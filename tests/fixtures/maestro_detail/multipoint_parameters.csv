@@ -1,0 +1,7 @@
+Point,Test,Output,Nominal,Spec,Weight,Pass/Fail
+"Parameters: VDD=0.8, TEMP=-40",,,,,,
+1,TRAN,delay,18p,<25p,1,Pass
+1,TRAN,logic_ok,1,1,1,Pass
+"Parameters: VDD=1.0, TEMP=125",,,,,,
+2,TRAN,delay,10p,<25p,1,Pass
+2,TRAN,logic_ok,1,1,1,Pass

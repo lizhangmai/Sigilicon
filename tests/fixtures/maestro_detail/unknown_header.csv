@@ -1,0 +1,2 @@
+Corner,Test,Output,Nominal,Spec,Weight,Pass/Fail
+tt,TRAN,delay,12p,<20p,1,Pass

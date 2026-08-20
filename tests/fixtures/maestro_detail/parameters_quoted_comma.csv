@@ -1,0 +1,3 @@
+Point,Test,Output,Nominal,Spec,Weight,Pass/Fail
+"Parameters: MODE=""fast,slow"", VDD=0.9",,,,,,
+1,TRAN,delay,12p,<20p,1,Pass

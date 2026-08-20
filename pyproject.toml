@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigilicon"
+version = "0.1.0"
+description = "Reusable EDA flow models, safety adapters, and orchestration"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+layout = ["laygo2==0.6.9"]
+virtuoso = [
+  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@57cdac99bd9afa62e163ef1faa782e1afaa0a1c3",
+]
+test = [
+  "pytest>=8",
+  "laygo2==0.6.9",
+  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@57cdac99bd9afa62e163ef1faa782e1afaa0a1c3",
+]
+
+[project.scripts]
+sigilicon = "sigilicon.cli.main:main"
+
+[tool.setuptools.package-data]
+"sigilicon.workflows" = ["*.tcl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

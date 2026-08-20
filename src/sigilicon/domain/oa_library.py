@@ -1,0 +1,512 @@
+"""Canonical OA ownership roots and library assembly contracts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+import tomllib
+from typing import Any
+
+from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.paths import ProjectContext
+
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
+_VIEW_KINDS = {
+    "spectre_netlist",
+    "spectre_model",
+    "schematic",
+    "symbol",
+    "layout",
+    "veriloga",
+    "system_verilog",
+    "skill",
+    "config",
+    "maestro",
+}
+_CELL_ROLES = {"design", "model", "testbench"}
+_NATIVE_VIEW_NAMES = {
+    "spectre_netlist": "netlist",
+    "spectre_model": "spectre",
+    "schematic": "schematic",
+    "symbol": "symbol",
+    "veriloga": "veriloga",
+    "system_verilog": "systemVerilog",
+    "skill": "measurement",
+    "config": "config",
+    "maestro": "maestro",
+}
+_SOURCE_MANIFEST_FIELDS = {
+    "schema",
+    "contract_kind",
+    "path_scope",
+    "owner",
+    "cell_roots",
+}
+_ASSEMBLY_FIELDS = {
+    "schema",
+    "contract_kind",
+    "path_scope",
+    "name",
+    "pdk",
+    "workspace_template",
+    "oa_library",
+    "additional_source_manifests",
+}
+
+
+@dataclass(frozen=True, order=True)
+class OAViewReference:
+    """One exact library-local cell/view dependency."""
+
+    cell: str
+    view: str
+
+
+@dataclass(frozen=True)
+class OACellViewSource:
+    """Canonical source and materializer kind for one OA view."""
+
+    name: str
+    kind: str
+    source: Path
+    dependencies: tuple[OAViewReference, ...]
+
+
+@dataclass(frozen=True)
+class OACellSource:
+    """Canonical source and explicit view set owned by one IP."""
+
+    owner: str
+    source_manifest_path: Path
+    manifest_path: Path
+    directory: Path
+    cell: str
+    role: str
+    canonical_source: Path
+    views: tuple[OACellViewSource, ...]
+
+    @property
+    def design_spec(self) -> Path | None:
+        """Return the unique design spec used by schematic generation, if any."""
+
+        values = {
+            view.source
+            for view in self.views
+            if view.kind in {"schematic", "symbol"}
+            and view.source.name == "design.toml"
+        }
+        if len(values) > 1:
+            raise ValueError(f"{self.cell} views disagree on their design spec")
+        return next(iter(values), None)
+
+    @property
+    def layout_specs(self) -> tuple[Path, ...]:
+        return tuple(view.source for view in self.views if view.kind == "layout")
+
+    def view(self, name: str) -> OACellViewSource:
+        try:
+            return next(view for view in self.views if view.name == name)
+        except StopIteration as exc:
+            raise KeyError(f"{self.cell} does not declare OA view {name}") from exc
+
+
+@dataclass(frozen=True)
+class OASourceRoot:
+    """One IP-owned collection of OA cell sources."""
+
+    owner: str
+    manifest_path: Path
+    directory: Path
+    cell_roots: tuple[Path, ...]
+    cells: tuple[OACellSource, ...]
+
+
+@dataclass(frozen=True)
+class OALibrarySource:
+    """Assembly contract for one generated OA library."""
+
+    manifest_path: Path
+    project_root: Path
+    name: str
+    pdk: str
+    workspace_template: Path
+    oa_library: Path
+    source_roots: tuple[OASourceRoot, ...]
+    cells: tuple[OACellSource, ...]
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as stream:
+            value = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"cannot read TOML {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"TOML root must be a table: {path}")
+    return value
+
+
+def _identifier(value: object, field: str) -> str:
+    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"{field} must be an identifier")
+    return value
+
+
+def _token(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+", value
+    ):
+        raise ValueError(f"{field} must be a non-empty token")
+    return value
+
+
+def _strings(value: object, field: str, *, allow_empty: bool = False) -> tuple[str, ...]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        qualifier = "" if allow_empty else " non-empty"
+        raise ValueError(f"{field} must be a{qualifier} string array")
+    result = tuple(value)
+    if any(not isinstance(item, str) or not item for item in result):
+        raise ValueError(f"{field} must contain non-empty strings")
+    if len(set(result)) != len(result):
+        raise ValueError(f"{field} contains duplicates")
+    return result
+
+
+def _project_path(root: Path, value: object, field: str, *, file: bool) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty project-relative path")
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"{field} must stay below the project root")
+    result = (root / relative).resolve()
+    if not result.is_relative_to(root):
+        raise ValueError(f"{field} must stay below the project root")
+    if file and not result.is_file():
+        raise ValueError(f"{field} does not exist: {result}")
+    return result
+
+
+def _cell_owned_path(directory: Path, value: object, field: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty cell-relative path")
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"{field} must stay inside its cell directory")
+    result = (directory / relative).resolve()
+    if not result.is_relative_to(directory.resolve()):
+        raise ValueError(f"{field} must stay inside its cell directory")
+    if not result.is_file():
+        raise ValueError(f"{field} does not exist: {result}")
+    return result
+
+
+def _is_non_oa_verification_cell(directory: Path) -> bool:
+    """Return whether a functional verification root contains a non-OA cell.
+
+    Verification is organized by circuit responsibility, so one domain root may
+    contain both native OA testbench cells and RTL-only verification cells.  The
+    OA assembly consumes the former and leaves the latter to their own runner.
+    """
+
+    manifest = directory / "cell.toml"
+    if not manifest.is_file():
+        return False
+    return _read_toml(manifest).get("contract_kind") == "verification-cell"
+
+
+def _view_reference(value: str, field: str) -> OAViewReference:
+    parts = value.split("/")
+    if len(parts) != 2:
+        raise ValueError(f"{field} must use CELL/view syntax")
+    return OAViewReference(
+        cell=_identifier(parts[0], f"{field}.cell"),
+        view=_identifier(parts[1], f"{field}.view"),
+    )
+
+
+def _load_cell(owner: str, source_manifest: Path, directory: Path) -> OACellSource:
+    cell_manifest = directory / "cell.toml"
+    raw = _read_toml(cell_manifest)
+    unknown = set(raw) - {
+        "schema",
+        "contract_kind",
+        "path_scope",
+        "owner",
+        "cell",
+        "role",
+        "canonical_source",
+        "views",
+    }
+    if unknown:
+        raise ValueError(
+            f"unsupported cell contract fields in {cell_manifest}: {sorted(unknown)}"
+        )
+    header = require_config_header(
+        raw,
+        cell_manifest,
+        contract_kind="oa-cell",
+        path_scope="cell",
+        owner=owner,
+    )
+    if header.owner != owner:
+        raise ValueError(f"OA cell owner disagrees with source manifest: {cell_manifest}")
+    cell = _identifier(raw.get("cell"), f"{cell_manifest}: cell")
+    if cell != directory.name:
+        raise ValueError(f"cell must match its directory name: {cell_manifest}")
+    role = _token(raw.get("role"), f"{cell_manifest}: role")
+    if role not in _CELL_ROLES:
+        raise ValueError(f"unsupported OA cell role in {cell_manifest}: {role}")
+    canonical_source = _cell_owned_path(
+        directory,
+        raw.get("canonical_source"),
+        f"{cell_manifest}: canonical_source",
+    )
+    rows = raw.get("views")
+    if not isinstance(rows, list) or not rows or not all(
+        isinstance(row, dict) for row in rows
+    ):
+        raise ValueError(f"{cell_manifest}: views must be a non-empty array of tables")
+    views: list[OACellViewSource] = []
+    for index, row in enumerate(rows):
+        field = f"{cell_manifest}: views[{index}]"
+        unknown_view = set(row) - {"name", "kind", "source", "dependencies"}
+        if unknown_view:
+            raise ValueError(f"unsupported {field} fields: {sorted(unknown_view)}")
+        name = _identifier(row.get("name"), f"{field}.name")
+        kind = _token(row.get("kind"), f"{field}.kind")
+        if kind not in _VIEW_KINDS:
+            raise ValueError(f"unsupported {field}.kind: {kind}")
+        native_name = _NATIVE_VIEW_NAMES.get(kind)
+        if native_name is not None and name != native_name:
+            raise ValueError(f"{field} kind {kind} must use OA view name {native_name}")
+        source = _cell_owned_path(directory, row.get("source"), f"{field}.source")
+        dependencies = tuple(
+            _view_reference(value, f"{field}.dependencies[]")
+            for value in _strings(
+                row.get("dependencies", []),
+                f"{field}.dependencies",
+                allow_empty=True,
+            )
+        )
+        views.append(
+            OACellViewSource(
+                name=name,
+                kind=kind,
+                source=source,
+                dependencies=dependencies,
+            )
+        )
+    if len({view.name for view in views}) != len(views):
+        raise ValueError(f"duplicate OA view names in {cell_manifest}")
+    if role == "design":
+        required = {"netlist", "schematic", "symbol"}
+        missing = required - {view.name for view in views}
+        if missing:
+            raise ValueError(f"design {cell} lacks required views: {sorted(missing)}")
+    if role == "testbench" and not {
+        "netlist",
+        "schematic",
+        "config",
+        "measurement",
+        "maestro",
+    }.issubset(
+        {view.name for view in views}
+    ):
+        raise ValueError(
+            f"testbench {cell} must declare netlist, schematic, config, measurement, and maestro views"
+        )
+    return OACellSource(
+        owner=owner,
+        source_manifest_path=source_manifest,
+        manifest_path=cell_manifest,
+        directory=directory.resolve(),
+        cell=cell,
+        role=role,
+        canonical_source=canonical_source,
+        views=tuple(views),
+    )
+
+
+def _load_source_root(
+    path: Path,
+    *,
+    context: ProjectContext,
+    allow_assembly_fields: bool = False,
+) -> OASourceRoot:
+    raw = _read_toml(path)
+    allowed = _SOURCE_MANIFEST_FIELDS | (
+        _ASSEMBLY_FIELDS if allow_assembly_fields else set()
+    )
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"unsupported OA source manifest fields in {path}: {sorted(unknown)}")
+    require_config_header(
+        raw,
+        path,
+        contract_kind=("oa-assembly" if allow_assembly_fields else "oa-source-root"),
+        path_scope="owner",
+    )
+    owner = _token(raw.get("owner"), f"{path}: owner")
+    manifest_directory = path.parent.resolve()
+    directory = manifest_directory.parent
+    ip_root = context.ip_root
+    expected_manifest = context.ip_config(directory.name, "oa.toml")
+    if path.resolve() != expected_manifest or directory.parent != ip_root:
+        raise ValueError(f"OA source manifest is outside its ProjectContext owner: {path}")
+    if directory.is_relative_to((context.ip_root / "legacy").resolve()):
+        raise ValueError(f"legacy IP cannot contribute to OA assembly: {path}")
+    root_values = _strings(raw.get("cell_roots"), f"{path}: cell_roots")
+    cell_roots: list[Path] = []
+    source_directories: list[Path] = []
+    for index, value in enumerate(root_values):
+        relative = Path(value)
+        field = f"{path}: cell_roots[{index}]"
+        if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
+            raise ValueError(f"{field} must stay inside its owning IP")
+        cell_root = (directory / relative).resolve()
+        if not cell_root.is_relative_to(directory) or not cell_root.is_dir():
+            raise ValueError(f"{field} must be an existing directory inside its owning IP")
+        all_children = tuple(
+            item
+            for item in sorted(cell_root.iterdir())
+            if item.is_dir() and not item.name.startswith(".")
+        )
+        undeclared = [
+            item.relative_to(directory).as_posix()
+            for item in all_children
+            if not (item / "cell.toml").is_file()
+        ]
+        if undeclared:
+            raise ValueError(
+                f"OA cell root contains directories without cell.toml: {undeclared}"
+            )
+        children = tuple(
+            item for item in all_children if not _is_non_oa_verification_cell(item)
+        )
+        if not children:
+            raise ValueError(f"OA cell root declares no cells: {cell_root}")
+        cell_roots.append(cell_root)
+        source_directories.extend(children)
+    if len(set(source_directories)) != len(source_directories):
+        raise ValueError(f"OA source manifest selects a cell directory more than once: {path}")
+    cells = tuple(
+        _load_cell(owner, path, item)
+        for item in source_directories
+    )
+    if not cells:
+        raise ValueError(f"OA source manifest declares no cells: {path}")
+    return OASourceRoot(
+        owner=owner,
+        manifest_path=path,
+        directory=directory,
+        cell_roots=tuple(cell_roots),
+        cells=cells,
+    )
+
+
+def load_oa_library_source(
+    path: Path,
+    *,
+    project_root: Path | None = None,
+) -> OALibrarySource:
+    """Load one OA assembly and all explicitly selected IP source roots."""
+
+    manifest_path = path.resolve()
+    if project_root is None:
+        raise ValueError("project_root or ProjectContext is required for an OA assembly")
+    context = ProjectContext.from_project_root(project_root)
+    root = context.project_root
+    ip_root = context.ip_root
+    if manifest_path.is_relative_to((ip_root / "legacy").resolve()):
+        raise ValueError("legacy IP cannot own an OA assembly contract")
+    owner_directory = manifest_path.parent.parent
+    expected_manifest = context.ip_config(owner_directory.name, "oa.toml")
+    if manifest_path != expected_manifest or owner_directory.parent != ip_root:
+        raise ValueError("OA assembly contract is outside its ProjectContext owner")
+    raw = _read_toml(manifest_path)
+    allowed = _ASSEMBLY_FIELDS | _SOURCE_MANIFEST_FIELDS
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(
+            f"unsupported OA assembly fields in {manifest_path}: {sorted(unknown)}"
+        )
+    require_config_header(
+        raw,
+        manifest_path,
+        contract_kind="oa-assembly",
+        path_scope="owner",
+    )
+    name = _identifier(raw.get("name"), "name")
+    pdk = _identifier(raw.get("pdk"), "pdk")
+    workspace_template = _project_path(
+        root, raw.get("workspace_template"), "workspace_template", file=False
+    )
+    if workspace_template != context.workspace_root or not workspace_template.is_dir():
+        raise ValueError("workspace_template must match the ProjectContext workspace root")
+    oa_library = _project_path(root, raw.get("oa_library"), "oa_library", file=False)
+    expected_library = workspace_template / name
+    if oa_library != expected_library:
+        raise ValueError("oa_library must be the named library below workspace_template")
+    additional_manifest_values = _strings(
+        raw.get("additional_source_manifests", []),
+        "additional_source_manifests",
+        allow_empty=True,
+    )
+    additional_manifests = tuple(
+        _project_path(
+            root,
+            value,
+            "additional_source_manifests[]",
+            file=True,
+        )
+        for value in additional_manifest_values
+    )
+    if manifest_path in additional_manifests:
+        raise ValueError("OA assembly must not list itself as an additional source")
+    source_roots = (
+        _load_source_root(
+            manifest_path,
+            context=context,
+            allow_assembly_fields=True,
+        ),
+        *(
+            _load_source_root(source, context=context)
+            for source in additional_manifests
+        ),
+    )
+    owners = tuple(source.owner for source in source_roots)
+    if len(set(owners)) != len(owners):
+        raise ValueError("OA assembly contains duplicate source owners")
+    cells = tuple(cell for source in source_roots for cell in source.cells)
+    names = tuple(cell.cell for cell in cells)
+    if len(set(names)) != len(names):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"OA cell names must be globally unique: {duplicates}")
+    available_views = {
+        OAViewReference(cell.cell, view.name)
+        for cell in cells
+        for view in cell.views
+    }
+    unresolved = sorted(
+        {
+            dependency
+            for cell in cells
+            for view in cell.views
+            for dependency in view.dependencies
+            if dependency not in available_views
+        }
+    )
+    if unresolved:
+        rendered = [f"{item.cell}/{item.view}" for item in unresolved]
+        raise ValueError(f"OA assembly has unresolved view dependencies: {rendered}")
+    return OALibrarySource(
+        manifest_path=manifest_path,
+        project_root=root,
+        name=name,
+        pdk=pdk,
+        workspace_template=workspace_template,
+        oa_library=oa_library,
+        source_roots=source_roots,
+        cells=cells,
+    )

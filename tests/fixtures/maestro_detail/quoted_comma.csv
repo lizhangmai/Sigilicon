@@ -1,0 +1,4 @@
+,Parameter,Nominal,,,
+
+Test,Output,Nominal,Spec,Weight,Pass/Fail
+AC,"gain, differential","12,5","between 10, 15",1,Pass
