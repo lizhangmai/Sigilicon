@@ -13,16 +13,17 @@ def _catalog_project(
     *,
     actions: str = '"check", "generate", "verify"',
 ) -> Path:
-    (tmp_path / "configs").mkdir()
-    (tmp_path / "ip/example").mkdir(parents=True)
+    flow_root = tmp_path / "ip/example/configs/flows"
+    flow_root.mkdir(parents=True)
+    (tmp_path / "ip/example").mkdir(parents=True, exist_ok=True)
     spec = tmp_path / "ip/example/leaf.toml"
     spec.write_text("# delegated layout spec\n", encoding="utf-8")
-    (tmp_path / "configs" / "layout_targets.toml").write_text(
+    (flow_root / "layout_targets.toml").write_text(
         f'''
 schema = 1
 contract_kind = "flow-layout-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.leaf]
 description = "Test leaf"
@@ -35,25 +36,47 @@ actions = [{actions}]
 
 
 def test_layout_target_catalog_can_start_empty(tmp_path: Path) -> None:
-    configs = tmp_path / "configs"
-    configs.mkdir()
-    (configs / "layout_targets.toml").write_text(
-        "schema = 1\ncontract_kind = \"flow-layout-registry\"\npath_scope = \"repository\"\nowner = \"repository\"\n\n[targets]\n",
+    flows = tmp_path / "ip/example/configs/flows"
+    flows.mkdir(parents=True)
+    (flows / "layout_targets.toml").write_text(
+        "schema = 1\ncontract_kind = \"flow-layout-registry\"\npath_scope = \"owner\"\nowner = \"example\"\n\n[targets]\n",
         encoding="utf-8",
     )
 
     assert load_layout_target_catalog(tmp_path).targets == ()
 
 
+def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+    catalog_path = tmp_path / "ip/example/configs/flows/layout_targets.toml"
+    source = catalog_path.read_text(encoding="utf-8")
+    catalog_path.write_text(
+        source.replace("[targets.leaf]", 'unexpected = "root"\n\n[targets.leaf]'),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="catalog contains unknown fields"):
+        load_layout_target_catalog(tmp_path)
+
+    catalog_path.write_text(
+        source.replace(
+            'description = "Test leaf"',
+            'description = "Test leaf"\nunexpected = "row"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="targets.leaf contains unknown fields"):
+        load_layout_target_catalog(tmp_path)
+
+
 def test_layout_catalog_rejects_unsafe_specs_and_invalid_actions(tmp_path: Path) -> None:
     _catalog_project(tmp_path)
-    catalog_path = tmp_path / "configs" / "layout_targets.toml"
+    catalog_path = tmp_path / "ip/example/configs/flows/layout_targets.toml"
     catalog_path.write_text(
         '''
 schema = 1
 contract_kind = "flow-layout-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.escape]
 description = "Unsafe"
@@ -69,8 +92,8 @@ actions = ["check"]
         '''
 schema = 1
 contract_kind = "flow-layout-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.leaf]
 description = "Bad action"

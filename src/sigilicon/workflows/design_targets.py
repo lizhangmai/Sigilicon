@@ -21,6 +21,10 @@ _PACKAGE_MODULE_PREFIXES = ("sigilicon.cli.",)
 _KINDS = frozenset({"script", "module"})
 _SPEC_ARGUMENTS = frozenset({"--spec", "--design"})
 _ROUTING_ARGUMENTS = frozenset({"--spec", "--design", "--mode"})
+_HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
+_TARGET_FIELDS = frozenset(
+    {"description", "kind", "entrypoint", "spec_argument", "spec", "modes"}
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,7 @@ class DesignMode:
 @dataclass(frozen=True)
 class DesignTarget:
     name: str
+    owner: str
     description: str
     project_root: Path
     kind: str
@@ -77,7 +82,7 @@ class DesignTarget:
 
 @dataclass(frozen=True)
 class DesignTargetCatalog:
-    path: Path
+    paths: tuple[Path, ...]
     project_root: Path
     targets: tuple[DesignTarget, ...]
 
@@ -154,86 +159,100 @@ def _modes(value: object, field: str) -> tuple[DesignMode, ...]:
 
 def load_design_target_catalog(
     project_root: Path,
-    path: Path | None = None,
 ) -> DesignTargetCatalog:
     root = project_root.resolve()
     context = ProjectContext.from_project_root(root)
-    catalog_path = (path or context.config_root / "design_targets.toml").resolve()
-    try:
-        with catalog_path.open("rb") as stream:
-            raw = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(
-            f"cannot read design target catalog {catalog_path}: {exc}"
-        ) from exc
-    require_config_header(
-        raw,
-        catalog_path,
-        contract_kind="flow-design-registry",
-        path_scope="repository",
-        owner="repository",
-    )
-    rows = raw.get("targets")
-    if not isinstance(rows, dict):
-        raise ValueError("design target catalog targets must be a table")
-
+    catalogs = context.flow_catalogs("design_targets")
+    if not catalogs:
+        raise ValueError("project context declares no design target catalogs")
     targets: list[DesignTarget] = []
-    for name, row in rows.items():
-        field = f"targets.{name}"
-        if not isinstance(name, str) or _NAME_RE.fullmatch(name) is None:
-            raise ValueError(f"design target name must match {_NAME_RE.pattern!r}")
-        if not isinstance(row, dict):
-            raise ValueError(f"{field} must be a table")
-        description = row.get("description")
-        if not isinstance(description, str) or not description.strip():
-            raise ValueError(f"{field}.description must be a non-empty string")
-        kind = row.get("kind")
-        if kind not in _KINDS:
-            raise ValueError(f"{field}.kind must be one of {sorted(_KINDS)}")
-        entrypoint = row.get("entrypoint")
-        entrypoint_path: Path | None = None
-        if kind == "script":
-            entrypoint_path, entrypoint_relative = _relative_file(
-                root, entrypoint, f"{field}.entrypoint"
-            )
-            if entrypoint_path.suffix != ".py":
-                raise ValueError(f"{field}.entrypoint must be a Python script")
-            entrypoint = entrypoint_relative.as_posix()
-        elif (
-            not isinstance(entrypoint, str)
-            or _MODULE_RE.fullmatch(entrypoint) is None
-            or not entrypoint.startswith(
-                (*_PACKAGE_MODULE_PREFIXES, *context.owned_module_prefixes)
-            )
-        ):
+    names: set[str] = set()
+    for owner, catalog_path in catalogs:
+        try:
+            with catalog_path.open("rb") as stream:
+                raw = tomllib.load(stream)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(
-                f"{field}.entrypoint must name a Sigilicon CLI or a "
-                "project-owned module prefix declared by ProjectContext"
-            )
-        spec_argument = row.get("spec_argument")
-        spec_value = row.get("spec")
-        spec: Path | None = None
-        spec_relative: Path | None = None
-        if spec_argument is None and spec_value is None:
-            pass
-        elif spec_argument not in _SPEC_ARGUMENTS:
-            raise ValueError(
-                f"{field}.spec_argument must be one of {sorted(_SPEC_ARGUMENTS)}"
-            )
-        else:
-            spec, spec_relative = _relative_file(root, spec_value, f"{field}.spec")
-        targets.append(
-            DesignTarget(
-                name=name,
-                description=description.strip(),
-                project_root=root,
-                kind=kind,
-                entrypoint=entrypoint,
-                entrypoint_path=entrypoint_path,
-                spec_argument=spec_argument,
-                spec=spec,
-                spec_relative=spec_relative,
-                modes=_modes(row.get("modes"), f"{field}.modes"),
-            )
+                f"cannot read design target catalog {catalog_path}: {exc}"
+            ) from exc
+        require_config_header(
+            raw,
+            catalog_path,
+            contract_kind="flow-design-registry",
+            path_scope="owner",
+            owner=owner,
         )
-    return DesignTargetCatalog(catalog_path, root, tuple(targets))
+        unknown = set(raw) - _HEADER_FIELDS - {"targets"}
+        if unknown:
+            raise ValueError(
+                f"design target catalog contains unknown fields: {sorted(unknown)}"
+            )
+        rows = raw.get("targets")
+        if not isinstance(rows, dict):
+            raise ValueError("design target catalog targets must be a table")
+        for name, row in rows.items():
+            field = f"targets.{name}"
+            if not isinstance(name, str) or _NAME_RE.fullmatch(name) is None:
+                raise ValueError(f"design target name must match {_NAME_RE.pattern!r}")
+            if name in names:
+                raise ValueError(f"duplicate design target across owner catalogs: {name}")
+            names.add(name)
+            if not isinstance(row, dict):
+                raise ValueError(f"{field} must be a table")
+            unknown = set(row) - _TARGET_FIELDS
+            if unknown:
+                raise ValueError(f"{field} contains unknown fields: {sorted(unknown)}")
+            description = row.get("description")
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(f"{field}.description must be a non-empty string")
+            kind = row.get("kind")
+            if kind not in _KINDS:
+                raise ValueError(f"{field}.kind must be one of {sorted(_KINDS)}")
+            entrypoint = row.get("entrypoint")
+            entrypoint_path: Path | None = None
+            if kind == "script":
+                entrypoint_path, entrypoint_relative = _relative_file(
+                    root, entrypoint, f"{field}.entrypoint"
+                )
+                if entrypoint_path.suffix != ".py":
+                    raise ValueError(f"{field}.entrypoint must be a Python script")
+                entrypoint = entrypoint_relative.as_posix()
+            elif (
+                not isinstance(entrypoint, str)
+                or _MODULE_RE.fullmatch(entrypoint) is None
+                or not entrypoint.startswith(
+                    (*_PACKAGE_MODULE_PREFIXES, *context.owned_module_prefixes)
+                )
+            ):
+                raise ValueError(
+                    f"{field}.entrypoint must name a Sigilicon CLI or a "
+                    "project-owned module prefix declared by ProjectContext"
+                )
+            spec_argument = row.get("spec_argument")
+            spec_value = row.get("spec")
+            spec: Path | None = None
+            spec_relative: Path | None = None
+            if spec_argument is None and spec_value is None:
+                pass
+            elif spec_argument not in _SPEC_ARGUMENTS:
+                raise ValueError(
+                    f"{field}.spec_argument must be one of {sorted(_SPEC_ARGUMENTS)}"
+                )
+            else:
+                spec, spec_relative = _relative_file(root, spec_value, f"{field}.spec")
+            targets.append(
+                DesignTarget(
+                    name=name,
+                    owner=owner,
+                    description=description.strip(),
+                    project_root=root,
+                    kind=kind,
+                    entrypoint=entrypoint,
+                    entrypoint_path=entrypoint_path,
+                    spec_argument=spec_argument,
+                    spec=spec,
+                    spec_relative=spec_relative,
+                    modes=_modes(row.get("modes"), f"{field}.modes"),
+                )
+            )
+    return DesignTargetCatalog(tuple(path for _, path in catalogs), root, tuple(targets))

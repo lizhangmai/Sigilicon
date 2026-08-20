@@ -38,6 +38,7 @@ from sigilicon.workflows.oa_simulation import run_oa_maestro_testbench
 def _target_payload(target: LayoutTarget) -> dict[str, object]:
     return {
         "name": target.name,
+        "owner": target.owner,
         "description": target.description,
         "spec": target.spec_relative.as_posix(),
         "actions": list(target.actions),
@@ -47,6 +48,7 @@ def _target_payload(target: LayoutTarget) -> dict[str, object]:
 def _design_target_payload(target: DesignTarget) -> dict[str, object]:
     return {
         "name": target.name,
+        "owner": target.owner,
         "description": target.description,
         "kind": target.kind,
         "entrypoint": target.entrypoint,

@@ -10,19 +10,20 @@ from sigilicon.workflows.design_targets import load_design_target_catalog
 
 
 def _catalog_project(tmp_path: Path) -> tuple[Path, Path]:
-    (tmp_path / "configs").mkdir()
+    flow_root = tmp_path / "ip/example/configs/flows"
+    flow_root.mkdir(parents=True)
     design = tmp_path / "ip/example/leaf"
     design.mkdir(parents=True)
     runner = design / "run.py"
     runner.write_text("raise SystemExit(0)\n", encoding="utf-8")
     spec = design / "design.toml"
     spec.write_text("# delegated design spec\n", encoding="utf-8")
-    (tmp_path / "configs" / "design_targets.toml").write_text(
+    (flow_root / "design_targets.toml").write_text(
         '''
 schema = 1
 contract_kind = "flow-design-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.leaf]
 description = "Test leaf"
@@ -40,27 +41,63 @@ sync = ["--overwrite"]
 
 
 def test_design_target_catalog_can_start_empty(tmp_path: Path) -> None:
-    configs = tmp_path / "configs"
-    configs.mkdir()
-    (configs / "design_targets.toml").write_text(
-        "schema = 1\ncontract_kind = \"flow-design-registry\"\npath_scope = \"repository\"\nowner = \"repository\"\n\n[targets]\n",
+    flows = tmp_path / "ip/example/configs/flows"
+    flows.mkdir(parents=True)
+    (flows / "design_targets.toml").write_text(
+        "schema = 1\ncontract_kind = \"flow-design-registry\"\npath_scope = \"owner\"\nowner = \"example\"\n\n[targets]\n",
         encoding="utf-8",
     )
 
     assert load_design_target_catalog(tmp_path).targets == ()
 
 
+def test_design_catalog_owner_must_match_project_flow(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
+    catalog_path.write_text(
+        catalog_path.read_text(encoding="utf-8").replace(
+            'owner = "example"', 'owner = "different-owner"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="owner must be 'example'"):
+        load_design_target_catalog(tmp_path)
+
+
+def test_design_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
+    source = catalog_path.read_text(encoding="utf-8")
+    catalog_path.write_text(
+        source.replace("[targets.leaf]", 'unexpected = "root"\n\n[targets.leaf]'),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="catalog contains unknown fields"):
+        load_design_target_catalog(tmp_path)
+
+    catalog_path.write_text(
+        source.replace(
+            'description = "Test leaf"',
+            'description = "Test leaf"\nunexpected = "row"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="targets.leaf contains unknown fields"):
+        load_design_target_catalog(tmp_path)
+
+
 def test_design_catalog_rejects_unsafe_entrypoints_and_routing_overrides(
     tmp_path: Path,
 ) -> None:
     _catalog_project(tmp_path)
-    catalog_path = tmp_path / "configs" / "design_targets.toml"
+    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
     catalog_path.write_text(
         '''
 schema = 1
 contract_kind = "flow-design-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.escape]
 description = "Unsafe"
@@ -80,8 +117,8 @@ topology = []
         '''
 schema = 1
 contract_kind = "flow-design-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.leaf]
 description = "Routing override"
@@ -102,13 +139,13 @@ def test_design_catalog_routes_dv_owned_modules_without_script_wrappers(
     tmp_path: Path,
 ) -> None:
     _catalog_project(tmp_path)
-    catalog_path = tmp_path / "configs" / "design_targets.toml"
+    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
     catalog_path.write_text(
         '''
 schema = 1
 contract_kind = "flow-design-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.dv-check]
 description = "DV-owned entrypoint"
@@ -132,8 +169,8 @@ contract = []
         '''
 schema = 1
 contract_kind = "flow-design-registry"
-path_scope = "repository"
-owner = "repository"
+path_scope = "owner"
+owner = "example"
 
 [targets.external]
 description = "Unowned module"

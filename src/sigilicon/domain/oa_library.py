@@ -9,6 +9,10 @@ import tomllib
 from typing import Any
 
 from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.physical_verification import (
+    PhysicalVerificationPolicy,
+    load_physical_verification_policy,
+)
 from sigilicon.paths import ProjectContext
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -52,6 +56,8 @@ _ASSEMBLY_FIELDS = {
     "workspace_template",
     "oa_library",
     "additional_source_manifests",
+    "primitive_masters",
+    "physical_verification",
 }
 
 
@@ -132,6 +138,8 @@ class OALibrarySource:
     pdk: str
     workspace_template: Path
     oa_library: Path
+    primitive_masters: tuple[str, ...]
+    physical_verification: PhysicalVerificationPolicy
     source_roots: tuple[OASourceRoot, ...]
     cells: tuple[OACellSource, ...]
 
@@ -445,6 +453,7 @@ def load_oa_library_source(
     )
     name = _identifier(raw.get("name"), "name")
     pdk = _identifier(raw.get("pdk"), "pdk")
+    assembly_owner = _token(raw.get("owner"), f"{manifest_path}: owner")
     workspace_template = _project_path(
         root, raw.get("workspace_template"), "workspace_template", file=False
     )
@@ -454,6 +463,22 @@ def load_oa_library_source(
     expected_library = workspace_template / name
     if oa_library != expected_library:
         raise ValueError("oa_library must be the named library below workspace_template")
+    primitive_masters = tuple(
+        _identifier(value, "primitive_masters[]")
+        for value in _strings(
+            raw.get("primitive_masters"), "primitive_masters", allow_empty=True
+        )
+    )
+    physical_verification_path = _project_path(
+        root,
+        raw.get("physical_verification"),
+        "physical_verification",
+        file=True,
+    )
+    physical_verification = load_physical_verification_policy(
+        physical_verification_path,
+        owner=assembly_owner,
+    )
     additional_manifest_values = _strings(
         raw.get("additional_source_manifests", []),
         "additional_source_manifests",
@@ -513,6 +538,8 @@ def load_oa_library_source(
         pdk=pdk,
         workspace_template=workspace_template,
         oa_library=oa_library,
+        primitive_masters=primitive_masters,
+        physical_verification=physical_verification,
         source_roots=source_roots,
         cells=cells,
     )

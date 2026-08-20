@@ -58,3 +58,14 @@ def test_verification_cell_rejects_canonical_source_outside_cell(tmp_path: Path)
 
     with pytest.raises(ValueError, match="canonical_source must stay inside"):
         load_verification_cell(contract, project_root=tmp_path)
+
+
+def test_verification_cell_rejects_unknown_fields(tmp_path: Path) -> None:
+    contract = _contract(tmp_path)
+    contract.write_text(
+        contract.read_text(encoding="utf-8") + 'unexpected = "field"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="contains unknown fields"):
+        load_verification_cell(contract, project_root=tmp_path)

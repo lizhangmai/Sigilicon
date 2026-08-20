@@ -1,4 +1,4 @@
-"""Shared metadata and inventory checks for repository-owned TOML contracts.
+"""Shared metadata checks for repository-owned TOML contracts.
 
 The repository intentionally keeps several domain-specific TOML schemas.  This
 module does not flatten those schemas; it validates the small common envelope
@@ -10,7 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import tomllib
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from sigilicon.paths import ProjectContext
 
 
 CONFIG_SCHEMA = 1
@@ -29,21 +32,6 @@ def _text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value
-
-
-def _contract_kind_choices(value: object, field: str) -> str | tuple[str, ...]:
-    """Accept one contract kind or an explicit set of equivalent kinds."""
-
-    if isinstance(value, str):
-        return _text(value, field)
-    if not isinstance(value, list) or not value or any(
-        not isinstance(item, str) or not item.strip() for item in value
-    ):
-        raise ValueError(f"{field} must be a non-empty string or string array")
-    choices = tuple(value)
-    if len(set(choices)) != len(choices):
-        raise ValueError(f"{field} contains duplicate contract kinds")
-    return choices
 
 
 def require_config_header(
@@ -96,194 +84,144 @@ def read_toml(path: Path) -> dict[str, Any]:
     return value
 
 
-def _safe_relative(root: Path, value: object, field: str) -> Path:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty relative path")
-    relative = Path(value)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"{field} must stay below the project root")
-    resolved = (root / relative).resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError(f"{field} must stay below the project root")
-    return resolved
-
-
-def _validate_inventory_document(
-    path: Path,
+def inspect_project_configurations(
+    context: ProjectContext,
     *,
-    project_root: Path,
-    contract_kind: str | tuple[str, ...],
-    path_scope: str,
-    owner: str,
-    schema: int,
-) -> None:
-    raw = read_toml(path)
-    require_config_header(
-        raw,
-        path,
-        contract_kind=contract_kind,
-        path_scope=path_scope,
-        owner=owner,
-        schema=schema,
-    )
-    if raw.get("contract_kind") == "verification-cell":
-        from sigilicon.domain.verification_cell import load_verification_cell
-
-        load_verification_cell(path, project_root=project_root)
-
-
-def validate_configuration_inventory(
-    path: Path,
-    *,
-    project_root: Path,
+    owner_roots: Mapping[str, Path],
 ) -> dict[str, Any]:
-    """Validate the tracked active configuration families declared by an inventory."""
+    """Validate TOML below the owner roots selected by ``ProjectContext``.
 
-    root = project_root.resolve()
-    inventory_path = path.resolve()
-    if not inventory_path.is_relative_to(root) or not inventory_path.is_file():
-        raise ValueError("configuration inventory must be a project-owned file")
-    raw = read_toml(inventory_path)
-    require_config_header(
-        raw,
-        inventory_path,
-        contract_kind="configuration-inventory",
-        path_scope="repository",
-        owner="repository",
+    Catalog locations define product and platform roots.  Managed IP roots stay
+    explicit because an IP catalog directory may also contain unmanaged source.
+    Domain loaders remain responsible for native schemas; this pass proves that
+    every TOML is parseable and that every common metadata envelope is complete.
+    """
+
+    root = context.project_root.resolve()
+    project_contract = root / "sigilicon.toml"
+    repository_owner = _text(
+        read_toml(project_contract).get("owner"),
+        f"{project_contract}: owner",
+    )
+    exact_paths = {
+        project_contract,
+        *(path for _, path in context.catalog_paths),
+        *(
+            path
+            for flow in context.flows
+            for _, path in flow.catalog_paths
+        ),
+    }
+    scan_roots = set(context.managed_ip_roots)
+    scan_roots.update(
+        path.parent
+        for _, path in context.catalog_paths
+        if path.parent != context.ip_root
     )
 
-    checked: set[Path] = set()
-    files = raw.get("files", [])
-    if not isinstance(files, list) or not all(isinstance(item, Mapping) for item in files):
-        raise ValueError("configuration inventory files must be an array of tables")
-    for index, item in enumerate(files):
-        field = f"files[{index}]"
-        target = _safe_relative(root, item.get("path"), f"{field}.path")
-        if not target.is_file():
-            raise ValueError(f"{field}.path does not exist: {target}")
-        if target in checked:
-            raise ValueError(f"configuration inventory selects a file more than once: {target}")
-        checked.add(target)
-        _validate_inventory_document(
-            target,
-            project_root=root,
-            contract_kind=_contract_kind_choices(item.get("contract_kind"), f"{field}.contract_kind"),
-            path_scope=_text(item.get("path_scope"), f"{field}.path_scope"),
-            owner=_text(item.get("owner"), f"{field}.owner"),
-            schema=item.get("schema", CONFIG_SCHEMA),
-        )
-
-    families = raw.get("families", [])
-    if not isinstance(families, list) or not all(
-        isinstance(item, Mapping) for item in families
-    ):
-        raise ValueError("configuration inventory families must be an array of tables")
-    family_counts: dict[str, int] = {}
-    for index, item in enumerate(families):
-        field = f"families[{index}]"
-        pattern = _text(item.get("glob"), f"{field}.glob")
-        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            raise ValueError(f"{field}.glob must stay below the project root")
-        matches = tuple(sorted(root.glob(pattern)))
-        excludes = item.get("exclude", [])
-        if not isinstance(excludes, list) or any(not isinstance(value, str) for value in excludes):
-            raise ValueError(f"{field}.exclude must be a string array")
-        excluded = {(root / value).resolve() for value in excludes}
-        matches = tuple(item for item in matches if item.is_file() and item not in excluded)
-        if not matches:
-            raise ValueError(f"{field}.glob matched no files: {pattern}")
-        for target in matches:
-            if target in checked:
-                raise ValueError(f"configuration inventory selects a file more than once: {target}")
-            checked.add(target)
-            _validate_inventory_document(
-                target,
-                project_root=root,
-                contract_kind=_contract_kind_choices(item.get("contract_kind"), f"{field}.contract_kind"),
-                path_scope=_text(item.get("path_scope"), f"{field}.path_scope"),
-                owner=_text(item.get("owner"), f"{field}.owner"),
-                schema=item.get("schema", CONFIG_SCHEMA),
+    resolved_owner_roots: dict[Path, str] = {}
+    for owner, directory in owner_roots.items():
+        owner_name = _text(owner, "configuration owner")
+        resolved = directory.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(
+                f"configuration owner root escapes the project root: {directory}"
             )
-        family_counts[field] = len(matches)
-
-    native_families = raw.get("native_families", [])
-    if not isinstance(native_families, list) or not all(
-        isinstance(item, Mapping) for item in native_families
-    ):
-        raise ValueError("configuration inventory native_families must be an array of tables")
-    native_counts: dict[str, int] = {}
-    for index, item in enumerate(native_families):
-        field = f"native_families[{index}]"
-        pattern = _text(item.get("glob"), f"{field}.glob")
-        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            raise ValueError(f"{field}.glob must stay below the project root")
-        matches = tuple(
-            sorted(path for path in root.glob(pattern) if path.is_file())
+        previous = resolved_owner_roots.get(resolved)
+        if previous is not None and previous != owner_name:
+            raise ValueError(
+                f"configuration owner root has multiple owners: {resolved}"
+            )
+        resolved_owner_roots[resolved] = owner_name
+    missing_managed = set(context.managed_ip_roots) - set(resolved_owner_roots)
+    if missing_managed:
+        raise ValueError(
+            "managed IP roots lack a cataloged owner: "
+            f"{sorted(str(path) for path in missing_managed)}"
         )
-        if not matches:
-            raise ValueError(f"{field}.glob matched no files: {pattern}")
-        expected_schema = item.get("schema")
-        if isinstance(expected_schema, bool) or not isinstance(expected_schema, int):
-            raise ValueError(f"{field}.schema must be an integer")
-        for target in matches:
-            if target in checked:
-                raise ValueError(f"configuration inventory selects a file more than once: {target}")
-            checked.add(target)
-            document = read_toml(target)
-            if document.get("schema") != expected_schema:
+
+    for path in (*exact_paths, *scan_roots, *resolved_owner_roots):
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"configuration source escapes the project root: {path}")
+    for path in exact_paths:
+        if not path.is_file():
+            raise ValueError(f"configuration source is missing: {path}")
+    for directory in scan_roots:
+        if not directory.is_dir():
+            raise ValueError(f"configuration owner root is missing: {directory}")
+
+    documents = set(exact_paths)
+    for directory in scan_roots:
+        documents.update(path for path in directory.rglob("*.toml") if path.is_file())
+
+    contract_kinds: set[str] = set()
+    owners: set[str] = set()
+    native_documents = 0
+    envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
+    repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
+    platform_root = context.catalog("platform").parent
+    soc_root = context.catalog("soc").parent
+    for path in sorted(documents):
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"configuration source escapes the project root: {path}")
+        raw = read_toml(resolved)
+        present = envelope_fields & raw.keys()
+        if not present:
+            native_documents += 1
+            continue
+        if present != envelope_fields:
+            missing = sorted(envelope_fields - present)
+            raise ValueError(f"{resolved}: incomplete configuration header: {missing}")
+        kind = _text(raw.get("contract_kind"), f"{resolved}: contract_kind")
+        if resolved in repository_sources:
+            allowed_scopes: str | tuple[str, ...] = "repository"
+            expected_owner = repository_owner
+        else:
+            matches = [
+                (owner_root, owner)
+                for owner_root, owner in resolved_owner_roots.items()
+                if resolved.is_relative_to(owner_root)
+            ]
+            if not matches:
+                raise ValueError(f"{resolved}: configuration has no cataloged owner")
+            owner_root, expected_owner = max(
+                matches,
+                key=lambda item: len(item[0].parts),
+            )
+            if owner_root in context.managed_ip_roots:
+                allowed_scopes = ("owner", "cell", "verification", "variant")
+            elif owner_root.is_relative_to(platform_root):
+                allowed_scopes = "platform"
+            elif owner_root.is_relative_to(soc_root):
+                allowed_scopes = ("product", "variant")
+            else:
                 raise ValueError(
-                    f"{target}: native schema must be {expected_schema}"
+                    f"{owner_root}: configuration owner root has no domain catalog"
                 )
-        native_counts[field] = len(matches)
+        header = require_config_header(
+            raw,
+            resolved,
+            contract_kind=kind,
+            path_scope=allowed_scopes,
+            owner=expected_owner,
+        )
+        if header.contract_kind == "verification-cell":
+            from sigilicon.domain.verification_cell import load_verification_cell
 
-    excluded_files = raw.get("excluded_files", [])
-    if not isinstance(excluded_files, list) or not all(
-        isinstance(item, Mapping) for item in excluded_files
-    ):
-        raise ValueError("configuration inventory excluded_files must be an array of tables")
-    excluded: set[Path] = set()
-    for index, item in enumerate(excluded_files):
-        field = f"excluded_files[{index}]"
-        target = _safe_relative(root, item.get("path"), f"{field}.path")
-        if not target.is_file():
-            raise ValueError(f"{field}.path does not exist: {target}")
-        if target in checked or target in excluded:
-            raise ValueError(f"configuration inventory selects a file more than once: {target}")
-        excluded.add(target)
-        _text(item.get("reason"), f"{field}.reason")
-
-    excluded_families = raw.get("excluded_families", [])
-    if not isinstance(excluded_families, list) or not all(
-        isinstance(item, Mapping) for item in excluded_families
-    ):
-        raise ValueError("configuration inventory excluded_families must be an array of tables")
-    excluded_family_counts: dict[str, int] = {}
-    for index, item in enumerate(excluded_families):
-        field = f"excluded_families[{index}]"
-        pattern = _text(item.get("glob"), f"{field}.glob")
-        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            raise ValueError(f"{field}.glob must stay below the project root")
-        matches = tuple(sorted(root.glob(pattern)))
-        excludes = item.get("exclude", [])
-        if not isinstance(excludes, list) or any(not isinstance(value, str) for value in excludes):
-            raise ValueError(f"{field}.exclude must be a string array")
-        excluded_paths = {(root / value).resolve() for value in excludes}
-        matches = tuple(item for item in matches if item.is_file() and item not in excluded_paths)
-        if not matches:
-            raise ValueError(f"{field}.glob matched no files: {pattern}")
-        _text(item.get("reason"), f"{field}.reason")
-        for target in matches:
-            if target in checked or target in excluded:
-                raise ValueError(f"configuration inventory selects a file more than once: {target}")
-            excluded.add(target)
-        excluded_family_counts[field] = len(matches)
+            load_verification_cell(resolved, project_root=root)
+        contract_kinds.add(header.contract_kind)
+        owners.add(header.owner)
 
     return {
         "passed": True,
-        "inventory": inventory_path.relative_to(root).as_posix(),
-        "files": len(files),
-        "families": family_counts,
-        "native_families": native_counts,
-        "excluded_files": len(excluded_files),
-        "excluded_families": excluded_family_counts,
+        "roots": sorted(
+            path.relative_to(root).as_posix() for path in scan_roots
+        ),
+        "documents": len(documents),
+        "contracts": len(documents) - native_documents,
+        "native_documents": native_documents,
+        "contract_kinds": sorted(contract_kinds),
+        "owners": sorted(owners),
     }

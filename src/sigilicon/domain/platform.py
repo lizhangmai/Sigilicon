@@ -93,31 +93,13 @@ class OaPlatformConfig:
     path: Path
     technology_library: str
     reference_libraries: tuple[str, ...]
-    primitive_masters: tuple[str, ...]
     primitive_subcircuits: Mapping[str, tuple[str, ...]]
     pcell_policy: PcellPolicy
 
 
 @dataclass(frozen=True)
-class PcellParameter:
-    name: str
-    value_type: str
-    value: str
-
-
-@dataclass(frozen=True)
-class MosPcellInterface:
-    length_parameter: str
-    width_parameter: str
-    gate_contact_selection_parameter: str
-    gate_contact_parameters: tuple[PcellParameter, ...]
-    polarity_parameters: Mapping[str, tuple[PcellParameter, ...]]
-
-
-@dataclass(frozen=True)
 class ViaInterface:
     definition: str
-    landing_half_sizes: Mapping[str, tuple[int, int]]
 
 
 @dataclass(frozen=True)
@@ -125,7 +107,6 @@ class LayoutTechnologyInterface:
     model_polarities: Mapping[str, str]
     layers: Mapping[str, str]
     vias: Mapping[str, ViaInterface]
-    mos_pcell: MosPcellInterface
 
     def layer(self, role: str) -> str:
         try:
@@ -149,46 +130,6 @@ class LayoutTechnologyInterface:
 
 
 @dataclass(frozen=True)
-class LayoutGeometryProfile:
-    path: Path
-    sha256: str
-    sections: Mapping[str, Mapping[str, Any]]
-
-    def integer(self, section: str, field: str) -> int:
-        value = self._value(section, field)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"layout profile {section}.{field} must be an integer")
-        return value
-
-    def pair(self, section: str, field: str) -> tuple[int, int]:
-        value = self._value(section, field)
-        if (
-            not isinstance(value, list)
-            or len(value) != 2
-            or any(
-                isinstance(item, bool) or not isinstance(item, int)
-                for item in value
-            )
-        ):
-            raise ValueError(
-                f"layout profile {section}.{field} must be an integer pair"
-            )
-        return value[0], value[1]
-
-    def _value(self, section: str, field: str) -> Any:
-        try:
-            return self.sections[section][field]
-        except KeyError as exc:
-            raise ValueError(f"layout profile is missing {section}.{field}") from exc
-
-
-@dataclass(frozen=True)
-class LayoutGenerationConfig:
-    technology: LayoutTechnologyInterface
-    geometry: LayoutGeometryProfile
-
-
-@dataclass(frozen=True)
 class LayoutPdkConfig:
     """Resolved layout and physical-verification platform capability."""
 
@@ -200,10 +141,7 @@ class LayoutPdkConfig:
     drc_deck: Path
     lvs_deck: Path
     qrc_tech_file: Path
-    drc_disabled_defines: Mapping[str, int]
-    drc_configuration_warnings: tuple[str, ...]
-    drc_waiver_layers: tuple[str, ...]
-    generation: LayoutGenerationConfig
+    technology: LayoutTechnologyInterface
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
     xstream_bin: Path | None = None
@@ -433,14 +371,10 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
         | {
             "technology_library",
             "reference_libraries",
-            "primitive_masters",
             "primitive_subcircuits",
             "pcell_policy",
         },
         "platform OA contract",
-    )
-    primitive_masters = _names(
-        raw.get("primitive_masters", []), "primitive_masters", empty=True
     )
     primitive_raw = _table(raw.get("primitive_subcircuits", {}), "primitive_subcircuits")
     primitive_subcircuits = {
@@ -449,18 +383,12 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
         )
         for master, terminals in primitive_raw.items()
     }
-    unknown = set(primitive_subcircuits) - set(primitive_masters)
-    if unknown:
-        raise ValueError(
-            f"primitive_subcircuits contains undeclared masters: {sorted(unknown)}"
-        )
     return OaPlatformConfig(
         path=path,
         technology_library=_identifier(
             raw.get("technology_library"), "technology_library"
         ),
         reference_libraries=_names(raw.get("reference_libraries"), "reference_libraries"),
-        primitive_masters=primitive_masters,
         primitive_subcircuits=primitive_subcircuits,
         pcell_policy=_load_pcell_policy(
             _table(raw.get("pcell_policy", {}), "pcell_policy")
@@ -468,91 +396,13 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
     )
 
 
-def _parameter_list(value: object, field: str) -> tuple[PcellParameter, ...]:
-    if not isinstance(value, list):
-        raise ValueError(f"{field} must be an array of parameter tables")
-    result: list[PcellParameter] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, Mapping) or set(item) != {"name", "type", "value"}:
-            raise ValueError(f"{field}[{index}] must contain name, type, and value")
-        name = _identifier(item["name"], f"{field}[{index}].name")
-        value_type = item["type"]
-        parameter_value = item["value"]
-        if value_type not in {"string", "boolean", "int", "float"}:
-            raise ValueError(f"{field}[{index}].type is unsupported")
-        if not isinstance(parameter_value, str) or not parameter_value:
-            raise ValueError(f"{field}[{index}].value must be non-empty text")
-        result.append(PcellParameter(name, value_type, parameter_value))
-    if len({item.name for item in result}) != len(result):
-        raise ValueError(f"{field} contains duplicate parameter names")
-    return tuple(result)
-
-
-def _load_geometry(path: Path, *, owner: str) -> LayoutGeometryProfile:
-    payload = path.read_bytes()
-    raw = read_toml(path)
-    require_config_header(
-        raw,
-        path,
-        contract_kind="platform-layout-profile",
-        path_scope="platform",
-        owner=owner,
-    )
-    sections: dict[str, Mapping[str, Any]] = {}
-    for name, section in raw.items():
-        if name in {"schema", "contract_kind", "path_scope", "owner"}:
-            continue
-        sections[name] = _table(section, f"layout profile {name}")
-    geometry = LayoutGeometryProfile(
-        path=path,
-        sha256=hashlib.sha256(payload).hexdigest(),
-        sections=sections,
-    )
-    for section, fields in {
-        "placement": ("template_bbox", "default_pitch", "routed_pitch"),
-        "access": (
-            "wire_half_width",
-            "source_offset_x",
-            "drain_offset_x",
-            "gate_offset",
-            "gate_landing_half_size",
-        ),
-    }.items():
-        for field in fields:
-            if field in {
-                "template_bbox",
-                "default_pitch",
-                "routed_pitch",
-                "gate_offset",
-                "gate_landing_half_size",
-            }:
-                geometry.pair(section, field)
-            else:
-                geometry.integer(section, field)
-    return geometry
-
-
-def _load_generation(
-    path: Path,
-    raw: Mapping[str, Any],
-    *,
-    root: Path,
-    owner: str,
-) -> LayoutGenerationConfig:
-    generation = _table(raw.get("generation"), "layout.generation")
+def _load_technology(raw: Mapping[str, Any]) -> LayoutTechnologyInterface:
     _reject_unknown(
-        generation,
-        {"profile", "model_polarities", "layers", "vias", "mos_pcell"},
-        "layout.generation",
+        raw,
+        {"model_polarities", "layers", "vias"},
+        "layout.technology",
     )
-    profile_path = _safe_relative(
-        path.parent,
-        generation.get("profile"),
-        "layout.generation.profile",
-        root=root,
-    )
-    geometry = _load_geometry(profile_path, owner=owner)
-    model_raw = _table(generation.get("model_polarities"), "model_polarities")
+    model_raw = _table(raw.get("model_polarities"), "model_polarities")
     model_polarities = {
         _identifier(model, "model_polarities key"): _text(
             polarity, f"model_polarities.{model}"
@@ -563,108 +413,31 @@ def _load_generation(
         polarity not in _POLARITIES for polarity in model_polarities.values()
     ):
         raise ValueError("layout model polarity must be nmos or pmos")
-    layer_raw = _table(generation.get("layers"), "layout.generation.layers")
+    layer_raw = _table(raw.get("layers"), "layout.technology.layers")
     layers = {
         _identifier(role, "layout layer role"): _identifier(
-            value, f"layout.generation.layers.{role}"
+            value, f"layout.technology.layers.{role}"
         )
         for role, value in layer_raw.items()
     }
     if missing := _REQUIRED_LAYERS - set(layers):
         raise ValueError(f"layout layer roles are missing: {sorted(missing)}")
-    via_raw = _table(generation.get("vias"), "layout.generation.vias")
+    via_raw = _table(raw.get("vias"), "layout.technology.vias")
     vias: dict[str, ViaInterface] = {}
     for raw_role, value in via_raw.items():
         role = _identifier(raw_role, "layout via role")
-        item = _table(value, f"layout.generation.vias.{role}")
+        item = _table(value, f"layout.technology.vias.{role}")
         _reject_unknown(
             item,
-            {"definition", "landing_half_sizes"},
-            f"layout.generation.vias.{role}",
+            {"definition"},
+            f"layout.technology.vias.{role}",
         )
-        landings_raw = _table(
-            item.get("landing_half_sizes"),
-            f"layout.generation.vias.{role}.landing_half_sizes",
-        )
-        landings: dict[str, tuple[int, int]] = {}
-        for layer_role, size in landings_raw.items():
-            if layer_role not in layers:
-                raise ValueError(f"via {role} references unknown layer {layer_role}")
-            if (
-                not isinstance(size, list)
-                or len(size) != 2
-                or any(
-                    isinstance(item, bool)
-                    or not isinstance(item, int)
-                    or item <= 0
-                    for item in size
-                )
-            ):
-                raise ValueError(f"via {role} landing {layer_role} must be positive")
-            landings[layer_role] = size[0], size[1]
         vias[role] = ViaInterface(
             _identifier(item.get("definition"), f"via {role} definition"),
-            landings,
         )
     if missing := _REQUIRED_VIAS - set(vias):
         raise ValueError(f"layout via roles are missing: {sorted(missing)}")
-    pcell_raw = _table(generation.get("mos_pcell"), "layout.generation.mos_pcell")
-    _reject_unknown(
-        pcell_raw,
-        {
-            "length_parameter",
-            "width_parameter",
-            "gate_contact_selection_parameter",
-            "gate_contact_parameters",
-            "polarity_parameters",
-        },
-        "layout.generation.mos_pcell",
-    )
-    polarity_raw = _table(
-        pcell_raw.get("polarity_parameters", {}), "mos_pcell.polarity_parameters"
-    )
-    polarity_parameters = {
-        polarity: _parameter_list(value, f"polarity_parameters.{polarity}")
-        for polarity, value in polarity_raw.items()
-    }
-    if any(polarity not in _POLARITIES for polarity in polarity_parameters):
-        raise ValueError("mos_pcell polarity key must be nmos or pmos")
-    mos_pcell = MosPcellInterface(
-        length_parameter=_identifier(
-            pcell_raw.get("length_parameter"), "mos_pcell.length_parameter"
-        ),
-        width_parameter=_identifier(
-            pcell_raw.get("width_parameter"), "mos_pcell.width_parameter"
-        ),
-        gate_contact_selection_parameter=_identifier(
-            pcell_raw.get("gate_contact_selection_parameter"),
-            "mos_pcell.gate_contact_selection_parameter",
-        ),
-        gate_contact_parameters=_parameter_list(
-            pcell_raw.get("gate_contact_parameters"),
-            "mos_pcell.gate_contact_parameters",
-        ),
-        polarity_parameters=polarity_parameters,
-    )
-    return LayoutGenerationConfig(
-        LayoutTechnologyInterface(model_polarities, layers, vias, mos_pcell),
-        geometry,
-    )
-
-
-def _integer_map(value: object, field: str) -> Mapping[str, int]:
-    raw = _table(value, field)
-    result: dict[str, int] = {}
-    for name, item in raw.items():
-        if (
-            not isinstance(name, str)
-            or not name
-            or isinstance(item, bool)
-            or not isinstance(item, int)
-        ):
-            raise ValueError(f"{field} must map names to integers")
-        result[name] = item
-    return result
+    return LayoutTechnologyInterface(model_polarities, layers, vias)
 
 
 def _load_layout(
@@ -673,13 +446,11 @@ def _load_layout(
     verification_path: Path,
     verification_raw: Mapping[str, Any],
     *,
-    root: Path,
-    owner: str,
     asset_root: Path,
 ) -> LayoutPdkConfig:
     _reject_unknown(
         layout_raw,
-        _HEADER_FIELDS | {"dbu_per_micron", "generation"},
+        _HEADER_FIELDS | {"dbu_per_micron", "technology"},
         "platform layout contract",
     )
     _reject_unknown(
@@ -694,14 +465,15 @@ def _load_layout(
             "xstream_suppressed_warnings",
             "xstream_bin",
             "calibre_bin",
-            "drc_profile",
         },
         "platform verification contract",
     )
     dbu = layout_raw.get("dbu_per_micron")
     if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
         raise ValueError("layout.dbu_per_micron must be a positive integer")
-    generation = _load_generation(layout_path, layout_raw, root=root, owner=owner)
+    technology = _load_technology(
+        _table(layout_raw.get("technology"), "layout.technology")
+    )
     xstream_flatten = verification_raw.get("xstream_flatten_pcells", True)
     if not isinstance(xstream_flatten, bool):
         raise ValueError("verification.xstream_flatten_pcells must be boolean")
@@ -715,12 +487,6 @@ def _load_layout(
         for warning in warnings
     ):
         raise ValueError("xstream warnings must use XSTRM-<number> identities")
-    drc_raw = _table(verification_raw.get("drc_profile", {}), "drc_profile")
-    _reject_unknown(
-        drc_raw,
-        {"disabled_defines", "configuration_warnings", "waiver_layers"},
-        "drc_profile",
-    )
     return LayoutPdkConfig(
         configuration_sha256="",
         layout_path=layout_path,
@@ -732,17 +498,7 @@ def _load_layout(
         qrc_tech_file=_required_file(
             asset_root, verification_raw.get("qrc_tech_file"), "qrc_tech_file"
         ),
-        drc_disabled_defines=_integer_map(
-            drc_raw.get("disabled_defines", {}), "drc_profile.disabled_defines"
-        ),
-        drc_configuration_warnings=_strings(
-            drc_raw.get("configuration_warnings", []),
-            "drc_profile.configuration_warnings",
-        ),
-        drc_waiver_layers=_strings(
-            drc_raw.get("waiver_layers", []), "drc_profile.waiver_layers"
-        ),
-        generation=generation,
+        technology=technology,
         xstream_flatten_pcells=xstream_flatten,
         xstream_suppressed_warnings=warnings,
         xstream_bin=_optional_executable(
@@ -877,13 +633,9 @@ def load_platform(context: ProjectContext, key: str) -> PdkConfig:
             layout_raw,
             verification_path,
             verification_raw,
-            root=root,
-            owner=header.owner,
             asset_root=asset_root,
         )
-        source_paths.extend(
-            (layout_path, verification_path, layout.generation.geometry.path)
-        )
+        source_paths.extend((layout_path, verification_path))
     sources = tuple(source_paths)
     source_sha256 = _source_digest(root, sources)
     if layout is not None:
@@ -893,7 +645,6 @@ def load_platform(context: ProjectContext, key: str) -> PdkConfig:
             oa_path,
             layout.layout_path,
             layout.verification_path,
-            layout.generation.geometry.path,
         )
         layout = replace(
             layout,

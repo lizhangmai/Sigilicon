@@ -168,7 +168,7 @@ def render_canonical_source_cdl(spec: LayoutSpec) -> str:
     hierarchy = resolve_netlist_hierarchy(
         spec.source_snapshots,
         top=spec.cell,
-        primitive_masters=spec.pdk.oa.primitive_masters,
+        primitive_masters=spec.primitive_masters,
     )
     if hierarchy.definitions[spec.cell].ports != spec.ports:
         raise RuntimeError("resolved LVS hierarchy changed the canonical top interface")
@@ -373,32 +373,12 @@ def _scoped_layout_fingerprint(
     standalone layout spec safely falls back to exact unresolved master names.
     """
 
-    context = ProjectContext.from_project_root(spec.project_root)
-    try:
-        relative_spec = spec.path.relative_to(context.ip_root)
-    except ValueError:
+    if spec.oa_assembly_manifest is None:
         return layout_verification_fingerprint(plan, scope=check)
-    if len(relative_spec.parts) <= 1:
-        return layout_verification_fingerprint(plan, scope=check)
-    config_root = context.ip_config_root(relative_spec.parts[0])
-    from sigilicon.domain.config_contracts import read_toml
-
-    manifests = tuple(
-        candidate
-        for candidate in sorted(config_root.glob("*.toml"))
-        if read_toml(candidate).get("contract_kind") == "oa-assembly"
-    )
-    if not manifests:
-        return layout_verification_fingerprint(plan, scope=check)
-    if len(manifests) != 1:
-        raise ValueError(
-            f"owner config root must contain at most one OA assembly: {config_root}"
-        )
-    manifest = manifests[0]
     from sigilicon.workflows.oa_library import plan_oa_library_rebuild
 
     library_plan = plan_oa_library_rebuild(
-        manifest,
+        spec.oa_assembly_manifest,
         project_root=spec.project_root,
         library=spec.library,
     )
@@ -428,11 +408,11 @@ def _verification_scope(
         hierarchy = resolve_netlist_hierarchy(
             spec.source_snapshots,
             top=spec.cell,
-            primitive_masters=spec.pdk.oa.primitive_masters,
+            primitive_masters=spec.primitive_masters,
         )
         result["electrical"] = netlist_electrical_fingerprint(
             hierarchy,
-            primitive_masters=spec.pdk.oa.primitive_masters,
+            primitive_masters=spec.primitive_masters,
         )
     return result
 
@@ -444,6 +424,11 @@ def _run_fingerprint(
     *,
     verification_scope: Mapping[str, str] | None = None,
 ) -> str:
+    policy = spec.physical_verification
+    if policy is None:
+        raise ValueError(
+            "physical verification requires an owner policy selected by the OA assembly"
+        )
     deck = spec.layout_pdk.drc_deck if check == "drc" else spec.layout_pdk.lvs_deck
     payload = {
         "check": check,
@@ -455,9 +440,10 @@ def _run_fingerprint(
         "pdk_configuration_sha256": spec.layout_pdk.configuration_sha256,
         "xstream_flatten_pcells": spec.layout_pdk.xstream_flatten_pcells,
         "xstream_suppressed_warnings": spec.layout_pdk.xstream_suppressed_warnings,
-        "drc_disabled_defines": dict(spec.layout_pdk.drc_disabled_defines),
-        "drc_configuration_warnings": spec.layout_pdk.drc_configuration_warnings,
-        "drc_waiver_layers": spec.layout_pdk.drc_waiver_layers,
+        "physical_verification_policy_sha256": policy.source_sha256,
+        "drc_disabled_defines": dict(policy.drc_disabled_defines),
+        "drc_configuration_warnings": policy.drc_configuration_warnings,
+        "drc_waiver_layers": policy.drc_waiver_layers,
         "pcell_policy": {
             "finger_count_parameter": spec.pdk.oa.pcell_policy.finger_count_parameter,
             "source_terminal": spec.pdk.oa.pcell_policy.source_terminal,
@@ -601,6 +587,11 @@ def _run_calibre(
     gds: Path,
     timeout: int,
 ) -> dict[str, object]:
+    policy = spec.physical_verification
+    if policy is None:
+        raise ValueError(
+            "physical verification requires an owner policy selected by the OA assembly"
+        )
     source_deck = spec.layout_pdk.drc_deck if check == "drc" else spec.layout_pdk.lvs_deck
     staged_source_deck = record.copy_file(
         "inputs",
@@ -652,7 +643,7 @@ def _run_calibre(
             primary=spec.cell,
             results_path=str(results / "drc-results.db"),
             summary_path=str(results / "drc-summary.rep"),
-            disabled_defines=spec.layout_pdk.drc_disabled_defines,
+            disabled_defines=policy.drc_disabled_defines,
         )
         if check == "drc"
         else render_lvs_run_deck(
@@ -681,7 +672,7 @@ def _run_calibre(
                 primary=spec.cell,
                 results_path=str(work / "drc-results.db"),
                 summary_path=str(work / "drc-summary.rep"),
-                disabled_defines=spec.layout_pdk.drc_disabled_defines,
+                disabled_defines=policy.drc_disabled_defines,
             )
             if check == "drc"
             else render_lvs_run_deck(
@@ -751,8 +742,8 @@ def _run_calibre(
         }
         return parse_drc_summary(
             read_nofollow_text(copied["drc-summary.rep"]),
-            configuration_warnings=spec.layout_pdk.drc_configuration_warnings,
-            waiver_layers=spec.layout_pdk.drc_waiver_layers,
+            configuration_warnings=policy.drc_configuration_warnings,
+            waiver_layers=policy.drc_waiver_layers,
         )
 
     outputs = (
@@ -794,6 +785,10 @@ def verify_layout(
 ) -> LayoutVerificationResult:
     if check not in {"drc", "lvs"}:
         raise ValueError("layout verification check must be drc or lvs")
+    if spec.physical_verification is None or spec.oa_assembly_manifest is None:
+        raise ValueError(
+            "physical verification requires an owner policy selected by the OA assembly"
+        )
     plan = build_layout_plan(spec)
     if plan.stage != "routed":
         raise ValueError("physical verification requires a routed layout plan")
@@ -823,6 +818,18 @@ def verify_layout(
         reference_links={"layout_generation": reference},
     )
     record.copy_file("inputs", ("layout.toml",), spec.path, label="canonical layout intent")
+    record.copy_file(
+        "inputs",
+        ("oa-assembly.toml",),
+        spec.oa_assembly_manifest,
+        label="owner OA assembly and primitive closure",
+    )
+    record.copy_file(
+        "inputs",
+        ("physical-verification.toml",),
+        spec.physical_verification.path,
+        label="owner physical-verification policy",
+    )
     record.copy_file(
         "inputs",
         ("layout-generator.py",),

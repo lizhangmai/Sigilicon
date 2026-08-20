@@ -117,6 +117,10 @@ class OALibraryRebuildPlan:
             "pdk": self.source.pdk,
             "workspace_template": self.source.workspace_template.relative_to(root).as_posix(),
             "oa_library": self.source.oa_library.relative_to(root).as_posix(),
+            "primitive_masters": list(self.source.primitive_masters),
+            "physical_verification": self.source.physical_verification.path.relative_to(
+                root
+            ).as_posix(),
             "source_roots": [
                 {
                     "owner": source.owner,
@@ -522,10 +526,8 @@ def _plan_layouts(
     dependencies: dict[tuple[str, str], set[tuple[str, str]]] = {
         key: set() for key in keys
     }
-    primitive_masters = specs[0].pdk.oa.primitive_masters
+    primitive_masters = source.primitive_masters
     for spec in specs:
-        if spec.pdk.oa.primitive_masters != primitive_masters:
-            raise ValueError("canonical layout specs disagree on primitive masters")
         key = (spec.cell, spec.view)
         for instance in plans[key].instances:
             master = (instance.cell, instance.view)

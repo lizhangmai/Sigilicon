@@ -18,6 +18,8 @@ from sigilicon.domain.netlist import (
     select_subckt_snapshot,
     subckt_ports,
 )
+from sigilicon.domain.oa_library import OALibrarySource, load_oa_library_source
+from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import (
     LayoutPdkConfig,
     PdkConfig,
@@ -53,6 +55,9 @@ class LayoutSpec:
     dependency_netlists: tuple[Path, ...]
     ports: tuple[str, ...]
     directions: Mapping[str, str]
+    oa_assembly_manifest: Path | None
+    primitive_masters: tuple[str, ...]
+    physical_verification: PhysicalVerificationPolicy | None
     pdk: PdkConfig
     layout_pdk: LayoutPdkConfig
 
@@ -68,14 +73,19 @@ class LayoutSpec:
             "stage": self.stage,
             "ports": self.ports,
             "directions": dict(self.directions),
+            "primitive_masters": self.primitive_masters,
             "technology_library": self.pdk.oa.technology_library,
             "dbu_per_micron": self.layout_pdk.dbu_per_micron,
             "pdk_configuration_sha256": self.layout_pdk.configuration_sha256,
-            "layout_profile": self.layout_pdk.generation.geometry.path.relative_to(
-                self.project_root
-            ).as_posix(),
-            "layout_profile_sha256": self.layout_pdk.generation.geometry.sha256,
         }
+        if self.oa_assembly_manifest is not None:
+            payload["oa_assembly_manifest"] = self.oa_assembly_manifest.relative_to(
+                self.project_root
+            ).as_posix()
+        if self.physical_verification is not None:
+            payload["physical_verification_sha256"] = (
+                self.physical_verification.source_sha256
+            )
         if self.generator_source_declared:
             payload["generator_source"] = self.generator_source.relative_to(
                 self.project_root
@@ -142,6 +152,38 @@ def _required_file(value: Any, field: str, *, base: Path) -> Path:
     if not result.is_file():
         raise ValueError(f"{field} does not exist: {result}")
     return result
+
+
+def _owner_oa_assembly(
+    context: ProjectContext,
+    spec_path: Path,
+) -> OALibrarySource | None:
+    """Resolve the canonical owner assembly when the spec belongs to one."""
+
+    try:
+        relative = spec_path.relative_to(context.ip_root)
+    except ValueError:
+        return None
+    if len(relative.parts) <= 1:
+        return None
+    manifest = context.ip_config_root(relative.parts[0]) / "oa.toml"
+    if not manifest.is_file():
+        return None
+    with manifest.open("rb") as stream:
+        raw = tomllib.load(stream)
+    if raw.get("contract_kind") != "oa-assembly":
+        return None
+    source = load_oa_library_source(manifest, project_root=context.project_root)
+    declared_specs = {
+        layout_spec
+        for cell in source.cells
+        for layout_spec in cell.layout_specs
+    }
+    if spec_path not in declared_specs:
+        raise ValueError(
+            f"layout spec is below an OA assembly owner but is not declared: {spec_path}"
+        )
+    return source
 
 
 def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutSpec:
@@ -342,6 +384,12 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
             f"platform {pdk_key!r} does not declare layout and verification contracts"
         )
     layout_pdk = pdk.layout
+    assembly = _owner_oa_assembly(context, spec_path)
+    if assembly is not None and assembly.pdk != pdk_key:
+        raise ValueError(
+            f"layout spec platform {pdk_key!r} disagrees with OA assembly "
+            f"{assembly.pdk!r}"
+        )
     return LayoutSpec(
         path=spec_path,
         spec_sha256=hashlib.sha256(spec_payload).hexdigest(),
@@ -365,6 +413,11 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
         dependency_netlists=dependency_netlists,
         ports=declared_ports,
         directions=directions,
+        oa_assembly_manifest=(assembly.manifest_path if assembly is not None else None),
+        primitive_masters=(assembly.primitive_masters if assembly is not None else ()),
+        physical_verification=(
+            assembly.physical_verification if assembly is not None else None
+        ),
         pdk=pdk,
         layout_pdk=layout_pdk,
     )

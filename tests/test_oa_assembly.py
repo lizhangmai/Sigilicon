@@ -63,6 +63,20 @@ def _assembly(tmp_path: Path) -> tuple[Path, Path]:
         cell_root="design/blocks",
         dependency="CELL_A/symbol",
     )
+    _write(
+        tmp_path / "ip" / "alpha" / "configs" / "physical_verification.toml",
+        '''schema = 1
+contract_kind = "physical-verification-policy"
+path_scope = "owner"
+owner = "alpha"
+
+[drc]
+configuration_warnings = []
+waiver_layers = []
+
+[drc.disabled_defines]
+''',
+    )
     manifest = _write(
         tmp_path / "ip" / "alpha" / "configs" / "oa.toml",
         '''schema = 1
@@ -73,6 +87,8 @@ name = "assembled"
 pdk = "testpdk"
 workspace_template = "virtuoso"
 oa_library = "virtuoso/assembled"
+primitive_masters = ["nch"]
+physical_verification = "ip/alpha/configs/physical_verification.toml"
 cell_roots = ["design/cells", "design/blocks"]
 ''',
     )
@@ -87,6 +103,10 @@ def test_ip_oa_contract_can_own_sources_and_assemble_the_library(
     assembly = load_oa_library_source(manifest, project_root=root)
 
     assert assembly.manifest_path == manifest.resolve()
+    assert assembly.primitive_masters == ("nch",)
+    assert assembly.physical_verification.path == (
+        root / "ip/alpha/configs/physical_verification.toml"
+    ).resolve()
     assert [source.owner for source in assembly.source_roots] == ["alpha"]
     assert [cell.cell for cell in assembly.cells] == ["CELL_A", "CELL_B"]
     assert assembly.cells[0].source_manifest_path == manifest.resolve()
@@ -95,6 +115,22 @@ def test_ip_oa_contract_can_own_sources_and_assemble_the_library(
         "schematic",
         "symbol",
     ]
+
+
+def test_oa_assembly_rejects_unknown_physical_verification_policy_fields(
+    tmp_path: Path,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    policy = root / "ip/alpha/configs/physical_verification.toml"
+    policy.write_text(
+        policy.read_text(encoding="utf-8").replace(
+            "\n[drc]\n", "\naccepted_violations = []\n\n[drc]\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields.*accepted_violations"):
+        load_oa_library_source(manifest, project_root=root)
 
 
 def test_instance_parameter_contract_elaborates_child_defaults_and_overrides(
@@ -159,13 +195,15 @@ def test_assembly_rejects_unresolved_view_dependency(tmp_path: Path) -> None:
         load_oa_library_source(manifest, project_root=root)
 
 
-def test_assembly_rejects_unmanaged_example_owner(tmp_path: Path) -> None:
+def test_assembly_rejects_unmanaged_owner(tmp_path: Path) -> None:
     root, _manifest = _assembly(tmp_path)
-    example = root / "ip" / "example"
+    unmanaged = root / "ip" / "unmanaged"
     manifest = _write(
-        example / "configs" / "oa.toml",
+        unmanaged / "configs" / "oa.toml",
         '''schema = 1
-owner = "example"
+contract_kind = "oa-assembly"
+path_scope = "owner"
+owner = "unmanaged"
 name = "assembled"
 pdk = "testpdk"
 workspace_template = "virtuoso"
@@ -173,7 +211,7 @@ oa_library = "virtuoso/assembled"
 cell_roots = ["design/cells"]
 ''',
     )
-    _cell(root, "example", "OLD")
+    _cell(root, "unmanaged", "OLD")
 
     with pytest.raises(ValueError, match="unmanaged IP cannot own"):
         load_oa_library_source(manifest, project_root=root)

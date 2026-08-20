@@ -49,6 +49,19 @@ def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:
         load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
 
 
+def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    oa = tmp_path / "configs/platform/testpdk/oa.toml"
+    oa.write_text(
+        oa.read_text(encoding="utf-8") + '\nprimitive_masters = ["nch"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields.*primitive_masters"):
+        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+
+
 def test_layout_identity_is_scoped_away_from_simulation_models(
     tmp_path: Path,
 ) -> None:
@@ -78,6 +91,53 @@ def test_layout_identity_is_scoped_away_from_simulation_models(
     third = load_platform(context, "testpdk")
     assert third.layout is not None
     assert third.layout.configuration_sha256 != second.layout.configuration_sha256
+
+
+def test_layout_contract_rejects_external_geometry_profile(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    layout = tmp_path / "configs/platform/testpdk/layout.toml"
+    source = layout.read_text(encoding="utf-8")
+    layout.write_text(
+        source.replace(
+            "[technology.model_polarities]",
+            '[technology]\nprofile = "geometry.toml"\n\n[technology.model_polarities]',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields.*profile"):
+        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+
+
+def test_layout_contract_rejects_owner_via_landing_geometry(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    layout = tmp_path / "configs/platform/testpdk/layout.toml"
+    layout.write_text(
+        layout.read_text(encoding="utf-8").replace(
+            'definition = "V23"',
+            'definition = "V23"\nlanding_half_sizes = { routing2 = [1, 1] }',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields.*landing_half_sizes"):
+        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+
+
+def test_verification_contract_rejects_owner_drc_policy(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    verification = tmp_path / "configs/platform/testpdk/verification.toml"
+    verification.write_text(
+        verification.read_text(encoding="utf-8")
+        + "\n[drc_profile]\nwaiver_layers = []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields.*drc_profile"):
+        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
 
 
 def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> None:

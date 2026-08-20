@@ -30,15 +30,19 @@ ip = "catalogs/ip.toml"
 soc = "catalogs/soc.toml"
 platform = "configs/platform/catalog.toml"
 
+[flows.example]
+owner = "example"
+design_targets = "ip/example/configs/flows/design_targets.toml"
+layout_targets = "ip/example/configs/flows/layout_targets.toml"
+
 [python]
 owned_module_prefixes = ["soc."]
 
 [paths]
 project_root = "."
 ip_root = "ip"
-managed_ip_roots = ["ip/alpha", "ip/beta", "ip/compute"]
+managed_ip_roots = ["ip/alpha", "ip/beta", "ip/compute", "ip/example"]
 ip_config_dir = "configs"
-config_root = "configs"
 workspace_root = "virtuoso"
 artifact_root = "artifacts"
 result_root = "artifacts"
@@ -128,13 +132,10 @@ path_scope = "platform"
 owner = "test-platform"
 dbu_per_micron = 1000
 
-[generation]
-profile = "geometry.toml"
-
-[generation.model_polarities]
+[technology.model_polarities]
 nch = "nmos"
 
-[generation.layers]
+[technology.layers]
 routing1 = "M1"
 routing2 = "M2"
 routing3 = "M3"
@@ -143,51 +144,17 @@ p_implant = "PP"
 n_implant = "NP"
 n_well = "NW"
 
-[generation.vias.substrate_tap]
+[technology.vias.substrate_tap]
 definition = "SUB"
-landing_half_sizes = { routing1 = [1, 1] }
 
-[generation.vias.well_tap]
+[technology.vias.well_tap]
 definition = "WELL"
-landing_half_sizes = { routing1 = [1, 1] }
 
-[generation.vias.routing1_routing2]
+[technology.vias.routing1_routing2]
 definition = "V12"
-landing_half_sizes = { routing1 = [1, 1], routing2 = [1, 1] }
 
-[generation.vias.routing2_routing3]
+[technology.vias.routing2_routing3]
 definition = "V23"
-landing_half_sizes = { routing2 = [1, 1], routing3 = [1, 1] }
-
-[generation.mos_pcell]
-length_parameter = "l"
-width_parameter = "w"
-gate_contact_selection_parameter = "gateContact"
-gate_contact_parameters = []
-
-[generation.mos_pcell.polarity_parameters]
-nmos = []
-pmos = []
-''',
-        encoding="utf-8",
-    )
-    (platform / "geometry.toml").write_text(
-        '''schema = 1
-contract_kind = "platform-layout-profile"
-path_scope = "platform"
-owner = "test-platform"
-
-[placement]
-template_bbox = [1, 1]
-default_pitch = [1, 1]
-routed_pitch = [1, 1]
-
-[access]
-wire_half_width = 1
-source_offset_x = 1
-drain_offset_x = 1
-gate_offset = [1, 1]
-gate_landing_half_size = [1, 1]
 ''',
         encoding="utf-8",
     )
@@ -309,7 +276,12 @@ ends inv
             encoding="utf-8",
         )
         (design_dir / "design.toml").write_text(
-            f"""[design]
+            f"""schema = 1
+contract_kind = "cell-design"
+path_scope = "cell"
+owner = "example"
+
+[design]
 library = "designLib"
 cell = "inv"
 source_netlist = "circuit.scs"

@@ -16,6 +16,16 @@ _ID_RE = re.compile(r"[0-9a-f]{32}\Z")
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
+def _reject_unknown_fields(
+    raw: Mapping[str, object],
+    allowed: set[str],
+    field: str,
+) -> None:
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"{field} contains unknown fields: {sorted(unknown)}")
+
+
 def validate_artifact_component(value: str, label: str) -> str:
     """Validate one literal path component, including Windows separators."""
 
@@ -420,6 +430,18 @@ class ArtifactPaths:
 
 
 @dataclass(frozen=True)
+class ProjectFlow:
+    """One project owner and its explicitly selected workflow catalogs."""
+
+    name: str
+    owner: str
+    catalog_paths: tuple[tuple[str, Path], ...]
+
+    def catalog(self, kind: str) -> Path | None:
+        return dict(self.catalog_paths).get(kind)
+
+
+@dataclass(frozen=True)
 class ProjectContext:
     """All project-owned locations needed by reusable flow code.
 
@@ -436,9 +458,9 @@ class ProjectContext:
     ip_root: Path
     managed_ip_roots: tuple[Path, ...]
     ip_config_dir: str
-    config_root: Path
     artifact_namespace: str
     catalog_paths: tuple[tuple[str, Path], ...]
+    flows: tuple[ProjectFlow, ...]
     owned_module_prefixes: tuple[str, ...]
     native_diagnostic_adapters: tuple[tuple[str, Path], ...]
 
@@ -453,9 +475,9 @@ class ProjectContext:
         ip_root: Path | str,
         managed_ip_roots: tuple[Path | str, ...],
         ip_config_dir: str,
-        config_root: Path | str,
         artifact_namespace: str = "sigilicon",
         catalog_paths: Mapping[str, Path | str] | None = None,
+        flows: Mapping[str, Mapping[str, Path | str]] | None = None,
         owned_module_prefixes: tuple[str, ...] = (),
         native_diagnostic_adapters: Mapping[str, Path | str] | None = None,
     ) -> "ProjectContext":
@@ -477,7 +499,6 @@ class ProjectContext:
             raise ValueError(
                 "managed IP roots must identify owners below the IP root"
             )
-        configs = resolve(config_root)
         if artifacts == root:
             raise ValueError("artifact root must not be the project root")
         if results == root:
@@ -494,6 +515,49 @@ class ProjectContext:
                 for name, value in (catalog_paths or {}).items()
             )
         )
+        resolved_flows: list[ProjectFlow] = []
+        flow_catalog_paths: set[Path] = set()
+        allowed_flow_fields = {"owner", "design_targets", "layout_targets"}
+        for raw_name, raw_flow in (flows or {}).items():
+            name = validate_artifact_component(raw_name, "flow name")
+            if not isinstance(raw_flow, Mapping):
+                raise ValueError(f"flow {name!r} must be a table")
+            unknown = set(raw_flow) - allowed_flow_fields
+            if unknown:
+                raise ValueError(
+                    f"flow {name!r} contains unknown fields: {sorted(unknown)}"
+                )
+            owner_value = raw_flow.get("owner")
+            if not isinstance(owner_value, str):
+                raise ValueError(f"flow {name!r} owner must be text")
+            owner = validate_artifact_component(owner_value, "flow owner")
+            selected: list[tuple[str, Path]] = []
+            for kind in ("design_targets", "layout_targets"):
+                value = raw_flow.get(kind)
+                if value is None:
+                    continue
+                if not isinstance(value, (str, Path)):
+                    raise ValueError(f"flow {name!r} {kind} must be a path")
+                catalog = resolve(value)
+                if not catalog.is_relative_to(root):
+                    raise ValueError(
+                        f"flow {name!r} {kind} must stay below the project root"
+                    )
+                if not any(
+                    catalog.is_relative_to(managed) for managed in managed_ips
+                ):
+                    raise ValueError(
+                        f"flow {name!r} {kind} must belong to a managed IP root"
+                    )
+                if catalog in flow_catalog_paths:
+                    raise ValueError(f"flow catalog paths must be unique: {catalog}")
+                flow_catalog_paths.add(catalog)
+                selected.append((kind, catalog))
+            if not selected:
+                raise ValueError(f"flow {name!r} must declare at least one catalog")
+            resolved_flows.append(
+                ProjectFlow(name, owner, tuple(sorted(selected)))
+            )
         prefixes: list[str] = []
         for prefix in owned_module_prefixes:
             if (
@@ -533,9 +597,9 @@ class ProjectContext:
             ip_config_dir=validate_artifact_component(
                 ip_config_dir, "IP config directory"
             ),
-            config_root=configs,
             artifact_namespace=namespace,
             catalog_paths=resolved_catalogs,
+            flows=tuple(sorted(resolved_flows, key=lambda flow: flow.name)),
             owned_module_prefixes=tuple(prefixes),
             native_diagnostic_adapters=tuple(sorted(diagnostic_adapters)),
         )
@@ -552,9 +616,38 @@ class ProjectContext:
             raise ValueError(f"cannot read Sigilicon project context {contract}: {exc}") from exc
         if raw.get("schema") != 1 or raw.get("contract_kind") != "sigilicon-project":
             raise ValueError(f"{contract}: invalid Sigilicon project context header")
+        if raw.get("path_scope") != "repository" or not isinstance(
+            raw.get("owner"), str
+        ):
+            raise ValueError(f"{contract}: invalid Sigilicon project context ownership")
+        _reject_unknown_fields(
+            raw,
+            {
+                "schema",
+                "contract_kind",
+                "path_scope",
+                "owner",
+                "project",
+                "catalogs",
+                "flows",
+                "python",
+                "paths",
+            },
+            str(contract),
+        )
         paths = raw.get("paths")
         if not isinstance(paths, dict):
             raise ValueError(f"{contract}: paths must be a table")
+        allowed_paths = {
+            "project_root",
+            "ip_root",
+            "managed_ip_roots",
+            "ip_config_dir",
+            "workspace_root",
+            "artifact_root",
+            "result_root",
+        }
+        _reject_unknown_fields(paths, allowed_paths, f"{contract}: paths")
 
         def required(name: str) -> str:
             value = paths.get(name)
@@ -573,6 +666,11 @@ class ProjectContext:
         project = raw.get("project", {})
         if not isinstance(project, dict):
             raise ValueError(f"{contract}: project must be a table")
+        _reject_unknown_fields(
+            project,
+            {"artifact_namespace"},
+            f"{contract}: project",
+        )
         artifact_namespace = project.get("artifact_namespace", "sigilicon")
         if not isinstance(artifact_namespace, str):
             raise ValueError(
@@ -586,9 +684,25 @@ class ProjectContext:
             for name, value in catalogs.items()
         ):
             raise ValueError(f"{contract}: catalogs must map names to paths")
+        _reject_unknown_fields(
+            catalogs,
+            {"ip", "soc", "platform"},
+            f"{contract}: catalogs",
+        )
+        flows = raw.get("flows", {})
+        if not isinstance(flows, dict) or any(
+            not isinstance(name, str) or not isinstance(value, dict)
+            for name, value in flows.items()
+        ):
+            raise ValueError(f"{contract}: flows must map names to tables")
         python = raw.get("python", {})
         if not isinstance(python, dict):
             raise ValueError(f"{contract}: python must be a table")
+        _reject_unknown_fields(
+            python,
+            {"owned_module_prefixes", "native_diagnostic_adapters"},
+            f"{contract}: python",
+        )
         raw_prefixes = python.get("owned_module_prefixes", [])
         if not isinstance(raw_prefixes, list) or any(
             not isinstance(prefix, str) for prefix in raw_prefixes
@@ -621,9 +735,9 @@ class ProjectContext:
             ip_root=required("ip_root"),
             managed_ip_roots=tuple(managed_ip_roots),
             ip_config_dir=required("ip_config_dir"),
-            config_root=required("config_root"),
             artifact_namespace=artifact_namespace,
             catalog_paths=catalogs,
+            flows=flows,
             owned_module_prefixes=tuple(raw_prefixes),
             native_diagnostic_adapters=native_diagnostic_adapters,
         )
@@ -668,9 +782,15 @@ class ProjectContext:
             ip_root=self.ip_root,
             managed_ip_roots=self.managed_ip_roots,
             ip_config_dir=self.ip_config_dir,
-            config_root=self.config_root,
             artifact_namespace=self.artifact_namespace,
             catalog_paths=dict(self.catalog_paths),
+            flows={
+                flow.name: {
+                    "owner": flow.owner,
+                    **dict(flow.catalog_paths),
+                }
+                for flow in self.flows
+            },
             owned_module_prefixes=self.owned_module_prefixes,
             native_diagnostic_adapters=dict(self.native_diagnostic_adapters),
         )
@@ -694,6 +814,17 @@ class ProjectContext:
             return dict(self.catalog_paths)[key]
         except KeyError as exc:
             raise ValueError(f"project context has no {key!r} catalog") from exc
+
+    def flow_catalogs(self, kind: str) -> tuple[tuple[str, Path], ...]:
+        """Return every owner catalog selected for one workflow kind."""
+
+        if kind not in {"design_targets", "layout_targets"}:
+            raise ValueError(f"unsupported flow catalog kind: {kind!r}")
+        return tuple(
+            (flow.owner, path)
+            for flow in self.flows
+            if (path := flow.catalog(kind)) is not None
+        )
 
     def is_managed_ip_path(self, path: Path | str) -> bool:
         """Return the caller-owned eligibility decision for an IP path."""

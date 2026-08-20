@@ -12,11 +12,14 @@ from sigilicon.paths import ProjectContext
 
 _TARGET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _ACTIONS = frozenset({"check", "generate", "verify"})
+_HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
+_TARGET_FIELDS = frozenset({"description", "spec", "actions"})
 
 
 @dataclass(frozen=True)
 class LayoutTarget:
     name: str
+    owner: str
     description: str
     spec: Path
     spec_relative: Path
@@ -28,7 +31,7 @@ class LayoutTarget:
 
 @dataclass(frozen=True)
 class LayoutTargetCatalog:
-    path: Path
+    paths: tuple[Path, ...]
     project_root: Path
     targets: tuple[LayoutTarget, ...]
 
@@ -76,47 +79,61 @@ def _actions(value: object, field: str) -> tuple[str, ...]:
 
 def load_layout_target_catalog(
     project_root: Path,
-    path: Path | None = None,
 ) -> LayoutTargetCatalog:
     root = project_root.resolve()
     context = ProjectContext.from_project_root(root)
-    catalog_path = (path or context.config_root / "layout_targets.toml").resolve()
-    try:
-        with catalog_path.open("rb") as stream:
-            raw = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(
-            f"cannot read layout target catalog {catalog_path}: {exc}"
-        ) from exc
-    require_config_header(
-        raw,
-        catalog_path,
-        contract_kind="flow-layout-registry",
-        path_scope="repository",
-        owner="repository",
-    )
-    rows = raw.get("targets")
-    if not isinstance(rows, dict):
-        raise ValueError("layout target catalog targets must be a table")
-
+    catalogs = context.flow_catalogs("layout_targets")
+    if not catalogs:
+        raise ValueError("project context declares no layout target catalogs")
     targets: list[LayoutTarget] = []
-    for name, row in rows.items():
-        field = f"targets.{name}"
-        if not isinstance(name, str) or _TARGET_NAME_RE.fullmatch(name) is None:
-            raise ValueError(f"layout target name must match {_TARGET_NAME_RE.pattern!r}")
-        if not isinstance(row, dict):
-            raise ValueError(f"{field} must be a table")
-        description = row.get("description")
-        if not isinstance(description, str) or not description.strip():
-            raise ValueError(f"{field}.description must be a non-empty string")
-        spec, spec_relative = _relative_spec(root, row.get("spec"), f"{field}.spec")
-        targets.append(
-            LayoutTarget(
-                name=name,
-                description=description.strip(),
-                spec=spec,
-                spec_relative=spec_relative,
-                actions=_actions(row.get("actions"), f"{field}.actions"),
-            )
+    names: set[str] = set()
+    for owner, catalog_path in catalogs:
+        try:
+            with catalog_path.open("rb") as stream:
+                raw = tomllib.load(stream)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(
+                f"cannot read layout target catalog {catalog_path}: {exc}"
+            ) from exc
+        require_config_header(
+            raw,
+            catalog_path,
+            contract_kind="flow-layout-registry",
+            path_scope="owner",
+            owner=owner,
         )
-    return LayoutTargetCatalog(catalog_path, root, tuple(targets))
+        unknown = set(raw) - _HEADER_FIELDS - {"targets"}
+        if unknown:
+            raise ValueError(
+                f"layout target catalog contains unknown fields: {sorted(unknown)}"
+            )
+        rows = raw.get("targets")
+        if not isinstance(rows, dict):
+            raise ValueError("layout target catalog targets must be a table")
+        for name, row in rows.items():
+            field = f"targets.{name}"
+            if not isinstance(name, str) or _TARGET_NAME_RE.fullmatch(name) is None:
+                raise ValueError(f"layout target name must match {_TARGET_NAME_RE.pattern!r}")
+            if name in names:
+                raise ValueError(f"duplicate layout target across owner catalogs: {name}")
+            names.add(name)
+            if not isinstance(row, dict):
+                raise ValueError(f"{field} must be a table")
+            unknown = set(row) - _TARGET_FIELDS
+            if unknown:
+                raise ValueError(f"{field} contains unknown fields: {sorted(unknown)}")
+            description = row.get("description")
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(f"{field}.description must be a non-empty string")
+            spec, spec_relative = _relative_spec(root, row.get("spec"), f"{field}.spec")
+            targets.append(
+                LayoutTarget(
+                    name=name,
+                    owner=owner,
+                    description=description.strip(),
+                    spec=spec,
+                    spec_relative=spec_relative,
+                    actions=_actions(row.get("actions"), f"{field}.actions"),
+                )
+            )
+    return LayoutTargetCatalog(tuple(path for _, path in catalogs), root, tuple(targets))

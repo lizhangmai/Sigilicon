@@ -9,6 +9,24 @@ from typing import Any
 from sigilicon.domain.config_contracts import read_toml, require_config_header
 
 
+_FIELDS = frozenset(
+    {
+        "schema",
+        "contract_kind",
+        "path_scope",
+        "owner",
+        "cell",
+        "role",
+        "canonical_source",
+        "dut",
+        "simulator",
+        "dependencies",
+        "contracts",
+        "runner",
+    }
+)
+
+
 def _text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
@@ -113,6 +131,11 @@ def load_verification_cell(
         contract_kind="verification-cell",
         path_scope="cell",
     )
+    unknown = set(raw) - _FIELDS
+    if unknown:
+        raise ValueError(
+            f"{contract}: verification cell contains unknown fields: {sorted(unknown)}"
+        )
     cell = _text(raw.get("cell"), f"{contract}: cell")
     if cell != cell_root.name:
         raise ValueError(

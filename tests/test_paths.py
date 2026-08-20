@@ -25,7 +25,12 @@ def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
     context = discover_project_context()
 
     assert context.project_root == tmp_path.resolve()
-    assert context.config_root == (tmp_path / "configs").resolve()
+    assert context.flow_catalogs("design_targets") == (
+        (
+            "example",
+            (tmp_path / "ip/example/configs/flows/design_targets.toml").resolve(),
+        ),
+    )
 
 
 def test_all_artifact_paths_match_the_single_layout(tmp_path: Path) -> None:
@@ -87,6 +92,62 @@ def test_ids_fingerprints_and_role_components_are_validated(tmp_path: Path) -> N
 def test_project_root_cannot_be_reused_as_artifact_root(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="must not be the project root"):
         ProjectContext.from_project_root(tmp_path, artifact_root=tmp_path)
+
+
+def test_project_context_rejects_unknown_path_field(tmp_path: Path) -> None:
+    contract = tmp_path / "sigilicon.toml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'workspace_root = "virtuoso"',
+            'unexpected_root = "configs"\nworkspace_root = "virtuoso"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown fields.*unexpected_root"):
+        ProjectContext.from_project_root(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("section", "unknown"),
+    (
+        ("root", 'unexpected = "root"\n'),
+        ("project", 'unexpected = "project"\n'),
+        ("catalogs", 'unexpected = "catalog.toml"\n'),
+        ("python", 'unexpected = "python"\n'),
+    ),
+)
+def test_project_context_rejects_unknown_schema_fields(
+    tmp_path: Path,
+    section: str,
+    unknown: str,
+) -> None:
+    contract = tmp_path / "sigilicon.toml"
+    source = contract.read_text(encoding="utf-8")
+    if section == "root":
+        source = unknown + source
+    else:
+        source = source.replace(f"[{section}]\n", f"[{section}]\n{unknown}")
+    contract.write_text(source, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="contains unknown fields.*unexpected"):
+        ProjectContext.from_project_root(tmp_path)
+
+
+def test_project_context_rejects_flow_catalog_outside_managed_ip(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "sigilicon.toml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            "ip/example/configs/flows/design_targets.toml",
+            "ip/unmanaged/configs/flows/design_targets.toml",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must belong to a managed IP root"):
+        ProjectContext.from_project_root(tmp_path)
 
 
 def test_execution_creation_rejects_symlinked_structural_components(
