@@ -73,12 +73,15 @@ def test_elaborated_netlist_fingerprint_requires_one_final_content(
 def test_elaborated_netlist_fingerprint_accepts_unique_spectre_content(
     tmp_path: Path,
 ) -> None:
-    netlist = tmp_path / "groupRunDataDir" / "netlist" / "netlist"
+    netlist = tmp_path / "ExplorerRORun.0.RO/1/tran_main/netlist/spectre.inp"
     netlist.parent.mkdir(parents=True)
     netlist.write_text("simulator lang=spectre\n", encoding="utf-8")
-    history_copy = tmp_path / "psf" / "tran_main" / "netlist" / "netlist"
+    history_copy = tmp_path / "psf" / "tran_main" / "netlist" / "spectre.inp"
     history_copy.parent.mkdir(parents=True)
-    history_copy.write_text("internal netlist\n", encoding="utf-8")
+    history_copy.write_text("simulator lang=spectre\n", encoding="utf-8")
+    (history_copy.parent / "netlist").write_text(
+        "protected config map\n", encoding="utf-8"
+    )
 
     assert _elaborated_netlist_fingerprint(tmp_path) == (
         "050d088f04a34128775c0e282e9c9a8906363ff14fc7354b5df4833915d0b4af"
@@ -93,8 +96,8 @@ def test_elaborated_netlist_fingerprint_prefers_ams_design_over_config_map(
     (netlist_dir / "netlist.vams").write_text(
         "module DUT; endmodule\n", encoding="utf-8"
     )
-    (netlist_dir / "netlist").write_text(
-        "lib: llm_cim\ncell: tb_ams\nview: config\n", encoding="utf-8"
+    (netlist_dir / "spectre.inp").write_text(
+        "simulator lang=spectre\n", encoding="utf-8"
     )
 
     assert _elaborated_netlist_fingerprint(tmp_path) == (

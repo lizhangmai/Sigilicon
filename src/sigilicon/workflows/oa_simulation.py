@@ -50,19 +50,18 @@ def _elaborated_netlist_fingerprint(work_dir: Path) -> str:
     ams_netlists = tuple(
         path for path in work_dir.rglob("netlist.vams") if path.is_file()
     )
-    # An AMS run emits both the elaborated ``netlist.vams`` and a small file
-    # named ``netlist`` that only describes the config-view binding.  The
+    # An AMS run emits both the elaborated ``netlist.vams`` and a protected
+    # file named ``netlist`` that describes the config-view binding.  The
     # latter is not a second elaborated design and must not participate in the
-    # identity comparison.  Pure Spectre runs have no ``netlist.vams``, so
-    # retain their existing final-netlist discovery as the fallback.
+    # identity comparison.  Current pure-Spectre Maestro runs emit their
+    # elaborated design as ``netlist/spectre.inp``.
     netlists = ams_netlists
     if not netlists:
         netlists = tuple(
             path
-            for path in work_dir.rglob("netlist")
+            for path in work_dir.rglob("spectre.inp")
             if path.is_file()
             and path.parent.name == "netlist"
-            and path.parent.parent.name == "groupRunDataDir"
         )
     if not netlists:
         raise RuntimeError(
