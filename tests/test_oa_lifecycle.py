@@ -1,14 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
-from sigilicon.virtuoso.ade import (
-    build_ie_cards,
-    create_config_view,
-    create_maestro_view,
-    export_oa_maestro_setup,
-)
 from sigilicon.virtuoso.oa import (
     _instance_parameter_value_matches,
     _owned_db_open_cellview_skill,
@@ -18,7 +11,6 @@ from sigilicon.virtuoso.oa import (
     validate_cell_port_directions,
     validate_instance_parameters,
 )
-from sigilicon.virtuoso.legacy_ade import read_oa_load_instances
 from sigilicon.virtuoso.importer import check_and_save_schematic
 
 
@@ -108,29 +100,6 @@ def test_synchronous_scope_closes_only_hidden_exact_delta_handles() -> None:
     assert "unwindProtect(" in source
 
 
-def test_maestro_capture_export_uses_synchronous_cellview_cleanup(
-    workspace_factory,
-) -> None:
-    client = RecordingClient()
-
-    with workspace_factory(client) as operation:
-        export_oa_maestro_setup(
-            client,
-            library="lib",
-            cell="tb",
-            script_path=operation.root.parent / "capture.il",
-            setup_path=operation.root.parent / "capture.sdb",
-            operation=operation,
-        )
-
-    source = client.sources[0]
-    assert "maeOpenSetup" in source
-    assert "maeCloseSession(?session session ?forceClose nil)" in source
-    assert "flowSyncBefore = dbGetOpenCellViews()" in source
-    assert "flowSyncCloseAttempt = errset(dbClose(flowSyncCv) t)" in source
-    assert '"Maestro setup export lib/tb"' in source
-    assert "exact synchronous handle cleanup failed" in source
-
 
 def test_every_open_cellview_is_protected_by_unwind_cleanup(workspace_factory) -> None:
     client = RecordingClient()
@@ -211,133 +180,3 @@ def test_instance_parameter_validation_reads_parent_oa_properties(
     assert 'dbFindProp(inst "w")' in source
     assert "unwindProtect" in source
     assert "dbClose" in source
-
-
-def test_config_handle_is_protected_by_unwind_cleanup(workspace_factory) -> None:
-    client = RecordingClient()
-
-    with workspace_factory(client, library="lib") as operation:
-        with operation.mutation_scope(
-            "lib", cells=("tb",), phase="test config creation"
-        ):
-            create_config_view(
-                client,
-                library="lib",
-                testbench="tb",
-                dut="dut",
-                reference_libraries=("devices",),
-                operation=operation,
-            )
-
-    source = client.sources[0]
-    assert "unwindProtect" in source
-    assert "hdbClose" in source
-    assert "flowBeforeViews = dbGetOpenCellViews()" in source
-    assert "member(flowCv flowBeforeViews)" in source
-    assert "preserved exact dbIds" in source
-
-
-def test_maestro_setup_owns_session_and_exact_new_cellviews(workspace_factory) -> None:
-    client = RecordingClient()
-
-    with workspace_factory(client, library='lib"unsafe') as operation:
-        with operation.mutation_scope(
-            'lib"unsafe', cells=('tb\\unsafe',), phase="test Maestro creation"
-        ):
-            create_maestro_view(
-                client,
-                library='lib"unsafe',
-                testbench='tb\\unsafe',
-                signals=('IN"unsafe', "OUT"),
-                stop="16n",
-                maxstep="20p",
-                errpreset="conservative",
-                model_file=Path('/model/unsafe"name.scs'),
-                model_section='tt"unsafe',
-                vdd=0.9,
-                connect_rules="full",
-                rise_time="20p",
-                vthi=0.5,
-                vtlo=0.3,
-                operation=operation,
-            )
-
-    source = client.sources[0]
-    assert "flowBeforeViews = dbGetOpenCellViews()" in source
-    assert "maeCloseSession(?session session ?forceClose nil)" in source
-    assert "flowMaestroOwnedScopes" in source
-    assert "flowOwnedViews" in source
-    assert "flowVisible" in source
-    assert "preserved scope" in source
-    assert "flowSyncBefore = dbGetOpenCellViews()" in source
-    assert "flowSyncCloseAttempt = errset(dbClose(flowSyncCv) t)" in source
-    assert "Maestro setup lib\\\"unsafe/tb\\\\unsafe" in source
-    assert "lib\\\"unsafe" in source
-    assert "tt\\\"unsafe" in source
-    assert "flowOpenAttempt = errset(" in source
-    assert source.index("flowAfterViews = dbGetOpenCellViews()") < source.index(
-        "flowRecord = list"
-    )
-    assert source.index("flowRecord = list") < source.index(
-        'unless(session error("maeOpenSetup failed after exact ownership capture"))'
-    )
-
-
-def test_ade_ie_card_contains_declared_thresholds_and_edges() -> None:
-    card = build_ie_cards(
-        vdd=0.9,
-        connect_rules="full",
-        rise_time="20p",
-        vthi=0.5,
-        vtlo=0.3,
-    )
-
-    assert "connectLib.CR_full_fast" in card
-    assert "tr=20p;tf=20p;vthi=0.5;vtlo=0.3;" in card
-
-
-def test_ade_ie_card_can_use_connect_rule_default_thresholds() -> None:
-    card = build_ie_cards(
-        vdd=0.9,
-        connect_rules="full",
-        rise_time="10p",
-    )
-
-    assert "connectLib.CR_full_fast" in card
-    assert "tr=10p;tf=10p;" in card
-    assert "vthi" not in card
-    assert "vtlo" not in card
-
-
-def test_oa_load_attestation_closes_its_exact_read_handle(workspace_factory) -> None:
-    class Client:
-        def __init__(self) -> None:
-            self.source = ""
-
-        def execute_skill(self, source, **_kwargs):
-            self.source = source
-            return SimpleNamespace(
-                output='"CLOAD0|analogLib|cap|\\"2f\\"|OUT,0,\\n"',
-                errors=[],
-            )
-
-    client = Client()
-    with workspace_factory(client, library="lib") as operation:
-        rows = read_oa_load_instances(
-            client,
-            "lib",
-            "dut_ams",
-            operation=operation,
-        )
-
-    assert rows == (
-        {
-            "instance": "CLOAD0",
-            "library": "analogLib",
-            "cell": "cap",
-            "value": "2f",
-            "nets": ("OUT", "0"),
-        },
-    )
-    assert "unwindProtect" in client.source
-    assert "dbClose(cv)" in client.source

@@ -44,8 +44,7 @@ def _expected_identity(
     The native setup remains the authority for the actual output model.  This
     hook lets a caller that already has an independently validated model
     compare it with the official RDB identities; the parser never derives a
-    model from simulator result paths, aggregate run metadata, Detail CSV, or
-    legacy MDL.
+    model from simulator result paths, aggregate run metadata, or Detail CSV.
     """
 
     checks = (
@@ -306,82 +305,10 @@ def read_native_maestro_rdb_export(
     return result
 
 
-def reconstruct_native_legacy_measurement(
-    result: dict[str, Any],
-    contract: OANativeRdbContract,
-) -> dict[str, Any] | None:
-    """Rebuild the former MDL sampled-array shape from official RDB rows.
-
-    This is a structured-result transformation only.  It does not inspect a
-    simulator result path, infer a corner from a run object, or execute MDL.  The native
-    setup owns the sample expressions and the RDB remains the sole numerical
-    source.
-    """
-
-    legacy = contract.legacy_measurement
-    if legacy is None:
-        return None
-    rows = {
-        (
-            int(row["point"]),
-            str(row["corner"]),
-            str(row["test"]),
-            str(row["name"]),
-        ): row["value"]
-        for row in result["outputs"]
-    }
-    contexts: list[dict[str, Any]] = []
-    for point in range(1, contract.point_count + 1):
-        for corner in contract.corners:
-            for test in contract.tests:
-                exports: dict[str, list[Any]] = {
-                    "sample_times": list(legacy.sample_times)
-                }
-                for series in legacy.series:
-                    values: list[Any] = []
-                    for index in range(legacy.sample_count):
-                        for signal_index in range(len(series.signals)):
-                            name = series.output_name(index, signal_index)
-                            key = (point, corner, test, name)
-                            if key not in rows:
-                                raise ValueError(
-                                    "native RDB is missing legacy sample output "
-                                    f"{point}/{corner}/{test}/{name}"
-                                )
-                            values.append(rows[key])
-                    exports[series.export] = values
-                contexts.append(
-                    {
-                        "point": point,
-                        "corner": corner,
-                        "test": test,
-                        "exports": exports,
-                    }
-                )
-    return {
-        "schema": 1,
-        "format": "native_rdb_legacy_sample_arrays",
-        "source": "Cadence maeReadResDB/point->outputs",
-        "alias": legacy.alias,
-        "sample_times": list(legacy.sample_times),
-        "sample_count": legacy.sample_count,
-        "series": [
-            {
-                "export": series.export,
-                "signals": list(series.signals),
-                "prefix": series.prefix,
-            }
-            for series in legacy.series
-        ],
-        "contexts": contexts,
-        "product_qualification_conclusion": False,
-    }
-
 
 def reconstruct_native_diagnostic(
     result: dict[str, Any],
     contract: Any,
-    legacy_result: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Delegate product-owned diagnostic reconstruction to ProjectContext."""
 
@@ -391,4 +318,4 @@ def reconstruct_native_diagnostic(
     adapter = getattr(contract, "diagnostic_adapter", None)
     if adapter is None:
         raise RuntimeError("native diagnostic contract has no project adapter")
-    return adapter.reconstruct(result, contract, legacy_result)
+    return adapter.reconstruct(result, contract)

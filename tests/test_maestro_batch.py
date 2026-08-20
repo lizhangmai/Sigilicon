@@ -19,7 +19,7 @@ NONCE = "a" * 32
 PROC_FD_PREFIX = f"/proc/{os.getpid()}/fd/"
 
 
-def test_rendered_native_worker_reads_official_rdb_without_legacy_paths(
+def test_rendered_native_worker_reads_official_rdb_without_result_path_fallbacks(
     tmp_path: Path,
 ) -> None:
     source = render_isolated_maestro_run_skill(
@@ -48,26 +48,6 @@ def test_rendered_native_worker_reads_official_rdb_without_legacy_paths(
     assert 'maeSetVar("z" "quoted\\"value"' in source
 
 
-def test_rendered_worker_without_rdb_is_reserved_for_independent_ams_path(
-    tmp_path: Path,
-) -> None:
-    source = render_isolated_maestro_run_skill(
-        "lib",
-        "tb",
-        variables={},
-        simulation_root=tmp_path / "simulation",
-        nonce=NONCE,
-    )
-
-    assert "maeOpenSetup" in source
-    assert "maeWaitUntilDone" in source
-    assert "maeReadResDB" not in source
-    assert "maeExportOutputView" not in source
-    assert "axlGetPointPsfDir" not in source
-    assert "runObjFile" not in source
-    assert "FLOW_ISOLATED_MAESTRO_DONE" in source
-
-
 @pytest.mark.parametrize(
     ("library", "cell", "nonce"),
     (("../lib", "tb", NONCE), ("lib", "/tb", NONCE), ("lib", "tb", "bad")),
@@ -82,6 +62,7 @@ def test_rendered_worker_rejects_unsafe_identity(
             variables={},
             simulation_root=tmp_path / "simulation",
             nonce=nonce,
+            rdb_export=tmp_path / "maestro-rdb.tsv",
         )
 
 
@@ -95,7 +76,6 @@ def _run_with_fake_process(
     terminated_after_confirmation: bool = False,
     residual_group_cleaned_after_exit: bool = False,
     result_confirmed: bool = True,
-    export_rdb: bool = False,
 ):
     client = object()
     work = tmp_path / "artifacts" / "run" / "work"
@@ -116,11 +96,10 @@ def _run_with_fake_process(
             "worker stdout\n",
             encoding="utf-8",
         )
-        if export_rdb:
-            rdb_path.write_text(
-                "RDB_SCHEMA\t1\nSUMMARY\t1\t1\nOVERALL_SPEC\tt\n",
-                encoding="utf-8",
-            )
+        rdb_path.write_text(
+            "RDB_SCHEMA\t1\nSUMMARY\t1\t1\nOVERALL_SPEC\tt\n",
+            encoding="utf-8",
+        )
         assert kwargs["confirmation_probe"]() == (
             f"FLOW_ISOLATED_MAESTRO_STARTED {NONCE} " in log_text
             and f"FLOW_ISOLATED_MAESTRO_FAILED {NONCE}" not in log_text
@@ -166,7 +145,7 @@ def _run_with_fake_process(
             timeout=30,
             operation=operation,
             result_completion_probe=lambda _history: result_confirmed,
-            rdb_export=rdb_path if export_rdb else None,
+            rdb_export=rdb_path,
         )
     return result, captured, worker_log, rdb_path
 
@@ -182,7 +161,6 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
             f"\\o FLOW_ISOLATED_MAESTRO_STARTED {NONCE} ExplorerRORun.0.RO\n"
             f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n"
         ),
-        export_rdb=True,
     )
 
     command = captured["command"]
@@ -205,21 +183,6 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
         encoding="utf-8"
     ) == result.control_script
     assert rdb_path.read_text(encoding="utf-8").startswith("RDB_SCHEMA")
-
-
-def test_isolated_runner_supports_no_result_export_for_independent_ams(
-    monkeypatch, workspace_factory, tmp_path: Path
-) -> None:
-    result, _captured, _worker_log, _rdb_path = _run_with_fake_process(
-        monkeypatch,
-        workspace_factory,
-        tmp_path,
-        log_text=(
-            f"\\o FLOW_ISOLATED_MAESTRO_STARTED {NONCE} Run.1\n"
-            f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n"
-        ),
-    )
-    assert result.rdb_export is None
 
 
 @pytest.mark.parametrize(
@@ -360,4 +323,5 @@ def test_isolated_runner_rejects_log_outside_direct_work(
                 timeout=30,
                 operation=operation,
                 result_completion_probe=lambda _history: True,
+                rdb_export=work / "maestro-rdb.tsv",
             )

@@ -4,15 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.domain.oa_simulation import (
-    OANativeLegacyMeasurement,
-    OANativeLegacySeries,
-    OANativeRdbContract,
-)
-from sigilicon.virtuoso.maestro_rdb import (
-    read_native_maestro_rdb_export,
-    reconstruct_native_legacy_measurement,
-)
+from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
 
 
 def test_native_maestro_rdb_export_preserves_official_identities(tmp_path: Path) -> None:
@@ -179,63 +171,3 @@ OVERALL_SPEC\tnil
             expected_outputs=("vgc_sample_0",),
             expected_expression_count=2,
         )
-
-
-def test_native_rdb_reconstructs_legacy_sample_arrays() -> None:
-    contract = OANativeRdbContract(
-        path=Path("native_rdb.toml"),
-        point_count=1,
-        corners=("tt_25c",),
-        tests=("tran_main",),
-        waveform_outputs=(("out", "/OUT"),),
-        scalar_outputs=(
-            ("endpoint", 'value(VT("/OUT") 2n)'),
-            ("legacy_out_000_00", 'value(VT("/OUT") 1n)'),
-            ("legacy_out_001_00", 'value(VT("/OUT") 2n)'),
-        ),
-        legacy_measurement=OANativeLegacyMeasurement(
-            alias="samples",
-            sample_times=("1n", "2n"),
-            series=(
-                OANativeLegacySeries(
-                    export="out_samples",
-                    signals=("/OUT",),
-                    prefix="legacy_out",
-                ),
-            ),
-        ),
-    )
-    result = {
-        "outputs": [
-            {
-                "point": 1,
-                "corner": "tt_25c",
-                "test": "tran_main",
-                "name": "endpoint",
-                "value": 0.3,
-            },
-            {
-                "point": 1,
-                "corner": "tt_25c",
-                "test": "tran_main",
-                "name": "legacy_out_000_00",
-                "value": 0.1,
-            },
-            {
-                "point": 1,
-                "corner": "tt_25c",
-                "test": "tran_main",
-                "name": "legacy_out_001_00",
-                "value": 0.2,
-            },
-        ]
-    }
-
-    legacy = reconstruct_native_legacy_measurement(result, contract)
-
-    assert legacy is not None
-    assert legacy["alias"] == "samples"
-    assert legacy["contexts"][0]["exports"] == {
-        "sample_times": ["1n", "2n"],
-        "out_samples": [0.1, 0.2],
-    }

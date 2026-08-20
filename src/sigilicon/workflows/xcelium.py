@@ -11,9 +11,8 @@ from sigilicon.artifacts import ArtifactRecord, file_sha256, new_identity
 from sigilicon.domain.fingerprints import source_fingerprint_set
 from sigilicon.domain.provenance import digest
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
-from sigilicon.external_tools import run_process_group_capture
+from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
 from sigilicon.paths import ProjectContext
-from sigilicon.workflows.ams_standalone import find_xrun, xrun_env
 from sigilicon.workflows.source_control import inspect_source_state
 
 

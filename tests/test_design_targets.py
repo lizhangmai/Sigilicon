@@ -11,7 +11,7 @@ from sigilicon.workflows.design_targets import load_design_target_catalog
 
 def _catalog_project(tmp_path: Path) -> tuple[Path, Path]:
     (tmp_path / "configs").mkdir()
-    design = tmp_path / "ip/legacy/leaf"
+    design = tmp_path / "ip/example/leaf"
     design.mkdir(parents=True)
     runner = design / "run.py"
     runner.write_text("raise SystemExit(0)\n", encoding="utf-8")
@@ -27,9 +27,9 @@ owner = "repository"
 [targets.leaf]
 description = "Test leaf"
 kind = "script"
-entrypoint = "ip/legacy/leaf/run.py"
+entrypoint = "ip/example/leaf/run.py"
 spec_argument = "--spec"
-spec = "ip/legacy/leaf/design.toml"
+spec = "ip/example/leaf/design.toml"
 [targets.leaf.modes]
 topology = []
 sync = ["--overwrite"]
@@ -67,7 +67,7 @@ description = "Unsafe"
 kind = "script"
 entrypoint = "../run.py"
 spec_argument = "--spec"
-spec = "ip/legacy/leaf/design.toml"
+spec = "ip/example/leaf/design.toml"
 [targets.escape.modes]
 topology = []
 ''',
@@ -86,9 +86,9 @@ owner = "repository"
 [targets.leaf]
 description = "Routing override"
 kind = "script"
-entrypoint = "ip/legacy/leaf/run.py"
+entrypoint = "ip/example/leaf/run.py"
 spec_argument = "--spec"
-spec = "ip/legacy/leaf/design.toml"
+spec = "ip/example/leaf/design.toml"
 [targets.leaf.modes]
 topology = ["--mode", "sync"]
 ''',
@@ -166,7 +166,7 @@ def test_design_cli_lists_targets_without_executing_a_runner(
     )
 
     assert capsys.readouterr().out == (
-        "leaf\ttopology,sync\tip/legacy/leaf/design.toml\n"
+        "leaf\ttopology,sync\tip/example/leaf/design.toml\n"
     )
     assert events == []
 
@@ -195,9 +195,9 @@ def test_design_cli_execs_the_existing_runner_with_catalog_defaults_and_extras(
 
     command = [
         sys.executable,
-        "ip/legacy/leaf/run.py",
+        "ip/example/leaf/run.py",
         "--spec",
-        "ip/legacy/leaf/design.toml",
+        "ip/example/leaf/design.toml",
         "--mode",
         "sync",
         "--overwrite",

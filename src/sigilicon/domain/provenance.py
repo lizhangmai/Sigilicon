@@ -45,12 +45,6 @@ def design_identity_fingerprint(design: DesignSpec) -> str:
     )
 
 
-def design_fingerprint(design: DesignSpec) -> str:
-    """Backward-compatible name for the exact OA identity fingerprint."""
-
-    return design_identity_fingerprint(design)
-
-
 @dataclass(frozen=True)
 class _ElectricalDefinition:
     ports: tuple[str, ...]

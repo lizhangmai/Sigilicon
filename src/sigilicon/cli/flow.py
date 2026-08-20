@@ -31,7 +31,7 @@ from sigilicon.workflows.oa_library import (
     plan_oa_library_rebuild,
     rebuild_oa_library,
 )
-from sigilicon.workflows.oa_doctor import UnavailableBridge, check_oa_library
+from sigilicon.workflows.oa_check import UnavailableBridge, check_oa_library
 from sigilicon.workflows.oa_simulation import run_oa_maestro_testbench
 
 
@@ -182,8 +182,6 @@ def _parser() -> argparse.ArgumentParser:
         ("plan", "validate and print the canonical source assembly plan"),
         ("check", "check current source/OA parity and live safety state"),
         ("rebuild", "rebuild source-declared OA objects from Git"),
-        ("audit", "compatibility alias for oa check"),
-        ("doctor", "compatibility alias for oa check"),
         ("attest", "run one read-only Cadence setup check"),
         ("simulate", "run a canonical OA testbench through its Maestro view"),
     ):
@@ -441,7 +439,7 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
     manifest = Path(args.manifest)
     if not manifest.is_absolute():
         manifest = root / manifest
-    if args.action in {"check", "audit", "doctor"}:
+    if args.action == "check":
         try:
             try:
                 client = client_factory()

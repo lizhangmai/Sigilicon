@@ -127,14 +127,14 @@ def test_native_simulation_contract_rejects_maestro_schema_duplication(
         load_oa_simulation_spec(spec_path, project_root=root)
 
 
-def test_schema_two_mdl_contracts_are_rejected_by_native_loader(tmp_path: Path) -> None:
+def test_native_loader_rejects_unsupported_schema(tmp_path: Path) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
     spec_path.write_text(
         spec_path.read_text(encoding="utf-8").replace("schema = 3", "schema = 2"),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="schema must be 3"):
+    with pytest.raises(ValueError, match="schema must be exactly 3"):
         load_oa_simulation_spec(spec_path, project_root=root)
 
 
@@ -150,8 +150,6 @@ procedure(llmCimNativeMaestro(session lib cell modelFile modelSection)
   maeAddOutput("out_scalar" "tran_main"
         ?expr "value(VT(\\"/OUT\\") 1u)")
   axlPutCorner(sdb "tt")
-  ;; legacySampleTimes legacySeries "1u" "out" "legacy_out"
-  ;; "%s_%03d_%02d" "value(VT(\\"%s\\") %s)"
 )
 """,
         encoding="utf-8",
@@ -170,14 +168,6 @@ signal = "/OUT"
 name = "out_scalar"
 expression = "value(VT(\\"/OUT\\") 1u)"
 
-[legacy_equivalence]
-alias = "samples"
-sample_times = ["1u"]
-
-[[legacy_equivalence.series]]
-export = "out"
-signals = ["/OUT"]
-prefix = "legacy_out"
 """,
         encoding="utf-8",
     )
@@ -186,9 +176,8 @@ prefix = "legacy_out"
 
     contract = spec.native_setup.rdb_contract
     assert contract is not None
-    assert contract.scalar_names == ("out_scalar", "legacy_out_000_00")
-    assert contract.expected_expression_count == 2
-    assert contract.legacy_scalar_names == ("legacy_out_000_00",)
+    assert contract.scalar_names == ("out_scalar",)
+    assert contract.expected_expression_count == 1
 
 
 def test_native_rdb_contract_rejects_setup_identity_mismatch(tmp_path: Path) -> None:

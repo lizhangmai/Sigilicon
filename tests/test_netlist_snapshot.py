@@ -260,8 +260,8 @@ def test_recursive_hierarchy_counts_instances_and_omits_unreachable_cdl(
         "X0 (A N VSS) child drive=2\n"
         "X1 (N Y VSS) child drive=2\n"
         "ends top\n"
-        "subckt historical A Y\n"
-        "ends historical\n",
+        "subckt unreachable A Y\n"
+        "ends unreachable\n",
         encoding="utf-8",
     )
     dependency = tmp_path / "dependency.scs"
@@ -281,13 +281,13 @@ def test_recursive_hierarchy_counts_instances_and_omits_unreachable_cdl(
     assert hierarchy.reachable_counts == {"child": 2, "top": 1}
     assert hierarchy.primitive_counts == {"nch_mac": 2}
     assert hierarchy.direct_children["top"] == {"child": 2}
-    assert hierarchy.unreachable_subckts == ("historical",)
+    assert hierarchy.unreachable_subckts == ("unreachable",)
     assert hierarchy.dependency_order == ("child", "top")
     cdl = render_canonical_cdl(hierarchy)
     assert cdl.index(".SUBCKT child") < cdl.index(".SUBCKT top")
     assert ".SUBCKT child A Y VSS PARAMS: drive=1" in cdl
     assert "X0 A N VSS child drive=2" in cdl
-    assert "historical" not in cdl
+    assert "unreachable" not in cdl
 
 
 def test_recursive_hierarchy_rejects_missing_master(tmp_path: Path) -> None:
@@ -311,7 +311,7 @@ def test_recursive_hierarchy_ignores_missing_master_in_unreachable_sibling(
     source = tmp_path / "unreachable-missing.scs"
     source.write_text(
         "subckt selected A Y\nends selected\n"
-        "subckt historical A Y\nX0 (A Y) undeclared_child\nends historical\n",
+        "subckt unreachable A Y\nX0 (A Y) undeclared_child\nends unreachable\n",
         encoding="utf-8",
     )
 
@@ -322,8 +322,8 @@ def test_recursive_hierarchy_ignores_missing_master_in_unreachable_sibling(
     )
 
     assert hierarchy.reachable_counts == {"selected": 1}
-    assert hierarchy.unreachable_subckts == ("historical",)
-    assert "historical" not in render_canonical_cdl(hierarchy)
+    assert hierarchy.unreachable_subckts == ("unreachable",)
+    assert "unreachable" not in render_canonical_cdl(hierarchy)
 
 
 def test_recursive_hierarchy_rejects_child_port_mismatch(tmp_path: Path) -> None:

@@ -37,7 +37,7 @@ class IsolatedMaestroRunResult:
     worker_log: Path
     worker_log_text: str
     control_script: str
-    rdb_export: Path | None = None
+    rdb_export: Path
     terminated_after_completion: bool = False
 
 
@@ -101,14 +101,9 @@ def render_isolated_maestro_run_skill(
     variables: Mapping[str, str],
     simulation_root: Path | str,
     nonce: str,
-    rdb_export: Path | str | None = None,
+    rdb_export: Path | str,
 ) -> str:
-    """Render one worker using native Maestro completion and optional RDB export.
-
-    The no-export form is reserved for the independent AMS/Xcelium truth-table
-    workflow.  It deliberately does not resolve simulator result paths or
-    inspect aggregate run metadata.
-    """
+    """Render one worker using native Maestro completion and RDB export."""
 
     validate_artifact_component(library, "Maestro worker library")
     validate_artifact_component(cell, "Maestro worker testbench")
@@ -124,9 +119,7 @@ def render_isolated_maestro_run_skill(
     if assignments:
         assignments += "\n"
 
-    rdb = ""
-    if rdb_export is not None:
-        rdb = f'''        resultPort = outfile({skill_quote(str(rdb_export))})
+    rdb = f'''        resultPort = outfile({skill_quote(str(rdb_export))})
         unless(resultPort error("cannot open native Maestro RDB export"))
         resultsOpened = maeOpenResults(?history history ?session session)
         unless(resultsOpened error("cannot open native Maestro results"))
@@ -162,7 +155,6 @@ def render_isolated_maestro_run_skill(
         resultPort = nil
         printf("FLOW_ISOLATED_MAESTRO_RDB {nonce}\\n")
 '''
-    result_body = rdb
     return f'''let((session history attempt completed closeAttempt waitStatus
   setupDb resultPort resultDb resultPoints resultPoint resultParam resultOutput
   resultSpecStatus resultExpressionCount resultsOpened)
@@ -186,7 +178,7 @@ def render_isolated_maestro_run_skill(
         waitStatus = maeWaitUntilDone(history ?session session)
         setupDb = axlGetMainSetupDB(session)
         unless(setupDb error("cannot access isolated Maestro setup database"))
-{result_body}        unless(maeCloseSession(
+{rdb}        unless(maeCloseSession(
           ?session session ?simulation "wait" ?forceClose nil)
           error("isolated maeCloseSession failed"))
         session = nil
@@ -257,7 +249,7 @@ def run_isolated_maestro(
     timeout: int,
     operation: Any,
     result_completion_probe: Callable[[str], bool],
-    rdb_export: Path | None = None,
+    rdb_export: Path,
 ) -> IsolatedMaestroRunResult:
     """Run one exact headless worker until its stable simulator result exists."""
 
@@ -279,14 +271,13 @@ def run_isolated_maestro(
         raise RuntimeError("Maestro worker log must be a direct work file")
     if absolute_log.exists() or absolute_log.is_symlink():
         raise RuntimeError(f"Maestro worker log path already exists: {absolute_log}")
-    absolute_rdb = None if rdb_export is None else Path(os.path.abspath(rdb_export))
-    if absolute_rdb is not None:
-        if absolute_rdb.parent != absolute_work:
-            raise RuntimeError("native Maestro RDB export must be a direct work file")
-        if absolute_rdb.exists() or absolute_rdb.is_symlink():
-            raise RuntimeError(
-                f"native Maestro RDB export path already exists: {absolute_rdb}"
-            )
+    absolute_rdb = Path(os.path.abspath(rdb_export))
+    if absolute_rdb.parent != absolute_work:
+        raise RuntimeError("native Maestro RDB export must be a direct work file")
+    if absolute_rdb.exists() or absolute_rdb.is_symlink():
+        raise RuntimeError(
+            f"native Maestro RDB export path already exists: {absolute_rdb}"
+        )
 
     operation.require_root_identity()
     cds_lib = operation.root / "cds.lib"
@@ -301,15 +292,8 @@ def run_isolated_maestro(
         owned_output_file(owned_work, "virtuoso.stdout") as owned_stdout,
         owned_output_file(owned_work, "maestro-worker.il") as owned_control,
         owned_output_file(owned_work, "maestro-worker.cds.lib") as owned_canonical_cds,
-        ExitStack() as optional_outputs,
+        owned_atomic_output_file(owned_work, absolute_rdb.name) as owned_rdb,
     ):
-        owned_rdb = (
-            optional_outputs.enter_context(
-                owned_atomic_output_file(owned_work, absolute_rdb.name)
-            )
-            if absolute_rdb is not None
-            else None
-        )
         cds_size = os.fstat(owned_cds_lib.fd).st_size
         cds_source = os.pread(owned_cds_lib.fd, cds_size, 0).decode("utf-8")
         control_script = render_isolated_maestro_run_skill(
@@ -318,7 +302,7 @@ def run_isolated_maestro(
             variables=variables,
             simulation_root=owned_simulation.child_path,
             nonce=nonce,
-            rdb_export=None if owned_rdb is None else owned_rdb.child_path,
+            rdb_export=owned_rdb.child_path,
         )
         owned_control.write_bytes(control_script.encode("utf-8"))
         os.fchmod(owned_control.fd, 0o444)
@@ -404,8 +388,7 @@ def run_isolated_maestro(
                     if len(histories) != 1 or callbacks > 1 or failed:
                         return False
                     try:
-                        if owned_rdb is not None:
-                            owned_rdb.require_visible()
+                        owned_rdb.require_visible()
                         return result_completion_probe(histories[0])
                     except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
                         return False
@@ -439,12 +422,11 @@ def run_isolated_maestro(
                     raise
         log_text = owned_log.read_bytes().decode("utf-8", errors="replace")
         stdout_text = owned_stdout.read_bytes().decode("utf-8", errors="replace")
-        if owned_rdb is not None:
-            owned_rdb.require_visible()
-            if not owned_rdb.read_bytes():
-                raise RuntimeError(
-                    "isolated Maestro worker exported an empty native RDB result"
-                )
+        owned_rdb.require_visible()
+        if not owned_rdb.read_bytes():
+            raise RuntimeError(
+                "isolated Maestro worker exported an empty native RDB result"
+            )
 
     try:
         metadata = absolute_log.stat(follow_symlinks=False)

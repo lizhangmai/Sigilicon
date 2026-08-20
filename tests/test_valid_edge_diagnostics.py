@@ -3,10 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from sigilicon.domain.oa_simulation import (
-    OANativeLegacyMeasurement,
-    OANativeLegacySeries,
-)
 from sigilicon.domain.valid_edge_diagnostics import (
     ValidEdgeContractDefinition,
     ValidEdgeResultBinding,
@@ -27,6 +23,10 @@ def test_valid_edge_algorithm_consumes_resolved_scenarios_without_product_policy
                     metadata={"caller_label": "opaque"},
                 ),
             ),
+            sample_times=("1.5n",),
+            ready_signal="/RDY",
+            decision_signals=("/D1", "/D0"),
+            analog_signals=("/VP", "/VN"),
             window_starts=("1n",),
             window_ends=("2n",),
             edge_signal="/VALID",
@@ -34,18 +34,8 @@ def test_valid_edge_algorithm_consumes_resolved_scenarios_without_product_policy
             threshold_v=0.45,
         )
     )
-    legacy = OANativeLegacyMeasurement(
-        alias="legacy",
-        sample_times=("1.5n",),
-        series=(
-            OANativeLegacySeries("protocol", ("/RDY",), "protocol"),
-            OANativeLegacySeries("decisions", ("/D1", "/D0"), "decisions"),
-            OANativeLegacySeries("analog", ("/VP", "/VN"), "analog"),
-        ),
-    )
     contract = SimpleNamespace(
         diagnostic_equivalence=diagnostic,
-        legacy_measurement=legacy,
         point_count=1,
         corners=("tt",),
         tests=("tran",),
@@ -56,44 +46,46 @@ def test_valid_edge_algorithm_consumes_resolved_scenarios_without_product_policy
                 "point": 1,
                 "corner": "tt",
                 "test": "tran",
+                "name": name,
+                "value": value,
+            }
+            for name, value in (
+                ("diag_ready_000_00", 0.9),
+                ("diag_decision_000_00", 0.9),
+                ("diag_decision_000_01", 0.0),
+                ("diag_analog_000_00", 0.2),
+                ("diag_analog_000_01", 0.7),
+            )
+        ] + [
+            {
+                "point": 1,
+                "corner": "tt",
+                "test": "tran",
                 "name": f"diag_valid_edge_000_{edge:02d}",
                 "value": 1.1e-9 + edge * 0.1e-9,
             }
             for edge in range(2)
         ]
     }
-    legacy_result = {
-        "contexts": [
-            {
-                "point": 1,
-                "corner": "tt",
-                "test": "tran",
-                "exports": {
-                    "protocol": [0.9],
-                    "decisions": [0.9, 0.0],
-                    "analog": [0.2, 0.7],
-                },
-            }
-        ]
-    }
 
     decoded = evaluate_valid_edge_diagnostic(
         result,
         contract,
-        legacy_result,
         binding=ValidEdgeResultBinding(
-            protocol_export="protocol",
-            decision_export="decisions",
-            analog_export="analog",
             analog_output_keys=("positive_v", "negative_v"),
         ),
     )
 
     assert [name for name, _expression in diagnostic.scalar_outputs] == [
+        "diag_ready_000_00",
+        "diag_decision_000_00",
+        "diag_decision_000_01",
+        "diag_analog_000_00",
+        "diag_analog_000_01",
         "diag_valid_edge_000_00",
         "diag_valid_edge_000_01",
     ]
-    assert 'VT("/VALID") 1n 2n' in diagnostic.scalar_outputs[0][1]
+    assert 'VT("/VALID") 1n 2n' in diagnostic.scalar_outputs[-1][1]
     context = decoded["contexts"][0]
     assert context["passed"] is True
     assert context["rows"] == [

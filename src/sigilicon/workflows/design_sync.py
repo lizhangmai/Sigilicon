@@ -13,7 +13,7 @@ from sigilicon.domain.netlist import (
     lower_subckt_default_parameters,
     materialize_netlist_snapshot,
 )
-from sigilicon.domain.provenance import design_fingerprint
+from sigilicon.domain.provenance import design_identity_fingerprint
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.library import LibrarySyncResult, ensure_project_library
@@ -164,7 +164,7 @@ def _sync_design_impl(
             entities={"library": spec.library, "cell": spec.cell},
             operation="sync-design",
             backend="virtuoso-oa",
-            source_fingerprint=design_fingerprint(spec),
+            source_fingerprint=design_identity_fingerprint(spec),
         )
         attempt.write_json(
             "inputs",
@@ -239,7 +239,7 @@ def _sync_design_impl(
                     "library": spec.library,
                     "cell": spec.cell,
                     "imported_cells": list(imported),
-                    "source_fingerprint": design_fingerprint(spec),
+                    "source_fingerprint": design_identity_fingerprint(spec),
                     "oa_view_sha256": oa_view_sha256,
                     "oa_completion_confirmed": True,
                 },
@@ -323,7 +323,7 @@ def _sync_design_impl(
                     spec.library,
                     spec.cell,
                     spec.directions,
-                    fingerprint=design_fingerprint(spec),
+                    fingerprint=design_identity_fingerprint(spec),
                     operation=operation,
                     timeout=timeout,
                 )
@@ -412,7 +412,7 @@ def _sync_existing_design_target_only_impl(
             entities={"library": spec.library, "cell": spec.cell},
             operation="sync-existing-design-target-only",
             backend="virtuoso-oa",
-            source_fingerprint=design_fingerprint(spec),
+            source_fingerprint=design_identity_fingerprint(spec),
         )
         attempt.write_json(
             "inputs",
@@ -583,7 +583,7 @@ def _sync_existing_design_target_only_impl(
                 spec.library,
                 spec.cell,
                 spec.directions,
-                fingerprint=design_fingerprint(spec),
+                fingerprint=design_identity_fingerprint(spec),
                 operation=operation,
                 timeout=timeout,
             )
@@ -595,7 +595,7 @@ def _sync_existing_design_target_only_impl(
             spec.library,
             spec.cell,
             spec.directions,
-            fingerprint=design_fingerprint(spec),
+            fingerprint=design_identity_fingerprint(spec),
             operation=operation,
             timeout=timeout,
         )
@@ -614,7 +614,7 @@ def _sync_existing_design_target_only_impl(
                 "imported_cells": [spec.cell],
                 "target_only": True,
                 "cds_lib_modified": False,
-                "source_fingerprint": design_fingerprint(spec),
+                "source_fingerprint": design_identity_fingerprint(spec),
                 "spicein_source_sha256": spicein_snapshot.sha256,
                 "oa_view_sha256": oa_view_sha256,
                 "oa_completion_confirmed": True,

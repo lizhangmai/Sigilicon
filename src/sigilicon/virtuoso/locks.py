@@ -150,7 +150,7 @@ def inspect_flow_operation_lock(virtuoso_root: Path) -> dict[str, object]:
     """Inspect the persistent marker without treating its pathname as a lease.
 
     ``exclusive_flow_operation`` intentionally leaves the last-operation
-    marker in place after releasing its advisory flock.  A doctor therefore
+    marker in place after releasing its advisory flock.  An OA check therefore
     needs to inspect the kernel's flock table, not merely check whether the
     marker exists.  Reading ``/proc/locks`` does not acquire or release the
     lock and fails closed if the marker is replaced, linked, or otherwise

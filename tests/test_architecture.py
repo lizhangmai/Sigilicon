@@ -9,7 +9,6 @@ from sigilicon.virtuoso import (
     environment,
     importer,
     layout,
-    legacy_ade,
     library,
     maestro_batch,
     netlisting,
@@ -24,7 +23,6 @@ from sigilicon.virtuoso import (
 LAYERS = {
     "root",
     "domain",
-    "ams",
     "layout",
     "virtuoso",
     "workflows",
@@ -33,12 +31,10 @@ LAYERS = {
 ALLOWED_DEPENDENCIES = {
     "root": {"root"},
     "domain": {"domain", "root"},
-    "ams": {"domain", "ams", "root"},
     "layout": {"domain", "layout", "root"},
     "virtuoso": {"domain", "layout", "virtuoso", "root"},
     "workflows": {
         "domain",
-        "ams",
         "layout",
         "virtuoso",
         "workflows",
@@ -46,7 +42,6 @@ ALLOWED_DEPENDENCIES = {
     },
     "cli": {
         "domain",
-        "ams",
         "layout",
         "virtuoso",
         "workflows",
@@ -153,8 +148,8 @@ def test_platform_source_contracts_have_one_loader() -> None:
 
 def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:
     stateful = (
-        ade.create_config_view,
-        ade.create_maestro_view,
+        ade.create_oa_native_config_view,
+        ade.create_oa_native_maestro_view,
         environment.sanitize_virtuoso_license_env,
         importer.generate_symbol,
         importer.import_schematic,
@@ -167,7 +162,6 @@ def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:
         oa.set_cell_port_directions,
         oa.validate_cell_fingerprint,
         oa.validate_cell_port_directions,
-        legacy_ade.read_oa_load_instances,
         schematic.read_instance_parameters,
         schematic.read_schematic,
         schematic.set_instance_parameters,

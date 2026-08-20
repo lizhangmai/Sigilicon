@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from pathlib import Path
 import re
 import tomllib
@@ -21,65 +20,6 @@ from sigilicon.native_diagnostics import (
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-_TIME_TOKEN = re.compile(
-    r"(?P<value>(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?)"
-    r"(?P<prefix>[afpnum]?)(?:s)?\Z"
-)
-_TIME_SCALE = {
-    "": 1.0,
-    "a": 1.0e-18,
-    "f": 1.0e-15,
-    "p": 1.0e-12,
-    "n": 1.0e-9,
-    "u": 1.0e-6,
-    "m": 1.0e-3,
-}
-
-
-@dataclass(frozen=True)
-class OANativeLegacySeries:
-    """One legacy MDL array represented by native Calculator samples."""
-
-    export: str
-    signals: tuple[str, ...]
-    prefix: str
-
-    def output_name(self, sample_index: int, signal_index: int) -> str:
-        return f"{self.prefix}_{sample_index:03d}_{signal_index:02d}"
-
-    def expression(self, signal: str, sample_time: str) -> str:
-        return f'value(VT("{signal}") {sample_time})'
-
-
-@dataclass(frozen=True)
-class OANativeLegacyMeasurement:
-    """Source-owned shape of the former MDL sampled-array result."""
-
-    alias: str
-    sample_times: tuple[str, ...]
-    series: tuple[OANativeLegacySeries, ...]
-
-    @property
-    def scalar_outputs(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (
-                series.output_name(index, signal_index),
-                series.expression(signal, sample_time),
-            )
-            for series in self.series
-            for index, sample_time in enumerate(self.sample_times)
-            for signal_index, signal in enumerate(series.signals)
-        )
-
-    @property
-    def sample_count(self) -> int:
-        return len(self.sample_times)
-
-    @property
-    def scalar_count(self) -> int:
-        return self.sample_count * sum(len(series.signals) for series in self.series)
-
-
 @dataclass(frozen=True)
 class OANativeDiagnosticContract:
     """Source-owned native Calculator outputs for reviewed observations.
@@ -107,21 +47,12 @@ class OANativeRdbContract:
     waveform_outputs: tuple[tuple[str, str], ...]
     scalar_outputs: tuple[tuple[str, str], ...]
     setup_model_identities: tuple[tuple[str, str], ...] = ()
-    legacy_measurement: OANativeLegacyMeasurement | None = None
     diagnostic_equivalence: OANativeDiagnosticContract | None = None
     diagnostic_adapter: NativeDiagnosticAdapter | None = None
 
     @property
     def scalar_names(self) -> tuple[str, ...]:
         return tuple(name for name, _expression in self.scalar_outputs)
-
-    @property
-    def legacy_scalar_names(self) -> tuple[str, ...]:
-        if self.legacy_measurement is None:
-            return ()
-        return tuple(
-            name for name, _expression in self.legacy_measurement.scalar_outputs
-        )
 
     @property
     def diagnostic_scalar_names(self) -> tuple[str, ...]:
@@ -231,80 +162,6 @@ def _strings(value: object, field: str) -> tuple[str, ...]:
     return result
 
 
-def _positive_time_token(value: object, field: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a positive time token")
-    match = _TIME_TOKEN.fullmatch(value)
-    if match is None:
-        raise ValueError(f"{field} must be a positive time token")
-    seconds = float(match.group("value")) * _TIME_SCALE[match.group("prefix")]
-    if not math.isfinite(seconds) or seconds <= 0:
-        raise ValueError(f"{field} must be a positive time token")
-    return value
-
-
-def _finite_number(value: object, field: str, *, positive: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} must be numeric")
-    number = float(value)
-    if not math.isfinite(number) or (positive and number <= 0):
-        qualifier = "positive " if positive else "finite "
-        raise ValueError(f"{field} must be a {qualifier}number")
-    return number
-
-
-def _integer_list(value: object, field: str) -> tuple[int, ...]:
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"{field} must be a non-empty integer array")
-    result: list[int] = []
-    for item in value:
-        if isinstance(item, bool) or not isinstance(item, int):
-            raise ValueError(f"{field} must contain only integers")
-        result.append(item)
-    return tuple(result)
-
-
-def _time_list(value: object, field: str) -> tuple[str, ...]:
-    return tuple(
-        _positive_time_token(item, field)
-        for item in _strings(value, field)
-    )
-
-
-def _format_calculator_number(value: float) -> str:
-    return format(value, ".12g")
-
-
-def _freeze_settings(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _freeze_settings(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return tuple(_freeze_settings(item) for item in value)
-    return value
-
-
-def _legacy_series_lookup(
-    legacy: OANativeLegacyMeasurement | None,
-    exports: object,
-    field: str,
-) -> tuple[OANativeLegacySeries, ...]:
-    if legacy is None:
-        raise ValueError(
-            f"{field} requires legacy_equivalence sampled arrays"
-        )
-    names = _strings(exports, field)
-    by_export = {series.export: series for series in legacy.series}
-    missing = [name for name in names if name not in by_export]
-    if missing:
-        raise ValueError(
-            f"{field} refers to unknown legacy series: {', '.join(missing)}"
-        )
-    return tuple(by_export[name] for name in names)
-
-
 def _load_native_rdb_contract(
     path: Path,
     *,
@@ -332,7 +189,6 @@ def _load_native_rdb_contract(
         "waveforms",
         "scalars",
         "setup_identity",
-        "legacy_equivalence",
         "diagnostic_equivalence",
     } or not {
         "schema",
@@ -345,10 +201,10 @@ def _load_native_rdb_contract(
         raise ValueError(
             "native RDB contract fields must be exactly schema, point_count, "
             "corners, tests, waveforms, scalars, with optional setup_identity, "
-            "legacy_equivalence and diagnostic_equivalence"
+            "and diagnostic_equivalence"
         )
-    if raw.get("schema") not in {1, 2}:
-        raise ValueError("native RDB contract schema must be 1 or 2")
+    if raw.get("schema") != 2:
+        raise ValueError("native RDB contract schema must be 2")
     point_count = raw.get("point_count")
     if (
         isinstance(point_count, bool)
@@ -433,59 +289,6 @@ def _load_native_rdb_contract(
             )
         setup_model_identities = tuple(models)
 
-    legacy_measurement: OANativeLegacyMeasurement | None = None
-    legacy_raw = raw.get("legacy_equivalence")
-    if legacy_raw is not None:
-        legacy_table = _table(legacy_raw, "native RDB contract legacy_equivalence")
-        if set(legacy_table) != {"alias", "sample_times", "series"}:
-            raise ValueError(
-                "native RDB contract legacy_equivalence fields must be exactly "
-                "alias, sample_times, and series"
-            )
-        alias = _identifier(
-            legacy_table.get("alias"),
-            "native RDB contract legacy_equivalence.alias",
-        )
-        sample_times = tuple(
-            _positive_time_token(value, "native RDB contract legacy sample time")
-            for value in _strings(
-                legacy_table.get("sample_times"),
-                "native RDB contract legacy_equivalence.sample_times",
-            )
-        )
-        series_rows = _rows(
-            legacy_table.get("series"),
-            "native RDB contract legacy_equivalence.series",
-        )
-        series: list[OANativeLegacySeries] = []
-        for index, row in enumerate(series_rows):
-            field = f"native RDB contract legacy_equivalence.series[{index}]"
-            if set(row) != {"export", "signals", "prefix"}:
-                raise ValueError(
-                    f"{field} fields must be exactly export, signals, and prefix"
-                )
-            export = _identifier(row.get("export"), f"{field}.export")
-            signals = tuple(
-                signal
-                for signal in _strings(row.get("signals"), f"{field}.signals")
-                if signal.startswith("/")
-            )
-            if len(signals) != len(row.get("signals", ())):
-                raise ValueError(f"{field}.signals must be absolute OA net names")
-            prefix = _identifier(row.get("prefix"), f"{field}.prefix")
-            series.append(
-                OANativeLegacySeries(export=export, signals=signals, prefix=prefix)
-            )
-        if len({item.export for item in series}) != len(series):
-            raise ValueError("native legacy series exports must be unique")
-        if len({item.prefix for item in series}) != len(series):
-            raise ValueError("native legacy series prefixes must be unique")
-        legacy_measurement = OANativeLegacyMeasurement(
-            alias=alias,
-            sample_times=sample_times,
-            series=tuple(series),
-        )
-
     diagnostic_equivalence: OANativeDiagnosticContract | None = None
     diagnostic_raw = raw.get("diagnostic_equivalence")
     if diagnostic_raw is not None:
@@ -496,19 +299,12 @@ def _load_native_rdb_contract(
             )
         diagnostic_equivalence = diagnostic_adapter.load_contract(
             diagnostic_raw,
-            legacy_measurement,
             contract_path=path,
             project_root=project_root,
         )
 
     waveform_names = [name for name, _signal in waveform_outputs]
     explicit_scalar_names = [name for name, _expression in scalar_outputs]
-    legacy_scalar_outputs = (
-        ()
-        if legacy_measurement is None
-        else legacy_measurement.scalar_outputs
-    )
-    scalar_outputs.extend(legacy_scalar_outputs)
     diagnostic_scalar_outputs = (
         ()
         if diagnostic_equivalence is None
@@ -527,17 +323,10 @@ def _load_native_rdb_contract(
     if len(set(scalar_names)) != len(scalar_names):
         raise ValueError("native RDB contract scalar names must be unique")
     if set(explicit_scalar_names) & {
-        name for name, _expression in legacy_scalar_outputs
+        name for name, _expression in diagnostic_scalar_outputs
     }:
         raise ValueError(
-            "native RDB contract explicit and legacy scalar names must be disjoint"
-        )
-    if (
-        set(name for name, _expression in diagnostic_scalar_outputs)
-        & set(name for name, _expression in legacy_scalar_outputs)
-    ):
-        raise ValueError(
-            "native RDB contract legacy and diagnostic scalar names must be disjoint"
+            "native RDB contract explicit and diagnostic scalar names must be disjoint"
         )
     if set(waveform_names) & set(scalar_names):
         raise ValueError(
@@ -551,7 +340,6 @@ def _load_native_rdb_contract(
         waveform_outputs=tuple(waveform_outputs),
         scalar_outputs=tuple(scalar_outputs),
         setup_model_identities=setup_model_identities,
-        legacy_measurement=legacy_measurement,
         diagnostic_equivalence=diagnostic_equivalence,
         diagnostic_adapter=diagnostic_adapter,
     )
@@ -565,13 +353,12 @@ def _validate_native_rdb_contract_source(
 
     setup_text = setup_source.read_text(encoding="utf-8")
     missing: list[str] = []
-    legacy_scalar_names = set(contract.legacy_scalar_names)
     diagnostic_scalar_names = set(contract.diagnostic_scalar_names)
     for name, signal in contract.waveform_outputs:
         if f'"{name}"' not in setup_text or f'"{signal}"' not in setup_text:
             missing.append(f"waveform {name}/{signal}")
     for name, expression in contract.scalar_outputs:
-        if name in legacy_scalar_names or name in diagnostic_scalar_names:
+        if name in diagnostic_scalar_names:
             continue
         escaped_expression = expression.replace('"', r'\"')
         if (
@@ -588,26 +375,6 @@ def _validate_native_rdb_contract_source(
     for model_file, section in contract.setup_model_identities:
         if model_file not in setup_text or f'"{section}"' not in setup_text:
             missing.append(f"setup model {model_file}/{section}")
-    legacy = contract.legacy_measurement
-    if legacy is not None:
-        if "legacySampleTimes" not in setup_text:
-            missing.append("legacySampleTimes setup generator")
-        if "legacySeries" not in setup_text:
-            missing.append("legacySeries setup generator")
-        for sample_time in legacy.sample_times:
-            if f'"{sample_time}"' not in setup_text:
-                missing.append(f"legacy sample time {sample_time}")
-        for series in legacy.series:
-            for value, label in ((series.export, "export"), (series.prefix, "prefix")):
-                if f'"{value}"' not in setup_text:
-                    missing.append(f"legacy {label} {value}")
-            for signal in series.signals:
-                if f'"{signal}"' not in setup_text:
-                    missing.append(f"legacy signal {signal}")
-        if '"%s_%03d_%02d"' not in setup_text:
-            missing.append("legacy scalar output name generator")
-        if '"value(VT(\\"%s\\") %s)"' not in setup_text:
-            missing.append("legacy scalar expression generator")
     diagnostic = contract.diagnostic_equivalence
     if diagnostic is not None:
         if contract.diagnostic_adapter is None:
@@ -773,10 +540,7 @@ def load_oa_simulation_spec(
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"cannot read OA simulation spec {spec_path}: {exc}") from exc
     if raw.get("schema") != 3:
-        raise ValueError(
-            "OA simulation schema must be 3; schema-2 MDL contracts are no longer "
-            "accepted by the native OA workflow"
-        )
+        raise ValueError("OA simulation schema must be exactly 3")
     return _load_native_oa_simulation_spec(
         spec_path,
         root,

@@ -17,7 +17,7 @@ from sigilicon.artifacts import file_sha256
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.design import DesignSpec, load_design_spec
 from sigilicon.domain.netlist import extract_subckt_body, iter_spectre_logical_lines
-from sigilicon.domain.provenance import design_fingerprint, digest
+from sigilicon.domain.provenance import design_identity_fingerprint, digest
 from sigilicon.paths import ProjectContext
 from sigilicon.waveforms import Waveform, extrema_in_window, first_crossing, parse_spectre_direct_print, render_waveform_csv, value_at
 from sigilicon.workflows.design_lifecycle import inspect_design
@@ -264,7 +264,7 @@ def run_switch_qualification(config: SwitchQualification, *, runner_path: Path, 
         "qualification": file_sha256(config.path), "runner": file_sha256(runner),
         "pdk": {path.name: file_sha256(path) for path in models},
     })
-    source = design_fingerprint(config.design)
+    source = design_identity_fingerprint(config.design)
     context = SpectreArtifactContext(
         project_root=config.project_root, library=config.design.library, cell=config.design.cell,
         testbench=config.testbench, source_fingerprint=source, setup_fingerprint=setup,

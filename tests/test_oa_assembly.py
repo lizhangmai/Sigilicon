@@ -159,13 +159,13 @@ def test_assembly_rejects_unresolved_view_dependency(tmp_path: Path) -> None:
         load_oa_library_source(manifest, project_root=root)
 
 
-def test_assembly_rejects_legacy_owner(tmp_path: Path) -> None:
+def test_assembly_rejects_unmanaged_example_owner(tmp_path: Path) -> None:
     root, _manifest = _assembly(tmp_path)
-    legacy = root / "ip" / "legacy"
+    example = root / "ip" / "example"
     manifest = _write(
-        legacy / "configs" / "oa.toml",
+        example / "configs" / "oa.toml",
         '''schema = 1
-owner = "legacy"
+owner = "example"
 name = "assembled"
 pdk = "testpdk"
 workspace_template = "virtuoso"
@@ -173,7 +173,7 @@ oa_library = "virtuoso/assembled"
 cell_roots = ["design/cells"]
 ''',
     )
-    _cell(root, "legacy", "OLD")
+    _cell(root, "example", "OLD")
 
     with pytest.raises(ValueError, match="unmanaged IP cannot own"):
         load_oa_library_source(manifest, project_root=root)
@@ -304,7 +304,7 @@ def test_read_only_check_classifies_missing_and_extra_objects(monkeypatch) -> No
     assert report["missing_views"] == {"EXPECTED": ["symbol"]}
 
 
-def test_check_accepts_git_owned_design_without_historical_state(
+def test_check_accepts_git_owned_design_without_prior_state(
     tmp_path: Path, monkeypatch
 ) -> None:
     cell = "DESIGN"
@@ -421,7 +421,7 @@ def test_testbench_check_includes_transitive_dependency_materialization(
     assert report["extra_cells"] == []
 
 
-def test_check_accepts_current_layout_cache_without_historical_state(
+def test_check_accepts_current_layout_cache_without_prior_state(
     tmp_path: Path, monkeypatch
 ) -> None:
     cell = "LAYOUT_CELL"

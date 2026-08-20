@@ -294,7 +294,7 @@ def project_factory(tmp_path: Path) -> Callable[..., tuple[Path, Path]]:
     def create(*, port_order: str = '"IN", "OUT", "VDD", "VSS"') -> tuple[Path, Path]:
         root = tmp_path / "project"
         write_project_context(root)
-        design_dir = root / "ip/legacy" / "inv"
+        design_dir = root / "ip/example" / "inv"
         virtuoso_dir = root / "virtuoso"
         design_dir.mkdir(parents=True)
         virtuoso_dir.mkdir(parents=True)
@@ -329,43 +329,6 @@ VSS = "inputOutput"
 """,
             encoding="utf-8",
         )
-        spec = design_dir / "ams.toml"
-        spec.write_text(
-            """[test]
-design = "design.toml"
-testbench = "tb_inv"
-
-[simulation.checker]
-settle = "5ns"
-
-[simulation.timing]
-stop = "16n"
-maxstep = "20p"
-
-[simulation.interface]
-vdd = 0.9
-load_cap = "2f"
-rise_time = "20p"
-vthi = 0.5
-vtlo = 0.3
-connect_rules = "full"
-
-[simulation.backends.standalone]
-dump_vcd = true
-
-[simulation.backends.ade]
-errpreset = "conservative"
-
-[[vectors]]
-inputs = [0]
-expected = [1]
-
-[[vectors]]
-inputs = [1]
-expected = [0]
-""",
-            encoding="utf-8",
-        )
-        return root, spec
+        return root, design_dir / "design.toml"
 
     return create

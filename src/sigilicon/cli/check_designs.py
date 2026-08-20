@@ -17,7 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--catalog",
         type=Path,
-        help="check one explicit catalog (use this for the optional legacy gate)",
+        help="check one explicit design catalog",
     )
     parser.add_argument(
         "--repository",

@@ -26,7 +26,7 @@ from sigilicon.domain.oa_library import (
     OAViewReference,
     load_oa_library_source,
 )
-from sigilicon.domain.provenance import design_fingerprint
+from sigilicon.domain.provenance import design_identity_fingerprint
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
@@ -254,7 +254,7 @@ def _override_inspection_library(
     return replace(
         inspection,
         spec=spec,
-        source_fingerprint=design_fingerprint(spec),
+        source_fingerprint=design_identity_fingerprint(spec),
     )
 
 

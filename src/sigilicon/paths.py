@@ -180,47 +180,6 @@ class OperationIncidentPaths:
 
 
 @dataclass(frozen=True)
-class AdeArtifactPaths:
-    artifact_root: Path
-    root: Path
-    library: str
-    testbench: str
-
-    @property
-    def current(self) -> Path:
-        return self.root / "current.json"
-
-    def setup_attempt(
-        self,
-        setup_fingerprint: str,
-        attempt_id: str,
-    ) -> ArtifactExecutionPaths:
-        fingerprint = validate_fingerprint(setup_fingerprint, "setup fingerprint")
-        attempt = validate_artifact_id(attempt_id, "attempt id")
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.artifact_root,
-            namespace_root=self.root,
-            root=self.root / "setups" / fingerprint / "attempts" / attempt,
-            artifact_kind="ade_setup",
-            identity_kind="attempt_id",
-            identity=attempt,
-            roles=("inputs", "evidence", "logs", "work"),
-        )
-
-    def run(self, run_id: str) -> ArtifactExecutionPaths:
-        run = validate_artifact_id(run_id, "run id")
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.artifact_root,
-            namespace_root=self.root,
-            root=self.root / "runs" / run,
-            artifact_kind="ade_run",
-            identity_kind="run_id",
-            identity=run,
-            roles=("inputs", "results", "logs", "work"),
-        )
-
-
-@dataclass(frozen=True)
 class ArtifactPaths:
     root: Path
 
@@ -399,16 +358,6 @@ class ArtifactPaths:
             identity_kind="run_id",
             identity=run,
             roles=("inputs", "results", "logs", "work"),
-        )
-
-    def ade(self, library: str, testbench: str) -> AdeArtifactPaths:
-        lib = self._name(library, "library")
-        tb = self._name(testbench, "testbench")
-        return AdeArtifactPaths(
-            artifact_root=self.root,
-            root=self.root / "verification" / lib / tb / "ade",
-            library=lib,
-            testbench=tb,
         )
 
     def import_attempt(

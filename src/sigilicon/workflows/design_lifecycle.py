@@ -15,7 +15,7 @@ from typing import Any
 
 from sigilicon.domain.design import DesignSpec, load_design_spec
 from sigilicon.domain.netlist import select_subckt_snapshot
-from sigilicon.domain.provenance import design_fingerprint
+from sigilicon.domain.provenance import design_identity_fingerprint
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.oa import (
     validate_cell_port_directions,
@@ -78,7 +78,7 @@ def inspect_design(
     return DesignInspection(
         spec=spec,
         hierarchy=plan.ordered_cells,
-        source_fingerprint=design_fingerprint(spec),
+        source_fingerprint=design_identity_fingerprint(spec),
     )
 
 

@@ -23,8 +23,8 @@ owner = "test"
     _write(tmp_path, "active/root.toml", header)
     _write(tmp_path, "active/cell/CELL/cell.toml", header.replace("test-contract", "oa-cell"))
     _write(tmp_path, "native/tb/simulation.toml", "schema = 3\n")
-    _write(tmp_path, "legacy/catalog.toml", "schema = 1\n")
-    _write(tmp_path, "legacy/old.toml", "legacy = true\n")
+    _write(tmp_path, "excluded/catalog.toml", "schema = 1\n")
+    _write(tmp_path, "excluded/source.toml", "fixture = true\n")
     _write(tmp_path, "pixi.toml", "[workspace]\nname = \"fixture\"\n")
     inventory = """schema = 1
 contract_kind = "configuration-inventory"
@@ -52,9 +52,9 @@ path = "pixi.toml"
 reason = "tool-owned manifest"
 
 [[excluded_families]]
-glob = "legacy/**/*.toml"
-exclude = ["legacy/catalog.toml"]
-reason = "legacy source-only files"
+glob = "excluded/**/*.toml"
+exclude = ["excluded/catalog.toml"]
+reason = "source files excluded by repository policy"
 """
     inventory_path = tmp_path / "inventory.toml"
     inventory_path.write_text(inventory, encoding="utf-8")

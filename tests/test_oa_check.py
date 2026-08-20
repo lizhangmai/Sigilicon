@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from sigilicon.cli.flow import _parser, _print_oa_check_summary
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.oa_doctor import (
+from sigilicon.workflows.oa_check import (
     _library_ownership,
     _locks,
     _recommendation,
@@ -28,6 +30,14 @@ def test_oa_check_is_a_parser_action_with_no_mutating_arguments() -> None:
     assert args.action == "check"
     assert not hasattr(args, "testbench")
     assert not hasattr(args, "cell")
+
+
+@pytest.mark.parametrize("retired_action", ("audit", "doctor"))
+def test_oa_check_has_no_alias_actions(retired_action: str) -> None:
+    with pytest.raises(SystemExit):
+        _parser().parse_args(
+            ["oa", retired_action, "--manifest", "ip/example/configs/oa.toml"]
+        )
 
 
 def test_read_only_check_workspace_does_not_create_flow_lock(
@@ -60,16 +70,16 @@ def test_invalid_manifest_is_reported_as_blocked_without_artifact_write(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_doctor.active_maestro_sessions", lambda _client: ()
+        "sigilicon.workflows.oa_check.active_maestro_sessions", lambda _client: ()
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_doctor.open_cell_views", lambda _client: ()
+        "sigilicon.workflows.oa_check.open_cell_views", lambda _client: ()
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_doctor.virtuoso_workdir", lambda _client: tmp_path
+        "sigilicon.workflows.oa_check.virtuoso_workdir", lambda _client: tmp_path
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_doctor.virtuoso_pid", lambda _client: 1
+        "sigilicon.workflows.oa_check.virtuoso_pid", lambda _client: 1
     )
     report = check_oa_library(
         tmp_path / "missing-oa.toml",
@@ -177,7 +187,7 @@ def test_released_flow_marker_is_not_reported_as_live_lock() -> None:
     )
 
 
-def test_old_state_is_not_part_of_current_check() -> None:
+def test_current_check_uses_only_live_state() -> None:
     common = {
         "plan_error": None,
         "parity": {"passed": True},

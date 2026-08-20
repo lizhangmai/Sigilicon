@@ -277,26 +277,26 @@ def test_delete_cell_uses_exact_deletion_scope(workspace_factory) -> None:
 
     class Client:
         def execute_skill(self, source, **_kwargs):
-            assert 'ddGetObj("lib" "obsolete")' in source
-            assert 'member(flowCv~>cellName list("obsolete"))' in source
+            assert 'ddGetObj("lib" "retired")' in source
+            assert 'member(flowCv~>cellName list("retired"))' in source
             assert target is not None
             target.rmdir()
             return SimpleNamespace(output="t", errors=[])
 
     client = Client()
     with workspace_factory(client, library="lib") as operation:
-        target = operation.root / "lib" / "obsolete"
+        target = operation.root / "lib" / "retired"
         target.mkdir(parents=True)
         with operation.mutation_scope(
             "lib",
-            cells=("obsolete",),
-            expected_deleted_cells=("obsolete",),
+            cells=("retired",),
+            expected_deleted_cells=("retired",),
             phase="OA cell deletion proof",
         ):
             delete_cell(
                 client,
                 "lib",
-                "obsolete",
+                "retired",
                 operation=operation,
             )
 
@@ -308,7 +308,7 @@ def test_delete_cell_view_retains_parent_cell(workspace_factory) -> None:
 
     class Client:
         def execute_skill(self, source, **_kwargs):
-            assert 'ddGetObj("lib" "retained" "obsolete_layout")' in source
+            assert 'ddGetObj("lib" "retained" "retired_layout")' in source
             assert 'member(flowCv~>cellName list("retained"))' in source
             assert target is not None
             target.rmdir()
@@ -317,7 +317,7 @@ def test_delete_cell_view_retains_parent_cell(workspace_factory) -> None:
     client = Client()
     with workspace_factory(client, library="lib") as operation:
         cell = operation.root / "lib" / "retained"
-        target = cell / "obsolete_layout"
+        target = cell / "retired_layout"
         target.mkdir(parents=True)
         with operation.mutation_scope(
             "lib",
@@ -328,7 +328,7 @@ def test_delete_cell_view_retains_parent_cell(workspace_factory) -> None:
                 client,
                 "lib",
                 "retained",
-                "obsolete_layout",
+                "retired_layout",
                 operation=operation,
             )
 

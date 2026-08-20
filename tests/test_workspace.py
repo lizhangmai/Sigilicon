@@ -495,19 +495,19 @@ def test_mutation_scope_accepts_exact_declared_cell_deletion(
     client = object()
 
     with workspace_factory(client, library="lib") as operation:
-        cell = operation.root / "lib" / "obsolete"
+        cell = operation.root / "lib" / "retired"
         cell.mkdir(parents=True)
         with operation.mutation_scope(
             "lib",
-            cells=("obsolete",),
-            expected_deleted_cells=("obsolete",),
+            cells=("retired",),
+            expected_deleted_cells=("retired",),
             phase="declared deletion proof",
         ):
             operation.require_active_mutation(
                 client,
                 "lib",
-                "obsolete",
-                phase="delete obsolete cell",
+                "retired",
+                phase="delete retired cell",
             )
             cell.rmdir()
 
@@ -518,12 +518,12 @@ def test_mutation_scope_requires_declared_deletion_to_complete(
     client = object()
 
     with workspace_factory(client, library="lib") as operation:
-        (operation.root / "lib" / "obsolete").mkdir(parents=True)
+        (operation.root / "lib" / "retired").mkdir(parents=True)
         with pytest.raises(RuntimeError, match="still exists"):
             with operation.mutation_scope(
                 "lib",
-                cells=("obsolete",),
-                expected_deleted_cells=("obsolete",),
+                cells=("retired",),
+                expected_deleted_cells=("retired",),
                 phase="incomplete deletion proof",
             ):
                 pass
@@ -539,7 +539,7 @@ def test_mutation_scope_rejects_deletion_outside_exact_cell_scope(
             with operation.mutation_scope(
                 "lib",
                 cells=("retained",),
-                expected_deleted_cells=("obsolete",),
+                expected_deleted_cells=("retired",),
                 phase="out-of-scope deletion proof",
             ):
                 pytest.fail("out-of-scope deletion must not be authorized")

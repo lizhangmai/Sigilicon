@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping, Sequence
 from sigilicon.artifacts import file_sha256
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.design import DesignSpec, load_design_spec
-from sigilicon.domain.provenance import design_fingerprint, digest
+from sigilicon.domain.provenance import design_identity_fingerprint, digest
 from sigilicon.paths import ProjectContext
 from sigilicon.waveforms import (
     Waveform,
@@ -352,7 +352,7 @@ def run_logic_qualification(
         "runner": file_sha256(runner),
         "pdk": {path.name: file_sha256(path) for path in models},
     })
-    source = design_fingerprint(config.design)
+    source = design_identity_fingerprint(config.design)
     context = SpectreArtifactContext(
         project_root=config.project_root,
         library=config.design.library,

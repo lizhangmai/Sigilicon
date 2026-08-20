@@ -42,8 +42,8 @@ def check_and_save_schematic(
     """Commit current connectivity required by AMS UNL netlisting.
 
     Cadence reports ``dirty`` when connectivity is current but the schematic
-    retains warning markers.  Only ``obsolete`` (or a missing status) means
-    the extracted connectivity is unusable by a background netlister.
+    retains warning markers.  Any other status means the extracted
+    connectivity is unusable by a background netlister.
     """
 
     require_oa_target_capability(

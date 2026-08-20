@@ -14,8 +14,8 @@ def _catalog_project(
     actions: str = '"check", "generate", "verify"',
 ) -> Path:
     (tmp_path / "configs").mkdir()
-    (tmp_path / "ip/legacy").mkdir(parents=True)
-    spec = tmp_path / "ip/legacy/leaf.toml"
+    (tmp_path / "ip/example").mkdir(parents=True)
+    spec = tmp_path / "ip/example/leaf.toml"
     spec.write_text("# delegated layout spec\n", encoding="utf-8")
     (tmp_path / "configs" / "layout_targets.toml").write_text(
         f'''
@@ -26,7 +26,7 @@ owner = "repository"
 
 [targets.leaf]
 description = "Test leaf"
-spec = "ip/legacy/leaf.toml"
+spec = "ip/example/leaf.toml"
 actions = [{actions}]
 ''',
         encoding="utf-8",
@@ -74,7 +74,7 @@ owner = "repository"
 
 [targets.leaf]
 description = "Bad action"
-spec = "ip/legacy/leaf.toml"
+spec = "ip/example/leaf.toml"
 actions = ["check", "publish"]
 ''',
         encoding="utf-8",
@@ -93,7 +93,7 @@ def test_layout_cli_lists_targets_without_opening_a_tool_client(
 
     assert flow_cli.main(["layout", "list"], client_factory=object) == 0
 
-    assert capsys.readouterr().out == "leaf\tcheck,generate,verify\tip/legacy/leaf.toml\n"
+    assert capsys.readouterr().out == "leaf\tcheck,generate,verify\tip/example/leaf.toml\n"
 
 
 def test_layout_cli_delegates_to_existing_generation_and_verification_clis(

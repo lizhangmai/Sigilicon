@@ -17,7 +17,6 @@ from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import (
     read_native_maestro_rdb_export,
     reconstruct_native_diagnostic,
-    reconstruct_native_legacy_measurement,
 )
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_library import (
@@ -232,19 +231,9 @@ def _run_native_oa_maestro_testbench_impl(
             "results", ("maestro-rdb.tsv",), rdb_export
         )
         parsed = work.write_json("results", ("maestro-rdb.json",), parsed_results)
-        legacy_equivalence = reconstruct_native_legacy_measurement(
-            parsed_results,
-            rdb_contract,
-        )
-        legacy_equivalence_path = None
-        if legacy_equivalence is not None:
-            legacy_equivalence_path = work.write_json(
-                "results", ("legacy-equivalence.json",), legacy_equivalence
-            )
         diagnostic_equivalence = reconstruct_native_diagnostic(
             parsed_results,
             rdb_contract,
-            legacy_equivalence,
         )
         diagnostic_equivalence_path = None
         if diagnostic_equivalence is not None:
@@ -271,21 +260,6 @@ def _run_native_oa_maestro_testbench_impl(
                     "expression_count": rdb_contract.expected_expression_count,
                 },
                 "waveform_output_count": len(rdb_contract.waveform_outputs),
-                "legacy_equivalence": (
-                    None
-                    if legacy_equivalence_path is None
-                    else str(legacy_equivalence_path.relative_to(work.root))
-                ),
-                "legacy_sample_count": (
-                    0
-                    if rdb_contract.legacy_measurement is None
-                    else rdb_contract.legacy_measurement.sample_count
-                ),
-                "legacy_series_count": (
-                    0
-                    if rdb_contract.legacy_measurement is None
-                    else len(rdb_contract.legacy_measurement.series)
-                ),
                 "diagnostic_equivalence": (
                     None
                     if diagnostic_equivalence_path is None

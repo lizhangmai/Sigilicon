@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import inspect
 import json
+import shutil
 import signal
 import stat
 import struct
@@ -923,6 +924,76 @@ def cadence_subprocess_env(
 
     env = dict(os.environ if base is None else base)
     env.pop(SYNOPSYS_LICENSE_ENV, None)
+    return env
+
+
+def find_xrun(explicit: Path | None = None) -> Path:
+    """Resolve the Xcelium launcher from an explicit path or installation root."""
+
+    if explicit is not None:
+        if explicit.is_file():
+            return explicit.resolve()
+        raise FileNotFoundError(f"xrun does not exist: {explicit}")
+    discovered = shutil.which("xrun")
+    if discovered:
+        return Path(discovered).resolve()
+    for variable in ("XCELIUM_HOME", "IUS_HOME"):
+        value = os.environ.get(variable)
+        if not value:
+            continue
+        installation = Path(value)
+        for candidate in (
+            installation / "tools" / "bin" / "xrun",
+            installation / "bin" / "xrun",
+        ):
+            if candidate.is_file():
+                return candidate.resolve()
+    raise FileNotFoundError(
+        "xrun was not found; load Xcelium, set XCELIUM_HOME, or pass --xrun"
+    )
+
+
+def _xcelium_home(xrun: Path) -> Path:
+    resolved = xrun.resolve()
+    configured = os.environ.get("XCELIUM_HOME") or os.environ.get("IUS_HOME")
+    candidates = ([Path(configured)] if configured else []) + list(resolved.parents)
+    for installation in candidates:
+        for launcher in (
+            installation / "tools" / "bin" / "xrun",
+            installation / "bin" / "xrun",
+        ):
+            if launcher.is_file() and launcher.resolve() == resolved:
+                return installation
+    raise RuntimeError(f"cannot determine Xcelium installation root from {xrun}")
+
+
+def xrun_env(xrun: Path) -> dict[str, str]:
+    """Build the bounded child environment for one resolved Xcelium install."""
+
+    env = cadence_subprocess_env()
+    installation = _xcelium_home(xrun)
+    path_entries = (installation / "tools" / "bin", installation / "bin")
+    lib_entries = (
+        installation / "tools" / "inca" / "lib",
+        installation / "tools" / "tbsc" / "lib",
+        installation / "tools" / "vic" / "lib" / "gnu",
+        installation / "tools" / "systemc" / "lib",
+        installation / "tools" / "lib",
+        installation / "lib",
+    )
+    env["PATH"] = (
+        os.pathsep.join(map(str, path_entries))
+        + os.pathsep
+        + env.get("PATH", "")
+    )
+    env["LD_LIBRARY_PATH"] = (
+        os.pathsep.join(map(str, lib_entries))
+        + os.pathsep
+        + env.get("LD_LIBRARY_PATH", "")
+    )
+    env.setdefault("XCELIUM_HOME", str(installation))
+    env.setdefault("IUS_HOME", str(installation))
+    env.setdefault("CDS_INST_DIR", str(installation))
     return env
 
 

@@ -74,9 +74,9 @@ def test_mapping_contract_uses_explicit_kind_and_table_path(
 ) -> None:
     contract = (
         tmp_path
-        / "ip/cim_compute_nocal/configs/architecture/behavioral_contract.toml"
+        / "ip/example/configs/architecture/behavioral_contract.toml"
     )
-    _write_behavior_contract(contract, owner="cim-compute-nocal")
+    _write_behavior_contract(contract, owner="example")
 
     mapping = load_integer_code_mapping_contract(
         contract,
@@ -92,7 +92,7 @@ def test_mapping_contract_uses_explicit_kind_and_table_path(
 def test_mapping_contract_does_not_infer_owner_from_repository_layout(
     tmp_path: Path,
 ) -> None:
-    contract = tmp_path / "ip/cim_compute_nocal/configs/behavior.toml"
+    contract = tmp_path / "ip/example/configs/behavior.toml"
     _write_behavior_contract(contract, owner="cim-compute")
 
     mapping = load_integer_code_mapping_contract(

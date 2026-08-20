@@ -13,6 +13,7 @@ from sigilicon.external_tools import (
     ProcessGroupCleanupUncertainError,
     cadence_subprocess_env,
     enforce_process_group_subprocess_run,
+    find_xrun,
     owned_atomic_output_file,
     owned_directory,
     owned_input_file,
@@ -23,6 +24,7 @@ from sigilicon.external_tools import (
     process_group_cleanup_uncertainty,
     run_process_group,
     run_process_group_until_confirmed,
+    xrun_env,
 )
 
 
@@ -39,6 +41,31 @@ def test_cadence_child_environment_removes_conflicting_license_variable() -> Non
     assert result["CDS_LIC_FILE"] == "cadence-license"
     assert result["PATH"] == "/tools/bin"
     assert source["LM_LICENSE_FILE"] == "mentor-or-synopsys-license"
+
+
+def test_xrun_resolution_and_environment_use_one_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    installation = tmp_path / "xcelium"
+    launcher = installation / "tools/bin/xrun"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("launcher\n", encoding="utf-8")
+    monkeypatch.setenv("XCELIUM_HOME", str(installation))
+    monkeypatch.delenv("IUS_HOME", raising=False)
+    monkeypatch.setenv("PATH", "")
+
+    resolved = find_xrun()
+    environment = xrun_env(resolved)
+
+    assert resolved == launcher.resolve()
+    assert environment["XCELIUM_HOME"] == str(installation)
+    assert environment["IUS_HOME"] == str(installation)
+    assert environment["CDS_INST_DIR"] == str(installation)
+    assert environment["PATH"].split(os.pathsep)[:2] == [
+        str(installation / "tools/bin"),
+        str(installation / "bin"),
+    ]
 
 
 def test_sealed_child_input_is_immutable_and_exact() -> None:

@@ -3,8 +3,8 @@
 Source-driven OA materialization deliberately does not enter this state
 machine; it uses :mod:`sigilicon.virtuoso.disposable` for temporary tool inputs and
 outputs.  The persistent contract remains for standalone characterization,
-AMS/ADE, verification, and other workflows whose artifacts are still an
-explicit result contract.
+verification, and other workflows whose artifacts are still an explicit
+result contract.
 """
 
 from __future__ import annotations
@@ -39,8 +39,6 @@ ARTIFACT_ROLES = {
     "physical_verification": {"inputs", "results", "logs", "work"},
     "netlist_export": {"inputs", "results", "logs", "work"},
     "standalone_simulation": {"inputs", "results", "logs", "work"},
-    "ade_setup": {"inputs", "evidence", "logs", "work"},
-    "ade_run": {"inputs", "results", "logs", "work"},
     "netlist_import": {"source", "cells", "evidence", "logs", "work"},
     "analysis": {"inputs", "results", "logs", "work"},
 }
@@ -51,8 +49,6 @@ ARTIFACT_IDENTITY_KINDS = {
     "physical_verification": "run_id",
     "netlist_export": "run_id",
     "standalone_simulation": "run_id",
-    "ade_setup": "attempt_id",
-    "ade_run": "run_id",
     "netlist_import": "attempt_id",
     "analysis": "run_id",
 }
@@ -78,11 +74,6 @@ ARTIFACT_ENTITY_FIELDS = {
         {"library", "cell", "testbench"},
         {"library", "cell", "testbench"},
     ),
-    "ade_setup": (
-        {"library", "cell", "testbench"},
-        {"library", "cell", "testbench"},
-    ),
-    "ade_run": ({"library", "testbench"}, {"library", "cell", "testbench"}),
     "netlist_import": ({"library", "source"}, {"library", "source", "cell"}),
     "analysis": (
         {"library", "cell", "analysis", "model"},

@@ -309,7 +309,7 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
             ) from exc
     # LVS hierarchy resolution needs every sibling definition in the declared
     # canonical file.  The resolver still emits only the closure reachable
-    # from ``layout.cell``, so historical subckts are not promoted into source.
+    # from ``layout.cell``, so unreachable subckts are not promoted into source.
     source_snapshots = (full_snapshot,) + tuple(
         load_netlist_snapshot(dependency) for dependency in dependency_netlists
     )

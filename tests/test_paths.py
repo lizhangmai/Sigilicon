@@ -13,7 +13,6 @@ from sigilicon.paths import (
 
 RUN = "1" * 32
 ATTEMPT = "2" * 32
-FINGERPRINT = "3" * 64
 
 
 def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
@@ -52,18 +51,6 @@ def test_all_artifact_paths_match_the_single_layout(tmp_path: Path) -> None:
     assert paths.standalone_run("lib", "tb_inv", RUN).root == (
         tmp_path / "artifacts/verification/lib/tb_inv/standalone/runs" / RUN
     )
-    ade = paths.ade("lib", "tb_inv")
-    assert ade.setup_attempt(FINGERPRINT, ATTEMPT).root == (
-        tmp_path
-        / "artifacts/verification/lib/tb_inv/ade/setups"
-        / FINGERPRINT
-        / "attempts"
-        / ATTEMPT
-    )
-    assert ade.run(RUN).root == (
-        tmp_path / "artifacts/verification/lib/tb_inv/ade/runs" / RUN
-    )
-    assert ade.run(RUN).roles == ("inputs", "results", "logs", "work")
     assert paths.import_attempt("lib", "source", ATTEMPT).root == (
         tmp_path / "artifacts/imports/lib/source/attempts" / ATTEMPT
     )
@@ -92,8 +79,6 @@ def test_ids_fingerprints_and_role_components_are_validated(tmp_path: Path) -> N
     paths = ProjectContext.from_project_root(tmp_path).artifacts
     with pytest.raises(ValueError, match="attempt id"):
         paths.design_sync_attempt("lib", "inv", "short")
-    with pytest.raises(ValueError, match="setup fingerprint"):
-        paths.ade("lib", "tb").setup_attempt("bad", ATTEMPT)
     execution = paths.standalone_run("lib", "tb", RUN)
     with pytest.raises(ValueError, match="path component"):
         execution.path("inputs", "../escape")

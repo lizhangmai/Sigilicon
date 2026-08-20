@@ -59,7 +59,7 @@ def test_rebuild_can_select_exactly_one_design_cell() -> None:
     assert args.testbench is None
 
 
-def test_cli_attest_reports_current_check_without_historical_state(
+def test_cli_attest_reports_current_check_without_prior_state(
     monkeypatch, capsys, tmp_path
 ) -> None:
     monkeypatch.chdir(tmp_path)

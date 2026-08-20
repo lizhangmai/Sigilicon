@@ -1,7 +1,7 @@
 """Generic valid-edge scalar generation and RDB reconstruction.
 
 Callers own the source schema, scenario meaning, code mapping, and report policy.
-This module only handles validated edge windows and decodes scalar/legacy values.
+This module only handles validated edge windows and decodes Calculator scalars.
 """
 
 from __future__ import annotations
@@ -29,6 +29,10 @@ class ValidEdgeContractDefinition:
 
     kind: str
     scenarios: tuple[ValidEdgeScenario, ...]
+    sample_times: tuple[str, ...]
+    ready_signal: str
+    decision_signals: tuple[str, ...]
+    analog_signals: tuple[str, ...]
     window_starts: tuple[str, ...]
     window_ends: tuple[str, ...]
     edge_signal: str
@@ -40,13 +44,9 @@ class ValidEdgeContractDefinition:
 
 @dataclass(frozen=True)
 class ValidEdgeResultBinding:
-    """Names that bind a generic decoder to caller-declared legacy exports."""
+    """Caller-owned names for analog values in the reconstructed report."""
 
-    protocol_export: str
-    decision_export: str
-    analog_export: str
     analog_output_keys: tuple[str, ...]
-    ready_signal_index: int = 0
 
 
 def _calculator_number(value: float) -> str:
@@ -63,11 +63,23 @@ def _validate_definition(definition: ValidEdgeContractDefinition) -> None:
         raise ValueError("valid-edge scenario names must be non-empty and unique")
     if not all(
         len(values) == len(definition.scenarios)
-        for values in (definition.window_starts, definition.window_ends)
+        for values in (
+            definition.sample_times,
+            definition.window_starts,
+            definition.window_ends,
+        )
     ):
-        raise ValueError("valid-edge windows must match the scenario count")
-    if not definition.edge_signal.startswith("/"):
-        raise ValueError("valid-edge signal must be an absolute OA net name")
+        raise ValueError("valid-edge samples and windows must match the scenario count")
+    signals = (
+        definition.ready_signal,
+        *definition.decision_signals,
+        *definition.analog_signals,
+        definition.edge_signal,
+    )
+    if not definition.decision_signals or not definition.analog_signals:
+        raise ValueError("valid-edge decision and analog signals must not be empty")
+    if any(not signal.startswith("/") for signal in signals):
+        raise ValueError("valid-edge signals must be absolute OA net names")
     if isinstance(definition.edge_count, bool) or definition.edge_count <= 0:
         raise ValueError("valid-edge count must be a positive integer")
     if (
@@ -85,6 +97,27 @@ def build_valid_edge_contract(
 
     _validate_definition(definition)
     outputs: list[tuple[str, str]] = []
+    for index, sample_time in enumerate(definition.sample_times):
+        outputs.append(
+            (
+                f"diag_ready_{index:03d}_00",
+                f'value(VT("{definition.ready_signal}") {sample_time})',
+            )
+        )
+        for signal_index, signal in enumerate(definition.decision_signals):
+            outputs.append(
+                (
+                    f"diag_decision_{index:03d}_{signal_index:02d}",
+                    f'value(VT("{signal}") {sample_time})',
+                )
+            )
+        for signal_index, signal in enumerate(definition.analog_signals):
+            outputs.append(
+                (
+                    f"diag_analog_{index:03d}_{signal_index:02d}",
+                    f'value(VT("{signal}") {sample_time})',
+                )
+            )
     for index, (start, end) in enumerate(
         zip(definition.window_starts, definition.window_ends, strict=True)
     ):
@@ -107,6 +140,10 @@ def build_valid_edge_contract(
             }
             for scenario in definition.scenarios
         ),
+        "sample_times": definition.sample_times,
+        "ready_signal": definition.ready_signal,
+        "decision_signals": definition.decision_signals,
+        "analog_signals": definition.analog_signals,
         "window_starts": definition.window_starts,
         "window_ends": definition.window_ends,
         "edge_signal": definition.edge_signal,
@@ -146,6 +183,10 @@ def validate_valid_edge_contract(
             )
             for scenario in scenarios
         ),
+        sample_times=tuple(settings.get("sample_times", ())),
+        ready_signal=str(settings.get("ready_signal", "")),
+        decision_signals=tuple(settings.get("decision_signals", ())),
+        analog_signals=tuple(settings.get("analog_signals", ())),
         window_starts=tuple(settings.get("window_starts", ())),
         window_ends=tuple(settings.get("window_ends", ())),
         edge_signal=str(settings.get("edge_signal", "")),
@@ -163,6 +204,10 @@ def validate_valid_edge_source(
 
     missing: list[str] = []
     markers = (
+        "diagnosticSampleTimes",
+        "diagnosticSampleGroups",
+        '"diag_%s_%03d_%02d"',
+        r'value(VT(\"%s\") %s)',
         "diagnosticEdgeWindows",
         '"diag_valid_edge_%03d_%02d"',
         'cross(clip(VT(\\"%s\\") %s %s)',
@@ -170,7 +215,7 @@ def validate_valid_edge_source(
     for marker in markers:
         if marker not in setup_text:
             missing.append(f"diagnostic setup generator {marker}")
-    for field in ("window_starts", "window_ends"):
+    for field in ("sample_times", "window_starts", "window_ends"):
         for value in diagnostic.settings.get(field, ()):
             if isinstance(value, str) and f'"{value}"' not in setup_text:
                 missing.append(f"diagnostic {field} value {value}")
@@ -207,19 +252,6 @@ def _diagnostic_value(rows: Mapping[str, Any], name: str, *, context: str) -> fl
     return float(value)
 
 
-def _legacy_values(
-    context: Mapping[str, Any], series: Any, sample_index: int
-) -> tuple[Any, ...]:
-    values = context["exports"].get(series.export)
-    if not isinstance(values, list):
-        raise ValueError(f"native legacy export is missing: {series.export}")
-    start = sample_index * len(series.signals)
-    end = start + len(series.signals)
-    if end > len(values):
-        raise ValueError(f"native legacy export is short: {series.export}")
-    return tuple(values[start:end])
-
-
 def _logic(value: Any, threshold: float) -> int:
     return 0 if float(value) < threshold else 1
 
@@ -227,7 +259,6 @@ def _logic(value: Any, threshold: float) -> int:
 def evaluate_valid_edge_diagnostic(
     result: Mapping[str, Any],
     contract: Any,
-    legacy_result: Mapping[str, Any],
     *,
     binding: ValidEdgeResultBinding,
 ) -> dict[str, Any]:
@@ -236,29 +267,12 @@ def evaluate_valid_edge_diagnostic(
     diagnostic = contract.diagnostic_equivalence
     if diagnostic is None:
         raise ValueError("valid-edge diagnostic contract is missing")
-    legacy = contract.legacy_measurement
-    if legacy is None:
-        raise ValueError("valid-edge diagnostics require legacy sampled arrays")
-    series_by_export = {series.export: series for series in legacy.series}
-    required_exports = (
-        binding.protocol_export,
-        binding.decision_export,
-        binding.analog_export,
-    )
-    missing_exports = [name for name in required_exports if name not in series_by_export]
-    if missing_exports:
-        raise ValueError(
-            "valid-edge legacy exports are missing: " + ", ".join(missing_exports)
-        )
-    protocol = series_by_export[binding.protocol_export]
-    decisions = series_by_export[binding.decision_export]
-    analog = series_by_export[binding.analog_export]
-    if binding.ready_signal_index >= len(protocol.signals):
-        raise ValueError("valid-edge ready signal index is outside protocol series")
-    if len(binding.analog_output_keys) != len(analog.signals):
+    settings = dict(diagnostic.settings)
+    analog_signals = tuple(settings["analog_signals"])
+    decision_signals = tuple(settings["decision_signals"])
+    if len(binding.analog_output_keys) != len(analog_signals):
         raise ValueError("valid-edge analog output keys do not match analog signals")
 
-    settings = dict(diagnostic.settings)
     scenarios = tuple(settings["scenarios"])
     threshold = float(settings["threshold_v"])
     edge_count = int(settings["edge_count"])
@@ -270,24 +284,25 @@ def evaluate_valid_edge_diagnostic(
                 rows_by_name = _context_rows(
                     result, point=point, corner=corner, test=test
                 )
-                try:
-                    legacy_context = next(
-                        item
-                        for item in legacy_result["contexts"]
-                        if item["point"] == point
-                        and item["corner"] == corner
-                        and item["test"] == test
-                    )
-                except StopIteration as exc:
-                    raise ValueError(
-                        f"native legacy RDB is missing context {context_name}"
-                    ) from exc
                 rows: list[dict[str, Any]] = []
                 checks: list[dict[str, Any]] = []
                 for index, scenario in enumerate(scenarios):
-                    protocol_values = _legacy_values(legacy_context, protocol, index)
-                    decision_values = _legacy_values(legacy_context, decisions, index)
-                    analog_values = _legacy_values(legacy_context, analog, index)
+                    decision_values = tuple(
+                        _diagnostic_value(
+                            rows_by_name,
+                            f"diag_decision_{index:03d}_{signal_index:02d}",
+                            context=context_name,
+                        )
+                        for signal_index in range(len(decision_signals))
+                    )
+                    analog_values = tuple(
+                        _diagnostic_value(
+                            rows_by_name,
+                            f"diag_analog_{index:03d}_{signal_index:02d}",
+                            context=context_name,
+                        )
+                        for signal_index in range(len(analog_signals))
+                    )
                     code_bits = [_logic(value, threshold) for value in decision_values]
                     code = sum(
                         value << bit
@@ -298,7 +313,12 @@ def evaluate_valid_edge_diagnostic(
                         )
                     )
                     ready = _logic(
-                        protocol_values[binding.ready_signal_index], threshold
+                        _diagnostic_value(
+                            rows_by_name,
+                            f"diag_ready_{index:03d}_00",
+                            context=context_name,
+                        ),
+                        threshold,
                     )
                     edges = [
                         _diagnostic_value(

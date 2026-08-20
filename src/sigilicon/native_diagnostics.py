@@ -7,7 +7,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Collection, Mapping
 
 from sigilicon.paths import ProjectContext
 
@@ -29,27 +29,41 @@ class NativeDiagnosticAdapter:
     source: Path
     implementation: ModuleType
 
-    def load_contract(self, *args: Any, **kwargs: Any) -> Any:
-        diagnostic = self.implementation.load_contract(*args, **kwargs)
+    def load_contract(
+        self,
+        raw: object,
+        *,
+        contract_path: Path,
+        project_root: Path,
+    ) -> Any:
+        diagnostic = self.implementation.load_contract(
+            raw,
+            contract_path=contract_path,
+            project_root=project_root,
+        )
         support_sources = tuple(
             dict.fromkeys((*diagnostic.support_sources, self.source))
         )
         return replace(diagnostic, support_sources=support_sources)
 
-    def validate_contract(self, *args: Any, **kwargs: Any) -> None:
-        self.implementation.validate_contract(*args, **kwargs)
+    def validate_contract(self, diagnostic: Any, *, point_count: int) -> None:
+        self.implementation.validate_contract(diagnostic, point_count=point_count)
 
-    def validate_source(self, *args: Any, **kwargs: Any) -> tuple[str, ...]:
-        return tuple(self.implementation.validate_source(*args, **kwargs))
+    def validate_source(
+        self, diagnostic: Any, setup_text: str
+    ) -> tuple[str, ...]:
+        return tuple(self.implementation.validate_source(diagnostic, setup_text))
 
-    def nullable_scalar_names(self, *args: Any, **kwargs: Any) -> tuple[str, ...]:
-        return tuple(self.implementation.nullable_scalar_names(*args, **kwargs))
+    def nullable_scalar_names(self, diagnostic: Any) -> tuple[str, ...]:
+        return tuple(self.implementation.nullable_scalar_names(diagnostic))
 
-    def reconstruct(self, *args: Any, **kwargs: Any) -> Any:
-        return self.implementation.reconstruct(*args, **kwargs)
+    def reconstruct(self, result: Mapping[str, Any], contract: Any) -> Any:
+        return self.implementation.reconstruct(result, contract)
 
-    def attestation_requirements(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        value = self.implementation.attestation_requirements(*args, **kwargs)
+    def attestation_requirements(
+        self, diagnostic: Any, tests: Collection[str]
+    ) -> dict[str, Any]:
+        value = self.implementation.attestation_requirements(diagnostic, tests)
         if not isinstance(value, dict):
             raise TypeError("native diagnostic attestation requirements must be a dict")
         return value
