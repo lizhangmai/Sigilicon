@@ -21,7 +21,6 @@ from sigilicon.domain.provenance import design_fingerprint, digest
 from sigilicon.paths import ProjectContext
 from sigilicon.waveforms import Waveform, extrema_in_window, first_crossing, parse_spectre_direct_print, render_waveform_csv, value_at
 from sigilicon.workflows.design_lifecycle import inspect_design
-from sigilicon.workflows.nominal_cell import PDK_SUPPORT_FILES
 from sigilicon.workflows.spectre import MeasurementContractFailure, SpectreArtifactContext, StagedSpectreInput, run_spectre_measurement
 
 
@@ -75,7 +74,6 @@ def load_switch_qualification(
         config_path,
         contract_kind="diagnostic-campaign",
         path_scope="cell",
-        owner="cim-compute",
     )
     design_raw, point, electrical = raw.get("design"), raw.get("simulation_point"), raw.get("electrical")
     if not all(isinstance(item, dict) for item in (design_raw, point, electrical)):
@@ -102,7 +100,7 @@ def load_switch_qualification(
     )
     if design.inputs != ("EN", "ENB") or design.inouts != ("A", "B") or design.outputs:
         raise ValueError("switch fixture requires A/B inouts and EN/ENB controls")
-    if config.model_section != design.pdk.model_section or not (0.0 < config.vcm_v < config.vdd_v):
+    if config.model_section != design.pdk.simulation.default.single_section or not (0.0 < config.vcm_v < config.vdd_v):
         raise ValueError("switch simulation point drifted from the platform")
     if config.logic_decode_reference != "VDD/2":
         raise ValueError("logic_decode_reference must be the supply-derived VDD/2")
@@ -251,8 +249,7 @@ def evaluate_switch_waveform(config: SwitchQualification, waveform: Waveform) ->
 
 
 def _pdk_files(config: SwitchQualification) -> tuple[Path, ...]:
-    root = config.design.pdk.model_file.parent
-    paths = (config.design.pdk.model_file, *(root / name for name in PDK_SUPPORT_FILES))
+    paths = config.design.pdk.simulation.default.files
     for path in paths:
         if not path.is_file():
             raise FileNotFoundError(f"required PDK model file does not exist: {path}")

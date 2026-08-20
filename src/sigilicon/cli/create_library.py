@@ -5,7 +5,8 @@
     This module is an internal source-driven library adapter; it is
     intentionally not exposed as a standalone Pixi task.
 
-建库后若 ``virtuoso/cds.lib`` 未 DEFINE 该库，会自动追加一行（幂等）。
+建库后若项目 context 所声明 workspace 的 ``cds.lib`` 未 DEFINE 该库，
+会自动追加一行（幂等）。
 """
 
 from __future__ import annotations

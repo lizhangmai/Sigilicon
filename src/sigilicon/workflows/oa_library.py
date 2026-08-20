@@ -287,12 +287,6 @@ def _load_definitions(
     return definitions
 
 
-def _declared_pdk_path(source: OALibrarySource) -> Path:
-    return ProjectContext.from_project_root(source.project_root).platform_config(
-        source.pdk
-    )
-
-
 def _plan_designs(
     source: OALibrarySource,
     library: str,
@@ -309,7 +303,7 @@ def _plan_designs(
             )
         if inspection.spec.cell != cell.cell:
             raise ValueError(f"design spec is not owned by its cell: {cell.design_spec}")
-        if inspection.spec.pdk.path != _declared_pdk_path(source):
+        if inspection.spec.pdk.key != source.pdk:
             raise ValueError(f"design spec uses the wrong PDK: {cell.design_spec}")
         inspections.append(_override_inspection_library(inspection, library))
     if not inspections:
@@ -509,10 +503,7 @@ def _plan_layouts(
                 )
             if spec.cell != cell.cell:
                 raise ValueError(f"layout spec is not owned by its cell: {spec_path}")
-            # The manifest stores the stable PDK key while PdkConfig.name is a
-            # human-readable foundry/process label, so bind through its source.
-            declared_pdk = _declared_pdk_path(source)
-            if spec.pdk.path != declared_pdk:
+            if spec.pdk.key != source.pdk:
                 raise ValueError(f"layout spec uses the wrong PDK: {spec_path}")
             if library != spec.library:
                 spec = replace(spec, library=library)
@@ -531,9 +522,9 @@ def _plan_layouts(
     dependencies: dict[tuple[str, str], set[tuple[str, str]]] = {
         key: set() for key in keys
     }
-    primitive_masters = specs[0].layout_pdk.primitive_masters
+    primitive_masters = specs[0].pdk.oa.primitive_masters
     for spec in specs:
-        if spec.layout_pdk.primitive_masters != primitive_masters:
+        if spec.pdk.oa.primitive_masters != primitive_masters:
             raise ValueError("canonical layout specs disagree on primitive masters")
         key = (spec.cell, spec.view)
         for instance in plans[key].instances:
@@ -987,7 +978,7 @@ def _attest_layout_steps(
             validate_layout_plan(
                 client,
                 step.plan,
-                pcell_policy=step.spec.layout_pdk.pcell_policy,
+                pcell_policy=step.spec.pdk.oa.pcell_policy,
                 operation=operation,
                 timeout=timeout,
             )

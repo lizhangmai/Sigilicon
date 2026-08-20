@@ -121,7 +121,7 @@ def sync_design(
             quarantine_stale_locks=quarantine_stale_locks,
             disposable=False,
         )
-    with DisposableWork.create(prefix="llm-cim-oa-design-") as work:
+    with DisposableWork.create(prefix="sigilicon-oa-design-") as work:
         return _sync_design_impl(
             spec,
             client,
@@ -273,7 +273,7 @@ def _sync_design_impl(
                 client,
                 library=spec.library,
                 path=paths.workspace_root / spec.library,
-                technology_library=spec.pdk.technology_library,
+                technology_library=spec.pdk.oa.technology_library,
                 cds_lib=paths.workspace_root / "cds.lib",
                 operation=operation,
                 timeout=timeout,
@@ -293,7 +293,7 @@ def _sync_design_impl(
                     client,
                     plan=hierarchy_plan,
                     library=spec.library,
-                    reference_libraries=spec.pdk.reference_libraries,
+                    reference_libraries=spec.pdk.oa.reference_libraries,
                     dev_map_file=device_map,
                     overwrite=overwrite,
                     artifact=attempt,
@@ -368,7 +368,7 @@ def sync_existing_design_target_only(
             quarantine_stale_locks=quarantine_stale_locks,
             disposable=False,
         )
-    with DisposableWork.create(prefix="llm-cim-oa-design-") as work:
+    with DisposableWork.create(prefix="sigilicon-oa-design-") as work:
         return _sync_existing_design_target_only_impl(
             spec,
             client,
@@ -479,10 +479,10 @@ def _sync_existing_design_target_only_impl(
                 f"expected {expected_library_path}"
             )
         technology_library = str(info.technology_library or "")
-        if technology_library != spec.pdk.technology_library:
+        if technology_library != spec.pdk.oa.technology_library:
             raise RuntimeError(
                 f"library {spec.library} uses technology {technology_library or None}, "
-                f"expected {spec.pdk.technology_library}"
+                f"expected {spec.pdk.oa.technology_library}"
             )
 
         attempt.copy_file(
@@ -519,7 +519,7 @@ def _sync_existing_design_target_only_impl(
             dict.fromkeys(
                 (
                     spec.library,
-                    *spec.pdk.reference_libraries,
+                    *spec.pdk.oa.reference_libraries,
                     "analogLib",
                     "basic",
                 )

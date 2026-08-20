@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from sigilicon.domain.code_mapping import (
     load_integer_code_mapping,
-    load_ip_adc_code_mapping,
+    load_integer_code_mapping_contract,
 )
 
 
@@ -71,7 +69,7 @@ maximum_code = 63
     )
 
 
-def test_ip_adc_mapping_derives_the_active_owner_from_its_path(
+def test_mapping_contract_uses_explicit_kind_and_table_path(
     tmp_path: Path,
 ) -> None:
     contract = (
@@ -80,18 +78,27 @@ def test_ip_adc_mapping_derives_the_active_owner_from_its_path(
     )
     _write_behavior_contract(contract, owner="cim-compute-nocal")
 
-    mapping = load_ip_adc_code_mapping(contract)
+    mapping = load_integer_code_mapping_contract(
+        contract,
+        contract_kind="ip-architecture-behavior",
+        table_path=("adc", "code_mapping"),
+    )
 
     assert mapping.code_for(-33) == 0
     assert mapping.code_for(0) == 32
     assert mapping.code_for(32) == 63
 
 
-def test_ip_adc_mapping_rejects_an_owner_that_disagrees_with_its_path(
+def test_mapping_contract_does_not_infer_owner_from_repository_layout(
     tmp_path: Path,
 ) -> None:
     contract = tmp_path / "ip/cim_compute_nocal/configs/behavior.toml"
     _write_behavior_contract(contract, owner="cim-compute")
 
-    with pytest.raises(ValueError, match="owner must be 'cim-compute-nocal'"):
-        load_ip_adc_code_mapping(contract)
+    mapping = load_integer_code_mapping_contract(
+        contract,
+        contract_kind="ip-architecture-behavior",
+        table_path=("adc", "code_mapping"),
+    )
+
+    assert mapping.code_for(0) == 32

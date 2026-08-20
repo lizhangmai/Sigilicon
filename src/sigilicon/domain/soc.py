@@ -119,13 +119,20 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
         raise ValueError("SoC contract must be inside the project root")
     with contract_path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
-    require_config_header(
+    header = require_config_header(
         raw,
         contract_path,
         contract_kind="soc-contract",
         path_scope="product",
-        owner="soc",
     )
+    required_roles_raw = raw.get("required_ip_roles", [])
+    if not isinstance(required_roles_raw, list) or any(
+        not isinstance(role, str) or not role for role in required_roles_raw
+    ):
+        raise ValueError("required_ip_roles must be a string array")
+    required_module_roles = set(required_roles_raw)
+    if len(required_module_roles) != len(required_roles_raw):
+        raise ValueError("required_ip_roles must be unique")
     dependencies = raw.get("ip")
     if not isinstance(dependencies, list) or not dependencies:
         raise ValueError("SoC contract must declare at least one released IP dependency")
@@ -151,11 +158,6 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
             if not isinstance(role, str) or not role:
                 raise ValueError(f"ip[{index}].role_modules keys must be non-empty")
             role_modules[role] = _string(module, f"ip[{index}].role_modules.{role}")
-        required_module_roles = {
-            "transaction_model",
-            "integration_adapter",
-            "physical_blackbox",
-        }
         if not required_module_roles.issubset(role_modules):
             raise ValueError(
                 f"ip[{index}].role_modules must declare {sorted(required_module_roles)}"
@@ -235,7 +237,7 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
             profile_path,
             contract_kind=profile_kind,
             path_scope="product",
-            owner="soc",
+            owner=header.owner,
         )
         implementation_profiles[name] = PurePosixPath(
             profile_path.relative_to(root).as_posix()
@@ -257,7 +259,7 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
             variant_path,
             contract_kind="soc-variant",
             path_scope="variant",
-            owner="soc",
+            owner=header.owner,
         )
         integration = _table(variant_raw.get("integration"), f"variant {name}.integration")
         if integration.get("variant") != name:

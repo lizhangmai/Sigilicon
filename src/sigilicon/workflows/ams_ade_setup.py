@@ -121,12 +121,13 @@ def setup_ade(
     """Create generated SystemVerilog, config, and Maestro views in OA."""
 
     design = spec.design
-    if not design.pdk.model_file.is_file():
+    model = design.pdk.simulation.default
+    if not model.file.is_file():
         raise FileNotFoundError(
-            f"PDK model file does not exist: {design.pdk.model_file}"
+            f"PDK model file does not exist: {model.file}"
         )
     setup_fingerprint = ams_fingerprint(spec)
-    model_file_sha256 = file_sha256(design.pdk.model_file)
+    model_file_sha256 = file_sha256(model.file)
     paths = ProjectContext.from_project_root(
         design.project_root,
         artifact_root=artifact_root,
@@ -189,10 +190,10 @@ def setup_ade(
             def validate_components(components: Any) -> None:
                 maestro = components["maestro"]
                 if (
-                    maestro.get("model_file") != str(design.pdk.model_file)
-                    or maestro.get("model_section") != design.pdk.model_section
+                    maestro.get("model_file") != str(model.file)
+                    or maestro.get("model_section") != model.single_section
                     or maestro.get("model_file_sha256") != model_file_sha256
-                    or file_sha256(design.pdk.model_file) != model_file_sha256
+                    or file_sha256(model.file) != model_file_sha256
                 ):
                     raise RuntimeError(
                         "ADE PDK model no longer matches the setup fingerprint"
@@ -284,7 +285,7 @@ def setup_ade(
                 client,
                 plan=wrapper_plan,
                 library=design.library,
-                reference_libraries=design.pdk.reference_libraries,
+                reference_libraries=design.pdk.oa.reference_libraries,
                 dev_map_file=device_map,
                 overwrite=overwrite,
                 artifact=attempt.record,
@@ -373,7 +374,7 @@ def setup_ade(
                     library=design.library,
                     testbench=spec.testbench,
                     dut=spec.wrapper_cell,
-                    reference_libraries=design.pdk.reference_libraries,
+                    reference_libraries=design.pdk.oa.reference_libraries,
                     operation=operation,
                 )
             view_lease.checkpoint("config view creation")
@@ -400,8 +401,8 @@ def setup_ade(
                     stop=spec.simulation.timing.stop,
                     maxstep=spec.simulation.timing.maxstep,
                     errpreset=spec.simulation.backends.ade.errpreset,
-                    model_file=design.pdk.model_file,
-                    model_section=design.pdk.model_section,
+                    model_file=model.file,
+                    model_section=model.single_section,
                     vdd=spec.simulation.interface.vdd,
                     connect_rules=spec.simulation.interface.connect_rules,
                     rise_time=spec.simulation.interface.rise_time,
@@ -418,9 +419,9 @@ def setup_ade(
                     spec.testbench,
                     "maestro",
                 ),
-                model_file=str(design.pdk.model_file),
+                model_file=str(model.file),
                 model_file_sha256=model_file_sha256,
-                model_section=design.pdk.model_section,
+                model_section=model.single_section,
             )
             prepared_load_attestation = validate_load_attestation(
                 design.outputs,

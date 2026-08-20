@@ -46,7 +46,7 @@ def sync_oa_text_view(
     with the current Git source.
     """
 
-    with DisposableWork.create(prefix="llm-cim-oa-text-") as work:
+    with DisposableWork.create(prefix="sigilicon-oa-text-") as work:
         _sync_oa_text_view_impl(
             client,
             project_root=project_root,

@@ -8,7 +8,7 @@ from sigilicon.layout.provenance import (
     layout_hierarchy_fingerprints,
     layout_verification_fingerprint,
 )
-from sigilicon.layout.spec import PcellPolicy
+from sigilicon.domain.platform import PcellPolicy
 from sigilicon.virtuoso.layout_generation import render_layout_plan_skill
 
 

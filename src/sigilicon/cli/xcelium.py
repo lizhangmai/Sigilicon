@@ -23,7 +23,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args(argv)
-    root = discover_project_context(__file__).project_root
+    context = discover_project_context(__file__)
+    root = context.project_root
     try:
         if not args.execute:
             payload = plan_xcelium_cell(args.cell, project_root=root).as_dict(
@@ -34,7 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = run_xcelium_cell(
                 args.cell,
                 project_root=root,
-                artifact_root=root / "artifacts",
+                artifact_root=context.artifact_root,
                 xrun=args.xrun,
                 timeout=args.timeout,
             )

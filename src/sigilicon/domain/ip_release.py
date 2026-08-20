@@ -270,7 +270,6 @@ def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
         contract_path,
         contract_kind="ip-release",
         path_scope="owner",
-        owner=producer.parts[-1].replace("_", "-"),
     )
     source = _table(raw.get("source"), "source")
 

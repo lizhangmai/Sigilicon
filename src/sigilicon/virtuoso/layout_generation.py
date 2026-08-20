@@ -9,7 +9,7 @@ from sigilicon.virtuoso.bridge import decode_skill_output
 from sigilicon.virtuoso.bridge import skill_quote
 
 from sigilicon.layout.ir import LayoutInstance, LayoutPlan
-from sigilicon.layout.spec import PcellPolicy
+from sigilicon.domain.platform import PcellPolicy
 from sigilicon.virtuoso.capability import require_workspace_capability
 from sigilicon.virtuoso.confirmation import require_bridge_confirmation
 from sigilicon.virtuoso.oa import (

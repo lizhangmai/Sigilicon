@@ -28,7 +28,7 @@ class DisposableWork:
         self.root.mkdir(parents=True, exist_ok=True)
 
     @classmethod
-    def create(cls, *, prefix: str = "llm-cim-oa-") -> "DisposableWork":
+    def create(cls, *, prefix: str = "sigilicon-oa-") -> "DisposableWork":
         return cls(Path(tempfile.mkdtemp(prefix=prefix)))
 
     def cleanup(self) -> None:

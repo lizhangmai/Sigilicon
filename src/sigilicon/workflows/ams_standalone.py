@@ -136,9 +136,10 @@ def run_standalone(
     """Generate, execute, and verify one standalone AMS simulation."""
 
     design = spec.design
-    if not design.pdk.model_file.is_file():
+    model = design.pdk.simulation.default
+    if not model.file.is_file():
         raise FileNotFoundError(
-            f"PDK model file does not exist: {design.pdk.model_file}"
+            f"PDK model file does not exist: {model.file}"
         )
     paths = ProjectContext.from_project_root(
         design.project_root,
@@ -180,7 +181,7 @@ def run_standalone(
             owned_input_file(testbench) as owned_testbench,
             owned_input_file(reference) as owned_reference,
             owned_input_file(
-                design.pdk.model_file,
+                model.file,
                 require_single_link=False,
             ) as owned_model,
             owned_input_file(
@@ -193,7 +194,7 @@ def run_standalone(
                 ("external-input-references.json",),
                 {
                     "pdk_model": {
-                        "path": str(design.pdk.model_file),
+                        "path": str(model.file),
                         "sha256": owned_model.sha256,
                     },
                     "source_netlist": {
@@ -209,7 +210,7 @@ def run_standalone(
                 render_analog_netlist(
                     spec,
                     reference_file=str(reference),
-                    model_file=str(design.pdk.model_file),
+                    model_file=str(model.file),
                     source_netlist=str(design.source_netlist),
                 ),
                 label="durable rendered analog input",

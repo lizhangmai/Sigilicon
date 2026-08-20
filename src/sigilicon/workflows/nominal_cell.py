@@ -34,13 +34,6 @@ from sigilicon.workflows.spectre import (
 )
 
 
-PDK_SUPPORT_FILES = (
-    "cln28hpcp_1d8_elk_v1d0_2p2_shrink0d9_embedded_usage.scs",
-    "cln28hpcp_1d8_elk_v1d0_2p2.scs",
-    "res_metal.scs",
-)
-
-
 @dataclass(frozen=True)
 class LogicCase:
     name: str
@@ -101,7 +94,6 @@ def load_logic_qualification(
         config_path,
         contract_kind="diagnostic-campaign",
         path_scope="cell",
-        owner="cim-compute",
     )
     design_raw = raw.get("design")
     point = raw.get("simulation_point")
@@ -172,7 +164,7 @@ def load_logic_qualification(
         propagation_delay_role=str(semantics.get("propagation_delay_role")),
         cases=tuple(parsed),
     )
-    if config.model_section != design.pdk.model_section:
+    if config.model_section != design.pdk.simulation.default.single_section:
         raise ValueError("logic qualification model section drifted from the platform")
     if not (config.stimulus_s + config.edge_s < config.sample_s < config.cycle_s):
         raise ValueError("logic stimulus, sample, and cycle times must be ordered")
@@ -339,11 +331,7 @@ def evaluate_logic_waveform(
 
 
 def _pdk_files(config: LogicQualification) -> tuple[Path, ...]:
-    root = config.design.pdk.model_file.parent
-    paths = (
-        config.design.pdk.model_file,
-        *(root / name for name in PDK_SUPPORT_FILES),
-    )
+    paths = config.design.pdk.simulation.default.files
     for path in paths:
         if not path.is_file():
             raise FileNotFoundError(f"required PDK model file does not exist: {path}")

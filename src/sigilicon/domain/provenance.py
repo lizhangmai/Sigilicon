@@ -39,8 +39,8 @@ def design_identity_fingerprint(design: DesignSpec) -> str:
             "outputs": design.outputs,
             "inouts": design.inouts,
             "directions": dict(design.directions),
-            "technology_library": design.pdk.technology_library,
-            "reference_libraries": design.pdk.reference_libraries,
+            "technology_library": design.pdk.oa.technology_library,
+            "reference_libraries": design.pdk.oa.reference_libraries,
         }
     )
 

@@ -121,7 +121,7 @@ def _print_oa_check_summary(payload: dict[str, Any]) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="flow", description=__doc__)
+    parser = argparse.ArgumentParser(prog="sigilicon", description=__doc__)
     domains = parser.add_subparsers(dest="domain", required=True)
 
     layout = domains.add_parser("layout", help="run a cataloged layout workflow")
@@ -263,6 +263,7 @@ def _catalog_contract(root: Path, domain: str, target: str) -> Path:
 
 
 def _run_ip(args: argparse.Namespace, root: Path) -> int:
+    context = ProjectContext.from_project_root(root)
     try:
         contract = _catalog_contract(root, "ip", args.target)
         operation = {
@@ -274,7 +275,7 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
         payload = operation(
             contract,
             project_root=root,
-            artifact_root=root / "artifacts",
+            artifact_root=context.artifact_root,
             qualification=args.qualification,
         )
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
@@ -301,17 +302,20 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
 
 
 def _run_soc(args: argparse.Namespace, root: Path) -> int:
+    context = ProjectContext.from_project_root(root)
     try:
         contract = _catalog_contract(root, "soc", args.target)
         if args.action == "plan":
             payload = plan_soc(
-                contract, project_root=root, artifact_root=root / "artifacts"
+                contract,
+                project_root=root,
+                artifact_root=context.artifact_root,
             )
         else:
             payload = check_soc(
                 contract,
                 project_root=root,
-                artifact_root=root / "artifacts",
+                artifact_root=context.artifact_root,
                 variant_name=args.variant,
                 fileset_name=args.fileset,
             )

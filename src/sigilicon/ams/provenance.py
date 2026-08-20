@@ -11,17 +11,18 @@ from sigilicon.domain.provenance import design_fingerprint, digest
 
 
 def ams_fingerprint(spec: AmsSpec) -> str:
+    model = spec.design.pdk.simulation.default
     return digest(
         {
             "design": design_fingerprint(spec.design),
             "testbench": spec.testbench,
             "simulation": asdict(spec.simulation),
             "vectors": [asdict(vector) for vector in spec.vectors],
-            "model_file": str(spec.design.pdk.model_file),
+            "model_file": str(model.file),
             "model_file_sha256": hashlib.sha256(
-                spec.design.pdk.model_file.read_bytes()
+                model.file.read_bytes()
             ).hexdigest(),
-            "model_section": spec.design.pdk.model_section,
+            "model_section": model.single_section,
         }
     )
 

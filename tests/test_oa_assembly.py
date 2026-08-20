@@ -175,7 +175,7 @@ cell_roots = ["design/cells"]
     )
     _cell(root, "legacy", "OLD")
 
-    with pytest.raises(ValueError, match="legacy IP cannot own"):
+    with pytest.raises(ValueError, match="unmanaged IP cannot own"):
         load_oa_library_source(manifest, project_root=root)
 
 
@@ -590,6 +590,8 @@ pdk = "testpdk"
 
 [setup]
 source = "setup.il"
+config_procedure = "llmCimNativeConfig"
+maestro_procedure = "llmCimNativeMaestro"
 """,
     )
     setup = _write(

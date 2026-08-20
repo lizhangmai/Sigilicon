@@ -144,7 +144,7 @@ contract = []
 ''',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="must name a sigilicon.cli or soc module"):
+    with pytest.raises(ValueError, match="project-owned module prefix"):
         load_design_target_catalog(tmp_path)
 
 

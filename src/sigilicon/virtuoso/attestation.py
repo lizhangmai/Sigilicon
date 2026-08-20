@@ -615,30 +615,27 @@ def compare_native_setup_attestation(
     diagnostic_contract = (
         None if contract is None else getattr(contract, "diagnostic_equivalence", None)
     )
-    measurement_settings = (
-        diagnostic_contract.settings
-        if diagnostic_contract is not None
-        and diagnostic_contract.kind == "bank_calibration_measurement"
-        else None
+    diagnostic_adapter = (
+        None if contract is None else getattr(contract, "diagnostic_adapter", None)
     )
-    expected_run_options = {
-        "mcmethod": "mismatch",
-        "mcnumpoints": (
-            str(measurement_settings["monte_carlo_samples"])
-            if measurement_settings is not None
-            else ""
-        ),
-        "samplingmode": "random",
-        "donominal": "0",
-        "montecarloseed": "20261101",
-        "mcstartingrunnumber": "1",
-    }
+    diagnostic_requirements = (
+        {}
+        if diagnostic_contract is None or diagnostic_adapter is None
+        else diagnostic_adapter.attestation_requirements(
+            diagnostic_contract,
+            set(contract.tests),
+        )
+    )
+    expected_run_options = dict(diagnostic_requirements.get("run_options", {}))
     actual_run_options = {
         str(row.get("name")): str(row.get("value"))
         for row in run_options
         if row.get("mode") == "Monte Carlo Sampling"
     }
-    expected_design_variables: dict[str, float] = {}
+    expected_design_variables = {
+        str(name): _engineering_number(value)
+        for name, value in diagnostic_requirements.get("design_variables", {}).items()
+    }
     actual_design_variables = {
         str(row.get("name")): _engineering_number(row.get("value"))
         for row in variables
@@ -653,22 +650,10 @@ def compare_native_setup_attestation(
         for row in test_variable_enabled
     }
     expected_tests = set(contract.tests) if contract is not None else set()
-    expected_analysis_options = (
-        {
-            (test, "tran", "stop"): _engineering_number(
-                measurement_settings["transient_stop"]
-            )
-            for test in expected_tests
-        }
-        | {
-            (test, "tran", "maxstep"): _engineering_number(
-                measurement_settings["transient_maxstep"]
-            )
-            for test in expected_tests
-        }
-        if measurement_settings is not None
-        else {}
-    )
+    expected_analysis_options = {
+        tuple(key): _engineering_number(value)
+        for key, value in diagnostic_requirements.get("analysis_options", {}).items()
+    }
     actual_analysis_options = {
         (
             str(row.get("test")),
@@ -710,20 +695,15 @@ def compare_native_setup_attestation(
         (name, _normalize_calculator_expression(expression))
         for name, expression in expected_scalars
     }
-    default_model = (
-        spec.native_setup.pdk.model_file.name,
-        spec.native_setup.pdk.model_section,
-    )
+    platform_model = spec.native_setup.pdk.simulation.default
+    default_model = (platform_model.file.name, platform_model.single_section)
     explicit_setup_models = set(
         getattr(contract, "setup_model_identities", ())
     )
-    expected_models = (
-        {
-            (str(measurement_settings["model_file"]), str(section))
-            for section in measurement_settings["model_sections"]
-        }
-        if measurement_settings is not None
-        else explicit_setup_models or {default_model}
+    expected_models = set(
+        diagnostic_requirements.get(
+            "models", explicit_setup_models or {default_model}
+        )
     )
     actual_models = {
         (Path(str(row.get("file"))).name, row.get("section")) for row in models
@@ -776,7 +756,7 @@ def compare_native_setup_attestation(
         "test_identity": bool(actual_tests)
         and (not expected_tests or expected_tests.issubset(actual_tests)),
         "analysis": bool(analyses),
-        "analysis_options": measurement_settings is None
+        "analysis_options": not diagnostic_requirements
         or all(
             actual_analysis_options.get(key) == value
             for key, value in expected_analysis_options.items()
@@ -794,7 +774,7 @@ def compare_native_setup_attestation(
         or expected_waveforms.issubset(actual_waveforms),
         "calculator_scalars": not expected_scalars
         or expected_scalars.issubset(actual_scalars),
-        "calculator_materialization": measurement_settings is None
+        "calculator_materialization": not diagnostic_requirements
         or expected_scalar_names.issubset(materialized_scalar_names),
         "spec_status_api": bool(attestation.get("overall_spec_status"))
         and all(
@@ -809,27 +789,27 @@ def compare_native_setup_attestation(
         "persistence": bool(attestation.get("sessions"))
         and bool(persistence)
         and any(row.get("state") == "closed" for row in attestation["sessions"]),
-        "design_variables": measurement_settings is None
+        "design_variables": not diagnostic_requirements
         or actual_design_variables == expected_design_variables,
-        "global_variables_enabled": measurement_settings is None
+        "global_variables_enabled": not diagnostic_requirements
         or not expected_design_variables
         or True in global_variables_enabled,
-        "design_variable_enabled": measurement_settings is None
+        "design_variable_enabled": not diagnostic_requirements
         or all(
             actual_variable_enabled.get(name) is True
             for name in expected_design_variables
         ),
-        "test_design_variable_enabled": measurement_settings is None
+        "test_design_variable_enabled": not diagnostic_requirements
         or all(
             actual_test_variable_enabled.get((test, name)) is True
             for test in expected_tests
             for name in expected_design_variables
         ),
-        "run_mode": measurement_settings is None
-        or "Monte Carlo Sampling" in run_modes,
-        "point_sweeps_enabled": measurement_settings is None
-        or False in sweeps_enabled,
-        "monte_carlo_options": measurement_settings is None
+        "run_mode": not diagnostic_requirements
+        or diagnostic_requirements.get("run_mode") in run_modes,
+        "point_sweeps_enabled": not diagnostic_requirements
+        or diagnostic_requirements.get("sweeps_enabled") in sweeps_enabled,
+        "monte_carlo_options": not diagnostic_requirements
         or all(
             actual_run_options.get(name) == value
             for name, value in expected_run_options.items()
@@ -883,7 +863,7 @@ def compare_native_setup_attestation(
             checks["analysis_options"],
             expected=(
                 "not-required"
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else [
                     [*key, value]
                     for key, value in sorted(expected_analysis_options.items())
@@ -895,7 +875,7 @@ def compare_native_setup_attestation(
             ],
             missing=(
                 ()
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else [
                     [*key, value]
                     for key, value in sorted(expected_analysis_options.items())
@@ -953,13 +933,13 @@ def compare_native_setup_attestation(
             checks["calculator_materialization"],
             expected=(
                 "not-required"
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else sorted(expected_scalar_names)
             ),
             observed=sorted(materialized_scalar_names),
             missing=(
                 ()
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else sorted(expected_scalar_names - materialized_scalar_names)
             ),
         ),
@@ -983,21 +963,21 @@ def compare_native_setup_attestation(
             checks["design_variables"],
             expected=(
                 "not-required"
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else expected_design_variables
             ),
             observed=actual_design_variables,
         ),
         "global_variables_enabled": _diagnostic(
             checks["global_variables_enabled"],
-            expected="not-required" if measurement_settings is None else True,
+            expected="not-required" if not diagnostic_requirements else True,
             observed=global_variables_enabled,
         ),
         "design_variable_enabled": _diagnostic(
             checks["design_variable_enabled"],
             expected=(
                 "not-required"
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else [
                     {"name": name, "enabled": True}
                     for name in sorted(expected_design_variables)
@@ -1009,7 +989,7 @@ def compare_native_setup_attestation(
             checks["test_design_variable_enabled"],
             expected=(
                 "not-required"
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else [
                     {"test": test, "name": name, "enabled": True}
                     for test in sorted(expected_tests)
@@ -1022,15 +1002,17 @@ def compare_native_setup_attestation(
             checks["run_mode"],
             expected=(
                 "not-required"
-                if measurement_settings is None
-                else "Monte Carlo Sampling"
+                if not diagnostic_requirements
+                else diagnostic_requirements.get("run_mode")
             ),
             observed=run_modes,
         ),
         "point_sweeps_enabled": _diagnostic(
             checks["point_sweeps_enabled"],
             expected=(
-                "not-required" if measurement_settings is None else False
+                "not-required"
+                if not diagnostic_requirements
+                else diagnostic_requirements.get("sweeps_enabled")
             ),
             observed=sweeps_enabled,
         ),
@@ -1038,7 +1020,7 @@ def compare_native_setup_attestation(
             checks["monte_carlo_options"],
             expected=(
                 "not-required"
-                if measurement_settings is None
+                if not diagnostic_requirements
                 else expected_run_options
             ),
             observed=actual_run_options,

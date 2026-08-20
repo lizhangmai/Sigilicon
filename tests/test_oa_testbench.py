@@ -60,7 +60,9 @@ def test_testbench_schematic_is_finalized_after_all_generated_views(
         cell="tb",
         native_setup=SimpleNamespace(
             source=setup,
-            pdk=SimpleNamespace(reference_libraries=()),
+            pdk=SimpleNamespace(
+                oa=SimpleNamespace(reference_libraries=())
+            ),
         ),
     )
     snapshot = SimpleNamespace()

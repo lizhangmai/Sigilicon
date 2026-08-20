@@ -92,11 +92,9 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
     for owner, cells in owners.items():
         duplicates = sorted(cell for cell in set(cells) if cells.count(cell) > 1)
         conflicts.extend(f"{owner}/{cell}" for cell in duplicates)
-    legacy_root = ProjectContext.from_project_root(
-        plan.source.project_root
-    ).legacy_ip_root
-    legacy_consumed = any(
-        path.resolve().is_relative_to(legacy_root)
+    context = ProjectContext.from_project_root(plan.source.project_root)
+    unmanaged_consumed = any(
+        not context.is_managed_ip_path(path)
         for source in plan.source.source_roots
         for path in (source.directory, *source.cell_roots)
     )
@@ -106,7 +104,7 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
         },
         "conflicts": sorted(set(conflicts)),
         "target_library": plan.library,
-        "legacy_consumed": legacy_consumed,
+        "unmanaged_consumed": unmanaged_consumed,
     }
 
 
@@ -254,7 +252,7 @@ def _recommendation(
     bridge: Mapping[str, Any],
     locks: Mapping[str, Any],
 ) -> str:
-    if plan_error or ownership.get("conflicts") or ownership.get("legacy_consumed"):
+    if plan_error or ownership.get("conflicts") or ownership.get("unmanaged_consumed"):
         return "blocked"
     library_ownership = ownership.get("library")
     if isinstance(library_ownership, Mapping):
@@ -360,7 +358,7 @@ def check_oa_library(
         },
         "thin_contract": thin_contract,
         "native_attestation": "explicit-testbench-only",
-        "legacy_source_roots_consumed": ownership["legacy_consumed"],
+        "unmanaged_source_roots_consumed": ownership["unmanaged_consumed"],
     }
     try:
         parity = check_oa_parity(

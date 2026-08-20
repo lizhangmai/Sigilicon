@@ -15,8 +15,8 @@ def test_spec_loads_source_interface_and_pdk(project_factory) -> None:
     spec = load_ams_spec(path, project_root=root)
 
     assert spec.design.port_order == ("IN", "OUT", "VDD", "VSS")
-    assert spec.design.pdk.technology_library == "techLib"
-    assert spec.design.pdk.reference_libraries == ("deviceLib",)
+    assert spec.design.pdk.oa.technology_library == "techLib"
+    assert spec.design.pdk.oa.reference_libraries == ("deviceLib",)
     assert spec.design.source_netlist == root / "ip/legacy" / "inv" / "circuit.scs"
     assert spec.design.sync_mode == "recursive"
     assert spec.simulation.interface.load_cap == "2f"

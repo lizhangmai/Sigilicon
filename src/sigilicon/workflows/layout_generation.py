@@ -194,7 +194,7 @@ def generate_layout(
             timeout=timeout,
             disposable=False,
         )
-    with DisposableWork.create(prefix="llm-cim-oa-layout-") as work:
+    with DisposableWork.create(prefix="sigilicon-oa-layout-") as work:
         return _generate_layout_impl(
             spec,
             client,
@@ -338,10 +338,10 @@ def _generate_layout_impl(
             operation.register_artifact(attempt)
         library_path = operation.require_project_library_target(client, spec.library)
         info = client.library.get(spec.library, timeout=30)
-        if str(info.technology_library or "") != spec.pdk.technology_library:
+        if str(info.technology_library or "") != spec.pdk.oa.technology_library:
             raise RuntimeError(
                 f"library {spec.library} uses technology {info.technology_library!r}, "
-                f"expected {spec.pdk.technology_library!r}"
+                f"expected {spec.pdk.oa.technology_library!r}"
             )
 
         def commit() -> Path:
@@ -382,7 +382,7 @@ def _generate_layout_impl(
             write_layout_plan(
                 client,
                 plan,
-                pcell_policy=spec.layout_pdk.pcell_policy,
+                pcell_policy=spec.pdk.oa.pcell_policy,
                 operation=operation,
                 overwrite=overwrite,
                 timeout=timeout,
@@ -391,7 +391,7 @@ def _generate_layout_impl(
         validate_layout_plan(
             client,
             plan,
-            pcell_policy=spec.layout_pdk.pcell_policy,
+            pcell_policy=spec.pdk.oa.pcell_policy,
             operation=operation,
             timeout=timeout,
         )

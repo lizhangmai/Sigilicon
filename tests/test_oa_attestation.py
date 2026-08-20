@@ -29,7 +29,11 @@ def _spec() -> SimpleNamespace:
         native_setup=SimpleNamespace(
             rdb_contract=contract,
             pdk=SimpleNamespace(
-                model_file=Path("toplevel.scs"), model_section="top_tt"
+                simulation=SimpleNamespace(
+                    default=SimpleNamespace(
+                        file=Path("toplevel.scs"), single_section="top_tt"
+                    )
+                )
             ),
         ),
     )
@@ -238,109 +242,3 @@ def test_attestation_diagnostics_identify_the_changed_result_contract_field() ->
     assert result["checks"]["waveform_outputs"] is False
     assert result["diagnostics"]["waveform_outputs"]["missing"] == [["wave", "/OUT"]]
     assert [item["check"] for item in result["mismatches"]] == ["waveform_outputs"]
-
-
-def test_attestation_checks_bank_fixed_stimulus_and_monte_carlo_options() -> None:
-    spec = _spec()
-    spec.native_setup.rdb_contract.diagnostic_equivalence = SimpleNamespace(
-        kind="bank_calibration_measurement",
-        settings={
-            "raw_half_span_v": 0.0125,
-            "post_half_span_v": 0.0025,
-            "monte_carlo_samples": 64,
-            "model_file": "mismatch_models.scs",
-            "model_sections": ("local_mos", "local_mom"),
-            "transient_stop": "1.005205e-3",
-            "transient_maxstep": "10u",
-        },
-    )
-    observations = _parse_rows(
-        "\n".join(
-            (
-                "CONFIG|llm_cim|tb_main|config|llm_cim|tb_main|schematic",
-                "BIND||DUT0|llm_cim|dut|schematic|true|true|true|llm_cim|dut|schematic|1",
-                "TEST|tran_main|llm_cim|tb_main|config|spectre|active|$AXL",
-                "ANALYSIS|tran_main|tran|tran",
-                "ANALYSIS_OPTION|tran_main|tran|stop|1.005205e-3",
-                "ANALYSIS_OPTION|tran_main|tran|maxstep|1e-05",
-                "ENV|tran_main|modelFiles|((mismatch_models.scs local_mos) (mismatch_models.scs local_mom))",
-                "OUTPUT|tran_main|wave|net|/OUT|||true|undefined",
-                'OUTPUT|tran_main|scalar|point||value(VT("/OUT") 1u)||true|true|undefined',
-                "MODEL|tt|local_mos|/pdk/mismatch_models.scs|local_mos",
-                "MODEL|tt|local_mom|/pdk/mismatch_models.scs|local_mom",
-                "SPEC_OVERALL|tran_main|undefined",
-                "RUNMODE|Monte Carlo Sampling",
-                "SWEEPS_ENABLED|false",
-                "RUNOPTION|Monte Carlo Sampling|mcmethod|mismatch",
-                "RUNOPTION|Monte Carlo Sampling|mcnumpoints|64",
-                "RUNOPTION|Monte Carlo Sampling|samplingmode|random",
-                "RUNOPTION|Monte Carlo Sampling|donominal|0",
-                "RUNOPTION|Monte Carlo Sampling|montecarloseed|20261101",
-                "RUNOPTION|Monte Carlo Sampling|mcstartingrunnumber|1",
-                "PERSISTENCE|tests|1|setup=(tran_main)",
-                "SESSION|opened|fnxSession1",
-                "SESSION|closed|nil",
-            )
-        )
-    )
-
-    result = compare_native_setup_attestation(spec, observations)
-
-    assert result["passed"] is True
-    assert result["checks"]["design_variables"] is True
-    assert result["checks"]["run_mode"] is True
-    assert result["checks"]["monte_carlo_options"] is True
-    assert result["checks"]["analysis_options"] is True
-
-
-def test_attestation_rejects_bank_transient_option_drift() -> None:
-    spec = _spec()
-    spec.native_setup.rdb_contract.diagnostic_equivalence = SimpleNamespace(
-        kind="bank_calibration_measurement",
-        settings={
-            "raw_half_span_v": 0.0125,
-            "post_half_span_v": 0.0025,
-            "monte_carlo_samples": 64,
-            "model_file": "mismatch_models.scs",
-            "model_sections": ("local_mos", "local_mom"),
-            "transient_stop": "1.005205e-3",
-            "transient_maxstep": "10u",
-        },
-    )
-    observations = _parse_rows(
-        "\n".join(
-            (
-                "CONFIG|llm_cim|tb_main|config|llm_cim|tb_main|schematic",
-                "BIND||DUT0|llm_cim|dut|schematic|true|true|true|llm_cim|dut|schematic|1",
-                "TEST|tran_main|llm_cim|tb_main|config|spectre|active|$AXL",
-                "ANALYSIS|tran_main|tran|tran",
-                "ANALYSIS_OPTION|tran_main|tran|stop|1.005205e-3",
-                "ANALYSIS_OPTION|tran_main|tran|maxstep|20u",
-                "ENV|tran_main|modelFiles|((mismatch_models.scs local_mos) (mismatch_models.scs local_mom))",
-                "OUTPUT|tran_main|wave|net|/OUT|||true|undefined",
-                'OUTPUT|tran_main|scalar|point||value(VT("/OUT") 1u)||true|true|undefined',
-                "MODEL|tt|local_mos|/pdk/mismatch_models.scs|local_mos",
-                "MODEL|tt|local_mom|/pdk/mismatch_models.scs|local_mom",
-                "SPEC_OVERALL|tran_main|undefined",
-                "RUNMODE|Monte Carlo Sampling",
-                "SWEEPS_ENABLED|false",
-                "RUNOPTION|Monte Carlo Sampling|mcmethod|mismatch",
-                "RUNOPTION|Monte Carlo Sampling|mcnumpoints|64",
-                "RUNOPTION|Monte Carlo Sampling|samplingmode|random",
-                "RUNOPTION|Monte Carlo Sampling|donominal|0",
-                "RUNOPTION|Monte Carlo Sampling|montecarloseed|20261101",
-                "RUNOPTION|Monte Carlo Sampling|mcstartingrunnumber|1",
-                "PERSISTENCE|tests|1|setup=(tran_main)",
-                "SESSION|opened|fnxSession1",
-                "SESSION|closed|nil",
-            )
-        )
-    )
-
-    result = compare_native_setup_attestation(spec, observations)
-
-    assert result["passed"] is False
-    assert result["checks"]["analysis_options"] is False
-    assert result["diagnostics"]["analysis_options"]["missing"] == [
-        ["tran_main", "tran", "maxstep", 1.0e-05]
-    ]

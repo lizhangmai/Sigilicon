@@ -35,7 +35,7 @@ ALLOWED_DEPENDENCIES = {
     "domain": {"domain", "root"},
     "ams": {"domain", "ams", "root"},
     "layout": {"domain", "layout", "root"},
-    "virtuoso": {"layout", "virtuoso", "root"},
+    "virtuoso": {"domain", "layout", "virtuoso", "root"},
     "workflows": {
         "domain",
         "ams",
@@ -133,6 +133,22 @@ def test_external_integration_apis_live_in_their_owned_adapter_layers() -> None:
     assert bridge_users <= {"virtuoso/bridge.py"}
     assert all(path.startswith("virtuoso/") for path in skill_users)
     assert process_users <= {"external_tools.py", "process_supervisor.py"}
+
+
+def test_platform_source_contracts_have_one_loader() -> None:
+    flow_root = Path(__file__).parents[1] / "src" / "sigilicon"
+    platform_loader = flow_root / "domain/platform.py"
+    violations: list[str] = []
+    for path in flow_root.rglob("*.py"):
+        if path == platform_loader:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "platform-definition" in source or "platform-simulation" in source:
+            violations.append(str(path.relative_to(flow_root)))
+        if ".pdk.path" in source or "platform_config(" in source:
+            violations.append(str(path.relative_to(flow_root)))
+
+    assert violations == []
 
 
 def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:

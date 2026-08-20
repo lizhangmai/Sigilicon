@@ -7,26 +7,15 @@ import pytest
 from sigilicon.domain.oa_simulation import load_oa_simulation_spec, oa_simulation_fingerprint
 from sigilicon.virtuoso.ade import _native_setup_entry_point
 from sigilicon.workflows.oa_simulation import _elaborated_netlist_fingerprint
-from conftest import write_project_context
+from conftest import write_project_context, write_test_platform
 
 
 def _write_native_simulation_spec(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "project"
     write_project_context(root)
-    pdk = root / "configs/platform/testpdk"
     owner = root / "ip/compute/verification/oa/tb_native"
-    pdk.mkdir(parents=True)
     owner.mkdir(parents=True)
-    (pdk / "model.scs").write_text("// model\n", encoding="utf-8")
-    (pdk / "pdk.toml").write_text(
-        """name = "Test PDK"
-technology_library = "techLib"
-reference_libraries = ["deviceLib"]
-model_file = "model.scs"
-model_section = "tt"
-""",
-        encoding="utf-8",
-    )
+    write_test_platform(root)
     (owner / "setup.il").write_text(
         "procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)\n"
         "procedure(llmCimNativeMaestro(session lib cell modelFile modelSection) t)\n",
@@ -48,6 +37,8 @@ pdk = "testpdk"
 
 [setup]
 source = "setup.il"
+config_procedure = "llmCimNativeConfig"
+maestro_procedure = "llmCimNativeMaestro"
 """,
         encoding="utf-8",
     )
@@ -227,6 +218,17 @@ def test_native_rdb_contract_can_audit_nondefault_setup_model_identity(
     tmp_path: Path,
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
+    simulation = root / "configs/platform/testpdk/simulation.toml"
+    simulation.write_text(
+        simulation.read_text(encoding="utf-8")
+        + '''
+
+[model_sets.local]
+file = "local_models.scs"
+sections = ["local_mos"]
+''',
+        encoding="utf-8",
+    )
     spec_path.parent.joinpath("setup.il").write_text(
         '''procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)
 procedure(llmCimNativeMaestro(session lib cell modelFile modelSection)
@@ -266,89 +268,59 @@ models = [
     )
 
 
-def test_native_bank_diagnostic_expands_reviewed_calculator_outputs(
+def test_native_rdb_contract_rejects_models_not_declared_by_platform(
     tmp_path: Path,
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
     spec_path.parent.joinpath("setup.il").write_text(
-        r'''procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)
-procedure(llmCimNativeAddBankTrajectory(session testName pathCount
-    decisionSampleTimes transferSampleTimes threshold)
-  ;; bankPathCount bankDecisionSampleTimes bankTransferSampleTimes
-  ;; "diag_bank_decision_diff_%03d_%02d"
-  ;; "diag_bank_decision_onehot_%03d_%02d"
-  ;; "diag_bank_vcal_diff_%03d_%02d"
-  ;; value((VT(\"/OUTP%d\")-VT(\"/OUTN%d\")) %s)
-  ;; (value(VT(\"/OUTP%d\") %s)-%s)*(value(VT(\"/OUTN%d\") %s)-%s)
-  ;; value((VT(\"/VCALP%d\")-VT(\"/VCALN%d\")) %s)
-  t)
+        '''procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)
 procedure(llmCimNativeMaestro(session lib cell modelFile modelSection)
   maeCreateTest("tran_main")
   maeAddOutput("out_wave" "tran_main" ?signalName "/OUT")
+  maeAddOutput("out_scalar" "tran_main"
+    ?expr "value(VT(\\"/OUT\\") 1u)")
   axlPutCorner(sdb "tt")
-  bankPathCount = 1
-  bankDecisionSampleTimes = list(
-    "1n" "2n" "3n" "4n" "5n" "6n" "7n")
-  bankTransferSampleTimes = list(
-    "1.5n" "2.5n" "3.5n" "4.5n" "5.5n" "6.5n" "7.5n")
-  t)
+  modelFile = "/pdk/unknown.scs"
+  modelSection = "unknown_section"
+)
 ''',
         encoding="utf-8",
     )
     (spec_path.parent / "native_rdb.toml").write_text(
         '''schema = 2
-point_count = 2
+point_count = 1
 corners = ["tt"]
 tests = ["tran_main"]
 waveforms = [{ name = "out_wave", signal = "/OUT" }]
-scalars = []
+scalars = [
+  { name = "out_scalar", expression = "value(VT(\\"/OUT\\") 1u)" },
+]
 
-[diagnostic_equivalence]
-kind = "bank_calibration_trajectory"
-paths = 1
-threshold_v = 0.45
-decision_sample_times = ["1n", "2n", "3n", "4n", "5n", "6n", "7n"]
-transfer_sample_times = ["1.5n", "2.5n", "3.5n", "4.5n", "5.5n", "6.5n", "7.5n"]
+[setup_identity]
+models = [
+  { file = "unknown.scs", section = "unknown_section" },
+]
 ''',
         encoding="utf-8",
     )
 
-    spec = load_oa_simulation_spec(spec_path, project_root=root)
-
-    contract = spec.native_setup.rdb_contract
-    assert contract is not None
-    diagnostic = contract.diagnostic_equivalence
-    assert diagnostic is not None
-    assert diagnostic.kind == "bank_calibration_trajectory"
-    assert len(diagnostic.scalar_outputs) == 21
-    assert diagnostic.scalar_outputs[0] == (
-        "diag_bank_decision_diff_000_00",
-        'value((VT("/OUTP0")-VT("/OUTN0")) 1n)',
-    )
-    assert diagnostic.scalar_outputs[1] == (
-        "diag_bank_decision_onehot_000_00",
-        '(value(VT("/OUTP0") 1n)-0.45)*(value(VT("/OUTN0") 1n)-0.45)',
-    )
-    assert diagnostic.scalar_outputs[-1] == (
-        "diag_bank_vcal_diff_006_00",
-        'value((VT("/VCALP0")-VT("/VCALN0")) 7.5n)',
-    )
-    assert contract.expected_expression_count == 42
+    with pytest.raises(ValueError, match="not declared by the selected platform"):
+        load_oa_simulation_spec(spec_path, project_root=root)
 
 
-def test_native_setup_entry_point_requires_one_native_definition(tmp_path: Path) -> None:
+def test_native_setup_entry_point_requires_the_declared_definition(tmp_path: Path) -> None:
     source = tmp_path / "setup.il"
     source.write_text(
         "procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)\n",
         encoding="utf-8",
     )
-    assert _native_setup_entry_point(source, generic="llmCimNativeConfig") == (
+    assert _native_setup_entry_point(source, declared="llmCimNativeConfig") == (
         "llmCimNativeConfig"
     )
 
     source.write_text("procedure(llmCimPilotConfig(lib cell dut refs) t)\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must define one source-owned"):
-        _native_setup_entry_point(source, generic="llmCimNativeConfig")
+    with pytest.raises(ValueError, match="does not define declared entry point"):
+        _native_setup_entry_point(source, declared="llmCimNativeConfig")
 
 
 def test_native_simulation_fingerprint_includes_setup_source(tmp_path: Path) -> None:

@@ -83,7 +83,7 @@ def sync_oa_testbench(
     No previous cache metadata is consulted.
     """
 
-    with DisposableWork.create(prefix="llm-cim-oa-testbench-") as work:
+    with DisposableWork.create(prefix="sigilicon-oa-testbench-") as work:
         _sync_oa_testbench_impl(
             spec,
             canonical_source,
@@ -170,7 +170,7 @@ def _sync_oa_testbench_impl(
             dict.fromkeys(
                 (
                     spec.library,
-                    *_testbench_pdk(spec).reference_libraries,
+                    *_testbench_pdk(spec).oa.reference_libraries,
                     "analogLib",
                     "basic",
                 )
@@ -211,7 +211,7 @@ def _sync_oa_testbench_impl(
             create_oa_native_config_view(
                 client,
                 spec,
-                reference_libraries=_testbench_pdk(spec).reference_libraries,
+                reference_libraries=_testbench_pdk(spec).oa.reference_libraries,
                 operation=operation,
                 timeout=timeout,
             )

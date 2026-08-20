@@ -124,11 +124,12 @@ def render_analog_netlist(
     timing = spec.simulation.timing
     interface = spec.simulation.interface
     design = spec.design
-    model_path = str(model_file or design.pdk.model_file).replace('"', '\\"')
+    platform_model = design.pdk.simulation.default
+    model_path = str(model_file or platform_model.file).replace('"', '\\"')
     source_path = str(source_netlist or design.source_netlist).replace('"', '\\"')
     return f"""simulator lang=spectre
 
-include "{model_path}" section={design.pdk.model_section}
+include "{model_path}" section={platform_model.single_section}
 simulator lang=spectre
 include "{source_path}"
 global 0

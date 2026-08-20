@@ -351,11 +351,13 @@ def _load_source_root(
     manifest_directory = path.parent.resolve()
     directory = manifest_directory.parent
     ip_root = context.ip_root
-    expected_manifest = context.ip_config(directory.name, "oa.toml")
-    if path.resolve() != expected_manifest or directory.parent != ip_root:
+    if (
+        manifest_directory != context.ip_config_root(directory.name)
+        or directory.parent != ip_root
+    ):
         raise ValueError(f"OA source manifest is outside its ProjectContext owner: {path}")
-    if directory.is_relative_to((context.ip_root / "legacy").resolve()):
-        raise ValueError(f"legacy IP cannot contribute to OA assembly: {path}")
+    if not context.is_managed_ip_path(directory):
+        raise ValueError(f"unmanaged IP cannot contribute to OA assembly: {path}")
     root_values = _strings(raw.get("cell_roots"), f"{path}: cell_roots")
     cell_roots: list[Path] = []
     source_directories: list[Path] = []
@@ -370,7 +372,9 @@ def _load_source_root(
         all_children = tuple(
             item
             for item in sorted(cell_root.iterdir())
-            if item.is_dir() and not item.name.startswith(".")
+            if item.is_dir()
+            and not item.name.startswith(".")
+            and item.name != "__pycache__"
         )
         undeclared = [
             item.relative_to(directory).as_posix()
@@ -418,11 +422,13 @@ def load_oa_library_source(
     context = ProjectContext.from_project_root(project_root)
     root = context.project_root
     ip_root = context.ip_root
-    if manifest_path.is_relative_to((ip_root / "legacy").resolve()):
-        raise ValueError("legacy IP cannot own an OA assembly contract")
+    if not context.is_managed_ip_path(manifest_path):
+        raise ValueError("unmanaged IP cannot own an OA assembly contract")
     owner_directory = manifest_path.parent.parent
-    expected_manifest = context.ip_config(owner_directory.name, "oa.toml")
-    if manifest_path != expected_manifest or owner_directory.parent != ip_root:
+    if (
+        manifest_path.parent != context.ip_config_root(owner_directory.name)
+        or owner_directory.parent != ip_root
+    ):
         raise ValueError("OA assembly contract is outside its ProjectContext owner")
     raw = _read_toml(manifest_path)
     allowed = _ASSEMBLY_FIELDS | _SOURCE_MANIFEST_FIELDS

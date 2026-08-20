@@ -216,28 +216,20 @@ def _load_native_setup_skill(source: Path, invocation: str) -> str:
 def _native_setup_entry_point(
     source: Path,
     *,
-    generic: str,
+    declared: str,
 ) -> str:
-    """Resolve the one source-owned native setup entry point."""
+    """Verify one project-declared native setup entry point."""
 
     try:
         text = source.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"cannot read native ADE setup source: {source}") from exc
-    native_names = tuple(
-        dict.fromkeys(
-            re.findall(
-                rf"\bprocedure\(({re.escape(generic)}[A-Za-z0-9_$]*)\s*\(",
-                text,
-            )
-        )
-    )
-    if len(native_names) != 1:
+    if re.search(rf"\bprocedure\({re.escape(declared)}\s*\(", text) is None:
         raise ValueError(
-            "native ADE setup must define one source-owned entry point starting "
-            f"with {generic}: {source}"
+            f"native ADE setup does not define declared entry point {declared}: "
+            f"{source}"
         )
-    return native_names[0]
+    return declared
 
 
 def _native_setup_test_name(source: Path) -> str:
@@ -271,7 +263,7 @@ def create_oa_native_config_view(
     references = " ".join(reference_libraries)
     entry_point = _native_setup_entry_point(
         native_setup.source,
-        generic="llmCimNativeConfig",
+        declared=native_setup.config_procedure,
     )
     invocation = (
         f"{entry_point}({skill_quote(spec.library)} "
@@ -330,13 +322,14 @@ def create_oa_native_maestro_view(
     )
     entry_point = _native_setup_entry_point(
         native_setup.source,
-        generic="llmCimNativeMaestro",
+        declared=native_setup.maestro_procedure,
     )
     canonical_test = _native_setup_test_name(native_setup.source)
+    platform_model = native_setup.pdk.simulation.default
     invocation = (
         f"{entry_point}(session {skill_quote(spec.library)} "
-        f"{skill_quote(spec.cell)} {skill_quote(str(native_setup.pdk.model_file))} "
-        f"{skill_quote(native_setup.pdk.model_section)})"
+        f"{skill_quote(spec.cell)} {skill_quote(str(platform_model.file))} "
+        f"{skill_quote(platform_model.single_section)})"
     )
     body = _load_native_setup_skill(native_setup.source, invocation)
     source = own_synchronous_cellview_delta_skill(

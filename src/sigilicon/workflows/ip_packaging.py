@@ -13,6 +13,7 @@ import tomllib
 import uuid
 from typing import Any, Mapping
 
+from sigilicon import __version__
 from sigilicon.artifacts import atomic_write_json, file_sha256, read_json_object, utc_now
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.ip_release import (
@@ -83,22 +84,40 @@ def _project_path(root: Path, relative: Path, label: str) -> Path:
 def _python_module_paths(root: Path, module: str) -> set[Path]:
     """Resolve one repository-owned absolute Python import and package initializers."""
 
-    if not module.startswith("flow"):
-        return set()
     parts = module.split(".")
-    source_root = root / "src"
-    stem = source_root.joinpath(*parts)
-    module_file = stem.with_suffix(".py")
-    package_file = stem / "__init__.py"
-    target = module_file if module_file.is_file() else package_file
-    if not target.is_file():
+    if not parts or any(not part.isidentifier() for part in parts):
         return set()
-    paths = {target.resolve()}
-    for length in range(1, len(parts)):
-        initializer = source_root.joinpath(*parts[:length], "__init__.py")
-        if initializer.is_file():
-            paths.add(initializer.resolve())
-    return paths
+    project_root = root.resolve()
+    for source_root in (project_root, project_root / "src"):
+        stem = source_root.joinpath(*parts)
+        module_file = stem.with_suffix(".py")
+        package_file = stem / "__init__.py"
+        target = module_file if module_file.is_file() else package_file
+        if not target.is_file() or not target.resolve().is_relative_to(project_root):
+            continue
+        paths = {target.resolve()}
+        for length in range(1, len(parts)):
+            initializer = source_root.joinpath(*parts[:length], "__init__.py")
+            if initializer.is_file():
+                paths.add(initializer.resolve())
+        return paths
+    return set()
+
+
+def _sigilicon_tool_identity() -> dict[str, str]:
+    """Return path-independent identity for the installed workflow implementation."""
+
+    package_root = Path(__file__).resolve().parents[1]
+    sources = sorted(package_root.rglob("*.py"))
+    return {
+        "version": __version__,
+        "source_sha256": digest(
+            {
+                path.relative_to(package_root).as_posix(): file_sha256(path)
+                for path in sources
+            }
+        ),
+    }
 
 
 def _python_import_closure(root: Path, paths: set[Path]) -> None:
@@ -519,6 +538,13 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
                             f"layout.{field} input is missing: {layout_spec}: {value}"
                         )
                     paths.add(declared)
+            modules = layout_raw.get("generator_modules", [])
+            if not isinstance(modules, list) or any(
+                not isinstance(module, str) or not module for module in modules
+            ):
+                raise ValueError(f"layout.generator_modules must be module names: {layout_spec}")
+            for module in modules:
+                paths.update(_python_module_paths(root, module))
     _python_import_closure(root, paths)
 
     covered = {item.source.resolve() for item in fingerprint_sources}
@@ -535,6 +561,7 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
 
     attributes: dict[str, object] = {
         "ip_name": contract.name,
+        "sigilicon_tool": _sigilicon_tool_identity(),
         # The generic release fingerprint intentionally ignores source
         # locators, but an IP package also records a source snapshot.  Include
         # the resolved closure layout in the package identity so a directory

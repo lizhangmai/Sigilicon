@@ -2,32 +2,20 @@
 
 from __future__ import annotations
 
-import re
 import os
-import tomllib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import read_toml, require_config_header
 from sigilicon.domain.netlist import NetlistSnapshot, load_netlist_snapshot, subckt_ports
+from sigilicon.domain.platform import PdkConfig, load_platform
 from sigilicon.paths import ProjectContext
 
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_.+\-]+\Z")
-
-
-@dataclass(frozen=True)
-class PdkConfig:
-    path: Path
-    name: str
-    technology_library: str
-    reference_libraries: tuple[str, ...]
-    model_file: Path
-    model_section: str
-    asset_root: Path | None = None
-    installation_root_environment: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,14 +43,7 @@ class DesignSpec:
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
-    try:
-        with path.open("rb") as stream:
-            value = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"cannot read TOML {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"TOML root must be a table: {path}")
-    return value
+    return read_toml(path)
 
 
 def _table(value: Any, field: str) -> dict[str, Any]:
@@ -102,58 +83,6 @@ def _optional_names(value: Any, field: str) -> tuple[str, ...]:
     return names
 
 
-def _load_pdk(context: ProjectContext, key: str) -> PdkConfig:
-    pdk_path = context.platform_config(key)
-    raw = _read_toml(pdk_path)
-    refs = _names(raw.get("reference_libraries"), "pdk.reference_libraries")
-    model_value = raw.get("model_file")
-    if not isinstance(model_value, str) or not model_value:
-        raise ValueError("pdk.model_file must be a non-empty path")
-    installation_environment = raw.get("installation_root_environment")
-    package_root_value = raw.get("package_root")
-    asset_root: Path | None = None
-    if installation_environment is not None or package_root_value is not None:
-        if (
-            not isinstance(installation_environment, str)
-            or re.fullmatch(r"[A-Z][A-Z0-9_]*", installation_environment) is None
-        ):
-            raise ValueError("pdk.installation_root_environment must be an environment name")
-        if not isinstance(package_root_value, str) or not package_root_value:
-            raise ValueError("pdk.package_root must be a non-empty relative path")
-        package_root = Path(package_root_value)
-        if package_root.is_absolute() or ".." in package_root.parts:
-            raise ValueError("pdk.package_root must be a safe relative path")
-        installation_value = os.environ.get(installation_environment)
-        if not installation_value:
-            raise ValueError(
-                f"PDK installation root environment is unset: {installation_environment}"
-            )
-        asset_root = (Path(installation_value).expanduser() / package_root).resolve()
-    model_file = Path(model_value).expanduser()
-    if not model_file.is_absolute():
-        model_file = ((asset_root or pdk_path.parent) / model_file).resolve()
-    return PdkConfig(
-        path=pdk_path,
-        name=str(raw.get("name", key)),
-        technology_library=_string(
-            raw.get("technology_library"),
-            "pdk.technology_library",
-            identifier=True,
-        ),
-        reference_libraries=refs,
-        model_file=model_file,
-        model_section=_string(raw.get("model_section"), "pdk.model_section"),
-        asset_root=asset_root,
-        installation_root_environment=installation_environment,
-    )
-
-
-def load_pdk_config(project_root: Path, key: str) -> PdkConfig:
-    """Load one project PDK declaration for non-schematic flow domains."""
-
-    return _load_pdk(ProjectContext.from_project_root(project_root), key)
-
-
 def load_design_spec(path: Path, *, project_root: Path | None = None) -> DesignSpec:
     spec_path = path.resolve()
     if project_root is None:
@@ -161,16 +90,12 @@ def load_design_spec(path: Path, *, project_root: Path | None = None) -> DesignS
     context = ProjectContext.from_project_root(project_root)
     root = context.project_root
     raw = _read_toml(spec_path)
-    ip_root = context.ip_root
-    legacy_root = context.legacy_ip_root
-    if spec_path.is_relative_to(ip_root) and not spec_path.is_relative_to(legacy_root):
-        owner = spec_path.relative_to(ip_root).parts[0].replace("_", "-")
+    if context.is_managed_ip_path(spec_path):
         require_config_header(
             raw,
             spec_path,
             contract_kind="cell-design",
             path_scope="cell",
-            owner=owner,
         )
     design = _table(raw.get("design"), "design")
     ports = _table(raw.get("ports"), "ports")
@@ -240,7 +165,7 @@ def load_design_spec(path: Path, *, project_root: Path | None = None) -> DesignS
             raise ValueError(f"invalid direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = _load_pdk(context, _string(design.get("pdk"), "design.pdk"))
+    pdk = load_platform(context, _string(design.get("pdk"), "design.pdk"))
     return DesignSpec(
         path=spec_path,
         project_root=root,

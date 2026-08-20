@@ -485,10 +485,13 @@ class ProjectContext:
     result_root: Path
     workspace_root: Path
     ip_root: Path
-    legacy_ip_root: Path
+    managed_ip_roots: tuple[Path, ...]
     ip_config_dir: str
     config_root: Path
-    platform_root: Path
+    artifact_namespace: str
+    catalog_paths: tuple[tuple[str, Path], ...]
+    owned_module_prefixes: tuple[str, ...]
+    native_diagnostic_adapters: tuple[tuple[str, Path], ...]
 
     @classmethod
     def from_roots(
@@ -499,10 +502,13 @@ class ProjectContext:
         result_root: Path | str,
         workspace_root: Path | str,
         ip_root: Path | str,
-        legacy_ip_root: Path | str,
+        managed_ip_roots: tuple[Path | str, ...],
         ip_config_dir: str,
         config_root: Path | str,
-        platform_root: Path | str,
+        artifact_namespace: str = "sigilicon",
+        catalog_paths: Mapping[str, Path | str] | None = None,
+        owned_module_prefixes: tuple[str, ...] = (),
+        native_diagnostic_adapters: Mapping[str, Path | str] | None = None,
     ) -> "ProjectContext":
         root = Path(project_root).resolve()
         def resolve(value: Path | str) -> Path:
@@ -513,25 +519,76 @@ class ProjectContext:
         results = resolve(result_root)
         workspace = resolve(workspace_root)
         ips = resolve(ip_root)
-        legacy_ips = resolve(legacy_ip_root)
+        managed_ips = tuple(resolve(value) for value in managed_ip_roots)
+        if not managed_ips:
+            raise ValueError("managed IP roots must not be empty")
+        if len(set(managed_ips)) != len(managed_ips):
+            raise ValueError("managed IP roots must be unique")
+        if any(path == ips or not path.is_relative_to(ips) for path in managed_ips):
+            raise ValueError(
+                "managed IP roots must identify owners below the IP root"
+            )
         configs = resolve(config_root)
-        platforms = resolve(platform_root)
         if artifacts == root:
             raise ValueError("artifact root must not be the project root")
         if results == root:
             raise ValueError("result root must not be the project root")
+        namespace = validate_artifact_component(
+            artifact_namespace, "namespace"
+        )
+        resolved_catalogs = tuple(
+            sorted(
+                (
+                    validate_artifact_component(name, "catalog name"),
+                    resolve(value),
+                )
+                for name, value in (catalog_paths or {}).items()
+            )
+        )
+        prefixes: list[str] = []
+        for prefix in owned_module_prefixes:
+            if (
+                not isinstance(prefix, str)
+                or not prefix.endswith(".")
+                or any(
+                    not part.isidentifier()
+                    for part in prefix.removesuffix(".").split(".")
+                )
+            ):
+                raise ValueError(
+                    "owned module prefixes must be dotted Python package prefixes"
+                )
+            prefixes.append(prefix)
+        if len(set(prefixes)) != len(prefixes):
+            raise ValueError("owned module prefixes must be unique")
+        diagnostic_adapters: list[tuple[str, Path]] = []
+        for owner, value in (native_diagnostic_adapters or {}).items():
+            owner_name = validate_artifact_component(owner, "native diagnostic owner")
+            source = resolve(value)
+            if not source.is_file():
+                raise ValueError(
+                    "native diagnostic adapter must be an existing project-owned file"
+                )
+            if not source.is_relative_to(root):
+                raise ValueError("native diagnostic adapter must stay below the project root")
+            diagnostic_adapters.append((owner_name, source))
+        if len({owner for owner, _ in diagnostic_adapters}) != len(diagnostic_adapters):
+            raise ValueError("native diagnostic adapter owners must be unique")
         return cls(
             project_root=root,
             artifact_root=artifacts,
             result_root=results,
             workspace_root=workspace,
             ip_root=ips,
-            legacy_ip_root=legacy_ips,
+            managed_ip_roots=managed_ips,
             ip_config_dir=validate_artifact_component(
                 ip_config_dir, "IP config directory"
             ),
             config_root=configs,
-            platform_root=platforms,
+            artifact_namespace=namespace,
+            catalog_paths=resolved_catalogs,
+            owned_module_prefixes=tuple(prefixes),
+            native_diagnostic_adapters=tuple(sorted(diagnostic_adapters)),
         )
 
     @classmethod
@@ -556,6 +613,51 @@ class ProjectContext:
                 raise ValueError(f"{contract}: paths.{name} must be a non-empty path")
             return value
 
+        managed_ip_roots = paths.get("managed_ip_roots")
+        if not isinstance(managed_ip_roots, list) or any(
+            not isinstance(value, str) or not value for value in managed_ip_roots
+        ):
+            raise ValueError(
+                f"{contract}: paths.managed_ip_roots must be a non-empty path array"
+            )
+
+        project = raw.get("project", {})
+        if not isinstance(project, dict):
+            raise ValueError(f"{contract}: project must be a table")
+        artifact_namespace = project.get("artifact_namespace", "sigilicon")
+        if not isinstance(artifact_namespace, str):
+            raise ValueError(
+                f"{contract}: project.artifact_namespace must be text"
+            )
+        catalogs = raw.get("catalogs", {})
+        if not isinstance(catalogs, dict) or any(
+            not isinstance(name, str)
+            or not isinstance(value, str)
+            or not value
+            for name, value in catalogs.items()
+        ):
+            raise ValueError(f"{contract}: catalogs must map names to paths")
+        python = raw.get("python", {})
+        if not isinstance(python, dict):
+            raise ValueError(f"{contract}: python must be a table")
+        raw_prefixes = python.get("owned_module_prefixes", [])
+        if not isinstance(raw_prefixes, list) or any(
+            not isinstance(prefix, str) for prefix in raw_prefixes
+        ):
+            raise ValueError(
+                f"{contract}: python.owned_module_prefixes must be a string array"
+            )
+        native_diagnostic_adapters = python.get("native_diagnostic_adapters", {})
+        if not isinstance(native_diagnostic_adapters, dict) or any(
+            not isinstance(owner, str)
+            or not isinstance(value, str)
+            or not value
+            for owner, value in native_diagnostic_adapters.items()
+        ):
+            raise ValueError(
+                f"{contract}: python.native_diagnostic_adapters must map owners to paths"
+            )
+
         declared_root = Path(required("project_root")).expanduser()
         root = (
             (contract.parent / declared_root).resolve()
@@ -568,10 +670,13 @@ class ProjectContext:
             result_root=required("result_root"),
             workspace_root=required("workspace_root"),
             ip_root=required("ip_root"),
-            legacy_ip_root=required("legacy_ip_root"),
+            managed_ip_roots=tuple(managed_ip_roots),
             ip_config_dir=required("ip_config_dir"),
             config_root=required("config_root"),
-            platform_root=required("platform_root"),
+            artifact_namespace=artifact_namespace,
+            catalog_paths=catalogs,
+            owned_module_prefixes=tuple(raw_prefixes),
+            native_diagnostic_adapters=native_diagnostic_adapters,
         )
 
     @classmethod
@@ -612,10 +717,13 @@ class ProjectContext:
             result_root=result_root or self.result_root,
             workspace_root=self.workspace_root,
             ip_root=self.ip_root,
-            legacy_ip_root=self.legacy_ip_root,
+            managed_ip_roots=self.managed_ip_roots,
             ip_config_dir=self.ip_config_dir,
             config_root=self.config_root,
-            platform_root=self.platform_root,
+            artifact_namespace=self.artifact_namespace,
+            catalog_paths=dict(self.catalog_paths),
+            owned_module_prefixes=self.owned_module_prefixes,
+            native_diagnostic_adapters=dict(self.native_diagnostic_adapters),
         )
 
     def ip(self, name: str) -> Path:
@@ -629,12 +737,26 @@ class ProjectContext:
     def ip_config_root(self, name: str) -> Path:
         return self.ip(name) / self.ip_config_dir
 
-    def platform_config(self, name: str, filename: str = "pdk.toml") -> Path:
-        return (
-            self.platform_root
-            / validate_artifact_component(name, "platform name")
-            / validate_artifact_component(filename, "platform config filename")
-        )
+    def catalog(self, name: str) -> Path:
+        """Return one caller-owned catalog path declared by the project."""
+
+        key = validate_artifact_component(name, "catalog name")
+        try:
+            return dict(self.catalog_paths)[key]
+        except KeyError as exc:
+            raise ValueError(f"project context has no {key!r} catalog") from exc
+
+    def is_managed_ip_path(self, path: Path | str) -> bool:
+        """Return the caller-owned eligibility decision for an IP path."""
+
+        resolved = Path(path).resolve()
+        return any(resolved.is_relative_to(root) for root in self.managed_ip_roots)
+
+    def native_diagnostic_adapter_for(self, owner: str) -> Path | None:
+        """Return the adapter selected by the caller for one IP directory."""
+
+        key = validate_artifact_component(owner, "native diagnostic owner")
+        return dict(self.native_diagnostic_adapters).get(key)
 
     @property
     def artifacts(self) -> ArtifactPaths:

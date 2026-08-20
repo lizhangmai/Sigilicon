@@ -91,7 +91,7 @@ def _run_native_oa_maestro_testbench(
     timeout: int,
     keep_work: bool = False,
 ) -> OAMaestroRunResult:
-    with DisposableWork.create(prefix="llm-cim-oa-sim-") as work:
+    with DisposableWork.create(prefix="sigilicon-oa-sim-") as work:
         try:
             result = _run_native_oa_maestro_testbench_impl(
                 plan,

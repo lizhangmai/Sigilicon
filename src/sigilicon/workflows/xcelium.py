@@ -152,9 +152,11 @@ def run_xcelium_cell(
         }
     )
     attempt = ArtifactRecord.begin(
-        paths.artifacts.standalone_run("llm_cim", plan.spec.cell, run_id),
+        paths.artifacts.standalone_run(
+            paths.artifact_namespace, plan.spec.cell, run_id
+        ),
         entities={
-            "library": "llm_cim",
+            "library": paths.artifact_namespace,
             "cell": plan.spec.dut,
             "testbench": plan.spec.cell,
         },

@@ -77,32 +77,31 @@ def load_integer_code_mapping(value: object, field: str) -> IntegerCodeMapping:
     return mapping
 
 
-def load_ip_adc_code_mapping(path: Path) -> IntegerCodeMapping:
-    """Load the IP-owned ADC mapping from its behavioral contract."""
+def load_integer_code_mapping_contract(
+    path: Path,
+    *,
+    contract_kind: str,
+    table_path: tuple[str, ...],
+) -> IntegerCodeMapping:
+    """Load a mapping from an explicitly described caller-owned contract."""
 
     contract_path = path.resolve()
-    ip_indices = [
-        index for index, part in enumerate(contract_path.parts) if part == "ip"
-    ]
-    if not ip_indices or ip_indices[-1] + 1 >= len(contract_path.parts):
-        raise ValueError("ADC mapping contract must be below ip/<owner>")
-    owner_directory = contract_path.parts[ip_indices[-1] + 1]
-    if owner_directory == "legacy":
-        raise ValueError("ADC mapping contract must belong to an active IP")
-    expected_owner = owner_directory.replace("_", "-")
     try:
         with contract_path.open("rb") as stream:
             raw = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"cannot read ADC mapping contract {contract_path}: {exc}") from exc
+        raise ValueError(f"cannot read code mapping contract {contract_path}: {exc}") from exc
     require_config_header(
         raw,
         contract_path,
-        contract_kind="ip-architecture-behavior",
+        contract_kind=contract_kind,
         path_scope="owner",
-        owner=expected_owner,
     )
-    adc = raw.get("adc")
-    if not isinstance(adc, Mapping):
-        raise ValueError("ADC mapping contract must contain an adc table")
-    return load_integer_code_mapping(adc.get("code_mapping"), "adc.code_mapping")
+    value: object = raw
+    for name in table_path:
+        if not isinstance(value, Mapping):
+            raise ValueError(
+                f"code mapping contract lacks table {'.'.join(table_path)}"
+            )
+        value = value.get(name)
+    return load_integer_code_mapping(value, ".".join(table_path))

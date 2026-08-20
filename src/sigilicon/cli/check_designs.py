@@ -25,7 +25,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="run the checks declared by a repository check manifest",
     )
     args = parser.parse_args(argv)
-    root = discover_project_context(__file__).project_root
+    context = discover_project_context(__file__)
+    root = context.project_root
     try:
         if (args.catalog is None) == (args.repository is None):
             parser.error("select exactly one of --catalog or --repository")
@@ -33,7 +34,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = inspect_repository_designs(
                 args.repository,
                 project_root=root,
-                artifact_root=root / "artifacts",
+                artifact_root=context.artifact_root,
             )
         else:
             assert args.catalog is not None

@@ -210,9 +210,9 @@ def test_setup_commits_all_components_with_one_fingerprint(
     assert load["oa_load_attestation"]["load_cap"] == "2f"
     assert load["oa_load_attestation"]["instances"][0]["output"] == "OUT"
     maestro = committed.components["maestro"]
-    assert maestro["model_file"] == str(spec.design.pdk.model_file)
+    assert maestro["model_file"] == str(spec.design.pdk.simulation.default.file)
     assert maestro["model_file_sha256"]
-    assert maestro["model_section"] == spec.design.pdk.model_section
+    assert maestro["model_section"] == spec.design.pdk.simulation.default.single_section
     current = json.loads((result.namespace_dir / "current.json").read_text())
     assert current["status"] == "succeeded"
 
@@ -243,7 +243,9 @@ def test_model_content_is_part_of_ams_fingerprint(
     spec = load_ams_spec(path, project_root=root)
     original = ams_fingerprint(spec)
 
-    spec.design.pdk.model_file.write_text("// changed model\n", encoding="utf-8")
+    spec.design.pdk.simulation.default.file.write_text(
+        "// changed model\n", encoding="utf-8"
+    )
 
     assert ams_fingerprint(spec) != original
 
@@ -310,7 +312,7 @@ def test_setup_revalidates_generated_state_immediately_before_commit(
                 / "maestro.sdb"
             )
         else:
-            changed = spec.design.pdk.model_file
+            changed = spec.design.pdk.simulation.default.file
         changed.write_text("changed before commit\n", encoding="utf-8")
         for commit in commits:
             try:

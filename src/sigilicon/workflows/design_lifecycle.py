@@ -38,6 +38,7 @@ class DesignInspection:
     source_fingerprint: str
 
     def as_dict(self) -> dict[str, object]:
+        model = self.spec.pdk.simulation.default
         return {
             "passed": True,
             "library": self.spec.library,
@@ -48,9 +49,9 @@ class DesignInspection:
             "source_fingerprint": self.source_fingerprint,
             "pdk": {
                 "name": self.spec.pdk.name,
-                "technology_library": self.spec.pdk.technology_library,
-                "model_file": str(self.spec.pdk.model_file),
-                "model_section": self.spec.pdk.model_section,
+                "technology_library": self.spec.pdk.oa.technology_library,
+                "model_file": str(model.file),
+                "model_section": model.single_section,
             },
         }
 
@@ -68,8 +69,9 @@ def inspect_design(
             spec,
             netlist_snapshot=select_subckt_snapshot(spec.netlist_snapshot, spec.cell),
         )
-    if not spec.pdk.model_file.is_file():
-        raise FileNotFoundError(f"PDK model file does not exist: {spec.pdk.model_file}")
+    model_file = spec.pdk.simulation.default.file
+    if not model_file.is_file():
+        raise FileNotFoundError(f"PDK model file does not exist: {model_file}")
     plan = plan_hierarchy(spec.netlist_snapshot, top=spec.cell)
     if not plan.ordered_cells or plan.ordered_cells[-1] != spec.cell:
         raise RuntimeError(f"invalid hierarchy plan for {spec.library}/{spec.cell}")

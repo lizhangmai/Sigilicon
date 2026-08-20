@@ -46,13 +46,13 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
         raise FileNotFoundError("component contract is missing or outside the project root")
     with contract_path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
-    owner = contract_path.relative_to(context.ip_root).parts[0].replace("_", "-")
+    if not contract_path.is_relative_to(context.ip_root):
+        raise ValueError("component contract must be owned by a ProjectContext IP")
     require_config_header(
         raw,
         contract_path,
         contract_kind="ip-component",
         path_scope="owner",
-        owner=owner,
     )
     kind = _string(raw.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:

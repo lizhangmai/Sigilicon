@@ -168,13 +168,13 @@ def render_canonical_source_cdl(spec: LayoutSpec) -> str:
     hierarchy = resolve_netlist_hierarchy(
         spec.source_snapshots,
         top=spec.cell,
-        primitive_masters=spec.layout_pdk.primitive_masters,
+        primitive_masters=spec.pdk.oa.primitive_masters,
     )
     if hierarchy.definitions[spec.cell].ports != spec.ports:
         raise RuntimeError("resolved LVS hierarchy changed the canonical top interface")
     primitive_interfaces = []
     for master in sorted(hierarchy.primitive_counts):
-        terminals = spec.layout_pdk.primitive_subcircuits.get(master)
+        terminals = spec.pdk.oa.primitive_subcircuits.get(master)
         if terminals is None:
             continue
         primitive_interfaces.extend(
@@ -186,7 +186,7 @@ def render_canonical_source_cdl(spec: LayoutSpec) -> str:
         )
     return "\n".join(primitive_interfaces) + render_canonical_cdl(
         hierarchy,
-        primitive_subcircuit_masters=spec.layout_pdk.primitive_subcircuits,
+        primitive_subcircuit_masters=spec.pdk.oa.primitive_subcircuits,
     )
 
 
@@ -380,9 +380,21 @@ def _scoped_layout_fingerprint(
         return layout_verification_fingerprint(plan, scope=check)
     if len(relative_spec.parts) <= 1:
         return layout_verification_fingerprint(plan, scope=check)
-    manifest = context.ip_config(relative_spec.parts[0], "oa.toml")
-    if not manifest.is_file():
+    config_root = context.ip_config_root(relative_spec.parts[0])
+    from sigilicon.domain.config_contracts import read_toml
+
+    manifests = tuple(
+        candidate
+        for candidate in sorted(config_root.glob("*.toml"))
+        if read_toml(candidate).get("contract_kind") == "oa-assembly"
+    )
+    if not manifests:
         return layout_verification_fingerprint(plan, scope=check)
+    if len(manifests) != 1:
+        raise ValueError(
+            f"owner config root must contain at most one OA assembly: {config_root}"
+        )
+    manifest = manifests[0]
     from sigilicon.workflows.oa_library import plan_oa_library_rebuild
 
     library_plan = plan_oa_library_rebuild(
@@ -416,11 +428,11 @@ def _verification_scope(
         hierarchy = resolve_netlist_hierarchy(
             spec.source_snapshots,
             top=spec.cell,
-            primitive_masters=spec.layout_pdk.primitive_masters,
+            primitive_masters=spec.pdk.oa.primitive_masters,
         )
         result["electrical"] = netlist_electrical_fingerprint(
             hierarchy,
-            primitive_masters=spec.layout_pdk.primitive_masters,
+            primitive_masters=spec.pdk.oa.primitive_masters,
         )
     return result
 
@@ -447,13 +459,13 @@ def _run_fingerprint(
         "drc_configuration_warnings": spec.layout_pdk.drc_configuration_warnings,
         "drc_waiver_layers": spec.layout_pdk.drc_waiver_layers,
         "pcell_policy": {
-            "finger_count_parameter": spec.layout_pdk.pcell_policy.finger_count_parameter,
-            "source_terminal": spec.layout_pdk.pcell_policy.source_terminal,
-            "drain_terminal": spec.layout_pdk.pcell_policy.drain_terminal,
-            "source_alias_prefix": spec.layout_pdk.pcell_policy.source_alias_prefix,
-            "drain_alias_prefix": spec.layout_pdk.pcell_policy.drain_alias_prefix,
-            "cdf_callback_parameter": spec.layout_pdk.pcell_policy.cdf_callback_parameter,
-            "cdf_callback_bypass_parameters": spec.layout_pdk.pcell_policy.cdf_callback_bypass_parameters,
+            "finger_count_parameter": spec.pdk.oa.pcell_policy.finger_count_parameter,
+            "source_terminal": spec.pdk.oa.pcell_policy.source_terminal,
+            "drain_terminal": spec.pdk.oa.pcell_policy.drain_terminal,
+            "source_alias_prefix": spec.pdk.oa.pcell_policy.source_alias_prefix,
+            "drain_alias_prefix": spec.pdk.oa.pcell_policy.drain_alias_prefix,
+            "cdf_callback_parameter": spec.pdk.oa.pcell_policy.cdf_callback_parameter,
+            "cdf_callback_bypass_parameters": spec.pdk.oa.pcell_policy.cdf_callback_bypass_parameters,
         },
     }
     return digest(payload)
@@ -501,7 +513,7 @@ def _run_xstream(
             "-summaryFile",
             str(work / "strmout.sum"),
             "-techLib",
-            spec.pdk.technology_library,
+            spec.pdk.oa.technology_library,
             "-layerMap",
             owned_map.child_named_path,
         ]
@@ -873,15 +885,15 @@ def verify_layout(
         operation.register_artifact(record)
         library_path = operation.require_project_library_target(client, spec.library)
         info = client.library.get(spec.library, timeout=30)
-        if str(info.technology_library or "") != spec.pdk.technology_library:
+        if str(info.technology_library or "") != spec.pdk.oa.technology_library:
             raise RuntimeError(
                 f"library {spec.library} uses technology {info.technology_library!r}, "
-                f"expected {spec.pdk.technology_library!r}"
+                f"expected {spec.pdk.oa.technology_library!r}"
             )
         validate_layout_plan(
             client,
             plan,
-            pcell_policy=spec.layout_pdk.pcell_policy,
+            pcell_policy=spec.pdk.oa.pcell_policy,
             operation=operation,
             timeout=60,
         )

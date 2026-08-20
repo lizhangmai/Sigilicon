@@ -17,7 +17,7 @@ _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _MODULE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z"
 )
-_OWNED_MODULE_PREFIXES = ("sigilicon.cli.", "soc.")
+_PACKAGE_MODULE_PREFIXES = ("sigilicon.cli.",)
 _KINDS = frozenset({"script", "module"})
 _SPEC_ARGUMENTS = frozenset({"--spec", "--design"})
 _ROUTING_ARGUMENTS = frozenset({"--spec", "--design", "--mode"})
@@ -202,10 +202,13 @@ def load_design_target_catalog(
         elif (
             not isinstance(entrypoint, str)
             or _MODULE_RE.fullmatch(entrypoint) is None
-            or not entrypoint.startswith(_OWNED_MODULE_PREFIXES)
+            or not entrypoint.startswith(
+                (*_PACKAGE_MODULE_PREFIXES, *context.owned_module_prefixes)
+            )
         ):
             raise ValueError(
-                f"{field}.entrypoint must name a sigilicon.cli or soc module"
+                f"{field}.entrypoint must name a Sigilicon CLI or a "
+                "project-owned module prefix declared by ProjectContext"
             )
         spec_argument = row.get("spec_argument")
         spec_value = row.get("spec")
