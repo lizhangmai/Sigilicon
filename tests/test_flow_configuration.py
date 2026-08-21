@@ -91,6 +91,9 @@ name = "local"
 adapter = "fake-requirements"
 requires = ["runtime.fake-license"]
 
+[actions."fake.requirements".platform_assets]
+logic-lib = "fake-platform:logic-lib@1"
+
 [actions."fake.requirements".config]
 mode = "local"
 ''',
@@ -130,6 +133,9 @@ def test_catalog_resolves_owner_scoped_flow_and_default_profile(
     assert selection.profile.profile_id == "local"
     assert selection.profile.selection("fake.requirements").adapter == "fake-requirements"
     assert selection.profile.selection("fake.requirements").config["mode"] == "local"
+    assert selection.profile.selection(
+        "fake.requirements"
+    ).platform_asset_identities == {"logic-lib": "fake-platform:logic-lib@1"}
 
 
 def test_catalog_rejects_paths_outside_the_explicit_owner_root(tmp_path: Path) -> None:
@@ -234,6 +240,9 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
                 adapter="fake-requirements",
                 config={"mode": "local"},
                 required_capabilities=("runtime.fake-license",),
+                platform_asset_identities={
+                    "logic-lib": "fake-platform:logic-lib@1"
+                },
             ),
         ),
     )
@@ -283,6 +292,25 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
             ),
         ),
     )
+    incompatible_environment = ExecutionEnvironment(
+        capabilities=environment.capabilities,
+        platform_assets=(
+            ResolvedPlatformAsset(
+                role="logic-lib",
+                kind="library.liberty",
+                identity="fake-platform:logic-lib@wrong",
+                digest="a" * 64,
+                members=environment.platform_assets[0].members,
+            ),
+        ),
+    )
+    incompatible = engine.preflight(plan, incompatible_environment)
+    assert incompatible.status == "blocked"
+    assert next(
+        check
+        for check in incompatible.checks
+        if check.requirement == "logic-lib"
+    ).status == "incompatible"
     ready = engine.preflight(plan, environment)
     assert ready.status == "ready"
     result = engine.run(

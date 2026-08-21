@@ -18,7 +18,14 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("simulation-recipe", "recipe.simulation"),
                 ArtifactPort("constraints", "constraints.sdc"),
                 ArtifactPort("synthesis-recipe", "recipe.synthesis"),
-                ArtifactPort("floorplan", "recipe.floorplan"),
+                ArtifactPort(
+                    "reference-library-recipe",
+                    "recipe.reference-library",
+                ),
+                ArtifactPort(
+                    "implementation-recipe",
+                    "recipe.physical-implementation",
+                ),
                 ArtifactPort("electrical-sources", "source-set.spice"),
                 ArtifactPort("decks", "source-set.spice-deck"),
                 ArtifactPort("qualification-spec", "spec.qualification"),
@@ -110,17 +117,65 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
     )
     registry.register_action(
         ActionContract(
+            kind="asic.reference-library-construction",
+            inputs=(
+                ArtifactPort(
+                    "reference-library-recipe",
+                    "recipe.reference-library",
+                ),
+            ),
+            outputs=(
+                ArtifactPort("reference-library", "library.synopsys-ndm"),
+                ArtifactPort("library-check-report", "report.library-check"),
+                ArtifactPort("execution-evidence", "evidence.tool-execution"),
+            ),
+            facts=("passed",),
+            required_capabilities=("tool.synopsys-library-manager",),
+            platform_assets=(
+                PlatformAssetRequirement(
+                    "physical-technology",
+                    "platform.physical-view-set",
+                    members=("technology-file", "technology-lef"),
+                ),
+                PlatformAssetRequirement(
+                    "standard-cell-physical",
+                    "library.lef-set",
+                    members=("rvt", "hvt", "lvt"),
+                ),
+                PlatformAssetRequirement(
+                    "standard-cell-timing",
+                    "library.synopsys-db-set",
+                    members=("rvt", "hvt", "lvt"),
+                ),
+            ),
+            adapters=("synopsys-fc",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
             kind="asic.physical-implementation",
             inputs=(
                 ArtifactPort("mapped-netlist", "netlist.verilog"),
                 ArtifactPort("mapped-constraints", "constraints.sdc"),
-                ArtifactPort("floorplan", "recipe.floorplan"),
+                ArtifactPort(
+                    "implementation-recipe",
+                    "recipe.physical-implementation",
+                ),
+                ArtifactPort("reference-library", "library.synopsys-ndm"),
             ),
             outputs=(
                 ArtifactPort("routed-netlist", "netlist.verilog"),
+                ArtifactPort("routed-constraints", "constraints.sdc"),
                 ArtifactPort("layout-stream", "layout.gds"),
-                ArtifactPort("checkpoint", "checkpoint.synopsys-ndm"),
-                ArtifactPort("reports", "report.collection"),
+                ArtifactPort("checkpoint", "checkpoint.synopsys-dlib"),
+                ArtifactPort("design-check-report", "report.design-check"),
+                ArtifactPort("structural-report", "report.structure"),
+                ArtifactPort("qor-report", "report.qor"),
+                ArtifactPort("timing-report", "report.timing"),
+                ArtifactPort("area-report", "report.area"),
+                ArtifactPort("power-report", "report.power"),
+                ArtifactPort("drc-report", "report.drc"),
+                ArtifactPort("execution-evidence", "evidence.tool-execution"),
             ),
             facts=("passed",),
             required_capabilities=("tool.synopsys-fc",),
@@ -128,10 +183,7 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 PlatformAssetRequirement(
                     "physical-technology",
                     "platform.physical-view-set",
-                ),
-                PlatformAssetRequirement(
-                    "standard-cell-physical",
-                    "library.physical-view-set",
+                    members=("tluplus", "gds-layer-map"),
                 ),
             ),
             adapters=("synopsys-fc",),

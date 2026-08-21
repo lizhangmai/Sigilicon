@@ -29,6 +29,7 @@ from sigilicon.flow.model import (
     FlowSpec,
     InputArtifact,
     NodeOutcome,
+    PlatformAssetRequirement,
     PolicySpec,
     PlannedNode,
     PreflightCheck,
@@ -207,6 +208,18 @@ class FlowEngine:
             node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
             selection = profile.selection(node.action_kind)
+            contract_asset_roles = {
+                requirement.role for requirement in contract.platform_assets
+            }
+            unknown_asset_identities = (
+                set(selection.platform_asset_identities) - contract_asset_roles
+            )
+            if unknown_asset_identities:
+                raise FlowContractError(
+                    f"Execution Profile action {node.action_kind!r} selects unknown "
+                    "platform asset identities: "
+                    f"{sorted(unknown_asset_identities)}"
+                )
             planned_items.append(
                 PlannedNode(
                     node=node,
@@ -220,7 +233,17 @@ class FlowEngine:
                             )
                         )
                     ),
-                    platform_assets=contract.platform_assets,
+                    platform_assets=tuple(
+                        PlatformAssetRequirement(
+                            requirement.role,
+                            requirement.kind,
+                            requirement.members,
+                            selection.platform_asset_identities.get(
+                                requirement.role
+                            ),
+                        )
+                        for requirement in contract.platform_assets
+                    ),
                     dependencies=dependencies[node_id],
                     source_revision=source_revisions[node_id],
                 )
@@ -260,7 +283,7 @@ class FlowEngine:
         checks: list[PreflightCheck] = []
         seen_adapters: set[str] = set()
         seen_capabilities: set[str] = set()
-        seen_assets: set[tuple[str, str, tuple[str, ...]]] = set()
+        seen_assets: set[tuple[str, str, tuple[str, ...], str | None]] = set()
         for planned in plan.nodes:
             if planned.adapter not in seen_adapters:
                 seen_adapters.add(planned.adapter)
@@ -318,6 +341,7 @@ class FlowEngine:
                     requirement.role,
                     requirement.kind,
                     requirement.members,
+                    requirement.identity,
                 )
                 if requirement_key in seen_assets:
                     continue
@@ -334,6 +358,10 @@ class FlowEngine:
                     if asset is None
                     else "incompatible"
                     if asset.kind != requirement.kind
+                    or (
+                        requirement.identity is not None
+                        and asset.identity != requirement.identity
+                    )
                     else "incomplete"
                     if missing_members
                     else "stale"
@@ -345,7 +373,14 @@ class FlowEngine:
                         requirement=requirement.role,
                         requirement_kind="platform-asset",
                         status=status,
-                        expected=requirement.kind,
+                        expected=(
+                            requirement.kind
+                            if requirement.identity is None
+                            else {
+                                "kind": requirement.kind,
+                                "identity": requirement.identity,
+                            }
+                        ),
                         identity=None if asset is None else asset.identity,
                         digest=None if asset is None else asset.digest,
                     )
@@ -1221,7 +1256,14 @@ class FlowEngine:
         resolved: dict[str, Any] = {}
         for requirement in planned.platform_assets:
             asset = environment.platform_asset(requirement.role)
-            if asset is None or asset.kind != requirement.kind:
+            if (
+                asset is None
+                or asset.kind != requirement.kind
+                or (
+                    requirement.identity is not None
+                    and asset.identity != requirement.identity
+                )
+            ):
                 raise FlowExecutionError(
                     f"preflight did not resolve platform asset {requirement.role!r}"
                 )

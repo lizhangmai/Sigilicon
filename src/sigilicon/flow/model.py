@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import os
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -136,6 +137,7 @@ class PlatformAssetRequirement:
     role: str
     kind: str
     members: tuple[str, ...] = ()
+    identity: str | None = None
 
     def __post_init__(self) -> None:
         identifier(self.role, "platform asset role")
@@ -143,6 +145,8 @@ class PlatformAssetRequirement:
         for member in self.members:
             identifier(member, "platform asset member role")
         _unique(self.members, "platform asset member roles")
+        if self.identity is not None:
+            _semantic_identity(self.identity, "platform asset identity")
 
 
 @dataclass(frozen=True)
@@ -326,6 +330,7 @@ class AdapterSelection:
     adapter: str
     config: Mapping[str, Any] = field(default_factory=dict)
     required_capabilities: tuple[str, ...] = ()
+    platform_asset_identities: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         identifier(self.action_kind, "profile Action kind")
@@ -333,6 +338,18 @@ class AdapterSelection:
         for capability in self.required_capabilities:
             identifier(capability, "profile required capability")
         _unique(self.required_capabilities, "profile required capabilities")
+        identities: dict[str, str] = {}
+        for role, identity in self.platform_asset_identities.items():
+            identifier(role, "profile platform asset role")
+            identities[role] = _semantic_identity(
+                identity,
+                "profile platform asset identity",
+            )
+        object.__setattr__(
+            self,
+            "platform_asset_identities",
+            MappingProxyType(identities),
+        )
         object.__setattr__(
             self,
             "config",
@@ -582,7 +599,14 @@ class ResolvedCapability:
     def __post_init__(self) -> None:
         _semantic_identity(self.identity, "resolved capability identity")
         if self.executable is not None:
-            object.__setattr__(self, "executable", Path(self.executable).resolve())
+            # Tool launchers may be multi-call binaries whose selected mode is
+            # derived from argv[0] (for example Synopsys dc_shell).  Normalize
+            # the site path without dereferencing that semantic launcher.
+            object.__setattr__(
+                self,
+                "executable",
+                Path(os.path.abspath(self.executable)),
+            )
 
 
 @dataclass(frozen=True)

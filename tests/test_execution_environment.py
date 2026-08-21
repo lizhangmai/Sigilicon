@@ -141,6 +141,37 @@ def test_explicit_environment_resolves_private_files_and_public_identity(
     assert str(tmp_path) not in json.dumps(record)
 
 
+def test_execution_environment_preserves_multicall_launcher_symlink(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "bin/snps_shell"
+    target.parent.mkdir()
+    target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    target.chmod(0o755)
+    launcher = target.with_name("dc_shell")
+    launcher.symlink_to(target.name)
+    contract = tmp_path / "environment.toml"
+    contract.write_text(
+        f'''schema = 1
+contract_kind = "execution-environment"
+path_scope = "site"
+owner = "fixture-site"
+name = "multicall-launcher"
+
+[capabilities."tool.synopsys-dc"]
+identity = "synopsys-dc@fixture"
+executable = "{launcher}"
+''',
+        encoding="utf-8",
+    )
+
+    environment = load_execution_environment(contract)
+
+    resolved = environment.capabilities["tool.synopsys-dc"].executable
+    assert resolved == launcher
+    assert resolved is not None and resolved.is_symlink()
+
+
 def test_preflight_rechecks_environment_after_resolution(tmp_path: Path) -> None:
     contract, paths = _write_environment(tmp_path)
     environment = load_execution_environment(contract)

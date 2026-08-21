@@ -51,7 +51,11 @@ from sigilicon.flow.model import (
 )
 from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.flow.standard_asic import register_standard_asic_actions
-from sigilicon.flow.synopsys import SynopsysDCAdapter, SynopsysVCSAdapter
+from sigilicon.flow.synopsys import (
+    SynopsysDCAdapter,
+    SynopsysFCAdapter,
+    SynopsysVCSAdapter,
+)
 from sigilicon.flow.source_assets import SourceAssetsAdapter
 from sigilicon.flow.source_revision import (
     load_source_asset_revision,
@@ -106,6 +110,7 @@ __all__ = [
     "fake_profile",
     "register_standard_asic_actions",
     "SynopsysDCAdapter",
+    "SynopsysFCAdapter",
     "SynopsysVCSAdapter",
     "builtin_registry",
     "load_source_asset_revision",

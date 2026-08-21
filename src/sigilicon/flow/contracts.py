@@ -46,6 +46,19 @@ def _string_list(value: object, label: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _string_mapping(value: object, label: str) -> dict[str, str]:
+    table = _table(value, label)
+    if any(
+        not isinstance(key, str)
+        or not key
+        or not isinstance(item, str)
+        or not item
+        for key, item in table.items()
+    ):
+        raise FlowContractError(f"{label} must map strings to strings")
+    return dict(table)
+
+
 def _table(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FlowContractError(f"{label} must be a table")
@@ -225,7 +238,7 @@ def load_execution_profile(path: Path) -> ExecutionProfile:
         action = _table(value, f"actions.{action_kind}")
         _reject_unknown(
             action,
-            {"adapter", "requires", "config"},
+            {"adapter", "requires", "platform_assets", "config"},
             f"actions.{action_kind}",
         )
         selections.append(
@@ -242,6 +255,10 @@ def load_execution_profile(path: Path) -> ExecutionProfile:
                 required_capabilities=_string_list(
                     action.get("requires", []),
                     f"actions.{action_kind}.requires",
+                ),
+                platform_asset_identities=_string_mapping(
+                    action.get("platform_assets", {}),
+                    f"actions.{action_kind}.platform_assets",
                 ),
             )
         )

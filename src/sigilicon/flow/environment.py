@@ -41,11 +41,18 @@ def _text(value: object, label: str) -> str:
     return value
 
 
-def _site_path(value: object, label: str) -> Path:
+def _site_path(
+    value: object,
+    label: str,
+    *,
+    preserve_launcher: bool = False,
+) -> Path:
     raw = _text(value, label)
     path = Path(raw)
     if not path.is_absolute():
         raise FlowContractError(f"{label} must be an absolute current-site path")
+    if preserve_launcher:
+        return Path(os.path.abspath(path))
     return path.resolve()
 
 
@@ -68,7 +75,11 @@ def _load_capabilities(value: object) -> dict[str, ResolvedCapability]:
         executable = (
             None
             if executable_value is None
-            else _site_path(executable_value, f"capabilities.{name}.executable")
+            else _site_path(
+                executable_value,
+                f"capabilities.{name}.executable",
+                preserve_launcher=True,
+            )
         )
         if executable is not None and (
             not executable.is_file() or not os.access(executable, os.X_OK)
