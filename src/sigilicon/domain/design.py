@@ -30,8 +30,8 @@ class DesignSpec:
     outputs: tuple[str, ...]
     inouts: tuple[str, ...]
     supplies: tuple[str, ...]
-    primary_supply: str
-    ground_supply: str
+    primary_supply: str | None
+    ground_supply: str | None
     port_order: tuple[str, ...]
     directions: Mapping[str, str]
     pdk: PdkConfig
@@ -119,29 +119,41 @@ def load_design_spec(path: Path, *, project_root: Path | None = None) -> DesignS
     primary_supply = ports.get("primary_supply")
     ground_supply = ports.get("ground_supply")
     if primary_supply is None and ground_supply is None:
-        if len(supplies_raw) != 2:
+        if len(supplies_raw) == 2:
+            primary_supply, ground_supply = supplies_raw
+        elif len(supplies_raw) == 1:
+            raise ValueError(
+                "single-rail ports.supplies requires either ports.primary_supply "
+                "or ports.ground_supply"
+            )
+        else:
             raise ValueError(
                 "multi-domain ports.supplies requires ports.primary_supply "
                 "and ports.ground_supply"
             )
-        primary_supply, ground_supply = supplies_raw
-    elif primary_supply is None or ground_supply is None:
+    else:
+        if primary_supply is not None:
+            primary_supply = _string(
+                primary_supply, "ports.primary_supply", identifier=True
+            )
+        if ground_supply is not None:
+            ground_supply = _string(
+                ground_supply, "ports.ground_supply", identifier=True
+            )
+    if len(supplies_raw) > 1 and (
+        primary_supply is None or ground_supply is None
+    ):
         raise ValueError(
             "ports.primary_supply and ports.ground_supply must be declared together"
         )
-    else:
-        primary_supply = _string(
-            primary_supply, "ports.primary_supply", identifier=True
-        )
-        ground_supply = _string(
-            ground_supply, "ports.ground_supply", identifier=True
-        )
-    if primary_supply == ground_supply:
+    if primary_supply is not None and primary_supply == ground_supply:
         raise ValueError("primary and ground supplies must be different")
-    if primary_supply not in supplies_raw or ground_supply not in supplies_raw:
+    if any(
+        supply is not None and supply not in supplies_raw
+        for supply in (primary_supply, ground_supply)
+    ):
         raise ValueError(
-            "ports.primary_supply and ports.ground_supply must both appear in "
-            "ports.supplies"
+            "declared primary or ground supply must appear in ports.supplies"
         )
     grouped = inputs + outputs + inouts + supplies_raw
     if not inputs + outputs + inouts:

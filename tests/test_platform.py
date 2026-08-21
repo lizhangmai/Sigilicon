@@ -93,6 +93,25 @@ def test_layout_identity_is_scoped_away_from_simulation_models(
     assert third.layout.configuration_sha256 != second.layout.configuration_sha256
 
 
+def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    verification = tmp_path / "configs/platform/testpdk/verification.toml"
+    verification.write_text(
+        verification.read_text(encoding="utf-8").replace(
+            'qrc_tech_file = "qrc.tech"\n', ""
+        ),
+        encoding="utf-8",
+    )
+
+    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+
+    assert platform.layout is not None
+    assert platform.layout.qrc_tech_file is None
+    assert platform.layout.drc_deck.name == "drc.deck"
+    assert platform.layout.lvs_deck.name == "lvs.deck"
+
+
 def test_platform_layout_rejects_owner_specific_technology_roles(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)

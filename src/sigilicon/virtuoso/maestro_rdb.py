@@ -47,10 +47,23 @@ def _expected_identity(
     model from simulator result paths, aggregate run metadata, or Detail CSV.
     """
 
+    scalar_free_model = (
+        expected_expression_count == 0
+        and expected_outputs is not None
+        and len(expected_outputs) == 0
+    )
     checks = (
         ("point count", expected_point_count, result["point_count"]),
-        ("corner identity", expected_corners, result["identity"]["corners"]),
-        ("test identity", expected_tests, result["identity"]["tests"]),
+        (
+            "corner identity",
+            None if scalar_free_model else expected_corners,
+            result["identity"]["corners"],
+        ),
+        (
+            "test identity",
+            None if scalar_free_model else expected_tests,
+            result["identity"]["tests"],
+        ),
         ("output identity", expected_outputs, result["identity"]["outputs"]),
         (
             "expression count",
@@ -61,8 +74,15 @@ def _expected_identity(
     for label, expected, actual in checks:
         if expected is None:
             continue
-        if label in {"point count", "expression count"}:
+        if label == "point count":
             if expected <= 0 or actual != expected:
+                raise ValueError(
+                    f"native Maestro RDB {label} differs from the expected model: "
+                    f"expected {expected}, got {actual}"
+                )
+            continue
+        if label == "expression count":
+            if expected < 0 or actual != expected:
                 raise ValueError(
                     f"native Maestro RDB {label} differs from the expected model: "
                     f"expected {expected}, got {actual}"
@@ -227,7 +247,16 @@ def read_native_maestro_rdb_export(
     if summary is None or overall_status is None:
         raise ValueError("native Maestro RDB export lacks summary or spec status")
     point_count, expression_count = summary
-    if point_count <= 0 or expression_count <= 0:
+    scalar_free_contract = (
+        expected_expression_count == 0
+        and expected_outputs is not None
+        and len(expected_outputs) == 0
+    )
+    if point_count <= 0:
+        raise ValueError("native Maestro RDB export contains no result points")
+    if expression_count < 0 or (
+        expression_count == 0 and not scalar_free_contract
+    ):
         raise ValueError("native Maestro RDB export contains no scalar expression outputs")
     if expression_count != len(outputs):
         raise ValueError(
@@ -251,6 +280,16 @@ def read_native_maestro_rdb_export(
             row["value"]
         )
     point_identities: dict[int, dict[str, Any]] = {}
+    if scalar_free_contract:
+        point_identities = {
+            point: {
+                "point": point,
+                "corners": set(),
+                "tests": set(),
+                "outputs": set(),
+            }
+            for point in range(1, point_count + 1)
+        }
     for row in outputs:
         point = int(row["point"])
         identity = point_identities.setdefault(

@@ -295,7 +295,7 @@ def _wrap_import_dd_cleanup(source: str) -> str:
         + " progn(when(vbNetlistObj "
         + "unless(ddReleaseObj(vbNetlistObj) "
         + 'error("source netlist DD handle release failed")) '
-        + "vbNetlistObj = nil)))"
+        + "vbNetlistObj = nil))))"
     )
 
 
@@ -460,7 +460,11 @@ def _import_netlist(
     netlist_view = str(kwargs.get("netlist_view", "netlist"))
     schematic_view = str(kwargs.get("schematic_view", "schematic"))
     reference_libraries = tuple(
-        str(item) for item in kwargs.get("ref_libs", ("analogLib", "basic"))
+        name
+        for name in dict.fromkeys(
+            str(item) for item in kwargs.get("ref_libs", ("analogLib", "basic"))
+        )
+        if name != library
     )
     cds_libraries = tuple(dict.fromkeys((library, *reference_libraries)))
     for name in cds_libraries:

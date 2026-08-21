@@ -183,6 +183,47 @@ def test_sync_design_consumes_source_and_pdk_config(
     assert any("term~>direction" in source for source in client.skill)
 
 
+def test_design_spec_accepts_one_explicit_ground_supply(project_factory) -> None:
+    root, path = project_factory()
+    design_dir = path.parent
+    (design_dir / "circuit.scs").write_text(
+        "subckt inv VSS OUT EN IN\nends inv\n",
+        encoding="utf-8",
+    )
+    path.write_text(
+        """schema = 1
+contract_kind = "cell-design"
+path_scope = "cell"
+owner = "example"
+
+[design]
+library = "designLib"
+cell = "inv"
+source_netlist = "circuit.scs"
+pdk = "testpdk"
+
+[ports]
+inputs = ["EN"]
+inouts = ["OUT", "IN"]
+supplies = ["VSS"]
+ground_supply = "VSS"
+order = ["VSS", "OUT", "EN", "IN"]
+
+[ports.directions]
+VSS = "inputOutput"
+OUT = "inputOutput"
+EN = "input"
+IN = "inputOutput"
+""",
+        encoding="utf-8",
+    )
+
+    spec = load_design_spec(path, project_root=root)
+
+    assert spec.primary_supply is None
+    assert spec.ground_supply == "VSS"
+
+
 def test_target_only_sync_reuses_bridge_import_without_touching_cds_lib(
     monkeypatch, project_factory
 ) -> None:
@@ -366,6 +407,28 @@ def test_import_conversion_cleanup_uses_exact_handle_identity() -> None:
         cell="cell",
     )
 
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in protected:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            assert depth >= 0
+
+    assert in_string is False
+    assert depth == 0
+
     assert "flowBeforeViews = dbGetOpenCellViews()" in protected
     assert "member(flowCv flowBeforeViews)" in protected
     assert (
@@ -466,6 +529,7 @@ def test_owned_spicein_adapter_contract_is_fully_offline(
         assert all(os.fstat(fd) for fd in kwargs["pass_fds"])
         parameter_text = Path(command[2]).read_text(encoding="utf-8")
         assert parameter_text.count(proc_fd_prefix) == 3
+        assert '\'refLibList "analogLib basic"' in parameter_text
         staged_cds = (run_dir / "cds.lib").read_text(encoding="utf-8")
         assert [line.split()[1] for line in staged_cds.splitlines()] == [
             "lib",

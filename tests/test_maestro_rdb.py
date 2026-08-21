@@ -149,6 +149,60 @@ OVERALL_SPEC\tpass
     }
 
 
+def test_native_maestro_rdb_export_accepts_explicit_waveform_only_contract(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rdb.tsv"
+    path.write_text(
+        """RDB_SCHEMA\t1
+PARAM\t1\tcorModelSpec\t\"tt_25c\"
+PARAM\t1\ttemperature\t25
+SUMMARY\t1\t0
+OVERALL_SPEC\t((\"overAll\" t))
+""",
+        encoding="utf-8",
+    )
+
+    result = read_native_maestro_rdb_export(
+        path,
+        expected_point_count=1,
+        expected_corners=("tt_25c",),
+        expected_tests=("tran_truth_table",),
+        expected_outputs=(),
+        expected_expression_count=0,
+    )
+
+    assert result["expression_count"] == 0
+    assert result["scalar_output_count"] == 0
+    assert result["outputs"] == []
+    assert result["identity"]["points"] == [
+        {
+            "point": 1,
+            "corners": [],
+            "tests": [],
+            "outputs": [],
+            "parameters": {"corModelSpec": "tt_25c", "temperature": 25},
+        }
+    ]
+
+
+def test_native_maestro_rdb_export_rejects_unexpected_empty_scalar_results(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rdb.tsv"
+    path.write_text(
+        """RDB_SCHEMA\t1
+PARAM\t1\ttemperature\t25
+SUMMARY\t1\t0
+OVERALL_SPEC\t((\"overAll\" t))
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="no scalar expression outputs"):
+        read_native_maestro_rdb_export(path)
+
+
 def test_native_maestro_rdb_export_rejects_wrong_cartesian_count(
     tmp_path: Path,
 ) -> None:

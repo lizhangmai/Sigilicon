@@ -80,7 +80,7 @@ class LayoutPdkConfig:
     layermap: Path
     drc_deck: Path
     lvs_deck: Path
-    qrc_tech_file: Path
+    qrc_tech_file: Path | None
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
     xstream_bin: Path | None = None
@@ -339,8 +339,14 @@ def _load_layout(
         layermap=_required_file(asset_root, verification_raw.get("layermap"), "layermap"),
         drc_deck=_required_file(asset_root, verification_raw.get("drc_deck"), "drc_deck"),
         lvs_deck=_required_file(asset_root, verification_raw.get("lvs_deck"), "lvs_deck"),
-        qrc_tech_file=_required_file(
-            asset_root, verification_raw.get("qrc_tech_file"), "qrc_tech_file"
+        qrc_tech_file=(
+            _required_file(
+                asset_root,
+                verification_raw["qrc_tech_file"],
+                "qrc_tech_file",
+            )
+            if "qrc_tech_file" in verification_raw
+            else None
         ),
         xstream_flatten_pcells=xstream_flatten,
         xstream_suppressed_warnings=warnings,
