@@ -9,6 +9,9 @@ from sigilicon.paths import (
     discover_project_context,
     validate_artifact_component,
 )
+from sigilicon.domain.repository import RepositoryContext
+
+from conftest import write_component_owner
 
 
 RUN = "1" * 32
@@ -25,12 +28,7 @@ def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
     context = discover_project_context()
 
     assert context.project_root == tmp_path.resolve()
-    assert context.flow_catalogs("design_targets") == (
-        (
-            "example",
-            (tmp_path / "ip/example/configs/flows/design_targets.toml").resolve(),
-        ),
-    )
+    assert context.workspace_root == (tmp_path / "virtuoso").resolve()
 
 
 def test_all_artifact_paths_match_the_single_layout(tmp_path: Path) -> None:
@@ -113,8 +111,6 @@ def test_project_context_rejects_unknown_path_field(tmp_path: Path) -> None:
     (
         ("root", 'unexpected = "root"\n'),
         ("project", 'unexpected = "project"\n'),
-        ("catalogs", 'unexpected = "catalog.toml"\n'),
-        ("python", 'unexpected = "python"\n'),
     ),
 )
 def test_project_context_rejects_unknown_schema_fields(
@@ -134,20 +130,30 @@ def test_project_context_rejects_unknown_schema_fields(
         ProjectContext.from_project_root(tmp_path)
 
 
-def test_project_context_rejects_flow_catalog_outside_managed_ip(
+def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
     tmp_path: Path,
 ) -> None:
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"source": ("catalogs/soc.toml",)},
+    )
+
+    with pytest.raises(ValueError, match="component source escapes"):
+        RepositoryContext.from_project_root(tmp_path)
+
+
+def test_repository_context_rejects_unknown_catalog_roles(tmp_path: Path) -> None:
     contract = tmp_path / "sigilicon.toml"
     contract.write_text(
         contract.read_text(encoding="utf-8").replace(
-            "ip/example/configs/flows/design_targets.toml",
-            "ip/unmanaged/configs/flows/design_targets.toml",
+            '[catalogs]\n', '[catalogs]\nunexpected = "catalogs/extra.toml"\n'
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="must belong to a managed IP root"):
-        ProjectContext.from_project_root(tmp_path)
+    with pytest.raises(ValueError, match="exactly ip, soc, and platform"):
+        RepositoryContext.from_project_root(tmp_path)
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

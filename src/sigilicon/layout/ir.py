@@ -18,6 +18,8 @@ class LayoutInstance:
     transform: str
     parameters: tuple[tuple[str, str, str], ...]
     terminals: tuple[tuple[str, str], ...]
+    expected_master_terminals: tuple[str, ...] = ()
+    callback_parameters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,7 @@ def lower_laygo2_design(
                     terminals=tuple(
                         (str(name), str(net)) for name, net in terminals.items()
                     ),
+                    expected_master_terminals=tuple(sorted(str(name) for name in terminals)),
                 )
             )
         elif isinstance(obj, laygo2.object.physical.Rect):

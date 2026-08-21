@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from sigilicon.domain.repository import RepositoryContext
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.locks import discover_oa_locks, inspect_flow_operation_lock
 from sigilicon.virtuoso.maestro import active_maestro_sessions
@@ -92,9 +93,9 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
     for owner, cells in owners.items():
         duplicates = sorted(cell for cell in set(cells) if cells.count(cell) > 1)
         conflicts.extend(f"{owner}/{cell}" for cell in duplicates)
-    context = ProjectContext.from_project_root(plan.source.project_root)
+    context = RepositoryContext.from_project_root(plan.source.project_root)
     unmanaged_consumed = any(
-        not context.is_managed_ip_path(path)
+        context.owner_for(path) is None
         for source in plan.source.source_roots
         for path in (source.directory, *source.cell_roots)
     )

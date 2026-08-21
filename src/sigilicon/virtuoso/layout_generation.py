@@ -9,7 +9,6 @@ from sigilicon.virtuoso.bridge import decode_skill_output
 from sigilicon.virtuoso.bridge import skill_quote
 
 from sigilicon.layout.ir import LayoutInstance, LayoutPlan
-from sigilicon.domain.platform import PcellPolicy
 from sigilicon.virtuoso.capability import require_workspace_capability
 from sigilicon.virtuoso.confirmation import require_bridge_confirmation
 from sigilicon.virtuoso.oa import (
@@ -55,63 +54,17 @@ def _parameter_list(parameters: tuple[tuple[str, str, str], ...]) -> str:
 
 def _expected_master_terminal_names(
     instance: LayoutInstance,
-    pcell_policy: PcellPolicy | None = None,
 ) -> tuple[str, ...]:
-    """Return the exact terminal set expected from a MOS PCell master.
+    """Return the exact caller-declared terminal set for one OA master."""
 
-    Multi-finger MOS PCells expose the additional alternating diffusion
-    islands as indexed aliases. The canonical instance mapping deliberately
-    stays at the electrical terminal level; this check derives physical
-    master aliases from the PDK-declared finger-count policy.
-    """
-
-    names = {name for name, _net in instance.terminals}
-    policy = pcell_policy or PcellPolicy()
-    if policy.finger_count_parameter is None:
-        return tuple(sorted(names))
-    fingers_value = next(
-        (
-            value
-            for name, _kind, value in instance.parameters
-            if name == policy.finger_count_parameter
-        ),
-        None,
-    )
-    if fingers_value is None:
-        return tuple(sorted(names))
-    try:
-        fingers = int(fingers_value)
-    except ValueError as exc:
-        raise ValueError(
-            f"instance {instance.name} has non-integral "
-            f"{policy.finger_count_parameter}={fingers_value!r}"
-        ) from exc
-    if fingers < 1:
-        raise ValueError(f"instance {instance.name} must have at least one finger")
-    if fingers > 1:
-        if not {policy.drain_terminal, policy.source_terminal}.issubset(names):
-            raise ValueError(
-                f"multi-finger instance {instance.name} must map "
-                f"{policy.drain_terminal} and {policy.source_terminal} terminals"
-            )
-        diffusion_count = fingers + 1
-        source_count = (diffusion_count + 1) // 2
-        drain_count = diffusion_count // 2
-        names.update(
-            f"{policy.source_alias_prefix}{index}"
-            for index in range(1, source_count)
-        )
-        names.update(
-            f"{policy.drain_alias_prefix}{index}"
-            for index in range(1, drain_count)
-        )
-    return tuple(sorted(names))
+    if instance.expected_master_terminals:
+        return tuple(sorted(instance.expected_master_terminals))
+    return tuple(sorted(name for name, _net in instance.terminals))
 
 
 def render_layout_plan_skill(
     plan: LayoutPlan,
     *,
-    pcell_policy: PcellPolicy | None = None,
     overwrite: bool = False,
 ) -> str:
     """Render a source-owned OA layout transaction.
@@ -120,33 +73,38 @@ def render_layout_plan_skill(
     lease still prevents replacement while a user has the target open.
     """
 
-    policy = pcell_policy or PcellPolicy()
     statements: list[str] = []
     for instance in plan.instances:
         x, y = instance.origin_dbu
         hierarchical = not instance.parameters and instance.library == plan.library
-        bypasses_callback = any(
-            name in policy.cdf_callback_bypass_parameters
-            for name, _value_type, _value in instance.parameters
+        if len(instance.callback_parameters) > 1:
+            raise ValueError(
+                f"instance {instance.name} declares more than one CDF callback parameter"
+            )
+        callback_parameter = (
+            instance.callback_parameters[0] if instance.callback_parameters else None
         )
-        route_poly = (
+        callback_value = (
             None
-            if bypasses_callback or policy.cdf_callback_parameter is None
+            if callback_parameter is None
             else next(
                 (
                     value
                     for name, value_type, value in instance.parameters
-                    if name == policy.cdf_callback_parameter
-                    and value_type == "string"
+                    if name == callback_parameter and value_type == "string"
                 ),
                 None,
             )
         )
+        if callback_parameter is not None and callback_value is None:
+            raise ValueError(
+                f"instance {instance.name} callback parameter {callback_parameter!r} "
+                "must name a string PCell parameter"
+            )
         creation_parameters = tuple(
             parameter
             for parameter in instance.parameters
-            if route_poly is None
-            or parameter[0] != policy.cdf_callback_parameter
+            if callback_parameter is None or parameter[0] != callback_parameter
         )
         statements.extend(
             (
@@ -185,7 +143,7 @@ def render_layout_plan_skill(
                 % skill_quote(f"cannot create layout instance {instance.name}"),
             )
         )
-        if route_poly is not None:
+        if callback_parameter is not None:
             statements.extend(
                 (
                     "savedCdf = makeTable(gensym('flowSavedCdfValues))",
@@ -199,9 +157,9 @@ def render_layout_plan_skill(
                     "when(get(iCDF param~>name) "
                     "putpropq(param get(iCDF param~>name)~>value value)))",
                     "routeParam = get(cCDF %s)"
-                    % skill_quote(policy.cdf_callback_parameter),
+                    % skill_quote(callback_parameter),
                     "unless(routeParam error(\"declared CDF callback parameter not found\"))",
-                    "routeParam~>value = %s" % skill_quote(route_poly),
+                    "routeParam~>value = %s" % skill_quote(callback_value),
                     "cdfgData = cCDF",
                     "callback = routeParam~>callback",
                     "unless(callback && callback != \"\" "
@@ -218,8 +176,8 @@ def render_layout_plan_skill(
                     "iCDF = cdfGetInstCDF(inst)",
                     "unless(equal(get(iCDF %s)~>value %s) error(%s))"
                     % (
-                        skill_quote(policy.cdf_callback_parameter),
-                        skill_quote(route_poly),
+                        skill_quote(callback_parameter),
+                        skill_quote(callback_value),
                         skill_quote(
                             f"PCell CDF callback failed for {instance.name}"
                         ),
@@ -342,7 +300,6 @@ def write_layout_plan(
     client: Any,
     plan: LayoutPlan,
     *,
-    pcell_policy: PcellPolicy,
     operation: Any,
     overwrite: bool = False,
     timeout: int = 120,
@@ -367,9 +324,7 @@ def write_layout_plan(
         lambda: client.execute_skill(
             audit_cellview_delta_skill(
                 own_synchronous_cellview_delta_skill(
-                    render_layout_plan_skill(
-                        plan, pcell_policy=pcell_policy, overwrite=overwrite
-                    ),
+                    render_layout_plan_skill(plan, overwrite=overwrite),
                     label=label,
                 ),
                 label=label,
@@ -389,7 +344,6 @@ def validate_layout_plan(
     client: Any,
     plan: LayoutPlan,
     *,
-    pcell_policy: PcellPolicy,
     operation: Any,
     timeout: int = 60,
 ) -> dict[str, object]:
@@ -408,7 +362,7 @@ def validate_layout_plan(
       terminals = sort(
         foreach(mapcar terminal inst~>master~>terminals terminal~>name)
         'alphalessp)
-      unless(equal(terminals list({" ".join(skill_quote(name) for name in _expected_master_terminal_names(instance, pcell_policy))}))
+      unless(equal(terminals list({" ".join(skill_quote(name) for name in _expected_master_terminal_names(instance))}))
         error(sprintf(nil {skill_quote(f"generated layout master terminals mismatch for {instance.name}: %L")} terminals)))'''
         for instance in plan.instances
     )

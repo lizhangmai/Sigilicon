@@ -7,7 +7,7 @@ import pytest
 from sigilicon.domain.oa_simulation import load_oa_simulation_spec, oa_simulation_fingerprint
 from sigilicon.virtuoso.ade import _native_setup_entry_point
 from sigilicon.workflows.oa_simulation import _elaborated_netlist_fingerprint
-from conftest import write_project_context, write_test_platform
+from conftest import write_component_owner, write_project_context, write_test_platform
 
 
 def _write_native_simulation_spec(tmp_path: Path) -> tuple[Path, Path]:
@@ -41,6 +41,16 @@ config_procedure = "llmCimNativeConfig"
 maestro_procedure = "llmCimNativeMaestro"
 """,
         encoding="utf-8",
+    )
+    write_component_owner(
+        root,
+        "compute",
+        filesets={
+            "verification": (
+                "ip/compute/verification/oa/tb_native/simulation.toml",
+                "ip/compute/verification/oa/tb_native/setup.il",
+            ),
+        },
     )
     return root, spec
 

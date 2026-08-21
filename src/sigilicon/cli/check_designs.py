@@ -24,7 +24,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = context.project_root
     try:
         if args.catalog is None:
-            report = inspect_repository_designs(context)
+            report = inspect_repository_designs(root)
         else:
             _, report = inspect_design_catalog(args.catalog, project_root=root)
     except (OSError, RuntimeError, ValueError) as error:

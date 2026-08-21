@@ -10,7 +10,7 @@ from conftest import (
     write_test_platform,
 )
 from sigilicon.domain.platform import load_platform
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 
 def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
@@ -19,7 +19,7 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
     write_project_context(tmp_path)
     model = write_test_platform(tmp_path)
 
-    platform = load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
 
     assert platform.path == tmp_path / "configs/platform/testpdk/platform.toml"
     assert platform.simulation.default.file == model
@@ -46,7 +46,7 @@ def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*model_sects"):
-        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
 
 
 def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*primitive_masters"):
-        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
 
 
 def test_layout_identity_is_scoped_away_from_simulation_models(
@@ -67,7 +67,7 @@ def test_layout_identity_is_scoped_away_from_simulation_models(
 ) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
-    context = ProjectContext.from_project_root(tmp_path)
+    context = RepositoryContext.from_project_root(tmp_path)
     first = load_platform(context, "testpdk")
     assert first.layout is not None
 
@@ -93,37 +93,18 @@ def test_layout_identity_is_scoped_away_from_simulation_models(
     assert third.layout.configuration_sha256 != second.layout.configuration_sha256
 
 
-def test_layout_contract_rejects_external_geometry_profile(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    write_test_layout_platform(tmp_path)
-    layout = tmp_path / "configs/platform/testpdk/layout.toml"
-    source = layout.read_text(encoding="utf-8")
-    layout.write_text(
-        source.replace(
-            "[technology.model_polarities]",
-            '[technology]\nprofile = "geometry.toml"\n\n[technology.model_polarities]',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unsupported fields.*profile"):
-        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
-
-
-def test_layout_contract_rejects_owner_via_landing_geometry(tmp_path: Path) -> None:
+def test_platform_layout_rejects_owner_specific_technology_roles(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
     layout = tmp_path / "configs/platform/testpdk/layout.toml"
     layout.write_text(
-        layout.read_text(encoding="utf-8").replace(
-            'definition = "V23"',
-            'definition = "V23"\nlanding_half_sizes = { routing2 = [1, 1] }',
-        ),
+        layout.read_text(encoding="utf-8")
+        + '\n[technology]\nprofile = "geometry.toml"\n',
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="unsupported fields.*landing_half_sizes"):
-        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+    with pytest.raises(ValueError, match="unsupported fields.*technology"):
+        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
 
 
 def test_verification_contract_rejects_owner_drc_policy(tmp_path: Path) -> None:
@@ -137,7 +118,7 @@ def test_verification_contract_rejects_owner_drc_policy(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*drc_profile"):
-        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
 
 
 def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> None:
@@ -153,7 +134,7 @@ def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> Non
     manifest = tmp_path / "configs/platform/custom/platform.toml"
     manifest.rename(manifest.with_name("platform-contract.toml"))
 
-    platform = load_platform(ProjectContext.from_project_root(tmp_path), "custom")
+    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "custom")
 
     assert platform.path.name == "platform-contract.toml"
 
@@ -170,4 +151,4 @@ def test_platform_contract_owners_must_match_the_manifest(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="owner must be 'test-platform'"):
-        load_platform(ProjectContext.from_project_root(tmp_path), "testpdk")
+        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")

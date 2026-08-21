@@ -7,6 +7,8 @@ import pytest
 from sigilicon.cli import flow as flow_cli
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
+from conftest import write_component_owner
+
 
 def _catalog_project(
     tmp_path: Path,
@@ -32,6 +34,13 @@ actions = [{actions}]
 ''',
         encoding="utf-8",
     )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": ("ip/example/configs/flows/layout_targets.toml",),
+        },
+    )
     return spec
 
 
@@ -41,6 +50,13 @@ def test_layout_target_catalog_can_start_empty(tmp_path: Path) -> None:
     (flows / "layout_targets.toml").write_text(
         "schema = 1\ncontract_kind = \"flow-layout-registry\"\npath_scope = \"owner\"\nowner = \"example\"\n\n[targets]\n",
         encoding="utf-8",
+    )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": ("ip/example/configs/flows/layout_targets.toml",),
+        },
     )
 
     assert load_layout_target_catalog(tmp_path).targets == ()

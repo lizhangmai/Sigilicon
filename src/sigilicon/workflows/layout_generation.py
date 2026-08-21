@@ -382,7 +382,6 @@ def _generate_layout_impl(
             write_layout_plan(
                 client,
                 plan,
-                pcell_policy=spec.pdk.oa.pcell_policy,
                 operation=operation,
                 overwrite=overwrite,
                 timeout=timeout,
@@ -391,7 +390,6 @@ def _generate_layout_impl(
         validate_layout_plan(
             client,
             plan,
-            pcell_policy=spec.pdk.oa.pcell_policy,
             operation=operation,
             timeout=timeout,
         )

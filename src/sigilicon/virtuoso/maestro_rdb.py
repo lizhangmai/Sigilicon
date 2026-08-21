@@ -310,12 +310,12 @@ def reconstruct_native_diagnostic(
     result: dict[str, Any],
     contract: Any,
 ) -> dict[str, Any] | None:
-    """Delegate product-owned diagnostic reconstruction to ProjectContext."""
+    """Delegate product-owned diagnostic reconstruction to its typed processor."""
 
     diagnostic = contract.diagnostic_equivalence
     if diagnostic is None:
         return None
-    adapter = getattr(contract, "diagnostic_adapter", None)
-    if adapter is None:
-        raise RuntimeError("native diagnostic contract has no project adapter")
-    return adapter.reconstruct(result, contract)
+    processor = getattr(contract, "diagnostic_processor", None)
+    if processor is None:
+        raise RuntimeError("native diagnostic contract has no owner processor")
+    return dict(processor.reconstruct(result, contract))

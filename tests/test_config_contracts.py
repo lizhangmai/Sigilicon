@@ -6,7 +6,7 @@ from sigilicon.domain.config_contracts import (
     inspect_project_configurations,
     require_config_header,
 )
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -21,12 +21,39 @@ contract_kind = "{kind}"
 path_scope = "repository"
 owner = "test"
 """
-    _write(root, "catalogs/ip.toml", header.format(kind="ip-catalog"))
-    _write(root, "catalogs/soc.toml", header.format(kind="soc-catalog"))
+    _write(
+        root,
+        "catalogs/ip.toml",
+        header.format(kind="ip-catalog")
+        + '''
+[targets]
+
+[components.alpha]
+contract = "ip/alpha/component.toml"
+root = "ip/alpha"
+
+[components.beta]
+contract = "ip/beta/component.toml"
+root = "ip/beta"
+
+[components.compute]
+contract = "ip/compute/component.toml"
+root = "ip/compute"
+
+[components.example]
+contract = "ip/example/component.toml"
+root = "ip/example"
+''',
+    )
+    _write(
+        root,
+        "catalogs/soc.toml",
+        header.format(kind="soc-catalog") + "\n[targets]\n",
+    )
     _write(
         root,
         "configs/platform/catalog.toml",
-        header.format(kind="platform-catalog"),
+        header.format(kind="platform-catalog") + "\n[platforms]\n",
     )
     _write(
         root,
@@ -43,7 +70,37 @@ owner = "test"
         + "\n[targets]\n",
     )
     for owner in ("alpha", "beta", "compute"):
-        (root / "ip" / owner).mkdir(parents=True, exist_ok=True)
+        _write(
+            root,
+            f"ip/{owner}/component.toml",
+            f'''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "{owner}"
+name = "{owner}"
+kind = "rtl-ip"
+
+[filesets]
+source = ["ip/{owner}/component.toml"]
+''',
+        )
+    _write(
+        root,
+        "ip/example/component.toml",
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "test"
+name = "example"
+kind = "rtl-ip"
+
+[filesets]
+flow = [
+  "ip/example/configs/flows/design_targets.toml",
+  "ip/example/configs/flows/layout_targets.toml",
+]
+''',
+    )
 
 
 def _owner_roots(root: Path) -> dict[str, Path]:
@@ -71,7 +128,7 @@ owner = "alpha"
     _write(tmp_path, "ip/beta/native.toml", "schema = 3\n")
 
     report = inspect_project_configurations(
-        ProjectContext.from_project_root(tmp_path),
+        RepositoryContext.from_project_root(tmp_path),
         owner_roots=_owner_roots(tmp_path),
     )
 
@@ -88,7 +145,7 @@ def test_project_configuration_rejects_partial_common_header(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="incomplete configuration header"):
         inspect_project_configurations(
-            ProjectContext.from_project_root(tmp_path),
+            RepositoryContext.from_project_root(tmp_path),
             owner_roots=_owner_roots(tmp_path),
         )
 
@@ -107,7 +164,7 @@ owner = "beta"
 
     with pytest.raises(ValueError, match="owner must be 'alpha'"):
         inspect_project_configurations(
-            ProjectContext.from_project_root(tmp_path),
+            RepositoryContext.from_project_root(tmp_path),
             owner_roots=_owner_roots(tmp_path),
         )
 
@@ -134,7 +191,7 @@ owner = "alpha"
     )
 
     inspect_project_configurations(
-        ProjectContext.from_project_root(tmp_path),
+        RepositoryContext.from_project_root(tmp_path),
         owner_roots=_owner_roots(tmp_path),
     )
 

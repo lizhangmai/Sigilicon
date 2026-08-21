@@ -13,7 +13,7 @@ import tomllib
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
-    from sigilicon.paths import ProjectContext
+    from sigilicon.domain.repository import RepositoryContext
 
 
 CONFIG_SCHEMA = 1
@@ -85,14 +85,13 @@ def read_toml(path: Path) -> dict[str, Any]:
 
 
 def inspect_project_configurations(
-    context: ProjectContext,
+    context: RepositoryContext,
     *,
     owner_roots: Mapping[str, Path],
 ) -> dict[str, Any]:
-    """Validate TOML below the owner roots selected by ``ProjectContext``.
+    """Validate TOML below the roots selected by repository catalogs.
 
-    Catalog locations define product and platform roots.  Managed IP roots stay
-    explicit because an IP catalog directory may also contain unmanaged source.
+    Catalog locations define product, component, and platform roots.
     Domain loaders remain responsible for native schemas; this pass proves that
     every TOML is parseable and that every common metadata envelope is complete.
     """
@@ -106,17 +105,14 @@ def inspect_project_configurations(
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),
-        *(
-            path
-            for flow in context.flows
-            for _, path in flow.catalog_paths
-        ),
+        *(path for _, path in context.flow_catalogs("design_targets")),
+        *(path for _, path in context.flow_catalogs("layout_targets")),
     }
-    scan_roots = set(context.managed_ip_roots)
+    repository_owner_roots = {owner.root for owner in context.owners}
+    scan_roots = set(repository_owner_roots)
     scan_roots.update(
         path.parent
         for _, path in context.catalog_paths
-        if path.parent != context.ip_root
     )
 
     resolved_owner_roots: dict[Path, str] = {}
@@ -133,11 +129,11 @@ def inspect_project_configurations(
                 f"configuration owner root has multiple owners: {resolved}"
             )
         resolved_owner_roots[resolved] = owner_name
-    missing_managed = set(context.managed_ip_roots) - set(resolved_owner_roots)
-    if missing_managed:
+    missing_components = repository_owner_roots - set(resolved_owner_roots)
+    if missing_components:
         raise ValueError(
-            "managed IP roots lack a cataloged owner: "
-            f"{sorted(str(path) for path in missing_managed)}"
+            "component roots lack a cataloged owner: "
+            f"{sorted(str(path) for path in missing_components)}"
         )
 
     for path in (*exact_paths, *scan_roots, *resolved_owner_roots):
@@ -190,7 +186,7 @@ def inspect_project_configurations(
                 matches,
                 key=lambda item: len(item[0].parts),
             )
-            if owner_root in context.managed_ip_roots:
+            if owner_root in repository_owner_roots:
                 allowed_scopes = ("owner", "cell", "verification", "variant")
             elif owner_root.is_relative_to(platform_root):
                 allowed_scopes = "platform"

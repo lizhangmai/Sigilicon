@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
-from sigilicon.domain.oa_simulation import OANativeDiagnosticContract
+from sigilicon.domain.native_diagnostics import NativeDiagnosticContract
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,7 @@ def _validate_definition(definition: ValidEdgeContractDefinition) -> None:
 
 def build_valid_edge_contract(
     definition: ValidEdgeContractDefinition,
-) -> OANativeDiagnosticContract:
+) -> NativeDiagnosticContract:
     """Create native Calculator expressions from caller-validated inputs."""
 
     _validate_definition(definition)
@@ -151,7 +151,7 @@ def build_valid_edge_contract(
         "threshold_v": float(definition.threshold_v),
         "owner_metadata": dict(definition.owner_metadata),
     }
-    return OANativeDiagnosticContract(
+    return NativeDiagnosticContract(
         kind=definition.kind,
         settings=settings,
         scalar_outputs=tuple(outputs),
@@ -160,7 +160,7 @@ def build_valid_edge_contract(
 
 
 def validate_valid_edge_contract(
-    diagnostic: OANativeDiagnosticContract,
+    diagnostic: NativeDiagnosticContract,
     *,
     point_count: int,
     expected_kind: str,
@@ -197,7 +197,7 @@ def validate_valid_edge_contract(
 
 
 def validate_valid_edge_source(
-    diagnostic: OANativeDiagnosticContract,
+    diagnostic: NativeDiagnosticContract,
     setup_text: str,
 ) -> tuple[str, ...]:
     """Report missing generator markers without interpreting caller policy."""

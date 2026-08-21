@@ -8,7 +8,6 @@ from sigilicon.layout.provenance import (
     layout_hierarchy_fingerprints,
     layout_verification_fingerprint,
 )
-from sigilicon.domain.platform import PcellPolicy
 from sigilicon.virtuoso.layout_generation import render_layout_plan_skill
 
 
@@ -127,7 +126,7 @@ def test_oa_layout_fingerprint_rejects_physical_or_connectivity_changes() -> Non
 
 def test_oa_layout_properties_separate_content_from_source_provenance() -> None:
     plan = _leaf("CELL")
-    skill = render_layout_plan_skill(plan, pcell_policy=PcellPolicy())
+    skill = render_layout_plan_skill(plan)
 
     assert '"flowLayoutFingerprint"' in skill
     assert '"flowLayoutSourceFingerprint"' in skill

@@ -10,27 +10,11 @@ import re
 from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import read_toml, require_config_header
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _PLATFORM_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
-_POLARITIES = {"nmos", "pmos"}
-_REQUIRED_LAYERS = {
-    "routing1",
-    "routing2",
-    "routing3",
-    "diffusion",
-    "p_implant",
-    "n_implant",
-    "n_well",
-}
-_REQUIRED_VIAS = {
-    "substrate_tap",
-    "well_tap",
-    "routing1_routing2",
-    "routing2_routing3",
-}
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
 
 
@@ -76,17 +60,6 @@ class SimulationPlatformConfig:
 
 
 @dataclass(frozen=True)
-class PcellPolicy:
-    finger_count_parameter: str | None = None
-    source_terminal: str = "S"
-    drain_terminal: str = "D"
-    source_alias_prefix: str = "S_"
-    drain_alias_prefix: str = "D_"
-    cdf_callback_parameter: str | None = None
-    cdf_callback_bypass_parameters: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
 class OaPlatformConfig:
     """OA technology and primitive facts owned by the project platform."""
 
@@ -94,39 +67,6 @@ class OaPlatformConfig:
     technology_library: str
     reference_libraries: tuple[str, ...]
     primitive_subcircuits: Mapping[str, tuple[str, ...]]
-    pcell_policy: PcellPolicy
-
-
-@dataclass(frozen=True)
-class ViaInterface:
-    definition: str
-
-
-@dataclass(frozen=True)
-class LayoutTechnologyInterface:
-    model_polarities: Mapping[str, str]
-    layers: Mapping[str, str]
-    vias: Mapping[str, ViaInterface]
-
-    def layer(self, role: str) -> str:
-        try:
-            return self.layers[role]
-        except KeyError as exc:
-            raise ValueError(f"layout technology has no layer role {role!r}") from exc
-
-    def via(self, role: str) -> ViaInterface:
-        try:
-            return self.vias[role]
-        except KeyError as exc:
-            raise ValueError(f"layout technology has no via role {role!r}") from exc
-
-    def polarity(self, model: str) -> str:
-        try:
-            return self.model_polarities[model]
-        except KeyError as exc:
-            raise ValueError(
-                f"layout technology has no polarity for model {model!r}"
-            ) from exc
 
 
 @dataclass(frozen=True)
@@ -141,7 +81,6 @@ class LayoutPdkConfig:
     drc_deck: Path
     lvs_deck: Path
     qrc_tech_file: Path
-    technology: LayoutTechnologyInterface
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
     xstream_bin: Path | None = None
@@ -320,50 +259,6 @@ def _load_simulation(
     return SimulationPlatformConfig(path, default_name, model_sets)
 
 
-def _optional_policy_identifier(
-    raw: Mapping[str, Any], name: str
-) -> str | None:
-    value = raw.get(name)
-    return None if value is None else _identifier(value, f"pcell_policy.{name}")
-
-
-def _load_pcell_policy(raw: Mapping[str, Any]) -> PcellPolicy:
-    _reject_unknown(
-        raw,
-        {
-            "finger_count_parameter",
-            "source_terminal",
-            "drain_terminal",
-            "source_alias_prefix",
-            "drain_alias_prefix",
-            "cdf_callback_parameter",
-            "cdf_callback_bypass_parameters",
-        },
-        "pcell_policy",
-    )
-    return PcellPolicy(
-        finger_count_parameter=_optional_policy_identifier(
-            raw, "finger_count_parameter"
-        ),
-        source_terminal=_identifier(raw.get("source_terminal", "S"), "source_terminal"),
-        drain_terminal=_identifier(raw.get("drain_terminal", "D"), "drain_terminal"),
-        source_alias_prefix=_identifier(
-            raw.get("source_alias_prefix", "S_"), "source_alias_prefix"
-        ),
-        drain_alias_prefix=_identifier(
-            raw.get("drain_alias_prefix", "D_"), "drain_alias_prefix"
-        ),
-        cdf_callback_parameter=_optional_policy_identifier(
-            raw, "cdf_callback_parameter"
-        ),
-        cdf_callback_bypass_parameters=_names(
-            raw.get("cdf_callback_bypass_parameters", []),
-            "cdf_callback_bypass_parameters",
-            empty=True,
-        ),
-    )
-
-
 def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
     _reject_unknown(
         raw,
@@ -372,7 +267,6 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
             "technology_library",
             "reference_libraries",
             "primitive_subcircuits",
-            "pcell_policy",
         },
         "platform OA contract",
     )
@@ -390,54 +284,7 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
         ),
         reference_libraries=_names(raw.get("reference_libraries"), "reference_libraries"),
         primitive_subcircuits=primitive_subcircuits,
-        pcell_policy=_load_pcell_policy(
-            _table(raw.get("pcell_policy", {}), "pcell_policy")
-        ),
     )
-
-
-def _load_technology(raw: Mapping[str, Any]) -> LayoutTechnologyInterface:
-    _reject_unknown(
-        raw,
-        {"model_polarities", "layers", "vias"},
-        "layout.technology",
-    )
-    model_raw = _table(raw.get("model_polarities"), "model_polarities")
-    model_polarities = {
-        _identifier(model, "model_polarities key"): _text(
-            polarity, f"model_polarities.{model}"
-        )
-        for model, polarity in model_raw.items()
-    }
-    if not model_polarities or any(
-        polarity not in _POLARITIES for polarity in model_polarities.values()
-    ):
-        raise ValueError("layout model polarity must be nmos or pmos")
-    layer_raw = _table(raw.get("layers"), "layout.technology.layers")
-    layers = {
-        _identifier(role, "layout layer role"): _identifier(
-            value, f"layout.technology.layers.{role}"
-        )
-        for role, value in layer_raw.items()
-    }
-    if missing := _REQUIRED_LAYERS - set(layers):
-        raise ValueError(f"layout layer roles are missing: {sorted(missing)}")
-    via_raw = _table(raw.get("vias"), "layout.technology.vias")
-    vias: dict[str, ViaInterface] = {}
-    for raw_role, value in via_raw.items():
-        role = _identifier(raw_role, "layout via role")
-        item = _table(value, f"layout.technology.vias.{role}")
-        _reject_unknown(
-            item,
-            {"definition"},
-            f"layout.technology.vias.{role}",
-        )
-        vias[role] = ViaInterface(
-            _identifier(item.get("definition"), f"via {role} definition"),
-        )
-    if missing := _REQUIRED_VIAS - set(vias):
-        raise ValueError(f"layout via roles are missing: {sorted(missing)}")
-    return LayoutTechnologyInterface(model_polarities, layers, vias)
 
 
 def _load_layout(
@@ -450,7 +297,7 @@ def _load_layout(
 ) -> LayoutPdkConfig:
     _reject_unknown(
         layout_raw,
-        _HEADER_FIELDS | {"dbu_per_micron", "technology"},
+        _HEADER_FIELDS | {"dbu_per_micron"},
         "platform layout contract",
     )
     _reject_unknown(
@@ -471,9 +318,6 @@ def _load_layout(
     dbu = layout_raw.get("dbu_per_micron")
     if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
         raise ValueError("layout.dbu_per_micron must be a positive integer")
-    technology = _load_technology(
-        _table(layout_raw.get("technology"), "layout.technology")
-    )
     xstream_flatten = verification_raw.get("xstream_flatten_pcells", True)
     if not isinstance(xstream_flatten, bool):
         raise ValueError("verification.xstream_flatten_pcells must be boolean")
@@ -498,7 +342,6 @@ def _load_layout(
         qrc_tech_file=_required_file(
             asset_root, verification_raw.get("qrc_tech_file"), "qrc_tech_file"
         ),
-        technology=technology,
         xstream_flatten_pcells=xstream_flatten,
         xstream_suppressed_warnings=warnings,
         xstream_bin=_optional_executable(
@@ -520,7 +363,7 @@ def _source_digest(root: Path, paths: tuple[Path, ...]) -> str:
     return digest.hexdigest()
 
 
-def load_platform(context: ProjectContext, key: str) -> PdkConfig:
+def load_platform(context: RepositoryContext, key: str) -> PdkConfig:
     """Resolve and validate one platform without leaking repository layout."""
 
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:

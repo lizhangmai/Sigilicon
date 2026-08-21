@@ -21,7 +21,7 @@ from sigilicon.domain.soc import (
     load_soc_contract,
     load_soc_lock,
 )
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
     plan_ip_release,
@@ -33,7 +33,7 @@ from sigilicon.workflows.ip_packaging import (
 def _catalog_targets(root: Path, domain: str) -> Mapping[str, Any]:
     if domain not in {"ip", "soc"}:
         raise ValueError(f"unsupported product catalog: {domain}")
-    context = ProjectContext.from_project_root(root)
+    context = RepositoryContext.from_project_root(root)
     path = context.catalog(domain)
     with path.open("rb") as stream:
         raw = tomllib.load(stream)

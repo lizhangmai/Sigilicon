@@ -9,7 +9,6 @@ from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_release import safe_relative
-from sigilicon.paths import ProjectContext
 
 
 COMPONENT_KINDS = {"composite-ip", "hard-macro", "rtl-shell", "rtl-ip"}
@@ -31,6 +30,7 @@ class ComponentDependency:
 class ComponentContract:
     path: Path
     project_root: Path
+    owner: str
     name: str
     kind: str
     public_interface: PurePosixPath | None
@@ -39,16 +39,13 @@ class ComponentContract:
 
 
 def load_component_contract(path: Path, *, project_root: Path) -> ComponentContract:
-    context = ProjectContext.from_project_root(project_root)
-    root = context.project_root
+    root = project_root.resolve()
     contract_path = path.resolve()
     if not contract_path.is_relative_to(root) or not contract_path.is_file():
         raise FileNotFoundError("component contract is missing or outside the project root")
     with contract_path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
-    if not contract_path.is_relative_to(context.ip_root):
-        raise ValueError("component contract must be owned by a ProjectContext IP")
-    require_config_header(
+    header = require_config_header(
         raw,
         contract_path,
         contract_kind="ip-component",
@@ -102,6 +99,7 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
     result = ComponentContract(
         path=contract_path,
         project_root=root,
+        owner=header.owner,
         name=_string(raw.get("name"), "name"),
         kind=kind,
         public_interface=public_interface,

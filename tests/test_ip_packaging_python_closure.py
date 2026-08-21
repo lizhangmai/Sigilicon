@@ -29,7 +29,7 @@ def test_python_import_closure_tracks_project_owned_root_modules(tmp_path: Path)
 
 
 def test_python_module_paths_do_not_snapshot_external_packages(tmp_path: Path) -> None:
-    assert _python_module_paths(tmp_path, "sigilicon.layout.mos") == set()
+    assert _python_module_paths(tmp_path, "sigilicon.layout.ir") == set()
 
 
 def test_sigilicon_tool_identity_has_version_and_source_digest() -> None:

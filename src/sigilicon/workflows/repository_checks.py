@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-import json
-import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +14,7 @@ from sigilicon.domain.config_contracts import (
 )
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.platform import load_platform
-from sigilicon.external_tools import run_process_group_capture
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
@@ -28,7 +25,7 @@ _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 
 
 def _catalog(
-    context: ProjectContext,
+    context: RepositoryContext,
     name: str,
     contract_kind: str,
     sections: tuple[str, ...],
@@ -57,18 +54,21 @@ def _catalog(
 
 
 def _contract_entries(
-    context: ProjectContext,
+    context: RepositoryContext,
     catalog: str,
     rows: Mapping[str, Any],
+    *,
+    owner_roots: bool = False,
 ) -> dict[str, Path]:
     root = context.project_root
     result: dict[str, Path] = {}
     for name, row in rows.items():
         if not isinstance(name, str) or not name:
             raise ValueError(f"{catalog} catalog names must be non-empty strings")
-        if not isinstance(row, Mapping) or set(row) != {"contract"}:
+        expected = {"contract", "root"} if owner_roots else {"contract"}
+        if not isinstance(row, Mapping) or set(row) != expected:
             raise ValueError(
-                f"{catalog} catalog entry {name!r} must contain only contract"
+                f"{catalog} catalog entry {name!r} must contain {sorted(expected)}"
             )
         value = row.get("contract")
         if not isinstance(value, str) or not value:
@@ -95,13 +95,8 @@ def _document_owner(path: Path) -> str:
     return owner
 
 
-def _managed_ip_root(context: ProjectContext, path: Path) -> Path:
-    matches = tuple(
-        root for root in context.managed_ip_roots if path.is_relative_to(root)
-    )
-    if len(matches) != 1:
-        raise ValueError(f"IP contract must belong to exactly one managed root: {path}")
-    return matches[0]
+def _component_owner_root(context: RepositoryContext, path: Path) -> Path:
+    return context.require_owner(path).root
 
 
 def _register_owner_root(
@@ -122,37 +117,12 @@ def _register_owner_root(
     owner_roots[owner] = root
 
 
-def _run_json_command(
-    command: Sequence[str],
-    *,
-    project_root: Path,
-    runner: Callable[..., Any],
-) -> dict[str, Any]:
-    completed = runner(
-        command,
-        cwd=project_root,
-        env=os.environ.copy(),
-        timeout=900,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"design check failed: {detail}")
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("design check did not return JSON") from exc
-    if not isinstance(payload, dict) or payload.get("passed") is not True:
-        raise RuntimeError("design check did not report a passing result")
-    return payload
-
-
 def inspect_repository_designs(
-    context: ProjectContext,
-    *,
-    runner: Callable[..., Any] = run_process_group_capture,
+    project_root: Path,
 ) -> dict[str, Any]:
     """Validate every canonical source selected by one project context."""
 
+    context = RepositoryContext.from_project_root(project_root)
     root = context.project_root
     ip_catalog_path, ip_catalog = _catalog(
         context,
@@ -165,6 +135,7 @@ def inspect_repository_designs(
         context,
         "ip.components",
         ip_catalog["components"],
+        owner_roots=True,
     )
 
     owner_roots: dict[str, Path] = {}
@@ -177,7 +148,7 @@ def inspect_repository_designs(
         _register_owner_root(
             owner_roots,
             owner=_document_owner(path),
-            root=_managed_ip_root(context, path),
+            root=_component_owner_root(context, path),
         )
         components[name] = {
             "contract": path.relative_to(root).as_posix(),
@@ -194,7 +165,7 @@ def inspect_repository_designs(
         _register_owner_root(
             owner_roots,
             owner=_document_owner(path),
-            root=_managed_ip_root(context, path),
+            root=_component_owner_root(context, path),
         )
         assembly = (root / contract.oa_assembly).resolve()
         ip_releases[name] = {
@@ -217,7 +188,11 @@ def inspect_repository_designs(
     soc_paths = _contract_entries(context, "soc.targets", soc_catalog["targets"])
     socs: dict[str, Any] = {}
     for name, path in soc_paths.items():
-        plan = plan_soc(path, project_root=root, artifact_root=context.artifact_root)
+        plan = plan_soc(
+            path,
+            project_root=root,
+            artifact_root=context.project.artifact_root,
+        )
         if plan.get("soc") != name:
             raise ValueError(f"SoC catalog identity mismatch: {name}")
         _register_owner_root(
@@ -249,16 +224,6 @@ def inspect_repository_designs(
             "source_sha256": platform.source_sha256,
         }
 
-    for flow in context.flows:
-        owner_root = owner_roots.get(flow.owner)
-        if owner_root is None:
-            raise ValueError(f"flow owner is absent from canonical catalogs: {flow.owner}")
-        for kind, path in flow.catalog_paths:
-            if not path.is_relative_to(owner_root):
-                raise ValueError(
-                    f"flow {flow.name!r} {kind} is outside owner {flow.owner!r}"
-                )
-
     configuration = inspect_project_configurations(
         context,
         owner_roots=owner_roots,
@@ -268,14 +233,14 @@ def inspect_repository_designs(
     design_catalog_paths = context.flow_catalogs("design_targets")
     if design_catalog_paths:
         design_catalog = load_design_target_catalog(root)
-        for target in design_catalog.targets:
-            if "topology" not in {mode.name for mode in target.modes}:
-                continue
-            designs[target.name] = _run_json_command(
-                target.command("topology"),
-                project_root=root,
-                runner=runner,
-            )
+        designs = {
+            target.name: {
+                "owner": target.owner,
+                "entrypoint": target.entrypoint,
+                "modes": [mode.name for mode in target.modes],
+            }
+            for target in design_catalog.targets
+        }
 
     layout_targets: dict[str, Any] = {}
     layout_catalog_paths = context.flow_catalogs("layout_targets")

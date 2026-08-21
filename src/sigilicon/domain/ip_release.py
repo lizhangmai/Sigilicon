@@ -10,7 +10,6 @@ import tomllib
 from typing import Any, Iterable, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
-from sigilicon.paths import ProjectContext
 
 QUALIFICATION_LEVELS = ("development", "implementation", "signoff")
 
@@ -257,8 +256,7 @@ class IpContract:
 
 
 def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
-    context = ProjectContext.from_project_root(project_root)
-    root = context.project_root
+    root = project_root.resolve()
     contract_path = path.resolve()
     if not contract_path.is_relative_to(root):
         raise ValueError("IP contract must be inside the project root")
@@ -276,10 +274,11 @@ def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
     component_contract = safe_relative(raw.get("component"), "component")
     producer_path = (root / producer).resolve()
     if (
-        producer_path != context.ip(producer_path.name)
-        or contract_path.parent != context.ip_config_root(producer_path.name)
+        not producer_path.is_dir()
+        or not producer_path.is_relative_to(root)
+        or not contract_path.is_relative_to(producer_path)
     ):
-        raise ValueError("IP release contract must be owned by its ProjectContext IP")
+        raise ValueError("IP release contract must stay inside its declared producer")
     component_path = (producer_path / component_contract).resolve()
     if not component_path.is_file() or not component_path.is_relative_to(producer_path):
         raise FileNotFoundError("IP component contract is missing or outside its owner")
@@ -484,14 +483,12 @@ def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
         raise ValueError("source.files must be an array")
     oa_assembly = safe_relative(source.get("oa_assembly"), "source.oa_assembly")
     oa_assembly_path = (root / oa_assembly).resolve()
-    owner_config_root = context.ip_config_root(producer_path.name).resolve()
     if (
         not oa_assembly_path.is_file()
-        or not oa_assembly_path.is_relative_to(owner_config_root)
+        or not oa_assembly_path.is_relative_to(producer_path)
     ):
         raise FileNotFoundError(
-            "source.oa_assembly must name a manifest inside the producer-owned "
-            "IP configuration directory"
+            "source.oa_assembly must name a manifest inside the producer root"
         )
 
     default = _string(raw.get("default_qualification"), "default_qualification")

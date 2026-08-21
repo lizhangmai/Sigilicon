@@ -8,6 +8,8 @@ import pytest
 from sigilicon.cli import flow as flow_cli
 from sigilicon.workflows.design_targets import load_design_target_catalog
 
+from conftest import write_component_owner
+
 
 def _catalog_project(tmp_path: Path) -> tuple[Path, Path]:
     flow_root = tmp_path / "ip/example/configs/flows"
@@ -37,6 +39,13 @@ sync = ["--overwrite"]
 ''',
         encoding="utf-8",
     )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": ("ip/example/configs/flows/design_targets.toml",),
+        },
+    )
     return runner.resolve(), spec.resolve()
 
 
@@ -46,6 +55,13 @@ def test_design_target_catalog_can_start_empty(tmp_path: Path) -> None:
     (flows / "design_targets.toml").write_text(
         "schema = 1\ncontract_kind = \"flow-design-registry\"\npath_scope = \"owner\"\nowner = \"example\"\n\n[targets]\n",
         encoding="utf-8",
+    )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": ("ip/example/configs/flows/design_targets.toml",),
+        },
     )
 
     assert load_design_target_catalog(tmp_path).targets == ()
@@ -139,6 +155,9 @@ def test_design_catalog_routes_dv_owned_modules_without_script_wrappers(
     tmp_path: Path,
 ) -> None:
     _catalog_project(tmp_path)
+    module = tmp_path / "soc/example/dv/transaction.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("raise SystemExit(0)\n", encoding="utf-8")
     catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
     catalog_path.write_text(
         '''
@@ -181,7 +200,7 @@ contract = []
 ''',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="project-owned module prefix"):
+    with pytest.raises(ValueError, match="project-owned module"):
         load_design_target_catalog(tmp_path)
 
 

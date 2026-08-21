@@ -980,7 +980,6 @@ def _attest_layout_steps(
             validate_layout_plan(
                 client,
                 step.plan,
-                pcell_policy=step.spec.pdk.oa.pcell_policy,
                 operation=operation,
                 timeout=timeout,
             )

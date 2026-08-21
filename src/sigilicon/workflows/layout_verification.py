@@ -444,15 +444,6 @@ def _run_fingerprint(
         "drc_disabled_defines": dict(policy.drc_disabled_defines),
         "drc_configuration_warnings": policy.drc_configuration_warnings,
         "drc_waiver_layers": policy.drc_waiver_layers,
-        "pcell_policy": {
-            "finger_count_parameter": spec.pdk.oa.pcell_policy.finger_count_parameter,
-            "source_terminal": spec.pdk.oa.pcell_policy.source_terminal,
-            "drain_terminal": spec.pdk.oa.pcell_policy.drain_terminal,
-            "source_alias_prefix": spec.pdk.oa.pcell_policy.source_alias_prefix,
-            "drain_alias_prefix": spec.pdk.oa.pcell_policy.drain_alias_prefix,
-            "cdf_callback_parameter": spec.pdk.oa.pcell_policy.cdf_callback_parameter,
-            "cdf_callback_bypass_parameters": spec.pdk.oa.pcell_policy.cdf_callback_bypass_parameters,
-        },
     }
     return digest(payload)
 
@@ -900,7 +891,6 @@ def verify_layout(
         validate_layout_plan(
             client,
             plan,
-            pcell_policy=spec.pdk.oa.pcell_policy,
             operation=operation,
             timeout=60,
         )

@@ -7,9 +7,9 @@ import hashlib
 import importlib.util
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Collection, Mapping
+from typing import Collection, Mapping
 
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 
 _REQUIRED_CALLABLES = (
@@ -23,8 +23,18 @@ _REQUIRED_CALLABLES = (
 
 
 @dataclass(frozen=True)
-class NativeDiagnosticAdapter:
-    """Loaded caller implementation for product-owned diagnostic semantics."""
+class NativeDiagnosticContract:
+    """Typed scalar-result contract supplied by one product owner."""
+
+    kind: str
+    settings: Mapping[str, object]
+    scalar_outputs: tuple[tuple[str, str], ...]
+    support_sources: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class NativeDiagnosticProcessor:
+    """Loaded owner processor consumed by native result lifecycle stages."""
 
     source: Path
     implementation: ModuleType
@@ -35,48 +45,61 @@ class NativeDiagnosticAdapter:
         *,
         contract_path: Path,
         project_root: Path,
-    ) -> Any:
+    ) -> NativeDiagnosticContract:
         diagnostic = self.implementation.load_contract(
             raw,
             contract_path=contract_path,
             project_root=project_root,
         )
+        if not isinstance(diagnostic, NativeDiagnosticContract):
+            raise TypeError("native diagnostic loader returned an invalid contract")
         support_sources = tuple(
             dict.fromkeys((*diagnostic.support_sources, self.source))
         )
         return replace(diagnostic, support_sources=support_sources)
 
-    def validate_contract(self, diagnostic: Any, *, point_count: int) -> None:
+    def validate_contract(
+        self, diagnostic: NativeDiagnosticContract, *, point_count: int
+    ) -> None:
         self.implementation.validate_contract(diagnostic, point_count=point_count)
 
     def validate_source(
-        self, diagnostic: Any, setup_text: str
+        self, diagnostic: NativeDiagnosticContract, setup_text: str
     ) -> tuple[str, ...]:
         return tuple(self.implementation.validate_source(diagnostic, setup_text))
 
-    def nullable_scalar_names(self, diagnostic: Any) -> tuple[str, ...]:
+    def nullable_scalar_names(
+        self, diagnostic: NativeDiagnosticContract
+    ) -> tuple[str, ...]:
         return tuple(self.implementation.nullable_scalar_names(diagnostic))
 
-    def reconstruct(self, result: Mapping[str, Any], contract: Any) -> Any:
-        return self.implementation.reconstruct(result, contract)
+    def reconstruct(
+        self,
+        result: Mapping[str, object],
+        contract: object,
+    ) -> Mapping[str, object]:
+        value = self.implementation.reconstruct(result, contract)
+        if not isinstance(value, Mapping):
+            raise TypeError("native diagnostic reconstruction must return a mapping")
+        return value
 
     def attestation_requirements(
-        self, diagnostic: Any, tests: Collection[str]
-    ) -> dict[str, Any]:
+        self, diagnostic: NativeDiagnosticContract, tests: Collection[str]
+    ) -> dict[str, object]:
         value = self.implementation.attestation_requirements(diagnostic, tests)
         if not isinstance(value, dict):
             raise TypeError("native diagnostic attestation requirements must be a dict")
         return value
 
 
-def load_native_diagnostic_adapter(
-    context: ProjectContext,
+def load_native_diagnostic_processor(
+    repository: RepositoryContext,
     *,
-    owner: str,
-) -> NativeDiagnosticAdapter | None:
-    """Load the owner adapter explicitly declared by the caller-owned context."""
+    owner_path: Path,
+) -> NativeDiagnosticProcessor | None:
+    """Load the processor selected by the owner component fileset."""
 
-    source = context.native_diagnostic_adapter_for(owner)
+    source = repository.owner_file(owner_path, "native_diagnostics")
     if source is None:
         return None
     identity = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
@@ -84,12 +107,12 @@ def load_native_diagnostic_adapter(
         f"_sigilicon_project_native_diagnostics_{identity}", source
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load native diagnostic adapter: {source}")
+        raise RuntimeError(f"cannot load native diagnostic processor: {source}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     missing = [name for name in _REQUIRED_CALLABLES if not callable(getattr(module, name, None))]
     if missing:
         raise RuntimeError(
-            f"native diagnostic adapter {source} lacks callables: {', '.join(missing)}"
+            f"native diagnostic processor {source} lacks callables: {', '.join(missing)}"
         )
-    return NativeDiagnosticAdapter(source=source, implementation=module)
+    return NativeDiagnosticProcessor(source=source, implementation=module)

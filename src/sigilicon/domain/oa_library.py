@@ -13,7 +13,7 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationPolicy,
     load_physical_verification_policy,
 )
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _VIEW_KINDS = {
@@ -339,7 +339,7 @@ def _load_cell(owner: str, source_manifest: Path, directory: Path) -> OACellSour
 def _load_source_root(
     path: Path,
     *,
-    context: ProjectContext,
+    context: RepositoryContext,
     allow_assembly_fields: bool = False,
 ) -> OASourceRoot:
     raw = _read_toml(path)
@@ -356,16 +356,10 @@ def _load_source_root(
         path_scope="owner",
     )
     owner = _token(raw.get("owner"), f"{path}: owner")
-    manifest_directory = path.parent.resolve()
-    directory = manifest_directory.parent
-    ip_root = context.ip_root
-    if (
-        manifest_directory != context.ip_config_root(directory.name)
-        or directory.parent != ip_root
-    ):
-        raise ValueError(f"OA source manifest is outside its ProjectContext owner: {path}")
-    if not context.is_managed_ip_path(directory):
-        raise ValueError(f"unmanaged IP cannot contribute to OA assembly: {path}")
+    repository_owner = context.require_owner(path)
+    if repository_owner.name != owner:
+        raise ValueError(f"OA source manifest owner disagrees with its catalog: {path}")
+    directory = repository_owner.root
     root_values = _strings(raw.get("cell_roots"), f"{path}: cell_roots")
     cell_roots: list[Path] = []
     source_directories: list[Path] = []
@@ -426,18 +420,10 @@ def load_oa_library_source(
 
     manifest_path = path.resolve()
     if project_root is None:
-        raise ValueError("project_root or ProjectContext is required for an OA assembly")
-    context = ProjectContext.from_project_root(project_root)
+        raise ValueError("project_root is required for an OA assembly")
+    context = RepositoryContext.from_project_root(project_root)
     root = context.project_root
-    ip_root = context.ip_root
-    if not context.is_managed_ip_path(manifest_path):
-        raise ValueError("unmanaged IP cannot own an OA assembly contract")
-    owner_directory = manifest_path.parent.parent
-    if (
-        manifest_path.parent != context.ip_config_root(owner_directory.name)
-        or owner_directory.parent != ip_root
-    ):
-        raise ValueError("OA assembly contract is outside its ProjectContext owner")
+    repository_owner = context.require_owner(manifest_path)
     raw = _read_toml(manifest_path)
     allowed = _ASSEMBLY_FIELDS | _SOURCE_MANIFEST_FIELDS
     unknown = set(raw) - allowed
@@ -454,11 +440,13 @@ def load_oa_library_source(
     name = _identifier(raw.get("name"), "name")
     pdk = _identifier(raw.get("pdk"), "pdk")
     assembly_owner = _token(raw.get("owner"), f"{manifest_path}: owner")
+    if assembly_owner != repository_owner.name:
+        raise ValueError("OA assembly owner disagrees with its repository catalog")
     workspace_template = _project_path(
         root, raw.get("workspace_template"), "workspace_template", file=False
     )
-    if workspace_template != context.workspace_root or not workspace_template.is_dir():
-        raise ValueError("workspace_template must match the ProjectContext workspace root")
+    if workspace_template != context.project.workspace_root or not workspace_template.is_dir():
+        raise ValueError("workspace_template must match the project workspace root")
     oa_library = _project_path(root, raw.get("oa_library"), "oa_library", file=False)
     expected_library = workspace_template / name
     if oa_library != expected_library:

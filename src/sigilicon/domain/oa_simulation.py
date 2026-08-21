@@ -12,30 +12,15 @@ from sigilicon.domain.fingerprints import (
     SourceFingerprintSet,
     oa_source_fingerprints,
 )
-from sigilicon.paths import ProjectContext
-from sigilicon.native_diagnostics import (
-    NativeDiagnosticAdapter,
-    load_native_diagnostic_adapter,
+from sigilicon.domain.native_diagnostics import (
+    NativeDiagnosticContract,
+    NativeDiagnosticProcessor,
+    load_native_diagnostic_processor,
 )
+from sigilicon.domain.repository import RepositoryContext
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-@dataclass(frozen=True)
-class OANativeDiagnosticContract:
-    """Source-owned native Calculator outputs for reviewed observations.
-
-    ``settings`` is normalized to tuples by the loader.  It is deliberately
-    data, rather than executable Python measurement code: the native setup
-    creates the Calculator expressions and Cadence's RDB supplies their
-    values.  Python only reconstructs the reviewed structured result.
-    """
-
-    kind: str
-    settings: Mapping[str, Any]
-    scalar_outputs: tuple[tuple[str, str], ...]
-    support_sources: tuple[Path, ...] = ()
-
-
 @dataclass(frozen=True)
 class OANativeRdbContract:
     """Independent identity model used to audit a native Maestro RDB."""
@@ -47,8 +32,8 @@ class OANativeRdbContract:
     waveform_outputs: tuple[tuple[str, str], ...]
     scalar_outputs: tuple[tuple[str, str], ...]
     setup_model_identities: tuple[tuple[str, str], ...] = ()
-    diagnostic_equivalence: OANativeDiagnosticContract | None = None
-    diagnostic_adapter: NativeDiagnosticAdapter | None = None
+    diagnostic_equivalence: NativeDiagnosticContract | None = None
+    diagnostic_processor: NativeDiagnosticProcessor | None = None
 
     @property
     def scalar_names(self) -> tuple[str, ...]:
@@ -68,9 +53,9 @@ class OANativeRdbContract:
 
         if self.diagnostic_equivalence is None:
             return ()
-        if self.diagnostic_adapter is None:
-            raise RuntimeError("native diagnostic contract has no project adapter")
-        return self.diagnostic_adapter.nullable_scalar_names(
+        if self.diagnostic_processor is None:
+            raise RuntimeError("native diagnostic contract has no owner processor")
+        return self.diagnostic_processor.nullable_scalar_names(
             self.diagnostic_equivalence
         )
 
@@ -166,7 +151,7 @@ def _load_native_rdb_contract(
     path: Path,
     *,
     project_root: Path,
-    diagnostic_adapter: NativeDiagnosticAdapter | None,
+    diagnostic_processor: NativeDiagnosticProcessor | None,
 ) -> OANativeRdbContract:
     """Load the source-owned native RDB identity audit model.
 
@@ -289,15 +274,15 @@ def _load_native_rdb_contract(
             )
         setup_model_identities = tuple(models)
 
-    diagnostic_equivalence: OANativeDiagnosticContract | None = None
+    diagnostic_equivalence: NativeDiagnosticContract | None = None
     diagnostic_raw = raw.get("diagnostic_equivalence")
     if diagnostic_raw is not None:
-        if diagnostic_adapter is None:
+        if diagnostic_processor is None:
             raise ValueError(
                 "native RDB diagnostic_equivalence requires the caller-owned "
-                "adapter declared by ProjectContext"
+                "processor declared by the owner component"
             )
-        diagnostic_equivalence = diagnostic_adapter.load_contract(
+        diagnostic_equivalence = diagnostic_processor.load_contract(
             diagnostic_raw,
             contract_path=path,
             project_root=project_root,
@@ -313,8 +298,8 @@ def _load_native_rdb_contract(
     scalar_outputs.extend(diagnostic_scalar_outputs)
     scalar_names = [name for name, _expression in scalar_outputs]
     if diagnostic_equivalence is not None:
-        assert diagnostic_adapter is not None
-        diagnostic_adapter.validate_contract(
+        assert diagnostic_processor is not None
+        diagnostic_processor.validate_contract(
             diagnostic_equivalence,
             point_count=point_count,
         )
@@ -341,7 +326,7 @@ def _load_native_rdb_contract(
         scalar_outputs=tuple(scalar_outputs),
         setup_model_identities=setup_model_identities,
         diagnostic_equivalence=diagnostic_equivalence,
-        diagnostic_adapter=diagnostic_adapter,
+        diagnostic_processor=diagnostic_processor,
     )
 
 
@@ -377,10 +362,10 @@ def _validate_native_rdb_contract_source(
             missing.append(f"setup model {model_file}/{section}")
     diagnostic = contract.diagnostic_equivalence
     if diagnostic is not None:
-        if contract.diagnostic_adapter is None:
-            raise RuntimeError("native diagnostic contract has no project adapter")
+        if contract.diagnostic_processor is None:
+            raise RuntimeError("native diagnostic contract has no owner processor")
         missing.extend(
-            contract.diagnostic_adapter.validate_source(diagnostic, setup_text)
+            contract.diagnostic_processor.validate_source(diagnostic, setup_text)
         )
     if missing:
         raise ValueError(
@@ -416,10 +401,10 @@ def _load_native_oa_simulation_spec(
     spec_path: Path,
     project_root: Path,
     *,
-    context: ProjectContext,
+    context: RepositoryContext,
     owner_root: Path,
     raw: Mapping[str, Any],
-    diagnostic_adapter: NativeDiagnosticAdapter | None,
+    diagnostic_processor: NativeDiagnosticProcessor | None,
 ) -> OASimulationSpec:
     """Load the thin contract used by native ADE/Maestro pilot cells.
 
@@ -489,7 +474,7 @@ def _load_native_oa_simulation_spec(
         _load_native_rdb_contract(
             rdb_contract_path,
             project_root=project_root,
-            diagnostic_adapter=diagnostic_adapter,
+            diagnostic_processor=diagnostic_processor,
         )
         if rdb_contract_path.is_file()
         else None
@@ -523,17 +508,12 @@ def load_oa_simulation_spec(
     """Load only the source-owned schema-3 thin native simulation contract."""
 
     spec_path = path.resolve()
-    context = ProjectContext.from_project_root(project_root)
+    context = RepositoryContext.from_project_root(project_root)
     root = context.project_root
     if not spec_path.is_file() or not spec_path.is_relative_to(root):
         raise ValueError("OA simulation spec must be a project-owned file")
-    ip_root = context.ip_root
-    if not spec_path.is_relative_to(ip_root):
-        raise ValueError("OA simulation spec must be owned by an active IP")
-    relative_to_ip = spec_path.relative_to(ip_root)
-    if len(relative_to_ip.parts) < 2 or not context.is_managed_ip_path(spec_path):
-        raise ValueError("OA simulation spec must be owned by an active IP")
-    owner_root = ip_root / relative_to_ip.parts[0]
+    owner = context.require_owner(spec_path)
+    owner_root = owner.root
     try:
         with spec_path.open("rb") as stream:
             raw = tomllib.load(stream)
@@ -547,8 +527,8 @@ def load_oa_simulation_spec(
         context=context,
         owner_root=owner_root,
         raw=raw,
-        diagnostic_adapter=load_native_diagnostic_adapter(
+        diagnostic_processor=load_native_diagnostic_processor(
             context,
-            owner=owner_root.name,
+            owner_path=spec_path,
         ),
     )

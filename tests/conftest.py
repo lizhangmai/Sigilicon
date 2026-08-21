@@ -30,26 +30,92 @@ ip = "catalogs/ip.toml"
 soc = "catalogs/soc.toml"
 platform = "configs/platform/catalog.toml"
 
-[flows.example]
-owner = "example"
-design_targets = "ip/example/configs/flows/design_targets.toml"
-layout_targets = "ip/example/configs/flows/layout_targets.toml"
-
-[python]
-owned_module_prefixes = ["soc."]
-
 [paths]
 project_root = "."
-ip_root = "ip"
-managed_ip_roots = ["ip/alpha", "ip/beta", "ip/compute", "ip/example"]
-ip_config_dir = "configs"
 workspace_root = "virtuoso"
 artifact_root = "artifacts"
 result_root = "artifacts"
 """,
         encoding="utf-8",
     )
+    catalogs = root / "catalogs"
+    catalogs.mkdir(exist_ok=True)
+    (catalogs / "ip.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-catalog"
+path_scope = "repository"
+owner = "test"
+
+[targets]
+[components]
+''',
+        encoding="utf-8",
+    )
+    (catalogs / "soc.toml").write_text(
+        '''schema = 1
+contract_kind = "soc-catalog"
+path_scope = "repository"
+owner = "test"
+
+[targets]
+''',
+        encoding="utf-8",
+    )
+    platform_root = root / "configs/platform"
+    platform_root.mkdir(parents=True, exist_ok=True)
+    (platform_root / "catalog.toml").write_text(
+        '''schema = 1
+contract_kind = "platform-catalog"
+path_scope = "repository"
+owner = "test"
+
+[platforms]
+''',
+        encoding="utf-8",
+    )
     return contract
+
+
+def write_component_owner(
+    root: Path,
+    owner: str,
+    *,
+    filesets: dict[str, tuple[str, ...]],
+) -> Path:
+    """Catalog one test owner with explicit fileset inventory."""
+
+    owner_root = root / "ip" / owner
+    owner_root.mkdir(parents=True, exist_ok=True)
+    component = owner_root / "component.toml"
+    fileset_lines: list[str] = []
+    for name, values in filesets.items():
+        rendered = ", ".join(f'"{value}"' for value in values)
+        fileset_lines.append(f"{name} = [{rendered}]")
+    component.write_text(
+        f'''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "{owner}"
+
+name = "{owner}"
+kind = "rtl-ip"
+
+[filesets]
+{chr(10).join(fileset_lines)}
+''',
+        encoding="utf-8",
+    )
+    catalog = root / "catalogs/ip.toml"
+    source = catalog.read_text(encoding="utf-8")
+    catalog.write_text(
+        source
+        + f'''\n[components.{owner}]
+contract = "ip/{owner}/component.toml"
+root = "ip/{owner}"
+''',
+        encoding="utf-8",
+    )
+    return component
 
 
 def write_test_platform(root: Path, key: str = "testpdk") -> Path:
@@ -131,30 +197,6 @@ contract_kind = "platform-layout"
 path_scope = "platform"
 owner = "test-platform"
 dbu_per_micron = 1000
-
-[technology.model_polarities]
-nch = "nmos"
-
-[technology.layers]
-routing1 = "M1"
-routing2 = "M2"
-routing3 = "M3"
-diffusion = "OD"
-p_implant = "PP"
-n_implant = "NP"
-n_well = "NW"
-
-[technology.vias.substrate_tap]
-definition = "SUB"
-
-[technology.vias.well_tap]
-definition = "WELL"
-
-[technology.vias.routing1_routing2]
-definition = "V12"
-
-[technology.vias.routing2_routing3]
-definition = "V23"
 ''',
         encoding="utf-8",
     )

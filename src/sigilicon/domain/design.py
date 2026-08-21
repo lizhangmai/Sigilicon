@@ -11,7 +11,7 @@ from typing import Any, Mapping
 from sigilicon.domain.config_contracts import read_toml, require_config_header
 from sigilicon.domain.netlist import NetlistSnapshot, load_netlist_snapshot, subckt_ports
 from sigilicon.domain.platform import PdkConfig, load_platform
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -86,11 +86,11 @@ def _optional_names(value: Any, field: str) -> tuple[str, ...]:
 def load_design_spec(path: Path, *, project_root: Path | None = None) -> DesignSpec:
     spec_path = path.resolve()
     if project_root is None:
-        raise ValueError("project_root or ProjectContext is required for a design spec")
-    context = ProjectContext.from_project_root(project_root)
-    root = context.project_root
+        raise ValueError("project_root is required for a design spec")
+    repository = RepositoryContext.from_project_root(project_root)
+    root = repository.project_root
     raw = _read_toml(spec_path)
-    if context.is_managed_ip_path(spec_path):
+    if repository.owner_for(spec_path) is not None:
         require_config_header(
             raw,
             spec_path,
@@ -165,7 +165,7 @@ def load_design_spec(path: Path, *, project_root: Path | None = None) -> DesignS
             raise ValueError(f"invalid direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = load_platform(context, _string(design.get("pdk"), "design.pdk"))
+    pdk = load_platform(repository, _string(design.get("pdk"), "design.pdk"))
     return DesignSpec(
         path=spec_path,
         project_root=root,

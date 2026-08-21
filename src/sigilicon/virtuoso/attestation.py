@@ -615,13 +615,13 @@ def compare_native_setup_attestation(
     diagnostic_contract = (
         None if contract is None else getattr(contract, "diagnostic_equivalence", None)
     )
-    diagnostic_adapter = (
-        None if contract is None else getattr(contract, "diagnostic_adapter", None)
+    diagnostic_processor = (
+        None if contract is None else getattr(contract, "diagnostic_processor", None)
     )
     diagnostic_requirements = (
         {}
-        if diagnostic_contract is None or diagnostic_adapter is None
-        else diagnostic_adapter.attestation_requirements(
+        if diagnostic_contract is None or diagnostic_processor is None
+        else diagnostic_processor.attestation_requirements(
             diagnostic_contract,
             set(contract.tests),
         )
@@ -1038,6 +1038,19 @@ def compare_native_setup_attestation(
     }
 
 
+def compare_native_setup_attestation_output(
+    spec: Any,
+    output: str,
+) -> dict[str, Any]:
+    """Parse one official attestation transcript and compare it at the public seam."""
+
+    observations = _parse_rows(output)
+    return {
+        "observations": observations,
+        **compare_native_setup_attestation(spec, observations),
+    }
+
+
 def attest_native_setup(
     spec: Any,
     client: Any,
@@ -1070,15 +1083,16 @@ def attest_native_setup(
     )
     if result.errors:
         raise RuntimeError(result.errors[0])
-    observations = _parse_rows(decode_skill_output(result.output or ""))
-    comparison = compare_native_setup_attestation(spec, observations)
+    comparison = compare_native_setup_attestation_output(
+        spec,
+        decode_skill_output(result.output or ""),
+    )
     payload = {
         "schema": ATTESTATION_SCHEMA,
         "kind": "cadence-native-setup-semantic-attestation",
         "source": "Cadence HDB/ADE/Maestro official API observations",
         "library": spec.library,
         "cell": spec.cell,
-        "observations": observations,
         **comparison,
         "simulation_run": False,
     }

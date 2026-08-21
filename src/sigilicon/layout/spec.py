@@ -25,7 +25,7 @@ from sigilicon.domain.platform import (
     PdkConfig,
     load_platform,
 )
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
@@ -155,25 +155,17 @@ def _required_file(value: Any, field: str, *, base: Path) -> Path:
 
 
 def _owner_oa_assembly(
-    context: ProjectContext,
+    repository: RepositoryContext,
     spec_path: Path,
 ) -> OALibrarySource | None:
     """Resolve the canonical owner assembly when the spec belongs to one."""
 
-    try:
-        relative = spec_path.relative_to(context.ip_root)
-    except ValueError:
+    if repository.owner_for(spec_path) is None:
         return None
-    if len(relative.parts) <= 1:
+    manifest = repository.oa_assembly_for(spec_path)
+    if manifest is None:
         return None
-    manifest = context.ip_config_root(relative.parts[0]) / "oa.toml"
-    if not manifest.is_file():
-        return None
-    with manifest.open("rb") as stream:
-        raw = tomllib.load(stream)
-    if raw.get("contract_kind") != "oa-assembly":
-        return None
-    source = load_oa_library_source(manifest, project_root=context.project_root)
+    source = load_oa_library_source(manifest, project_root=repository.project_root)
     declared_specs = {
         layout_spec
         for cell in source.cells
@@ -189,9 +181,9 @@ def _owner_oa_assembly(
 def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutSpec:
     spec_path = path.resolve()
     if project_root is None:
-        raise ValueError("project_root or ProjectContext is required for a layout spec")
-    context = ProjectContext.from_project_root(project_root)
-    root = context.project_root
+        raise ValueError("project_root is required for a layout spec")
+    repository = RepositoryContext.from_project_root(project_root)
+    root = repository.project_root
     try:
         spec_payload = spec_path.read_bytes()
     except OSError as exc:
@@ -200,7 +192,7 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
         raw = tomllib.loads(spec_payload.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"cannot read layout TOML {spec_path}: {exc}") from exc
-    if context.is_managed_ip_path(spec_path):
+    if repository.owner_for(spec_path) is not None:
         require_config_header(
             raw,
             spec_path,
@@ -268,10 +260,6 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
             raise ValueError(
                 "layout.generator_dependencies must stay below the project root"
             ) from exc
-        if dependency.suffix != ".py":
-            raise ValueError(
-                "layout.generator_dependencies entries must be Python source files"
-            )
     generator_dependency_sha256s = tuple(
         hashlib.sha256(path.read_bytes()).hexdigest()
         for path in generator_dependencies
@@ -378,13 +366,13 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
             raise ValueError(f"unsupported direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = load_platform(context, pdk_key)
+    pdk = load_platform(repository, pdk_key)
     if pdk.layout is None:
         raise ValueError(
             f"platform {pdk_key!r} does not declare layout and verification contracts"
         )
     layout_pdk = pdk.layout
-    assembly = _owner_oa_assembly(context, spec_path)
+    assembly = _owner_oa_assembly(repository, spec_path)
     if assembly is not None and assembly.pdk != pdk_key:
         raise ValueError(
             f"layout spec platform {pdk_key!r} disagrees with OA assembly "

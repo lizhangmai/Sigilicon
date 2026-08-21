@@ -11,7 +11,7 @@ import sys
 import tomllib
 
 from sigilicon.domain.config_contracts import require_config_header
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import RepositoryContext
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _MODULE_RE = re.compile(
@@ -161,8 +161,8 @@ def load_design_target_catalog(
     project_root: Path,
 ) -> DesignTargetCatalog:
     root = project_root.resolve()
-    context = ProjectContext.from_project_root(root)
-    catalogs = context.flow_catalogs("design_targets")
+    repository = RepositoryContext.from_project_root(root)
+    catalogs = repository.flow_catalogs("design_targets")
     if not catalogs:
         raise ValueError("project context declares no design target catalogs")
     targets: list[DesignTarget] = []
@@ -217,17 +217,18 @@ def load_design_target_catalog(
                 if entrypoint_path.suffix != ".py":
                     raise ValueError(f"{field}.entrypoint must be a Python script")
                 entrypoint = entrypoint_relative.as_posix()
-            elif (
-                not isinstance(entrypoint, str)
-                or _MODULE_RE.fullmatch(entrypoint) is None
-                or not entrypoint.startswith(
-                    (*_PACKAGE_MODULE_PREFIXES, *context.owned_module_prefixes)
-                )
-            ):
-                raise ValueError(
-                    f"{field}.entrypoint must name a Sigilicon CLI or a "
-                    "project-owned module prefix declared by ProjectContext"
-                )
+            elif not isinstance(entrypoint, str) or _MODULE_RE.fullmatch(entrypoint) is None:
+                raise ValueError(f"{field}.entrypoint must name a Python module")
+            elif not entrypoint.startswith(_PACKAGE_MODULE_PREFIXES):
+                module_path = root.joinpath(*entrypoint.split("."))
+                if not (
+                    module_path.with_suffix(".py").is_file()
+                    or (module_path / "__main__.py").is_file()
+                ):
+                    raise ValueError(
+                        f"{field}.entrypoint must name a Sigilicon CLI or a "
+                        "project-owned module"
+                    )
             spec_argument = row.get("spec_argument")
             spec_value = row.get("spec")
             spec: Path | None = None

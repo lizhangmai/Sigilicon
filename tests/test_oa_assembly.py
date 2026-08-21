@@ -15,6 +15,8 @@ from sigilicon.workflows.oa_library import (
 )
 from sigilicon.workflows.oa_text_view import oa_text_view_fingerprint
 
+from conftest import write_component_owner
+
 
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +92,12 @@ oa_library = "virtuoso/assembled"
 primitive_masters = ["nch"]
 physical_verification = "ip/alpha/configs/physical_verification.toml"
 cell_roots = ["design/cells", "design/blocks"]
-''',
+        ''',
+    )
+    write_component_owner(
+        tmp_path,
+        "alpha",
+        filesets={"oa_source": ("ip/alpha/configs/oa.toml",)},
     )
     return tmp_path, manifest
 
@@ -213,7 +220,7 @@ cell_roots = ["design/cells"]
     )
     _cell(root, "unmanaged", "OLD")
 
-    with pytest.raises(ValueError, match="unmanaged IP cannot own"):
+    with pytest.raises(ValueError, match="no cataloged owner"):
         load_oa_library_source(manifest, project_root=root)
 
 
@@ -285,7 +292,12 @@ contract_kind = "oa-source-root"
 path_scope = "owner"
 owner = "beta"
 cell_roots = ["design/cells"]
-''',
+        ''',
+    )
+    write_component_owner(
+        root,
+        "beta",
+        filesets={"oa_source": ("ip/beta/configs/oa.toml",)},
     )
     manifest.write_text(
         manifest.read_text(encoding="utf-8")
