@@ -429,6 +429,8 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
 
 def load_soc_lock(path: Path, *, contract: SocContract) -> SocLock:
     lock_path = path.resolve()
+    if not lock_path.is_relative_to(contract.project_root):
+        raise ValueError("SoC release lock must be inside the project root")
     if not lock_path.is_file():
         raise FileNotFoundError(f"SoC IP lock is missing: {lock_path}")
     with lock_path.open("rb") as stream:

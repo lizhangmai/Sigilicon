@@ -405,6 +405,7 @@ def check_soc(
     lock_path: Path | None = None,
 ) -> dict[str, Any]:
     contract = load_soc_contract(contract_path, project_root=project_root)
+    resolved_artifact_root = artifact_root.resolve()
     variant = contract.get_variant(variant_name)
     architecture = _validate_variant_architecture(variant)
     fileset = variant.get_fileset(fileset_name)
@@ -475,7 +476,10 @@ def check_soc(
             )
             for role in roles
         ]
-        release_sources.extend(path.as_posix() for path in paths)
+        relative_paths = [
+            path.relative_to(resolved_artifact_root).as_posix() for path in paths
+        ]
+        release_sources.extend(relative_paths)
         resolved_ip.append(
             {
                 "name": dependency.name,
@@ -483,31 +487,31 @@ def check_soc(
                 "release_id": pinned.release_id,
                 "source_fingerprint": manifest["source_fingerprint"],
                 "maturity": actual_level,
-                "manifest": manifest_path.as_posix(),
+                "manifest": manifest_path.relative_to(
+                    resolved_artifact_root
+                ).as_posix(),
                 "role_exports": {
                     role: _role_export(dependency, role) for role in roles
                 },
                 "roles": {
-                    role: path.as_posix()
-                    for role, path in zip(roles, paths, strict=True)
+                    role: path
+                    for role, path in zip(roles, relative_paths, strict=True)
                 },
             }
         )
     return {
+        "schema": 1,
+        "contract_kind": "soc-check",
+        "owner": "soc",
         "soc": contract.name,
         "variant": variant.name,
         "fileset": fileset.name,
-        "lock": (
-            lock.path.relative_to(contract.project_root).as_posix()
-            if lock.path.is_relative_to(contract.project_root)
-            else lock.path.as_posix()
-        ),
+        "lock": lock.path.relative_to(contract.project_root).as_posix(),
         "passed": True,
         "architecture": architecture,
         "ip_releases": resolved_ip,
         "product_sources": source_plan["sources"],
         "release_sources": release_sources,
-        "sources": [*source_plan["sources"], *release_sources],
     }
 
 
@@ -560,4 +564,12 @@ def resolve_soc_fileset(
         fileset_name=fileset_name,
         lock_path=lock_path,
     )
-    return tuple(Path(value) for value in result["sources"])
+    product_sources = tuple(
+        (project_root.resolve() / Path(value)).resolve()
+        for value in result["product_sources"]
+    )
+    release_sources = tuple(
+        (artifact_root.resolve() / Path(value)).resolve()
+        for value in result["release_sources"]
+    )
+    return (*product_sources, *release_sources)
