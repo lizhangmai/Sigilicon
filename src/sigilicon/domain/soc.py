@@ -8,7 +8,7 @@ import tomllib
 from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
-from sigilicon.domain.ip_release import QUALIFICATION_LEVELS, safe_relative
+from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
 
 
 def _table(value: object, label: str) -> Mapping[str, Any]:
@@ -27,7 +27,7 @@ def _string(value: object, label: str) -> str:
 class SocIpDependency:
     name: str
     export: str
-    required_qualification: str
+    required_maturity: str
     logical_interface: str
     physical_interface: str
     role_modules: Mapping[str, str]
@@ -102,7 +102,7 @@ class LockedIpRelease:
     name: str
     release_id: str
     manifest: PurePosixPath
-    qualification: str
+    maturity: str
 
 
 @dataclass(frozen=True)
@@ -141,14 +141,14 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
     for index, value in enumerate(dependencies):
         item = _table(value, f"ip[{index}]")
         name = _string(item.get("name"), f"ip[{index}].name")
-        qualification = _string(
-            item.get("required_qualification"),
-            f"ip[{index}].required_qualification",
+        maturity = _string(
+            item.get("required_maturity"),
+            f"ip[{index}].required_maturity",
         )
         if name in names:
             raise ValueError(f"duplicate SoC IP dependency: {name}")
-        if qualification not in QUALIFICATION_LEVELS:
-            raise ValueError(f"unsupported SoC IP qualification: {qualification}")
+        if maturity not in RELEASE_MATURITY_LEVELS:
+            raise ValueError(f"unsupported SoC IP maturity: {maturity}")
         names.add(name)
         role_modules_raw = _table(
             item.get("role_modules"), f"ip[{index}].role_modules"
@@ -184,7 +184,7 @@ def load_soc_contract(path: Path, *, project_root: Path) -> SocContract:
             SocIpDependency(
                 name=name,
                 export=export,
-                required_qualification=qualification,
+                required_maturity=maturity,
                 logical_interface=_string(
                     item.get("logical_interface"), f"ip[{index}].logical_interface"
                 ),
@@ -433,6 +433,13 @@ def load_soc_lock(path: Path, *, contract: SocContract) -> SocLock:
         raise FileNotFoundError(f"SoC IP lock is missing: {lock_path}")
     with lock_path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
+    require_config_header(
+        raw,
+        lock_path,
+        contract_kind="soc-release-lock",
+        path_scope="product",
+        owner="soc",
+    )
     if raw.get("soc") != contract.name:
         raise ValueError("SoC IP lock identity does not match its contract")
     entries = raw.get("ip")
@@ -441,17 +448,17 @@ def load_soc_lock(path: Path, *, contract: SocContract) -> SocLock:
     locked: list[LockedIpRelease] = []
     for index, value in enumerate(entries):
         item = _table(value, f"lock.ip[{index}]")
-        qualification = _string(
-            item.get("qualification"), f"lock.ip[{index}].qualification"
+        maturity = _string(
+            item.get("maturity"), f"lock.ip[{index}].maturity"
         )
-        if qualification not in QUALIFICATION_LEVELS:
-            raise ValueError("SoC IP lock has an unsupported qualification")
+        if maturity not in RELEASE_MATURITY_LEVELS:
+            raise ValueError("SoC IP lock has an unsupported maturity")
         locked.append(
             LockedIpRelease(
                 name=_string(item.get("name"), f"lock.ip[{index}].name"),
                 release_id=_string(item.get("release_id"), f"lock.ip[{index}].release_id"),
                 manifest=safe_relative(item.get("manifest"), f"lock.ip[{index}].manifest"),
-                qualification=qualification,
+                maturity=maturity,
             )
         )
     expected = {item.name for item in contract.ips}

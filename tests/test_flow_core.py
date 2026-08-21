@@ -48,6 +48,10 @@ class SourceAdapter:
         self.executions += 1
         output = context.output_path("source", "value.txt")
         output.write_text(str(context.action_config["text"]), encoding="utf-8")
+        if context.action_config.get("internal_symlink"):
+            target = context.work_root / "target.txt"
+            target.write_text("managed target\n", encoding="utf-8")
+            (context.work_root / "link.txt").symlink_to(target.name)
         return AdapterExecution.succeeded()
 
     def collect_result(
@@ -187,6 +191,7 @@ def flow_spec(
     qualifiers: dict[str, str] | None = None,
     transform_policy: str | None = None,
     diagnostic_binding: bool = False,
+    internal_symlink: bool = False,
 ) -> FlowSpec:
     return FlowSpec(
         owner="example",
@@ -195,7 +200,11 @@ def flow_spec(
             FlowNode(
                 node_id="source",
                 action_kind="fake.source",
-                config={"text": text, "qualifiers": qualifiers or {}},
+                config={
+                    "text": text,
+                    "qualifiers": qualifiers or {},
+                    "internal_symlink": internal_symlink,
+                },
             ),
             FlowNode(
                 node_id="transform",
@@ -341,6 +350,35 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     for record in public_records:
         assert not {name for name in keys(record) if "fingerprint" in name}
     assert "digest" not in keys(public_records[2])
+
+
+def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
+    tmp_path: Path,
+) -> None:
+    registered, *_ = registry()
+    engine = FlowEngine(registered)
+    artifact_root = tmp_path / "artifacts"
+    run_id = "9" * 32
+    result = engine.run(
+        engine.plan(
+            flow_spec(internal_symlink=True),
+            "qualification",
+            fake_profile(),
+        ),
+        artifact_root=artifact_root,
+        run_id=run_id,
+    )
+    manifest = json.loads((result.run_root / "run_manifest.json").read_text())
+
+    assert "nodes/source/work/link.txt" in manifest["managed_paths"]
+    assert len(manifest["managed_paths"]) == len(set(manifest["managed_paths"]))
+    engine.clean_run(
+        artifact_root=artifact_root,
+        owner="example",
+        flow_id="fake-pipeline",
+        run_id=run_id,
+    )
+    assert not result.run_root.exists()
 
 
 def test_artifact_qualifiers_propagate_without_derived_identities(

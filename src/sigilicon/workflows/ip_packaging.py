@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -17,11 +18,14 @@ from sigilicon import __version__
 from sigilicon.artifacts import atomic_write_json, file_sha256, read_json_object, utc_now
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.ip_release import (
-    QUALIFICATION_LEVELS,
+    RELEASE_MATURITY_LEVELS,
     IpContract,
     IpExport,
+    IpPromotionContract,
+    PromotionEvidence,
     ReleaseFingerprintSource,
     load_ip_contract,
+    load_ip_promotion_contract,
     release_source_fingerprint,
     semantic_source_sha256,
 )
@@ -39,10 +43,18 @@ from sigilicon.domain.systemverilog import (
     named_port_connections,
 )
 from sigilicon.external_tools import run_process_group
+from sigilicon.flow import FlowEngine, FlowRegistry
+from sigilicon.flow.model import PolicyCheck, PolicySpec
+from sigilicon.flow.policy import evaluate_policy
+from sigilicon.flow.run_artifacts import (
+    load_run_artifact_reference,
+    run_artifact_reference_payload,
+    validate_durable_artifact,
+)
 
 
-class IpQualificationError(RuntimeError):
-    """The requested release level is not backed by real collateral."""
+class IpReleaseError(RuntimeError):
+    """The requested release is not backed by accepted immutable evidence."""
 
 
 _IMPLEMENTATION_ROLE_FORMATS = {
@@ -805,16 +817,16 @@ def _qualification_semantics(
 
 
 def _availability(
-    level: str, roles: set[str], *, qualification_passed: bool
+    level: str, roles: set[str], *, collateral_passed: bool
 ) -> dict[str, bool]:
     return {
         "simulation": "transaction_model" in roles,
-        "synthesis": qualification_passed
+        "synthesis": collateral_passed
         and level in {"implementation", "signoff"}
         and "integration_adapter" in roles
         and "physical_blackbox" in roles
         and "raw_macro_liberty_or_db" in roles,
-        "physical_implementation": qualification_passed
+        "physical_implementation": collateral_passed
         and level in {"implementation", "signoff"}
         and "integration_adapter" in roles
         and "physical_blackbox" in roles
@@ -830,10 +842,10 @@ def plan_ip_release(
     *,
     project_root: Path,
     artifact_root: Path,
-    qualification: str | None = None,
+    maturity: str | None = None,
 ) -> dict[str, Any]:
     contract = load_ip_contract(contract_path, project_root=project_root)
-    level = contract.require_level(qualification or contract.default_qualification)
+    level = contract.require_level(maturity or contract.default_maturity)
     inputs = _source_inputs(contract)
     source_fingerprint = release_source_fingerprint(
         attributes=inputs.fingerprint_attributes,
@@ -880,7 +892,7 @@ def plan_ip_release(
             item for item in missing if item.startswith(f"{exported.name}:")
         ]
         availability = _availability(
-            level, roles, qualification_passed=not export_missing
+            level, roles, collateral_passed=not export_missing
         )
         role_checks.append(
             {
@@ -910,7 +922,7 @@ def plan_ip_release(
                         exported.physical_interface != exported.logical_interface
                     ),
                 },
-                "qualification": {
+                "maturity": {
                     "required_roles": list(exported.required_roles[level]),
                     "missing_items": export_missing,
                 },
@@ -937,16 +949,14 @@ def plan_ip_release(
             "contract": component.path.relative_to(contract.project_root).as_posix(),
         },
         "release_id": release_id,
-        "release_root": (
-            artifact_root.resolve() / "ip" / contract.name / release_id
-        ).as_posix(),
+        "release_root": (Path("ip") / contract.name / release_id).as_posix(),
         "source_commit": commit,
         "working_tree_dirty": dirty,
         "source_fingerprint": source_fingerprint,
         "qualification_subject_fingerprint": subject_fingerprint,
         "source_files": inputs.files,
-        "qualification_level": level,
-        "qualification_checks": [
+        "maturity_level": level,
+        "maturity_checks": [
             *role_checks,
             {
                 "name": "source_fingerprint",
@@ -994,31 +1004,31 @@ def build_ip_release(
     *,
     project_root: Path,
     artifact_root: Path,
-    qualification: str | None = None,
+    maturity: str | None = None,
 ) -> dict[str, Any]:
     plan = plan_ip_release(
         contract_path,
         project_root=project_root,
         artifact_root=artifact_root,
-        qualification=qualification,
+        maturity=maturity,
     )
     if plan["missing_items"]:
         missing = ", ".join(plan["missing_items"])
-        raise IpQualificationError(
-            f"cannot build {plan['qualification_level']} IP release; missing: {missing}"
+        raise IpReleaseError(
+            f"cannot build {plan['maturity_level']} IP release; missing: {missing}"
         )
-    if plan["working_tree_dirty"] and plan["qualification_level"] != "development":
-        raise IpQualificationError(
+    if plan["working_tree_dirty"] and plan["maturity_level"] != "development":
+        raise IpReleaseError(
             "implementation and signoff releases require a clean source checkout"
         )
     contract = load_ip_contract(contract_path, project_root=project_root)
-    release_root = Path(plan["release_root"])
+    release_root = artifact_root.resolve() / Path(plan["release_root"])
     if release_root.exists():
         return audit_ip_release(
             contract_path,
             project_root=project_root,
             artifact_root=artifact_root,
-            qualification=qualification,
+            maturity=maturity,
         )
     namespace = release_root.parent
     namespace.mkdir(parents=True, exist_ok=True)
@@ -1052,6 +1062,9 @@ def build_ip_release(
                 }
             )
         manifest: dict[str, Any] = {
+            "schema": 1,
+            "contract_kind": "ip-release-manifest",
+            "release_kind": "source-package",
             "ip_name": plan["ip_name"],
             "release_id": plan["release_id"],
             "source_commit": plan["source_commit"],
@@ -1063,9 +1076,9 @@ def build_ip_release(
             "component": plan["component"],
             "exports": plan["exports"],
             "views": views,
-            "qualification": {
-                "level": plan["qualification_level"],
-                "checks": plan["qualification_checks"],
+            "maturity": {
+                "level": plan["maturity_level"],
+                "checks": plan["maturity_checks"],
                 "missing_items": plan["missing_items"],
             },
             "provenance": {
@@ -1090,7 +1103,7 @@ def build_ip_release(
         contract_path,
         project_root=project_root,
         artifact_root=artifact_root,
-        qualification=qualification,
+        maturity=maturity,
     )
 
 
@@ -1274,26 +1287,26 @@ def _packaged_interface_check(
             )
 
 
-def _packaged_qualification_check(
+def _packaged_maturity_check(
     manifest: Mapping[str, Any], manifest_path: Path
 ) -> None:
-    qualification = manifest.get("qualification")
-    if not isinstance(qualification, Mapping):
-        raise RuntimeError("IP release qualification identity is missing")
-    level = qualification.get("level")
-    if level not in QUALIFICATION_LEVELS:
-        raise RuntimeError("IP release qualification level is invalid")
+    maturity = manifest.get("maturity")
+    if not isinstance(maturity, Mapping):
+        raise RuntimeError("IP release maturity identity is missing")
+    level = maturity.get("level")
+    if level not in RELEASE_MATURITY_LEVELS:
+        raise RuntimeError("IP release maturity level is invalid")
     problems: list[str] = []
     views = manifest.get("views")
     if not isinstance(views, list):
         raise RuntimeError("IP release views must be a list")
     for export_name, exported in _manifest_exports(manifest).items():
         oa = exported.get("oa")
-        export_qualification = exported.get("qualification")
+        export_maturity = exported.get("maturity")
         if not isinstance(oa, Mapping) or not isinstance(
-            export_qualification, Mapping
+            export_maturity, Mapping
         ):
-            problems.append(f"{export_name}:qualification-identity")
+            problems.append(f"{export_name}:maturity-identity")
             continue
         by_role = {
             str(view.get("role")): view
@@ -1302,7 +1315,7 @@ def _packaged_qualification_check(
             and view.get("export") == export_name
             and isinstance(view.get("role"), str)
         }
-        required = export_qualification.get("required_roles")
+        required = export_maturity.get("required_roles")
         if not isinstance(required, list) or any(
             not isinstance(role, str) or not role for role in required
         ):
@@ -1402,6 +1415,15 @@ def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Audit an exact immutable package without consulting producer source."""
 
     manifest = load_ip_release_manifest(manifest_path)
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("contract_kind") != "ip-release-manifest"
+    ):
+        raise RuntimeError("unsupported IP release manifest schema")
+    if manifest.get("release_kind") == "flow-promotion":
+        return _audit_promoted_ip_release_manifest(manifest_path)
+    if manifest.get("release_kind") != "source-package":
+        raise RuntimeError("unsupported IP release kind")
     release_root = manifest_path.parent.resolve()
     views = manifest.get("views")
     if not isinstance(views, list) or not views:
@@ -1441,7 +1463,7 @@ def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     if actual_files != expected_files:
         raise RuntimeError("IP release file inventory does not match its manifest")
     _packaged_interface_check(manifest, manifest_path)
-    _packaged_qualification_check(manifest, manifest_path)
+    _packaged_maturity_check(manifest, manifest_path)
     return manifest
 
 
@@ -1450,15 +1472,15 @@ def audit_ip_release(
     *,
     project_root: Path,
     artifact_root: Path,
-    qualification: str | None = None,
+    maturity: str | None = None,
 ) -> dict[str, Any]:
     plan = plan_ip_release(
         contract_path,
         project_root=project_root,
         artifact_root=artifact_root,
-        qualification=qualification,
+        maturity=maturity,
     )
-    release_root = Path(plan["release_root"])
+    release_root = artifact_root.resolve() / Path(plan["release_root"])
     if not release_root.is_dir() or release_root.is_symlink():
         raise FileNotFoundError(f"IP release has not been built: {release_root}")
     manifest = audit_ip_release_manifest(release_root / "manifest.json")
@@ -1481,15 +1503,15 @@ def audit_ip_release(
         or any(character not in "0123456789abcdef" for character in source_commit)
     ):
         raise RuntimeError("IP release source_commit is invalid")
-    qualification_data = manifest.get("qualification")
-    if not isinstance(qualification_data, Mapping):
-        raise RuntimeError("IP release qualification record is missing")
+    maturity_data = manifest.get("maturity")
+    if not isinstance(maturity_data, Mapping):
+        raise RuntimeError("IP release maturity record is missing")
     if (
-        qualification_data.get("level") != plan["qualification_level"]
-        or qualification_data.get("missing_items") != []
-        or qualification_data.get("checks") != plan["qualification_checks"]
+        maturity_data.get("level") != plan["maturity_level"]
+        or maturity_data.get("missing_items") != []
+        or maturity_data.get("checks") != plan["maturity_checks"]
     ):
-        raise RuntimeError("IP release qualification record is inconsistent")
+        raise RuntimeError("IP release maturity record is inconsistent")
     views = manifest.get("views")
     if not isinstance(views, list):
         raise RuntimeError("IP release views must be a list")
@@ -1552,7 +1574,9 @@ def audit_ip_release(
         raise RuntimeError("IP release file inventory does not match its manifest")
     return {
         **manifest,
-        "manifest": (release_root / "manifest.json").as_posix(),
+        "manifest": (release_root / "manifest.json")
+        .relative_to(artifact_root.resolve())
+        .as_posix(),
         "audit": {"passed": True, "audited_at": utc_now()},
     }
 
@@ -1562,35 +1586,35 @@ def publish_ip_release(
     *,
     project_root: Path,
     artifact_root: Path,
-    qualification: str | None = None,
+    maturity: str | None = None,
 ) -> dict[str, Any]:
     plan = plan_ip_release(
         contract_path,
         project_root=project_root,
         artifact_root=artifact_root,
-        qualification=qualification,
+        maturity=maturity,
     )
     if plan["working_tree_dirty"]:
-        raise IpQualificationError(
+        raise IpReleaseError(
             "cannot publish an immutable IP release from a dirty source checkout"
         )
     audited = audit_ip_release(
         contract_path,
         project_root=project_root,
         artifact_root=artifact_root,
-        qualification=qualification,
+        maturity=maturity,
     )
     provenance = audited.get("provenance")
     if not isinstance(provenance, Mapping) or provenance.get("working_tree_dirty"):
-        raise IpQualificationError(
+        raise IpReleaseError(
             "cannot publish a release candidate that was built from dirty source"
         )
-    manifest = Path(str(audited["manifest"]))
+    manifest = artifact_root.resolve() / Path(str(audited["manifest"]))
     namespace = artifact_root.resolve() / "ip" / str(audited["ip_name"])
     pointer = {
         "ip_name": audited["ip_name"],
         "release_id": audited["release_id"],
-        "qualification_level": audited["qualification"]["level"],
+        "maturity": audited["maturity"]["level"],
         "source_fingerprint": audited["source_fingerprint"],
         "manifest": manifest.relative_to(artifact_root.resolve()).as_posix(),
         "published_at": utc_now(),
@@ -1615,11 +1639,11 @@ def load_published_ip(
     for key in ("ip_name", "release_id", "source_fingerprint"):
         if manifest.get(key) != pointer.get(key):
             raise RuntimeError(f"IP current pointer {key} is inconsistent")
-    qualification = manifest.get("qualification")
-    if not isinstance(qualification, Mapping) or (
-        qualification.get("level") != pointer.get("qualification_level")
+    maturity = manifest.get("maturity")
+    if not isinstance(maturity, Mapping) or (
+        maturity.get("level") != pointer.get("maturity")
     ):
-        raise RuntimeError("IP current pointer qualification is inconsistent")
+        raise RuntimeError("IP current pointer maturity is inconsistent")
     return manifest, manifest_path
 
 
@@ -1637,3 +1661,700 @@ def resolve_release_role(
     if file_sha256(path) != view.get("sha256"):
         raise RuntimeError(f"IP release role {export}/{role} digest drifted")
     return path
+
+
+def _promotion_run_root(
+    contract: IpPromotionContract,
+    artifact_root: Path,
+    references: tuple[Any, ...],
+) -> Path:
+    reference = references[0]
+    root = artifact_root.resolve()
+    if root == Path(root.anchor):
+        raise IpReleaseError("promotion artifact root cannot be a filesystem root")
+    run_root = (
+        root
+        / "flows"
+        / contract.owner
+        / reference.flow_id
+        / "runs"
+        / reference.run_id
+    )
+    if (
+        not run_root.resolve(strict=False).is_relative_to(root)
+        or not run_root.is_dir()
+        or run_root.is_symlink()
+    ):
+        raise IpReleaseError("promotion Flow Run does not exist or is unsafe")
+    return run_root
+
+
+def _promotion_source_identity(
+    contract: IpPromotionContract,
+    plan: Mapping[str, Any],
+) -> dict[str, object]:
+    nodes = plan.get("nodes")
+    if not isinstance(nodes, list):
+        raise IpReleaseError("promotion run has no resolved nodes")
+    identities: set[tuple[str, bool]] = set()
+    for node in nodes:
+        source_assets = node.get("source_assets") if isinstance(node, Mapping) else None
+        git = (
+            source_assets.get("git")
+            if isinstance(source_assets, Mapping)
+            else None
+        )
+        if not isinstance(git, Mapping):
+            continue
+        commit = git.get("commit")
+        dirty = git.get("dirty")
+        if not isinstance(commit, str) or not isinstance(dirty, bool):
+            raise IpReleaseError("promotion run source identity is invalid")
+        identities.add((commit, dirty))
+    if len(identities) != 1:
+        raise IpReleaseError("promotion requires one canonical Git source identity")
+    commit, dirty = identities.pop()
+    if dirty:
+        raise IpReleaseError("cannot promote a release from dirty source")
+    if commit != contract.source_commit or dirty != contract.source_dirty:
+        raise IpReleaseError("promotion source identity differs from its request")
+    return {"commit": commit, "dirty": dirty}
+
+
+def _promotion_policy(
+    plan: Mapping[str, Any],
+    policy_id: str,
+) -> PolicySpec:
+    policies = plan.get("policies")
+    if not isinstance(policies, list):
+        raise IpReleaseError("promotion run has no policies")
+    matches = [
+        value
+        for value in policies
+        if isinstance(value, Mapping) and value.get("policy_id") == policy_id
+    ]
+    if len(matches) != 1:
+        raise IpReleaseError(f"promotion required policy is missing: {policy_id}")
+    checks = matches[0].get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise IpReleaseError(f"promotion required policy has no checks: {policy_id}")
+    try:
+        return PolicySpec(
+            policy_id=policy_id,
+            checks=tuple(
+                PolicyCheck(
+                    check_id=str(check["check_id"]),
+                    fact=str(check["fact"]),
+                    operator=str(check["operator"]),
+                    expected=check.get("expected"),
+                )
+                for check in checks
+                if isinstance(check, Mapping)
+            ),
+        )
+    except (KeyError, ValueError) as exc:
+        raise IpReleaseError(
+            f"promotion required policy is malformed: {policy_id}"
+        ) from exc
+
+
+def _promotion_evidence_receipt(
+    evidence: PromotionEvidence,
+    *,
+    run_root: Path,
+    result: Mapping[str, Any],
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    nodes = result.get("nodes")
+    node = nodes.get(evidence.node_id) if isinstance(nodes, Mapping) else None
+    if not isinstance(node, Mapping) or (
+        node.get("execution_status") != "succeeded"
+        or node.get("result_status") != "valid"
+        or node.get("status") != "accepted"
+    ):
+        raise IpReleaseError(
+            f"promotion evidence producer is not accepted: {evidence.node_id}"
+        )
+    try:
+        action_result = read_json_object(
+            run_root / "nodes" / evidence.node_id / "action_result.json",
+            f"promotion {evidence.role} Action Result",
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise IpReleaseError(
+            f"promotion evidence producer is not accepted: {evidence.node_id}"
+        ) from exc
+    execution = action_result.get("execution")
+    if (
+        action_result.get("schema") != 1
+        or action_result.get("contract_kind") != "action-result"
+        or action_result.get("node") != evidence.node_id
+        or action_result.get("result_status") != "valid"
+        or not isinstance(execution, Mapping)
+        or execution.get("status") != "succeeded"
+        or action_result.get("facts") != node.get("facts")
+    ):
+        raise IpReleaseError(
+            f"promotion evidence producer is not accepted: {evidence.node_id}"
+        )
+    if evidence.evaluation == "producer":
+        try:
+            receipt = read_json_object(
+                run_root / "nodes" / evidence.node_id / "policy_receipt.json",
+                f"promotion {evidence.role} Policy Receipt",
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise IpReleaseError(
+                f"promotion required policy is missing: {evidence.policy}"
+            ) from exc
+        if (
+            receipt.get("schema") != 1
+            or receipt.get("contract_kind") != "policy-receipt"
+            or receipt.get("policy") != evidence.policy
+            or receipt.get("status") != "accepted"
+        ):
+            raise IpReleaseError(
+                f"promotion required policy was not accepted: {evidence.policy}"
+            )
+        return dict(receipt)
+
+    facts = node.get("facts")
+    if not isinstance(facts, Mapping):
+        raise IpReleaseError(f"promotion evidence facts are missing: {evidence.node_id}")
+    evaluated = evaluate_policy(_promotion_policy(plan, evidence.policy), facts)
+    if evaluated.status != "accepted":
+        raise IpReleaseError(
+            f"promotion required policy was not accepted: {evidence.policy}"
+        )
+    return {
+        "schema": 1,
+        "contract_kind": "policy-receipt",
+        "policy": evaluated.policy_id,
+        "status": evaluated.status,
+        "checks": [
+            {
+                "check_id": check.check_id,
+                "status": check.status,
+                "actual": check.actual,
+                "expected": check.expected,
+            }
+            for check in evaluated.checks
+        ],
+    }
+
+
+def _validate_conclusions(
+    conclusions: Mapping[str, Any],
+    evidence_roles: set[str],
+) -> None:
+    fields = {
+        "implementation_regression",
+        "physical_completion_readiness",
+        "qualification",
+        "signoff",
+    }
+    if set(conclusions) != fields or any(
+        not isinstance(conclusions[field], bool) for field in fields
+    ):
+        raise IpReleaseError("promotion conclusions do not match the current schema")
+    if (
+        conclusions["implementation_regression"]
+        and "regression" not in evidence_roles
+    ):
+        raise IpReleaseError(
+            "implementation regression conclusion lacks regression evidence"
+        )
+    if (
+        conclusions["physical_completion_readiness"]
+        and "readiness" not in evidence_roles
+    ):
+        raise IpReleaseError(
+            "physical completion readiness conclusion lacks readiness evidence"
+        )
+    if conclusions["qualification"] and "qualification" not in evidence_roles:
+        raise IpReleaseError(
+            "qualification cannot be claimed from diagnostic, regression, or readiness evidence"
+        )
+    if conclusions["signoff"] and "signoff" not in evidence_roles:
+        raise IpReleaseError(
+            "signoff cannot be claimed from diagnostic, regression, or readiness evidence"
+        )
+    if conclusions["signoff"] and not conclusions["qualification"]:
+        raise IpReleaseError("signoff conclusion requires qualification")
+
+
+def _validate_promotion_conclusions(
+    contract: IpPromotionContract,
+    evidence: tuple[PromotionEvidence, ...],
+) -> None:
+    _validate_conclusions(
+        contract.conclusions,
+        {item.evidence_role for item in evidence},
+    )
+
+
+def _git_interface_bytes(contract: IpPromotionContract) -> bytes:
+    relative = (Path(contract.producer) / contract.interface_contract).as_posix()
+    command = run_process_group(
+        ["git", "show", f"{contract.source_commit}:{relative}"],
+        cwd=contract.project_root,
+        env=os.environ.copy(),
+        timeout=30,
+    )
+    if command.returncode != 0:
+        raise IpReleaseError(
+            "required interface is absent from the promoted source commit"
+        )
+    return command.stdout.encode()
+
+
+def _promotion_reference_payload(reference: Any) -> dict[str, Any]:
+    payload = run_artifact_reference_payload(reference)
+    payload.pop("schema")
+    payload.pop("contract_kind")
+    return payload
+
+
+def _copy_promoted_artifact(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    try:
+        manifest = read_json_object(source, "promoted durable artifact")
+    except (OSError, RuntimeError, ValueError):
+        return
+    if manifest.get("contract_kind") != "artifact-directory-manifest":
+        return
+    root = manifest.get("root")
+    relative = Path(root) if isinstance(root, str) else Path()
+    if (
+        not isinstance(root, str)
+        or not root
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or "\\" in root
+    ):
+        raise IpReleaseError("promoted directory artifact root is unsafe")
+    source_root = source.parent / relative
+    destination_root = destination.parent / relative
+    if not source_root.is_dir() or source_root.is_symlink():
+        raise IpReleaseError("promoted directory artifact root is missing")
+    shutil.copytree(source_root, destination_root)
+
+
+def _audit_promoted_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
+    manifest = load_ip_release_manifest(manifest_path)
+    fields = {
+        "schema",
+        "contract_kind",
+        "release_kind",
+        "owner",
+        "ip_name",
+        "export",
+        "release_id",
+        "release_fingerprint",
+        "maturity",
+        "source",
+        "interface",
+        "artifacts",
+        "evidence",
+        "conclusions",
+        "boundaries",
+        "provenance",
+    }
+    if (
+        set(manifest) != fields
+        or manifest.get("schema") != 1
+        or manifest.get("contract_kind") != "ip-release-manifest"
+        or manifest.get("release_kind") != "flow-promotion"
+    ):
+        raise RuntimeError("unsupported promoted IP release manifest")
+    release_root = manifest_path.parent.resolve()
+    owner = manifest.get("owner")
+    ip_name = manifest.get("ip_name")
+    export = manifest.get("export")
+    release_id = manifest.get("release_id")
+    release_fingerprint = manifest.get("release_fingerprint")
+    if any(
+        not isinstance(value, str) or not value
+        for value in (owner, ip_name, export, release_id, release_fingerprint)
+    ):
+        raise RuntimeError("promoted IP release identity is invalid")
+    if release_root.name != release_id or release_root.parent.name != ip_name:
+        raise RuntimeError("promoted IP release path does not match its identity")
+    maturity = manifest.get("maturity")
+    if (
+        not isinstance(maturity, Mapping)
+        or set(maturity) != {"level"}
+        or maturity.get("level") not in RELEASE_MATURITY_LEVELS
+    ):
+        raise RuntimeError("promoted IP release maturity is invalid")
+    source = manifest.get("source")
+    if (
+        not isinstance(source, Mapping)
+        or set(source) != {"commit", "dirty"}
+        or source.get("dirty") is not False
+        or not isinstance(source.get("commit"), str)
+        or len(source["commit"]) not in {40, 64}
+        or any(
+            character not in "0123456789abcdef"
+            for character in source["commit"]
+        )
+    ):
+        raise RuntimeError("promoted IP release source identity is invalid")
+    expected_files = {Path("manifest.json")}
+    interface = manifest.get("interface")
+    if not isinstance(interface, Mapping) or set(interface) != {
+        "path",
+        "digest",
+        "logical",
+        "physical",
+    }:
+        raise RuntimeError("promoted IP release interface is missing")
+    interface_relative = Path(str(interface.get("path", "")))
+    interface_path = (release_root / interface_relative).resolve()
+    if (
+        interface_relative.is_absolute()
+        or ".." in interface_relative.parts
+        or not interface_path.is_relative_to(release_root)
+        or not interface_path.is_file()
+        or file_sha256(interface_path) != interface.get("digest")
+    ):
+        raise RuntimeError("promoted IP release interface drifted")
+    expected_files.add(interface_relative)
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise RuntimeError("promoted IP release artifacts are missing")
+    reference_rows: list[dict[str, Any]] = []
+    for item in artifacts:
+        if not isinstance(item, Mapping) or set(item) != {
+            "reference",
+            "path",
+            "digest",
+        }:
+            raise RuntimeError("promoted IP release artifact is invalid")
+        relative = Path(str(item.get("path", "")))
+        path = (release_root / relative).resolve()
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not path.is_relative_to(release_root)
+            or not path.is_file()
+            or file_sha256(path) != item.get("digest")
+        ):
+            raise RuntimeError("promoted IP release artifact drifted")
+        expected_files.add(relative)
+        try:
+            reference_raw = item.get("reference")
+            if not isinstance(reference_raw, Mapping):
+                raise RuntimeError("promoted IP release reference is missing")
+            reference = load_run_artifact_reference(
+                {
+                    "schema": 1,
+                    "contract_kind": "run-artifact-reference",
+                    **reference_raw,
+                }
+            )
+            members = validate_durable_artifact(
+                path,
+                kind=reference.kind,
+                qualifiers=reference.qualifiers,
+                digest=reference.digest,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise RuntimeError("promoted IP release artifact drifted") from exc
+        reference_rows.append(_promotion_reference_payload(reference))
+        expected_files.update(
+            member.relative_to(release_root) for member in members
+        )
+
+    evidence = manifest.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        raise RuntimeError("promoted IP release evidence is missing")
+    evidence_roles: set[str] = set()
+    evidence_receipts: list[dict[str, Any]] = []
+    for item in evidence:
+        if (
+            not isinstance(item, Mapping)
+            or set(item)
+            != {
+                "node",
+                "role",
+                "policy",
+                "evidence_role",
+                "status",
+                "path",
+                "digest",
+            }
+            or item.get("status") != "accepted"
+        ):
+            raise RuntimeError("promoted IP release evidence is not accepted")
+        evidence_role = item.get("evidence_role")
+        if evidence_role not in {
+            "diagnostic",
+            "regression",
+            "readiness",
+            "qualification",
+            "signoff",
+        }:
+            raise RuntimeError("promoted IP release evidence role is invalid")
+        role = item.get("role")
+        if not isinstance(role, str) or not role or role in evidence_roles:
+            raise RuntimeError("promoted IP release evidence roles are not unique")
+        evidence_roles.add(role)
+        relative = Path(str(item.get("path", "")))
+        path = (release_root / relative).resolve()
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not path.is_relative_to(release_root)
+            or not path.is_file()
+            or file_sha256(path) != item.get("digest")
+        ):
+            raise RuntimeError("promoted IP release evidence drifted")
+        receipt = read_json_object(path, "promoted IP release Policy Receipt")
+        if (
+            receipt.get("schema") != 1
+            or receipt.get("contract_kind") != "policy-receipt"
+            or receipt.get("policy") != item.get("policy")
+            or receipt.get("status") != "accepted"
+        ):
+            raise RuntimeError("promoted IP release evidence receipt is invalid")
+        evidence_receipts.append(dict(receipt))
+        expected_files.add(relative)
+
+    conclusions = manifest.get("conclusions")
+    if not isinstance(conclusions, Mapping):
+        raise RuntimeError("promoted IP release conclusions are missing")
+    _validate_conclusions(
+        conclusions,
+        {
+            str(item["evidence_role"])
+            for item in evidence
+            if isinstance(item, Mapping)
+        },
+    )
+    boundaries = manifest.get("boundaries")
+    if not isinstance(boundaries, list) or any(
+        not isinstance(item, Mapping)
+        or set(item) != {"kind", "status", "summary", "subjects"}
+        for item in boundaries
+    ):
+        raise RuntimeError("promoted IP release boundaries are invalid")
+    provenance = manifest.get("provenance")
+    if (
+        not isinstance(provenance, Mapping)
+        or set(provenance) != {"contract", "generator"}
+        or provenance.get("generator") != "sigilicon-flow-promotion"
+    ):
+        raise RuntimeError("promoted IP release provenance is invalid")
+
+    expected_fingerprint = digest(
+        {
+            "schema": 1,
+            "owner": owner,
+            "ip_name": ip_name,
+            "export": export,
+            "maturity": dict(maturity),
+            "source": dict(source),
+            "interface": {
+                "logical": interface.get("logical"),
+                "physical": interface.get("physical"),
+                "digest": interface.get("digest"),
+            },
+            "artifacts": reference_rows,
+            "evidence": evidence_receipts,
+            "conclusions": dict(conclusions),
+            "boundaries": boundaries,
+        }
+    )
+    expected_release_id = (
+        f"{maturity['level']}-{expected_fingerprint[:24]}-"
+        f"{source['commit'][:12]}"
+    )
+    if (
+        release_fingerprint != expected_fingerprint
+        or release_id != expected_release_id
+    ):
+        raise RuntimeError("promoted IP release identity digest is inconsistent")
+    actual_files = {
+        path.relative_to(release_root)
+        for path in release_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        raise RuntimeError("promoted IP release inventory drifted")
+    return manifest
+
+
+def promote_ip_release(
+    contract_path: Path,
+    *,
+    project_root: Path,
+    artifact_root: Path,
+) -> dict[str, Any]:
+    """Publish one immutable release from exact accepted Flow Run evidence."""
+
+    contract = load_ip_promotion_contract(
+        contract_path,
+        project_root=project_root,
+    )
+    _validate_promotion_conclusions(contract, contract.evidence)
+    try:
+        references = tuple(
+            load_run_artifact_reference(value) for value in contract.artifacts
+        )
+    except (TypeError, ValueError) as exc:
+        raise IpReleaseError(f"promotion Run Artifact reference is invalid: {exc}") from exc
+    run_root = _promotion_run_root(contract, artifact_root, references)
+    engine = FlowEngine(FlowRegistry())
+    resolved = []
+    try:
+        for reference in references:
+            resolved.append(
+                engine.resolve_run_artifact(
+                    artifact_root=artifact_root,
+                    consumer_owner=contract.owner,
+                    reference=reference,
+                )
+            )
+    except Exception as exc:
+        raise IpReleaseError(
+            f"promotion Run Artifact identity/digest validation failed: {exc}"
+        ) from exc
+
+    try:
+        plan = read_json_object(run_root / "resolved_plan.json", "promotion Flow Plan")
+        result = read_json_object(run_root / "flow_result.json", "promotion Flow Result")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise IpReleaseError(f"promotion run records are incomplete: {exc}") from exc
+    source = _promotion_source_identity(contract, plan)
+    receipts = tuple(
+        _promotion_evidence_receipt(
+            evidence,
+            run_root=run_root,
+            result=result,
+            plan=plan,
+        )
+        for evidence in contract.evidence
+    )
+    interface_bytes = _git_interface_bytes(contract)
+    interface_digest = hashlib.sha256(interface_bytes).hexdigest()
+    reference_rows = [
+        _promotion_reference_payload(reference) for reference in references
+    ]
+    boundaries = [
+        {
+            "kind": boundary.kind,
+            "status": boundary.status,
+            "summary": boundary.summary,
+            "subjects": list(boundary.subjects),
+        }
+        for boundary in contract.boundaries
+    ]
+    release_fingerprint = digest(
+        {
+            "schema": 1,
+            "owner": contract.owner,
+            "ip_name": contract.name,
+            "export": contract.export,
+            "maturity": {"level": contract.maturity},
+            "source": source,
+            "interface": {
+                "logical": contract.logical_interface,
+                "physical": contract.physical_interface,
+                "digest": interface_digest,
+            },
+            "artifacts": reference_rows,
+            "evidence": list(receipts),
+            "conclusions": dict(contract.conclusions),
+            "boundaries": boundaries,
+        }
+    )
+    release_id = (
+        f"{contract.maturity}-{release_fingerprint[:24]}-"
+        f"{contract.source_commit[:12]}"
+    )
+    release_root = artifact_root.resolve() / "ip" / contract.name / release_id
+    if release_root.exists():
+        manifest = _audit_promoted_ip_release_manifest(release_root / "manifest.json")
+        if manifest.get("release_fingerprint") != release_fingerprint:
+            raise IpReleaseError("immutable release identity collision")
+        return manifest
+
+    namespace = release_root.parent
+    namespace.mkdir(parents=True, exist_ok=True)
+    temporary = namespace / f".{release_id}.{uuid.uuid4().hex}.tmp"
+    temporary.mkdir()
+    try:
+        interface_path = Path("exports") / contract.export / "interface.toml"
+        destination_interface = temporary / interface_path
+        destination_interface.parent.mkdir(parents=True)
+        destination_interface.write_bytes(interface_bytes)
+
+        artifact_rows: list[dict[str, Any]] = []
+        for reference, artifact in zip(references, resolved, strict=True):
+            relative = Path("artifacts") / reference.role / artifact.path.name
+            _copy_promoted_artifact(artifact.path, temporary / relative)
+            artifact_rows.append(
+                {
+                    "reference": _promotion_reference_payload(reference),
+                    "path": relative.as_posix(),
+                    "digest": reference.digest,
+                }
+            )
+
+        evidence_rows: list[dict[str, Any]] = []
+        for selected, receipt in zip(contract.evidence, receipts, strict=True):
+            relative = Path("evidence") / f"{selected.role}.json"
+            atomic_write_json(temporary / relative, receipt)
+            evidence_rows.append(
+                {
+                    "node": selected.node_id,
+                    "role": selected.role,
+                    "policy": selected.policy,
+                    "evidence_role": selected.evidence_role,
+                    "status": "accepted",
+                    "path": relative.as_posix(),
+                    "digest": file_sha256(temporary / relative),
+                }
+            )
+
+        manifest = {
+            "schema": 1,
+            "contract_kind": "ip-release-manifest",
+            "release_kind": "flow-promotion",
+            "owner": contract.owner,
+            "ip_name": contract.name,
+            "export": contract.export,
+            "release_id": release_id,
+            "release_fingerprint": release_fingerprint,
+            "maturity": {"level": contract.maturity},
+            "source": source,
+            "interface": {
+                "path": interface_path.as_posix(),
+                "digest": interface_digest,
+                "logical": contract.logical_interface,
+                "physical": contract.physical_interface,
+            },
+            "artifacts": artifact_rows,
+            "evidence": evidence_rows,
+            "conclusions": dict(contract.conclusions),
+            "boundaries": boundaries,
+            "provenance": {
+                "contract": contract.path.relative_to(
+                    contract.project_root
+                ).as_posix(),
+                "generator": "sigilicon-flow-promotion",
+            },
+        }
+        atomic_write_json(temporary / "manifest.json", manifest)
+        _readonly_tree(temporary)
+        try:
+            os.replace(temporary, release_root)
+        except FileExistsError:
+            pass
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return _audit_promoted_ip_release_manifest(release_root / "manifest.json")

@@ -34,12 +34,14 @@ from sigilicon.flow.model import (
     PreflightCheck,
     PreflightResult,
     ProducedArtifact,
+    RunArtifactReference,
     identifier,
     owner_identity,
     run_identity,
 )
 from sigilicon.flow.policy import EvaluatedPolicy, evaluate_policy
 from sigilicon.flow.registry import FlowRegistry
+from sigilicon.flow.run_artifacts import validate_durable_artifact
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
     git_source,
@@ -656,7 +658,7 @@ class FlowEngine:
                     "contract_kind": "action-run-manifest",
                     "node": node.node_id,
                     "managed_paths": [
-                        self._managed_relative(path, run_root, "managed path")
+                        self._inventory_relative(path, run_root)
                         for path in sorted(node_root.rglob("*"))
                     ],
                 },
@@ -693,7 +695,7 @@ class FlowEngine:
                 "target": plan.target.target_id,
                 "run_id": identity,
                 "managed_paths": [
-                    self._managed_relative(path, run_root, "managed path")
+                    self._inventory_relative(path, run_root)
                     for path in sorted(run_root.rglob("*"))
                     if path != run_root / "run_manifest.json"
                 ],
@@ -778,18 +780,20 @@ class FlowEngine:
                 raise FlowExecutionError(
                     f"unsafe managed path in Flow Run Manifest: {relative!r}"
                 )
-            declared[relative_path.as_posix()] = candidate
+            declared[relative_path.as_posix()] = run_root / relative_path
 
         actual: dict[str, Path] = {}
         for path in run_root.rglob("*"):
             relative = path.relative_to(run_root).as_posix()
             if relative == "run_manifest.json":
                 continue
-            if path.is_symlink():
+            if path.is_symlink() and not path.resolve(strict=False).is_relative_to(
+                resolved_run
+            ):
                 raise FlowExecutionError(
-                    f"refusing to clean symlink in Flow Run: {relative!r}"
+                    f"refusing to clean escaping symlink in Flow Run: {relative!r}"
                 )
-            actual[relative] = path.resolve(strict=False)
+            actual[relative] = path
         missing = sorted(set(declared) - set(actual))
         untracked = sorted(set(actual) - set(declared))
         if missing or untracked:
@@ -800,7 +804,9 @@ class FlowEngine:
 
         for relative in sorted(declared, key=lambda value: len(Path(value).parts), reverse=True):
             path = declared[relative]
-            if path.is_dir():
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
                 path.rmdir()
             else:
                 path.unlink()
@@ -846,6 +852,211 @@ class FlowEngine:
         ):
             raise FlowExecutionError("Flow Result identity does not match selected run")
         return result
+
+    def resolve_run_artifact(
+        self,
+        *,
+        artifact_root: Path,
+        consumer_owner: str,
+        reference: RunArtifactReference,
+    ) -> ActionArtifact:
+        """Resolve and validate one durable same-owner prior-run artifact."""
+
+        selected_owner = owner_identity(consumer_owner, "Run Artifact consumer owner")
+        if reference.owner != selected_owner:
+            raise FlowExecutionError(
+                "cross-owner consumption requires an immutable Release selected by a lock"
+            )
+        store_root = Path(artifact_root).resolve()
+        if store_root == Path(store_root.anchor):
+            raise FlowExecutionError("artifact root cannot be a filesystem root")
+        run_root = (
+            store_root
+            / "flows"
+            / reference.owner
+            / reference.flow_id
+            / "runs"
+            / reference.run_id
+        )
+        resolved_run = run_root.resolve(strict=False)
+        if not resolved_run.is_relative_to(store_root):
+            raise FlowExecutionError("Flow Run path escaped the artifact root")
+        if not run_root.is_dir() or run_root.is_symlink():
+            raise FlowExecutionError(f"Flow Run does not exist: {reference.run_id}")
+
+        try:
+            manifest = read_json_object(
+                run_root / "run_manifest.json", "Flow Run Manifest"
+            )
+            result = read_json_object(run_root / "flow_result.json", "Flow Result")
+            action_result = read_json_object(
+                run_root / "nodes" / reference.node_id / "action_result.json",
+                "Action Result",
+            )
+            receipt = read_json_object(
+                run_root / "nodes" / reference.node_id / "policy_receipt.json",
+                "Policy Receipt",
+            )
+        except (OSError, RuntimeError) as exc:
+            raise FlowExecutionError(str(exc)) from exc
+
+        expected_run = {
+            "owner": reference.owner,
+            "flow": reference.flow_id,
+            "run_id": reference.run_id,
+        }
+        if (
+            manifest.get("schema") != 1
+            or manifest.get("contract_kind") != "flow-run-manifest"
+            or any(manifest.get(key) != value for key, value in expected_run.items())
+        ):
+            raise FlowExecutionError("Flow Run Manifest identity does not match reference")
+        self._validate_run_inventory(run_root, manifest)
+        if (
+            result.get("schema") != 1
+            or result.get("contract_kind") != "flow-result"
+            or any(result.get(key) != value for key, value in expected_run.items())
+        ):
+            raise FlowExecutionError("Flow Result identity does not match reference")
+        nodes = result.get("nodes")
+        node = nodes.get(reference.node_id) if isinstance(nodes, Mapping) else None
+        if not isinstance(node, Mapping):
+            raise FlowExecutionError("Run Artifact producer node is missing")
+        if (
+            node.get("execution_status") != "succeeded"
+            or node.get("result_status") != "valid"
+            or node.get("status") != "accepted"
+        ):
+            raise FlowExecutionError("Run Artifact producer is not accepted and valid")
+        if (
+            action_result.get("schema") != 1
+            or action_result.get("contract_kind") != "action-result"
+            or action_result.get("node") != reference.node_id
+            or action_result.get("result_status") != "valid"
+            or not isinstance(action_result.get("execution"), Mapping)
+            or action_result["execution"].get("status") != "succeeded"
+        ):
+            raise FlowExecutionError("Run Artifact Action Result is not valid")
+        if (
+            receipt.get("schema") != 1
+            or receipt.get("contract_kind") != "policy-receipt"
+            or receipt.get("policy") != reference.required_policy
+            or receipt.get("status") != "accepted"
+        ):
+            raise FlowExecutionError("Run Artifact required policy was not accepted")
+
+        artifacts = node.get("artifacts")
+        artifact = artifacts.get(reference.role) if isinstance(artifacts, Mapping) else None
+        action_artifacts = action_result.get("artifacts")
+        action_artifact = (
+            action_artifacts.get(reference.role)
+            if isinstance(action_artifacts, Mapping)
+            else None
+        )
+        if not isinstance(artifact, Mapping) or artifact != action_artifact:
+            raise FlowExecutionError("Run Artifact record is missing or inconsistent")
+        if (
+            artifact.get("producer") != reference.node_id
+            or artifact.get("kind") != reference.kind
+            or artifact.get("qualifiers") != dict(reference.qualifiers)
+            or artifact.get("digest") != reference.digest
+        ):
+            raise FlowExecutionError("Run Artifact identity does not match reference")
+
+        relative_text = artifact.get("path")
+        relative = Path(relative_text) if isinstance(relative_text, str) else Path()
+        if (
+            not isinstance(relative_text, str)
+            or not relative_text
+            or relative.is_absolute()
+            or "\\" in relative_text
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise FlowExecutionError("Run Artifact path is unsafe")
+        path = (run_root / relative).resolve(strict=False)
+        if not path.is_relative_to(resolved_run) or not path.is_file():
+            raise FlowExecutionError("Run Artifact path escaped or is missing")
+        lexical_path = run_root / relative
+        parents = []
+        candidate = lexical_path.parent
+        while candidate != run_root:
+            parents.append(candidate)
+            candidate = candidate.parent
+        if lexical_path.is_symlink() or any(parent.is_symlink() for parent in parents):
+            raise FlowExecutionError("Run Artifact path traverses a symlink")
+        validate_durable_artifact(
+            path,
+            kind=reference.kind,
+            qualifiers=reference.qualifiers,
+            digest=reference.digest,
+        )
+
+        managed = manifest.get("managed_paths")
+        if not isinstance(managed, list) or relative.as_posix() not in managed:
+            raise FlowExecutionError("Flow Run Manifest does not own the Run Artifact")
+        return ActionArtifact(
+            role=reference.role,
+            kind=reference.kind,
+            path=path,
+            relative_path=relative.as_posix(),
+            digest=reference.digest,
+            producer=reference.node_id,
+            qualifiers=reference.qualifiers,
+        )
+
+    def _validate_run_inventory(
+        self,
+        run_root: Path,
+        manifest: Mapping[str, Any],
+    ) -> None:
+        """Fail closed unless a Flow Run Manifest exactly owns its inventory."""
+
+        raw_paths = manifest.get("managed_paths")
+        if not isinstance(raw_paths, list) or any(
+            not isinstance(value, str) for value in raw_paths
+        ):
+            raise FlowExecutionError("Flow Run Manifest has invalid managed paths")
+        if len(raw_paths) != len(set(raw_paths)):
+            raise FlowExecutionError("Flow Run Manifest repeats a managed path")
+        resolved_run = run_root.resolve()
+        declared: set[str] = set()
+        for relative_text in raw_paths:
+            relative = Path(relative_text)
+            if (
+                not relative_text
+                or relative.is_absolute()
+                or "\\" in relative_text
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise FlowExecutionError(
+                    f"unsafe managed path in Flow Run Manifest: {relative_text!r}"
+                )
+            candidate = (run_root / relative).resolve(strict=False)
+            if candidate == resolved_run or not candidate.is_relative_to(resolved_run):
+                raise FlowExecutionError(
+                    f"unsafe managed path in Flow Run Manifest: {relative_text!r}"
+                )
+            declared.add(relative.as_posix())
+
+        actual: set[str] = set()
+        for path in run_root.rglob("*"):
+            relative = path.relative_to(run_root).as_posix()
+            if relative == "run_manifest.json":
+                continue
+            if path.is_symlink() and not path.resolve(strict=False).is_relative_to(
+                resolved_run
+            ):
+                raise FlowExecutionError(
+                    f"escaping symlink in Flow Run inventory: {relative!r}"
+                )
+            actual.add(relative)
+        missing = sorted(declared - actual)
+        untracked = sorted(actual - declared)
+        if missing or untracked:
+            raise FlowExecutionError(
+                "Flow Run manifest drift: "
+                f"missing={missing}, untracked={untracked}"
+            )
 
     def _block_reason(
         self,
@@ -952,6 +1163,15 @@ class FlowEngine:
                 "checks": [json_value(check) for check in evaluation.checks],
             },
         )
+
+    def _inventory_relative(self, path: Path, run_root: Path) -> str:
+        """Record a managed locator without dereferencing tool-created symlinks."""
+
+        candidate = Path(path).absolute()
+        root = run_root.absolute()
+        if candidate == root or not candidate.is_relative_to(root):
+            raise FlowExecutionError("managed path escaped the Flow Run")
+        return candidate.relative_to(root).as_posix()
 
     def _managed_relative(self, path: Path, run_root: Path, label: str) -> str:
         candidate = Path(path).resolve()

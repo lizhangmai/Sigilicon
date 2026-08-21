@@ -24,6 +24,7 @@ from sigilicon.workflows.ip_packaging import (
     audit_ip_release,
     build_ip_release,
     plan_ip_release,
+    promote_ip_release,
     publish_ip_release,
 )
 from sigilicon.workflows.oa_library import (
@@ -227,16 +228,24 @@ def _parser() -> argparse.ArgumentParser:
     ip_commands = ip.add_subparsers(dest="action", required=True)
     for action, help_text in (
         ("plan", "validate the producer contract and show the release plan"),
-        ("build", "build an immutable qualified release package"),
+        ("build", "build an immutable release package"),
         ("audit", "audit a built release against its source contract"),
         ("publish", "atomically select an audited release for consumers"),
+        ("promote", "publish exact accepted Flow Run evidence as a release"),
     ):
         action_parser = ip_commands.add_parser(action, help=help_text)
         action_parser.add_argument("target")
-        action_parser.add_argument(
-            "--qualification",
-            choices=("development", "implementation", "signoff"),
-        )
+        if action != "promote":
+            action_parser.add_argument(
+                "--maturity",
+                choices=("development", "implementation", "signoff"),
+            )
+        else:
+            action_parser.add_argument(
+                "--artifact-root",
+                type=Path,
+                help="managed Flow/release root (defaults to project artifact_root)",
+            )
         add_json_arg(action_parser)
 
     soc = domains.add_parser("soc", help="plan and check a reproducible SoC product")
@@ -271,13 +280,22 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
             "build": build_ip_release,
             "audit": audit_ip_release,
             "publish": publish_ip_release,
+            "promote": promote_ip_release,
         }[args.action]
-        payload = operation(
-            contract,
-            project_root=root,
-            artifact_root=context.artifact_root,
-            qualification=args.qualification,
-        )
+        artifact_root = context.artifact_root
+        if args.action == "promote" and args.artifact_root is not None:
+            artifact_root = (
+                args.artifact_root
+                if args.artifact_root.is_absolute()
+                else (root / args.artifact_root)
+            ).resolve()
+        keywords = {
+            "project_root": root,
+            "artifact_root": artifact_root,
+        }
+        if args.action != "promote":
+            keywords["maturity"] = args.maturity
+        payload = operation(contract, **keywords)
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
         die(f"ERROR: {exc}")
     if args.json:
@@ -285,7 +303,7 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
     elif args.action == "plan":
         print(
             f"IP release plan: {payload['ip_name']} {payload['release_id']} "
-            f"qualification={payload['qualification_level']}"
+            f"maturity={payload['maturity_level']}"
         )
         if payload["missing_items"]:
             print(f"missing: {', '.join(payload['missing_items'])}")

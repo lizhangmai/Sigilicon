@@ -707,6 +707,41 @@ class PreflightResult:
 
 
 @dataclass(frozen=True)
+class RunArtifactReference:
+    """Exact owner-selected identity of one durable artifact from a prior run."""
+
+    owner: str
+    flow_id: str
+    run_id: str
+    node_id: str
+    role: str
+    kind: str
+    qualifiers: Mapping[str, Any]
+    digest: str
+    required_policy: str
+
+    def __post_init__(self) -> None:
+        owner_identity(self.owner, "Run Artifact owner")
+        identifier(self.flow_id, "Run Artifact Flow")
+        run_identity(self.run_id)
+        identifier(self.node_id, "Run Artifact node")
+        identifier(self.role, "Run Artifact role")
+        identifier(self.kind, "Run Artifact kind")
+        identifier(self.required_policy, "Run Artifact required policy")
+        if not isinstance(self.digest, str) or _DIGEST_RE.fullmatch(self.digest) is None:
+            raise FlowContractError("Run Artifact digest must be sha256")
+        object.__setattr__(
+            self,
+            "qualifiers",
+            _qualifier_mapping(
+                self.qualifiers,
+                "Run Artifact qualifiers",
+                FlowContractError,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class InputArtifact:
     role: str
     kind: str

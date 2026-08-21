@@ -45,6 +45,7 @@ from sigilicon.flow.model import (
     ResolvedPlatformAsset,
     ResolvedCapability,
     ResolvedPlatformAssetMember,
+    RunArtifactReference,
     GitSource,
     SourceArtifact,
     SourceAssets,
@@ -61,6 +62,11 @@ from sigilicon.flow.source_assets import (
     SourceAssetsAdapter,
     load_source_assets,
     source_assets_payload,
+)
+from sigilicon.flow.run_artifacts import (
+    load_run_artifact_reference,
+    run_artifact_reference_payload,
+    validate_durable_artifact,
 )
 
 
@@ -97,6 +103,7 @@ __all__ = [
     "ResolvedPlatformAsset",
     "ResolvedCapability",
     "ResolvedPlatformAssetMember",
+    "RunArtifactReference",
     "GitSource",
     "SourceArtifact",
     "SourceAssets",
@@ -116,5 +123,8 @@ __all__ = [
     "SynopsysVCSAdapter",
     "builtin_registry",
     "load_source_assets",
+    "load_run_artifact_reference",
+    "run_artifact_reference_payload",
+    "validate_durable_artifact",
     "source_assets_payload",
 ]

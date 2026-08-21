@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.component import load_component_contract
 from sigilicon.domain.ip_release import (
-    QUALIFICATION_LEVELS,
+    RELEASE_MATURITY_LEVELS,
     load_ip_contract,
 )
 from sigilicon.domain.soc import (
@@ -207,7 +207,7 @@ def plan_soc(
             producer_path,
             project_root=contract.project_root,
             artifact_root=artifact_root,
-            qualification=dependency.required_qualification,
+            maturity=dependency.required_maturity,
         )
         exported = _release_export(expected, dependency.export)
         interface = exported.get("interface")
@@ -234,7 +234,7 @@ def plan_soc(
                 "name": dependency.name,
                 "export": dependency.export,
                 "provider": expected["contract"],
-                "required_qualification": dependency.required_qualification,
+                "required_maturity": dependency.required_maturity,
                 "logical_interface": dependency.logical_interface,
                 "physical_interface": dependency.physical_interface,
                 "role_modules": dict(dependency.role_modules),
@@ -283,7 +283,7 @@ def plan_soc_fileset(
 
 
 def _level_satisfies(actual: str, required: str) -> bool:
-    return QUALIFICATION_LEVELS.index(actual) >= QUALIFICATION_LEVELS.index(required)
+    return RELEASE_MATURITY_LEVELS.index(actual) >= RELEASE_MATURITY_LEVELS.index(required)
 
 
 def _release_export(
@@ -334,23 +334,12 @@ def _locked_release_manifest(
     pinned: LockedIpRelease,
 ) -> tuple[Path, Mapping[str, Any]]:
     dependency_name = dependency.name
-    manifest_path = (artifact_root.resolve() / Path(pinned.manifest)).resolve()
-    if not manifest_path.is_relative_to(artifact_root.resolve()):
-        raise RuntimeError("SoC IP lock escapes the artifact root")
-    manifest = audit_ip_release_manifest(manifest_path)
-    if (
-        manifest.get("ip_name") != dependency_name
-        or manifest.get("release_id") != pinned.release_id
-    ):
-        raise RuntimeError("SoC IP lock identity does not match its manifest")
-    qualification = manifest.get("qualification")
-    if not isinstance(qualification, Mapping):
-        raise RuntimeError("SoC IP release has no qualification record")
-    if qualification.get("level") != pinned.qualification:
-        raise RuntimeError("SoC IP lock qualification does not match its manifest")
-    provenance = manifest.get("provenance")
-    if not isinstance(provenance, Mapping) or provenance.get("working_tree_dirty") is not False:
-        raise RuntimeError("SoC cannot consume an IP release built from dirty source")
+    manifest_path, manifest = resolve_locked_ip_release(
+        artifact_root=artifact_root,
+        pinned=pinned,
+    )
+    if manifest.get("ip_name") != dependency_name:
+        raise RuntimeError("SoC IP lock identity does not match its dependency")
     exported = _release_export(manifest, dependency.export)
     interface = exported.get("interface")
     if not isinstance(interface, Mapping) or (
@@ -360,12 +349,49 @@ def _locked_release_manifest(
         raise RuntimeError(
             "SoC IP release export interface does not match integration intent"
         )
-    checks = qualification.get("checks")
+    maturity = manifest.get("maturity")
+    assert isinstance(maturity, Mapping)
+    checks = maturity.get("checks")
     if not isinstance(checks, list) or not checks or any(
         not isinstance(check, Mapping) or check.get("passed") is not True
         for check in checks
     ):
-        raise RuntimeError("SoC IP release qualification checks are incomplete")
+        raise RuntimeError("SoC IP release maturity checks are incomplete")
+    return manifest_path, manifest
+
+
+def resolve_locked_ip_release(
+    *,
+    artifact_root: Path,
+    pinned: LockedIpRelease,
+) -> tuple[Path, Mapping[str, Any]]:
+    """Resolve one exact cross-owner Release without following producer state."""
+
+    manifest_path = (artifact_root.resolve() / Path(pinned.manifest)).resolve()
+    if not manifest_path.is_relative_to(artifact_root.resolve()):
+        raise RuntimeError("SoC IP lock escapes the artifact root")
+    manifest = audit_ip_release_manifest(manifest_path)
+    if (
+        manifest.get("ip_name") != pinned.name
+        or manifest.get("release_id") != pinned.release_id
+    ):
+        raise RuntimeError("SoC IP lock identity does not match its manifest")
+    maturity = manifest.get("maturity")
+    if not isinstance(maturity, Mapping):
+        raise RuntimeError("SoC IP release has no maturity record")
+    if maturity.get("level") != pinned.maturity:
+        raise RuntimeError("SoC IP lock maturity does not match its manifest")
+    source = manifest.get("source")
+    provenance = manifest.get("provenance")
+    source_clean = (
+        isinstance(source, Mapping)
+        and source.get("dirty") is False
+    ) or (
+        isinstance(provenance, Mapping)
+        and provenance.get("working_tree_dirty") is False
+    )
+    if not source_clean:
+        raise RuntimeError("SoC cannot consume an IP release built from dirty source")
     return manifest_path, manifest
 
 
@@ -403,15 +429,15 @@ def check_soc(
             dependency=dependency,
             pinned=pinned,
         )
-        qualification = manifest.get("qualification")
-        assert isinstance(qualification, Mapping)
-        actual_level = str(qualification.get("level"))
-        if actual_level not in QUALIFICATION_LEVELS or not _level_satisfies(
-            actual_level, dependency.required_qualification
+        maturity = manifest.get("maturity")
+        assert isinstance(maturity, Mapping)
+        actual_level = str(maturity.get("level"))
+        if actual_level not in RELEASE_MATURITY_LEVELS or not _level_satisfies(
+            actual_level, dependency.required_maturity
         ):
             raise RuntimeError(
-                f"SoC IP release qualification {actual_level!r} does not satisfy "
-                f"{dependency.required_qualification!r}"
+                f"SoC IP release maturity {actual_level!r} does not satisfy "
+                f"{dependency.required_maturity!r}"
             )
         exported = _release_export(manifest, dependency.export)
         availability = exported.get("availability")
@@ -456,7 +482,7 @@ def check_soc(
                 "export": dependency.export,
                 "release_id": pinned.release_id,
                 "source_fingerprint": manifest["source_fingerprint"],
-                "qualification_level": actual_level,
+                "maturity": actual_level,
                 "manifest": manifest_path.as_posix(),
                 "role_exports": {
                     role: _role_export(dependency, role) for role in roles

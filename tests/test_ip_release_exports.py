@@ -47,7 +47,7 @@ owner = "fixture"
 name = "fixture-ip"
 producer = "ip/fixture"
 component = "configs/ip.toml"
-default_qualification = "development"
+default_maturity = "development"
 
 [[exports]]
 name = "left"
@@ -60,11 +60,11 @@ layout_view = "layout"
 contract = "configs/left_interface.toml"
 physical = "LEFT:physical"
 logical = "left_model:logical"
-[exports.qualification.development]
+[exports.maturity.development]
 required_roles = ["interface_contract"]
-[exports.qualification.implementation]
+[exports.maturity.implementation]
 required_roles = ["interface_contract"]
-[exports.qualification.signoff]
+[exports.maturity.signoff]
 required_roles = ["interface_contract"]
 
 [[exports]]
@@ -78,11 +78,11 @@ layout_view = "layout"
 contract = "configs/right_interface.toml"
 physical = "RIGHT:physical"
 logical = "right_model:logical"
-[exports.qualification.development]
+[exports.maturity.development]
 required_roles = ["interface_contract"]
-[exports.qualification.implementation]
+[exports.maturity.implementation]
 required_roles = ["interface_contract"]
-[exports.qualification.signoff]
+[exports.maturity.signoff]
 required_roles = ["interface_contract"]
 
 [[collateral]]
@@ -157,7 +157,7 @@ owner = "fixture"
 name = "fixture-ip"
 producer = "ip/fixture"
 component = "configs/ip.toml"
-default_qualification = "development"
+default_maturity = "development"
 [oa]
 library = "fixture-lib"
 cell = "LEFT"
@@ -169,6 +169,21 @@ files = []
     )
 
     with pytest.raises(ValueError, match="exports"):
+        load_ip_contract(contract_path, project_root=tmp_path)
+
+
+def test_release_maturity_is_not_a_qualification_compatibility_alias(
+    tmp_path: Path,
+) -> None:
+    contract_path = _contract_fixture(tmp_path)
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8")
+        .replace("default_maturity", "default_qualification")
+        .replace("exports.maturity", "exports.qualification"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="maturity"):
         load_ip_contract(contract_path, project_root=tmp_path)
 
 
