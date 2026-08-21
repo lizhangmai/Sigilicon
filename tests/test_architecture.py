@@ -23,6 +23,7 @@ from sigilicon.virtuoso import (
 LAYERS = {
     "root",
     "domain",
+    "flow",
     "layout",
     "virtuoso",
     "workflows",
@@ -31,10 +32,12 @@ LAYERS = {
 ALLOWED_DEPENDENCIES = {
     "root": {"root"},
     "domain": {"domain", "root"},
+    "flow": {"flow", "root"},
     "layout": {"domain", "layout", "root"},
     "virtuoso": {"domain", "layout", "virtuoso", "root"},
     "workflows": {
         "domain",
+        "flow",
         "layout",
         "virtuoso",
         "workflows",
@@ -42,6 +45,7 @@ ALLOWED_DEPENDENCIES = {
     },
     "cli": {
         "domain",
+        "flow",
         "layout",
         "virtuoso",
         "workflows",
@@ -51,6 +55,7 @@ ALLOWED_DEPENDENCIES = {
 }
 CLI_DEPENDENCY_PREFIXES = (
     "sigilicon.cli",
+    "sigilicon.flow",
     "sigilicon.paths",
     "sigilicon.workflows",
     "sigilicon.virtuoso.client",

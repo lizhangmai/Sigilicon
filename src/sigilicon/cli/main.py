@@ -6,12 +6,12 @@ from collections.abc import Sequence
 import sys
 
 
-_HELP = """usage: sigilicon [-h] {layout,design,oa,ip,soc} ...
+_HELP = """usage: sigilicon [-h] {flow,layout,design,oa,ip,soc} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {layout,design,oa,ip,soc}
+  {flow,layout,design,oa,ip,soc}
 
 options:
   -h, --help            show this help message and exit
@@ -25,6 +25,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not arguments or arguments == ["-h"] or arguments == ["--help"]:
         print(_HELP, end="")
         return 0
+    if arguments[0] == "flow":
+        from sigilicon.cli.flow_core import main as flow_core_main
+
+        return flow_core_main(arguments[1:])
     from sigilicon.cli.flow import main as flow_main
 
     return flow_main(arguments)
