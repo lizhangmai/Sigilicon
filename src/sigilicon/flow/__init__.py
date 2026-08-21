@@ -56,6 +56,7 @@ from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.synopsys import (
     SynopsysDCAdapter,
     SynopsysFCAdapter,
+    SynopsysHSpiceAdapter,
     SynopsysVCSAdapter,
 )
 from sigilicon.flow.source_assets import (
@@ -120,6 +121,7 @@ __all__ = [
     "register_standard_asic_actions",
     "SynopsysDCAdapter",
     "SynopsysFCAdapter",
+    "SynopsysHSpiceAdapter",
     "SynopsysVCSAdapter",
     "builtin_registry",
     "load_source_assets",

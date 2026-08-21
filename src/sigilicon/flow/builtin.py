@@ -11,6 +11,7 @@ from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.synopsys import (
     SynopsysDCAdapter,
     SynopsysFCAdapter,
+    SynopsysHSpiceAdapter,
     SynopsysVCSAdapter,
 )
 
@@ -24,6 +25,10 @@ def builtin_registry(owner_root: Path | None = None) -> FlowRegistry:
     if owner_root is not None:
         registry.register_adapter("synopsys-dc", SynopsysDCAdapter(owner_root))
         registry.register_adapter("synopsys-fc", SynopsysFCAdapter(owner_root))
+        registry.register_adapter(
+            "synopsys-hspice",
+            SynopsysHSpiceAdapter(owner_root),
+        )
         registry.register_adapter("synopsys-vcs", SynopsysVCSAdapter(owner_root))
     return registry
 

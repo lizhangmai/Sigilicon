@@ -28,6 +28,10 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ),
                 ArtifactPort("electrical-sources", "source-set.spice"),
                 ArtifactPort("decks", "source-set.spice-deck"),
+                ArtifactPort(
+                    "electrical-recipe",
+                    "recipe.electrical-simulation",
+                ),
                 ArtifactPort("qualification-spec", "spec.qualification"),
             ),
             adapters=("source-assets",),
@@ -246,15 +250,29 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
             inputs=(
                 ArtifactPort("electrical-sources", "source-set.spice"),
                 ArtifactPort("decks", "source-set.spice-deck"),
+                ArtifactPort(
+                    "electrical-recipe",
+                    "recipe.electrical-simulation",
+                ),
             ),
             outputs=(
                 ArtifactPort("measurements", "measurement.collection"),
-                ArtifactPort("waveforms", "waveform.collection"),
+                ArtifactPort("waveforms", "waveform.collection", required=False),
             ),
-            facts=("passed",),
+            facts=(
+                "tool-execution-completed",
+                "measurement-file-count",
+                "measurement-row-count",
+                "measurement-failure-count",
+                "measurement-check-failure-count",
+            ),
             required_capabilities=("tool.synopsys-hspice",),
             platform_assets=(
-                PlatformAssetRequirement("hspice-models", "model.hspice-set"),
+                PlatformAssetRequirement(
+                    "hspice-models",
+                    "model.hspice-set",
+                    members=("nominal-model", "rvt", "hvt", "lvt"),
+                ),
             ),
             adapters=("synopsys-hspice",),
         )
