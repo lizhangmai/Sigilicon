@@ -97,6 +97,8 @@ if target == "formal":
     assert os.environ["SIGILICON_HSPICE_SUPPLY_V"] == "0.8"
     assert os.environ["SIGILICON_HSPICE_MISMATCH_SAMPLES"] == "200"
     assert os.environ["SIGILICON_HSPICE_DECISION_DEADLINE_PS"] == "250.0"
+    assert os.environ["SIGILICON_HSPICE_NOMINAL_VCM"] == "0.35"
+    assert os.environ["SIGILICON_HSPICE_MAXIMUM_TRANSFER_PULSE_PS"] == "800.0"
     assert Path(os.environ["SIGILICON_HSPICE_MISMATCH_MODEL"]).is_file()
     samples = 199 if mode == "wrong-sample-count" else 200
     points = []
@@ -280,6 +282,8 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                     "supply_v": 0.8,
                     "mismatch_samples": 200,
                     "decision_deadline_ps": 250.0,
+                    "nominal_vcm": 0.35,
+                    "maximum_transfer_pulse_ps": 800.0,
                 },
                 bindings=(
                     ArtifactBinding("electrical-sources", "assets", "electrical-sources"),

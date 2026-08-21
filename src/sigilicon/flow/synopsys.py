@@ -1421,6 +1421,12 @@ class SynopsysHSpiceAdapter:
             environment["SIGILICON_HSPICE_DECISION_DEADLINE_PS"] = str(
                 configuration["decision_deadline_ps"]
             )
+            environment["SIGILICON_HSPICE_NOMINAL_VCM"] = str(
+                configuration["nominal_vcm"]
+            )
+            environment["SIGILICON_HSPICE_MAXIMUM_TRANSFER_PULSE_PS"] = str(
+                configuration["maximum_transfer_pulse_ps"]
+            )
         for role, model in models.items():
             environment[_HSPICE_MODEL_ENVIRONMENT[role]] = str(model)
 
@@ -1583,6 +1589,8 @@ class SynopsysHSpiceAdapter:
                 "supply_v",
                 "mismatch_samples",
                 "decision_deadline_ps",
+                "nominal_vcm",
+                "maximum_transfer_pulse_ps",
             }
             if unknown_action:
                 raise FlowExecutionError(
@@ -1611,6 +1619,10 @@ class SynopsysHSpiceAdapter:
             decision_deadline_ps = context.action_config.get(
                 "decision_deadline_ps"
             )
+            nominal_vcm = context.action_config.get("nominal_vcm")
+            maximum_transfer_pulse_ps = context.action_config.get(
+                "maximum_transfer_pulse_ps"
+            )
             if (
                 isinstance(supply_v, bool)
                 or not isinstance(supply_v, (int, float))
@@ -1637,6 +1649,19 @@ class SynopsysHSpiceAdapter:
                 raise FlowExecutionError(
                     "HSPICE campaign requires a positive decision_deadline_ps"
                 )
+            for value, label in (
+                (nominal_vcm, "nominal_vcm"),
+                (maximum_transfer_pulse_ps, "maximum_transfer_pulse_ps"),
+            ):
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) <= 0
+                ):
+                    raise FlowExecutionError(
+                        f"HSPICE campaign requires a positive {label}"
+                    )
             timeout = self._timeout(context)
             return {
                 "target": target,
@@ -1645,6 +1670,8 @@ class SynopsysHSpiceAdapter:
                 "supply_v": float(supply_v),
                 "mismatch_samples": mismatch_samples,
                 "decision_deadline_ps": float(decision_deadline_ps),
+                "nominal_vcm": float(nominal_vcm),
+                "maximum_transfer_pulse_ps": float(maximum_transfer_pulse_ps),
                 "timeout_seconds": timeout,
             }
         unknown_action = set(context.action_config) - {
