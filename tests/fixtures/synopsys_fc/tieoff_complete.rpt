@@ -1,0 +1,12 @@
+****************************************
+Report : check_mv_design
+        -tieoff
+Design : synthesizable_comparator_paper_0p8v
+Version: X-2025.06-SP1
+****************************************
+
+---------- Tie-off connection rule ----------
+No errors or warnings.
+
+---------- Summary ----------
+Information: Total 0 error(s) and 0 warning(s) from check_mv_design. (MV-082)

@@ -69,6 +69,8 @@ _FC_IMPLEMENTATION_OUTPUT_ROLES = frozenset(
         "area-report",
         "power-report",
         "drc-report",
+        "physical-completion-report",
+        "tie-off-check-report",
     }
 )
 _FC_DIRECTORY_OUTPUT_ROLES = frozenset({"reference-library", "checkpoint"})
@@ -77,6 +79,7 @@ _FC_PHYSICAL_TECHNOLOGY_ENVIRONMENT = {
     "technology-lef": "SIGILICON_FC_TECH_LEF",
     "tluplus": "SIGILICON_FC_TLUPLUS",
     "gds-layer-map": "SIGILICON_FC_GDS_MAP",
+    "antenna-rules": "SIGILICON_FC_ANTENNA_RULES",
 }
 _FC_STDCELL_PHYSICAL_ENVIRONMENT = {
     "rvt": "SIGILICON_STDCELL_RVT_LEF",
@@ -102,6 +105,8 @@ _FC_OUTPUT_ENVIRONMENT = {
     "area-report": "SIGILICON_FC_AREA_REPORT",
     "power-report": "SIGILICON_FC_POWER_REPORT",
     "drc-report": "SIGILICON_FC_DRC_REPORT",
+    "physical-completion-report": "SIGILICON_FC_PHYSICAL_COMPLETION_REPORT",
+    "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
 }
 _VERILOG_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 
@@ -1046,7 +1051,7 @@ class SynopsysFCAdapter:
                 {
                     role: environment
                     for role, environment in _FC_PHYSICAL_TECHNOLOGY_ENVIRONMENT.items()
-                    if role in {"tluplus", "gds-layer-map"}
+                    if role in {"tluplus", "gds-layer-map", "antenna-rules"}
                 },
             )
         )

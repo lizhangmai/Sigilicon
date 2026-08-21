@@ -48,6 +48,191 @@ def _required_int(text: str, pattern: str, label: str) -> int:
     return values[0]
 
 
+def _required_summary_value(text: str, label: str) -> str:
+    values = [
+        value.strip()
+        for value in re.findall(
+            rf"^\s*{re.escape(label)}\s*=\s*([^\r\n]+?)\s*$",
+            text,
+            re.MULTILINE,
+        )
+    ]
+    if not values:
+        raise FlowExecutionError(
+            "malformed Synopsys DRC report: "
+            f"{label!r} observation is missing"
+        )
+    if len(set(values)) != 1:
+        raise FlowExecutionError(
+            "malformed Synopsys DRC report: "
+            f"{label!r} observations conflict"
+        )
+    return values[0]
+
+
+def _route_verification_facts(
+    drc: str,
+) -> dict[str, bool | int | str]:
+    antenna = _required_summary_value(
+        drc,
+        "Total number of antenna violations",
+    )
+    facts: dict[str, bool | int | str]
+    if antenna.isdigit():
+        facts = {
+            "antenna-check-active": True,
+            "antenna-check-status": "active",
+            "antenna-violation-count": int(antenna),
+        }
+    elif antenna == "no antenna rules defined":
+        facts = {
+            "antenna-check-active": False,
+            "antenna-check-status": "no-rules",
+        }
+    elif antenna == "antenna checking not active":
+        facts = {
+            "antenna-check-active": False,
+            "antenna-check-status": "inactive",
+        }
+    else:
+        raise FlowExecutionError(
+            "malformed Synopsys DRC report: unsupported antenna status "
+            f"{antenna!r}"
+        )
+
+    tie = _required_summary_value(
+        drc,
+        "Total number of tie to rail violations",
+    )
+    tie_direct = _required_summary_value(
+        drc,
+        "Total number of tie to rail directly violations",
+    )
+    if tie.isdigit() and tie_direct.isdigit():
+        facts.update(
+            {
+                "tie-to-rail-check-performed": True,
+                "tie-to-rail-check-status": "performed",
+                "tie-to-rail-violation-count": int(tie),
+                "tie-to-rail-direct-violation-count": int(tie_direct),
+            }
+        )
+    elif tie == "not checked" and tie_direct == "not checked":
+        facts.update(
+            {
+                "tie-to-rail-check-performed": False,
+                "tie-to-rail-check-status": "not-performed",
+            }
+        )
+    else:
+        raise FlowExecutionError(
+            "malformed Synopsys DRC report: tie-to-rail summary is "
+            f"inconsistent ({tie!r}, {tie_direct!r})"
+        )
+    return facts
+
+
+def _physical_completion_facts(
+    report: str,
+) -> dict[str, bool | int | str]:
+    if len(
+        re.findall(
+            r"^SIGILICON_PHYSICAL_COMPLETION_REPORT 1\s*$",
+            report,
+            re.MULTILINE,
+        )
+    ) != 1:
+        raise FlowExecutionError(
+            "malformed Synopsys physical-completion report: "
+            "version marker is missing or duplicated"
+        )
+
+    required = _required_int(
+        report,
+        r"^Required PG ports\s*=\s*(\d+)\s*$",
+        "physical-completion",
+    )
+    placed = _required_int(
+        report,
+        r"^Placed required PG ports\s*=\s*(\d+)\s*$",
+        "physical-completion",
+    )
+    unplaced = _required_int(
+        report,
+        r"^Unplaced required PG ports\s*=\s*(\d+)\s*$",
+        "physical-completion",
+    )
+    if placed + unplaced != required:
+        raise FlowExecutionError(
+            "malformed Synopsys physical-completion report: "
+            "placed and unplaced PG port counts do not equal the required count"
+        )
+
+    checks = re.findall(
+        r"^PG connectivity check\s*=\s*([^\r\n]+?)\s*$",
+        report,
+        re.MULTILINE,
+    )
+    if len(checks) != 1 or checks[0] not in {"performed", "not-performed"}:
+        raise FlowExecutionError(
+            "malformed Synopsys physical-completion report: "
+            "PG connectivity check status is missing or unsupported"
+        )
+
+    facts: dict[str, bool | int | str] = {
+        "required-pg-port-count": required,
+        "placed-required-pg-port-count": placed,
+        "unplaced-required-pg-port-count": unplaced,
+        "pg-connectivity-check-performed": checks[0] == "performed",
+        "pg-connectivity-check-status": checks[0],
+    }
+    violation_values = re.findall(
+        r"^PG connectivity violations\s*=\s*(\d+)\s*$",
+        report,
+        re.MULTILINE,
+    )
+    if checks[0] == "performed":
+        if len(violation_values) != 1:
+            raise FlowExecutionError(
+                "malformed Synopsys physical-completion report: "
+                "performed PG connectivity check lacks one violation count"
+            )
+        facts["pg-connectivity-violation-count"] = int(violation_values[0])
+    elif violation_values:
+        raise FlowExecutionError(
+            "malformed Synopsys physical-completion report: "
+            "a non-performed PG connectivity check has a violation count"
+        )
+    return facts
+
+
+def _tie_off_facts(report: str) -> dict[str, bool | int | str]:
+    headers = re.findall(
+        r"^Report\s*:\s*check_mv_design\s*$",
+        report,
+        re.MULTILINE,
+    )
+    modes = re.findall(r"^\s*-tieoff\s*$", report, re.MULTILINE)
+    summaries = re.findall(
+        r"^Information:\s*Total\s+(\d+)\s+error\(s\)\s+and\s+"
+        r"(\d+)\s+warning\(s\)\s+from\s+check_mv_design\.\s*"
+        r"\(MV-082\)\s*$",
+        report,
+        re.MULTILINE,
+    )
+    if len(headers) != 1 or len(modes) != 1 or len(summaries) != 1:
+        raise FlowExecutionError(
+            "malformed Synopsys tie-off check report: "
+            "check identity or completion summary is missing or duplicated"
+        )
+    errors, warnings = (int(value) for value in summaries[0])
+    return {
+        "tie-off-check-performed": True,
+        "tie-off-check-status": "performed",
+        "tie-off-violation-count": errors + warnings,
+    }
+
+
 def _power_nw(text: str, label: str) -> float:
     match = re.search(
         rf"^\s*{re.escape(label)}\s*=\s*({_NUMBER})\s*"
@@ -166,6 +351,11 @@ def parse_synopsys_fc_report_facts(
             )
 
         drc = _report_text(reports, "drc-report")
+        physical_completion = _report_text(
+            reports,
+            "physical-completion-report",
+        )
+        tie_off = _report_text(reports, "tie-off-check-report")
         open_nets = _required_int(
             drc,
             r"^\s*Total number of open nets\s*=\s*(\d+)\b",
@@ -177,7 +367,7 @@ def parse_synopsys_fc_report_facts(
             "DRC",
         )
 
-        return {
+        facts: dict[str, bool | int | float | str] = {
             "tool-execution-completed": True,
             "design-check-error-count": sum(
                 int(match.group("errors")) for match in summaries
@@ -197,6 +387,10 @@ def parse_synopsys_fc_report_facts(
             "total-dynamic-power-nw": _power_nw(power, "Total Dynamic Power"),
             "cell-leakage-power-nw": _power_nw(power, "Cell Leakage Power"),
         }
+        facts.update(_route_verification_facts(drc))
+        facts.update(_physical_completion_facts(physical_completion))
+        facts.update(_tie_off_facts(tie_off))
+        return facts
     raise FlowExecutionError(
         f"unsupported Synopsys FC report action: {action_kind!r}"
     )

@@ -570,7 +570,9 @@ class FlowEngine:
                         )
                         facts = dict(collected.facts)
                         missing_facts = set(action.facts) - set(facts)
-                        unknown_facts = set(facts) - set(action.facts)
+                        unknown_facts = set(facts) - (
+                            set(action.facts) | set(action.optional_facts)
+                        )
                         if collected.status == "valid" and missing_facts:
                             raise FlowExecutionError(
                                 f"Action {node.node_id!r} omitted Facts "

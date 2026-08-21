@@ -1,0 +1,33 @@
+INFO: wire-opt feature for router enabled
+Cell Min-Routing-Layer = M1
+Cell Max-Routing-Layer = AP
+Turn off antenna since no rule is specified
+Warning: Port VDD of cell synthesizable_comparator_paper_0p8v is unplaced.  This may impact routing result. (ZRT-740)
+Warning: Port VSS of cell synthesizable_comparator_paper_0p8v is unplaced.  This may impact routing result. (ZRT-740)
+
+Start checking for open nets ...
+
+Total number of nets = 422, of which 0 are not extracted
+Total number of open nets = 0, of which 0 are frozen
+
+Check 422 nets, 0 have Errors
+
+Warning: No antenna rules defined, Skip antenna analysis. (ZRT-309)
+
+DRC-SUMMARY:
+	@@@@@@@ TOTAL VIOLATIONS =	0
+
+Verify Summary:
+
+Total number of nets = 422, of which 0 are not extracted
+Total number of open nets = 0, of which 0 are frozen
+Total number of excluded ports = 0 ports of 0 unplaced cells connected to 0 nets
+                                 0 ports without pins of 0 cells connected to 0 nets
+                                 0 ports of 0 cover cells connected to 0 non-pg nets
+
+Total number of DRCs = 0
+Total number of antenna violations = no antenna rules defined
+Total number of tie to rail violations = not checked
+Total number of tie to rail directly violations = not checked
+
+Total number of DRCs on M3 and below = 0

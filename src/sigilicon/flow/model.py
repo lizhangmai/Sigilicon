@@ -264,6 +264,7 @@ class ActionContract:
     inputs: tuple[ArtifactPort, ...] = ()
     outputs: tuple[ArtifactPort, ...] = ()
     facts: tuple[str, ...] = ()
+    optional_facts: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
     platform_assets: tuple[PlatformAssetRequirement, ...] = ()
     adapters: tuple[str, ...] = ()
@@ -273,6 +274,8 @@ class ActionContract:
         identifier(self.kind, "action kind")
         for value in self.facts:
             identifier(value, "fact name")
+        for value in self.optional_facts:
+            identifier(value, "optional fact name")
         for value in self.adapters:
             identifier(value, "Adapter name")
         for value in self.required_capabilities:
@@ -280,6 +283,13 @@ class ActionContract:
         _unique(tuple(port.role for port in self.inputs), "Action input roles")
         _unique(tuple(port.role for port in self.outputs), "Action output roles")
         _unique(self.facts, "Action facts")
+        _unique(self.optional_facts, "Action optional facts")
+        overlap = set(self.facts) & set(self.optional_facts)
+        if overlap:
+            raise FlowContractError(
+                "Action required and optional facts overlap: "
+                f"{sorted(overlap)}"
+            )
         _unique(self.required_capabilities, "Action required capabilities")
         _unique(
             tuple(requirement.role for requirement in self.platform_assets),

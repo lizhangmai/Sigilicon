@@ -45,6 +45,7 @@ def _write_owner(
     library_report: str | None = None,
     omit_library_report: bool = False,
     design_report: str | None = None,
+    physical_completion_report: str | None = None,
 ) -> None:
     owner_root.mkdir()
     (owner_root / "mapped.v").write_text("module top; endmodule\n", encoding="utf-8")
@@ -72,6 +73,15 @@ def _write_owner(
         design_report = (
             "Total 2 EMS messages : 0 errors, 2 warnings, 0 info.\n"
             "Total 1 non-EMS messages : 0 errors, 1 warnings, 0 info.\n"
+        )
+    if physical_completion_report is None:
+        physical_completion_report = (
+            "SIGILICON_PHYSICAL_COMPLETION_REPORT 1\n"
+            "Required PG ports = 2\n"
+            "Placed required PG ports = 2\n"
+            "Unplaced required PG ports = 0\n"
+            "PG connectivity check = performed\n"
+            "PG connectivity violations = 0\n"
         )
     _write_executable(
         owner_root / "run-fc-fixture.py",
@@ -116,6 +126,7 @@ else:
     assert (reference / "library.ndm").read_text() == "reference library\\n"
     assert Path(os.environ["SIGILICON_FC_TLUPLUS"]).is_file()
     assert Path(os.environ["SIGILICON_FC_GDS_MAP"]).is_file()
+    assert Path(os.environ["SIGILICON_FC_ANTENNA_RULES"]).is_file()
     files = {{
         "SIGILICON_FC_ROUTED_NETLIST": "module top; endmodule\\n",
         "SIGILICON_FC_ROUTED_CONSTRAINTS": "create_clock -period 1 clk\\n",
@@ -143,6 +154,16 @@ else:
             "Total number of nets = 422\\n"
             "Total number of open nets = 0\\n"
             "@@@@@@@ TOTAL VIOLATIONS = 0\\n"
+            "Total number of antenna violations = 0\\n"
+            "Total number of tie to rail violations = 0\\n"
+            "Total number of tie to rail directly violations = 0\\n"
+        ),
+        "SIGILICON_FC_PHYSICAL_COMPLETION_REPORT": {physical_completion_report!r},
+        "SIGILICON_FC_TIE_OFF_CHECK_REPORT": (
+            "Report : check_mv_design\\n"
+            "        -tieoff\\n"
+            "Information: Total 0 error(s) and 0 warning(s) from "
+            "check_mv_design. (MV-082)\\n"
         ),
     }}
     for name, content in files.items():
@@ -286,7 +307,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                         "reference-library",
                     ),
                 ),
-                policy="implementation-regression",
+                policy="physical-completion-readiness",
             ),
         ),
         targets=(
@@ -318,7 +339,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                 ),
             ),
             PolicySpec(
-                "implementation-regression",
+                "physical-completion-readiness",
                 (
                     PolicyCheck(
                         "tool-completed",
@@ -341,6 +362,54 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                     PolicyCheck(
                         "no-route-drc",
                         "route-drc-violation-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "required-pg-ports",
+                        "required-pg-port-count",
+                        "equals",
+                        2,
+                    ),
+                    PolicyCheck(
+                        "all-required-pg-ports-placed",
+                        "unplaced-required-pg-port-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "pg-connectivity-checked",
+                        "pg-connectivity-check-performed",
+                        "equals",
+                        True,
+                    ),
+                    PolicyCheck(
+                        "no-pg-connectivity-violations",
+                        "pg-connectivity-violation-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "antenna-check-active",
+                        "antenna-check-active",
+                        "equals",
+                        True,
+                    ),
+                    PolicyCheck(
+                        "no-antenna-violations",
+                        "antenna-violation-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "tie-off-checked",
+                        "tie-off-check-performed",
+                        "equals",
+                        True,
+                    ),
+                    PolicyCheck(
+                        "no-tie-off-violations",
+                        "tie-off-violation-count",
                         "at_most",
                         0,
                     ),
@@ -382,6 +451,8 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                         "area-report": "area.rpt",
                         "power-report": "power.rpt",
                         "drc-report": "drc.rpt",
+                        "physical-completion-report": "physical_completion.rpt",
+                        "tie-off-check-report": "tie_off_check.rpt",
                     },
                 },
             ),
@@ -405,6 +476,7 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
         "technology-lef",
         "tluplus",
         "gds-layer-map",
+        "antenna-rules",
     ):
         path = tmp_path / "platform" / name
         path.parent.mkdir(exist_ok=True)
@@ -462,6 +534,24 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
     return environment, collateral
 
 
+def test_physical_implementation_requires_fc_antenna_rules() -> None:
+    registry = FlowRegistry()
+    register_standard_asic_actions(registry)
+
+    action = registry.action("asic.physical-implementation")
+    physical_technology = next(
+        requirement
+        for requirement in action.platform_assets
+        if requirement.role == "physical-technology"
+    )
+
+    assert physical_technology.members == (
+        "tluplus",
+        "gds-layer-map",
+        "antenna-rules",
+    )
+
+
 def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     tmp_path: Path,
 ) -> None:
@@ -497,6 +587,8 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
         "execution-evidence",
         "layout-stream",
         "power-report",
+        "physical-completion-report",
+        "tie-off-check-report",
         "qor-report",
         "routed-constraints",
         "routed-netlist",
@@ -537,6 +629,22 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
         "power-activity-mode": "scalar",
         "total-dynamic-power-nw": 95500.0,
         "cell-leakage-power-nw": 386.0,
+        "antenna-check-active": True,
+        "antenna-check-status": "active",
+        "antenna-violation-count": 0,
+        "tie-to-rail-check-performed": True,
+        "tie-to-rail-check-status": "performed",
+        "tie-to-rail-violation-count": 0,
+        "tie-to-rail-direct-violation-count": 0,
+        "tie-off-check-performed": True,
+        "tie-off-check-status": "performed",
+        "tie-off-violation-count": 0,
+        "required-pg-port-count": 2,
+        "placed-required-pg-port-count": 2,
+        "unplaced-required-pg-port-count": 0,
+        "pg-connectivity-check-performed": True,
+        "pg-connectivity-check-status": "performed",
+        "pg-connectivity-violation-count": 0,
     }
     for record in result.run_root.rglob("*.json"):
         assert str(tmp_path) not in record.read_text(encoding="utf-8")
@@ -732,6 +840,41 @@ def test_fc_exit_zero_with_design_check_error_is_policy_rejected(
     assert implementation.execution_status == "succeeded"
     assert implementation.result_status == "valid"
     assert implementation.facts["design-check-error-count"] == 1
+    assert implementation.policy_status == "rejected"
+    assert implementation.status == "rejected"
+
+
+def test_fc_exit_zero_with_incomplete_pg_is_policy_rejected(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(
+        owner_root,
+        physical_completion_report=(
+            "SIGILICON_PHYSICAL_COMPLETION_REPORT 1\n"
+            "Required PG ports = 2\n"
+            "Placed required PG ports = 0\n"
+            "Unplaced required PG ports = 2\n"
+            "PG connectivity check = performed\n"
+            "PG connectivity violations = 4\n"
+        ),
+    )
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "implementation", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="6" * 32,
+    )
+
+    implementation = result.nodes["implementation"]
+    assert implementation.execution_status == "succeeded"
+    assert implementation.result_status == "valid"
+    assert implementation.facts["unplaced-required-pg-port-count"] == 2
+    assert implementation.facts["pg-connectivity-violation-count"] == 4
     assert implementation.policy_status == "rejected"
     assert implementation.status == "rejected"
 
