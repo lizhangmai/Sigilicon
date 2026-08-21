@@ -179,28 +179,30 @@ def inspect_repository_designs(
             project_root=root,
         ).as_dict()
 
-    soc_catalog_path, soc_catalog = _catalog(
-        context,
-        "soc",
-        "soc-catalog",
-        ("targets",),
-    )
-    soc_paths = _contract_entries(context, "soc.targets", soc_catalog["targets"])
     socs: dict[str, Any] = {}
-    for name, path in soc_paths.items():
-        plan = plan_soc(
-            path,
-            project_root=root,
-            artifact_root=context.project.artifact_root,
+    soc_catalog_path = context.find_catalog("soc")
+    if soc_catalog_path is not None:
+        soc_catalog_path, soc_catalog = _catalog(
+            context,
+            "soc",
+            "soc-catalog",
+            ("targets",),
         )
-        if plan.get("soc") != name:
-            raise ValueError(f"SoC catalog identity mismatch: {name}")
-        _register_owner_root(
-            owner_roots,
-            owner=_document_owner(path),
-            root=path.parent,
-        )
-        socs[name] = plan
+        soc_paths = _contract_entries(context, "soc.targets", soc_catalog["targets"])
+        for name, path in soc_paths.items():
+            plan = plan_soc(
+                path,
+                project_root=root,
+                artifact_root=context.project.artifact_root,
+            )
+            if plan.get("soc") != name:
+                raise ValueError(f"SoC catalog identity mismatch: {name}")
+            _register_owner_root(
+                owner_roots,
+                owner=_document_owner(path),
+                root=path.parent,
+            )
+            socs[name] = plan
 
     platform_catalog_path, platform_catalog = _catalog(
         context,
@@ -255,23 +257,26 @@ def inspect_repository_designs(
             for target in layout_catalog.targets
         }
 
+    catalogs = {
+        "ip": ip_catalog_path.relative_to(root).as_posix(),
+        "platform": platform_catalog_path.relative_to(root).as_posix(),
+        "design_targets": [
+            path.relative_to(root).as_posix()
+            for _, path in design_catalog_paths
+        ],
+        "layout_targets": [
+            path.relative_to(root).as_posix()
+            for _, path in layout_catalog_paths
+        ],
+    }
+    if soc_catalog_path is not None:
+        catalogs["soc"] = soc_catalog_path.relative_to(root).as_posix()
+
     return {
         "passed": True,
         "project": "sigilicon.toml",
         "configuration": configuration,
-        "catalogs": {
-            "ip": ip_catalog_path.relative_to(root).as_posix(),
-            "soc": soc_catalog_path.relative_to(root).as_posix(),
-            "platform": platform_catalog_path.relative_to(root).as_posix(),
-            "design_targets": [
-                path.relative_to(root).as_posix()
-                for _, path in design_catalog_paths
-            ],
-            "layout_targets": [
-                path.relative_to(root).as_posix()
-                for _, path in layout_catalog_paths
-            ],
-        },
+        "catalogs": catalogs,
         "components": components,
         "ip_releases": ip_releases,
         "designs": designs,

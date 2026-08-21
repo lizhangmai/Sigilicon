@@ -152,8 +152,24 @@ def test_repository_context_rejects_unknown_catalog_roles(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="exactly ip, soc, and platform"):
+    with pytest.raises(ValueError, match="unknown catalog roles.*unexpected"):
         RepositoryContext.from_project_root(tmp_path)
+
+
+def test_repository_context_allows_an_unregistered_soc_domain(tmp_path: Path) -> None:
+    contract = tmp_path / "sigilicon.toml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'soc = "catalogs/soc.toml"\n', ""
+        ),
+        encoding="utf-8",
+    )
+
+    repository = RepositoryContext.from_project_root(tmp_path)
+
+    assert repository.find_catalog("soc") is None
+    with pytest.raises(ValueError, match="repository has no 'soc' catalog"):
+        repository.catalog("soc")
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

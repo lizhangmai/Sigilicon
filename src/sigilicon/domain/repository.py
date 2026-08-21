@@ -55,13 +55,19 @@ class RepositoryContext:
         project = ProjectContext.from_file(contract)
         raw = read_toml(contract)
         catalogs = raw.get("catalogs")
-        if not isinstance(catalogs, Mapping) or set(catalogs) != {
-            "ip",
-            "soc",
-            "platform",
-        }:
+        if not isinstance(catalogs, Mapping):
+            raise ValueError(f"{contract}: catalogs must be a table")
+        catalog_names = set(catalogs)
+        missing = {"ip", "platform"} - catalog_names
+        if missing:
             raise ValueError(
-                f"{contract}: catalogs must contain exactly ip, soc, and platform"
+                f"{contract}: catalogs must contain ip and platform; "
+                f"missing {sorted(missing)}"
+            )
+        unknown = catalog_names - {"ip", "soc", "platform"}
+        if unknown:
+            raise ValueError(
+                f"{contract}: unknown catalog roles: {sorted(unknown)}"
             )
         catalog_paths = tuple(
             sorted(
@@ -174,12 +180,18 @@ class RepositoryContext:
     def project_root(self) -> Path:
         return self.project.project_root
 
-    def catalog(self, name: str) -> Path:
+    def find_catalog(self, name: str) -> Path | None:
+        """Return a registered catalog, or ``None`` for an optional domain."""
+
         key = validate_artifact_component(name, "catalog name")
-        try:
-            return dict(self.catalog_paths)[key]
-        except KeyError as exc:
-            raise ValueError(f"repository has no {key!r} catalog") from exc
+        return dict(self.catalog_paths).get(key)
+
+    def catalog(self, name: str) -> Path:
+        path = self.find_catalog(name)
+        if path is None:
+            key = validate_artifact_component(name, "catalog name")
+            raise ValueError(f"repository has no {key!r} catalog")
+        return path
 
     def owner_for(self, path: Path | str) -> RepositoryOwner | None:
         resolved = Path(path).resolve()

@@ -157,7 +157,8 @@ def inspect_project_configurations(
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
     repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
     platform_root = context.catalog("platform").parent
-    soc_root = context.catalog("soc").parent
+    soc_catalog = context.find_catalog("soc")
+    soc_root = soc_catalog.parent if soc_catalog is not None else None
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
@@ -190,7 +191,7 @@ def inspect_project_configurations(
                 allowed_scopes = ("owner", "cell", "verification", "variant")
             elif owner_root.is_relative_to(platform_root):
                 allowed_scopes = "platform"
-            elif owner_root.is_relative_to(soc_root):
+            elif soc_root is not None and owner_root.is_relative_to(soc_root):
                 allowed_scopes = ("product", "variant")
             else:
                 raise ValueError(
