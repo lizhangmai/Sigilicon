@@ -19,6 +19,7 @@ from sigilicon.flow.model import (
     FlowExecutionError,
     ProducedArtifact,
 )
+from sigilicon.flow.synopsys_reports import parse_synopsys_fc_report_facts
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
@@ -547,7 +548,7 @@ class SynopsysDCAdapter:
 class SynopsysFCAdapter:
     """Run managed reference-library and place-and-route Action interfaces."""
 
-    version = "1"
+    version = "2"
 
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()
@@ -734,9 +735,17 @@ class SynopsysFCAdapter:
                 qualifiers=qualifiers,
             )
         )
+        facts = parse_synopsys_fc_report_facts(
+            context.action.kind,
+            {
+                role: path
+                for role, path in locations.items()
+                if role.endswith("-report")
+            },
+        )
         return CollectedActionResult(
             artifacts=tuple(produced),
-            facts={"passed": True},
+            facts=facts,
             evidence=(stdout, stderr),
             details={
                 "target": node["target"],

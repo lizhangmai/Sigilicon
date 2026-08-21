@@ -129,7 +129,12 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("library-check-report", "report.library-check"),
                 ArtifactPort("execution-evidence", "evidence.tool-execution"),
             ),
-            facts=("passed",),
+            facts=(
+                "tool-execution-completed",
+                "library-check-succeeded",
+                "library-check-error-count",
+                "library-check-warning-count",
+            ),
             required_capabilities=("tool.synopsys-library-manager",),
             platform_assets=(
                 PlatformAssetRequirement(
@@ -177,7 +182,22 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("drc-report", "report.drc"),
                 ArtifactPort("execution-evidence", "evidence.tool-execution"),
             ),
-            facts=("passed",),
+            facts=(
+                "tool-execution-completed",
+                "design-check-error-count",
+                "design-check-warning-count",
+                "open-net-count",
+                "route-drc-violation-count",
+                "worst-setup-slack-ns",
+                "worst-hold-slack-ns",
+                "max-transition-violation-count",
+                "max-capacitance-violation-count",
+                "physical-cell-area-um2",
+                "leaf-cell-count",
+                "power-activity-mode",
+                "total-dynamic-power-nw",
+                "cell-leakage-power-nw",
+            ),
             required_capabilities=("tool.synopsys-fc",),
             platform_assets=(
                 PlatformAssetRequirement(

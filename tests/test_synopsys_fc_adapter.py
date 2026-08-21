@@ -19,6 +19,8 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
+    PolicyCheck,
+    PolicySpec,
     ResolvedCapability,
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
@@ -33,7 +35,14 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _write_owner(owner_root: Path, *, fail_pnr: bool = False) -> None:
+def _write_owner(
+    owner_root: Path,
+    *,
+    fail_pnr: bool = False,
+    library_report: str | None = None,
+    omit_library_report: bool = False,
+    design_report: str | None = None,
+) -> None:
     owner_root.mkdir()
     (owner_root / "mapped.v").write_text("module top; endmodule\n", encoding="utf-8")
     (owner_root / "mapped.sdc").write_text(
@@ -50,6 +59,17 @@ def _write_owner(owner_root: Path, *, fail_pnr: bool = False) -> None:
     )
     (owner_root / "site.lef").write_text("END LIBRARY\n", encoding="utf-8")
     failure = "raise SystemExit(7)" if fail_pnr else "pass"
+    if library_report is None:
+        library_report = (
+            "Checking libraries...\n"
+            "Warning: fixture library warning (LM-001)\n"
+            "Workspace check succeeded!\n"
+        )
+    if design_report is None:
+        design_report = (
+            "Total 2 EMS messages : 0 errors, 2 warnings, 0 info.\n"
+            "Total 1 non-EMS messages : 0 errors, 1 warnings, 0 info.\n"
+        )
     _write_executable(
         owner_root / "run-fc-fixture.py",
         f'''#!/usr/bin/env python3
@@ -80,9 +100,10 @@ if target == "library":
     reference = Path(os.environ["SIGILICON_FC_REFERENCE_NDM"])
     reference.mkdir(parents=True)
     (reference / "library.ndm").write_text("reference library\\n")
-    report = Path(os.environ["SIGILICON_FC_LIBRARY_CHECK_REPORT"])
-    report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text("library check passed\\n")
+    if {not omit_library_report!r}:
+        report = Path(os.environ["SIGILICON_FC_LIBRARY_CHECK_REPORT"])
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text({library_report!r})
 else:
     {failure}
     assert Path(os.environ["SIGILICON_SYNOPSYS_FC_SHELL"]).is_file()
@@ -96,13 +117,30 @@ else:
         "SIGILICON_FC_ROUTED_NETLIST": "module top; endmodule\\n",
         "SIGILICON_FC_ROUTED_CONSTRAINTS": "create_clock -period 1 clk\\n",
         "SIGILICON_FC_GDS": "gds fixture\\n",
-        "SIGILICON_FC_DESIGN_CHECK_REPORT": "design passed\\n",
+        "SIGILICON_FC_DESIGN_CHECK_REPORT": {design_report!r},
         "SIGILICON_FC_STRUCTURAL_REPORT": "structure passed\\n",
-        "SIGILICON_FC_QOR_REPORT": "qor passed\\n",
-        "SIGILICON_FC_TIMING_REPORT": "timing passed\\n",
-        "SIGILICON_FC_AREA_REPORT": "area passed\\n",
-        "SIGILICON_FC_POWER_REPORT": "power passed\\n",
-        "SIGILICON_FC_DRC_REPORT": "drc passed\\n",
+        "SIGILICON_FC_QOR_REPORT": (
+            "Critical Path Slack:                   -0.04\\n"
+            "Worst Hold Violation:                  -0.08\\n"
+            "Max Trans Violations:                      2\\n"
+            "Max Cap Violations:                        3\\n"
+            "TOTAL LEAF CELLS                         418      387.590\\n"
+        ),
+        "SIGILICON_FC_TIMING_REPORT": "slack (VIOLATED) -0.04\\n",
+        "SIGILICON_FC_AREA_REPORT": (
+            "Total physical cell area: 387.590\\n"
+            "TOTAL LEAF CELLS 418 387.590\\n"
+        ),
+        "SIGILICON_FC_POWER_REPORT": (
+            "Running switching activity propagation in scalar mode!\\n"
+            "Total Dynamic Power = 9.55e+04 nW\\n"
+            "Cell Leakage Power = 3.86e+02 nW\\n"
+        ),
+        "SIGILICON_FC_DRC_REPORT": (
+            "Total number of nets = 422\\n"
+            "Total number of open nets = 0\\n"
+            "@@@@@@@ TOTAL VIOLATIONS = 0\\n"
+        ),
     }}
     for name, content in files.items():
         path = Path(os.environ[name])
@@ -204,6 +242,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                         "reference-library-recipe",
                     ),
                 ),
+                policy="reference-library-quality",
             ),
             FlowNode(
                 "implementation",
@@ -231,11 +270,66 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                         "reference-library",
                     ),
                 ),
+                policy="implementation-regression",
             ),
         ),
         targets=(
             FlowTarget("reference-library", ("reference-library",)),
             FlowTarget("implementation", ("implementation",)),
+        ),
+        policies=(
+            PolicySpec(
+                "reference-library-quality",
+                (
+                    PolicyCheck(
+                        "tool-completed",
+                        "tool-execution-completed",
+                        "equals",
+                        True,
+                    ),
+                    PolicyCheck(
+                        "no-library-errors",
+                        "library-check-error-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "workspace-check-succeeded",
+                        "library-check-succeeded",
+                        "equals",
+                        True,
+                    ),
+                ),
+            ),
+            PolicySpec(
+                "implementation-regression",
+                (
+                    PolicyCheck(
+                        "tool-completed",
+                        "tool-execution-completed",
+                        "equals",
+                        True,
+                    ),
+                    PolicyCheck(
+                        "no-design-check-errors",
+                        "design-check-error-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "no-open-nets",
+                        "open-net-count",
+                        "at_most",
+                        0,
+                    ),
+                    PolicyCheck(
+                        "no-route-drc",
+                        "route-drc-violation-count",
+                        "at_most",
+                        0,
+                    ),
+                ),
+            ),
         ),
         owner_root=owner_root,
     )
@@ -405,7 +499,22 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     assert checkpoint_manifest["root"] == "routed.ndm"
     assert reference_manifest["members"][0]["path"] == "library.ndm"
     assert checkpoint_manifest["members"][0]["path"] == "top.ndm"
-    assert implementation.facts == {"passed": True}
+    assert dict(implementation.facts) == {
+        "tool-execution-completed": True,
+        "design-check-error-count": 0,
+        "design-check-warning-count": 3,
+        "open-net-count": 0,
+        "route-drc-violation-count": 0,
+        "worst-setup-slack-ns": -0.04,
+        "worst-hold-slack-ns": -0.08,
+        "max-transition-violation-count": 2,
+        "max-capacitance-violation-count": 3,
+        "physical-cell-area-um2": 387.59,
+        "leaf-cell-count": 418,
+        "power-activity-mode": "scalar",
+        "total-dynamic-power-nw": 95500.0,
+        "cell-leakage-power-nw": 386.0,
+    }
     for record in result.run_root.rglob("*.json"):
         assert str(tmp_path) not in record.read_text(encoding="utf-8")
 
@@ -440,6 +549,193 @@ def test_synopsys_fc_adapter_records_owner_runner_failure(tmp_path: Path) -> Non
     )
     assert action_result["execution"]["exit_code"] == 7
     assert str(tmp_path) not in json.dumps(action_result)
+
+
+def test_library_manager_exit_zero_with_report_error_is_policy_rejected(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(
+        owner_root,
+        library_report=(
+            "Checking libraries...\n"
+            "Error: timing libraries have the same PVT (LM-073)\n"
+            "Workspace check succeeded!\n"
+        ),
+    )
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "reference-library", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="e" * 32,
+    )
+
+    reference = result.nodes["reference-library"]
+    assert reference.execution_status == "succeeded"
+    assert reference.result_status == "valid"
+    assert reference.facts["tool-execution-completed"] is True
+    assert reference.facts["library-check-error-count"] == 1
+    assert reference.policy_status == "rejected"
+    assert reference.status == "rejected"
+
+
+def test_failed_workspace_check_marker_is_policy_rejected(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(owner_root, library_report="Workspace check failed!\n")
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "reference-library", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="5" * 32,
+    )
+
+    reference = result.nodes["reference-library"]
+    assert reference.execution_status == "succeeded"
+    assert reference.result_status == "valid"
+    assert reference.facts["library-check-error-count"] == 0
+    assert reference.facts["library-check-succeeded"] is False
+    assert reference.status == "rejected"
+
+
+def test_rejected_reference_library_blocks_physical_implementation(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(
+        owner_root,
+        library_report=(
+            "Error: timing libraries have the same PVT (LM-073)\n"
+            "Workspace check succeeded!\n"
+        ),
+    )
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "implementation", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="4" * 32,
+    )
+
+    assert result.nodes["reference-library"].status == "rejected"
+    implementation = result.nodes["implementation"]
+    assert implementation.status == "blocked"
+    assert implementation.execution_status is None
+    assert "reference-library" in (implementation.reason or "")
+
+
+def test_synopsys_fc_adapter_rejects_missing_library_report(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(owner_root, omit_library_report=True)
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "reference-library", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="f" * 32,
+    )
+
+    reference = result.nodes["reference-library"]
+    assert result.status == "failed"
+    assert reference.execution_status == "succeeded"
+    assert reference.result_status == "failed"
+    assert "library-check-report" in (reference.reason or "")
+
+
+def test_synopsys_fc_adapter_rejects_malformed_library_report(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(owner_root, library_report="Checking libraries...\n")
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "reference-library", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="1" * 32,
+    )
+
+    reference = result.nodes["reference-library"]
+    assert result.status == "failed"
+    assert reference.execution_status == "succeeded"
+    assert reference.result_status == "failed"
+    assert "completion marker is missing" in (reference.reason or "")
+
+
+def test_fc_exit_zero_with_design_check_error_is_policy_rejected(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(
+        owner_root,
+        design_report=(
+            "Total 2 EMS messages : 1 errors, 1 warnings, 0 info.\n"
+            "Total 1 non-EMS messages : 0 errors, 1 warnings, 0 info.\n"
+        ),
+    )
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "implementation", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="2" * 32,
+    )
+
+    assert result.nodes["reference-library"].status == "accepted"
+    implementation = result.nodes["implementation"]
+    assert implementation.execution_status == "succeeded"
+    assert implementation.result_status == "valid"
+    assert implementation.facts["design-check-error-count"] == 1
+    assert implementation.policy_status == "rejected"
+    assert implementation.status == "rejected"
+
+
+def test_synopsys_fc_adapter_rejects_malformed_implementation_report(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(owner_root, design_report="design check finished\n")
+    spec, profile = _flow(owner_root)
+    environment, _collateral = _environment(tmp_path)
+    engine = FlowEngine(_registry(owner_root))
+
+    result = engine.run(
+        engine.plan(spec, "implementation", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="3" * 32,
+    )
+
+    implementation = result.nodes["implementation"]
+    assert result.status == "failed"
+    assert implementation.execution_status == "succeeded"
+    assert implementation.result_status == "failed"
+    assert "message summary is missing or duplicated" in (
+        implementation.reason or ""
+    )
 
 
 def test_synopsys_fc_adapter_rejects_stale_reference_before_downstream_use(
