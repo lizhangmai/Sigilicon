@@ -279,16 +279,57 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
     )
     registry.register_action(
         ActionContract(
+            kind="asic.electrical-campaign",
+            inputs=(
+                ArtifactPort("electrical-sources", "source-set.spice"),
+                ArtifactPort("decks", "source-set.spice-deck"),
+                ArtifactPort(
+                    "electrical-recipe",
+                    "recipe.electrical-simulation",
+                ),
+            ),
+            outputs=(
+                ArtifactPort(
+                    "campaign-summary",
+                    "report.electrical-campaign",
+                ),
+            ),
+            facts=(
+                "tool-execution-completed",
+                "campaign-point-count",
+            ),
+            required_capabilities=("tool.synopsys-hspice",),
+            platform_assets=(
+                PlatformAssetRequirement(
+                    "hspice-models",
+                    "model.hspice-set",
+                    members=(
+                        "nominal-model",
+                        "mismatch-model",
+                        "rvt",
+                        "hvt",
+                        "lvt",
+                    ),
+                ),
+            ),
+            adapters=("synopsys-hspice",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
             kind="asic.electrical-qualification",
             inputs=(
-                ArtifactPort("measurements", "measurement.collection"),
+                ArtifactPort(
+                    "campaign-summary",
+                    "report.electrical-campaign",
+                ),
                 ArtifactPort("qualification-spec", "spec.qualification"),
             ),
             outputs=(
                 ArtifactPort("evidence", "evidence.qualification"),
             ),
-            facts=("passed",),
-            adapters=("synopsys-hspice",),
+            facts=("passed", "qualification-failure-count"),
+            adapters=("electrical-qualification",),
         )
     )
 

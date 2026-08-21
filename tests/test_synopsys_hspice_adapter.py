@@ -13,6 +13,7 @@ from sigilicon.flow import (
     ArtifactBinding,
     ArtifactPort,
     ExecutionEnvironment,
+    ElectricalQualificationAdapter,
     ExecutionProfile,
     FlowEngine,
     FlowNode,
@@ -41,6 +42,27 @@ def _write_owner(owner_root: Path) -> None:
         "fixture polarity deck\n",
         encoding="utf-8",
     )
+    (owner_root / "qualification.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-qualification"
+path_scope = "owner"
+owner = "fixture"
+
+[electrical_offset_campaign]
+variant = "paper_0p8v"
+corner = "tt0p8v25c"
+common_mode_v = [0.350, 0.355]
+mismatch_samples = 200
+raw_reference_sigma_mv = 15.25
+calibrated_reference_sigma_mv = 0.92
+reference_ratio_min = 0.1
+reference_ratio_max = 10.0
+require_same_conditions = true
+require_full_code_coverage = true
+require_sigma_improvement = true
+''',
+        encoding="utf-8",
+    )
     runner = owner_root / "run-hspice-fixture.py"
     runner.write_text(
         '''#!/usr/bin/env python3
@@ -48,7 +70,8 @@ import os
 from pathlib import Path
 import sys
 
-assert sys.argv[1] == "calibrated-polarity"
+target = sys.argv[1]
+assert target in {"calibrated-polarity", "formal"}
 assert os.environ["SIGILICON_DESIGN_VARIANT"] == "paper_0p8v"
 assert os.environ["SIGILICON_DESIGN_CORNER"] == "tt0p8v25c"
 for name in (
@@ -68,6 +91,42 @@ mode = os.environ.get("SIGILICON_HSPICE_FIXTURE_MODE", "valid")
 if mode == "tool-failed":
     raise SystemExit(7)
 if mode == "missing":
+    raise SystemExit(0)
+if target == "formal":
+    import json
+    assert os.environ["SIGILICON_HSPICE_SUPPLY_V"] == "0.8"
+    assert os.environ["SIGILICON_HSPICE_MISMATCH_SAMPLES"] == "200"
+    assert os.environ["SIGILICON_HSPICE_DECISION_DEADLINE_PS"] == "250.0"
+    assert Path(os.environ["SIGILICON_HSPICE_MISMATCH_MODEL"]).is_file()
+    samples = 199 if mode == "wrong-sample-count" else 200
+    points = []
+    for vcm, raw_sigma, calibrated_sigma in (
+        (0.350, 11.14, 2.13),
+        (0.355, 7.34, 1.99),
+    ):
+        points.append({
+            "vcm_v": vcm,
+            "status": "pass",
+            "method": {
+                "mismatch_samples": samples,
+                "same_vcm_and_mc_index": True,
+            },
+            "raw": {"count": samples, "sample_sigma_mv": raw_sigma},
+            "calibrated": {"count": samples, "sample_sigma_mv": calibrated_sigma},
+            "sigma_improvement_ratio": raw_sigma / calibrated_sigma,
+            "failures": {"uncovered_indices": [], "checks": []},
+        })
+    summary = {
+        "schema": 1,
+        "contract_kind": "electrical-offset-campaign",
+        "status": "pass",
+        "points": points,
+    }
+    campaign = output / "common_mode_qualified"
+    campaign.mkdir()
+    (campaign / "statistics.json").write_text(
+        json.dumps(summary) + "\\n", encoding="utf-8"
+    )
     raise SystemExit(0)
 header = "$OPTION MEASFORM=3\\n.TITLE 'fixture'\\n"
 if mode == "malformed":
@@ -118,6 +177,12 @@ role = "electrical-recipe"
 kind = "recipe.electrical-simulation"
 materialization = "manifest"
 members = ["run-hspice-fixture.py"]
+
+[[artifacts]]
+role = "qualification-spec"
+kind = "spec.qualification"
+materialization = "file"
+members = ["qualification.toml"]
 ''',
         encoding="utf-8",
     )
@@ -148,6 +213,7 @@ def _registry(owner_root: Path) -> FlowRegistry:
                     "electrical-recipe",
                     "recipe.electrical-simulation",
                 ),
+                ArtifactPort("qualification-spec", "spec.qualification"),
             ),
             adapters=("source-assets",),
             resolves_source_assets=True,
@@ -156,6 +222,10 @@ def _registry(owner_root: Path) -> FlowRegistry:
     register_standard_asic_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
     registry.register_adapter("synopsys-hspice", SynopsysHSpiceAdapter(owner_root))
+    registry.register_adapter(
+        "electrical-qualification",
+        ElectricalQualificationAdapter(),
+    )
     return registry
 
 
@@ -199,8 +269,41 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                 ),
                 policy="electrical-functional-regression",
             ),
+            FlowNode(
+                "electrical-campaign",
+                "asic.electrical-campaign",
+                config={
+                    "runner": "run-hspice-fixture.py",
+                    "target": "formal",
+                    "model_section": "LocalMCOnly_MOS_MOSCAP",
+                    "summary_file": "common_mode_qualified/statistics.json",
+                    "supply_v": 0.8,
+                    "mismatch_samples": 200,
+                    "decision_deadline_ps": 250.0,
+                },
+                bindings=(
+                    ArtifactBinding("electrical-sources", "assets", "electrical-sources"),
+                    ArtifactBinding("decks", "assets", "decks"),
+                    ArtifactBinding("electrical-recipe", "assets", "electrical-recipe"),
+                ),
+                policy="electrical-campaign-complete",
+            ),
+            FlowNode(
+                "electrical-qualification",
+                "asic.electrical-qualification",
+                bindings=(
+                    ArtifactBinding(
+                        "campaign-summary", "electrical-campaign", "campaign-summary"
+                    ),
+                    ArtifactBinding("qualification-spec", "assets", "qualification-spec"),
+                ),
+                policy="electrical-qualified",
+            ),
         ),
-        targets=(FlowTarget("electrical-regression", ("electrical-functional",)),),
+        targets=(
+            FlowTarget("electrical-regression", ("electrical-functional",)),
+            FlowTarget("qualification", ("electrical-qualification",)),
+        ),
         policies=(
             PolicySpec(
                 "electrical-functional-regression",
@@ -227,6 +330,17 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                     ),
                 ),
             ),
+            PolicySpec(
+                "electrical-campaign-complete",
+                (
+                    PolicyCheck("tool-completed", "tool-execution-completed", "equals", True),
+                    PolicyCheck("two-points", "campaign-point-count", "equals", 2),
+                ),
+            ),
+            PolicySpec(
+                "electrical-qualified",
+                (PolicyCheck("qualified", "passed", "equals", True),),
+            ),
         ),
         owner_root=owner_root,
     )
@@ -243,6 +357,18 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                     "hspice-models": "fixture:hspice@tt0p8v25c",
                 },
             ),
+            AdapterSelection(
+                "asic.electrical-campaign",
+                "synopsys-hspice",
+                config={"timeout_seconds": 30},
+                platform_asset_identities={
+                    "hspice-models": "fixture:hspice@tt0p8v25c",
+                },
+            ),
+            AdapterSelection(
+                "asic.electrical-qualification",
+                "electrical-qualification",
+            ),
         ),
     )
     return spec, profile
@@ -250,7 +376,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
 
 def _environment(tmp_path: Path, executable: Path) -> ExecutionEnvironment:
     members: list[ResolvedPlatformAssetMember] = []
-    for role in ("nominal-model", "rvt", "hvt", "lvt"):
+    for role in ("nominal-model", "mismatch-model", "rvt", "hvt", "lvt"):
         model = tmp_path / f"models/{role}.sp"
         model.parent.mkdir(exist_ok=True)
         model.write_text(f"* {role} fixture\n", encoding="utf-8")
@@ -388,3 +514,91 @@ def test_hspice_preflight_rejects_wrong_corner_model_identity(tmp_path: Path) ->
         "identity": "fixture:hspice@tt0p8v25c",
     }
     assert model_check.identity == "fixture:hspice@tt0p9v25c"
+
+
+def test_managed_electrical_campaign_is_evaluated_by_owner_spec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_root = tmp_path / "owner"
+    owner_root.mkdir()
+    _write_owner(owner_root)
+    spec, profile = _flow(owner_root)
+    engine = FlowEngine(_registry(owner_root))
+    environment = _environment(tmp_path, owner_root / "run-hspice-fixture.py")
+    monkeypatch.setenv("SIGILICON_HSPICE_FIXTURE_MODE", "valid")
+
+    result = engine.run(
+        engine.plan(spec, "qualification", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="2" * 32,
+    )
+
+    assert result.status == "accepted"
+    campaign = result.nodes["electrical-campaign"]
+    assert campaign.facts == {
+        "campaign-point-count": 2,
+        "tool-execution-completed": True,
+    }
+    qualification = result.nodes["electrical-qualification"]
+    assert qualification.status == "accepted"
+    assert qualification.facts["passed"] is True
+    assert qualification.facts["qualification-failure-count"] == 0
+    evidence = json.loads(qualification.artifacts["evidence"].path.read_text())
+    assert evidence["conclusion"] == "qualification"
+    assert str(tmp_path) not in json.dumps(evidence)
+
+
+def test_qualification_recomputes_checks_instead_of_trusting_summary_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_root = tmp_path / "owner"
+    owner_root.mkdir()
+    _write_owner(owner_root)
+    spec, profile = _flow(owner_root)
+    engine = FlowEngine(_registry(owner_root))
+    environment = _environment(tmp_path, owner_root / "run-hspice-fixture.py")
+    monkeypatch.setenv("SIGILICON_HSPICE_FIXTURE_MODE", "wrong-sample-count")
+
+    result = engine.run(
+        engine.plan(spec, "qualification", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="3" * 32,
+    )
+
+    qualification = result.nodes["electrical-qualification"]
+    assert result.status == "failed"
+    assert qualification.status == "rejected"
+    assert qualification.result_status == "valid"
+    assert qualification.facts["passed"] is False
+    assert qualification.facts["qualification-failure-count"] == 2
+
+
+def test_qualification_rejects_dirty_owner_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_root = tmp_path / "owner"
+    owner_root.mkdir()
+    _write_owner(owner_root)
+    with (owner_root / "qualification.toml").open("a", encoding="utf-8") as stream:
+        stream.write("\n")
+    spec, profile = _flow(owner_root)
+    engine = FlowEngine(_registry(owner_root))
+    environment = _environment(tmp_path, owner_root / "run-hspice-fixture.py")
+    monkeypatch.setenv("SIGILICON_HSPICE_FIXTURE_MODE", "valid")
+
+    result = engine.run(
+        engine.plan(spec, "qualification", profile),
+        artifact_root=tmp_path / "artifacts",
+        environment=environment,
+        run_id="4" * 32,
+    )
+
+    qualification = result.nodes["electrical-qualification"]
+    assert result.status == "failed"
+    assert qualification.status == "failed"
+    assert "clean committed owner source" in qualification.reason

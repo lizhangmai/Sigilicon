@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 from typing import Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json
@@ -40,6 +41,7 @@ _VCS_MODEL_ENVIRONMENT = {
 }
 _HSPICE_MODEL_ENVIRONMENT = {
     "nominal-model": "SIGILICON_HSPICE_NOMINAL_MODEL",
+    "mismatch-model": "SIGILICON_HSPICE_MISMATCH_MODEL",
     "rvt": "SIGILICON_STDCELL_RVT_SPICE",
     "hvt": "SIGILICON_STDCELL_HVT_SPICE",
     "lvt": "SIGILICON_STDCELL_LVT_SPICE",
@@ -1343,18 +1345,21 @@ class SynopsysVCSAdapter:
         return executable, models
 
 class SynopsysHSpiceAdapter:
-    """Run one owner-selected HSPICE functional regression and type its data."""
+    """Run an owner-selected HSPICE regression or characterization campaign."""
 
-    version = "1"
+    version = "2"
 
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
-        if context.action.kind != "asic.electrical-functional":
+        if context.action.kind not in {
+            "asic.electrical-functional",
+            "asic.electrical-campaign",
+        }:
             return (
-                "Synopsys HSPICE Adapter requires asic.electrical-functional",
+                "Synopsys HSPICE Adapter requires an HSPICE electrical Action",
             )
         try:
             self._configuration(context)
@@ -1405,8 +1410,19 @@ class SynopsysHSpiceAdapter:
         ]
         environment["SIGILICON_DESIGN_VARIANT"] = str(qualifiers["variant"])
         environment["SIGILICON_DESIGN_CORNER"] = str(qualifiers["corner"])
-        for role, environment_name in _HSPICE_MODEL_ENVIRONMENT.items():
-            environment[environment_name] = str(models[role])
+        environment["SIGILICON_PYTHON"] = sys.executable
+        if context.action.kind == "asic.electrical-campaign":
+            environment["SIGILICON_HSPICE_SUPPLY_V"] = str(
+                configuration["supply_v"]
+            )
+            environment["SIGILICON_HSPICE_MISMATCH_SAMPLES"] = str(
+                configuration["mismatch_samples"]
+            )
+            environment["SIGILICON_HSPICE_DECISION_DEADLINE_PS"] = str(
+                configuration["decision_deadline_ps"]
+            )
+        for role, model in models.items():
+            environment[_HSPICE_MODEL_ENVIRONMENT[role]] = str(model)
 
         completed = run_process_group_capture(
             [str(runner), configuration["target"]],
@@ -1438,6 +1454,13 @@ class SynopsysHSpiceAdapter:
     ) -> CollectedActionResult:
         configuration = self._configuration(context)
         qualifiers = self._qualifiers(context)
+        if context.action.kind == "asic.electrical-campaign":
+            return self._collect_campaign(
+                context,
+                execution,
+                configuration,
+                qualifiers,
+            )
         raw_measurement = self._managed_tool_output(
             context.output_root / "tool",
             configuration["measurement_file"],
@@ -1467,9 +1490,7 @@ class SynopsysHSpiceAdapter:
                 "target": configuration["target"],
                 "qualifiers": dict(qualifiers),
                 "measurement_file": configuration["measurement_file"],
-                "required_measurements": list(
-                    configuration["required_measurements"]
-                ),
+                "required_measurements": list(configuration["required_measurements"]),
                 "rows": rows,
             },
         )
@@ -1498,7 +1519,134 @@ class SynopsysHSpiceAdapter:
             },
         )
 
+    def _collect_campaign(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+        configuration: Mapping[str, Any],
+        qualifiers: Mapping[str, Any],
+    ) -> CollectedActionResult:
+        raw_summary = self._managed_tool_output(
+            context.output_root / "tool",
+            configuration["summary_file"],
+        )
+        try:
+            summary = json.loads(raw_summary.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise FlowExecutionError(
+                "Synopsys HSPICE omitted or malformed the campaign summary"
+            ) from exc
+        if not isinstance(summary, dict) or summary.get("schema") != 1:
+            raise FlowExecutionError("HSPICE campaign summary schema must be 1")
+        if summary.get("contract_kind") != "electrical-offset-campaign":
+            raise FlowExecutionError(
+                "HSPICE campaign summary contract_kind is not supported"
+            )
+        points = summary.get("points")
+        if not isinstance(points, list) or not points:
+            raise FlowExecutionError("HSPICE campaign summary has no points")
+        summary["kind"] = "report.electrical-campaign"
+        summary["qualifiers"] = dict(qualifiers)
+        output = context.output_path("campaign-summary", "campaign-summary.json")
+        atomic_write_json(output, summary)
+        return CollectedActionResult(
+            artifacts=(
+                ProducedArtifact(
+                    "campaign-summary",
+                    "report.electrical-campaign",
+                    output,
+                    qualifiers=qualifiers,
+                ),
+            ),
+            facts={
+                "tool-execution-completed": True,
+                "campaign-point-count": len(points),
+            },
+            evidence=(
+                context.work_root / "stdout.log",
+                context.work_root / "stderr.log",
+                raw_summary,
+            ),
+            details={
+                "target": configuration["target"],
+                "summary_file": configuration["summary_file"],
+            },
+        )
+
     def _configuration(self, context: ActionContext) -> dict[str, Any]:
+        if context.action.kind == "asic.electrical-campaign":
+            unknown_action = set(context.action_config) - {
+                "runner",
+                "target",
+                "model_section",
+                "summary_file",
+                "supply_v",
+                "mismatch_samples",
+                "decision_deadline_ps",
+            }
+            if unknown_action:
+                raise FlowExecutionError(
+                    "HSPICE campaign Action contains unknown configuration: "
+                    f"{sorted(unknown_action)}"
+                )
+            target = context.action_config.get("target")
+            if (
+                not isinstance(target, str)
+                or _HSPICE_TARGET.fullmatch(target) is None
+            ):
+                raise FlowExecutionError("HSPICE campaign Action requires a safe target")
+            model_section = context.action_config.get("model_section")
+            if not isinstance(model_section, str) or not model_section:
+                raise FlowExecutionError(
+                    "HSPICE campaign Action requires a model_section"
+                )
+            summary_file = context.action_config.get("summary_file")
+            if not isinstance(summary_file, str):
+                raise FlowExecutionError(
+                    "HSPICE campaign Action requires a summary_file"
+                )
+            self._managed_tool_output(Path("."), summary_file)
+            supply_v = context.action_config.get("supply_v")
+            mismatch_samples = context.action_config.get("mismatch_samples")
+            decision_deadline_ps = context.action_config.get(
+                "decision_deadline_ps"
+            )
+            if (
+                isinstance(supply_v, bool)
+                or not isinstance(supply_v, (int, float))
+                or not math.isfinite(float(supply_v))
+                or float(supply_v) <= 0
+            ):
+                raise FlowExecutionError(
+                    "HSPICE campaign requires a positive supply_v"
+                )
+            if (
+                isinstance(mismatch_samples, bool)
+                or not isinstance(mismatch_samples, int)
+                or mismatch_samples <= 1
+            ):
+                raise FlowExecutionError(
+                    "HSPICE campaign requires mismatch_samples greater than one"
+                )
+            if (
+                isinstance(decision_deadline_ps, bool)
+                or not isinstance(decision_deadline_ps, (int, float))
+                or not math.isfinite(float(decision_deadline_ps))
+                or float(decision_deadline_ps) <= 0
+            ):
+                raise FlowExecutionError(
+                    "HSPICE campaign requires a positive decision_deadline_ps"
+                )
+            timeout = self._timeout(context)
+            return {
+                "target": target,
+                "model_section": model_section,
+                "summary_file": summary_file,
+                "supply_v": float(supply_v),
+                "mismatch_samples": mismatch_samples,
+                "decision_deadline_ps": float(decision_deadline_ps),
+                "timeout_seconds": timeout,
+            }
         unknown_action = set(context.action_config) - {
             "runner",
             "target",
@@ -1535,6 +1683,18 @@ class SynopsysHSpiceAdapter:
             raise FlowExecutionError(
                 "HSPICE positive_measurements must be required measurements"
             )
+        timeout = self._timeout(context)
+        return {
+            "target": target,
+            "model_section": model_section,
+            "measurement_file": measurement_file,
+            "required_measurements": required,
+            "positive_measurements": positive,
+            "timeout_seconds": timeout,
+        }
+
+    @staticmethod
+    def _timeout(context: ActionContext) -> int:
         unknown_adapter = set(context.adapter_config) - {"timeout_seconds"}
         if unknown_adapter:
             raise FlowExecutionError(
@@ -1546,14 +1706,7 @@ class SynopsysHSpiceAdapter:
             raise FlowExecutionError(
                 "HSPICE profile requires a positive timeout_seconds"
             )
-        return {
-            "target": target,
-            "model_section": model_section,
-            "measurement_file": measurement_file,
-            "required_measurements": required,
-            "positive_measurements": positive,
-            "timeout_seconds": timeout,
-        }
+        return timeout
 
     @staticmethod
     def _measurement_names(
@@ -1618,7 +1771,16 @@ class SynopsysHSpiceAdapter:
                 "Synopsys HSPICE requires a resolved HSPICE model set"
             )
         models: dict[str, Path] = {}
-        for role in _HSPICE_MODEL_ENVIRONMENT:
+        required_models = (
+            tuple(_HSPICE_MODEL_ENVIRONMENT)
+            if context.action.kind == "asic.electrical-campaign"
+            else tuple(
+                role
+                for role in _HSPICE_MODEL_ENVIRONMENT
+                if role != "mismatch-model"
+            )
+        )
+        for role in required_models:
             member = asset.member(role)
             if member is None:
                 raise FlowExecutionError(f"HSPICE model set omitted {role!r}")
