@@ -118,6 +118,7 @@ class ArtifactPort:
     required: bool = True
     multiple: bool = False
     accepted_kinds: tuple[str, ...] = ()
+    content_digest: bool = False
 
     def __post_init__(self) -> None:
         identifier(self.role, "artifact port role")
@@ -150,11 +151,10 @@ class PlatformAssetRequirement:
 
 
 @dataclass(frozen=True)
-class SourceRevisionMember:
-    """One owner-relative canonical source member pinned by content."""
+class SourceMember:
+    """One owner-relative member selected from the current Git checkout."""
 
     path: str
-    digest: str
     location: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -166,23 +166,20 @@ class SourceRevisionMember:
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise FlowContractError(
-                f"source revision member must be owner-relative: {self.path!r}"
+                f"source member must be owner-relative: {self.path!r}"
             )
-        if _DIGEST_RE.fullmatch(self.digest) is None:
-            raise FlowContractError("source revision member digest must be sha256")
         object.__setattr__(self, "location", Path(self.location).resolve())
 
 
 @dataclass(frozen=True)
-class SourceArtifactRevision:
-    """Pinned members implementing one typed source artifact role."""
+class SourceArtifact:
+    """Members implementing one typed source artifact role."""
 
     role: str
     kind: str
     materialization: str
     qualifiers: Mapping[str, Any]
-    members: tuple[SourceRevisionMember, ...]
-    fingerprint: str
+    members: tuple[SourceMember, ...]
 
     def __post_init__(self) -> None:
         identifier(self.role, "source artifact role")
@@ -200,8 +197,6 @@ class SourceArtifactRevision:
                 f"source artifact {self.role!r} declares no members"
             )
         _unique(tuple(member.path for member in self.members), "source artifact members")
-        if _DIGEST_RE.fullmatch(self.fingerprint) is None:
-            raise FlowContractError("source artifact fingerprint must be sha256")
         object.__setattr__(
             self,
             "qualifiers",
@@ -214,40 +209,50 @@ class SourceArtifactRevision:
 
 
 @dataclass(frozen=True)
-class SourceAssetRevision:
-    """One immutable source-only owner revision resolved before execution."""
+class GitSource:
+    """Readable identity of the Git checkout used by an owner Flow."""
 
-    owner: str
-    revision_id: str
-    contracts: Mapping[str, SourceRevisionMember]
-    artifacts: tuple[SourceArtifactRevision, ...]
-    fingerprint: str
+    commit: str
+    changes: tuple[str, ...]
+    repository_root: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        owner_identity(self.owner, "source revision owner")
-        identifier(self.revision_id, "source revision identity")
-        for role in self.contracts:
-            identifier(role, "source revision contract role")
-        object.__setattr__(
-            self,
-            "contracts",
-            MappingProxyType(dict(self.contracts)),
-        )
+        if re.fullmatch(r"[0-9a-f]{40,64}", self.commit) is None:
+            raise FlowContractError("Git source commit is invalid")
+        object.__setattr__(self, "repository_root", Path(self.repository_root).resolve())
+
+    @property
+    def dirty(self) -> bool:
+        return bool(self.changes)
+
+
+@dataclass(frozen=True)
+class SourceAssets:
+    """One Git-owned selection of typed source artifacts."""
+
+    owner: str
+    name: str
+    git: GitSource
+    artifacts: tuple[SourceArtifact, ...]
+    owner_root: Path = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        owner_identity(self.owner, "source assets owner")
+        identifier(self.name, "source assets identity")
         _unique(
             tuple(artifact.role for artifact in self.artifacts),
-            "source revision artifact roles",
+            "source artifact roles",
         )
         if not self.artifacts:
-            raise FlowContractError("source revision declares no artifacts")
-        if _DIGEST_RE.fullmatch(self.fingerprint) is None:
-            raise FlowContractError("source revision fingerprint must be sha256")
+            raise FlowContractError("source assets declare no artifacts")
+        object.__setattr__(self, "owner_root", Path(self.owner_root).resolve())
 
-    def artifact(self, role: str) -> SourceArtifactRevision:
+    def artifact(self, role: str) -> SourceArtifact:
         try:
             return next(artifact for artifact in self.artifacts if artifact.role == role)
         except StopIteration as exc:
             raise FlowContractError(
-                f"source revision {self.revision_id!r} has no role {role!r}"
+                f"source assets {self.name!r} have no role {role!r}"
             ) from exc
 
 
@@ -262,7 +267,7 @@ class ActionContract:
     required_capabilities: tuple[str, ...] = ()
     platform_assets: tuple[PlatformAssetRequirement, ...] = ()
     adapters: tuple[str, ...] = ()
-    resolves_source_revision: bool = False
+    resolves_source_assets: bool = False
 
     def __post_init__(self) -> None:
         identifier(self.kind, "action kind")
@@ -283,8 +288,8 @@ class ActionContract:
         _unique(self.adapters, "Action Adapters")
         if not self.adapters:
             raise FlowContractError(f"Action {self.kind!r} declares no Adapter")
-        if self.resolves_source_revision and self.inputs:
-            raise FlowContractError("source revision Action cannot declare inputs")
+        if self.resolves_source_assets and self.inputs:
+            raise FlowContractError("source assets Action cannot declare inputs")
 
     def input(self, role: str) -> ArtifactPort:
         try:
@@ -533,7 +538,7 @@ class PlannedNode:
     required_capabilities: tuple[str, ...]
     platform_assets: tuple[PlatformAssetRequirement, ...]
     dependencies: tuple[str, ...]
-    source_revision: SourceAssetRevision | None = None
+    source_assets: SourceAssets | None = None
 
 
 @dataclass(frozen=True)
@@ -543,7 +548,6 @@ class FlowPlan:
     target: FlowTarget
     nodes: tuple[PlannedNode, ...]
     topology: tuple[str, ...]
-    fingerprint: str
 
     def planned_node(self, node_id: str) -> PlannedNode:
         try:
@@ -631,15 +635,12 @@ class ResolvedPlatformAsset:
     role: str
     kind: str
     identity: str
-    digest: str
     members: tuple[ResolvedPlatformAssetMember, ...] = ()
 
     def __post_init__(self) -> None:
         identifier(self.role, "resolved platform asset role")
         identifier(self.kind, "resolved platform asset kind")
         _semantic_identity(self.identity, "resolved platform asset identity")
-        if _DIGEST_RE.fullmatch(self.digest) is None:
-            raise FlowContractError("resolved platform asset digest must be sha256")
         _unique(
             tuple(member.role for member in self.members),
             "resolved platform asset member roles",
@@ -687,14 +688,12 @@ class PreflightCheck:
     status: str
     expected: str | None = None
     identity: str | None = None
-    digest: str | None = None
 
 
 @dataclass(frozen=True)
 class PreflightResult:
     status: str
     checks: tuple[PreflightCheck, ...]
-    fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -702,14 +701,14 @@ class InputArtifact:
     role: str
     kind: str
     path: Path
-    digest: str
+    digest: str | None
     producer: str
     qualifiers: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         identifier(self.role, "input artifact role")
         identifier(self.kind, "input artifact kind")
-        if _DIGEST_RE.fullmatch(self.digest) is None:
+        if self.digest is not None and _DIGEST_RE.fullmatch(self.digest) is None:
             raise FlowExecutionError("input artifact digest must be sha256")
         object.__setattr__(self, "path", Path(self.path).resolve())
         object.__setattr__(
@@ -751,14 +750,14 @@ class ActionArtifact:
     kind: str
     path: Path
     relative_path: str
-    digest: str
+    digest: str | None
     producer: str
     qualifiers: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         identifier(self.role, "Action artifact role")
         identifier(self.kind, "Action artifact kind")
-        if _DIGEST_RE.fullmatch(self.digest) is None:
+        if self.digest is not None and _DIGEST_RE.fullmatch(self.digest) is None:
             raise FlowExecutionError("Action artifact digest must be sha256")
         object.__setattr__(self, "path", Path(self.path).resolve())
         object.__setattr__(
@@ -838,7 +837,7 @@ class ActionContext:
     adapter_config: Mapping[str, Any]
     capabilities: Mapping[str, str]
     platform_assets: Mapping[str, ResolvedPlatformAsset]
-    source_revision: SourceAssetRevision | None = None
+    source_assets: SourceAssets | None = None
 
     def input(self, role: str) -> InputArtifact:
         try:
@@ -877,9 +876,7 @@ class NodeOutcome:
     policy_status: str | None
     artifacts: Mapping[str, ActionArtifact]
     facts: Mapping[str, Any]
-    reused: bool = False
     reason: str | None = None
-    execution_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)

@@ -45,9 +45,10 @@ from sigilicon.flow.model import (
     ResolvedPlatformAsset,
     ResolvedCapability,
     ResolvedPlatformAssetMember,
-    SourceArtifactRevision,
-    SourceAssetRevision,
-    SourceRevisionMember,
+    GitSource,
+    SourceArtifact,
+    SourceAssets,
+    SourceMember,
 )
 from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.flow.standard_asic import register_standard_asic_actions
@@ -56,10 +57,10 @@ from sigilicon.flow.synopsys import (
     SynopsysFCAdapter,
     SynopsysVCSAdapter,
 )
-from sigilicon.flow.source_assets import SourceAssetsAdapter
-from sigilicon.flow.source_revision import (
-    load_source_asset_revision,
-    source_revision_payload,
+from sigilicon.flow.source_assets import (
+    SourceAssetsAdapter,
+    load_source_assets,
+    source_assets_payload,
 )
 
 
@@ -96,9 +97,10 @@ __all__ = [
     "ResolvedPlatformAsset",
     "ResolvedCapability",
     "ResolvedPlatformAssetMember",
-    "SourceArtifactRevision",
-    "SourceAssetRevision",
-    "SourceRevisionMember",
+    "GitSource",
+    "SourceArtifact",
+    "SourceAssets",
+    "SourceMember",
     "SourceAssetsAdapter",
     "ToolAdapter",
     "load_flow_contract",
@@ -113,6 +115,6 @@ __all__ = [
     "SynopsysFCAdapter",
     "SynopsysVCSAdapter",
     "builtin_registry",
-    "load_source_asset_revision",
-    "source_revision_payload",
+    "load_source_assets",
+    "source_assets_payload",
 ]

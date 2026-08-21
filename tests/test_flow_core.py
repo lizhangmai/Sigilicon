@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from sigilicon.flow import (
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
+    ExecutionEnvironment,
     ExecutionProfile,
     FlowContractError,
     FlowEngine,
@@ -290,6 +292,9 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     plan = engine.plan(flow_spec(), "qualification", fake_profile())
 
     assert plan.topology == ("source", "transform", "verify")
+    assert not hasattr(plan, "fingerprint")
+    assert not hasattr(engine.preflight(plan, ExecutionEnvironment()), "fingerprint")
+    assert "resume" not in inspect.signature(engine.run).parameters
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
@@ -299,6 +304,7 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     assert result.status == "accepted"
     assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
     assert result.nodes["verify"].policy_status == "accepted"
+    assert not hasattr(result.nodes["verify"], "execution_fingerprint")
     for record in (
         "resolved_plan.json",
         "flow_result.json",
@@ -316,20 +322,39 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     for record in result.run_root.rglob("*.json"):
         assert encoded_root not in record.read_bytes()
 
+    def keys(value: object) -> set[str]:
+        if isinstance(value, dict):
+            return set(value) | {
+                nested
+                for item in value.values()
+                for nested in keys(item)
+            }
+        if isinstance(value, list):
+            return {nested for item in value for nested in keys(item)}
+        return set()
 
-def test_artifact_qualifiers_propagate_into_records_and_fingerprints(
+    public_records = (
+        json.loads((result.run_root / "resolved_plan.json").read_text()),
+        json.loads((result.run_root / "preflight.json").read_text()),
+        json.loads((result.run_root / "flow_result.json").read_text()),
+    )
+    for record in public_records:
+        assert not {name for name in keys(record) if "fingerprint" in name}
+    assert "digest" not in keys(public_records[2])
+
+
+def test_artifact_qualifiers_propagate_without_derived_identities(
     tmp_path: Path,
 ) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
     artifact_root = tmp_path / "artifacts"
-    run_id = "9" * 32
     paper_plan = engine.plan(
         flow_spec(qualifiers={"variant": "paper_0p8v", "corner": "tt0p8v25c"}),
         "qualification",
         fake_profile(),
     )
-    paper = engine.run(paper_plan, artifact_root=artifact_root, run_id=run_id)
+    paper = engine.run(paper_plan, artifact_root=artifact_root, run_id="9" * 32)
 
     source_result = json.loads(
         (paper.run_root / "nodes/source/action_result.json").read_text()
@@ -354,15 +379,13 @@ def test_artifact_qualifiers_propagate_into_records_and_fingerprints(
     product = engine.run(
         product_plan,
         artifact_root=artifact_root,
-        run_id=run_id,
-        resume=True,
+        run_id="8" * 32,
     )
 
-    assert not any(outcome.reused for outcome in product.nodes.values())
-    assert (
-        paper.nodes["source"].execution_fingerprint
-        != product.nodes["source"].execution_fingerprint
-    )
+    assert product.nodes["source"].artifacts["source"].qualifiers == {
+        "corner": "tt0p9v25c",
+        "variant": "product_0p9v",
+    }
 
 
 def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) -> None:
@@ -397,7 +420,7 @@ def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) 
     assert strict.status == "failed"
 
 
-def test_resume_reuses_exact_results_and_propagates_changed_inputs(tmp_path: Path) -> None:
+def test_run_identity_is_immutable(tmp_path: Path) -> None:
     registered, source, transform, verify = registry()
     engine = FlowEngine(registered)
     artifact_root = tmp_path / "artifacts"
@@ -408,26 +431,15 @@ def test_resume_reuses_exact_results_and_propagates_changed_inputs(tmp_path: Pat
         artifact_root=artifact_root,
         run_id=run_id,
     )
-    resumed = engine.run(
-        engine.plan(flow_spec(text="hello"), "qualification", fake_profile()),
-        artifact_root=artifact_root,
-        run_id=run_id,
-        resume=True,
-    )
+    with pytest.raises(FlowExecutionError, match="already exists"):
+        engine.run(
+            engine.plan(flow_spec(text="goodbye"), "qualification", fake_profile()),
+            artifact_root=artifact_root,
+            run_id=run_id,
+        )
 
-    assert first.status == resumed.status == "accepted"
+    assert first.status == "accepted"
     assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
-    assert all(node.reused for node in resumed.nodes.values())
-
-    changed = engine.run(
-        engine.plan(flow_spec(text="goodbye"), "qualification", fake_profile()),
-        artifact_root=artifact_root,
-        run_id=run_id,
-        resume=True,
-    )
-    assert changed.status == "accepted"
-    assert [source.executions, transform.executions, verify.executions] == [2, 2, 2]
-    assert not any(node.reused for node in changed.nodes.values())
 
 
 def test_flow_contract_loader_supports_only_the_current_schema(tmp_path: Path) -> None:
@@ -695,59 +707,7 @@ def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) ->
     assert not result.run_root.exists()
 
 
-def test_clean_accepts_a_manifest_rewritten_by_exact_resume(tmp_path: Path) -> None:
-    registered, *_ = registry()
-    engine = FlowEngine(registered)
-    artifact_root = tmp_path / "artifacts"
-    run_id = "4" * 32
-    plan = engine.plan(flow_spec(), "qualification", fake_profile())
-    engine.run(plan, artifact_root=artifact_root, run_id=run_id)
-    result = engine.run(
-        plan,
-        artifact_root=artifact_root,
-        run_id=run_id,
-        resume=True,
-    )
-
-    engine.clean_run(
-        artifact_root=artifact_root,
-        owner="example",
-        flow_id="fake-pipeline",
-        run_id=run_id,
-    )
-
-    assert not result.run_root.exists()
-
-
-def test_stale_resume_refuses_to_delete_untracked_node_content(tmp_path: Path) -> None:
-    registered, *_ = registry()
-    engine = FlowEngine(registered)
-    artifact_root = tmp_path / "artifacts"
-    run_id = "5" * 32
-    first = engine.run(
-        engine.plan(flow_spec(text="hello"), "qualification", fake_profile()),
-        artifact_root=artifact_root,
-        run_id=run_id,
-    )
-    untracked = first.run_root / "nodes/source/caller-owned.txt"
-    untracked.write_text("preserve", encoding="utf-8")
-
-    with pytest.raises(FlowExecutionError, match="untracked"):
-        engine.run(
-            engine.plan(
-                flow_spec(text="changed"),
-                "qualification",
-                fake_profile(),
-            ),
-            artifact_root=artifact_root,
-            run_id=run_id,
-            resume=True,
-        )
-
-    assert untracked.read_text(encoding="utf-8") == "preserve"
-
-
-def test_policy_change_reevaluates_facts_without_rerunning_actions(
+def test_policy_change_requires_a_new_run(
     tmp_path: Path,
 ) -> None:
     registered, source, transform, verify = registry()
@@ -772,18 +732,16 @@ def test_policy_change_reevaluates_facts_without_rerunning_actions(
             ),
         ),
     )
-    resumed = engine.run(
+    changed = engine.run(
         engine.plan(changed_policy, "qualification", fake_profile()),
         artifact_root=artifact_root,
-        run_id=run_id,
-        resume=True,
+        run_id="7" * 32,
     )
 
     assert first.status == "accepted"
-    assert resumed.status == "failed"
-    assert resumed.nodes["verify"].status == "rejected"
-    assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
-    assert all(outcome.reused for outcome in resumed.nodes.values())
+    assert changed.status == "failed"
+    assert changed.nodes["verify"].status == "rejected"
+    assert [source.executions, transform.executions, verify.executions] == [2, 2, 2]
 
 
 def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:

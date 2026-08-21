@@ -17,7 +17,6 @@ from sigilicon.flow.model import (
     identifier,
     owner_identity,
 )
-from sigilicon.flow.serialization import canonical_digest
 
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
@@ -125,23 +124,11 @@ def _load_platform_assets(value: object) -> tuple[ResolvedPlatformAsset, ...]:
         role = _text(item.get("role"), f"{label}.role")
         kind = _text(item.get("kind"), f"{label}.kind")
         identity_value = _text(item.get("identity"), f"{label}.identity")
-        digest = canonical_digest(
-            {
-                "role": role,
-                "kind": kind,
-                "identity": identity_value,
-                "members": [
-                    {"role": member.role, "digest": member.digest}
-                    for member in sorted(members, key=lambda candidate: candidate.role)
-                ],
-            }
-        )
         assets.append(
             ResolvedPlatformAsset(
                 role=role,
                 kind=kind,
                 identity=identity_value,
-                digest=digest,
                 members=tuple(members),
             )
         )

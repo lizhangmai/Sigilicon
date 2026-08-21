@@ -70,6 +70,25 @@ _INPUT_WATCH_MASK = (
 _INOTIFY_EVENT = struct.Struct("iIII")
 
 
+def run_readonly_capture(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int = 30,
+) -> bytes:
+    """Run one bounded read-only helper and return its stdout bytes."""
+
+    completed = subprocess.run(
+        tuple(command),
+        cwd=Path(cwd),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout_seconds,
+    )
+    return completed.stdout
+
+
 def owned_process_fd_path(descriptor: int) -> str:
     """Address a held fd through this still-live owner process for descendants."""
 

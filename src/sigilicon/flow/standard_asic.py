@@ -31,7 +31,7 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("qualification-spec", "spec.qualification"),
             ),
             adapters=("source-assets",),
-            resolves_source_revision=True,
+            resolves_source_assets=True,
         )
     )
     registry.register_action(
@@ -125,7 +125,11 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ),
             ),
             outputs=(
-                ArtifactPort("reference-library", "library.synopsys-ndm"),
+                ArtifactPort(
+                    "reference-library",
+                    "library.synopsys-ndm",
+                    content_digest=True,
+                ),
                 ArtifactPort("library-check-report", "report.library-check"),
                 ArtifactPort("execution-evidence", "evidence.tool-execution"),
             ),
@@ -166,7 +170,11 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                     "implementation-recipe",
                     "recipe.physical-implementation",
                 ),
-                ArtifactPort("reference-library", "library.synopsys-ndm"),
+                ArtifactPort(
+                    "reference-library",
+                    "library.synopsys-ndm",
+                    content_digest=True,
+                ),
             ),
             outputs=(
                 ArtifactPort("routed-netlist", "netlist.verilog"),

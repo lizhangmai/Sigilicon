@@ -1,10 +1,8 @@
-"""Canonical JSON-compatible values and fingerprints for Flow records."""
+"""JSON-compatible values for portable Flow records."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from hashlib import sha256
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -21,14 +19,3 @@ def json_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"Flow record value is not JSON-compatible: {type(value).__name__}")
-
-
-def canonical_digest(value: Any) -> str:
-    payload = json.dumps(
-        json_value(value),
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return sha256(payload).hexdigest()
-

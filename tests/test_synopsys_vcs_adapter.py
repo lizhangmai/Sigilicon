@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from pathlib import Path
+import subprocess
 
 from sigilicon.flow import (
     ActionContract,
@@ -69,9 +70,9 @@ print(json.dumps({"target": target, "passed": True}))
         encoding="utf-8",
     )
     runner.chmod(0o755)
-    (owner_root / "source-revision.toml").write_text(
+    (owner_root / "source-assets.toml").write_text(
         '''schema = 1
-contract_kind = "source-asset-revision"
+contract_kind = "source-assets"
 path_scope = "owner"
 owner = "fixture"
 name = "vcs-fixture-source"
@@ -106,6 +107,19 @@ members = ["mapped.v"]
 ''',
         encoding="utf-8",
     )
+    subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@example.com"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Fixture"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
+    subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
 
 
 def _registry(owner_root: Path) -> FlowRegistry:
@@ -120,7 +134,7 @@ def _registry(owner_root: Path) -> FlowRegistry:
                 ArtifactPort("mapped-netlist", "netlist.verilog"),
             ),
             adapters=("source-assets",),
-            resolves_source_revision=True,
+            resolves_source_assets=True,
         )
     )
     register_standard_asic_actions(registry)
@@ -142,7 +156,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
             FlowNode(
                 "assets",
                 "design.vcs-fixture",
-                config={"revision": "source-revision.toml"},
+                config={"source": "source-assets.toml"},
             ),
             FlowNode(
                 "rtl",
@@ -234,7 +248,6 @@ def _environment(tmp_path: Path, executable: Path) -> ExecutionEnvironment:
                 role="standard-cell-models",
                 kind="library.verilog-model-set",
                 identity="fixture-models",
-                digest="a" * 64,
                 members=tuple(models),
             ),
         ),

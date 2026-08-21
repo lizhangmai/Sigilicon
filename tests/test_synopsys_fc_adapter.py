@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from sigilicon.flow import (
+    ActionContext,
     ActionContract,
     AdapterSelection,
     ArtifactBinding,
@@ -19,6 +21,7 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
+    InputArtifact,
     PolicyCheck,
     PolicySpec,
     ResolvedCapability,
@@ -151,9 +154,9 @@ else:
     (checkpoint / "top.ndm").write_text("routed checkpoint\\n")
 ''',
     )
-    (owner_root / "source-revision.toml").write_text(
+    (owner_root / "source-assets.toml").write_text(
         '''schema = 1
-contract_kind = "source-asset-revision"
+contract_kind = "source-assets"
 path_scope = "owner"
 owner = "fixture"
 name = "fc-fixture-source"
@@ -188,6 +191,19 @@ members = ["run-fc-fixture.py", "place-route.tcl"]
 ''',
         encoding="utf-8",
     )
+    subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@example.com"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Fixture"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
+    subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
 
 
 def _registry(owner_root: Path) -> FlowRegistry:
@@ -208,7 +224,7 @@ def _registry(owner_root: Path) -> FlowRegistry:
                 ),
             ),
             adapters=("source-assets",),
-            resolves_source_revision=True,
+            resolves_source_assets=True,
         )
     )
     register_standard_asic_actions(registry)
@@ -225,7 +241,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
             FlowNode(
                 "assets",
                 "design.fc-fixture",
-                config={"revision": "source-revision.toml"},
+                config={"source": "source-assets.toml"},
             ),
             FlowNode(
                 "reference-library",
@@ -427,21 +443,18 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
                 role="physical-technology",
                 kind="platform.physical-view-set",
                 identity="physical-technology@fixture",
-                digest="1" * 64,
                 members=tuple(_member(collateral[role], role) for role in collateral),
             ),
             ResolvedPlatformAsset(
                 role="standard-cell-physical",
                 kind="library.lef-set",
                 identity="standard-cell-lef@fixture",
-                digest="2" * 64,
                 members=tuple(physical),
             ),
             ResolvedPlatformAsset(
                 role="standard-cell-timing",
                 kind="library.synopsys-db-set",
                 identity="standard-cell-db@fixture",
-                digest="3" * 64,
                 members=tuple(timing),
             ),
         ),
@@ -456,7 +469,8 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     _write_owner(owner_root)
     spec, profile = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
+    registry = _registry(owner_root)
+    engine = FlowEngine(registry)
     plan = engine.plan(spec, "implementation", profile)
 
     assert plan.topology == ("assets", "reference-library", "implementation")
@@ -499,6 +513,15 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     assert checkpoint_manifest["root"] == "routed.ndm"
     assert reference_manifest["members"][0]["path"] == "library.ndm"
     assert checkpoint_manifest["members"][0]["path"] == "top.ndm"
+    assert "digest" in reference_manifest["members"][0]
+    assert "digest" not in checkpoint_manifest["members"][0]
+    assert reference.artifacts["reference-library"].digest is not None
+    assert all(
+        artifact.digest is None
+        for role, artifact in reference.artifacts.items()
+        if role != "reference-library"
+    )
+    assert all(artifact.digest is None for artifact in implementation.artifacts.values())
     assert dict(implementation.facts) == {
         "tool-execution-completed": True,
         "design-check-error-count": 0,
@@ -745,7 +768,8 @@ def test_synopsys_fc_adapter_rejects_stale_reference_before_downstream_use(
     _write_owner(owner_root)
     spec, profile = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
+    registry = _registry(owner_root)
+    engine = FlowEngine(registry)
     plan = engine.plan(spec, "implementation", profile)
     first = engine.run(
         plan,
@@ -765,24 +789,50 @@ def test_synopsys_fc_adapter_rejects_stale_reference_before_downstream_use(
         / reference_manifest["members"][0]["path"]
     )
     reference_member.write_text("stale reference library\n", encoding="utf-8")
-    first.nodes["implementation"].artifacts["routed-netlist"].path.write_text(
-        "stale routed netlist\n",
-        encoding="utf-8",
+    implementation_node = spec.node("implementation")
+    implementation_action = registry.action(implementation_node.action_kind)
+    bindings = {
+        binding.input: first.nodes[binding.producer].artifacts[binding.output]
+        for binding in implementation_node.bindings
+    }
+    validation_root = tmp_path / "validation"
+    (validation_root / "work").mkdir(parents=True)
+    (validation_root / "outputs").mkdir()
+    context = ActionContext(
+        node_id="implementation",
+        action=implementation_action,
+        run_root=first.run_root,
+        node_root=validation_root,
+        work_root=validation_root / "work",
+        output_root=validation_root / "outputs",
+        inputs={
+            role: InputArtifact(
+                role=role,
+                kind=artifact.kind,
+                path=artifact.path,
+                digest=artifact.digest,
+                producer=artifact.producer,
+                qualifiers=artifact.qualifiers,
+            )
+            for role, artifact in bindings.items()
+        },
+        action_config=implementation_node.config,
+        adapter_config=profile.selection(
+            "asic.physical-implementation"
+        ).config,
+        capabilities={
+            "tool.synopsys-fc": environment.capabilities["tool.synopsys-fc"]
+        },
+        platform_assets={
+            "physical-technology": environment.platform_asset(
+                "physical-technology"
+            )
+        },
     )
 
-    resumed = engine.run(
-        plan,
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="d" * 32,
-        resume=True,
-    )
+    diagnostics = registry.adapter("synopsys-fc").validate_inputs(context)
 
-    assert resumed.nodes["reference-library"].reused is True
-    implementation = resumed.nodes["implementation"]
-    assert implementation.status == "failed"
-    assert implementation.execution_status == "failed"
-    assert "missing or stale" in (implementation.reason or "")
+    assert any("missing or stale" in diagnostic for diagnostic in diagnostics)
 
 
 def test_synopsys_fc_preflight_rejects_stale_recipe_and_platform(
@@ -802,7 +852,7 @@ def test_synopsys_fc_preflight_rejects_stale_recipe_and_platform(
     source_preflight = engine.preflight(plan, environment)
     assert source_preflight.status == "blocked"
     assert any(
-        check.requirement_kind == "source-revision" and check.status == "stale"
+        check.requirement_kind == "git-source" and check.status == "changed"
         for check in source_preflight.checks
     )
     with pytest.raises(FlowExecutionError, match="preflight is blocked"):

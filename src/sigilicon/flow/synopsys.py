@@ -138,11 +138,10 @@ def _environment_mapping(value: object, label: str) -> dict[str, str]:
 
 
 def _manifest_members(
-    owner_root: Path,
     manifest_path: Path,
     expected_kind: str,
     expected_qualifiers: Mapping[str, Any],
-) -> tuple[tuple[str, Path, str], ...]:
+) -> tuple[tuple[str, Path], ...]:
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -158,15 +157,16 @@ def _manifest_members(
     members_raw = raw.get("members")
     if not isinstance(members_raw, list) or not members_raw:
         raise FlowExecutionError("source-set manifest has no members")
-    members: list[tuple[str, Path, str]] = []
+    members: list[tuple[str, Path]] = []
     for value in members_raw:
         if not isinstance(value, dict):
             raise FlowExecutionError("source-set member must be an object")
         relative_text = value.get("path")
-        digest = value.get("digest")
-        if not isinstance(relative_text, str) or not isinstance(digest, str):
+        file_text = value.get("file")
+        if not isinstance(relative_text, str) or not isinstance(file_text, str):
             raise FlowExecutionError("source-set member identity is invalid")
         relative = Path(relative_text)
+        relative_file = Path(file_text)
         if (
             not relative_text
             or relative.is_absolute()
@@ -176,31 +176,34 @@ def _manifest_members(
             raise FlowExecutionError(
                 f"source-set member must be owner-relative: {relative_text!r}"
             )
-        source = (owner_root / relative).resolve()
         if (
-            not source.is_relative_to(owner_root)
-            or not source.is_file()
-            or _sha256(source) != digest
+            not file_text
+            or relative_file.is_absolute()
+            or "\\" in file_text
+            or any(part in {"", ".", ".."} for part in relative_file.parts)
         ):
-            raise FlowExecutionError(
-                f"source-set member is missing or stale: {relative_text}"
-            )
-        members.append((relative.as_posix(), source, digest))
-    paths = [relative for relative, _source, _digest in members]
+            raise FlowExecutionError("source-set snapshot path is invalid")
+        manifest_root = manifest_path.parent.resolve()
+        source = (manifest_root / relative_file).resolve()
+        if (
+            not source.is_relative_to(manifest_root)
+            or not source.is_file()
+        ):
+            raise FlowExecutionError(f"source-set snapshot is missing: {relative_text}")
+        members.append((relative.as_posix(), source))
+    paths = [relative for relative, _source in members]
     if len(paths) != len(set(paths)):
         raise FlowExecutionError("source-set manifest repeats a member")
     return tuple(members)
 
 
 def _stage_source_set(
-    owner_root: Path,
     context: ActionContext,
     role: str,
     filelist_name: str,
 ) -> Path:
     artifact = context.input(role)
     members = _manifest_members(
-        owner_root,
         artifact.path,
         artifact.kind,
         artifact.qualifiers,
@@ -208,7 +211,7 @@ def _stage_source_set(
     stage_root = context.work_root / "inputs" / role
     stage_root.mkdir(parents=True)
     staged: list[Path] = []
-    for relative, source, digest in members:
+    for relative, source in members:
         destination = (stage_root / relative).resolve()
         if not destination.is_relative_to(stage_root.resolve()):
             raise FlowExecutionError(
@@ -216,10 +219,6 @@ def _stage_source_set(
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
-        if _sha256(destination) != digest:
-            raise FlowExecutionError(
-                f"source-set member changed while staging: {relative}"
-            )
         staged.append(destination)
     filelist = context.work_root / filelist_name
     filelist.write_text(
@@ -230,7 +229,6 @@ def _stage_source_set(
 
 
 def _pinned_owner_runner(
-    owner_root: Path,
     context: ActionContext,
     recipe_role: str,
     action_label: str,
@@ -243,24 +241,20 @@ def _pinned_owner_runner(
         part in {"", ".", ".."} for part in relative.parts
     ):
         raise FlowExecutionError(f"{action_label} runner must be owner-relative")
-    runner = (owner_root / relative).resolve()
-    if not runner.is_relative_to(owner_root) or not runner.is_file():
-        raise FlowExecutionError(
-            f"{action_label} runner is missing or escaped its owner"
-        )
-    if not os.access(runner, os.X_OK):
-        raise FlowExecutionError(f"{action_label} runner is not executable")
     recipe = context.input(recipe_role)
     members = _manifest_members(
-        owner_root,
         recipe.path,
         recipe.kind,
         recipe.qualifiers,
     )
-    if value not in {member for member, _path, _digest in members}:
+    member_paths = {member: path for member, path in members}
+    if value not in member_paths:
         raise FlowExecutionError(
             f"{action_label} runner is not pinned by {recipe_role}"
         )
+    runner = member_paths[value]
+    if not os.access(runner, os.X_OK):
+        raise FlowExecutionError(f"{action_label} runner is not executable")
     return runner
 
 
@@ -293,7 +287,6 @@ class SynopsysDCAdapter:
         if rtl := context.inputs.get("rtl-sources"):
             try:
                 _manifest_members(
-                    self._owner_root,
                     rtl.path,
                     rtl.kind,
                     rtl.qualifiers,
@@ -325,7 +318,6 @@ class SynopsysDCAdapter:
         environment[configuration["output_root_environment"]] = str(tool_root)
         materialized_inputs = {
             "rtl-sources": _stage_source_set(
-                self._owner_root,
                 context,
                 "rtl-sources",
                 "rtl-sources.f",
@@ -400,7 +392,6 @@ class SynopsysDCAdapter:
             report_members.append(
                 {
                     "path": report.relative_to(context.output_root).as_posix(),
-                    "digest": _sha256(report),
                 }
             )
         report_manifest = context.output_path("reports", "reports.json")
@@ -465,7 +456,6 @@ class SynopsysDCAdapter:
 
     def _pinned_runner(self, context: ActionContext) -> Path:
         return _pinned_owner_runner(
-            self._owner_root,
             context,
             "synthesis-recipe",
             "synthesis",
@@ -569,14 +559,13 @@ class SynopsysFCAdapter:
             if not artifact.path.is_file():
                 diagnostics.append(f"FC input {role!r} is not a regular file")
                 continue
-            if _sha256(artifact.path) != artifact.digest:
+            if artifact.digest is not None and _sha256(artifact.path) != artifact.digest:
                 diagnostics.append(f"FC input {role!r} is stale")
         recipe_role = _FC_ACTIONS[context.action.kind]["recipe"]
         recipe = context.inputs.get(recipe_role)
         if recipe is not None:
             try:
                 _manifest_members(
-                    self._owner_root,
                     recipe.path,
                     recipe.kind,
                     recipe.qualifiers,
@@ -802,7 +791,6 @@ class SynopsysFCAdapter:
     def _pinned_runner(self, context: ActionContext) -> Path:
         node = self._node_configuration(context)
         return _pinned_owner_runner(
-            self._owner_root,
             context,
             _FC_ACTIONS[context.action.kind]["recipe"],
             "Fusion Compiler",
@@ -812,14 +800,13 @@ class SynopsysFCAdapter:
         recipe_role = _FC_ACTIONS[context.action.kind]["recipe"]
         recipe = context.input(recipe_role)
         members = _manifest_members(
-            self._owner_root,
             recipe.path,
             recipe.kind,
             recipe.qualifiers,
         )
         stage_root = context.work_root / "inputs" / recipe_role
         staged_runner: Path | None = None
-        for relative, source, digest in members:
+        for relative, source in members:
             destination = (stage_root / relative).resolve()
             if not destination.is_relative_to(stage_root.resolve()):
                 raise FlowExecutionError(
@@ -827,10 +814,6 @@ class SynopsysFCAdapter:
                 )
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            if _sha256(destination) != digest:
-                raise FlowExecutionError(
-                    f"FC recipe member changed while staging: {relative}"
-                )
             if relative == runner_name:
                 staged_runner = destination
         if staged_runner is None:
@@ -846,12 +829,14 @@ class SynopsysFCAdapter:
         filename: str,
     ) -> Path:
         artifact = context.input(role)
-        if not artifact.path.is_file() or _sha256(artifact.path) != artifact.digest:
+        if not artifact.path.is_file() or (
+            artifact.digest is not None and _sha256(artifact.path) != artifact.digest
+        ):
             raise FlowExecutionError(f"FC input {role!r} is missing or stale")
         destination = context.work_root / "inputs" / role / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(artifact.path, destination)
-        if _sha256(destination) != artifact.digest:
+        if artifact.digest is not None and _sha256(destination) != artifact.digest:
             raise FlowExecutionError(f"FC input {role!r} changed while staging")
         return destination
 
@@ -971,17 +956,16 @@ class SynopsysFCAdapter:
         root = resolved.relative_to(role_root).as_posix()
         if len(Path(root).parts) != 1:
             raise FlowExecutionError("FC directory output must use one managed name")
+        content_digest = context.action.output(role).content_digest
         members: list[dict[str, str]] = []
         for path in sorted(resolved.rglob("*")):
             if path.is_symlink():
                 raise FlowExecutionError("FC directory output contains a symlink")
             if path.is_file():
-                members.append(
-                    {
-                        "path": path.relative_to(resolved).as_posix(),
-                        "digest": _sha256(path),
-                    }
-                )
+                member = {"path": path.relative_to(resolved).as_posix()}
+                if content_digest:
+                    member["digest"] = _sha256(path)
+                members.append(member)
         if not members:
             raise FlowExecutionError(f"Synopsys FC produced empty output {role!r}")
         manifest = context.output_path(role, f"{role}.json")
@@ -1150,7 +1134,6 @@ class SynopsysVCSAdapter:
                 continue
             try:
                 _manifest_members(
-                    self._owner_root,
                     artifact.path,
                     artifact.kind,
                     artifact.qualifiers,
@@ -1186,7 +1169,6 @@ class SynopsysVCSAdapter:
             if environment_name is not None:
                 environment[environment_name] = str(
                     _stage_source_set(
-                        self._owner_root,
                         context,
                         role,
                         f"{role}.f",
@@ -1282,7 +1264,6 @@ class SynopsysVCSAdapter:
 
     def _pinned_runner(self, context: ActionContext) -> Path:
         return _pinned_owner_runner(
-            self._owner_root,
             context,
             "simulation-recipe",
             "simulation",

@@ -281,7 +281,6 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
                 role="logic-lib",
                 kind="library.liberty",
                 identity="fake-platform:logic-lib@1",
-                digest="a" * 64,
                 members=(
                     ResolvedPlatformAssetMember(
                         role="library",
@@ -299,7 +298,6 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
                 role="logic-lib",
                 kind="library.liberty",
                 identity="fake-platform:logic-lib@wrong",
-                digest="a" * 64,
                 members=environment.platform_assets[0].members,
             ),
         ),
@@ -333,7 +331,7 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
         for check in preflight["checks"]
         if check["requirement"] == "logic-lib"
     )
-    assert platform_check["digest"] == "a" * 64
+    assert "digest" not in platform_check
     assert request["execution_environment"]["capabilities"] == {
         "runtime.action-capability": "fake-action@1",
         "runtime.fake-license": "fake-license@1",
@@ -341,7 +339,6 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
     assert request["execution_environment"]["platform_assets"]["logic-lib"] == {
         "kind": "library.liberty",
         "identity": "fake-platform:logic-lib@1",
-        "digest": "a" * 64,
     }
     assert str(tmp_path / "installed/logic.lib") not in json.dumps(preflight)
     assert str(tmp_path / "installed/logic.lib") not in json.dumps(request)
@@ -361,5 +358,4 @@ def test_public_environment_identity_rejects_absolute_site_paths(
             role="logic-lib",
             kind="library.liberty",
             identity=str(tmp_path / "logic.lib"),
-            digest="b" * 64,
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from pathlib import Path
+import shutil
 
 from sigilicon.flow import (
     ActionContext,
@@ -41,7 +42,11 @@ class SourceAssetsAdapter:
         pass
 
     def execute(self, context: ActionContext) -> AdapterExecution:
-        context.output_path("rtl-sources", "rtl-sources.json").write_text(
+        rtl_manifest = context.output_path("rtl-sources", "rtl-sources.json")
+        rtl_snapshot = rtl_manifest.parent / "files/rtl/top.sv"
+        rtl_snapshot.parent.mkdir(parents=True)
+        shutil.copy2(self.owner_root / "rtl/top.sv", rtl_snapshot)
+        rtl_manifest.write_text(
             json.dumps(
                 {
                     "schema": 1,
@@ -51,13 +56,10 @@ class SourceAssetsAdapter:
                         "variant": "product_0p9v",
                         "corner": "tt0p9v25c",
                     },
-                    "fingerprint": "0" * 64,
                     "members": [
                         {
                             "path": "rtl/top.sv",
-                            "digest": sha256(
-                                (self.owner_root / "rtl/top.sv").read_bytes()
-                            ).hexdigest(),
+                            "file": "files/rtl/top.sv",
                         }
                     ],
                 }
@@ -69,7 +71,11 @@ class SourceAssetsAdapter:
             "create_clock -period 1 clk\n",
             encoding="utf-8",
         )
-        context.output_path("synthesis-recipe", "recipe.json").write_text(
+        recipe_manifest = context.output_path("synthesis-recipe", "recipe.json")
+        recipe_snapshot = recipe_manifest.parent / "files/run-dc-fixture.py"
+        recipe_snapshot.parent.mkdir(parents=True)
+        shutil.copy2(self.owner_root / "run-dc-fixture.py", recipe_snapshot)
+        recipe_manifest.write_text(
             json.dumps(
                 {
                     "schema": 1,
@@ -79,13 +85,10 @@ class SourceAssetsAdapter:
                         "variant": "product_0p9v",
                         "corner": "tt0p9v25c",
                     },
-                    "fingerprint": "1" * 64,
                     "members": [
                         {
                             "path": "run-dc-fixture.py",
-                            "digest": sha256(
-                                (self.owner_root / "run-dc-fixture.py").read_bytes()
-                            ).hexdigest(),
+                            "file": "files/run-dc-fixture.py",
                         }
                     ],
                 }
@@ -253,7 +256,6 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
                 role="standard-cell-timing",
                 kind="library.synopsys-db-set",
                 identity="fixture-library",
-                digest="0" * 64,
                 members=tuple(timing_members),
             ),
         ),

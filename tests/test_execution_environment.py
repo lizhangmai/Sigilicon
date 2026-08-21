@@ -137,8 +137,10 @@ def test_explicit_environment_resolves_private_files_and_public_identity(
     timing = environment.platform_asset("standard-cell-timing")
     assert timing is not None
     assert {member.role for member in timing.members} == {"rvt", "hvt", "lvt"}
-    assert len(timing.digest) == 64
+    assert not hasattr(timing, "digest")
     assert str(tmp_path) not in json.dumps(record)
+    assert "digest" not in json.dumps(record)
+    assert "fingerprint" not in json.dumps(record)
 
 
 def test_execution_environment_preserves_multicall_launcher_symlink(

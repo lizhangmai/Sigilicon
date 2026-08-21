@@ -30,7 +30,6 @@ from sigilicon.flow.model import (
     InputArtifact,
     NodeOutcome,
     PlatformAssetRequirement,
-    PolicySpec,
     PlannedNode,
     PreflightCheck,
     PreflightResult,
@@ -41,11 +40,11 @@ from sigilicon.flow.model import (
 )
 from sigilicon.flow.policy import EvaluatedPolicy, evaluate_policy
 from sigilicon.flow.registry import FlowRegistry
-from sigilicon.flow.serialization import canonical_digest, json_value
-from sigilicon.flow.source_revision import (
-    resolve_node_source_revision,
-    source_revision_payload,
-    stale_source_members,
+from sigilicon.flow.serialization import json_value
+from sigilicon.flow.source_assets import (
+    git_source,
+    resolve_node_source_assets,
+    source_assets_payload,
 )
 
 
@@ -93,10 +92,10 @@ def _plan_payload(
                 "policy": item.node.policy,
                 "dependencies": list(item.dependencies),
                 "bindings": [json_value(binding) for binding in item.node.bindings],
-                "source_revision": (
+                "source_assets": (
                     None
-                    if item.source_revision is None
-                    else source_revision_payload(item.source_revision)
+                    if item.source_assets is None
+                    else source_assets_payload(item.source_assets)
                 ),
             }
             for item in planned
@@ -125,7 +124,7 @@ class FlowEngine:
         target = spec.target(target_id)
         node_order = {node.node_id: index for index, node in enumerate(spec.nodes)}
         dependencies: dict[str, tuple[str, ...]] = {}
-        source_revisions: dict[str, Any] = {}
+        source_assets: dict[str, Any] = {}
         for node in spec.nodes:
             contract = self._registry.action(node.action_kind)
             selection = profile.selection(node.action_kind)
@@ -134,7 +133,7 @@ class FlowEngine:
                     f"Adapter {selection.adapter!r} cannot implement "
                     f"Action {contract.kind!r}"
                 )
-            source_revisions[node.node_id] = resolve_node_source_revision(
+            source_assets[node.node_id] = resolve_node_source_assets(
                 spec,
                 node,
                 contract,
@@ -153,6 +152,12 @@ class FlowEngine:
                         f"binding {binding.producer}.{binding.output} kind "
                         f"{producer.kind!r} is incompatible with {node.node_id}."
                         f"{binding.input} kind {consumer.kind!r}"
+                    )
+                if consumer.content_digest and not producer.content_digest:
+                    raise FlowContractError(
+                        f"binding {binding.producer}.{binding.output} does not "
+                        f"provide the content digest required by {node.node_id}."
+                        f"{binding.input}"
                     )
                 binding_inputs.setdefault(binding.input, []).append(binding)
                 data_dependencies.append(binding.producer)
@@ -245,33 +250,29 @@ class FlowEngine:
                         for requirement in contract.platform_assets
                     ),
                     dependencies=dependencies[node_id],
-                    source_revision=source_revisions[node_id],
+                    source_assets=source_assets[node_id],
                 )
             )
         planned = tuple(planned_items)
         topology_tuple = tuple(topology)
-        payload = _plan_payload(spec, profile, target_id, planned, topology_tuple)
         return FlowPlan(
             spec=spec,
             profile=profile,
             target=target,
             nodes=planned,
             topology=topology_tuple,
-            fingerprint=canonical_digest(payload),
         )
 
     def plan_record(self, plan: FlowPlan) -> dict[str, Any]:
         """Return the canonical, source-only record for a resolved plan."""
 
-        payload = _plan_payload(
+        return _plan_payload(
             plan.spec,
             plan.profile,
             plan.target.target_id,
             plan.nodes,
             plan.topology,
         )
-        payload["fingerprint"] = plan.fingerprint
-        return payload
 
     def preflight(
         self,
@@ -300,16 +301,19 @@ class FlowEngine:
                         ),
                     )
                 )
-            if planned.source_revision is not None:
-                stale = stale_source_members(planned.source_revision)
+            if planned.source_assets is not None:
+                current_source = git_source(planned.source_assets.owner_root)
                 checks.append(
                     PreflightCheck(
-                        requirement=planned.source_revision.revision_id,
-                        requirement_kind="source-revision",
-                        status="available" if not stale else "stale",
-                        expected=planned.source_revision.fingerprint,
-                        identity=planned.source_revision.revision_id,
-                        digest=planned.source_revision.fingerprint,
+                        requirement=planned.source_assets.name,
+                        requirement_kind="git-source",
+                        status=(
+                            "available"
+                            if current_source == planned.source_assets.git
+                            else "changed"
+                        ),
+                        expected=planned.source_assets.git.commit,
+                        identity=current_source.commit,
                     )
                 )
             for capability in planned.required_capabilities:
@@ -382,7 +386,6 @@ class FlowEngine:
                             }
                         ),
                         identity=None if asset is None else asset.identity,
-                        digest=None if asset is None else asset.digest,
                     )
                 )
         status = (
@@ -390,14 +393,7 @@ class FlowEngine:
             if all(check.status == "available" for check in checks)
             else "blocked"
         )
-        fingerprint = canonical_digest(
-            {
-                "schema": 1,
-                "plan_fingerprint": plan.fingerprint,
-                "checks": [json_value(check) for check in checks],
-            }
-        )
-        return PreflightResult(status, tuple(checks), fingerprint)
+        return PreflightResult(status, tuple(checks))
 
     def preflight_record(
         self,
@@ -413,8 +409,6 @@ class FlowEngine:
             "execution_profile": plan.profile.profile_id,
             "status": result.status,
             "checks": [json_value(check) for check in result.checks],
-            "plan_fingerprint": plan.fingerprint,
-            "fingerprint": result.fingerprint,
         }
 
     def run(
@@ -424,7 +418,6 @@ class FlowEngine:
         artifact_root: Path,
         environment: ExecutionEnvironment | None = None,
         run_id: str | None = None,
-        resume: bool = False,
     ) -> FlowResult:
         current_environment = environment or ExecutionEnvironment()
         preflight = self.preflight(plan, current_environment)
@@ -451,11 +444,9 @@ class FlowEngine:
         )
         if not run_root.resolve(strict=False).is_relative_to(store_root):
             raise FlowExecutionError("Flow Run path escaped the artifact root")
-        if run_root.exists() and not resume:
+        if run_root.exists():
             raise FlowExecutionError(f"Flow Run already exists: {identity}")
-        if resume and not run_root.is_dir():
-            raise FlowExecutionError(f"cannot resume missing Flow Run: {identity}")
-        run_root.mkdir(parents=True, exist_ok=resume)
+        run_root.mkdir(parents=True)
 
         atomic_write_json(run_root / "resolved_plan.json", self.plan_record(plan))
         atomic_write_json(
@@ -499,61 +490,7 @@ class FlowEngine:
                 planned,
                 current_environment,
             )
-            interface_fingerprint = canonical_digest(action)
-            execution_fingerprint = canonical_digest(
-                {
-                    "schema": 1,
-                    "action": node.action_kind,
-                    "adapter": planned.adapter,
-                    "adapter_version": adapter.version,
-                    "action_config": json_value(node.config),
-                    "adapter_config": json_value(planned.adapter_config),
-                    "execution_environment": environment_payload,
-                    "inputs": {
-                        role: {
-                            "kind": artifact.kind,
-                            "digest": artifact.digest,
-                            "producer": artifact.producer,
-                            "qualifiers": json_value(artifact.qualifiers),
-                        }
-                        for role, artifact in sorted(inputs.items())
-                    },
-                    "source_revision": (
-                        None
-                        if planned.source_revision is None
-                        else source_revision_payload(planned.source_revision)
-                    ),
-                    "interface_fingerprint": interface_fingerprint,
-                }
-            )
             node_root = run_root / "nodes" / node.node_id
-            reused = self._reusable_outcome(
-                node_root,
-                run_root=run_root,
-                node_id=node.node_id,
-                interface_fingerprint=interface_fingerprint,
-                execution_fingerprint=execution_fingerprint,
-            )
-            if reused is not None:
-                policy = (
-                    None if node.policy is None else plan.spec.policy(node.policy)
-                )
-                evaluation = evaluate_policy(policy, reused.facts)
-                self._write_policy_receipt(node_root, evaluation, policy)
-                outcomes[node.node_id] = NodeOutcome(
-                    node_id=node.node_id,
-                    status=evaluation.status,
-                    execution_status="succeeded",
-                    result_status="valid",
-                    policy_status=evaluation.status,
-                    artifacts=reused.artifacts,
-                    facts=reused.facts,
-                    reused=True,
-                    execution_fingerprint=execution_fingerprint,
-                )
-                continue
-            if node_root.exists():
-                self._remove_managed_node(node_root, run_root)
             work_root = node_root / "work"
             output_root = node_root / "outputs"
             work_root.mkdir(parents=True)
@@ -577,7 +514,7 @@ class FlowEngine:
                 platform_assets=MappingProxyType(
                     self._resolved_platform_assets(planned, current_environment)
                 ),
-                source_revision=planned.source_revision,
+                source_assets=planned.source_assets,
             )
             request = {
                 "schema": 1,
@@ -593,13 +530,11 @@ class FlowEngine:
                     role: self._artifact_payload(artifact, run_root)
                     for role, artifact in sorted(inputs.items())
                 },
-                "source_revision": (
+                "source_assets": (
                     None
-                    if planned.source_revision is None
-                    else source_revision_payload(planned.source_revision)
+                    if planned.source_assets is None
+                    else source_assets_payload(planned.source_assets)
                 ),
-                "interface_fingerprint": interface_fingerprint,
-                "execution_fingerprint": execution_fingerprint,
             }
             atomic_write_json(node_root / "action_request.json", request)
             started = _utc_now()
@@ -622,14 +557,6 @@ class FlowEngine:
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             else:
-                try:
-                    canonical_digest(execution.details)
-                except Exception as exc:
-                    execution = AdapterExecution(
-                        execution.status,
-                        execution.exit_code,
-                    )
-                    error = f"invalid execution details: {type(exc).__name__}: {exc}"
                 if error is None and execution.status != "succeeded":
                     interrupted = execution.status == "cancelled"
                     error = f"Adapter execution ended with {execution.status}"
@@ -654,8 +581,6 @@ class FlowEngine:
                                 f"Action {node.node_id!r} emitted undeclared Facts "
                                 f"{sorted(unknown_facts)}"
                             )
-                        canonical_digest(collected.details)
-                        self._content_fingerprint(artifacts, facts)
                         result_status = collected.status
                     except KeyboardInterrupt:
                         interrupted = True
@@ -693,8 +618,6 @@ class FlowEngine:
                 ],
                 "details": json_value(collected.details),
                 "error": error,
-                "content_fingerprint": self._content_fingerprint(artifacts, facts),
-                "execution_fingerprint": execution_fingerprint,
             }
             atomic_write_json(node_root / "action_result.json", action_result)
             policy = None if node.policy is None else plan.spec.policy(node.policy)
@@ -707,7 +630,7 @@ class FlowEngine:
                     (),
                 )
             )
-            self._write_policy_receipt(node_root, evaluation, policy)
+            self._write_policy_receipt(node_root, evaluation)
             node_status = (
                 evaluation.status
                 if result_status == "valid"
@@ -722,7 +645,6 @@ class FlowEngine:
                 artifacts=MappingProxyType(dict(artifacts)),
                 facts=MappingProxyType(dict(facts)),
                 reason=error,
-                execution_fingerprint=execution_fingerprint,
             )
             outcomes[node.node_id] = outcome
             atomic_write_json(
@@ -731,7 +653,6 @@ class FlowEngine:
                     "schema": 1,
                     "contract_kind": "action-run-manifest",
                     "node": node.node_id,
-                    "execution_fingerprint": execution_fingerprint,
                     "managed_paths": [
                         self._managed_relative(path, run_root, "managed path")
                         for path in sorted(node_root.rglob("*"))
@@ -758,8 +679,6 @@ class FlowEngine:
                 node_id: self._outcome_payload(outcome, run_root)
                 for node_id, outcome in outcomes.items()
             },
-            "plan_fingerprint": plan.fingerprint,
-            "preflight_fingerprint": preflight.fingerprint,
         }
         atomic_write_json(run_root / "flow_result.json", flow_payload)
         atomic_write_json(
@@ -996,7 +915,7 @@ class FlowEngine:
                 kind=produced.kind,
                 path=path,
                 relative_path=self._managed_relative(path, run_root, "output"),
-                digest=_sha256(path),
+                digest=_sha256(path) if port.content_digest else None,
                 producer=context.node_id,
                 qualifiers=produced.qualifiers,
             )
@@ -1016,87 +935,10 @@ class FlowEngine:
                 raise FlowExecutionError("Evidence is not a managed regular file")
         return artifacts
 
-    def _reusable_outcome(
-        self,
-        node_root: Path,
-        *,
-        run_root: Path,
-        node_id: str,
-        interface_fingerprint: str,
-        execution_fingerprint: str,
-    ) -> NodeOutcome | None:
-        request_path = node_root / "action_request.json"
-        result_path = node_root / "action_result.json"
-        if not request_path.is_file() or not result_path.is_file():
-            return None
-        try:
-            request = read_json_object(request_path, "Action Request")
-            result = read_json_object(result_path, "Action Result")
-        except (OSError, RuntimeError):
-            return None
-        if (
-            request.get("schema") != 1
-            or request.get("contract_kind") != "action-request"
-            or request.get("interface_fingerprint") != interface_fingerprint
-            or request.get("execution_fingerprint") != execution_fingerprint
-            or result.get("schema") != 1
-            or result.get("contract_kind") != "action-result"
-            or result.get("result_status") != "valid"
-            or result.get("execution_fingerprint") != execution_fingerprint
-        ):
-            return None
-        raw_artifacts = result.get("artifacts")
-        raw_facts = result.get("facts")
-        if not isinstance(raw_artifacts, dict) or not isinstance(raw_facts, dict):
-            return None
-        artifacts: dict[str, ActionArtifact] = {}
-        for role, value in raw_artifacts.items():
-            if not isinstance(value, dict):
-                return None
-            relative = value.get("path")
-            digest = value.get("digest")
-            kind = value.get("kind")
-            qualifiers = value.get("qualifiers")
-            if not all(isinstance(item, str) and item for item in (relative, digest, kind)):
-                return None
-            if not isinstance(qualifiers, dict):
-                return None
-            path = (run_root / relative).resolve()
-            if not path.is_relative_to(run_root.resolve()) or not path.is_file():
-                return None
-            if _sha256(path) != digest:
-                return None
-            artifacts[role] = ActionArtifact(
-                role=role,
-                kind=kind,
-                path=path,
-                relative_path=relative,
-                digest=digest,
-                producer=node_id,
-                qualifiers=qualifiers,
-            )
-        if result.get("content_fingerprint") != self._content_fingerprint(
-            artifacts,
-            raw_facts,
-        ):
-            return None
-        return NodeOutcome(
-            node_id=node_id,
-            status="accepted",
-            execution_status="succeeded",
-            result_status="valid",
-            policy_status=None,
-            artifacts=MappingProxyType(artifacts),
-            facts=MappingProxyType(dict(raw_facts)),
-            reused=True,
-            execution_fingerprint=execution_fingerprint,
-        )
-
     def _write_policy_receipt(
         self,
         node_root: Path,
         evaluation: EvaluatedPolicy,
-        policy: PolicySpec | None,
     ) -> None:
         atomic_write_json(
             node_root / "policy_receipt.json",
@@ -1104,106 +946,10 @@ class FlowEngine:
                 "schema": 1,
                 "contract_kind": "policy-receipt",
                 "policy": evaluation.policy_id,
-                "policy_fingerprint": (
-                    None if policy is None else canonical_digest(policy)
-                ),
                 "status": evaluation.status,
                 "checks": [json_value(check) for check in evaluation.checks],
             },
         )
-
-    def _content_fingerprint(
-        self,
-        artifacts: Mapping[str, ActionArtifact],
-        facts: Mapping[str, Any],
-    ) -> str:
-        return canonical_digest(
-            {
-                "artifacts": {
-                    role: {
-                        "kind": artifact.kind,
-                        "digest": artifact.digest,
-                        "qualifiers": json_value(artifact.qualifiers),
-                    }
-                    for role, artifact in sorted(artifacts.items())
-                },
-                "facts": json_value(facts),
-            }
-        )
-
-    def _remove_managed_node(self, node_root: Path, run_root: Path) -> None:
-        resolved_node = node_root.resolve()
-        resolved_nodes = (run_root / "nodes").resolve()
-        if (
-            resolved_node == resolved_nodes
-            or not resolved_node.is_relative_to(resolved_nodes)
-            or node_root.is_symlink()
-        ):
-            raise FlowExecutionError("refusing to replace an unsafe node directory")
-        manifest_path = node_root / "run_manifest.json"
-        try:
-            manifest = read_json_object(manifest_path, "Action Run Manifest")
-        except (OSError, RuntimeError) as exc:
-            raise FlowExecutionError(str(exc)) from exc
-        if (
-            manifest.get("schema") != 1
-            or manifest.get("contract_kind") != "action-run-manifest"
-            or manifest.get("node") != node_root.name
-        ):
-            raise FlowExecutionError("Action Run Manifest identity does not match node")
-        raw_paths = manifest.get("managed_paths")
-        if not isinstance(raw_paths, list) or any(
-            not isinstance(value, str) for value in raw_paths
-        ):
-            raise FlowExecutionError("Action Run Manifest has invalid managed paths")
-        if len(raw_paths) != len(set(raw_paths)):
-            raise FlowExecutionError("Action Run Manifest repeats a managed path")
-
-        declared: dict[str, Path] = {}
-        for relative in raw_paths:
-            relative_path = Path(relative)
-            candidate = (run_root / relative_path).resolve(strict=False)
-            if (
-                not relative
-                or relative_path.is_absolute()
-                or "\\" in relative
-                or any(part in {"", ".", ".."} for part in relative_path.parts)
-                or not candidate.is_relative_to(resolved_node)
-            ):
-                raise FlowExecutionError(
-                    f"unsafe managed path in Action Run Manifest: {relative!r}"
-                )
-            declared[relative_path.as_posix()] = candidate
-
-        actual: dict[str, Path] = {}
-        for path in node_root.rglob("*"):
-            relative = path.relative_to(run_root).as_posix()
-            if path == manifest_path:
-                continue
-            if path.is_symlink():
-                raise FlowExecutionError(
-                    f"refusing to replace symlink in Action Run: {relative!r}"
-                )
-            actual[relative] = path.resolve(strict=False)
-        missing = sorted(set(declared) - set(actual))
-        untracked = sorted(set(actual) - set(declared))
-        if missing or untracked:
-            raise FlowExecutionError(
-                "Action Run manifest drift: "
-                f"missing={missing}, untracked={untracked}"
-            )
-        for relative in sorted(
-            declared,
-            key=lambda value: len(Path(value).parts),
-            reverse=True,
-        ):
-            path = declared[relative]
-            if path.is_dir():
-                path.rmdir()
-            else:
-                path.unlink()
-        manifest_path.unlink()
-        node_root.rmdir()
 
     def _managed_relative(self, path: Path, run_root: Path, label: str) -> str:
         candidate = Path(path).resolve()
@@ -1217,13 +963,15 @@ class FlowEngine:
         artifact: InputArtifact | ActionArtifact,
         run_root: Path,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "kind": artifact.kind,
             "path": self._managed_relative(artifact.path, run_root, "artifact"),
-            "digest": artifact.digest,
             "producer": artifact.producer,
             "qualifiers": json_value(artifact.qualifiers),
         }
+        if artifact.digest is not None:
+            payload["digest"] = artifact.digest
+        return payload
 
     def _environment_payload(
         self,
@@ -1238,7 +986,6 @@ class FlowEngine:
             platform_assets[role] = {
                 "kind": asset.kind,
                 "identity": asset.identity,
-                "digest": asset.digest,
             }
         return {
             "capabilities": {
@@ -1276,9 +1023,7 @@ class FlowEngine:
             "execution_status": outcome.execution_status,
             "result_status": outcome.result_status,
             "policy_status": outcome.policy_status,
-            "reused": outcome.reused,
             "reason": outcome.reason,
-            "execution_fingerprint": outcome.execution_fingerprint,
             "artifacts": {
                 role: self._artifact_payload(artifact, run_root)
                 for role, artifact in sorted(outcome.artifacts.items())

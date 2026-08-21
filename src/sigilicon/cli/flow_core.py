@@ -63,7 +63,6 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--environment", type=Path)
     run.add_argument("--artifact-root", type=Path, required=True)
     run.add_argument("--run-id")
-    run.add_argument("--resume", action="store_true")
 
     for name, help_text in (
         ("status", "read a persisted Flow Result"),
@@ -185,7 +184,6 @@ def main(
                     environment_factory,
                 ),
                 run_id=args.run_id,
-                resume=args.resume,
             )
             payload = engine.read_run_result(
                 artifact_root=args.artifact_root,
