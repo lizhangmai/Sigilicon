@@ -556,6 +556,7 @@ def _write_cli_flow_owner(owner_root: Path) -> tuple[Path, Path]:
         ("deck.sp", ".end\n"),
         ("electrical.sh", "#!/bin/sh\nexit 0\n"),
         ("qualification.toml", "schema = 1\n"),
+        ("qualification.py", "# fixture qualification recipe\n"),
     ):
         (owner_root / name).write_text(content, encoding="utf-8")
     _write_executable(
@@ -654,6 +655,12 @@ role = "qualification-spec"
 kind = "spec.qualification"
 materialization = "file"
 members = ["qualification.toml"]
+
+[[artifacts]]
+role = "qualification-recipe"
+kind = "recipe.qualification"
+materialization = "manifest"
+members = ["qualification.py"]
 ''',
         encoding="utf-8",
     )

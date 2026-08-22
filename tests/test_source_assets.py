@@ -52,7 +52,7 @@ owner = "fixture"
 name = "fixture-source"
 
 [qualifiers]
-variant = "product_0p9v"
+variant = "variant_b"
 
 [[artifacts]]
 role = "rtl-sources"
@@ -157,7 +157,7 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
     )
     assert result.status == "accepted"
     source = result.nodes["assets"]
-    assert source.artifacts["rtl-sources"].qualifiers["variant"] == "product_0p9v"
+    assert source.artifacts["rtl-sources"].qualifiers["variant"] == "variant_b"
     manifest = json.loads(source.artifacts["rtl-sources"].path.read_text())
     assert manifest["members"][0] == {
         "path": "rtl/a.sv",

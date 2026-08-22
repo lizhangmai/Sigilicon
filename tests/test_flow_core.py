@@ -295,6 +295,41 @@ def test_plan_validates_typed_bindings_before_creating_a_run(tmp_path: Path) -> 
     assert not (tmp_path / "artifacts").exists()
 
 
+def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:
+    registered = FlowRegistry()
+    registered.register_action(
+        ActionContract(
+            kind="fake.owner-qualified",
+            adapter_extensible=True,
+        )
+    )
+    adapter = SourceAdapter()
+
+    registered.register_action_adapter(
+        "fake.owner-qualified",
+        "fixture-owner-qualification",
+        adapter,
+    )
+
+    assert registered.action("fake.owner-qualified").adapters == (
+        "fixture-owner-qualification",
+    )
+    assert registered.adapter("fixture-owner-qualification") is adapter
+
+    registered.register_action(
+        ActionContract(
+            kind="fake.closed",
+            adapters=("fake-source",),
+        )
+    )
+    with pytest.raises(FlowContractError, match="does not accept Adapter extensions"):
+        registered.register_action_adapter(
+            "fake.closed",
+            "fixture-closed",
+            SourceAdapter(),
+        )
+
+
 def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     registered, source, transform, verify = registry()
     engine = FlowEngine(registered)
@@ -387,30 +422,30 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
     registered, *_ = registry()
     engine = FlowEngine(registered)
     artifact_root = tmp_path / "artifacts"
-    paper_plan = engine.plan(
-        flow_spec(qualifiers={"variant": "paper_0p8v", "corner": "tt0p8v25c"}),
+    first_plan = engine.plan(
+        flow_spec(qualifiers={"variant": "variant_a", "corner": "nominal_a"}),
         "qualification",
         fake_profile(),
     )
-    paper = engine.run(paper_plan, artifact_root=artifact_root, run_id="9" * 32)
+    first_run = engine.run(first_plan, artifact_root=artifact_root, run_id="9" * 32)
 
     source_result = json.loads(
-        (paper.run_root / "nodes/source/action_result.json").read_text()
+        (first_run.run_root / "nodes/source/action_result.json").read_text()
     )
     transform_request = json.loads(
-        (paper.run_root / "nodes/transform/action_request.json").read_text()
+        (first_run.run_root / "nodes/transform/action_request.json").read_text()
     )
     assert source_result["artifacts"]["source"]["qualifiers"] == {
-        "corner": "tt0p8v25c",
-        "variant": "paper_0p8v",
+        "corner": "nominal_a",
+        "variant": "variant_a",
     }
     assert transform_request["inputs"]["input"]["qualifiers"] == {
-        "corner": "tt0p8v25c",
-        "variant": "paper_0p8v",
+        "corner": "nominal_a",
+        "variant": "variant_a",
     }
 
     product_plan = engine.plan(
-        flow_spec(qualifiers={"variant": "product_0p9v", "corner": "tt0p9v25c"}),
+        flow_spec(qualifiers={"variant": "variant_b", "corner": "nominal_b"}),
         "qualification",
         fake_profile(),
     )
@@ -421,8 +456,8 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
     )
 
     assert product.nodes["source"].artifacts["source"].qualifiers == {
-        "corner": "tt0p9v25c",
-        "variant": "product_0p9v",
+        "corner": "nominal_b",
+        "variant": "variant_b",
     }
 
 

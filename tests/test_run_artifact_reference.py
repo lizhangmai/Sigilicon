@@ -17,16 +17,16 @@ from sigilicon.flow import (
 )
 
 
-OWNER = "Synthesizable-Comparator"
-FLOW = "comparator-paper-0p8v"
+OWNER = "Fixture-Block"
+FLOW = "fixture-flow"
 RUN_ID = "5e75c193dd734b038d3baecb3aac5497"
 NODE = "reference-library"
 ROLE = "reference-library"
 QUALIFIERS = {
-    "corner": "tt0p8v25c",
+    "corner": "nominal_a",
     "nominal_supply_v": 0.8,
     "nominal_temperature_c": 25.0,
-    "variant": "paper_0p8v",
+    "variant": "variant_a",
 }
 MEMBER_BYTES = b"durable NDM fixture\n"
 MEMBER_DIGEST = sha256(MEMBER_BYTES).hexdigest()
@@ -36,7 +36,7 @@ ARTIFACT_BYTES = (
             "schema": 1,
             "contract_kind": "artifact-directory-manifest",
             "kind": "library.synopsys-ndm",
-            "root": "paper.ndm",
+            "root": "fixture.ndm",
             "members": [{"path": "reflib.ndm", "digest": MEMBER_DIGEST}],
             "qualifiers": QUALIFIERS,
         },
@@ -56,15 +56,15 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _paper_run_fixture(tmp_path: Path) -> Path:
-    """Materialize the current paper NDM run-record shape without a fake runner."""
+def _run_fixture(tmp_path: Path) -> Path:
+    """Materialize the current fixture NDM run-record shape without a fake runner."""
 
     artifact_root = tmp_path / "artifacts"
     run_root = artifact_root / "flows" / OWNER / FLOW / "runs" / RUN_ID
     artifact_path = run_root / ARTIFACT_RELATIVE
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_bytes(ARTIFACT_BYTES)
-    ndm_member = artifact_path.parent / "paper.ndm/reflib.ndm"
+    ndm_member = artifact_path.parent / "fixture.ndm/reflib.ndm"
     ndm_member.parent.mkdir()
     ndm_member.write_bytes(MEMBER_BYTES)
     artifact = {
@@ -98,14 +98,14 @@ def _paper_run_fixture(tmp_path: Path) -> Path:
             "target": "implementation",
             "execution_profile": {
                 "owner": OWNER,
-                "name": "paper-0p8v-synopsys",
+                "name": "fixture-synopsys",
             },
             "topology": ["assets", "reference-library", "implementation"],
             "nodes": [
                 {
                     "id": "assets",
                     "source_assets": {
-                        "name": "comparator-paper-0p8v-source",
+                        "name": "fixture-flow-source",
                         "git": {
                             "commit": "b9753f18f7c8c60bffb90fc08c4c628651a658c3",
                             "dirty": False,
@@ -124,7 +124,7 @@ def _paper_run_fixture(tmp_path: Path) -> Path:
             "owner": OWNER,
             "flow": FLOW,
             "target": "implementation",
-            "execution_profile": "paper-0p8v-synopsys",
+            "execution_profile": "fixture-synopsys",
             "status": "ready",
             "checks": [],
         },
@@ -252,7 +252,7 @@ def _reference(**changes: object) -> RunArtifactReference:
 def test_owner_can_resolve_an_exact_accepted_durable_run_artifact(
     tmp_path: Path,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
 
     artifact = FlowEngine(FlowRegistry()).resolve_run_artifact(
         artifact_root=artifact_root,
@@ -268,7 +268,7 @@ def test_owner_can_resolve_an_exact_accepted_durable_run_artifact(
 def test_run_artifact_reference_rejects_an_escaping_manifest_path(
     tmp_path: Path,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     manifest_path = (
         artifact_root / "flows" / OWNER / FLOW / "runs" / RUN_ID / "run_manifest.json"
     )
@@ -290,13 +290,13 @@ def test_run_artifact_reference_rejects_an_escaping_manifest_path(
         ("missing-run", {"run_id": "0" * 32}, OWNER),
         ("wrong-owner", {"owner": "Different-Owner"}, "Different-Owner"),
         ("cross-owner", {"owner": OWNER}, "Different-Owner"),
-        ("wrong-flow", {"flow_id": "comparator-paper-other"}, OWNER),
+        ("wrong-flow", {"flow_id": "other-flow"}, OWNER),
         ("wrong-node", {"node_id": "implementation"}, OWNER),
         ("wrong-role", {"role": "different-library"}, OWNER),
         ("wrong-kind", {"kind": "library.liberty"}, OWNER),
         (
             "wrong-qualifier",
-            {"qualifiers": {**QUALIFIERS, "corner": "tt0p9v25c"}},
+            {"qualifiers": {**QUALIFIERS, "corner": "nominal_b"}},
             OWNER,
         ),
         ("wrong-digest", {"digest": "0" * 64}, OWNER),
@@ -309,7 +309,7 @@ def test_run_artifact_reference_rejects_a_wrong_selected_identity(
     reference_changes: dict[str, object],
     consumer_owner: str,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
 
     with pytest.raises(FlowExecutionError):
         FlowEngine(FlowRegistry()).resolve_run_artifact(
@@ -327,7 +327,7 @@ def test_run_artifact_reference_rejects_an_unaccepted_producer(
     tmp_path: Path,
     state: str,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     run_root = _run_root(artifact_root)
     if state == "producer-rejected":
         _mutate_json(
@@ -358,7 +358,7 @@ def test_run_artifact_reference_rejects_an_unaccepted_producer(
 def test_run_artifact_reference_rejects_a_missing_recorded_digest(
     tmp_path: Path,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     run_root = _run_root(artifact_root)
     for record in (
         run_root / "flow_result.json",
@@ -386,7 +386,7 @@ def test_run_artifact_reference_rejects_a_missing_recorded_digest(
 def test_run_artifact_reference_rejects_stale_durable_content(
     tmp_path: Path,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     (_run_root(artifact_root) / ARTIFACT_RELATIVE).write_bytes(
         ARTIFACT_BYTES + b"stale\n"
     )
@@ -402,11 +402,11 @@ def test_run_artifact_reference_rejects_stale_durable_content(
 def test_run_artifact_reference_rejects_a_stale_directory_member(
     tmp_path: Path,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     member = (
         _run_root(artifact_root)
         / Path(ARTIFACT_RELATIVE).parent
-        / "paper.ndm/reflib.ndm"
+        / "fixture.ndm/reflib.ndm"
     )
     member.write_bytes(MEMBER_BYTES + b"stale\n")
 
@@ -419,7 +419,7 @@ def test_run_artifact_reference_rejects_a_stale_directory_member(
 
 
 def test_ndm_run_artifact_requires_a_directory_manifest(tmp_path: Path) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     run_root = _run_root(artifact_root)
     opaque = b"not an NDM directory manifest\n"
     opaque_digest = sha256(opaque).hexdigest()
@@ -451,7 +451,7 @@ def test_run_artifact_reference_rejects_an_escaping_artifact_record(
     tmp_path: Path,
     path: str,
 ) -> None:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     run_root = _run_root(artifact_root)
     for record in (
         run_root / "flow_result.json",

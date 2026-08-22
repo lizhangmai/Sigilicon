@@ -268,6 +268,7 @@ class ActionContract:
     required_capabilities: tuple[str, ...] = ()
     platform_assets: tuple[PlatformAssetRequirement, ...] = ()
     adapters: tuple[str, ...] = ()
+    adapter_extensible: bool = False
     resolves_source_assets: bool = False
 
     def __post_init__(self) -> None:
@@ -296,7 +297,7 @@ class ActionContract:
             "Action platform asset roles",
         )
         _unique(self.adapters, "Action Adapters")
-        if not self.adapters:
+        if not self.adapters and not self.adapter_extensible:
             raise FlowContractError(f"Action {self.kind!r} declares no Adapter")
         if self.resolves_source_assets and self.inputs:
             raise FlowContractError("source assets Action cannot declare inputs")

@@ -2,8 +2,8 @@ INFO: wire-opt feature for router enabled
 Cell Min-Routing-Layer = M1
 Cell Max-Routing-Layer = AP
 Turn off antenna since no rule is specified
-Warning: Port VDD of cell synthesizable_comparator_paper_0p8v is unplaced.  This may impact routing result. (ZRT-740)
-Warning: Port VSS of cell synthesizable_comparator_paper_0p8v is unplaced.  This may impact routing result. (ZRT-740)
+Warning: Port VDD of cell fixture_block_variant_a is unplaced.  This may impact routing result. (ZRT-740)
+Warning: Port VSS of cell fixture_block_variant_a is unplaced.  This may impact routing result. (ZRT-740)
 
 Start checking for open nets ...
 

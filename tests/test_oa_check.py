@@ -21,9 +21,9 @@ def test_oa_check_is_a_parser_action_with_no_mutating_arguments() -> None:
             "oa",
             "check",
             "--manifest",
-            "ip/cim_compute/configs/oa.toml",
+            "ip/fixture_block/configs/oa.toml",
             "--library",
-            "llm_cim",
+            "fixture_lib",
         ]
     )
 
@@ -84,7 +84,7 @@ def test_invalid_manifest_is_reported_as_blocked_without_artifact_write(
     report = check_oa_library(
         tmp_path / "missing-oa.toml",
         project_root=tmp_path,
-        library="llm_cim",
+        library="fixture_lib",
         client=SimpleNamespace(),
     )
 
@@ -112,12 +112,12 @@ def test_check_proves_live_library_path_is_the_manifest_target(
     monkeypatch, tmp_path: Path
 ) -> None:
     workspace = tmp_path / "virtuoso"
-    expected = workspace / "llm_cim"
+    expected = workspace / "fixture_lib"
     shadow = workspace / "shadow"
     expected.mkdir(parents=True)
     shadow.mkdir()
     plan = SimpleNamespace(
-        library="llm_cim",
+        library="fixture_lib",
         source=SimpleNamespace(project_root=tmp_path, oa_library=expected),
     )
     client = SimpleNamespace(
@@ -142,7 +142,7 @@ def test_check_proves_live_library_path_is_the_manifest_target(
 
 
 def test_lock_inventory_includes_undeclared_oa_cache_views(tmp_path: Path) -> None:
-    view = tmp_path / "virtuoso" / "llm_cim" / "EXTRA" / "schematic"
+    view = tmp_path / "virtuoso" / "fixture_lib" / "EXTRA" / "schematic"
     view.mkdir(parents=True)
     (view / ".cdslck.1").write_text(
         "HostName test-host\nProcessIdentifier 1\n", encoding="utf-8"
@@ -151,7 +151,7 @@ def test_lock_inventory_includes_undeclared_oa_cache_views(tmp_path: Path) -> No
         expected_views={},
         source=SimpleNamespace(
             project_root=tmp_path,
-            oa_library=tmp_path / "virtuoso" / "llm_cim",
+            oa_library=tmp_path / "virtuoso" / "fixture_lib",
             workspace_template=tmp_path / "virtuoso",
         ),
     )
@@ -210,13 +210,13 @@ def test_plain_check_summary_exposes_current_operator_state(capsys) -> None:
             "status": "clean",
             "source_contract": {
                 "passed": True,
-                "library": "llm_cim",
+                "library": "fixture_lib",
                 "cell_count": 33,
                 "view_count": 135,
                 "testbench_count": 7,
             },
             "ownership": {
-                "library": {"passed": True, "registered_path": "/tmp/virtuoso/llm_cim"}
+                "library": {"passed": True, "registered_path": "/tmp/virtuoso/fixture_lib"}
             },
             "parity": {
                 "passed": True,

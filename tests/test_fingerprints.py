@@ -88,12 +88,12 @@ def test_waveform_signal_change_changes_semantic_identity(tmp_path: Path) -> Non
 def test_simulation_identity_change_is_semantic_and_exact(tmp_path: Path) -> None:
     source = _write(
         tmp_path / "simulation.toml",
-        '[testbench]\ncell = "tb_a"\nlibrary = "llm_cim"\n',
+        '[testbench]\ncell = "tb_a"\nlibrary = "fixture_lib"\n',
     )
     before = source_fingerprint_set({"contract/simulation.toml": source})
     source.write_text(
         '# formatting/comment only\n\n[testbench]\n'
-        'library = "llm_cim"\ncell = "tb_b"\n',
+        'library = "fixture_lib"\ncell = "tb_b"\n',
         encoding="utf-8",
     )
     after = source_fingerprint_set({"contract/simulation.toml": source})
@@ -107,12 +107,12 @@ def test_simulation_comments_and_formatting_are_exact_only_changes(
 ) -> None:
     source = _write(
         tmp_path / "simulation.toml",
-        '[testbench]\nlibrary = "llm_cim"\ncell = "tb_a"\n',
+        '[testbench]\nlibrary = "fixture_lib"\ncell = "tb_a"\n',
     )
     before = source_fingerprint_set({"contract/simulation.toml": source})
     source.write_text(
         '# source ownership note\n\n[testbench]\ncell = "tb_a"\n'
-        'library = "llm_cim"\n',
+        'library = "fixture_lib"\n',
         encoding="utf-8",
     )
     after = source_fingerprint_set({"contract/simulation.toml": source})

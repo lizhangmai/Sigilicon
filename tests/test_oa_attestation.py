@@ -21,7 +21,7 @@ def _spec() -> SimpleNamespace:
         scalar_outputs=(("scalar", 'value(VT("/OUT") 1u)'),),
     )
     return SimpleNamespace(
-        library="llm_cim",
+        library="fixture_lib",
         cell="tb_main",
         dut="dut",
         top_view="schematic",
@@ -40,7 +40,7 @@ def _spec() -> SimpleNamespace:
 
 
 def test_attestation_skill_uses_official_read_only_objects() -> None:
-    skill = build_native_setup_attestation_skill("llm_cim", "tb_main")
+    skill = build_native_setup_attestation_skill("fixture_lib", "tb_main")
 
     for api in (
         "hdbOpen",
@@ -71,7 +71,7 @@ def test_attestation_skill_uses_official_read_only_objects() -> None:
 
 
 def test_attestation_skill_has_balanced_parentheses_and_strings() -> None:
-    skill = build_native_setup_attestation_skill("llm_cim", "tb_main")
+    skill = build_native_setup_attestation_skill("fixture_lib", "tb_main")
     depth = 0
     in_string = False
     escaped = False
@@ -122,9 +122,9 @@ def test_attestation_rows_are_structured_without_python_setup_parsing() -> None:
     observations = _parse_rows(
         "\n".join(
             (
-                "CONFIG|llm_cim|tb_main|config|llm_cim|tb_main|schematic",
-                "BIND||DUT0|llm_cim|dut|schematic|true|true|true|llm_cim|dut|schematic|1",
-                "TEST|tran_main|llm_cim|tb_main|config|spectre|active|$AXL",
+                "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
+                "BIND||DUT0|fixture_lib|dut|schematic|true|true|true|fixture_lib|dut|schematic|1",
+                "TEST|tran_main|fixture_lib|tb_main|config|spectre|active|$AXL",
                 "ANALYSIS|tran_main|tran|tran",
                 "ENV|tran_main|modelFiles|((toplevel.scs top_tt))",
                 "OUTPUT|tran_main|wave|net|/OUT|||true|undefined",
@@ -160,9 +160,9 @@ def test_attestation_comparison_covers_setup_and_result_identity() -> None:
     observations = _parse_rows(
         "\n".join(
             (
-                "CONFIG|llm_cim|tb_main|config|llm_cim|tb_main|schematic",
-                "BIND||DUT0|llm_cim|dut|schematic|true|true|true|llm_cim|dut|schematic|1",
-                "TEST|tran_main|llm_cim|tb_main|config|spectre|active|$AXL",
+                "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
+                "BIND||DUT0|fixture_lib|dut|schematic|true|true|true|fixture_lib|dut|schematic|1",
+                "TEST|tran_main|fixture_lib|tb_main|config|spectre|active|$AXL",
                 "ANALYSIS|tran_main|tran|tran",
                 "ENV|tran_main|modelFiles|((toplevel.scs top_tt))",
                 "OUTPUT|tran_main|wave|net|/OUT|||true|undefined",
@@ -192,9 +192,9 @@ def test_attestation_uses_explicit_nondefault_setup_model_identity() -> None:
     observations = _parse_rows(
         "\n".join(
             (
-                "CONFIG|llm_cim|tb_main|config|llm_cim|tb_main|schematic",
-                "BIND||DUT0|llm_cim|dut|schematic|true|true|true|llm_cim|dut|schematic|1",
-                "TEST|tran_main|llm_cim|tb_main|config|spectre|active|$AXL",
+                "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
+                "BIND||DUT0|fixture_lib|dut|schematic|true|true|true|fixture_lib|dut|schematic|1",
+                "TEST|tran_main|fixture_lib|tb_main|config|spectre|active|$AXL",
                 "ANALYSIS|tran_main|tran|tran",
                 "ENV|tran_main|modelFiles|((local_models.scs local_mos))",
                 "OUTPUT|tran_main|wave|net|/OUT|||true|undefined",
@@ -220,9 +220,9 @@ def test_attestation_diagnostics_identify_the_changed_result_contract_field() ->
     observations = _parse_rows(
         "\n".join(
             (
-                "CONFIG|llm_cim|tb_main|config|llm_cim|tb_main|schematic",
-                "BIND||DUT0|llm_cim|dut|schematic|true|true|true|llm_cim|dut|schematic|1",
-                "TEST|tran_main|llm_cim|tb_main|config|spectre|active|$AXL",
+                "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
+                "BIND||DUT0|fixture_lib|dut|schematic|true|true|true|fixture_lib|dut|schematic|1",
+                "TEST|tran_main|fixture_lib|tb_main|config|spectre|active|$AXL",
                 "ANALYSIS|tran_main|tran|tran",
                 "ENV|tran_main|modelFiles|((toplevel.scs top_tt))",
                 "OUTPUT|tran_main|wave|net|/WRONG|||true|undefined",

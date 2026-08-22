@@ -23,7 +23,7 @@ from test_run_artifact_reference import (
     QUALIFIERS,
     ROLE,
     RUN_ID,
-    _paper_run_fixture,
+    _run_fixture,
     _run_root,
     _write_json,
 )
@@ -52,7 +52,7 @@ def _refresh_run_manifest(run_root: Path) -> None:
 
 
 def _promotion_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
-    artifact_root = _paper_run_fixture(tmp_path)
+    artifact_root = _run_fixture(tmp_path)
     run_root = _run_root(artifact_root)
 
     flow_result_path = run_root / "flow_result.json"
@@ -147,18 +147,18 @@ def _promotion_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
     )
     _refresh_run_manifest(run_root)
 
-    owner = tmp_path / "ip/Synthesizable_Comparator"
+    owner = tmp_path / "ip/Fixture_Block"
     configs = owner / "configs"
     configs.mkdir(parents=True)
     (owner / "component.toml").write_text(
         """schema = 1
 contract_kind = "ip-component"
 path_scope = "owner"
-owner = "Synthesizable-Comparator"
-name = "synthesizable-comparator"
+owner = "Fixture-Block"
+name = "fixture-block"
 kind = "rtl-ip"
 [filesets]
-specification = ["ip/Synthesizable_Comparator/configs/interface.toml"]
+specification = ["ip/Fixture_Block/configs/interface.toml"]
 """,
         encoding="utf-8",
     )
@@ -166,9 +166,9 @@ specification = ["ip/Synthesizable_Comparator/configs/interface.toml"]
         """schema = 1
 contract_kind = "ip-interface"
 path_scope = "owner"
-owner = "Synthesizable-Comparator"
+owner = "Fixture-Block"
 [module]
-name = "synthesizable_comparator_paper_0p8v"
+name = "fixture_block_variant_a"
 """,
         encoding="utf-8",
     )
@@ -203,12 +203,12 @@ name = "synthesizable_comparator_paper_0p8v"
         f"""schema = 1
 contract_kind = "ip-promotion"
 path_scope = "owner"
-owner = "Synthesizable-Comparator"
+owner = "Fixture-Block"
 
-name = "synthesizable-comparator"
-producer = "ip/Synthesizable_Comparator"
+name = "fixture-block"
+producer = "ip/Fixture_Block"
 component = "component.toml"
-export = "paper-0p8v"
+export = "fixture-export"
 maturity = "development"
 
 [source]
@@ -217,8 +217,8 @@ dirty = false
 
 [interface]
 contract = "configs/interface.toml"
-logical = "synthesizable_comparator_paper_0p8v:rtl"
-physical = "synthesizable_comparator_paper_0p8v:routed"
+logical = "fixture_block_variant_a:rtl"
+physical = "fixture_block_variant_a:routed"
 
 [conclusions]
 implementation_regression = true
@@ -237,7 +237,7 @@ role = "{ROLE}"
 kind = "library.synopsys-ndm"
 digest = "{DIGEST}"
 required_policy = "reference-library-quality"
-qualifiers = {{ corner = "tt0p8v25c", nominal_supply_v = 0.8, nominal_temperature_c = 25.0, variant = "paper_0p8v" }}
+qualifiers = {{ corner = "nominal_a", nominal_supply_v = 0.8, nominal_temperature_c = 25.0, variant = "variant_a" }}
 
 [[evidence]]
 node = "implementation"
@@ -318,11 +318,11 @@ def test_promotion_builds_one_immutable_release_from_exact_run_evidence(
     assert not any(token in encoded for token in ("cache_key", "source_fingerprint"))
     manifest_relative = PurePosixPath(
         "ip"
-    ) / "synthesizable-comparator" / first["release_id"] / "manifest.json"
+    ) / "fixture-block" / first["release_id"] / "manifest.json"
     manifest_path, locked = resolve_locked_ip_release(
         artifact_root=artifact_root,
         pinned=LockedIpRelease(
-            name="synthesizable-comparator",
+            name="fixture-block",
             release_id=first["release_id"],
             manifest=manifest_relative,
             maturity="development",
@@ -345,8 +345,8 @@ contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "repository"
 
-[targets.comparator-paper]
-contract = "ip/Synthesizable_Comparator/configs/promotion.toml"
+[targets.fixture-target]
+contract = "ip/Fixture_Block/configs/promotion.toml"
 
 [components]
 """,
@@ -359,7 +359,7 @@ contract = "ip/Synthesizable_Comparator/configs/promotion.toml"
             [
                 "ip",
                 "promote",
-                "comparator-paper",
+                "fixture-target",
                 "--artifact-root",
                 str(artifact_root),
                 "--json",
@@ -374,7 +374,7 @@ contract = "ip/Synthesizable_Comparator/configs/promotion.toml"
             [
                 "ip",
                 "audit",
-                "comparator-paper",
+                "fixture-target",
                 "--artifact-root",
                 str(artifact_root),
                 "--json",
@@ -500,7 +500,7 @@ def test_release_lock_rejects_a_manifest_that_overclaims_qualification(
     )
     manifest_relative = (
         PurePosixPath("ip")
-        / "synthesizable-comparator"
+        / "fixture-block"
         / release["release_id"]
         / "manifest.json"
     )
@@ -514,7 +514,7 @@ def test_release_lock_rejects_a_manifest_that_overclaims_qualification(
         resolve_locked_ip_release(
             artifact_root=artifact_root,
             pinned=LockedIpRelease(
-                name="synthesizable-comparator",
+                name="fixture-block",
                 release_id=release["release_id"],
                 manifest=manifest_relative,
                 maturity="development",

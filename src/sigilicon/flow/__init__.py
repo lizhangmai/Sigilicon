@@ -12,7 +12,6 @@ from sigilicon.flow.contracts import (
 )
 from sigilicon.flow.builtin import builtin_registry
 from sigilicon.flow.engine import FlowEngine
-from sigilicon.flow.electrical import ElectricalQualificationAdapter
 from sigilicon.flow.environment import load_execution_environment
 from sigilicon.flow.fake import fake_profile, fake_registry
 from sigilicon.flow.model import (
@@ -82,7 +81,6 @@ __all__ = [
     "ArtifactPort",
     "CollectedActionResult",
     "ExecutionEnvironment",
-    "ElectricalQualificationAdapter",
     "ExecutionProfile",
     "FlowCatalog",
     "FlowCatalogEntry",

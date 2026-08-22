@@ -77,7 +77,7 @@ def test_real_fc_report_distinguishes_missing_antenna_rules_and_tie_check(
         "asic.physical-implementation",
         _physical_reports(
             tmp_path,
-            FIXTURES / "paper_0p8v_incomplete_drc.rpt",
+            FIXTURES / "incomplete_drc.rpt",
             FIXTURES / "physical_completion_incomplete.rpt",
         ),
     )
@@ -118,7 +118,7 @@ def test_physical_completion_report_exposes_incomplete_pg_facts(
         "asic.physical-implementation",
         _physical_reports(
             tmp_path,
-            FIXTURES / "paper_0p8v_incomplete_drc.rpt",
+            FIXTURES / "incomplete_drc.rpt",
             FIXTURES / "physical_completion_incomplete.rpt",
         ),
     )
@@ -139,7 +139,7 @@ def test_missing_physical_completion_report_is_rejected(tmp_path: Path) -> None:
             "asic.physical-implementation",
             _physical_reports(
                 tmp_path,
-                FIXTURES / "paper_0p8v_incomplete_drc.rpt",
+                FIXTURES / "incomplete_drc.rpt",
             ),
         )
 
@@ -181,7 +181,7 @@ def test_pg_connectivity_not_performed_has_no_violation_count(
     [
         ("route_checks_active.rpt", True, "active", 3),
         ("route_checks_inactive.rpt", False, "inactive", None),
-        ("paper_0p8v_incomplete_drc.rpt", False, "no-rules", None),
+        ("incomplete_drc.rpt", False, "no-rules", None),
     ],
 )
 def test_antenna_check_states_remain_distinct(
@@ -212,7 +212,7 @@ def test_antenna_check_states_remain_distinct(
     ("fixture", "performed", "status", "violations", "direct"),
     [
         ("route_checks_active.rpt", True, "performed", 4, 1),
-        ("paper_0p8v_incomplete_drc.rpt", False, "not-performed", None, None),
+        ("incomplete_drc.rpt", False, "not-performed", None, None),
     ],
 )
 def test_tie_to_rail_check_states_remain_distinct(
@@ -255,7 +255,7 @@ def test_tie_off_check_report_exposes_performed_facts(
         "asic.physical-implementation",
         _physical_reports(
             tmp_path,
-            FIXTURES / "paper_0p8v_incomplete_drc.rpt",
+            FIXTURES / "incomplete_drc.rpt",
             FIXTURES / "physical_completion_complete.rpt",
             FIXTURES / fixture,
         ),
@@ -272,7 +272,7 @@ def test_missing_tie_off_check_report_is_rejected(tmp_path: Path) -> None:
             "asic.physical-implementation",
             _physical_reports(
                 tmp_path,
-                FIXTURES / "paper_0p8v_incomplete_drc.rpt",
+                FIXTURES / "incomplete_drc.rpt",
                 FIXTURES / "physical_completion_complete.rpt",
                 None,
             ),

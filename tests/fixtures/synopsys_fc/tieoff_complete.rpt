@@ -1,7 +1,7 @@
 ****************************************
 Report : check_mv_design
         -tieoff
-Design : synthesizable_comparator_paper_0p8v
+Design : fixture_block_variant_a
 Version: X-2025.06-SP1
 ****************************************
 

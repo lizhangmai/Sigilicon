@@ -640,14 +640,14 @@ pdk = "testpdk"
 
 [setup]
 source = "setup.il"
-config_procedure = "llmCimNativeConfig"
-maestro_procedure = "llmCimNativeMaestro"
+config_procedure = "fixtureNativeConfig"
+maestro_procedure = "fixtureNativeMaestro"
 """,
     )
     setup = _write(
         canonical.parent / "setup.il",
-        "procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)\n"
-        "procedure(llmCimNativeMaestro(session lib cell modelFile modelSection) t)\n",
+        "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n"
+        "procedure(fixtureNativeMaestro(session lib cell modelFile modelSection) t)\n",
     )
     step = SimpleNamespace(
         cell=cell,

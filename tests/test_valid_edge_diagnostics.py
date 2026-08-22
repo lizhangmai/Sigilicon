@@ -114,7 +114,7 @@ def test_valid_edge_module_does_not_own_hardware_product_schema() -> None:
         "activation_masks_hex",
         "bounded_campaign",
         "code_mapping_contract",
-        "comparator_mismatch_qualified",
+        "edge_mismatch_qualified",
         "product_qualification_conclusion",
     ):
         assert product_term not in text

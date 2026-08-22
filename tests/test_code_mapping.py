@@ -93,7 +93,7 @@ def test_mapping_contract_does_not_infer_owner_from_repository_layout(
     tmp_path: Path,
 ) -> None:
     contract = tmp_path / "ip/example/configs/behavior.toml"
-    _write_behavior_contract(contract, owner="cim-compute")
+    _write_behavior_contract(contract, owner="fixture-owner")
 
     mapping = load_integer_code_mapping_contract(
         contract,

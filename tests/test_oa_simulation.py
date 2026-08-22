@@ -17,8 +17,8 @@ def _write_native_simulation_spec(tmp_path: Path) -> tuple[Path, Path]:
     owner.mkdir(parents=True)
     write_test_platform(root)
     (owner / "setup.il").write_text(
-        "procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)\n"
-        "procedure(llmCimNativeMaestro(session lib cell modelFile modelSection) t)\n",
+        "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n"
+        "procedure(fixtureNativeMaestro(session lib cell modelFile modelSection) t)\n",
         encoding="utf-8",
     )
     spec = owner / "simulation.toml"
@@ -37,8 +37,8 @@ pdk = "testpdk"
 
 [setup]
 source = "setup.il"
-config_procedure = "llmCimNativeConfig"
-maestro_procedure = "llmCimNativeMaestro"
+config_procedure = "fixtureNativeConfig"
+maestro_procedure = "fixtureNativeMaestro"
 """,
         encoding="utf-8",
     )
@@ -156,8 +156,8 @@ def test_native_rdb_identity_contract_is_source_owned_and_setup_consistent(
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
     spec_path.parent.joinpath("setup.il").write_text(
-        """procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)
-procedure(llmCimNativeMaestro(session lib cell modelFile modelSection)
+        """procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)
+procedure(fixtureNativeMaestro(session lib cell modelFile modelSection)
   maeCreateTest("tran_main")
   maeAddOutput("out_wave" "tran_main" ?signalName "/OUT")
   maeAddOutput("out_scalar" "tran_main"
@@ -232,8 +232,8 @@ sections = ["local_mos"]
         encoding="utf-8",
     )
     spec_path.parent.joinpath("setup.il").write_text(
-        '''procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)
-procedure(llmCimNativeMaestro(session lib cell modelFile modelSection)
+        '''procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)
+procedure(fixtureNativeMaestro(session lib cell modelFile modelSection)
   maeCreateTest("tran_main")
   maeAddOutput("out_wave" "tran_main" ?signalName "/OUT")
   maeAddOutput("out_scalar" "tran_main"
@@ -275,8 +275,8 @@ def test_native_rdb_contract_rejects_models_not_declared_by_platform(
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
     spec_path.parent.joinpath("setup.il").write_text(
-        '''procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)
-procedure(llmCimNativeMaestro(session lib cell modelFile modelSection)
+        '''procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)
+procedure(fixtureNativeMaestro(session lib cell modelFile modelSection)
   maeCreateTest("tran_main")
   maeAddOutput("out_wave" "tran_main" ?signalName "/OUT")
   maeAddOutput("out_scalar" "tran_main"
@@ -313,16 +313,16 @@ models = [
 def test_native_setup_entry_point_requires_the_declared_definition(tmp_path: Path) -> None:
     source = tmp_path / "setup.il"
     source.write_text(
-        "procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)\n",
+        "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n",
         encoding="utf-8",
     )
-    assert _native_setup_entry_point(source, declared="llmCimNativeConfig") == (
-        "llmCimNativeConfig"
+    assert _native_setup_entry_point(source, declared="fixtureNativeConfig") == (
+        "fixtureNativeConfig"
     )
 
-    source.write_text("procedure(llmCimPilotConfig(lib cell dut refs) t)\n", encoding="utf-8")
+    source.write_text("procedure(fixturePilotConfig(lib cell dut refs) t)\n", encoding="utf-8")
     with pytest.raises(ValueError, match="does not define declared entry point"):
-        _native_setup_entry_point(source, declared="llmCimNativeConfig")
+        _native_setup_entry_point(source, declared="fixtureNativeConfig")
 
 
 def test_native_simulation_fingerprint_includes_setup_source(tmp_path: Path) -> None:
@@ -332,8 +332,8 @@ def test_native_simulation_fingerprint_includes_setup_source(tmp_path: Path) -> 
     spec = load_oa_simulation_spec(spec_path, project_root=root)
     first = oa_simulation_fingerprint(spec, source)
     spec.native_setup.source.write_text(
-        "procedure(llmCimNativeConfig(lib cell dut sourceView refs) t)\n"
-        "procedure(llmCimNativeMaestro(session lib cell modelFile modelSection) t)\n"
+        "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n"
+        "procedure(fixtureNativeMaestro(session lib cell modelFile modelSection) t)\n"
         "; changed\n",
         encoding="utf-8",
     )

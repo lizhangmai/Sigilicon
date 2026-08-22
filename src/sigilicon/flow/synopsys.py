@@ -26,6 +26,24 @@ from sigilicon.flow.synopsys_reports import parse_synopsys_fc_report_facts
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
+_ENVIRONMENT_PREFIX = re.compile(r"[A-Z][A-Z0-9_]*_\Z")
+_RESERVED_PROCESS_ENVIRONMENT = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "ENV",
+        "HOME",
+        "IFS",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "PATH",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "SHELL",
+    }
+)
 _SYNTHESIS_OUTPUT_ROLES = frozenset(
     {"mapped-netlist", "mapped-constraints", "checkpoint"}
 )
@@ -1347,7 +1365,7 @@ class SynopsysVCSAdapter:
 class SynopsysHSpiceAdapter:
     """Run an owner-selected HSPICE regression or characterization campaign."""
 
-    version = "2"
+    version = "3"
 
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()
@@ -1411,22 +1429,7 @@ class SynopsysHSpiceAdapter:
         environment["SIGILICON_DESIGN_VARIANT"] = str(qualifiers["variant"])
         environment["SIGILICON_DESIGN_CORNER"] = str(qualifiers["corner"])
         environment["SIGILICON_PYTHON"] = sys.executable
-        if context.action.kind == "asic.electrical-campaign":
-            environment["SIGILICON_HSPICE_SUPPLY_V"] = str(
-                configuration["supply_v"]
-            )
-            environment["SIGILICON_HSPICE_MISMATCH_SAMPLES"] = str(
-                configuration["mismatch_samples"]
-            )
-            environment["SIGILICON_HSPICE_DECISION_DEADLINE_PS"] = str(
-                configuration["decision_deadline_ps"]
-            )
-            environment["SIGILICON_HSPICE_NOMINAL_VCM"] = str(
-                configuration["nominal_vcm"]
-            )
-            environment["SIGILICON_HSPICE_MAXIMUM_TRANSFER_PULSE_PS"] = str(
-                configuration["maximum_transfer_pulse_ps"]
-            )
+        environment.update(configuration.get("runner_environment", {}))
         for role, model in models.items():
             environment[_HSPICE_MODEL_ENVIRONMENT[role]] = str(model)
 
@@ -1544,13 +1547,13 @@ class SynopsysHSpiceAdapter:
             ) from exc
         if not isinstance(summary, dict) or summary.get("schema") != 1:
             raise FlowExecutionError("HSPICE campaign summary schema must be 1")
-        if summary.get("contract_kind") != "electrical-offset-campaign":
+        if summary.get("contract_kind") != configuration["summary_contract_kind"]:
             raise FlowExecutionError(
-                "HSPICE campaign summary contract_kind is not supported"
+                "HSPICE campaign summary contract_kind does not match the Action"
             )
-        points = summary.get("points")
-        if not isinstance(points, list) or not points:
-            raise FlowExecutionError("HSPICE campaign summary has no points")
+        records = summary.get(configuration["summary_records_field"])
+        if not isinstance(records, list) or not records:
+            raise FlowExecutionError("HSPICE campaign summary has no records")
         summary["kind"] = "report.electrical-campaign"
         summary["qualifiers"] = dict(qualifiers)
         output = context.output_path("campaign-summary", "campaign-summary.json")
@@ -1566,7 +1569,7 @@ class SynopsysHSpiceAdapter:
             ),
             facts={
                 "tool-execution-completed": True,
-                "campaign-point-count": len(points),
+                "campaign-record-count": len(records),
             },
             evidence=(
                 context.work_root / "stdout.log",
@@ -1586,11 +1589,10 @@ class SynopsysHSpiceAdapter:
                 "target",
                 "model_section",
                 "summary_file",
-                "supply_v",
-                "mismatch_samples",
-                "decision_deadline_ps",
-                "nominal_vcm",
-                "maximum_transfer_pulse_ps",
+                "summary_contract_kind",
+                "summary_records_field",
+                "runner_environment_prefix",
+                "runner_environment",
             }
             if unknown_action:
                 raise FlowExecutionError(
@@ -1614,64 +1616,49 @@ class SynopsysHSpiceAdapter:
                     "HSPICE campaign Action requires a summary_file"
                 )
             self._managed_tool_output(Path("."), summary_file)
-            supply_v = context.action_config.get("supply_v")
-            mismatch_samples = context.action_config.get("mismatch_samples")
-            decision_deadline_ps = context.action_config.get(
-                "decision_deadline_ps"
-            )
-            nominal_vcm = context.action_config.get("nominal_vcm")
-            maximum_transfer_pulse_ps = context.action_config.get(
-                "maximum_transfer_pulse_ps"
+            summary_contract_kind = context.action_config.get(
+                "summary_contract_kind"
             )
             if (
-                isinstance(supply_v, bool)
-                or not isinstance(supply_v, (int, float))
-                or not math.isfinite(float(supply_v))
-                or float(supply_v) <= 0
+                not isinstance(summary_contract_kind, str)
+                or not summary_contract_kind
             ):
                 raise FlowExecutionError(
-                    "HSPICE campaign requires a positive supply_v"
+                    "HSPICE campaign requires a summary_contract_kind"
                 )
+            summary_records_field = context.action_config.get(
+                "summary_records_field"
+            )
             if (
-                isinstance(mismatch_samples, bool)
-                or not isinstance(mismatch_samples, int)
-                or mismatch_samples <= 1
+                not isinstance(summary_records_field, str)
+                or _HSPICE_MEASUREMENT_NAME.fullmatch(summary_records_field) is None
             ):
                 raise FlowExecutionError(
-                    "HSPICE campaign requires mismatch_samples greater than one"
+                    "HSPICE campaign requires a safe summary_records_field"
                 )
+            runner_environment_prefix = context.action_config.get(
+                "runner_environment_prefix"
+            )
             if (
-                isinstance(decision_deadline_ps, bool)
-                or not isinstance(decision_deadline_ps, (int, float))
-                or not math.isfinite(float(decision_deadline_ps))
-                or float(decision_deadline_ps) <= 0
+                not isinstance(runner_environment_prefix, str)
+                or _ENVIRONMENT_PREFIX.fullmatch(runner_environment_prefix) is None
             ):
                 raise FlowExecutionError(
-                    "HSPICE campaign requires a positive decision_deadline_ps"
+                    "HSPICE campaign requires a safe runner_environment_prefix"
                 )
-            for value, label in (
-                (nominal_vcm, "nominal_vcm"),
-                (maximum_transfer_pulse_ps, "maximum_transfer_pulse_ps"),
-            ):
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(float(value))
-                    or float(value) <= 0
-                ):
-                    raise FlowExecutionError(
-                        f"HSPICE campaign requires a positive {label}"
-                    )
+            runner_environment = self._runner_environment(
+                context.action_config.get("runner_environment", {}),
+                prefix=runner_environment_prefix,
+            )
             timeout = self._timeout(context)
             return {
                 "target": target,
                 "model_section": model_section,
                 "summary_file": summary_file,
-                "supply_v": float(supply_v),
-                "mismatch_samples": mismatch_samples,
-                "decision_deadline_ps": float(decision_deadline_ps),
-                "nominal_vcm": float(nominal_vcm),
-                "maximum_transfer_pulse_ps": float(maximum_transfer_pulse_ps),
+                "summary_contract_kind": summary_contract_kind,
+                "summary_records_field": summary_records_field,
+                "runner_environment_prefix": runner_environment_prefix,
+                "runner_environment": runner_environment,
                 "timeout_seconds": timeout,
             }
         unknown_action = set(context.action_config) - {
@@ -1719,6 +1706,44 @@ class SynopsysHSpiceAdapter:
             "positive_measurements": positive,
             "timeout_seconds": timeout,
         }
+
+    @staticmethod
+    def _runner_environment(value: object, *, prefix: str) -> dict[str, str]:
+        if not isinstance(value, Mapping):
+            raise FlowExecutionError(
+                "HSPICE runner_environment must be a mapping"
+            )
+        result: dict[str, str] = {}
+        for name, raw_value in value.items():
+            if not isinstance(name, str) or _ENVIRONMENT_NAME.fullmatch(name) is None:
+                raise FlowExecutionError(
+                    f"HSPICE runner_environment contains invalid name {name!r}"
+                )
+            if name.startswith("SIGILICON_"):
+                raise FlowExecutionError(
+                    "HSPICE runner_environment cannot override SIGILICON_* variables"
+                )
+            if name in _RESERVED_PROCESS_ENVIRONMENT:
+                raise FlowExecutionError(
+                    f"HSPICE runner_environment cannot override {name}"
+                )
+            if not name.startswith(prefix):
+                raise FlowExecutionError(
+                    "HSPICE runner_environment name must use owner prefix "
+                    f"{prefix!r}: {name!r}"
+                )
+            if isinstance(raw_value, bool) or not isinstance(
+                raw_value, (str, int, float)
+            ):
+                raise FlowExecutionError(
+                    f"HSPICE runner_environment value for {name!r} must be scalar"
+                )
+            if isinstance(raw_value, float) and not math.isfinite(raw_value):
+                raise FlowExecutionError(
+                    f"HSPICE runner_environment value for {name!r} must be finite"
+                )
+            result[name] = str(raw_value)
+        return result
 
     @staticmethod
     def _timeout(context: ActionContext) -> int:

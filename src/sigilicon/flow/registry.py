@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Protocol
 
 from sigilicon.flow.model import (
@@ -60,6 +61,30 @@ class FlowRegistry:
                     f"Adapter {identity!r} has no {operation} operation"
                 )
         self._adapters[identity] = adapter
+
+    def register_action_adapter(
+        self,
+        action_kind: str,
+        name: str,
+        adapter: ToolAdapter,
+    ) -> None:
+        """Register one owner implementation of an extensible Action seam."""
+
+        contract = self.action(action_kind)
+        if not contract.adapter_extensible:
+            raise FlowContractError(
+                f"Action {action_kind!r} does not accept Adapter extensions"
+            )
+        identity = identifier(name, "Adapter name")
+        if identity in contract.adapters:
+            raise FlowContractError(
+                f"Adapter {identity!r} is already allowed by Action {action_kind!r}"
+            )
+        self.register_adapter(identity, adapter)
+        self._actions[action_kind] = replace(
+            contract,
+            adapters=(*contract.adapters, identity),
+        )
 
     def action(self, kind: str) -> ActionContract:
         try:

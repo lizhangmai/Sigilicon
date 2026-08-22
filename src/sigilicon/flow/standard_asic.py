@@ -33,6 +33,7 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                     "recipe.electrical-simulation",
                 ),
                 ArtifactPort("qualification-spec", "spec.qualification"),
+                ArtifactPort("qualification-recipe", "recipe.qualification"),
             ),
             adapters=("source-assets",),
             resolves_source_assets=True,
@@ -296,7 +297,7 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
             ),
             facts=(
                 "tool-execution-completed",
-                "campaign-point-count",
+                "campaign-record-count",
             ),
             required_capabilities=("tool.synopsys-hspice",),
             platform_assets=(
@@ -324,12 +325,13 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                     "report.electrical-campaign",
                 ),
                 ArtifactPort("qualification-spec", "spec.qualification"),
+                ArtifactPort("qualification-recipe", "recipe.qualification"),
             ),
             outputs=(
                 ArtifactPort("evidence", "evidence.qualification"),
             ),
             facts=("passed", "qualification-failure-count"),
-            adapters=("electrical-qualification",),
+            adapter_extensible=True,
         )
     )
 

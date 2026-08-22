@@ -10,9 +10,9 @@ def test_attest_is_a_current_testbench_setup_check() -> None:
             "oa",
             "attest",
             "--manifest",
-            "ip/cim_compute/configs/oa.toml",
+            "ip/fixture_block/configs/oa.toml",
             "--library",
-            "llm_cim",
+            "fixture_lib",
             "--testbench",
             "tb_main",
         ]
@@ -29,9 +29,9 @@ def test_simulation_work_retention_is_explicit() -> None:
             "oa",
             "simulate",
             "--manifest",
-            "ip/cim_compute/configs/oa.toml",
+            "ip/fixture_block/configs/oa.toml",
             "--library",
-            "llm_cim",
+            "fixture_lib",
             "--testbench",
             "tb_main",
             "--keep-work",
@@ -47,15 +47,15 @@ def test_rebuild_can_select_exactly_one_design_cell() -> None:
             "oa",
             "rebuild",
             "--manifest",
-            "ip/cim_compute/configs/oa.toml",
+            "ip/fixture_block/configs/oa.toml",
             "--library",
-            "llm_cim",
+            "fixture_lib",
             "--cell",
-            "COMPARATOR_CAL_INTEGRATOR",
+            "FIXTURE_CELL",
         ]
     )
 
-    assert args.cell == "COMPARATOR_CAL_INTEGRATOR"
+    assert args.cell == "FIXTURE_CELL"
     assert args.testbench is None
 
 
@@ -64,12 +64,12 @@ def test_cli_attest_reports_current_check_without_prior_state(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     plan = type("Plan", (), {
-        "library": "llm_cim",
+        "library": "fixture_lib",
         "testbenches": (type("Step", (), {"cell": "tb_main"})(),),
     })()
     payload = {
         "passed": True,
-        "library": "llm_cim",
+        "library": "fixture_lib",
         "testbench": "tb_main",
         "source_fingerprint": "a" * 64,
         "semantic_fingerprint": "b" * 64,
@@ -91,9 +91,9 @@ def test_cli_attest_reports_current_check_without_prior_state(
                 "oa",
                 "attest",
                 "--manifest",
-                "ip/cim_compute/configs/oa.toml",
+                "ip/fixture_block/configs/oa.toml",
                 "--library",
-                "llm_cim",
+                "fixture_lib",
                 "--testbench",
                 "tb_main",
             ],
@@ -102,5 +102,5 @@ def test_cli_attest_reports_current_check_without_prior_state(
         == 0
     )
     output = capsys.readouterr().out
-    assert "OA setup check passed: llm_cim/tb_main" in output
+    assert "OA setup check passed: fixture_lib/tb_main" in output
     assert "manifest=" not in output

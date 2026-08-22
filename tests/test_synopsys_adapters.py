@@ -53,8 +53,8 @@ class SourceAssetsAdapter:
                     "contract_kind": "source-set-manifest",
                     "kind": "source-set.systemverilog",
                     "qualifiers": {
-                        "variant": "product_0p9v",
-                        "corner": "tt0p9v25c",
+                        "variant": "variant_b",
+                        "corner": "nominal_b",
                     },
                     "members": [
                         {
@@ -82,8 +82,8 @@ class SourceAssetsAdapter:
                     "contract_kind": "source-set-manifest",
                     "kind": "recipe.synthesis",
                     "qualifiers": {
-                        "variant": "product_0p9v",
-                        "corner": "tt0p9v25c",
+                        "variant": "variant_b",
+                        "corner": "nominal_b",
                     },
                     "members": [
                         {
@@ -103,7 +103,7 @@ class SourceAssetsAdapter:
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
-        qualifiers = {"variant": "product_0p9v", "corner": "tt0p9v25c"}
+        qualifiers = {"variant": "variant_b", "corner": "nominal_b"}
         return CollectedActionResult(
             artifacts=(
                 ProducedArtifact(
@@ -138,7 +138,7 @@ from pathlib import Path
 
 root = Path(os.environ["MANAGED_DC_ROOT"])
 root.mkdir(parents=True, exist_ok=True)
-assert os.environ["DESIGN_VARIANT"] == "product_0p9v"
+assert os.environ["DESIGN_VARIANT"] == "variant_b"
 rtl_sources = Path(os.environ["RTL_SOURCE_SET"]).read_text(encoding="utf-8").splitlines()
 assert len(rtl_sources) == 1
 assert Path(rtl_sources[0]).is_file()
@@ -278,8 +278,8 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
         "reports",
     }
     assert synthesis.artifacts["mapped-netlist"].qualifiers == {
-        "corner": "tt0p9v25c",
-        "variant": "product_0p9v",
+        "corner": "nominal_b",
+        "variant": "variant_b",
     }
     reports = json.loads(synthesis.artifacts["reports"].path.read_text())
     assert reports["kind"] == "report.collection"
