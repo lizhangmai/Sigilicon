@@ -34,7 +34,10 @@ from sigilicon.virtuoso.oa import (
 _TEXT_VIEW_ADAPTERS = {
     "spectre_model": ("spectre", "spectre"),
     "system_verilog": ("systemverilog", "systemVerilog"),
-    "veriloga": ("veriloga", "veriloga"),
+    # cdsTextTo5x exposes Verilog-A through its Verilog-AMS front end.  In
+    # particular, IC25.1 rejects ``-LANG veriloga`` while retaining the native
+    # OA view name ``veriloga``.
+    "veriloga": ("verilogams", "veriloga"),
 }
 
 # DDPI can create a view master only for a filename registered in Cadence's
