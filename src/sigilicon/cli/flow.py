@@ -229,7 +229,7 @@ def _parser() -> argparse.ArgumentParser:
     for action, help_text in (
         ("plan", "validate the producer contract and show the release plan"),
         ("build", "build an immutable release package"),
-        ("audit", "audit a built release against its source contract"),
+        ("audit", "read-only audit of the release selected by its owner contract"),
         ("publish", "atomically select an audited release for consumers"),
         ("promote", "publish exact accepted Flow Run evidence as a release"),
     ):
@@ -240,7 +240,7 @@ def _parser() -> argparse.ArgumentParser:
                 "--maturity",
                 choices=("development", "implementation", "signoff"),
             )
-        else:
+        if action in {"audit", "promote"}:
             action_parser.add_argument(
                 "--artifact-root",
                 type=Path,
@@ -283,7 +283,7 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
             "promote": promote_ip_release,
         }[args.action]
         artifact_root = context.artifact_root
-        if args.action == "promote" and args.artifact_root is not None:
+        if args.action in {"audit", "promote"} and args.artifact_root is not None:
             artifact_root = (
                 args.artifact_root
                 if args.artifact_root.is_absolute()

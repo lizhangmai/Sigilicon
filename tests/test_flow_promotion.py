@@ -7,7 +7,12 @@ import subprocess
 
 import pytest
 
-from sigilicon.workflows.ip_packaging import IpReleaseError, promote_ip_release
+from sigilicon.cli.main import main as sigilicon_cli_main
+from sigilicon.workflows.ip_packaging import (
+    IpReleaseError,
+    audit_ip_release,
+    promote_ip_release,
+)
 from sigilicon.domain.soc import LockedIpRelease
 from sigilicon.workflows.soc import resolve_locked_ip_release
 from test_run_artifact_reference import (
@@ -325,6 +330,80 @@ def test_promotion_builds_one_immutable_release_from_exact_run_evidence(
     )
     assert manifest_path == artifact_root / Path(manifest_relative)
     assert locked["release_id"] == first["release_id"]
+
+
+def test_public_cli_promotes_then_read_only_audits_the_same_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    contract, artifact_root, _ = _promotion_fixture(tmp_path)
+    catalog = tmp_path / "catalogs" / "ip.toml"
+    catalog.write_text(
+        """schema = 1
+contract_kind = "ip-catalog"
+path_scope = "repository"
+owner = "repository"
+
+[targets.comparator-paper]
+contract = "ip/Synthesizable_Comparator/configs/promotion.toml"
+
+[components]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert (
+        sigilicon_cli_main(
+            [
+                "ip",
+                "promote",
+                "comparator-paper",
+                "--artifact-root",
+                str(artifact_root),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    promoted = json.loads(capsys.readouterr().out)
+
+    assert (
+        sigilicon_cli_main(
+            [
+                "ip",
+                "audit",
+                "comparator-paper",
+                "--artifact-root",
+                str(artifact_root),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    audited = json.loads(capsys.readouterr().out)
+    assert audited == promoted
+    assert audited["conclusions"] == {
+        "implementation_regression": True,
+        "physical_completion_readiness": True,
+        "qualification": False,
+        "signoff": False,
+    }
+    assert contract.is_file()
+
+
+def test_promotion_audit_never_creates_a_missing_release(tmp_path: Path) -> None:
+    contract, artifact_root, _ = _promotion_fixture(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="has not been built"):
+        audit_ip_release(
+            contract,
+            project_root=tmp_path,
+            artifact_root=artifact_root,
+        )
+
+    assert not (artifact_root / "ip").exists()
 
 
 @pytest.mark.parametrize(

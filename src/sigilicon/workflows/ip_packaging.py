@@ -44,7 +44,12 @@ from sigilicon.domain.systemverilog import (
 )
 from sigilicon.external_tools import run_process_group
 from sigilicon.flow import FlowEngine, FlowRegistry
-from sigilicon.flow.model import PolicyCheck, PolicySpec
+from sigilicon.flow.model import (
+    InputArtifact,
+    PolicyCheck,
+    PolicySpec,
+    RunArtifactReference,
+)
 from sigilicon.flow.policy import evaluate_policy
 from sigilicon.flow.run_artifacts import (
     load_run_artifact_reference,
@@ -1467,7 +1472,7 @@ def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     return manifest
 
 
-def audit_ip_release(
+def _audit_source_ip_release(
     contract_path: Path,
     *,
     project_root: Path,
@@ -1666,7 +1671,7 @@ def resolve_release_role(
 def _promotion_run_root(
     contract: IpPromotionContract,
     artifact_root: Path,
-    references: tuple[Any, ...],
+    references: tuple[RunArtifactReference, ...],
 ) -> Path:
     reference = references[0]
     root = artifact_root.resolve()
@@ -1908,7 +1913,9 @@ def _git_interface_bytes(contract: IpPromotionContract) -> bytes:
     return command.stdout.encode()
 
 
-def _promotion_reference_payload(reference: Any) -> dict[str, Any]:
+def _promotion_reference_payload(
+    reference: RunArtifactReference,
+) -> dict[str, Any]:
     payload = run_artifact_reference_payload(reference)
     payload.pop("schema")
     payload.pop("contract_kind")
@@ -2187,18 +2194,66 @@ def _audit_promoted_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     return manifest
 
 
-def promote_ip_release(
+def audit_ip_release(
     contract_path: Path,
     *,
     project_root: Path,
     artifact_root: Path,
+    maturity: str | None = None,
 ) -> dict[str, Any]:
-    """Publish one immutable release from exact accepted Flow Run evidence."""
+    """Audit the exact release selected by the configured IP contract."""
 
+    try:
+        with contract_path.open("rb") as stream:
+            contract_kind = tomllib.load(stream).get("contract_kind")
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"cannot read IP release contract {contract_path}: {exc}") from exc
+    if contract_kind == "ip-promotion":
+        return audit_promoted_ip_release(
+            contract_path,
+            project_root=project_root,
+            artifact_root=artifact_root,
+            maturity=maturity,
+        )
+    return _audit_source_ip_release(
+        contract_path,
+        project_root=project_root,
+        artifact_root=artifact_root,
+        maturity=maturity,
+    )
+
+
+@dataclass(frozen=True)
+class _ResolvedPromotion:
+    contract: IpPromotionContract
+    references: tuple[RunArtifactReference, ...]
+    artifacts: tuple[InputArtifact, ...]
+    source: dict[str, Any]
+    receipts: tuple[dict[str, Any], ...]
+    interface_bytes: bytes
+    interface_digest: str
+    boundaries: tuple[dict[str, Any], ...]
+    release_fingerprint: str
+    release_id: str
+    release_root: Path
+
+
+def _resolve_ip_promotion(
+    contract_path: Path,
+    *,
+    project_root: Path,
+    artifact_root: Path,
+    maturity: str | None = None,
+) -> _ResolvedPromotion:
     contract = load_ip_promotion_contract(
         contract_path,
         project_root=project_root,
     )
+    if maturity is not None and maturity != contract.maturity:
+        raise IpReleaseError(
+            "promotion maturity differs from the configured release: "
+            f"expected {contract.maturity}, got {maturity}"
+        )
     _validate_promotion_conclusions(contract, contract.evidence)
     try:
         references = tuple(
@@ -2208,16 +2263,15 @@ def promote_ip_release(
         raise IpReleaseError(f"promotion Run Artifact reference is invalid: {exc}") from exc
     run_root = _promotion_run_root(contract, artifact_root, references)
     engine = FlowEngine(FlowRegistry())
-    resolved = []
     try:
-        for reference in references:
-            resolved.append(
-                engine.resolve_run_artifact(
-                    artifact_root=artifact_root,
-                    consumer_owner=contract.owner,
-                    reference=reference,
-                )
+        resolved = tuple(
+            engine.resolve_run_artifact(
+                artifact_root=artifact_root,
+                consumer_owner=contract.owner,
+                reference=reference,
             )
+            for reference in references
+        )
     except Exception as exc:
         raise IpReleaseError(
             f"promotion Run Artifact identity/digest validation failed: {exc}"
@@ -2240,10 +2294,10 @@ def promote_ip_release(
     )
     interface_bytes = _git_interface_bytes(contract)
     interface_digest = hashlib.sha256(interface_bytes).hexdigest()
-    reference_rows = [
+    reference_rows = tuple(
         _promotion_reference_payload(reference) for reference in references
-    ]
-    boundaries = [
+    )
+    boundaries = tuple(
         {
             "kind": boundary.kind,
             "status": boundary.status,
@@ -2251,7 +2305,7 @@ def promote_ip_release(
             "subjects": list(boundary.subjects),
         }
         for boundary in contract.boundaries
-    ]
+    )
     release_fingerprint = digest(
         {
             "schema": 1,
@@ -2276,6 +2330,72 @@ def promote_ip_release(
         f"{contract.source_commit[:12]}"
     )
     release_root = artifact_root.resolve() / "ip" / contract.name / release_id
+    return _ResolvedPromotion(
+        contract=contract,
+        references=references,
+        artifacts=resolved,
+        source=source,
+        receipts=receipts,
+        interface_bytes=interface_bytes,
+        interface_digest=interface_digest,
+        boundaries=boundaries,
+        release_fingerprint=release_fingerprint,
+        release_id=release_id,
+        release_root=release_root,
+    )
+
+
+def audit_promoted_ip_release(
+    contract_path: Path,
+    *,
+    project_root: Path,
+    artifact_root: Path,
+    maturity: str | None = None,
+) -> dict[str, Any]:
+    """Read-only audit of the promoted release selected by an owner contract."""
+
+    promotion = _resolve_ip_promotion(
+        contract_path,
+        project_root=project_root,
+        artifact_root=artifact_root,
+        maturity=maturity,
+    )
+    if not promotion.release_root.is_dir() or promotion.release_root.is_symlink():
+        raise FileNotFoundError(
+            f"promoted IP release has not been built: {promotion.release_root}"
+        )
+    manifest = _audit_promoted_ip_release_manifest(
+        promotion.release_root / "manifest.json"
+    )
+    if manifest.get("release_fingerprint") != promotion.release_fingerprint:
+        raise IpReleaseError("promoted IP release differs from its owner contract")
+    return manifest
+
+
+def promote_ip_release(
+    contract_path: Path,
+    *,
+    project_root: Path,
+    artifact_root: Path,
+) -> dict[str, Any]:
+    """Publish one immutable release from exact accepted Flow Run evidence."""
+
+    promotion = _resolve_ip_promotion(
+        contract_path,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+    contract = promotion.contract
+    references = promotion.references
+    resolved = promotion.artifacts
+    source = promotion.source
+    receipts = promotion.receipts
+    interface_bytes = promotion.interface_bytes
+    interface_digest = promotion.interface_digest
+    boundaries = promotion.boundaries
+    release_fingerprint = promotion.release_fingerprint
+    release_id = promotion.release_id
+    release_root = promotion.release_root
     if release_root.exists():
         manifest = _audit_promoted_ip_release_manifest(release_root / "manifest.json")
         if manifest.get("release_fingerprint") != release_fingerprint:

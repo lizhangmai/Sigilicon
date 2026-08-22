@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
@@ -41,6 +42,7 @@ def _write_executable(path: Path, body: str) -> None:
 def _write_owner(
     owner_root: Path,
     *,
+    initialize_git: bool = True,
     fail_pnr: bool = False,
     library_report: str | None = None,
     omit_library_report: bool = False,
@@ -212,19 +214,20 @@ members = ["run-fc-fixture.py", "place-route.tcl"]
 ''',
         encoding="utf-8",
     )
-    subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
-    subprocess.run(
-        ("git", "config", "user.email", "fixture@example.com"),
-        cwd=owner_root,
-        check=True,
-    )
-    subprocess.run(
-        ("git", "config", "user.name", "Fixture"),
-        cwd=owner_root,
-        check=True,
-    )
-    subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
-    subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
+    if initialize_git:
+        subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
+        subprocess.run(
+            ("git", "config", "user.email", "fixture@example.com"),
+            cwd=owner_root,
+            check=True,
+        )
+        subprocess.run(
+            ("git", "config", "user.name", "Fixture"),
+            cwd=owner_root,
+            check=True,
+        )
+        subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
+        subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
 
 
 def _registry(owner_root: Path) -> FlowRegistry:
@@ -497,10 +500,15 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
     bin_root.mkdir()
     lm_shell = bin_root / "lm_shell"
     fc_shell = bin_root / "fc_shell"
-    for executable in (lm_shell, fc_shell):
+    dc_shell = bin_root / "dc_shell"
+    for executable in (lm_shell, fc_shell, dc_shell):
         _write_executable(executable, "#!/bin/sh\nexit 0\n")
     environment = ExecutionEnvironment(
         capabilities={
+            "tool.synopsys-dc": ResolvedCapability(
+                "design-compiler@fixture",
+                executable=dc_shell,
+            ),
             "tool.synopsys-library-manager": ResolvedCapability(
                 "library-manager@fixture",
                 executable=lm_shell,
@@ -532,6 +540,679 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
         ),
     )
     return environment, collateral
+
+
+def _write_cli_flow_owner(owner_root: Path) -> tuple[Path, Path]:
+    (owner_root / "rtl").mkdir()
+    (owner_root / "rtl" / "top.sv").write_text(
+        "module top; endmodule\n",
+        encoding="utf-8",
+    )
+    for name, content in (
+        ("tb.sv", "module tb; endmodule\n"),
+        ("simulate.sh", "#!/bin/sh\nexit 0\n"),
+        ("synthesis.toml", "schema = 1\n"),
+        ("electrical.sp", ".end\n"),
+        ("deck.sp", ".end\n"),
+        ("electrical.sh", "#!/bin/sh\nexit 0\n"),
+        ("qualification.toml", "schema = 1\n"),
+    ):
+        (owner_root / name).write_text(content, encoding="utf-8")
+    _write_executable(
+        owner_root / "run-dc-fixture.py",
+        '''#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+root = Path(os.environ["SIGILICON_DC_BUILD_ROOT"])
+root.mkdir(parents=True, exist_ok=True)
+assert os.environ["SIGILICON_DESIGN_VARIANT"] == "fixture_variant"
+assert Path(os.environ["SIGILICON_RTL_SOURCES_FILE"]).is_file()
+assert Path(os.environ["SIGILICON_CONSTRAINTS"]).is_file()
+assert Path(os.environ["SIGILICON_SYNOPSYS_DC_SHELL"]).is_file()
+for role in ("RVT", "HVT", "LVT"):
+    assert Path(os.environ[f"SIGILICON_STDCELL_{role}_DB"]).is_file()
+(root / "mapped.v").write_text("module top; endmodule\\n")
+(root / "mapped.sdc").write_text("create_clock -period 1 clk\\n")
+(root / "mapped.ddc").write_text("checkpoint\\n")
+(root / "check_design.rpt").write_text("passed\\n")
+''',
+    )
+    (owner_root / "source-assets.toml").write_text(
+        '''schema = 1
+contract_kind = "source-assets"
+path_scope = "owner"
+owner = "fixture"
+name = "fc-fixture-source"
+
+[qualifiers]
+variant = "fixture_variant"
+corner = "tt"
+
+[[artifacts]]
+role = "rtl-sources"
+kind = "source-set.systemverilog"
+materialization = "manifest"
+members = ["rtl/top.sv"]
+
+[[artifacts]]
+role = "testbench"
+kind = "source-set.systemverilog"
+materialization = "manifest"
+members = ["tb.sv"]
+
+[[artifacts]]
+role = "simulation-recipe"
+kind = "recipe.simulation"
+materialization = "manifest"
+members = ["simulate.sh"]
+
+[[artifacts]]
+role = "constraints"
+kind = "constraints.sdc"
+materialization = "file"
+members = ["mapped.sdc"]
+
+[[artifacts]]
+role = "synthesis-recipe"
+kind = "recipe.synthesis"
+materialization = "manifest"
+members = ["run-dc-fixture.py", "synthesis.toml"]
+
+[[artifacts]]
+role = "reference-library-recipe"
+kind = "recipe.reference-library"
+materialization = "manifest"
+members = ["run-fc-fixture.py", "build-reference.tcl", "site.lef"]
+
+[[artifacts]]
+role = "implementation-recipe"
+kind = "recipe.physical-implementation"
+materialization = "manifest"
+members = ["run-fc-fixture.py", "place-route.tcl"]
+
+[[artifacts]]
+role = "electrical-sources"
+kind = "source-set.spice"
+materialization = "manifest"
+members = ["electrical.sp"]
+
+[[artifacts]]
+role = "decks"
+kind = "source-set.spice-deck"
+materialization = "manifest"
+members = ["deck.sp"]
+
+[[artifacts]]
+role = "electrical-recipe"
+kind = "recipe.electrical-simulation"
+materialization = "manifest"
+members = ["electrical.sh"]
+
+[[artifacts]]
+role = "qualification-spec"
+kind = "spec.qualification"
+materialization = "file"
+members = ["qualification.toml"]
+''',
+        encoding="utf-8",
+    )
+    (owner_root / "interface.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "fixture"
+
+[module]
+name = "top"
+''',
+        encoding="utf-8",
+    )
+    (owner_root / "component.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "fixture"
+name = "fc-fixture"
+kind = "rtl-ip"
+
+[filesets]
+specification = ["owner/interface.toml"]
+''',
+        encoding="utf-8",
+    )
+    flow = owner_root / "flow.toml"
+    flow.write_text(
+        '''schema = 1
+contract_kind = "flow"
+path_scope = "owner"
+owner = "fixture"
+name = "fc-managed"
+
+[[nodes]]
+id = "assets"
+action = "design.source-assets"
+config = { source = "source-assets.toml" }
+
+[[nodes]]
+id = "reference-library"
+action = "asic.reference-library-construction"
+config = { runner = "run-fc-fixture.py", target = "library", top = "top" }
+policy = "reference-library-quality"
+
+[[nodes.bindings]]
+input = "reference-library-recipe"
+producer = "assets"
+output = "reference-library-recipe"
+
+[[nodes]]
+id = "synthesis"
+action = "asic.synthesis"
+config = { runner = "run-dc-fixture.py" }
+policy = "tool-pass"
+
+[[nodes.bindings]]
+input = "rtl-sources"
+producer = "assets"
+output = "rtl-sources"
+
+[[nodes.bindings]]
+input = "constraints"
+producer = "assets"
+output = "constraints"
+
+[[nodes.bindings]]
+input = "synthesis-recipe"
+producer = "assets"
+output = "synthesis-recipe"
+
+[[nodes]]
+id = "implementation"
+action = "asic.physical-implementation"
+config = { runner = "run-fc-fixture.py", target = "pnr", top = "top" }
+policy = "implementation-regression"
+
+[[nodes.bindings]]
+input = "mapped-netlist"
+producer = "synthesis"
+output = "mapped-netlist"
+
+[[nodes.bindings]]
+input = "mapped-constraints"
+producer = "synthesis"
+output = "mapped-constraints"
+
+[[nodes.bindings]]
+input = "implementation-recipe"
+producer = "assets"
+output = "implementation-recipe"
+
+[[nodes.bindings]]
+input = "reference-library"
+producer = "reference-library"
+output = "reference-library"
+
+[[targets]]
+name = "implementation"
+goals = ["implementation"]
+
+[[policies]]
+id = "tool-pass"
+
+[[policies.checks]]
+id = "passed"
+fact = "passed"
+operator = "equals"
+expected = true
+
+[[policies]]
+id = "reference-library-quality"
+
+[[policies.checks]]
+id = "tool-completed"
+fact = "tool-execution-completed"
+operator = "equals"
+expected = true
+
+[[policies.checks]]
+id = "no-library-errors"
+fact = "library-check-error-count"
+operator = "at_most"
+expected = 0
+
+[[policies.checks]]
+id = "workspace-check-succeeded"
+fact = "library-check-succeeded"
+operator = "equals"
+expected = true
+
+[[policies]]
+id = "implementation-regression"
+
+[[policies.checks]]
+id = "tool-completed"
+fact = "tool-execution-completed"
+operator = "equals"
+expected = true
+
+[[policies.checks]]
+id = "no-design-check-errors"
+fact = "design-check-error-count"
+operator = "at_most"
+expected = 0
+
+[[policies.checks]]
+id = "no-open-nets"
+fact = "open-net-count"
+operator = "at_most"
+expected = 0
+
+[[policies.checks]]
+id = "no-route-drc"
+fact = "route-drc-violation-count"
+operator = "at_most"
+expected = 0
+
+[[policies]]
+id = "physical-completion-readiness"
+
+[[policies.checks]]
+id = "tool-completed"
+fact = "tool-execution-completed"
+operator = "equals"
+expected = true
+
+[[policies.checks]]
+id = "required-pg-ports"
+fact = "required-pg-port-count"
+operator = "equals"
+expected = 2
+
+[[policies.checks]]
+id = "all-required-pg-ports-placed"
+fact = "unplaced-required-pg-port-count"
+operator = "at_most"
+expected = 0
+
+[[policies.checks]]
+id = "pg-connectivity-checked"
+fact = "pg-connectivity-check-performed"
+operator = "equals"
+expected = true
+
+[[policies.checks]]
+id = "no-pg-connectivity-violations"
+fact = "pg-connectivity-violation-count"
+operator = "at_most"
+expected = 0
+
+[[policies.checks]]
+id = "antenna-check-active"
+fact = "antenna-check-active"
+operator = "equals"
+expected = true
+
+[[policies.checks]]
+id = "no-antenna-violations"
+fact = "antenna-violation-count"
+operator = "at_most"
+expected = 0
+
+[[policies.checks]]
+id = "tie-off-checked"
+fact = "tie-off-check-performed"
+operator = "equals"
+expected = true
+
+[[policies.checks]]
+id = "no-tie-off-violations"
+fact = "tie-off-violation-count"
+operator = "at_most"
+expected = 0
+''',
+        encoding="utf-8",
+    )
+    profile = owner_root / "profile.toml"
+    profile.write_text(
+        '''schema = 1
+contract_kind = "execution-profile"
+path_scope = "owner"
+owner = "fixture"
+name = "fc-fixture"
+
+[actions."design.source-assets"]
+adapter = "source-assets"
+
+[actions."asic.synthesis"]
+adapter = "synopsys-dc"
+
+[actions."asic.synthesis".config]
+output_root_environment = "SIGILICON_DC_BUILD_ROOT"
+timeout_seconds = 30
+reports = ["check_design.rpt"]
+
+[actions."asic.synthesis".config.input_environment]
+rtl-sources = "SIGILICON_RTL_SOURCES_FILE"
+constraints = "SIGILICON_CONSTRAINTS"
+
+[actions."asic.synthesis".config.qualifier_environment]
+variant = "SIGILICON_DESIGN_VARIANT"
+
+[actions."asic.synthesis".config.outputs]
+mapped-netlist = "mapped.v"
+mapped-constraints = "mapped.sdc"
+checkpoint = "mapped.ddc"
+
+[actions."asic.synthesis".platform_assets]
+standard-cell-timing = "standard-cell-db@fixture"
+
+[actions."asic.reference-library-construction"]
+adapter = "synopsys-fc"
+
+[actions."asic.reference-library-construction".config]
+timeout_seconds = 30
+
+[actions."asic.reference-library-construction".config.outputs]
+reference-library = "reference.ndm"
+library-check-report = "check_workspace.rpt"
+
+[actions."asic.reference-library-construction".platform_assets]
+physical-technology = "physical-technology@fixture"
+standard-cell-physical = "standard-cell-lef@fixture"
+standard-cell-timing = "standard-cell-db@fixture"
+
+[actions."asic.physical-implementation"]
+adapter = "synopsys-fc"
+
+[actions."asic.physical-implementation".config]
+timeout_seconds = 30
+
+[actions."asic.physical-implementation".config.outputs]
+routed-netlist = "routed.v"
+routed-constraints = "routed.sdc"
+layout-stream = "routed.gds"
+checkpoint = "routed.ndm"
+design-check-report = "check_design.rpt"
+structural-report = "protected_inventory.tsv"
+qor-report = "qor.rpt"
+timing-report = "timing.rpt"
+area-report = "area.rpt"
+power-report = "power.rpt"
+drc-report = "drc.rpt"
+physical-completion-report = "physical_completion.rpt"
+tie-off-check-report = "tie_off_check.rpt"
+
+[actions."asic.physical-implementation".platform_assets]
+physical-technology = "physical-technology@fixture"
+''',
+        encoding="utf-8",
+    )
+    catalog = owner_root / "catalog.toml"
+    catalog.write_text(
+        '''schema = 1
+contract_kind = "flow-catalog"
+path_scope = "owner"
+owner = "fixture"
+
+[flows.fc-managed]
+contract = "flow.toml"
+default_profile = "fc-fixture"
+
+[flows.fc-managed.profiles]
+fc-fixture = "profile.toml"
+''',
+        encoding="utf-8",
+    )
+    return catalog, profile
+
+
+def _write_environment_contract(
+    path: Path,
+    environment: ExecutionEnvironment,
+) -> None:
+    lines = [
+        "schema = 1",
+        'contract_kind = "execution-environment"',
+        'path_scope = "site"',
+        'owner = "fixture-site"',
+        'name = "fc-fixture-site"',
+        "",
+    ]
+    for name, capability in environment.capabilities.items():
+        lines.extend(
+            (
+                f'[capabilities."{name}"]',
+                f'identity = "{capability.identity}"',
+                f'executable = {json.dumps(str(capability.executable))}',
+                "",
+            )
+        )
+    for asset in environment.platform_assets:
+        lines.extend(
+            (
+                "[[platform_assets]]",
+                f'role = "{asset.role}"',
+                f'kind = "{asset.kind}"',
+                f'identity = "{asset.identity}"',
+                "",
+            )
+        )
+        for member in asset.members:
+            lines.extend(
+                (
+                    "[[platform_assets.members]]",
+                    f'role = "{member.role}"',
+                    f'path = {json.dumps(str(member.location))}',
+                    "",
+                )
+            )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def test_public_cli_closes_fc_flow_reference_promotion_and_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    owner_root = tmp_path / "owner"
+    _write_owner(owner_root, initialize_git=False)
+    catalog, _profile = _write_cli_flow_owner(owner_root)
+    (tmp_path / ".gitignore").write_text(
+        "artifacts/\n.site/\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "catalogs" / "ip.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-catalog"
+path_scope = "repository"
+owner = "repository"
+
+[targets.fc-fixture]
+contract = "owner/promotion.toml"
+
+[components.fc-fixture]
+contract = "owner/component.toml"
+root = "owner"
+''',
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "init", "-q"), cwd=tmp_path, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@example.com"),
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Fixture"),
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(("git", "add", "."), cwd=tmp_path, check=True)
+    subprocess.run(
+        ("git", "commit", "-qm", "fixture source"),
+        cwd=tmp_path,
+        check=True,
+    )
+    source_commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+    site_root = tmp_path / ".site"
+    site_root.mkdir()
+    environment, _collateral = _environment(site_root)
+    environment_contract = site_root / "environment.toml"
+    _write_environment_contract(environment_contract, environment)
+    artifact_root = tmp_path / "artifacts"
+    run_id = "c" * 32
+    monkeypatch.chdir(tmp_path)
+
+    def invoke(arguments: list[str]) -> dict[str, object]:
+        assert sigilicon_cli_main(arguments) == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        return json.loads(captured.out)
+
+    selection = [
+        str(catalog),
+        "fc-managed",
+        "implementation",
+        "--owner-root",
+        str(owner_root),
+    ]
+    plan = invoke(["flow", "plan", *selection])
+    source = plan["nodes"][0]["source_assets"]["git"]  # type: ignore[index]
+    assert source == {"commit": source_commit, "dirty": False}
+    assert str(tmp_path) not in json.dumps(plan)
+
+    preflight = invoke(
+        [
+            "flow",
+            "preflight",
+            *selection,
+            "--environment",
+            str(environment_contract),
+        ]
+    )
+    assert preflight["status"] == "ready"
+    assert str(tmp_path) not in json.dumps(preflight)
+
+    result = invoke(
+        [
+            "flow",
+            "run",
+            *selection,
+            "--environment",
+            str(environment_contract),
+            "--artifact-root",
+            str(artifact_root),
+            "--run-id",
+            run_id,
+        ]
+    )
+    assert result["status"] == "accepted"
+    assert str(tmp_path) not in json.dumps(result)
+    status = invoke(
+        [
+            "flow",
+            "status",
+            "--artifact-root",
+            str(artifact_root),
+            "fixture",
+            "fc-managed",
+            run_id,
+        ]
+    )
+    assert status == result
+
+    reference = result["nodes"]["reference-library"]["artifacts"][  # type: ignore[index]
+        "reference-library"
+    ]
+    reference_digest = reference["digest"]
+    (owner_root / "promotion.toml").write_text(
+        f'''schema = 1
+contract_kind = "ip-promotion"
+path_scope = "owner"
+owner = "fixture"
+
+name = "fc-fixture"
+producer = "owner"
+component = "component.toml"
+export = "fixture"
+maturity = "development"
+boundaries = []
+
+[source]
+commit = "{source_commit}"
+dirty = false
+
+[interface]
+contract = "interface.toml"
+logical = "top:rtl"
+physical = "top:routed"
+
+[conclusions]
+implementation_regression = true
+physical_completion_readiness = true
+qualification = false
+signoff = false
+
+[[artifacts]]
+schema = 1
+contract_kind = "run-artifact-reference"
+owner = "fixture"
+flow = "fc-managed"
+run_id = "{run_id}"
+node = "reference-library"
+role = "reference-library"
+kind = "library.synopsys-ndm"
+digest = "{reference_digest}"
+required_policy = "reference-library-quality"
+qualifiers = {{ variant = "fixture_variant", corner = "tt" }}
+
+[[evidence]]
+node = "implementation"
+role = "implementation-regression"
+policy = "implementation-regression"
+evidence_role = "regression"
+evaluation = "producer"
+
+[[evidence]]
+node = "implementation"
+role = "physical-completion-readiness"
+policy = "physical-completion-readiness"
+evidence_role = "readiness"
+evaluation = "run-policy"
+''',
+        encoding="utf-8",
+    )
+    promoted = invoke(["ip", "promote", "fc-fixture", "--json"])
+    audited = invoke(["ip", "audit", "fc-fixture", "--json"])
+
+    assert audited == promoted
+    assert promoted["source"] == {"commit": source_commit, "dirty": False}
+    assert promoted["conclusions"] == {
+        "implementation_regression": True,
+        "physical_completion_readiness": True,
+        "qualification": False,
+        "signoff": False,
+    }
+    promoted_reference = promoted["artifacts"][0]["reference"]  # type: ignore[index]
+    assert promoted_reference == {
+        "owner": "fixture",
+        "flow": "fc-managed",
+        "run_id": run_id,
+        "node": "reference-library",
+        "role": "reference-library",
+        "kind": "library.synopsys-ndm",
+        "qualifiers": {"variant": "fixture_variant", "corner": "tt"},
+        "digest": reference_digest,
+        "required_policy": "reference-library-quality",
+    }
+    assert str(tmp_path) not in json.dumps(promoted)
 
 
 def test_physical_implementation_requires_fc_antenna_rules() -> None:
