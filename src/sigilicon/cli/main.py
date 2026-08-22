@@ -6,12 +6,12 @@ from collections.abc import Sequence
 import sys
 
 
-_HELP = """usage: sigilicon [-h] {flow,layout,design,oa,ip} ...
+_HELP = """usage: sigilicon [-h] {artifact-path,flow,layout,design,oa,ip} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {flow,layout,design,oa,ip}
+  {artifact-path,flow,layout,design,oa,ip}
 
 options:
   -h, --help            show this help message and exit
@@ -29,6 +29,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from sigilicon.cli.flow_core import main as flow_core_main
 
         return flow_core_main(arguments[1:])
+    if arguments[0] == "artifact-path":
+        from sigilicon.cli.artifact_path import main as artifact_path_main
+
+        return artifact_path_main(arguments[1:])
     from sigilicon.cli.flow import main as flow_main
 
     return flow_main(arguments)

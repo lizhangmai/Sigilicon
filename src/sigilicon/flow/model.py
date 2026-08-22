@@ -840,9 +840,9 @@ class ActionContext:
     node_id: str
     action: ActionContract
     run_root: Path
-    node_root: Path
     work_root: Path
     output_root: Path
+    log_root: Path
     inputs: Mapping[str, InputArtifact]
     action_config: Mapping[str, Any]
     adapter_config: Mapping[str, Any]
@@ -873,7 +873,7 @@ class ActionContext:
         root = self.output_root / role
         root.mkdir(parents=True, exist_ok=True)
         result = root / filename
-        if not result.resolve(strict=False).is_relative_to(self.node_root.resolve()):
+        if not result.resolve(strict=False).is_relative_to(self.output_root.resolve()):
             raise FlowExecutionError("Action output escaped its managed node directory")
         return result
 

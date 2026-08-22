@@ -46,6 +46,7 @@ from sigilicon.flow.source_assets import (
     resolve_node_source_assets,
     source_assets_payload,
 )
+from sigilicon.paths import ArtifactLayout
 
 
 def _utc_now() -> str:
@@ -434,23 +435,25 @@ class FlowEngine:
         store_root = Path(artifact_root).resolve()
         if store_root == Path(store_root.anchor):
             raise FlowExecutionError("artifact root cannot be a filesystem root")
-        run_root = (
-            store_root
-            / "flows"
-            / plan.spec.owner
-            / plan.spec.flow_id
-            / "runs"
-            / identity
+        run_paths = ArtifactLayout(store_root).execution(
+            owner=plan.spec.owner,
+            target=plan.target.target_id,
+            flow=plan.spec.flow_id,
+            variant="default",
+            identity=identity,
+            artifact_kind="flow",
+            identity_kind="run_id",
         )
+        run_root = run_paths.root
         if not run_root.resolve(strict=False).is_relative_to(store_root):
             raise FlowExecutionError("Flow Run path escaped the artifact root")
         if run_root.exists():
             raise FlowExecutionError(f"Flow Run already exists: {identity}")
-        run_root.mkdir(parents=True)
+        run_paths.create()
 
-        atomic_write_json(run_root / "resolved_plan.json", self.plan_record(plan))
+        atomic_write_json(run_paths.role("inputs") / "resolved_plan.json", self.plan_record(plan))
         atomic_write_json(
-            run_root / "preflight.json",
+            run_paths.role("inputs") / "preflight.json",
             self.preflight_record(plan, preflight),
         )
 
@@ -490,18 +493,21 @@ class FlowEngine:
                 planned,
                 current_environment,
             )
-            node_root = run_root / "nodes" / node.node_id
-            work_root = node_root / "work"
-            output_root = node_root / "outputs"
-            work_root.mkdir(parents=True)
+            input_root = run_paths.role("inputs") / node.node_id
+            work_root = run_paths.role("work") / node.node_id
+            output_root = run_paths.role("outputs") / node.node_id
+            log_root = run_paths.role("logs") / node.node_id
+            input_root.mkdir()
+            work_root.mkdir()
             output_root.mkdir()
+            log_root.mkdir()
             context = ActionContext(
                 node_id=node.node_id,
                 action=action,
                 run_root=run_root,
-                node_root=node_root,
                 work_root=work_root,
                 output_root=output_root,
+                log_root=log_root,
                 inputs=MappingProxyType(inputs),
                 action_config=node.config,
                 adapter_config=planned.adapter_config,
@@ -536,7 +542,7 @@ class FlowEngine:
                     else source_assets_payload(planned.source_assets)
                 ),
             }
-            atomic_write_json(node_root / "action_request.json", request)
+            atomic_write_json(input_root / "action_request.json", request)
             started = _utc_now()
             execution = AdapterExecution("failed")
             collected = CollectedActionResult(status="failed")
@@ -621,7 +627,7 @@ class FlowEngine:
                 "details": json_value(collected.details),
                 "error": error,
             }
-            atomic_write_json(node_root / "action_result.json", action_result)
+            atomic_write_json(output_root / "action_result.json", action_result)
             policy = None if node.policy is None else plan.spec.policy(node.policy)
             evaluation = (
                 evaluate_policy(policy, facts)
@@ -632,7 +638,7 @@ class FlowEngine:
                     (),
                 )
             )
-            self._write_policy_receipt(node_root, evaluation)
+            self._write_policy_receipt(output_root, evaluation)
             node_status = (
                 evaluation.status
                 if result_status == "valid"
@@ -649,19 +655,6 @@ class FlowEngine:
                 reason=error,
             )
             outcomes[node.node_id] = outcome
-            atomic_write_json(
-                node_root / "run_manifest.json",
-                {
-                    "schema": 1,
-                    "contract_kind": "action-run-manifest",
-                    "node": node.node_id,
-                    "managed_paths": [
-                        self._inventory_relative(path, run_root)
-                        for path in sorted(node_root.rglob("*"))
-                    ],
-                },
-            )
-
         flow_status = (
             "accepted"
             if all(outcomes[goal].status == "accepted" for goal in plan.target.goals)
@@ -682,7 +675,7 @@ class FlowEngine:
                 for node_id, outcome in outcomes.items()
             },
         }
-        atomic_write_json(run_root / "flow_result.json", flow_payload)
+        atomic_write_json(run_paths.role("outputs") / "flow_result.json", flow_payload)
         atomic_write_json(
             run_root / "run_manifest.json",
             {
@@ -716,24 +709,28 @@ class FlowEngine:
         artifact_root: Path,
         owner: str,
         flow_id: str,
+        target: str,
         run_id: str,
     ) -> None:
         """Remove exactly one completed run, failing closed on manifest drift."""
 
         owner_id = owner_identity(owner, "Flow owner")
         flow_identity = identifier(flow_id, "Flow identity")
+        target_identity = identifier(target, "Flow target")
         identity = run_identity(run_id)
         store_root = Path(artifact_root).resolve()
         if store_root == Path(store_root.anchor):
             raise FlowExecutionError("artifact root cannot be a filesystem root")
-        run_root = (
-            store_root
-            / "flows"
-            / owner_id
-            / flow_identity
-            / "runs"
-            / identity
+        run_paths = ArtifactLayout(store_root).execution(
+            owner=owner_id,
+            target=target_identity,
+            flow=flow_identity,
+            variant="default",
+            identity=identity,
+            artifact_kind="flow",
+            identity_kind="run_id",
         )
+        run_root = run_paths.root
         resolved_run = run_root.resolve(strict=False)
         if not resolved_run.is_relative_to(store_root):
             raise FlowExecutionError("Flow Run path escaped the artifact root")
@@ -750,6 +747,7 @@ class FlowEngine:
             or manifest.get("contract_kind") != "flow-run-manifest"
             or manifest.get("owner") != owner_id
             or manifest.get("flow") != flow_identity
+            or manifest.get("target") != target_identity
             or manifest.get("run_id") != identity
         ):
             raise FlowExecutionError("Flow Run Manifest identity does not match clean target")
@@ -817,28 +815,35 @@ class FlowEngine:
         artifact_root: Path,
         owner: str,
         flow_id: str,
+        target: str,
         run_id: str,
     ) -> dict[str, Any]:
         """Read one current-schema result after checking its selected identity."""
 
         owner_id = owner_identity(owner, "Flow owner")
         flow_identity = identifier(flow_id, "Flow identity")
+        target_identity = identifier(target, "Flow target")
         identity = run_identity(run_id)
         store_root = Path(artifact_root).resolve()
         if store_root == Path(store_root.anchor):
             raise FlowExecutionError("artifact root cannot be a filesystem root")
-        run_root = (
-            store_root
-            / "flows"
-            / owner_id
-            / flow_identity
-            / "runs"
-            / identity
+        run_paths = ArtifactLayout(store_root).execution(
+            owner=owner_id,
+            target=target_identity,
+            flow=flow_identity,
+            variant="default",
+            identity=identity,
+            artifact_kind="flow",
+            identity_kind="run_id",
         )
+        run_root = run_paths.root
         if not run_root.resolve(strict=False).is_relative_to(store_root):
             raise FlowExecutionError("Flow Run path escaped the artifact root")
         try:
-            result = read_json_object(run_root / "flow_result.json", "Flow Result")
+            result = read_json_object(
+                run_paths.role("outputs") / "flow_result.json",
+                "Flow Result",
+            )
         except (OSError, RuntimeError) as exc:
             raise FlowExecutionError(str(exc)) from exc
         if (
@@ -846,6 +851,7 @@ class FlowEngine:
             or result.get("contract_kind") != "flow-result"
             or result.get("owner") != owner_id
             or result.get("flow") != flow_identity
+            or result.get("target") != target_identity
             or result.get("run_id") != identity
         ):
             raise FlowExecutionError("Flow Result identity does not match selected run")
@@ -991,17 +997,24 @@ class FlowEngine:
                 )
         for evidence in collected.evidence:
             path = Path(evidence).resolve()
-            if not path.is_file() or not path.is_relative_to(context.node_root.resolve()):
+            managed_roots = (
+                context.work_root.resolve(),
+                context.output_root.resolve(),
+                context.log_root.resolve(),
+            )
+            if not path.is_file() or not any(
+                path.is_relative_to(root) for root in managed_roots
+            ):
                 raise FlowExecutionError("Evidence is not a managed regular file")
         return artifacts
 
     def _write_policy_receipt(
         self,
-        node_root: Path,
+        output_root: Path,
         evaluation: EvaluatedPolicy,
     ) -> None:
         atomic_write_json(
-            node_root / "policy_receipt.json",
+            output_root / "policy_receipt.json",
             {
                 "schema": 1,
                 "contract_kind": "policy-receipt",

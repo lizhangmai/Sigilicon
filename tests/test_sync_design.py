@@ -139,8 +139,14 @@ def _patch_fake_import(monkeypatch) -> None:
 
 def _import_artifact(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
     return ArtifactRecord.begin(
-        ProjectContext.from_project_root(tmp_path).artifacts.import_attempt(
-            "designLib", "source", identity
+        ProjectContext.from_project_root(tmp_path).artifacts.execution(
+            owner="designLib",
+            target="source",
+            flow="netlist-import",
+            variant="hierarchy",
+            identity=identity,
+            artifact_kind="netlist_import",
+            identity_kind="attempt_id",
         ),
         entities={"library": "designLib", "source": "source"},
         operation="test-import",
@@ -170,8 +176,8 @@ def test_sync_design_consumes_source_and_pdk_config(
         "devselect := capacitor cap\n"
     )
     assert result.imported_cells == ("inv",)
-    assert result.attempt_dir.parent.name == "attempts"
-    assert result.attempt_dir.parent.parent.name == "sync"
+    assert result.attempt_dir.parent.name == "recursive"
+    assert result.attempt_dir.parent.parent.name == "design-sync"
     manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
     assert set(manifest["details"]["oa_view_sha256"]["inv"]) == {
@@ -332,8 +338,8 @@ def test_import_hierarchy_passes_explicit_device_map(
             dev_map_file=device_map,
             overwrite=True,
             artifact=_import_artifact(tmp_path),
-            source_role="source",
-            work_role="cells",
+            source_role="inputs",
+            work_role="work",
             timeout=30,
             operation=operation,
         )
@@ -380,8 +386,8 @@ def test_import_hierarchy_preserves_unowned_leaked_handle(
                 reference_libraries=spec.design.pdk.oa.reference_libraries,
                 overwrite=True,
                 artifact=_import_artifact(tmp_path),
-                source_role="source",
-                work_role="cells",
+                source_role="inputs",
+                work_role="work",
                 timeout=30,
                 operation=operation,
             )

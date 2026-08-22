@@ -106,6 +106,9 @@ class TransformAdapter:
                 ),
             ),
             facts={"length": len(output.read_text(encoding="utf-8"))},
+            evidence=(context.input("input").path,)
+            if context.action_config.get("foreign_evidence")
+            else (),
         )
 
 
@@ -192,6 +195,7 @@ def flow_spec(
     transform_policy: str | None = None,
     diagnostic_binding: bool = False,
     internal_symlink: bool = False,
+    foreign_evidence: bool = False,
 ) -> FlowSpec:
     return FlowSpec(
         owner="example",
@@ -209,6 +213,7 @@ def flow_spec(
             FlowNode(
                 node_id="transform",
                 action_kind="fake.transform",
+                config={"foreign_evidence": foreign_evidence},
                 policy=transform_policy,
                 bindings=(
                     ArtifactBinding(
@@ -349,18 +354,14 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
     assert result.nodes["verify"].policy_status == "accepted"
     assert not hasattr(result.nodes["verify"], "execution_fingerprint")
-    for record in (
-        "resolved_plan.json",
-        "flow_result.json",
-        "run_manifest.json",
-    ):
-        assert (result.run_root / record).is_file()
+    assert (result.run_root / "inputs/resolved_plan.json").is_file()
+    assert (result.run_root / "inputs/preflight.json").is_file()
+    assert (result.run_root / "outputs/flow_result.json").is_file()
+    assert (result.run_root / "run_manifest.json").is_file()
     for node in plan.topology:
-        node_root = result.run_root / "nodes" / node
-        assert (node_root / "action_request.json").is_file()
-        assert (node_root / "action_result.json").is_file()
-        assert (node_root / "policy_receipt.json").is_file()
-        assert (node_root / "run_manifest.json").is_file()
+        assert (result.run_root / "inputs" / node / "action_request.json").is_file()
+        assert (result.run_root / "outputs" / node / "action_result.json").is_file()
+        assert (result.run_root / "outputs" / node / "policy_receipt.json").is_file()
 
     encoded_root = str(result.run_root).encode()
     for record in result.run_root.rglob("*.json"):
@@ -378,9 +379,9 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
         return set()
 
     public_records = (
-        json.loads((result.run_root / "resolved_plan.json").read_text()),
-        json.loads((result.run_root / "preflight.json").read_text()),
-        json.loads((result.run_root / "flow_result.json").read_text()),
+        json.loads((result.run_root / "inputs/resolved_plan.json").read_text()),
+        json.loads((result.run_root / "inputs/preflight.json").read_text()),
+        json.loads((result.run_root / "outputs/flow_result.json").read_text()),
     )
     for record in public_records:
         assert not {name for name in keys(record) if "fingerprint" in name}
@@ -405,15 +406,36 @@ def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
     )
     manifest = json.loads((result.run_root / "run_manifest.json").read_text())
 
-    assert "nodes/source/work/link.txt" in manifest["managed_paths"]
+    assert "work/source/link.txt" in manifest["managed_paths"]
     assert len(manifest["managed_paths"]) == len(set(manifest["managed_paths"]))
     engine.clean_run(
         artifact_root=artifact_root,
         owner="example",
         flow_id="fake-pipeline",
+        target="qualification",
         run_id=run_id,
     )
     assert not result.run_root.exists()
+
+
+def test_node_cannot_claim_another_nodes_file_as_evidence(tmp_path: Path) -> None:
+    registered, *_ = registry()
+    engine = FlowEngine(registered)
+    result = engine.run(
+        engine.plan(
+            flow_spec(foreign_evidence=True),
+            "qualification",
+            fake_profile(),
+        ),
+        artifact_root=tmp_path / "artifacts",
+        run_id="8" * 32,
+    )
+
+    assert result.status == "failed"
+    assert result.nodes["transform"].result_status == "failed"
+    assert "Evidence is not a managed regular file" in str(
+        result.nodes["transform"].reason
+    )
 
 
 def test_artifact_qualifiers_propagate_without_derived_identities(
@@ -430,10 +452,10 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
     first_run = engine.run(first_plan, artifact_root=artifact_root, run_id="9" * 32)
 
     source_result = json.loads(
-        (first_run.run_root / "nodes/source/action_result.json").read_text()
+        (first_run.run_root / "outputs/source/action_result.json").read_text()
     )
     transform_request = json.loads(
-        (first_run.run_root / "nodes/transform/action_request.json").read_text()
+        (first_run.run_root / "inputs/transform/action_request.json").read_text()
     )
     assert source_result["artifacts"]["source"]["qualifiers"] == {
         "corner": "nominal_a",
@@ -644,7 +666,7 @@ def test_non_valid_terminal_results_are_persisted(
     assert result.status == "failed"
     assert result.nodes["terminal"].result_status == result_status
     payload = json.loads(
-        (result.run_root / "nodes/terminal/action_result.json").read_text()
+        (result.run_root / "outputs/terminal/action_result.json").read_text()
     )
     assert payload["execution"]["status"] == "succeeded"
     assert payload["result_status"] == result_status
@@ -738,7 +760,7 @@ def test_interruption_writes_cancelled_terminal_records(tmp_path: Path) -> None:
     )
 
     payload = json.loads(
-        (result.run_root / "nodes/interrupt/action_result.json").read_text()
+        (result.run_root / "outputs/interrupt/action_result.json").read_text()
     )
     assert result.status == "failed"
     assert result.interrupted is True
@@ -766,6 +788,7 @@ def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) ->
             artifact_root=artifact_root,
             owner="example",
             flow_id="fake-pipeline",
+            target="qualification",
             run_id=run_id,
         )
 
@@ -775,6 +798,7 @@ def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) ->
         artifact_root=artifact_root,
         owner="example",
         flow_id="fake-pipeline",
+        target="qualification",
         run_id=run_id,
     )
     assert not result.run_root.exists()
@@ -837,6 +861,7 @@ def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:
             artifact_root=artifact_root,
             owner="example",
             flow_id="fake-pipeline",
+            target="qualification",
             run_id=run_id,
         )
 
@@ -990,6 +1015,7 @@ fake = "profile.toml"
         str(artifact_root),
         "example",
         "fake-pipeline",
+        "qualification",
         run_id,
     ]
     assert flow_cli_main(["status", *identity]) == 0

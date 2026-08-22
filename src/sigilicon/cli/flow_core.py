@@ -72,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--artifact-root", type=Path, required=True)
         command.add_argument("owner")
         command.add_argument("flow")
+        command.add_argument("target")
         command.add_argument("run_id")
     return parser
 
@@ -189,6 +190,7 @@ def main(
                 artifact_root=args.artifact_root,
                 owner=result.owner,
                 flow_id=result.flow_id,
+                target=result.target,
                 run_id=result.run_id,
             )
             emit_json(payload)
@@ -198,6 +200,7 @@ def main(
                 artifact_root=args.artifact_root,
                 owner=args.owner,
                 flow_id=args.flow,
+                target=args.target,
                 run_id=args.run_id,
             )
             emit_json(payload)
@@ -207,6 +210,7 @@ def main(
                 artifact_root=args.artifact_root,
                 owner=args.owner,
                 flow_id=args.flow,
+                target=args.target,
                 run_id=args.run_id,
             )
             emit_json(
@@ -216,6 +220,7 @@ def main(
                     "status": "cleaned",
                     "owner": args.owner,
                     "flow": args.flow,
+                    "target": args.target,
                     "run_id": args.run_id,
                 }
             )

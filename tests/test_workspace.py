@@ -33,6 +33,18 @@ class Client:
         return SimpleNamespace(output=output, errors=[])
 
 
+def _design_execution(project, identity):
+    return ProjectContext.from_project_root(project).artifacts.execution(
+        owner="lib",
+        target="cell",
+        flow="design-sync",
+        variant="recursive",
+        identity=identity,
+        artifact_kind="design_sync",
+        identity_kind="attempt_id",
+    )
+
+
 def test_incident_rollback_refuses_replaced_symlink_parent(tmp_path) -> None:
     project = tmp_path / "project"
     write_project_context(project)
@@ -798,9 +810,7 @@ def test_final_audit_uncertainty_reaches_manifest_before_terminal_transition(
     root = project / "virtuoso"
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
-        ProjectContext.from_project_root(project).artifacts.design_sync_attempt(
-            "lib", "cell", "1" * 32
-        ),
+        _design_execution(project, "1" * 32),
         entities={"library": "lib", "cell": "cell"},
         operation="sync-design",
         backend="virtuoso-oa",
@@ -871,9 +881,7 @@ def test_operation_incident_is_referenced_by_the_related_attempt_manifest(tmp_pa
     root = project / "virtuoso"
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
-        ProjectContext.from_project_root(project).artifacts.design_sync_attempt(
-            "lib", "cell", "1" * 32
-        ),
+        _design_execution(project, "1" * 32),
         entities={"library": "lib", "cell": "cell"},
         operation="sync-design",
         backend="virtuoso-oa",
@@ -905,9 +913,7 @@ def test_wrapped_process_cleanup_failure_marks_workspace_artifact_uncertain(
     root = project / "virtuoso"
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
-        ProjectContext.from_project_root(project).artifacts.design_sync_attempt(
-            "lib", "cell", "3" * 32
-        ),
+        _design_execution(project, "3" * 32),
         entities={"library": "lib", "cell": "cell"},
         operation="sync-design",
         backend="virtuoso-oa",
@@ -944,9 +950,7 @@ def test_incident_link_failure_rolls_back_unreferenced_journal(
     root = project / "virtuoso"
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
-        ProjectContext.from_project_root(project).artifacts.design_sync_attempt(
-            "lib", "cell", "2" * 32
-        ),
+        _design_execution(project, "2" * 32),
         entities={"library": "lib", "cell": "cell"},
         operation="sync-design",
         backend="virtuoso-oa",

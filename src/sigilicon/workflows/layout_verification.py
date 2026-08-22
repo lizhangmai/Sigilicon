@@ -11,10 +11,8 @@ import shutil
 from typing import Any, Mapping, Sequence
 
 from sigilicon.artifacts import (
-    ArtifactManifestError,
     ArtifactRecord,
     file_sha256,
-    load_manifest,
     new_identity,
     read_nofollow_text,
 )
@@ -329,38 +327,6 @@ def _calibre_environment(executable: Path) -> dict[str, str]:
     return environment
 
 
-def _generation_reference(paths: ProjectContext, spec: LayoutSpec, fingerprint: str) -> str:
-    attempts = (
-        paths.artifact_root
-        / "designs"
-        / spec.library
-        / spec.cell
-        / "layout"
-        / spec.view
-        / "generate"
-        / "attempts"
-    )
-    matches: list[tuple[str, Path]] = []
-    if attempts.is_dir():
-        for manifest_path in attempts.glob("*/manifest.json"):
-            try:
-                manifest = load_manifest(manifest_path)
-            except ArtifactManifestError:
-                continue
-            if (
-                manifest.get("status") == "succeeded"
-                and manifest.get("operation") == "generate-layout"
-                and manifest.get("fingerprints", {}).get("run") == fingerprint
-            ):
-                matches.append((str(manifest.get("completed_at") or ""), manifest_path))
-    if not matches:
-        raise RuntimeError(
-            f"no successful layout-generation artifact matches {spec.view} fingerprint {fingerprint}"
-        )
-    selected = max(matches)[1]
-    return selected.relative_to(paths.artifact_root).as_posix()
-
-
 def _scoped_layout_fingerprint(
     spec: LayoutSpec,
     plan: LayoutPlan,
@@ -626,7 +592,7 @@ def _run_calibre(
         source_cdl.chmod(0o444)
 
     work = record.paths.role("work")
-    results = record.paths.role("results")
+    results = record.paths.role("outputs")
     canonical_deck = (
         render_drc_run_deck(
             source_text,
@@ -728,7 +694,7 @@ def _run_calibre(
             ("drc-summary.rep", "Calibre DRC summary report"),
         )
         copied = {
-            name: record.copy_file("results", (name,), work / name, label=label)
+            name: record.copy_file("outputs", (name,), work / name, label=label)
             for name, label in outputs
         }
         return parse_drc_summary(
@@ -749,13 +715,13 @@ def _run_calibre(
         if not candidate.is_file():
             raise RuntimeError(f"Calibre LVS did not produce {source_name}")
         copied_lvs[source_name] = record.copy_file(
-            "results", (result_name,), candidate, label=label
+            "outputs", (result_name,), candidate, label=label
         )
     extracted = work / "svdb" / f"{spec.cell}.sp"
     if not extracted.is_file():
         raise RuntimeError("Calibre LVS did not produce the extracted layout netlist")
     record.copy_file(
-        "results", ("extracted.sp",), extracted, label="Calibre extracted layout netlist"
+        "outputs", ("extracted.sp",), extracted, label="Calibre extracted layout netlist"
     )
     result = parse_lvs_report(read_nofollow_text(copied_lvs["lvs.rep"]), primary=spec.cell)
     if result["passed"] and "LVS completed. CORRECT." not in completed.stdout:
@@ -784,7 +750,6 @@ def verify_layout(
     if plan.stage != "routed":
         raise ValueError("physical verification requires a routed layout plan")
     paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
-    reference = _generation_reference(paths, spec, plan.fingerprint)
     verification_scope = _verification_scope(spec, plan, check)
     run_fingerprint = _run_fingerprint(
         spec,
@@ -793,8 +758,14 @@ def verify_layout(
         verification_scope=verification_scope,
     )
     record = ArtifactRecord.begin(
-        paths.artifacts.layout_verification_run(
-            spec.library, spec.cell, spec.view, check, new_identity()
+        paths.artifacts.execution(
+            owner=spec.library,
+            target=spec.cell,
+            flow="physical-verification",
+            variant=f"{spec.view}-{check}",
+            identity=new_identity(),
+            artifact_kind="physical_verification",
+            identity_kind="run_id",
         ),
         entities={
             "library": spec.library,
@@ -806,7 +777,6 @@ def verify_layout(
         backend="xstream+calibre",
         source_fingerprint=spec.source_fingerprint,
         run_fingerprint=run_fingerprint,
-        reference_links={"layout_generation": reference},
     )
     record.copy_file("inputs", ("layout.toml",), spec.path, label="canonical layout intent")
     record.copy_file(
@@ -931,7 +901,7 @@ def verify_layout(
                 **outcome,
             }
             completion = record.write_json(
-                "results",
+                "outputs",
                 ("completion.json",),
                 completion_payload,
                 label="physical verification completion proof",

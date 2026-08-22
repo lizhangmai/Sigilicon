@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from sigilicon.paths import (
     ArtifactExecutionPaths,
+    operation_incident_reference,
     validate_artifact_component,
     validate_artifact_id,
     validate_fingerprint,
@@ -32,15 +33,19 @@ from sigilicon.paths import (
 
 ARTIFACT_STATUSES = frozenset({"running", "succeeded", "failed", "partial", "uncertain"})
 TERMINAL_STATUSES = ARTIFACT_STATUSES - {"running"}
+_EXECUTION_ROLES = frozenset({"inputs", "work", "outputs", "logs"})
 ARTIFACT_ROLES = {
-    "design_sync": {"inputs", "evidence", "logs", "work"},
-    "oa_text_view": {"inputs", "evidence", "logs", "work"},
-    "layout_generation": {"inputs", "evidence", "logs", "work"},
-    "physical_verification": {"inputs", "results", "logs", "work"},
-    "netlist_export": {"inputs", "results", "logs", "work"},
-    "standalone_simulation": {"inputs", "results", "logs", "work"},
-    "netlist_import": {"source", "cells", "evidence", "logs", "work"},
-    "analysis": {"inputs", "results", "logs", "work"},
+    kind: _EXECUTION_ROLES
+    for kind in (
+        "design_sync",
+        "oa_text_view",
+        "layout_generation",
+        "physical_verification",
+        "netlist_export",
+        "standalone_simulation",
+        "netlist_import",
+        "analysis",
+    )
 }
 ARTIFACT_IDENTITY_KINDS = {
     "design_sync": "attempt_id",
@@ -323,7 +328,6 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "completed_at",
         "status",
         "fingerprints",
-        "links",
         "files",
         "partial_failure",
         "uncertain_reason",
@@ -346,7 +350,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         validate_artifact_id(run_id if run_id is not None else attempt_id, "execution id")
     except ValueError as exc:
         raise ArtifactManifestError(str(exc)) from exc
-    for field_name in ("entities", "fingerprints", "links", "files"):
+    for field_name in ("entities", "fingerprints", "files"):
         if not isinstance(value.get(field_name), dict):
             raise ArtifactManifestError(f"manifest {field_name} must be an object")
     artifact_kind = value.get("artifact_kind")
@@ -399,20 +403,6 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                 validate_fingerprint(fingerprint, f"{label} fingerprint")
             except ValueError as exc:
                 raise ArtifactManifestError(str(exc)) from exc
-    links = value["links"]
-    if set(links) != {"parent", "references"}:
-        raise ArtifactManifestError("manifest links must contain parent/references")
-    for link_kind, link_values in links.items():
-        if not isinstance(link_values, dict):
-            raise ArtifactManifestError(f"manifest {link_kind} links must be an object")
-        for label, link in link_values.items():
-            try:
-                validate_artifact_component(label, f"{link_kind} link label")
-            except ValueError as exc:
-                raise ArtifactManifestError(str(exc)) from exc
-            if link is None and link_kind == "parent":
-                continue
-            _safe_manifest_relative(link, f"{link_kind} link")
     files = value["files"]
     if set(files) != ARTIFACT_ROLES[artifact_kind]:
         raise ArtifactManifestError(
@@ -456,10 +446,9 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     if len(completion_evidence) != len(set(completion_evidence)):
         raise ArtifactManifestError("manifest completion_evidence must be unique")
-    completion_role = "results" if run_id is not None else "evidence"
-    if any(Path(path).parts[0] != completion_role for path in completion_evidence):
+    if any(Path(path).parts[0] != "outputs" for path in completion_evidence):
         raise ArtifactManifestError(
-            f"manifest completion_evidence for this artifact must use {completion_role}/"
+            "manifest completion_evidence for this artifact must use outputs/"
         )
     partial_failure = value.get("partial_failure")
     if partial_failure is not None and not isinstance(partial_failure, dict):
@@ -473,26 +462,13 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     if incident is not None:
         if not isinstance(incident, str) or not incident:
             raise ArtifactManifestError("manifest incident_reference must be a string or null")
-        incident_path = Path(incident)
-        if (
-            incident_path.is_absolute()
-            or "\\" in incident
-            or incident_path.as_posix() != incident
-            or len(incident_path.parts) != 4
-            or incident_path.parts[:2] != ("system", "operations")
-            or incident_path.name != "incident.json"
-        ):
-            raise ArtifactManifestError(f"unsafe incident reference: {incident!r}")
         try:
-            incident_id = validate_artifact_id(
-                incident_path.parts[2], "incident operation id"
-            )
-        except ValueError as exc:
-            raise ArtifactManifestError(str(exc)) from exc
-        if operation_id != incident_id:
-            raise ArtifactManifestError(
-                "incident reference must match the manifest operation_id"
-            )
+            incident_path = _safe_manifest_relative(incident, "incident reference")
+            expected_incident = operation_incident_reference(operation_id)
+        except (ArtifactManifestError, ValueError) as exc:
+            raise ArtifactManifestError(f"unsafe incident reference: {incident!r}") from exc
+        if incident_path != expected_incident:
+            raise ArtifactManifestError(f"unsafe incident reference: {incident!r}")
     completed_at = value.get("completed_at")
     if status == "running":
         if completed_at is not None:
@@ -564,8 +540,6 @@ class ArtifactRecord:
         semantic_fingerprint: str | None = None,
         setup_fingerprint: str | None = None,
         run_fingerprint: str | None = None,
-        parent_links: Mapping[str, str | None] | None = None,
-        reference_links: Mapping[str, str] | None = None,
     ) -> "ArtifactRecord":
         files = {role: [] for role in paths.roles}
         fingerprints = {
@@ -587,10 +561,6 @@ class ArtifactRecord:
             "completed_at": None,
             "status": "running",
             "fingerprints": fingerprints,
-            "links": {
-                "parent": dict(parent_links or {}),
-                "references": dict(reference_links or {}),
-            },
             "files": files,
             "partial_failure": None,
             "uncertain_reason": None,

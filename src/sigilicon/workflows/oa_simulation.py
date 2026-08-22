@@ -188,7 +188,7 @@ def _run_native_oa_maestro_testbench_impl(
             timeout=min(timeout, 300),
         )
         work.write_json(
-            "results",
+            "outputs",
             ("setup-semantic-attestation.json",),
             setup_attestation,
         )
@@ -227,9 +227,9 @@ def _run_native_oa_maestro_testbench_impl(
         )
         work.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
         result_export = work.copy_file(
-            "results", ("maestro-rdb.tsv",), rdb_export
+            "outputs", ("maestro-rdb.tsv",), rdb_export
         )
-        parsed = work.write_json("results", ("maestro-rdb.json",), parsed_results)
+        parsed = work.write_json("outputs", ("maestro-rdb.json",), parsed_results)
         diagnostic_equivalence = reconstruct_native_diagnostic(
             parsed_results,
             rdb_contract,
@@ -237,11 +237,11 @@ def _run_native_oa_maestro_testbench_impl(
         diagnostic_equivalence_path = None
         if diagnostic_equivalence is not None:
             diagnostic_equivalence_path = work.write_json(
-                "results", ("diagnostic-equivalence.json",), diagnostic_equivalence
+                "outputs", ("diagnostic-equivalence.json",), diagnostic_equivalence
             )
-        work.write_json("results", ("oa-library-check.json",), oa_check)
+        work.write_json("outputs", ("oa-library-check.json",), oa_check)
         work.write_json(
-            "results",
+            "outputs",
             ("run-summary.json",),
             {
                 "library": plan.library,

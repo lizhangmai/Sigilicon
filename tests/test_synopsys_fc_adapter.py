@@ -1148,10 +1148,10 @@ def test_synopsys_fc_adapter_records_owner_runner_failure(tmp_path: Path) -> Non
     assert implementation.artifacts == {}
     action_result = json.loads(
         (
-            result.run_root
-            / "nodes"
-            / "implementation"
-            / "action_result.json"
+                result.run_root
+                / "outputs"
+                / "implementation"
+                / "action_result.json"
         ).read_text(encoding="utf-8")
     )
     assert action_result["execution"]["exit_code"] == 7
@@ -1421,9 +1421,9 @@ def test_synopsys_fc_adapter_rejects_stale_reference_before_downstream_use(
         node_id="implementation",
         action=implementation_action,
         run_root=first.run_root,
-        node_root=validation_root,
         work_root=validation_root / "work",
         output_root=validation_root / "outputs",
+        log_root=validation_root / "logs",
         inputs={
             role: InputArtifact(
                 role=role,

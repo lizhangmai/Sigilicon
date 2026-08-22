@@ -34,37 +34,23 @@ def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
 def test_all_artifact_paths_match_the_single_layout(tmp_path: Path) -> None:
     paths = ProjectContext.from_project_root(tmp_path).artifacts
 
-    assert paths.design_sync_attempt("lib", "inv", ATTEMPT).root == (
-        tmp_path / "artifacts/designs/lib/inv/sync/attempts" / ATTEMPT
+    execution = paths.execution(
+        owner="lib",
+        target="inv",
+        flow="design-sync",
+        variant="recursive",
+        identity=ATTEMPT,
+        artifact_kind="design_sync",
+        identity_kind="attempt_id",
     )
-    text_view = paths.oa_text_view_attempt("lib", "inv", "veriloga", ATTEMPT)
-    assert text_view.root == (
-        tmp_path
-        / "artifacts/designs/lib/inv/views/veriloga/sync/attempts"
-        / ATTEMPT
+    assert execution.root == (
+        tmp_path / "artifacts/runs/lib/inv/design-sync/recursive" / ATTEMPT
     )
-    assert text_view.artifact_kind == "oa_text_view"
-    assert paths.netlist_export_run(
-        "lib", "inv", "schematic", "spectre", RUN
-    ).root == (
-        tmp_path
-        / "artifacts/designs/lib/inv/exports/netlist/schematic/spectre/runs"
-        / RUN
+    assert execution.roles == ("inputs", "work", "outputs", "logs")
+    assert paths.export("lib", "netlist", "inv.scs") == (
+        tmp_path / "artifacts/exports/lib/netlist/inv.scs"
     )
-    assert paths.standalone_run("lib", "tb_inv", RUN).root == (
-        tmp_path / "artifacts/verification/lib/tb_inv/standalone/runs" / RUN
-    )
-    assert paths.import_attempt("lib", "source", ATTEMPT).root == (
-        tmp_path / "artifacts/imports/lib/source/attempts" / ATTEMPT
-    )
-    analysis = paths.analysis_run("lib", "cell", "timing", "model", RUN)
-    assert analysis.root == (
-        tmp_path
-        / "artifacts/designs/lib/cell/timing/model/runs"
-        / RUN
-    )
-    assert analysis.artifact_kind == "analysis"
-    assert paths.operation_incident(RUN).incident == (
+    assert paths.system_operation(RUN).incident == (
         tmp_path / "artifacts/system/operations" / RUN / "incident.json"
     )
 
@@ -81,8 +67,24 @@ def test_artifact_components_reject_escape_and_separators(unsafe: str) -> None:
 def test_ids_fingerprints_and_role_components_are_validated(tmp_path: Path) -> None:
     paths = ProjectContext.from_project_root(tmp_path).artifacts
     with pytest.raises(ValueError, match="attempt id"):
-        paths.design_sync_attempt("lib", "inv", "short")
-    execution = paths.standalone_run("lib", "tb", RUN)
+        paths.execution(
+            owner="lib",
+            target="inv",
+            flow="design-sync",
+            variant="recursive",
+            identity="short",
+            artifact_kind="design_sync",
+            identity_kind="attempt_id",
+        )
+    execution = paths.execution(
+        owner="lib",
+        target="tb",
+        flow="spectre",
+        variant="nominal",
+        identity=RUN,
+        artifact_kind="standalone_simulation",
+        identity_kind="run_id",
+    )
     with pytest.raises(ValueError, match="path component"):
         execution.path("inputs", "../escape")
 
@@ -110,7 +112,7 @@ def test_project_context_rejects_unknown_path_field(tmp_path: Path) -> None:
     ("section", "unknown"),
     (
         ("root", 'unexpected = "root"\n'),
-        ("project", 'unexpected = "project"\n'),
+        ("paths", 'unexpected = "path"\n'),
     ),
 )
 def test_project_context_rejects_unknown_schema_fields(
@@ -176,13 +178,18 @@ def test_execution_creation_rejects_symlinked_structural_components(
     outside = tmp_path / "outside"
     artifacts.mkdir()
     outside.mkdir()
-    (artifacts / "verification").mkdir()
-    (artifacts / "verification" / "lib").symlink_to(
+    (artifacts / "runs").symlink_to(
         outside,
         target_is_directory=True,
     )
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.standalone_run(
-        "lib", "tb", RUN
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        owner="lib",
+        target="tb",
+        flow="spectre",
+        variant="nominal",
+        identity=RUN,
+        artifact_kind="standalone_simulation",
+        identity_kind="run_id",
     )
 
     with pytest.raises(RuntimeError, match="unsafe filesystem component"):

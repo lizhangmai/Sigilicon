@@ -160,7 +160,15 @@ def _sync_design_impl(
     else:
         source_state = inspect_source_state(spec.project_root)
         attempt = ArtifactRecord.begin(
-            paths.artifacts.design_sync_attempt(spec.library, spec.cell, new_identity()),
+            paths.artifacts.execution(
+                owner=spec.library,
+                target=spec.cell,
+                flow="design-sync",
+                variant=spec.sync_mode,
+                identity=new_identity(),
+                artifact_kind="design_sync",
+                identity_kind="attempt_id",
+            ),
             entities={"library": spec.library, "cell": spec.cell},
             operation="sync-design",
             backend="virtuoso-oa",
@@ -233,7 +241,7 @@ def _sync_design_impl(
                 paths, spec.library, imported
             )
             completion = attempt.write_json(
-                "evidence",
+                "outputs",
                 ("completion.json",),
                 {
                     "library": spec.library,
@@ -264,7 +272,7 @@ def _sync_design_impl(
             cells=None,
             phase="ensure design library",
             expected_library_path=paths.workspace_root / spec.library,
-            quarantine_root=attempt.directory("evidence", "stale-locks")
+            quarantine_root=attempt.directory("outputs", "stale-locks")
             if quarantine_stale_locks
             else None,
             require_view_lease=False,
@@ -408,7 +416,15 @@ def _sync_existing_design_target_only_impl(
     else:
         source_state = inspect_source_state(spec.project_root)
         attempt = ArtifactRecord.begin(
-            paths.artifacts.design_sync_attempt(spec.library, spec.cell, new_identity()),
+            paths.artifacts.execution(
+                owner=spec.library,
+                target=spec.cell,
+                flow="design-sync",
+                variant=spec.sync_mode,
+                identity=new_identity(),
+                artifact_kind="design_sync",
+                identity_kind="attempt_id",
+            ),
             entities={"library": spec.library, "cell": spec.cell},
             operation="sync-existing-design-target-only",
             backend="virtuoso-oa",
@@ -533,7 +549,7 @@ def _sync_existing_design_target_only_impl(
             cells=(spec.cell,),
             views=((spec.cell, "netlist"), (spec.cell, "schematic")),
             phase=f"target-only schematic import {spec.library}/{spec.cell}",
-            quarantine_root=attempt.directory("evidence", "stale-locks")
+            quarantine_root=attempt.directory("outputs", "stale-locks")
             if quarantine_stale_locks
             else None,
         ):
@@ -604,7 +620,7 @@ def _sync_existing_design_target_only_impl(
             paths, spec.library, (spec.cell,)
         )
         completion = attempt.write_json(
-            "evidence",
+            "outputs",
             ("completion.json",),
             {
                 "library": spec.library,

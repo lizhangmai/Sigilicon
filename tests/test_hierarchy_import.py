@@ -13,8 +13,14 @@ from sigilicon.virtuoso.workspace import OperationPolicy
 
 def _artifact(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
     return ArtifactRecord.begin(
-        ProjectContext.from_project_root(tmp_path).artifacts.import_attempt(
-            "lib", "source", identity
+        ProjectContext.from_project_root(tmp_path).artifacts.execution(
+            owner="lib",
+            target="source",
+            flow="netlist-import",
+            variant="hierarchy",
+            identity=identity,
+            artifact_kind="netlist_import",
+            identity_kind="attempt_id",
         ),
         entities={"library": "lib", "source": "source"},
         operation="test-import",
@@ -88,9 +94,9 @@ ends leaf
             reference_libraries=("deviceLib", "deviceLib"),
             overwrite=True,
             artifact=artifact,
-            source_role="source",
+            source_role="inputs",
             work_role="work",
-            cell_evidence_role="cells",
+            cell_evidence_role="outputs",
             timeout=30,
             operation=operation,
         )
@@ -100,8 +106,8 @@ ends leaf
     assert completed == plan.ordered_cells
     assert (artifact.paths.root / "work/leaf").is_dir()
     assert (artifact.paths.root / "work/top").is_dir()
-    assert (artifact.paths.root / "cells/leaf.json").is_file()
-    assert (artifact.paths.root / "cells/top.json").is_file()
+    assert (artifact.paths.root / "outputs/leaf.json").is_file()
+    assert (artifact.paths.root / "outputs/top.json").is_file()
     writes = [event for event in events if event[0] != "quiescent"]
     assert writes == [
         (
@@ -152,8 +158,8 @@ def test_repeated_imports_use_distinct_single_attempt_directories(
                 library="lib",
                 overwrite=True,
                 artifact=_artifact(tmp_path, f"{index + 2:032x}"),
-                source_role="source",
-                work_role="cells",
+                source_role="inputs",
+                work_role="work",
                 timeout=30,
                 operation=operation,
             )
@@ -161,8 +167,8 @@ def test_repeated_imports_use_distinct_single_attempt_directories(
     assert len(run_dirs) == 2
     assert run_dirs[0] != run_dirs[1]
     assert all(path.name == "cell" for path in run_dirs)
-    assert all(path.parent.name == "cells" for path in run_dirs)
-    assert all(path.parts.count("attempts") == 1 for path in run_dirs)
+    assert all(path.parent.name == "work" for path in run_dirs)
+    assert all(path.parts.count("runs") == 1 for path in run_dirs)
 
 
 @pytest.mark.parametrize("failed_stage", ["schematic", "symbol"])
@@ -215,8 +221,8 @@ def test_partial_failure_reports_exact_completed_cells_and_stage(
                 library="lib",
                 overwrite=True,
                 artifact=_artifact(tmp_path),
-                source_role="source",
-                work_role="cells",
+                source_role="inputs",
+                work_role="work",
                 timeout=30,
                 operation=operation,
             )
@@ -258,8 +264,8 @@ def test_hierarchy_write_adapters_reject_forged_workspace_operation(
             library="lib",
             overwrite=True,
             artifact=_artifact(tmp_path),
-            source_role="source",
-            work_role="cells",
+            source_role="inputs",
+            work_role="work",
             timeout=30,
             operation=SimpleNamespace(),
         )
@@ -339,8 +345,8 @@ def test_interrupt_is_rethrown_with_partial_provenance(
                 library="lib",
                 overwrite=True,
                 artifact=_artifact(tmp_path),
-                source_role="source",
-                work_role="cells",
+                source_role="inputs",
+                work_role="work",
                 timeout=30,
                 operation=operation,
             )

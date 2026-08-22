@@ -52,8 +52,14 @@ def rollback_generated_layout(
     paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
     source_state = inspect_source_state(spec.project_root)
     attempt = ArtifactRecord.begin(
-        paths.artifacts.layout_generation_attempt(
-            spec.library, spec.cell, spec.view, new_identity()
+        paths.artifacts.execution(
+            owner=spec.library,
+            target=spec.cell,
+            flow="layout-generation",
+            variant=spec.view,
+            identity=new_identity(),
+            artifact_kind="layout_generation",
+            identity_kind="attempt_id",
         ),
         entities={"library": spec.library, "cell": spec.cell, "view": spec.view},
         operation="rollback-generated-layout",
@@ -112,7 +118,7 @@ def rollback_generated_layout(
 
         def commit() -> Path:
             completion = attempt.write_json(
-                "evidence",
+                "outputs",
                 ("completion.json",),
                 {
                     "library": spec.library,
@@ -227,8 +233,14 @@ def _generate_layout_impl(
     else:
         source_state = inspect_source_state(spec.project_root)
         attempt = ArtifactRecord.begin(
-            paths.artifacts.layout_generation_attempt(
-                spec.library, spec.cell, spec.view, new_identity()
+            paths.artifacts.execution(
+                owner=spec.library,
+                target=spec.cell,
+                flow="layout-generation",
+                variant=spec.view,
+                identity=new_identity(),
+                artifact_kind="layout_generation",
+                identity_kind="attempt_id",
             ),
             entities={"library": spec.library, "cell": spec.cell, "view": spec.view},
             operation="generate-layout",
@@ -348,7 +360,7 @@ def _generate_layout_impl(
             if oa_sha256 is None:
                 raise RuntimeError("layout commit is missing its OA content receipt")
             completion = attempt.write_json(
-                "evidence",
+                "outputs",
                 ("completion.json",),
                 {
                     "library": spec.library,

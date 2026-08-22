@@ -54,6 +54,13 @@ def validate_fingerprint(value: str, label: str) -> str:
     return value
 
 
+def operation_incident_reference(operation_id: str) -> Path:
+    """Return the canonical artifact-relative locator for one incident."""
+
+    operation = validate_artifact_id(operation_id, "operation id")
+    return Path("system") / "operations" / operation / "incident.json"
+
+
 def _create_artifact_identity_directory(artifact_root: Path, root: Path) -> int:
     """Exclusively create one contained identity directory and return its dirfd."""
 
@@ -174,12 +181,15 @@ class ArtifactExecutionPaths:
 @dataclass(frozen=True)
 class OperationIncidentPaths:
     artifact_root: Path
-    root: Path
     operation_id: str
 
     @property
+    def root(self) -> Path:
+        return self.artifact_root / operation_incident_reference(self.operation_id).parent
+
+    @property
     def incident(self) -> Path:
-        return self.root / "incident.json"
+        return self.artifact_root / operation_incident_reference(self.operation_id)
 
     def create(self) -> None:
         descriptor = _create_artifact_identity_directory(
@@ -190,241 +200,64 @@ class OperationIncidentPaths:
 
 
 @dataclass(frozen=True)
-class ArtifactPaths:
+class ArtifactLayout:
+    """The single physical-layout interface for disposable project artifacts."""
+
     root: Path
 
-    def _name(self, value: str, label: str) -> str:
-        return validate_artifact_component(value, label)
-
-    def design_sync_attempt(
+    def execution(
         self,
-        library: str,
-        cell: str,
-        attempt_id: str,
+        *,
+        owner: str,
+        target: str,
+        flow: str,
+        variant: str,
+        identity: str,
+        artifact_kind: str,
+        identity_kind: str,
     ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        design_cell = self._name(cell, "cell")
-        attempt = validate_artifact_id(attempt_id, "attempt id")
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=self.root / "designs" / lib / design_cell / "sync",
-            root=self.root / "designs" / lib / design_cell / "sync" / "attempts" / attempt,
-            artifact_kind="design_sync",
-            identity_kind="attempt_id",
-            identity=attempt,
-            roles=("inputs", "evidence", "logs", "work"),
-        )
+        """Resolve one run without exposing directory policy to its caller."""
 
-    def oa_text_view_attempt(
-        self,
-        library: str,
-        cell: str,
-        view: str,
-        attempt_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        design_cell = self._name(cell, "cell")
-        design_view = self._name(view, "view")
-        attempt = validate_artifact_id(attempt_id, "attempt id")
+        owner_name = validate_artifact_component(owner, "owner")
+        target_name = validate_artifact_component(target, "target")
+        flow_name = validate_artifact_component(flow, "flow")
+        variant_name = validate_artifact_component(variant, "variant")
+        artifact_identity = validate_artifact_id(identity, identity_kind.replace("_", " "))
         namespace = (
             self.root
-            / "designs"
-            / lib
-            / design_cell
-            / "views"
-            / design_view
-            / "sync"
+            / "runs"
+            / owner_name
+            / target_name
+            / flow_name
+            / variant_name
         )
         return ArtifactExecutionPaths.build(
             artifact_root=self.root,
             namespace_root=namespace,
-            root=namespace / "attempts" / attempt,
-            artifact_kind="oa_text_view",
-            identity_kind="attempt_id",
-            identity=attempt,
-            roles=("inputs", "evidence", "logs", "work"),
+            root=namespace / artifact_identity,
+            artifact_kind=artifact_kind,
+            identity_kind=identity_kind,
+            identity=artifact_identity,
+            roles=("inputs", "work", "outputs", "logs"),
         )
 
-    def layout_generation_attempt(
-        self,
-        library: str,
-        cell: str,
-        view: str,
-        attempt_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        design_cell = self._name(cell, "cell")
-        design_view = self._name(view, "view")
-        attempt = validate_artifact_id(attempt_id, "attempt id")
-        namespace = (
+    def export(self, owner: str, name: str, *components: str) -> Path:
+        """Resolve a named stable handoff below the managed export tree."""
+
+        result = (
             self.root
-            / "designs"
-            / lib
-            / design_cell
-            / "layout"
-            / design_view
-            / "generate"
+            / "exports"
+            / validate_artifact_component(owner, "export owner")
+            / validate_artifact_component(name, "export name")
         )
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=namespace,
-            root=namespace / "attempts" / attempt,
-            artifact_kind="layout_generation",
-            identity_kind="attempt_id",
-            identity=attempt,
-            roles=("inputs", "evidence", "logs", "work"),
-        )
+        for component in components:
+            result /= validate_artifact_component(component, "export component")
+        return result
 
-    def layout_verification_run(
-        self,
-        library: str,
-        cell: str,
-        view: str,
-        check: str,
-        run_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        design_cell = self._name(cell, "cell")
-        design_view = self._name(view, "view")
-        check_name = self._name(check, "check")
-        run = validate_artifact_id(run_id, "run id")
-        namespace = (
-            self.root
-            / "designs"
-            / lib
-            / design_cell
-            / "layout"
-            / design_view
-            / "verification"
-            / check_name
-        )
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=namespace,
-            root=namespace / "runs" / run,
-            artifact_kind="physical_verification",
-            identity_kind="run_id",
-            identity=run,
-            roles=("inputs", "results", "logs", "work"),
-        )
-
-    def netlist_export_run(
-        self,
-        library: str,
-        cell: str,
-        view: str,
-        simulator: str,
-        run_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        design_cell = self._name(cell, "cell")
-        design_view = self._name(view, "view")
-        backend = self._name(simulator, "simulator")
-        run = validate_artifact_id(run_id, "run id")
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=(
-                self.root
-                / "designs"
-                / lib
-                / design_cell
-                / "exports"
-                / "netlist"
-                / design_view
-                / backend
-            ),
-            root=(
-                self.root
-                / "designs"
-                / lib
-                / design_cell
-                / "exports"
-                / "netlist"
-                / design_view
-                / backend
-                / "runs"
-                / run
-            ),
-            artifact_kind="netlist_export",
-            identity_kind="run_id",
-            identity=run,
-            roles=("inputs", "results", "logs", "work"),
-        )
-
-    def standalone_run(
-        self,
-        library: str,
-        testbench: str,
-        run_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        tb = self._name(testbench, "testbench")
-        run = validate_artifact_id(run_id, "run id")
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=self.root / "verification" / lib / tb / "standalone",
-            root=self.root / "verification" / lib / tb / "standalone" / "runs" / run,
-            artifact_kind="standalone_simulation",
-            identity_kind="run_id",
-            identity=run,
-            roles=("inputs", "results", "logs", "work"),
-        )
-
-    def import_attempt(
-        self,
-        library: str,
-        source: str,
-        attempt_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        source_name = self._name(source, "source")
-        attempt = validate_artifact_id(attempt_id, "attempt id")
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=self.root / "imports" / lib / source_name,
-            root=self.root / "imports" / lib / source_name / "attempts" / attempt,
-            artifact_kind="netlist_import",
-            identity_kind="attempt_id",
-            identity=attempt,
-            roles=("source", "cells", "evidence", "logs", "work"),
-        )
-
-    def analysis_run(
-        self,
-        library: str,
-        cell: str,
-        analysis: str,
-        model: str,
-        run_id: str,
-    ) -> ArtifactExecutionPaths:
-        lib = self._name(library, "library")
-        design_cell = self._name(cell, "cell")
-        analysis_name = self._name(analysis, "analysis")
-        model_name = self._name(model, "model")
-        run = validate_artifact_id(run_id, "run id")
-        namespace = (
-            self.root
-            / "designs"
-            / lib
-            / design_cell
-            / analysis_name
-            / model_name
-        )
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=namespace,
-            root=namespace / "runs" / run,
-            artifact_kind="analysis",
-            identity_kind="run_id",
-            identity=run,
-            roles=("inputs", "results", "logs", "work"),
-        )
-
-    def operation_incident(self, operation_id: str) -> OperationIncidentPaths:
+    def system_operation(self, operation_id: str) -> OperationIncidentPaths:
         operation = validate_artifact_id(operation_id, "operation id")
         return OperationIncidentPaths(
             artifact_root=self.root.resolve(),
-            root=self.root / "system" / "operations" / operation,
             operation_id=operation,
         )
 
@@ -441,9 +274,7 @@ class ProjectContext:
 
     project_root: Path
     artifact_root: Path
-    result_root: Path
     workspace_root: Path
-    artifact_namespace: str
 
     @classmethod
     def from_roots(
@@ -451,9 +282,7 @@ class ProjectContext:
         project_root: Path | str,
         *,
         artifact_root: Path | str,
-        result_root: Path | str,
         workspace_root: Path | str,
-        artifact_namespace: str = "sigilicon",
     ) -> "ProjectContext":
         root = Path(project_root).resolve()
         def resolve(value: Path | str) -> Path:
@@ -461,21 +290,13 @@ class ProjectContext:
             return (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
         artifacts = resolve(artifact_root)
-        results = resolve(result_root)
         workspace = resolve(workspace_root)
         if artifacts == root:
             raise ValueError("artifact root must not be the project root")
-        if results == root:
-            raise ValueError("result root must not be the project root")
-        namespace = validate_artifact_component(
-            artifact_namespace, "namespace"
-        )
         return cls(
             project_root=root,
             artifact_root=artifacts,
-            result_root=results,
             workspace_root=workspace,
-            artifact_namespace=namespace,
         )
 
     @classmethod
@@ -501,7 +322,6 @@ class ProjectContext:
                 "contract_kind",
                 "path_scope",
                 "owner",
-                "project",
                 "catalogs",
                 "paths",
             },
@@ -514,7 +334,6 @@ class ProjectContext:
             "project_root",
             "workspace_root",
             "artifact_root",
-            "result_root",
         }
         _reject_unknown_fields(paths, allowed_paths, f"{contract}: paths")
 
@@ -524,19 +343,6 @@ class ProjectContext:
                 raise ValueError(f"{contract}: paths.{name} must be a non-empty path")
             return value
 
-        project = raw.get("project", {})
-        if not isinstance(project, dict):
-            raise ValueError(f"{contract}: project must be a table")
-        _reject_unknown_fields(
-            project,
-            {"artifact_namespace"},
-            f"{contract}: project",
-        )
-        artifact_namespace = project.get("artifact_namespace", "sigilicon")
-        if not isinstance(artifact_namespace, str):
-            raise ValueError(
-                f"{contract}: project.artifact_namespace must be text"
-            )
         declared_root = Path(required("project_root")).expanduser()
         root = (
             (contract.parent / declared_root).resolve()
@@ -546,9 +352,7 @@ class ProjectContext:
         return cls.from_roots(
             root,
             artifact_root=required("artifact_root"),
-            result_root=required("result_root"),
             workspace_root=required("workspace_root"),
-            artifact_namespace=artifact_namespace,
         )
 
     @classmethod
@@ -557,7 +361,6 @@ class ProjectContext:
         project_root: Path | str,
         *,
         artifact_root: Path | str | None = None,
-        result_root: Path | str | None = None,
     ) -> "ProjectContext":
         """Load the project-owned context contract at an explicit root."""
 
@@ -568,32 +371,25 @@ class ProjectContext:
                 f"{root / 'sigilicon.toml'} declares a different project root: "
                 f"{context.project_root}"
             )
-        if artifact_root is None and result_root is None:
+        if artifact_root is None:
             return context
-        return context.with_artifact_root(
-            artifact_root or context.artifact_root,
-            result_root=result_root,
-        )
+        return context.with_artifact_root(artifact_root)
 
     def with_artifact_root(
         self,
         artifact_root: Path | str,
-        *,
-        result_root: Path | str | None = None,
     ) -> "ProjectContext":
         """Return the same project layout with run-scoped output roots."""
 
         return self.from_roots(
             self.project_root,
             artifact_root=artifact_root,
-            result_root=result_root or self.result_root,
             workspace_root=self.workspace_root,
-            artifact_namespace=self.artifact_namespace,
         )
 
     @property
-    def artifacts(self) -> ArtifactPaths:
-        return ArtifactPaths(self.artifact_root)
+    def artifacts(self) -> ArtifactLayout:
+        return ArtifactLayout(self.artifact_root)
 
 
 def discover_project_context(anchor: Path | str | None = None) -> ProjectContext:

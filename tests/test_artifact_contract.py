@@ -17,8 +17,14 @@ from sigilicon.paths import ProjectContext
 
 
 def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.standalone_run(
-        "lib", "tb", identity
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        owner="lib",
+        target="tb",
+        flow="spectre",
+        variant="nominal",
+        identity=identity,
+        artifact_kind="standalone_simulation",
+        identity_kind="run_id",
     )
     return ArtifactRecord.begin(
         execution,
@@ -33,8 +39,14 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
 def test_artifact_manifest_keeps_exact_and_semantic_fingerprints_distinct(
     tmp_path: Path,
 ) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.standalone_run(
-        "lib", "tb", "4" * 32
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        owner="lib",
+        target="tb",
+        flow="spectre",
+        variant="nominal",
+        identity="4" * 32,
+        artifact_kind="standalone_simulation",
+        identity_kind="run_id",
     )
     record = ArtifactRecord.begin(
         execution,
@@ -61,9 +73,9 @@ def test_status_machine_requires_proof_and_forbids_terminal_rewrite(tmp_path: Pa
     record = _record(tmp_path)
     with pytest.raises(RuntimeError, match="without completion evidence"):
         record.succeed(completion_evidence=())
-    proof = record.path("results", "proof.txt")
+    proof = record.path("outputs", "proof.txt")
     proof.write_text("confirmed\n", encoding="utf-8")
-    record.add_file("results", proof)
+    record.add_file("outputs", proof)
     record.succeed(completion_evidence=(proof,))
     with pytest.raises(RuntimeError, match="illegal artifact status transition"):
         record.fail(RuntimeError("late failure"))
@@ -72,7 +84,7 @@ def test_status_machine_requires_proof_and_forbids_terminal_rewrite(tmp_path: Pa
 def test_completion_evidence_is_reverified_before_success(tmp_path: Path) -> None:
     record = _record(tmp_path)
     proof = record.write_text(
-        "results",
+        "outputs",
         ("proof.txt",),
         "original\n",
         label="completion proof",
@@ -90,7 +102,7 @@ def test_atomic_transition_failure_leaves_memory_and_disk_running(
     tmp_path: Path,
 ) -> None:
     record = _record(tmp_path)
-    proof = record.write_text("results", ("proof.txt",), "confirmed\n")
+    proof = record.write_text("outputs", ("proof.txt",), "confirmed\n")
 
     def fail_write(_path, _value):
         raise OSError("manifest replace failed")
@@ -106,58 +118,49 @@ def test_terminal_artifact_rejects_all_mutation_except_incident_link(
     tmp_path: Path,
 ) -> None:
     record = _record(tmp_path)
-    proof = record.write_text("results", ("proof.txt",), "confirmed\n")
+    proof = record.write_text("outputs", ("proof.txt",), "confirmed\n")
     record.succeed(completion_evidence=(proof,))
 
     with pytest.raises(RuntimeError, match="terminal artifact"):
         record.write_text("logs", ("late.log",), "late\n")
     with pytest.raises(RuntimeError, match="terminal artifact"):
-        record.add_file("results", proof)
+        record.add_file("outputs", proof)
     with pytest.raises(RuntimeError, match="terminal artifact"):
-        record.directory("results", "late")
+        record.directory("outputs", "late")
     with pytest.raises(RuntimeError, match="terminal artifact"):
         record.bind_operation("a" * 32)
 
 
-def test_manifest_rejects_unsafe_links_and_invalid_file_metadata(tmp_path: Path) -> None:
+def test_manifest_rejects_invalid_file_metadata(tmp_path: Path) -> None:
     record = _record(tmp_path)
-    proof = record.path("results", "proof.txt")
+    proof = record.path("outputs", "proof.txt")
     proof.write_text("confirmed\n", encoding="utf-8")
-    record.add_file("results", proof)
-
-    unsafe_link = copy.deepcopy(record.manifest)
-    unsafe_link["links"]["references"]["setup_manifest"] = "../../outside.json"
-    with pytest.raises(ArtifactManifestError, match="unsafe manifest references link"):
-        validate_manifest(unsafe_link)
+    record.add_file("outputs", proof)
 
     invalid_digest = copy.deepcopy(record.manifest)
-    invalid_digest["files"]["results"][0]["sha256"] = "not-a-digest"
+    invalid_digest["files"]["outputs"][0]["sha256"] = "not-a-digest"
     with pytest.raises(ArtifactManifestError, match="invalid digest or size"):
         validate_manifest(invalid_digest)
-
-    for noncanonical in (
-        "results//proof.txt",
-        "results/./proof.txt",
-        "results/proof.txt/",
-    ):
-        unsafe_path = copy.deepcopy(record.manifest)
-        unsafe_path["links"]["references"]["proof"] = noncanonical
-        with pytest.raises(ArtifactManifestError, match="unsafe manifest references link"):
-            validate_manifest(unsafe_path)
 
 
 def test_run_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
     record = _record(tmp_path)
     log = record.write_text("logs", ("claimed-proof.log",), "looks successful\n")
 
-    with pytest.raises(ArtifactManifestError, match="must use results/"):
+    with pytest.raises(ArtifactManifestError, match="must use outputs/"):
         record.succeed(completion_evidence=(log,))
     assert record.status == "running"
 
 
 def test_attempt_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.design_sync_attempt(
-        "lib", "dut", "7" * 32
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        owner="lib",
+        target="dut",
+        flow="design-sync",
+        variant="recursive",
+        identity="7" * 32,
+        artifact_kind="design_sync",
+        identity_kind="attempt_id",
     )
     record = ArtifactRecord.begin(
         execution,
@@ -168,14 +171,20 @@ def test_attempt_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> No
     )
     log = record.write_text("logs", ("claimed-proof.log",), "looks successful\n")
 
-    with pytest.raises(ArtifactManifestError, match="must use evidence/"):
+    with pytest.raises(ArtifactManifestError, match="must use outputs/"):
         record.succeed(completion_evidence=(log,))
     assert record.status == "running"
 
 
 def test_oa_text_view_artifact_requires_exact_view_identity(tmp_path: Path) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.oa_text_view_attempt(
-        "lib", "dut", "veriloga", "9" * 32
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        owner="lib",
+        target="dut",
+        flow="oa-text-view",
+        variant="veriloga",
+        identity="9" * 32,
+        artifact_kind="oa_text_view",
+        identity_kind="attempt_id",
     )
     record = ArtifactRecord.begin(
         execution,
@@ -227,24 +236,24 @@ def test_manifest_binds_kind_to_identity_entities_and_status_provenance(
         validate_manifest(forged_running)
 
 
-def test_artifact_references_reject_symlinks_even_when_target_stays_inside_role(
+def test_artifact_files_reject_symlinks_even_when_target_stays_inside_role(
     tmp_path: Path,
 ) -> None:
     record = _record(tmp_path)
-    target = record.path("results", "proof.txt")
+    target = record.path("outputs", "proof.txt")
     target.write_text("confirmed\n", encoding="utf-8")
-    alias = record.path("results", "proof-alias.txt")
+    alias = record.path("outputs", "proof-alias.txt")
     alias.symlink_to(target.name)
 
     with pytest.raises(RuntimeError, match="cannot traverse a symlink"):
-        record.add_file("results", alias)
+        record.add_file("outputs", alias)
 
-    real_directory = record.path("results", "real-directory")
+    real_directory = record.path("outputs", "real-directory")
     real_directory.mkdir()
-    directory_alias = record.path("results", "directory-alias")
+    directory_alias = record.path("outputs", "directory-alias")
     directory_alias.symlink_to(real_directory.name, target_is_directory=True)
     with pytest.raises(RuntimeError, match="cannot traverse a symlink"):
-        record.directory("results", "directory-alias")
+        record.directory("outputs", "directory-alias")
 
 
 def test_partial_and_uncertain_require_structured_provenance(tmp_path: Path) -> None:
@@ -275,9 +284,9 @@ def test_concurrent_runs_never_overwrite_each_other(tmp_path: Path) -> None:
 
     def create(identity: str) -> Path:
         record = _record(tmp_path, identity)
-        proof = record.path("results", "proof.txt")
+        proof = record.path("outputs", "proof.txt")
         proof.write_text(identity, encoding="utf-8")
-        record.add_file("results", proof)
+        record.add_file("outputs", proof)
         record.succeed(completion_evidence=(proof,))
         return record.paths.root
 

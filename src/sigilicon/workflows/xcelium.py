@@ -10,6 +10,7 @@ from typing import Any
 from sigilicon.artifacts import ArtifactRecord, file_sha256, new_identity
 from sigilicon.domain.fingerprints import source_fingerprint_set
 from sigilicon.domain.provenance import digest
+from sigilicon.domain.repository import RepositoryContext
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
 from sigilicon.paths import ProjectContext
@@ -134,6 +135,7 @@ def run_xcelium_cell(
     xrun_bin = find_xrun(xrun)
     source_state = inspect_source_state(root).as_dict()
     paths = ProjectContext.from_project_root(root, artifact_root=artifact_root)
+    owner = RepositoryContext.from_project_root(root).require_owner(plan.contract).name
     run_id = new_identity()
     setup_fingerprint = digest(
         {
@@ -151,11 +153,17 @@ def run_xcelium_cell(
         }
     )
     attempt = ArtifactRecord.begin(
-        paths.artifacts.standalone_run(
-            paths.artifact_namespace, plan.spec.cell, run_id
+        paths.artifacts.execution(
+            owner=owner,
+            target=plan.spec.cell,
+            flow="xcelium",
+            variant=plan.spec.simulator,
+            identity=run_id,
+            artifact_kind="standalone_simulation",
+            identity_kind="run_id",
         ),
         entities={
-            "library": paths.artifact_namespace,
+            "library": owner,
             "cell": plan.spec.dut,
             "testbench": plan.spec.cell,
         },
@@ -241,7 +249,7 @@ def run_xcelium_cell(
             },
         }
         summary_path = attempt.write_json(
-            "results", ("summary.json",), summary, label="Xcelium completion summary"
+            "outputs", ("summary.json",), summary, label="Xcelium completion summary"
         )
         if completed.returncode != 0:
             error = RuntimeError(

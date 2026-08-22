@@ -20,7 +20,7 @@ class DisposableWork:
     explicitly wants to retain the temporary result directory after return.
     """
 
-    _roles = frozenset(("inputs", "evidence", "logs", "results", "work"))
+    _roles = frozenset(("inputs", "work", "outputs", "logs"))
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()

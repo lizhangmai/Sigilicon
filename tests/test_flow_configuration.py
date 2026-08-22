@@ -321,9 +321,9 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
     assert result.status == "accepted"
     assert adapter.executions == 1
     assert adapter.platform_location == (tmp_path / "installed/logic.lib").resolve()
-    preflight = json.loads((result.run_root / "preflight.json").read_text())
+    preflight = json.loads((result.run_root / "inputs/preflight.json").read_text())
     request = json.loads(
-        (result.run_root / "nodes/check/action_request.json").read_text()
+        (result.run_root / "inputs/check/action_request.json").read_text()
     )
     assert preflight["status"] == "ready"
     platform_check = next(

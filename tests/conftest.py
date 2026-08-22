@@ -22,9 +22,6 @@ contract_kind = "sigilicon-project"
 path_scope = "repository"
 owner = "test"
 
-[project]
-artifact_namespace = "test-project"
-
 [catalogs]
 ip = "catalogs/ip.toml"
 platform = "configs/platform/catalog.toml"
@@ -33,7 +30,6 @@ platform = "configs/platform/catalog.toml"
 project_root = "."
 workspace_root = "virtuoso"
 artifact_root = "artifacts"
-result_root = "artifacts"
 """,
         encoding="utf-8",
     )

@@ -94,10 +94,10 @@ def _copy_export_support_files(
         if not source.is_file():
             continue
         if len(relative.parts) > 1:
-            record.directory("results", *relative.parts[:-1])
+            record.directory("outputs", *relative.parts[:-1])
         copied.append(
             record.copy_file(
-                "results",
+                "outputs",
                 relative.parts,
                 source,
                 label="OA netlist relative include support file",
@@ -123,12 +123,14 @@ def export_project_netlist(
             artifact_root=artifact_root,
         )
     record = ArtifactRecord.begin(
-        paths.artifacts.netlist_export_run(
-            library,
-            cell,
-            view,
-            simulator,
-            new_identity(),
+        paths.artifacts.execution(
+            owner=library,
+            target=cell,
+            flow="netlist-export",
+            variant=f"{view}-{simulator}",
+            identity=new_identity(),
+            artifact_kind="netlist_export",
+            identity_kind="run_id",
         ),
         entities={
             "library": library,
@@ -177,7 +179,7 @@ def export_project_netlist(
                     operation=operation,
                 )
                 stable_result = record.copy_file(
-                    "results",
+                    "outputs",
                     (generated.name,),
                     generated,
                     label="exported netlist",
@@ -202,7 +204,7 @@ def export_project_netlist(
                         details={
                             "generated_file": stable_result.name,
                             "relative_support_files": [
-                                path.relative_to(record.paths.role("results")).as_posix()
+                                path.relative_to(record.paths.role("outputs")).as_posix()
                                 for path in support_files
                             ],
                         },
@@ -481,7 +483,15 @@ def import_spectre_hierarchy(
             artifact_root=artifact_root,
         )
     record = ArtifactRecord.begin(
-        paths.artifacts.import_attempt(library, netlist.stem, new_identity()),
+        paths.artifacts.execution(
+            owner=library,
+            target=netlist.stem,
+            flow="netlist-import",
+            variant=top or "hierarchy",
+            identity=new_identity(),
+            artifact_kind="netlist_import",
+            identity_kind="attempt_id",
+        ),
         entities={
             "library": library,
             "source": netlist.stem,
@@ -521,9 +531,9 @@ def import_spectre_hierarchy(
                         reference_libraries=reference_libraries,
                         overwrite=overwrite,
                         artifact=record,
-                        source_role="source",
+                        source_role="inputs",
                         work_role="work",
-                        cell_evidence_role="cells",
+                        cell_evidence_role="outputs",
                         timeout=timeout,
                         operation=operation,
                     )
@@ -568,7 +578,7 @@ def import_spectre_hierarchy(
                 )
 
             completion = record.write_json(
-                "evidence",
+                "outputs",
                 ("completion.json",),
                 {
                     "library": library,

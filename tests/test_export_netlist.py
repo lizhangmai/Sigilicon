@@ -72,7 +72,7 @@ def test_scoped_netlisting_skill_accepts_the_installed_bridge_shape(tmp_path: Pa
     assert rendered.index('resultsDir("') > rendered.index("ddsRefresh")
 
 
-def test_export_defaults_to_immutable_artifact_namespace(
+def test_export_defaults_to_the_project_artifact_root(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -93,7 +93,7 @@ def test_export_defaults_to_immutable_artifact_namespace(
     assert output == [None]
 
 
-def test_export_workflow_owns_the_immutable_artifact_directory(
+def test_export_workflow_uses_the_canonical_execution_layout(
     monkeypatch, tmp_path: Path
 ) -> None:
     destinations: list[Path] = []
@@ -155,11 +155,11 @@ def test_export_workflow_owns_the_immutable_artifact_directory(
 
     expected = (
         tmp_path
-        / "artifacts/designs/lib/inv/exports/netlist/schematic/spectre/runs"
+        / "artifacts/runs/lib/inv/netlist-export/schematic-spectre"
         / ("1" * 32)
     )
     assert destinations == [expected / "work"]
-    assert result.input_scs == expected / "results/input.scs"
+    assert result.input_scs == expected / "outputs/input.scs"
     assert result.manifest_path == expected / "manifest.json"
     request = json.loads((expected / "inputs/oa-view.json").read_text())
     assert request == {

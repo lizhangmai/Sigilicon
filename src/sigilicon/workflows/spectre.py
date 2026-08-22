@@ -397,7 +397,6 @@ def run_spectre_measurement(
     timeout: int,
     artifact_root: Path | None = None,
     spectre: Path | None = None,
-    oa_export: OaSpectreNetlistExport | None = None,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
 
@@ -407,13 +406,16 @@ def run_spectre_measurement(
     """
 
     paths = ProjectContext.from_project_root(context.project_root, artifact_root=artifact_root)
-    references: dict[str, str] = {}
-    if oa_export is not None:
-        references["oa_netlist_export"] = oa_export.manifest_path.relative_to(
-            paths.artifact_root
-        ).as_posix()
     record = ArtifactRecord.begin(
-        paths.artifacts.standalone_run(context.library, context.testbench, new_identity()),
+        paths.artifacts.execution(
+            owner=context.library,
+            target=context.testbench,
+            flow="spectre",
+            variant=kind,
+            identity=new_identity(),
+            artifact_kind="standalone_simulation",
+            identity_kind="run_id",
+        ),
         entities={
             "library": context.library,
             "cell": context.cell,
@@ -424,7 +426,6 @@ def run_spectre_measurement(
         source_fingerprint=context.source_fingerprint,
         setup_fingerprint=context.setup_fingerprint,
         run_fingerprint=run_fingerprint,
-        reference_links=references,
     )
     record.bind_operation(new_identity())
     try:
@@ -444,17 +445,17 @@ def run_spectre_measurement(
             spectre=spectre,
         )
         raw = record.copy_file(
-            "results", (raw_result_name,), execution.raw_outputs[output_name], label="raw Spectre direct-print data"
+            "outputs", (raw_result_name,), execution.raw_outputs[output_name], label="raw Spectre direct-print data"
         )
         parsed = parse(read_nofollow_text(raw, errors="strict"))
         normalized = record.write_text(
-            "results", (normalized_name,), normalize(parsed), label="normalized direct-print curve data"
+            "outputs", (normalized_name,), normalize(parsed), label="normalized direct-print curve data"
         )
         payload = dict(evaluate(parsed))
         payload.setdefault("contract_version", 1)
         payload.setdefault("condition", dict(condition))
         measurements = record.write_json(
-            "results", ("measurements.json",), payload, label="machine-verifiable measurement contract"
+            "outputs", ("measurements.json",), payload, label="machine-verifiable measurement contract"
         )
         record.add_file("work", record.paths.role("work"), label="native Spectre work directory")
         result = SpectreRunResult(
@@ -476,10 +477,6 @@ def run_spectre_measurement(
             "condition": dict(condition),
             "spectre": str(execution.executable),
         }
-        if oa_export is not None:
-            details["oa_export_manifest"] = oa_export.manifest_path.relative_to(
-                paths.artifact_root
-            ).as_posix()
         record.succeed(completion_evidence=(measurements,), details=details)
         return result
     except BaseException as error:
@@ -501,13 +498,12 @@ def run_spectre_multi_measurement(
     timeout: int,
     artifact_root: Path | None = None,
     spectre: Path | None = None,
-    oa_exports: Sequence[OaSpectreNetlistExport] = (),
 ) -> SpectreRunResult:
     """Run one Spectre deck with multiple declared raw-output files.
 
     This is the multi-analysis sibling of :func:`run_spectre_measurement`.
     ``outputs`` maps the tool-relative output path to its immutable destination
-    below ``results/``.  The evaluator receives only those copied result files;
+    below ``outputs/``.  The evaluator receives only those copied result files;
     it never reads mutable simulator work files.
     """
 
@@ -516,14 +512,16 @@ def run_spectre_multi_measurement(
     if len(set(outputs.values())) != len(outputs):
         raise ValueError("multi-output Spectre destinations must be unique")
     paths = ProjectContext.from_project_root(context.project_root, artifact_root=artifact_root)
-    references = {
-        f"oa_netlist_export_{index}": export.manifest_path.relative_to(
-            paths.artifact_root
-        ).as_posix()
-        for index, export in enumerate(oa_exports)
-    }
     record = ArtifactRecord.begin(
-        paths.artifacts.standalone_run(context.library, context.testbench, new_identity()),
+        paths.artifacts.execution(
+            owner=context.library,
+            target=context.testbench,
+            flow="spectre",
+            variant=kind,
+            identity=new_identity(),
+            artifact_kind="standalone_simulation",
+            identity_kind="run_id",
+        ),
         entities={
             "library": context.library,
             "cell": context.cell,
@@ -534,7 +532,6 @@ def run_spectre_multi_measurement(
         source_fingerprint=context.source_fingerprint,
         setup_fingerprint=context.setup_fingerprint,
         run_fingerprint=run_fingerprint,
-        reference_links=references,
     )
     record.bind_operation(new_identity())
     try:
@@ -558,9 +555,9 @@ def run_spectre_multi_measurement(
             if not destination:
                 raise ValueError("multi-output result destination cannot be empty")
             if len(destination) > 1:
-                record.directory("results", *destination[:-1])
+                record.directory("outputs", *destination[:-1])
             copied[tool_name] = record.copy_file(
-                "results",
+                "outputs",
                 destination,
                 execution.raw_outputs[tool_name],
                 label=f"raw Spectre output {tool_name}",
@@ -569,7 +566,7 @@ def run_spectre_multi_measurement(
         payload.setdefault("contract_version", 1)
         payload.setdefault("condition", dict(condition))
         measurements = record.write_json(
-            "results",
+            "outputs",
             ("measurements.json",),
             payload,
             label="machine-verifiable multi-analysis measurement contract",
@@ -595,7 +592,6 @@ def run_spectre_multi_measurement(
                 "kind": kind,
                 "condition": dict(condition),
                 "spectre": str(execution.executable),
-                "oa_export_manifests": list(references.values()),
             },
         )
         return result
@@ -610,17 +606,24 @@ def publish_measurement_summary(
     kind: str,
     condition: Mapping[str, object],
     run_fingerprint: str,
-    source_runs: Sequence[SpectreRunResult],
     inputs: Sequence[StagedSpectreInput],
     result_files: Mapping[str, str],
     payload: Mapping[str, object],
     artifact_root: Path | None = None,
 ) -> SpectreRunResult:
-    """Publish a derived sweep/distribution contract with an independent run ID."""
+    """Publish a self-contained derived sweep or distribution result."""
 
     paths = ProjectContext.from_project_root(context.project_root, artifact_root=artifact_root)
     record = ArtifactRecord.begin(
-        paths.artifacts.standalone_run(context.library, context.testbench, new_identity()),
+        paths.artifacts.execution(
+            owner=context.library,
+            target=context.testbench,
+            flow="spectre-derived",
+            variant=kind,
+            identity=new_identity(),
+            artifact_kind="standalone_simulation",
+            identity_kind="run_id",
+        ),
         entities={
             "library": context.library,
             "cell": context.cell,
@@ -643,27 +646,10 @@ def publish_measurement_summary(
                 dict(exact_command),
                 label="exact characterization campaign command",
             )
-        record.write_json(
-            "inputs",
-            ("source-runs.json",),
-            {
-                "runs": [
-                    {
-                        "run_id": source.run_id,
-                        "manifest": source.manifest_path.relative_to(paths.artifact_root).as_posix(),
-                        "measurements": source.measurements.relative_to(paths.artifact_root).as_posix(),
-                        "passed": source.passed,
-                        "condition": dict(source.condition),
-                    }
-                    for source in source_runs
-                ]
-            },
-            label="exact source-run references",
-        )
         for name, content in result_files.items():
-            record.write_text("results", (name,), content, label=f"derived {kind} result")
+            record.write_text("outputs", (name,), content, label=f"derived {kind} result")
         measurements = record.write_json(
-            "results", ("measurements.json",), payload, label="derived measurement contract"
+            "outputs", ("measurements.json",), payload, label="derived measurement contract"
         )
         result = SpectreRunResult(
             kind=kind,
@@ -681,7 +667,7 @@ def publish_measurement_summary(
             raise MeasurementContractFailure("derived measurement contract failed", result)
         record.succeed(
             completion_evidence=(measurements,),
-            details={"kind": kind, "source_run_count": len(source_runs)},
+            details={"kind": kind},
         )
         return result
     except BaseException as error:

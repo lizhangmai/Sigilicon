@@ -44,6 +44,7 @@ from sigilicon.flow.model import (
     PolicyCheck,
     PolicySpec,
 )
+from sigilicon.paths import ArtifactLayout
 
 
 class IpReleaseError(RuntimeError):
@@ -942,7 +943,10 @@ def plan_ip_release(
             "contract": component.path.relative_to(contract.project_root).as_posix(),
         },
         "release_id": release_id,
-        "release_root": (Path("ip") / contract.name / release_id).as_posix(),
+        "release_root": ArtifactLayout(artifact_root.resolve())
+        .export(contract.name, "package", release_id)
+        .relative_to(artifact_root.resolve())
+        .as_posix(),
         "source_commit": commit,
         "working_tree_dirty": dirty,
         "source_fingerprint": source_fingerprint,
@@ -1601,7 +1605,9 @@ def publish_ip_release(
             "cannot publish a release candidate that was built from dirty source"
         )
     manifest = artifact_root.resolve() / Path(str(audited["manifest"]))
-    namespace = artifact_root.resolve() / "ip" / str(audited["ip_name"])
+    namespace = ArtifactLayout(artifact_root.resolve()).export(
+        str(audited["ip_name"]), "package"
+    )
     pointer = {
         "ip_name": audited["ip_name"],
         "release_id": audited["release_id"],

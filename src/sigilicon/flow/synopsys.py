@@ -377,11 +377,11 @@ class SynopsysDCAdapter:
             env=environment,
             timeout=configuration["timeout_seconds"],
         )
-        (context.work_root / "stdout.log").write_text(
+        (context.log_root / "stdout.log").write_text(
             completed.stdout,
             encoding="utf-8",
         )
-        (context.work_root / "stderr.log").write_text(
+        (context.log_root / "stderr.log").write_text(
             completed.stderr or "",
             encoding="utf-8",
         )
@@ -452,8 +452,8 @@ class SynopsysDCAdapter:
             artifacts=tuple(produced),
             facts={"passed": True},
             evidence=(
-                context.work_root / "stdout.log",
-                context.work_root / "stderr.log",
+                context.log_root / "stdout.log",
+                context.log_root / "stderr.log",
             ),
             details={"report_count": len(report_members)},
         )
@@ -673,11 +673,11 @@ class SynopsysFCAdapter:
                 "managed Synopsys FC process supervision failed: "
                 f"{type(exc).__name__}"
             ) from exc
-        (context.work_root / "stdout.log").write_text(
+        (context.log_root / "stdout.log").write_text(
             completed.stdout,
             encoding="utf-8",
         )
-        (context.work_root / "stderr.log").write_text(
+        (context.log_root / "stderr.log").write_text(
             completed.stderr or "",
             encoding="utf-8",
         )
@@ -732,8 +732,8 @@ class SynopsysFCAdapter:
                 )
             )
 
-        stdout = context.work_root / "stdout.log"
-        stderr = context.work_root / "stderr.log"
+        stdout = context.log_root / "stdout.log"
+        stderr = context.log_root / "stderr.log"
         evidence = context.output_path("execution-evidence", "execution.json")
         atomic_write_json(
             evidence,
@@ -1223,11 +1223,11 @@ class SynopsysVCSAdapter:
             env=environment,
             timeout=configuration["timeout_seconds"],
         )
-        (context.work_root / "stdout.log").write_text(
+        (context.log_root / "stdout.log").write_text(
             completed.stdout,
             encoding="utf-8",
         )
-        (context.work_root / "stderr.log").write_text(
+        (context.log_root / "stderr.log").write_text(
             completed.stderr or "",
             encoding="utf-8",
         )
@@ -1246,8 +1246,8 @@ class SynopsysVCSAdapter:
         execution: AdapterExecution,
     ) -> CollectedActionResult:
         qualifiers = self._qualifiers(context)
-        stdout = context.work_root / "stdout.log"
-        stderr = context.work_root / "stderr.log"
+        stdout = context.log_root / "stdout.log"
+        stderr = context.log_root / "stderr.log"
         evidence = context.output_path("evidence", "simulation.json")
         atomic_write_json(
             evidence,
@@ -1439,11 +1439,11 @@ class SynopsysHSpiceAdapter:
             env=environment,
             timeout=configuration["timeout_seconds"],
         )
-        (context.work_root / "stdout.log").write_text(
+        (context.log_root / "stdout.log").write_text(
             completed.stdout,
             encoding="utf-8",
         )
-        (context.work_root / "stderr.log").write_text(
+        (context.log_root / "stderr.log").write_text(
             completed.stderr or "",
             encoding="utf-8",
         )
@@ -1503,8 +1503,8 @@ class SynopsysHSpiceAdapter:
                 "rows": rows,
             },
         )
-        stdout = context.work_root / "stdout.log"
-        stderr = context.work_root / "stderr.log"
+        stdout = context.log_root / "stdout.log"
+        stderr = context.log_root / "stderr.log"
         return CollectedActionResult(
             artifacts=(
                 ProducedArtifact(
@@ -1572,8 +1572,8 @@ class SynopsysHSpiceAdapter:
                 "campaign-record-count": len(records),
             },
             evidence=(
-                context.work_root / "stdout.log",
-                context.work_root / "stderr.log",
+                context.log_root / "stdout.log",
+                context.log_root / "stderr.log",
                 raw_summary,
             ),
             details={

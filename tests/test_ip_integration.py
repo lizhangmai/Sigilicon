@@ -21,7 +21,7 @@ def _fixture_architecture_validator(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _write_release_fixture(artifact_root: Path) -> tuple[str, str]:
     release_id = "development-fixture"
-    relative_root = Path("ip/fixture-ip") / release_id
+    relative_root = Path("exports/fixture-ip/package") / release_id
     release_root = artifact_root / relative_root
     release_root.mkdir(parents=True)
     files = {
@@ -274,9 +274,6 @@ contract_kind = "sigilicon-project"
 path_scope = "repository"
 owner = "repository"
 
-[project]
-artifact_namespace = "fixture"
-
 [catalogs]
 ip = "ip/catalog.toml"
 platform = "configs/platform/catalog.toml"
@@ -285,7 +282,6 @@ platform = "configs/platform/catalog.toml"
 project_root = "."
 workspace_root = "workspace"
 artifact_root = "../artifacts"
-result_root = "../artifacts"
 ''',
         encoding="utf-8",
     )
@@ -406,7 +402,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert "sources" not in result
     assert result["source_files"] == ["ip/demo/rtl/top.sv"]
     assert result["release_sources"] == [
-        f"ip/fixture-ip/{release_id}/rtl/fixture_model.sv"
+        f"exports/fixture-ip/package/{release_id}/rtl/fixture_model.sv"
     ]
     assert result["dependency_releases"][0]["manifest"] == manifest
 
