@@ -47,11 +47,6 @@ root = "ip/example"
     )
     _write(
         root,
-        "catalogs/soc.toml",
-        header.format(kind="soc-catalog") + "\n[targets]\n",
-    )
-    _write(
-        root,
         "configs/platform/catalog.toml",
         header.format(kind="platform-catalog") + "\n[platforms]\n",
     )

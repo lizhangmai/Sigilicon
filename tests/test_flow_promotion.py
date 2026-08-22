@@ -13,8 +13,8 @@ from sigilicon.workflows.ip_packaging import (
     audit_ip_release,
     promote_ip_release,
 )
-from sigilicon.domain.soc import LockedIpRelease
-from sigilicon.workflows.soc import resolve_locked_ip_release
+from sigilicon.domain.ip_integration import LockedIpRelease
+from sigilicon.workflows.ip_integration import resolve_locked_ip_release
 from test_run_artifact_reference import (
     DIGEST,
     FLOW,

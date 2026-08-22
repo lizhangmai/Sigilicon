@@ -17,7 +17,9 @@ if TYPE_CHECKING:
 
 
 CONFIG_SCHEMA = 1
-PATH_SCOPES = frozenset({"repository", "owner", "cell", "verification", "platform", "product", "variant"})
+PATH_SCOPES = frozenset(
+    {"repository", "owner", "cell", "verification", "platform", "variant"}
+)
 
 
 @dataclass(frozen=True)
@@ -91,7 +93,7 @@ def inspect_project_configurations(
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
-    Catalog locations define product, component, and platform roots.
+    Catalog locations define repository, IP-owner, and platform roots.
     Domain loaders remain responsible for native schemas; this pass proves that
     every TOML is parseable and that every common metadata envelope is complete.
     """
@@ -157,8 +159,6 @@ def inspect_project_configurations(
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
     repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
     platform_root = context.catalog("platform").parent
-    soc_catalog = context.find_catalog("soc")
-    soc_root = soc_catalog.parent if soc_catalog is not None else None
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
@@ -191,8 +191,6 @@ def inspect_project_configurations(
                 allowed_scopes = ("owner", "cell", "verification", "variant")
             elif owner_root.is_relative_to(platform_root):
                 allowed_scopes = "platform"
-            elif soc_root is not None and owner_root.is_relative_to(soc_root):
-                allowed_scopes = ("product", "variant")
             else:
                 raise ValueError(
                     f"{owner_root}: configuration owner root has no domain catalog"

@@ -64,7 +64,7 @@ class RepositoryContext:
                 f"{contract}: catalogs must contain ip and platform; "
                 f"missing {sorted(missing)}"
             )
-        unknown = catalog_names - {"ip", "soc", "platform"}
+        unknown = catalog_names - {"ip", "platform"}
         if unknown:
             raise ValueError(
                 f"{contract}: unknown catalog roles: {sorted(unknown)}"

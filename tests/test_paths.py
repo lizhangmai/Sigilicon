@@ -136,7 +136,7 @@ def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
     write_component_owner(
         tmp_path,
         "example",
-        filesets={"source": ("catalogs/soc.toml",)},
+        filesets={"source": ("configs/platform/catalog.toml",)},
     )
 
     with pytest.raises(ValueError, match="component source escapes"):
@@ -156,20 +156,17 @@ def test_repository_context_rejects_unknown_catalog_roles(tmp_path: Path) -> Non
         RepositoryContext.from_project_root(tmp_path)
 
 
-def test_repository_context_allows_an_unregistered_soc_domain(tmp_path: Path) -> None:
+def test_repository_context_rejects_a_retired_catalog_domain(tmp_path: Path) -> None:
     contract = tmp_path / "sigilicon.toml"
     contract.write_text(
         contract.read_text(encoding="utf-8").replace(
-            'soc = "catalogs/soc.toml"\n', ""
+            '[catalogs]\n', '[catalogs]\nlegacy = "catalogs/legacy.toml"\n'
         ),
         encoding="utf-8",
     )
 
-    repository = RepositoryContext.from_project_root(tmp_path)
-
-    assert repository.find_catalog("soc") is None
-    with pytest.raises(ValueError, match="repository has no 'soc' catalog"):
-        repository.catalog("soc")
+    with pytest.raises(ValueError, match="unknown catalog roles.*legacy"):
+        RepositoryContext.from_project_root(tmp_path)
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

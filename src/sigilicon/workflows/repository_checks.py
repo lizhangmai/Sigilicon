@@ -21,7 +21,7 @@ from sigilicon.domain.repository import RepositoryContext
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
-from sigilicon.workflows.soc import plan_soc
+from sigilicon.workflows.ip_integration import plan_ip_integration
 
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
@@ -153,11 +153,21 @@ def inspect_repository_designs(
             owner=_document_owner(path),
             root=_component_owner_root(context, path),
         )
-        components[name] = {
+        component_result: dict[str, Any] = {
             "contract": path.relative_to(root).as_posix(),
             "kind": component.kind,
             "graph": sorted(graph),
         }
+        if "variants" in read_toml(path):
+            integration = plan_ip_integration(
+                path,
+                project_root=root,
+                artifact_root=context.project.artifact_root,
+            )
+            if integration.get("ip") != name:
+                raise ValueError(f"IP integration catalog identity mismatch: {name}")
+            component_result["integration"] = integration
+        components[name] = component_result
 
     ip_releases: dict[str, Any] = {}
     oa_assemblies: dict[str, Any] = {}
@@ -203,31 +213,6 @@ def inspect_repository_designs(
             assembly,
             project_root=root,
         ).as_dict()
-
-    socs: dict[str, Any] = {}
-    soc_catalog_path = context.find_catalog("soc")
-    if soc_catalog_path is not None:
-        soc_catalog_path, soc_catalog = _catalog(
-            context,
-            "soc",
-            "soc-catalog",
-            ("targets",),
-        )
-        soc_paths = _contract_entries(context, "soc.targets", soc_catalog["targets"])
-        for name, path in soc_paths.items():
-            plan = plan_soc(
-                path,
-                project_root=root,
-                artifact_root=context.project.artifact_root,
-            )
-            if plan.get("soc") != name:
-                raise ValueError(f"SoC catalog identity mismatch: {name}")
-            _register_owner_root(
-                owner_roots,
-                owner=_document_owner(path),
-                root=path.parent,
-            )
-            socs[name] = plan
 
     platform_catalog_path, platform_catalog = _catalog(
         context,
@@ -294,9 +279,6 @@ def inspect_repository_designs(
             for _, path in layout_catalog_paths
         ],
     }
-    if soc_catalog_path is not None:
-        catalogs["soc"] = soc_catalog_path.relative_to(root).as_posix()
-
     return {
         "passed": True,
         "project": "sigilicon.toml",
@@ -308,5 +290,4 @@ def inspect_repository_designs(
         "layout_targets": layout_targets,
         "oa_assemblies": oa_assemblies,
         "platforms": platforms,
-        "socs": socs,
     }

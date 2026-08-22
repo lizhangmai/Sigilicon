@@ -1,7 +1,8 @@
 # AGENTS.md — Sigilicon Python package
 
 适用于本目录及全部子目录。Sigilicon 只拥有可跨项目复用的 EDA flow 模型、adapter、
-安全检查和编排；具体 IP、SoC、PDK、qualification 门槛与仓库布局由调用项目拥有。
+安全检查和编排；具体 IP（含层次化 composite IP）、PDK、qualification 门槛与仓库
+布局由调用项目拥有。全部设计层次通过 IP component/integration seam 表达。
 
 - 公共 import namespace 是 `sigilicon`，实现采用 `src/sigilicon` layout。
 - 库内 workflow 接收显式 `ProjectContext`，或接收显式 project root 后只读取该 root

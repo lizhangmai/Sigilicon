@@ -6,12 +6,12 @@ from collections.abc import Sequence
 import sys
 
 
-_HELP = """usage: sigilicon [-h] {flow,layout,design,oa,ip,soc} ...
+_HELP = """usage: sigilicon [-h] {flow,layout,design,oa,ip} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {flow,layout,design,oa,ip,soc}
+  {flow,layout,design,oa,ip}
 
 options:
   -h, --help            show this help message and exit

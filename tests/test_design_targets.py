@@ -155,7 +155,7 @@ def test_design_catalog_routes_dv_owned_modules_without_script_wrappers(
     tmp_path: Path,
 ) -> None:
     _catalog_project(tmp_path)
-    module = tmp_path / "soc/example/dv/transaction.py"
+    module = tmp_path / "ip/example/dv/transaction.py"
     module.parent.mkdir(parents=True)
     module.write_text("raise SystemExit(0)\n", encoding="utf-8")
     catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
@@ -169,7 +169,7 @@ owner = "example"
 [targets.dv-check]
 description = "DV-owned entrypoint"
 kind = "module"
-entrypoint = "soc.example.dv.transaction"
+entrypoint = "ip.example.dv.transaction"
 [targets.dv-check.modes]
 contract = []
 ''',
@@ -179,7 +179,7 @@ contract = []
     assert target.command("contract") == (
         sys.executable,
         "-m",
-        "soc.example.dv.transaction",
+        "ip.example.dv.transaction",
         "--mode",
         "contract",
     )

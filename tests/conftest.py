@@ -27,7 +27,6 @@ artifact_namespace = "test-project"
 
 [catalogs]
 ip = "catalogs/ip.toml"
-soc = "catalogs/soc.toml"
 platform = "configs/platform/catalog.toml"
 
 [paths]
@@ -48,16 +47,6 @@ owner = "test"
 
 [targets]
 [components]
-''',
-        encoding="utf-8",
-    )
-    (catalogs / "soc.toml").write_text(
-        '''schema = 1
-contract_kind = "soc-catalog"
-path_scope = "repository"
-owner = "test"
-
-[targets]
 ''',
         encoding="utf-8",
     )

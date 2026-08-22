@@ -13,7 +13,11 @@ from sigilicon.cli.generate_layout import main as generate_layout_main
 from sigilicon.cli.verify_layout import main as verify_layout_main
 from sigilicon.paths import ProjectContext, discover_project_context
 from sigilicon.virtuoso.client import get_client
-from sigilicon.workflows.soc import catalog_contract_path, check_soc, plan_soc
+from sigilicon.workflows.ip_integration import (
+    check_ip_integration,
+    ip_catalog_contract_path,
+    plan_ip_integration,
+)
 from sigilicon.workflows.design_targets import (
     DesignTarget,
     execute_design_target,
@@ -248,33 +252,71 @@ def _parser() -> argparse.ArgumentParser:
             )
         add_json_arg(action_parser)
 
-    soc = domains.add_parser("soc", help="plan and check a reproducible SoC product")
-    soc_commands = soc.add_subparsers(dest="action", required=True)
-    soc_plan = soc_commands.add_parser(
-        "plan", help="validate the source-only SoC integration plan"
+    integration = ip_commands.add_parser(
+        "integration", help="plan or check a composite IP"
     )
-    soc_plan.add_argument("target")
-    add_json_arg(soc_plan)
-    soc_check = soc_commands.add_parser(
-        "check", help="resolve one variant through its exact IP lock"
+    integration_commands = integration.add_subparsers(
+        dest="integration_action", required=True
     )
-    soc_check.add_argument("target")
-    soc_check.add_argument("--variant", required=True)
-    soc_check.add_argument(
+    integration_plan = integration_commands.add_parser(
+        "plan", help="validate source-only composite-IP integration intent"
+    )
+    integration_plan.add_argument("target")
+    add_json_arg(integration_plan)
+    integration_check = integration_commands.add_parser(
+        "check", help="resolve one IP variant through its exact dependency lock"
+    )
+    integration_check.add_argument("target")
+    integration_check.add_argument("--variant", required=True)
+    integration_check.add_argument(
         "--fileset", help="named variant fileset (defaults to the variant contract)"
     )
-    add_json_arg(soc_check)
+    add_json_arg(integration_check)
     return parser
 
 
-def _catalog_contract(root: Path, domain: str, target: str) -> Path:
-    return catalog_contract_path(root, domain, target)
+def _catalog_contract(root: Path, target: str, *, section: str = "targets") -> Path:
+    return ip_catalog_contract_path(root, target, section=section)
 
 
 def _run_ip(args: argparse.Namespace, root: Path) -> int:
     context = ProjectContext.from_project_root(root)
+    if args.action == "integration":
+        try:
+            contract = _catalog_contract(root, args.target, section="components")
+            if args.integration_action == "plan":
+                payload = plan_ip_integration(
+                    contract,
+                    project_root=root,
+                    artifact_root=context.artifact_root,
+                )
+            else:
+                payload = check_ip_integration(
+                    contract,
+                    project_root=root,
+                    artifact_root=context.artifact_root,
+                    variant_name=args.variant,
+                    fileset_name=args.fileset,
+                )
+        except (OSError, RuntimeError, ValueError, KeyError) as exc:
+            die(f"ERROR: {exc}")
+        if args.json:
+            emit_json(payload)
+        elif args.integration_action == "plan":
+            variants = ", ".join(item["name"] for item in payload["variants"])
+            print(f"IP integration plan passed: {payload['ip']} ({variants})")
+        else:
+            releases = ", ".join(
+                item["release_id"] for item in payload["dependency_releases"]
+            )
+            print(
+                f"IP integration check passed: {payload['ip']} "
+                f"variant={payload['variant']} fileset={payload['fileset']} "
+                f"dependencies={releases or 'source-only'}"
+            )
+        return 0
     try:
-        contract = _catalog_contract(root, "ip", args.target)
+        contract = _catalog_contract(root, args.target)
         operation = {
             "plan": plan_ip_release,
             "build": build_ip_release,
@@ -315,42 +357,6 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
         print(
             f"IP release {args.action} passed: {payload['ip_name']} "
             f"{payload['release_id']}"
-        )
-    return 0
-
-
-def _run_soc(args: argparse.Namespace, root: Path) -> int:
-    context = ProjectContext.from_project_root(root)
-    try:
-        contract = _catalog_contract(root, "soc", args.target)
-        if args.action == "plan":
-            payload = plan_soc(
-                contract,
-                project_root=root,
-                artifact_root=context.artifact_root,
-            )
-        else:
-            payload = check_soc(
-                contract,
-                project_root=root,
-                artifact_root=context.artifact_root,
-                variant_name=args.variant,
-                fileset_name=args.fileset,
-            )
-    except (OSError, RuntimeError, ValueError, KeyError) as exc:
-        die(f"ERROR: {exc}")
-    if args.json:
-        emit_json(payload)
-    elif args.action == "plan":
-        variants = ", ".join(item["name"] for item in payload["variants"])
-        print(f"SoC source-only plan passed: {payload['soc']} ({variants})")
-    else:
-        release_ids = ", ".join(
-            item["release_id"] for item in payload["ip_releases"]
-        )
-        print(
-            f"SoC check passed: {payload['soc']} variant={payload['variant']} "
-            f"fileset={payload['fileset']} IP={release_ids}"
         )
     return 0
 
@@ -622,8 +628,6 @@ def main(
         return _run_oa(args, root, client_factory)
     if args.domain == "ip":
         return _run_ip(args, root)
-    if args.domain == "soc":
-        return _run_soc(args, root)
     raise AssertionError(f"unhandled flow domain: {args.domain}")
 
 
