@@ -33,7 +33,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                     "recipe.electrical-simulation",
                 ),
                 ArtifactPort("qualification-spec", "spec.qualification"),
-                ArtifactPort("qualification-recipe", "recipe.qualification"),
             ),
             adapters=("source-assets",),
             resolves_source_assets=True,
@@ -325,7 +324,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                     "report.electrical-campaign",
                 ),
                 ArtifactPort("qualification-spec", "spec.qualification"),
-                ArtifactPort("qualification-recipe", "recipe.qualification"),
             ),
             outputs=(
                 ArtifactPort("evidence", "evidence.qualification"),

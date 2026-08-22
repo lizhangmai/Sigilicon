@@ -28,7 +28,6 @@ from sigilicon.workflows.ip_packaging import (
     audit_ip_release,
     build_ip_release,
     plan_ip_release,
-    promote_ip_release,
     publish_ip_release,
 )
 from sigilicon.workflows.oa_library import (
@@ -235,16 +234,14 @@ def _parser() -> argparse.ArgumentParser:
         ("build", "build an immutable release package"),
         ("audit", "read-only audit of the release selected by its owner contract"),
         ("publish", "atomically select an audited release for consumers"),
-        ("promote", "publish exact accepted Flow Run evidence as a release"),
     ):
         action_parser = ip_commands.add_parser(action, help=help_text)
         action_parser.add_argument("target")
-        if action != "promote":
-            action_parser.add_argument(
-                "--maturity",
-                choices=("development", "implementation", "signoff"),
-            )
-        if action in {"audit", "promote"}:
+        action_parser.add_argument(
+            "--maturity",
+            choices=("development", "implementation", "signoff"),
+        )
+        if action == "audit":
             action_parser.add_argument(
                 "--artifact-root",
                 type=Path,
@@ -322,10 +319,9 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
             "build": build_ip_release,
             "audit": audit_ip_release,
             "publish": publish_ip_release,
-            "promote": promote_ip_release,
         }[args.action]
         artifact_root = context.artifact_root
-        if args.action in {"audit", "promote"} and args.artifact_root is not None:
+        if args.action == "audit" and args.artifact_root is not None:
             artifact_root = (
                 args.artifact_root
                 if args.artifact_root.is_absolute()
@@ -335,8 +331,7 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
             "project_root": root,
             "artifact_root": artifact_root,
         }
-        if args.action != "promote":
-            keywords["maturity"] = args.maturity
+        keywords["maturity"] = args.maturity
         payload = operation(contract, **keywords)
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
         die(f"ERROR: {exc}")

@@ -34,14 +34,12 @@ from sigilicon.flow.model import (
     PreflightCheck,
     PreflightResult,
     ProducedArtifact,
-    RunArtifactReference,
     identifier,
     owner_identity,
     run_identity,
 )
 from sigilicon.flow.policy import EvaluatedPolicy, evaluate_policy
 from sigilicon.flow.registry import FlowRegistry
-from sigilicon.flow.run_artifacts import validate_durable_artifact
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
     git_source,
@@ -852,157 +850,6 @@ class FlowEngine:
         ):
             raise FlowExecutionError("Flow Result identity does not match selected run")
         return result
-
-    def resolve_run_artifact(
-        self,
-        *,
-        artifact_root: Path,
-        consumer_owner: str,
-        reference: RunArtifactReference,
-    ) -> ActionArtifact:
-        """Resolve and validate one durable same-owner prior-run artifact."""
-
-        selected_owner = owner_identity(consumer_owner, "Run Artifact consumer owner")
-        if reference.owner != selected_owner:
-            raise FlowExecutionError(
-                "cross-owner consumption requires an immutable Release selected by a lock"
-            )
-        store_root = Path(artifact_root).resolve()
-        if store_root == Path(store_root.anchor):
-            raise FlowExecutionError("artifact root cannot be a filesystem root")
-        run_root = (
-            store_root
-            / "flows"
-            / reference.owner
-            / reference.flow_id
-            / "runs"
-            / reference.run_id
-        )
-        resolved_run = run_root.resolve(strict=False)
-        if not resolved_run.is_relative_to(store_root):
-            raise FlowExecutionError("Flow Run path escaped the artifact root")
-        if not run_root.is_dir() or run_root.is_symlink():
-            raise FlowExecutionError(f"Flow Run does not exist: {reference.run_id}")
-
-        try:
-            manifest = read_json_object(
-                run_root / "run_manifest.json", "Flow Run Manifest"
-            )
-            result = read_json_object(run_root / "flow_result.json", "Flow Result")
-            action_result = read_json_object(
-                run_root / "nodes" / reference.node_id / "action_result.json",
-                "Action Result",
-            )
-            receipt = read_json_object(
-                run_root / "nodes" / reference.node_id / "policy_receipt.json",
-                "Policy Receipt",
-            )
-        except (OSError, RuntimeError) as exc:
-            raise FlowExecutionError(str(exc)) from exc
-
-        expected_run = {
-            "owner": reference.owner,
-            "flow": reference.flow_id,
-            "run_id": reference.run_id,
-        }
-        if (
-            manifest.get("schema") != 1
-            or manifest.get("contract_kind") != "flow-run-manifest"
-            or any(manifest.get(key) != value for key, value in expected_run.items())
-        ):
-            raise FlowExecutionError("Flow Run Manifest identity does not match reference")
-        self._validate_run_inventory(run_root, manifest)
-        if (
-            result.get("schema") != 1
-            or result.get("contract_kind") != "flow-result"
-            or any(result.get(key) != value for key, value in expected_run.items())
-        ):
-            raise FlowExecutionError("Flow Result identity does not match reference")
-        nodes = result.get("nodes")
-        node = nodes.get(reference.node_id) if isinstance(nodes, Mapping) else None
-        if not isinstance(node, Mapping):
-            raise FlowExecutionError("Run Artifact producer node is missing")
-        if (
-            node.get("execution_status") != "succeeded"
-            or node.get("result_status") != "valid"
-            or node.get("status") != "accepted"
-        ):
-            raise FlowExecutionError("Run Artifact producer is not accepted and valid")
-        if (
-            action_result.get("schema") != 1
-            or action_result.get("contract_kind") != "action-result"
-            or action_result.get("node") != reference.node_id
-            or action_result.get("result_status") != "valid"
-            or not isinstance(action_result.get("execution"), Mapping)
-            or action_result["execution"].get("status") != "succeeded"
-        ):
-            raise FlowExecutionError("Run Artifact Action Result is not valid")
-        if (
-            receipt.get("schema") != 1
-            or receipt.get("contract_kind") != "policy-receipt"
-            or receipt.get("policy") != reference.required_policy
-            or receipt.get("status") != "accepted"
-        ):
-            raise FlowExecutionError("Run Artifact required policy was not accepted")
-
-        artifacts = node.get("artifacts")
-        artifact = artifacts.get(reference.role) if isinstance(artifacts, Mapping) else None
-        action_artifacts = action_result.get("artifacts")
-        action_artifact = (
-            action_artifacts.get(reference.role)
-            if isinstance(action_artifacts, Mapping)
-            else None
-        )
-        if not isinstance(artifact, Mapping) or artifact != action_artifact:
-            raise FlowExecutionError("Run Artifact record is missing or inconsistent")
-        if (
-            artifact.get("producer") != reference.node_id
-            or artifact.get("kind") != reference.kind
-            or artifact.get("qualifiers") != dict(reference.qualifiers)
-            or artifact.get("digest") != reference.digest
-        ):
-            raise FlowExecutionError("Run Artifact identity does not match reference")
-
-        relative_text = artifact.get("path")
-        relative = Path(relative_text) if isinstance(relative_text, str) else Path()
-        if (
-            not isinstance(relative_text, str)
-            or not relative_text
-            or relative.is_absolute()
-            or "\\" in relative_text
-            or any(part in {"", ".", ".."} for part in relative.parts)
-        ):
-            raise FlowExecutionError("Run Artifact path is unsafe")
-        path = (run_root / relative).resolve(strict=False)
-        if not path.is_relative_to(resolved_run) or not path.is_file():
-            raise FlowExecutionError("Run Artifact path escaped or is missing")
-        lexical_path = run_root / relative
-        parents = []
-        candidate = lexical_path.parent
-        while candidate != run_root:
-            parents.append(candidate)
-            candidate = candidate.parent
-        if lexical_path.is_symlink() or any(parent.is_symlink() for parent in parents):
-            raise FlowExecutionError("Run Artifact path traverses a symlink")
-        validate_durable_artifact(
-            path,
-            kind=reference.kind,
-            qualifiers=reference.qualifiers,
-            digest=reference.digest,
-        )
-
-        managed = manifest.get("managed_paths")
-        if not isinstance(managed, list) or relative.as_posix() not in managed:
-            raise FlowExecutionError("Flow Run Manifest does not own the Run Artifact")
-        return ActionArtifact(
-            role=reference.role,
-            kind=reference.kind,
-            path=path,
-            relative_path=relative.as_posix(),
-            digest=reference.digest,
-            producer=reference.node_id,
-            qualifiers=reference.qualifiers,
-        )
 
     def _validate_run_inventory(
         self,

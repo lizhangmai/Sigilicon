@@ -12,10 +12,7 @@ from sigilicon.domain.config_contracts import (
     read_toml,
     require_config_header,
 )
-from sigilicon.domain.ip_release import (
-    load_ip_contract,
-    load_ip_promotion_contract,
-)
+from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.platform import load_platform
 from sigilicon.domain.repository import RepositoryContext
 from sigilicon.workflows.design_targets import load_design_target_catalog
@@ -172,28 +169,6 @@ def inspect_repository_designs(
     ip_releases: dict[str, Any] = {}
     oa_assemblies: dict[str, Any] = {}
     for name, path in release_paths.items():
-        contract_kind = read_toml(path).get("contract_kind")
-        if contract_kind == "ip-promotion":
-            promotion = load_ip_promotion_contract(path, project_root=root)
-            if promotion.name != name:
-                raise ValueError(f"IP promotion catalog identity mismatch: {name}")
-            _register_owner_root(
-                owner_roots,
-                owner=_document_owner(path),
-                root=_component_owner_root(context, path),
-            )
-            reference = promotion.artifacts[0]
-            ip_releases[name] = {
-                "contract": path.relative_to(root).as_posix(),
-                "maturity": promotion.maturity,
-                "exports": [promotion.export],
-                "producer_run": {
-                    "owner": reference["owner"],
-                    "flow": reference["flow"],
-                    "run_id": reference["run_id"],
-                },
-            }
-            continue
         contract = load_ip_contract(path, project_root=root)
         if contract.name != name:
             raise ValueError(f"IP release catalog identity mismatch: {name}")
