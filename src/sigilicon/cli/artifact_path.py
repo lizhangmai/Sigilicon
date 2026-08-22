@@ -28,7 +28,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--role",
         choices=("inputs", "work", "outputs", "logs"),
-        help="print one standard role directory instead of the run root",
+        action="append",
+        help="print each selected standard role directory instead of the run root",
     )
 
     exported = commands.add_parser("export", help="resolve one named export")
@@ -57,5 +58,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if args.create:
         execution.create()
-    print(execution.role(args.role) if args.role else execution.root)
+    if args.role:
+        for role in args.role:
+            print(execution.role(role))
+    else:
+        print(execution.root)
     return 0

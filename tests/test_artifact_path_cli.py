@@ -24,10 +24,14 @@ def test_cli_resolves_and_creates_runs_through_artifact_layout(
             "--create",
             "--role",
             "work",
+            "--role",
+            "logs",
         ]
     ) == 0
 
-    work = Path(capsys.readouterr().out.strip())
+    work_text, logs_text = capsys.readouterr().out.splitlines()
+    work = Path(work_text)
+    logs = Path(logs_text)
     root = work.parent
     assert work == (
         tmp_path / "artifacts/runs/owner/target/flow/variant" / identity / "work"
@@ -38,6 +42,7 @@ def test_cli_resolves_and_creates_runs_through_artifact_layout(
         "outputs",
         "logs",
     }
+    assert logs == root / "logs"
 
 
 def test_cli_resolves_named_exports_without_creating_them(
