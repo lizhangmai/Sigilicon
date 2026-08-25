@@ -16,6 +16,7 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
     load_native_diagnostic_processor,
+    load_owner_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import RepositoryContext
 
@@ -151,7 +152,8 @@ def _load_native_rdb_contract(
     path: Path,
     *,
     project_root: Path,
-    diagnostic_processor: NativeDiagnosticProcessor | None,
+    owner_root: Path,
+    default_diagnostic_processor: NativeDiagnosticProcessor | None,
 ) -> OANativeRdbContract:
     """Load the source-owned native RDB identity audit model.
 
@@ -174,6 +176,7 @@ def _load_native_rdb_contract(
         "waveforms",
         "scalars",
         "setup_identity",
+        "diagnostic_processor",
         "diagnostic_equivalence",
     } or not {
         "schema",
@@ -186,7 +189,7 @@ def _load_native_rdb_contract(
         raise ValueError(
             "native RDB contract fields must be exactly schema, point_count, "
             "corners, tests, waveforms, scalars, with optional setup_identity, "
-            "and diagnostic_equivalence"
+            "diagnostic_processor, and diagnostic_equivalence"
         )
     if raw.get("schema") != 2:
         raise ValueError("native RDB contract schema must be 2")
@@ -274,13 +277,42 @@ def _load_native_rdb_contract(
             )
         setup_model_identities = tuple(models)
 
-    diagnostic_equivalence: NativeDiagnosticContract | None = None
+    diagnostic_processor = default_diagnostic_processor
+    processor_value = raw.get("diagnostic_processor")
     diagnostic_raw = raw.get("diagnostic_equivalence")
+    if processor_value is not None:
+        if diagnostic_raw is None:
+            raise ValueError(
+                "native RDB diagnostic_processor requires diagnostic_equivalence"
+            )
+        if (
+            not isinstance(processor_value, str)
+            or not processor_value
+            or Path(processor_value).name != processor_value
+            or Path(processor_value).suffix != ".py"
+        ):
+            raise ValueError(
+                "native RDB diagnostic_processor must be a testbench-local "
+                "Python filename"
+            )
+        processor_source = (path.parent / processor_value).resolve()
+        if (
+            not processor_source.is_relative_to(path.parent.resolve())
+            or not processor_source.is_relative_to(owner_root.resolve())
+            or not processor_source.is_file()
+        ):
+            raise ValueError(
+                "native RDB diagnostic_processor must be an existing "
+                "testbench-owned file"
+            )
+        diagnostic_processor = load_native_diagnostic_processor(processor_source)
+
+    diagnostic_equivalence: NativeDiagnosticContract | None = None
     if diagnostic_raw is not None:
         if diagnostic_processor is None:
             raise ValueError(
-                "native RDB diagnostic_equivalence requires the caller-owned "
-                "processor declared by the owner component"
+                "native RDB diagnostic_equivalence requires a testbench-local "
+                "diagnostic_processor declared by the native RDB contract"
             )
         diagnostic_equivalence = diagnostic_processor.load_contract(
             diagnostic_raw,
@@ -404,7 +436,7 @@ def _load_native_oa_simulation_spec(
     context: RepositoryContext,
     owner_root: Path,
     raw: Mapping[str, Any],
-    diagnostic_processor: NativeDiagnosticProcessor | None,
+    default_diagnostic_processor: NativeDiagnosticProcessor | None,
 ) -> OASimulationSpec:
     """Load the thin contract used by native ADE/Maestro pilot cells.
 
@@ -474,7 +506,8 @@ def _load_native_oa_simulation_spec(
         _load_native_rdb_contract(
             rdb_contract_path,
             project_root=project_root,
-            diagnostic_processor=diagnostic_processor,
+            owner_root=owner_root,
+            default_diagnostic_processor=default_diagnostic_processor,
         )
         if rdb_contract_path.is_file()
         else None
@@ -527,7 +560,7 @@ def load_oa_simulation_spec(
         context=context,
         owner_root=owner_root,
         raw=raw,
-        diagnostic_processor=load_native_diagnostic_processor(
+        default_diagnostic_processor=load_owner_native_diagnostic_processor(
             context,
             owner_path=spec_path,
         ),

@@ -24,7 +24,7 @@ _REQUIRED_CALLABLES = (
 
 @dataclass(frozen=True)
 class NativeDiagnosticContract:
-    """Typed scalar-result contract supplied by one product owner."""
+    """Typed scalar-result contract supplied by one testbench."""
 
     kind: str
     settings: Mapping[str, object]
@@ -34,7 +34,7 @@ class NativeDiagnosticContract:
 
 @dataclass(frozen=True)
 class NativeDiagnosticProcessor:
-    """Loaded owner processor consumed by native result lifecycle stages."""
+    """Loaded testbench processor consumed by native result lifecycle stages."""
 
     source: Path
     implementation: ModuleType
@@ -92,16 +92,10 @@ class NativeDiagnosticProcessor:
         return value
 
 
-def load_native_diagnostic_processor(
-    repository: RepositoryContext,
-    *,
-    owner_path: Path,
-) -> NativeDiagnosticProcessor | None:
-    """Load the processor selected by the owner component fileset."""
+def load_native_diagnostic_processor(source: Path) -> NativeDiagnosticProcessor:
+    """Load one processor explicitly selected by its native RDB contract."""
 
-    source = repository.owner_file(owner_path, "native_diagnostics")
-    if source is None:
-        return None
+    source = source.resolve()
     identity = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
     spec = importlib.util.spec_from_file_location(
         f"_sigilicon_project_native_diagnostics_{identity}", source
@@ -116,3 +110,16 @@ def load_native_diagnostic_processor(
             f"native diagnostic processor {source} lacks callables: {', '.join(missing)}"
         )
     return NativeDiagnosticProcessor(source=source, implementation=module)
+
+
+def load_owner_native_diagnostic_processor(
+    repository: RepositoryContext,
+    *,
+    owner_path: Path,
+) -> NativeDiagnosticProcessor | None:
+    """Load the legacy owner default for unmodified downstream projects."""
+
+    source = repository.owner_file(owner_path, "native_diagnostics")
+    if source is None:
+        return None
+    return load_native_diagnostic_processor(source)
