@@ -201,7 +201,7 @@ class OperationIncidentPaths:
 
 @dataclass(frozen=True)
 class ArtifactLayout:
-    """The single physical-layout interface for disposable project artifacts."""
+    """The single physical-layout interface for managed project artifacts."""
 
     root: Path
 

@@ -208,12 +208,6 @@ def _parser() -> argparse.ArgumentParser:
                 required=True,
                 help="declared OA testbench cell to run",
             )
-        if action == "simulate":
-            action_parser.add_argument(
-                "--keep-work",
-                action="store_true",
-                help="retain this run's temporary outputs for manual inspection",
-            )
         if action == "rebuild":
             target = action_parser.add_mutually_exclusive_group()
             target.add_argument(
@@ -520,14 +514,15 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
                     matches[0],
                     client,
                     timeout=args.timeout,
-                    keep_work=args.keep_work,
                 )
                 payload = {
                     "passed": True,
                     "library": result.library,
                     "testbench": result.testbench,
                     "history": result.history,
-                    "run_dir": None if result.run_dir is None else str(result.run_dir),
+                    "run_id": result.run_id,
+                    "run_dir": str(result.run_dir),
+                    "manifest": str(result.manifest_path),
                     "source_fingerprint": result.source_fingerprint,
                     "semantic_fingerprint": result.semantic_fingerprint,
                     "oa_materialization_fingerprint": (
@@ -537,15 +532,12 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
                         result.elaborated_netlist_fingerprint
                     ),
                     "result_database_export": (
-                        None
-                        if result.result_database_export is None
-                        else str(result.result_database_export)
+                        str(result.result_database_export)
                     ),
                     "normalized_result_database": (
-                        None
-                        if result.normalized_result_database is None
-                        else str(result.normalized_result_database)
+                        str(result.normalized_result_database)
                     ),
+                    "run_summary": str(result.run_summary),
                     "scalar_output_count": result.scalar_output_count,
                     "product_qualification_conclusion": False,
                 }
@@ -592,10 +584,7 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
                 f"OA Maestro run completed: {payload['library']}/"
                 f"{payload['testbench']} history={payload['history']}"
             )
-            if payload["run_dir"] is None:
-                print("temporary outputs: cleaned (use --keep-work to retain this run)")
-            else:
-                print(f"temporary outputs: {payload['run_dir']}")
+            print(f"managed artifact: {payload['run_dir']}")
         else:
             if payload["passed"]:
                 print(

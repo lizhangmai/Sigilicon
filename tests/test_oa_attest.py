@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from sigilicon.cli import flow as flow_cli
 from sigilicon.cli.flow import _parser
 
@@ -23,7 +25,7 @@ def test_attest_is_a_current_testbench_setup_check() -> None:
     assert args.timeout == 300
 
 
-def test_simulation_work_retention_is_explicit() -> None:
+def test_simulation_has_no_temporary_work_retention_option() -> None:
     args = _parser().parse_args(
         [
             "oa",
@@ -34,11 +36,22 @@ def test_simulation_work_retention_is_explicit() -> None:
             "fixture_lib",
             "--testbench",
             "tb_main",
-            "--keep-work",
         ]
     )
 
-    assert args.keep_work is True
+    assert not hasattr(args, "keep_work")
+    with pytest.raises(SystemExit):
+        _parser().parse_args(
+            [
+                "oa",
+                "simulate",
+                "--manifest",
+                "ip/fixture_block/configs/oa.toml",
+                "--testbench",
+                "tb_main",
+                "--keep-work",
+            ]
+        )
 
 
 def test_rebuild_can_select_exactly_one_design_cell() -> None:

@@ -1,11 +1,4 @@
-"""Lifecycle, state machine, and atomic I/O for persistent artifacts.
-
-Source-driven OA materialization deliberately does not enter this state
-machine; it uses :mod:`sigilicon.virtuoso.disposable` for temporary tool inputs and
-outputs.  The persistent contract remains for standalone characterization,
-verification, and other workflows whose artifacts are still an explicit
-result contract.
-"""
+"""Lifecycle, state machine, and atomic I/O for persistent artifacts."""
 
 from __future__ import annotations
 
@@ -43,6 +36,7 @@ ARTIFACT_ROLES = {
         "physical_verification",
         "netlist_export",
         "standalone_simulation",
+        "oa_maestro_simulation",
         "netlist_import",
         "analysis",
     )
@@ -54,6 +48,7 @@ ARTIFACT_IDENTITY_KINDS = {
     "physical_verification": "run_id",
     "netlist_export": "run_id",
     "standalone_simulation": "run_id",
+    "oa_maestro_simulation": "run_id",
     "netlist_import": "attempt_id",
     "analysis": "run_id",
 }
@@ -76,6 +71,10 @@ ARTIFACT_ENTITY_FIELDS = {
         {"library", "cell", "view", "simulator"},
     ),
     "standalone_simulation": (
+        {"library", "cell", "testbench"},
+        {"library", "cell", "testbench"},
+    ),
+    "oa_maestro_simulation": (
         {"library", "cell", "testbench"},
         {"library", "cell", "testbench"},
     ),
