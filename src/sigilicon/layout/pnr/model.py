@@ -280,10 +280,48 @@ PlacementConstraint: TypeAlias = (
 
 
 @dataclass(frozen=True)
+class BoundingBoxAreaObjective(CanonicalValue):
+    name: str
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class EstimatedHpwlObjective(CanonicalValue):
+    name: str
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class DensityOverflowObjective(CanonicalValue):
+    name: str
+    bins_x: int
+    bins_y: int
+    target_density: float
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class BoundingBoxCongestionObjective(CanonicalValue):
+    name: str
+    bins_x: int
+    bins_y: int
+    weight: float = 1.0
+
+
+PlacementObjective: TypeAlias = (
+    BoundingBoxAreaObjective
+    | EstimatedHpwlObjective
+    | DensityOverflowObjective
+    | BoundingBoxCongestionObjective
+)
+
+
+@dataclass(frozen=True)
 class PnrRequest(CanonicalValue):
     stages: tuple[PnrStage, ...] = (PnrStage.PLACEMENT,)
     minimum_instance_spacing_dbu: int = 0
     maximum_search_states: int = 100_000
+    objectives: tuple[PlacementObjective, ...] = ()
 
 
 @dataclass(frozen=True)

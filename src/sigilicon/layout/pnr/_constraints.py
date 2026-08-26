@@ -302,6 +302,110 @@ def evaluate_constraint(
     raise TypeError(f"unknown placement constraint: {type(constraint).__name__}")
 
 
+def constraint_penalty(
+    constraint: PlacementConstraint,
+    rectangles: Mapping[str, Rect],
+    placements: Mapping[str, Placement],
+) -> float:
+    """Return a non-negative distance-like penalty for a complete placement."""
+
+    if isinstance(constraint, FenceConstraint):
+        return float(
+            sum(
+                max(constraint.region.x_min - rectangles[name].x_min, 0)
+                + max(rectangles[name].x_max - constraint.region.x_max, 0)
+                + max(constraint.region.y_min - rectangles[name].y_min, 0)
+                + max(rectangles[name].y_max - constraint.region.y_max, 0)
+                for name in constraint.instances
+            )
+        )
+
+    if isinstance(constraint, AlignmentConstraint):
+        anchors = tuple(
+            _anchor2(rectangles[name], constraint.axis, constraint.anchor)
+            for name in constraint.instances
+        )
+        return (max(anchors) - min(anchors)) / 2
+
+    if isinstance(constraint, OrderingConstraint):
+        first = rectangles[constraint.first]
+        second = rectangles[constraint.second]
+        first_high, second_low = (
+            (first.x_max, second.x_min)
+            if constraint.axis is Axis.X
+            else (first.y_max, second.y_min)
+        )
+        return float(
+            max(0, first_high + constraint.minimum_gap_dbu - second_low)
+        )
+
+    if isinstance(constraint, SeparationConstraint):
+        first = rectangles[constraint.first]
+        second = rectangles[constraint.second]
+        clearance_x = max(
+            second.x_min - first.x_max,
+            first.x_min - second.x_max,
+        )
+        clearance_y = max(
+            second.y_min - first.y_max,
+            first.y_min - second.y_max,
+        )
+        penalty_x = max(0, constraint.minimum_gap_dbu - clearance_x)
+        penalty_y = max(0, constraint.minimum_gap_dbu - clearance_y)
+        if constraint.axis is SeparationAxis.X:
+            return float(penalty_x)
+        if constraint.axis is SeparationAxis.Y:
+            return float(penalty_y)
+        return float(min(penalty_x, penalty_y))
+
+    if isinstance(constraint, SymmetryConstraint):
+        coordinate2 = 2 * constraint.coordinate_dbu
+        penalty2 = 0
+        for first_name, second_name in constraint.pairs:
+            first = rectangles[first_name]
+            second = rectangles[second_name]
+            if constraint.axis is Axis.X:
+                penalty2 += (
+                    abs(first.x_min + second.x_max - coordinate2)
+                    + abs(first.x_max + second.x_min - coordinate2)
+                    + 2 * abs(first.y_min - second.y_min)
+                    + 2 * abs(first.y_max - second.y_max)
+                )
+            else:
+                penalty2 += (
+                    abs(first.y_min + second.y_max - coordinate2)
+                    + abs(first.y_max + second.y_min - coordinate2)
+                    + 2 * abs(first.x_min - second.x_min)
+                    + 2 * abs(first.x_max - second.x_max)
+                )
+        return penalty2 / 2
+
+    if isinstance(constraint, ArrayConstraint):
+        reference_name = constraint.instances[0]
+        reference = rectangles[reference_name]
+        reference_placement = placements[reference_name]
+        penalty = 0.0
+        for index, instance_name in enumerate(constraint.instances):
+            rectangle = rectangles[instance_name]
+            placement = placements[instance_name]
+            row, column = divmod(index, constraint.columns)
+            penalty += abs(
+                rectangle.x_min
+                - (reference.x_min + column * constraint.x_pitch_dbu)
+            )
+            penalty += abs(
+                rectangle.y_min - (reference.y_min + row * constraint.y_pitch_dbu)
+            )
+            if (
+                constraint.require_same_orientation
+                and placement.orientation is not reference_placement.orientation
+            ):
+                penalty += 1.0
+        return penalty
+
+    raise TypeError(f"unknown placement constraint: {type(constraint).__name__}")
+
+
 def constraint_outcomes(
     constraints: tuple[PlacementConstraint, ...],
     rectangles: Mapping[str, Rect],

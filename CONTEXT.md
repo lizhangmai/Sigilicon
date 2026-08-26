@@ -44,6 +44,10 @@ _Avoid_: Repetition hint
 A condition requiring two instance bounding boxes to maintain a minimum gap along a selected axis or along either axis.
 _Avoid_: Keep away
 
+**Placement Objective**:
+A named, weighted measure used to rank legal Placement Solutions without changing hard legality.
+_Avoid_: Qualification metric, signoff target
+
 **Placement Solution**:
 Exact instance origins and orientations satisfying the supported placement constraints.
 _Avoid_: Floorplan suggestion

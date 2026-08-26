@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from sigilicon.layout.pnr._constraints import validate_constraint
+from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
 from sigilicon.layout.pnr._serialization import canonical_sha256
 from sigilicon.layout.pnr.model import (
-    ConstraintMode,
     ConstraintOutcome,
     ConstraintStatus,
     Diagnostic,
@@ -24,8 +24,8 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 2
-ALGORITHM = "deterministic_constraint_search_v1"
+ENGINE_VERSION = 3
+ALGORITHM = "deterministic_weighted_search_v1"
 
 
 class PnrInputError(ValueError):
@@ -246,6 +246,13 @@ def _validate_job(job: PhysicalDesignJob) -> None:
             )
         )
 
+    objective_names = tuple(objective.name for objective in job.request.objectives)
+    duplicates = _duplicates(objective_names)
+    if duplicates:
+        errors.append(f"duplicate placement objectives: {', '.join(duplicates)}")
+    for objective in job.request.objectives:
+        errors.extend(validate_objective(objective, job=job))
+
     if errors:
         raise PnrInputError("invalid physical-design job: " + "; ".join(errors))
 
@@ -271,12 +278,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
     unsupported_stages = tuple(
         stage for stage in job.request.stages if stage is not PnrStage.PLACEMENT
     )
-    unsupported_constraints = tuple(
-        constraint
-        for constraint in job.constraints
-        if constraint.mode is not ConstraintMode.HARD
-    )
-    if unsupported_stages or unsupported_constraints:
+    if unsupported_stages:
         reports: list[StageReport] = []
         for stage in unsupported_stages:
             diagnostic = Diagnostic(
@@ -291,35 +293,14 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                     diagnostics=(diagnostic,),
                 )
             )
-        if unsupported_constraints:
-            diagnostic = Diagnostic(
-                code="unsupported_constraint_mode",
-                message="reference engine currently implements hard constraints only",
-                entities=tuple(item.name for item in unsupported_constraints),
-            )
-            reports.append(
-                StageReport(
-                    stage=PnrStage.PLACEMENT,
-                    status=ResultStatus.UNSUPPORTED,
-                    diagnostics=(diagnostic,),
-                )
-            )
         return PhysicalDesignResult(
             status=ResultStatus.UNSUPPORTED,
             placements=(),
             constraint_outcomes=tuple(
                 ConstraintOutcome(
                     constraint=constraint.name,
-                    status=(
-                        ConstraintStatus.UNSUPPORTED
-                        if constraint in unsupported_constraints
-                        else ConstraintStatus.NOT_EVALUATED
-                    ),
-                    message=(
-                        "constraint mode is not supported"
-                        if constraint in unsupported_constraints
-                        else "constraint was not evaluated"
-                    ),
+                    status=ConstraintStatus.NOT_EVALUATED,
+                    message="constraint was not evaluated",
                 )
                 for constraint in job.constraints
             ),

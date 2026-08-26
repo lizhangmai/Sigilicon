@@ -6,17 +6,25 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from sigilicon.layout.pnr._constraints import (
+    constraint_penalty,
     constraint_outcomes,
     evaluate_constraint,
 )
+from sigilicon.layout.pnr._legality import (
+    hard_constraints_hold,
+    instance_region,
+    oriented_dimensions,
+    placed_rect,
+    rectangles_conflict,
+)
+from sigilicon.layout.pnr._objectives import objective_unit, objective_value
 from sigilicon.layout.pnr.model import (
     ArrayConstraint,
+    ConstraintMode,
     ConstraintOutcome,
     Diagnostic,
-    FenceConstraint,
     InstancePlacement,
     Metric,
-    Orientation,
     PhysicalDesignJob,
     PhysicalInstance,
     PhysicalMaster,
@@ -37,49 +45,8 @@ class PlacementSolveResult:
     report: StageReport
 
 
-def _dimensions(master: PhysicalMaster, orientation: Orientation) -> tuple[int, int]:
-    if orientation in {
-        Orientation.R90,
-        Orientation.R270,
-        Orientation.MXR90,
-        Orientation.MYR90,
-    }:
-        return master.height_dbu, master.width_dbu
-    return master.width_dbu, master.height_dbu
-
-
-def _placed_rect(master: PhysicalMaster, placement: Placement) -> Rect:
-    width, height = _dimensions(master, placement.orientation)
-    return Rect(
-        x_min=placement.origin.x,
-        y_min=placement.origin.y,
-        x_max=placement.origin.x + width,
-        y_max=placement.origin.y + height,
-    )
-
-
 def _snap_up(value: int, grid: int) -> int:
     return -(-value // grid) * grid
-
-
-def _conflicts(candidate: Rect, other: Rect, spacing: int) -> bool:
-    return not (
-        candidate.x_max + spacing <= other.x_min
-        or other.x_max + spacing <= candidate.x_min
-        or candidate.y_max + spacing <= other.y_min
-        or other.y_max + spacing <= candidate.y_min
-    )
-
-
-def _instance_region(job: PhysicalDesignJob, instance_name: str) -> Rect | None:
-    region: Rect | None = job.design.die
-    for constraint in job.constraints:
-        if not isinstance(constraint, FenceConstraint):
-            continue
-        if instance_name not in constraint.instances:
-            continue
-        region = region.intersection(constraint.region) if region is not None else None
-    return region
 
 
 def _candidate_placements(
@@ -89,7 +56,7 @@ def _candidate_placements(
     grid: int,
 ) -> Iterator[tuple[Placement, Rect]]:
     for orientation in master.allowed_orientations:
-        width, height = _dimensions(master, orientation)
+        width, height = oriented_dimensions(master, orientation)
         x_start = _snap_up(region.x_min, grid)
         y_start = _snap_up(region.y_min, grid)
         x_stop = region.x_max - width
@@ -132,15 +99,42 @@ def _search_order(
     )
 
 
-def _hard_constraints_hold(
+def _placement_key(placements: dict[str, Placement]) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            name,
+            placements[name].origin.x,
+            placements[name].origin.y,
+            placements[name].orientation.value,
+        )
+        for name in sorted(placements)
+    )
+
+
+def _placement_score(
     job: PhysicalDesignJob,
     rectangles: dict[str, Rect],
     placements: dict[str, Placement],
-) -> bool:
-    return all(
-        evaluate_constraint(constraint, rectangles, placements) is not False
+) -> tuple[float, float, tuple[tuple[str, float, str], ...]]:
+    soft_penalty = sum(
+        constraint.weight * constraint_penalty(constraint, rectangles, placements)
         for constraint in job.constraints
+        if constraint.mode is ConstraintMode.SOFT
     )
+    objective_values = tuple(
+        (
+            objective.name,
+            objective_value(objective, job, rectangles),
+            objective_unit(objective),
+        )
+        for objective in job.request.objectives
+    )
+    objectives_by_name = {name: value for name, value, _ in objective_values}
+    objective_cost = sum(
+        objective.weight * objectives_by_name[objective.name]
+        for objective in job.request.objectives
+    )
+    return soft_penalty + objective_cost, soft_penalty, objective_values
 
 
 def _ordered_placements(
@@ -199,8 +193,8 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
     for instance in fixed:
         placement = instance.fixed_placement
         assert placement is not None
-        shape = _placed_rect(masters[instance.master], placement)
-        region = _instance_region(job, instance.name)
+        shape = placed_rect(masters[instance.master], placement)
+        region = instance_region(job, instance.name)
         if region is None or not region.contains(shape):
             return _failure(
                 code="fixed_instance_outside_region",
@@ -211,7 +205,9 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
                 job=job,
             )
         conflicts = tuple(
-            name for name, other in rectangles.items() if _conflicts(shape, other, spacing)
+            name
+            for name, other in rectangles.items()
+            if rectangles_conflict(shape, other, spacing)
         )
         if conflicts:
             return _failure(
@@ -225,7 +221,7 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
         placements[instance.name] = placement
         rectangles[instance.name] = shape
 
-    if not _hard_constraints_hold(job, rectangles, placements):
+    if not hard_constraints_hold(job, rectangles, placements):
         return _failure(
             code="fixed_constraint_violation",
             message="fixed placements violate a hard placement constraint",
@@ -247,7 +243,7 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
     empty_regions = tuple(
         instance.name
         for instance in movable
-        if _instance_region(job, instance.name) is None
+        if instance_region(job, instance.name) is None
     )
     if empty_regions:
         return _failure(
@@ -261,20 +257,33 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
 
     search_states = 0
     exhausted = False
+    optimizing = bool(job.request.objectives) or any(
+        constraint.mode is ConstraintMode.SOFT for constraint in job.constraints
+    )
+    best_placements: dict[str, Placement] | None = None
+    best_rectangles: dict[str, Rect] | None = None
+    best_key: tuple[float, tuple[tuple[object, ...], ...]] | None = None
 
-    def search(index: int) -> tuple[dict[str, Placement], dict[str, Rect]] | None:
-        nonlocal search_states, exhausted
+    def search(index: int) -> bool:
+        nonlocal search_states, exhausted, best_placements, best_rectangles, best_key
         if index == len(movable):
             if all(
                 evaluate_constraint(constraint, rectangles, placements) is True
                 for constraint in job.constraints
+                if constraint.mode is ConstraintMode.HARD
             ):
-                return dict(placements), dict(rectangles)
-            return None
+                score, _, _ = _placement_score(job, rectangles, placements)
+                candidate_key = score, _placement_key(placements)
+                if best_key is None or candidate_key < best_key:
+                    best_key = candidate_key
+                    best_placements = dict(placements)
+                    best_rectangles = dict(rectangles)
+                return not optimizing
+            return False
 
         instance = movable[index]
         master = masters[instance.master]
-        region = _instance_region(job, instance.name)
+        region = instance_region(job, instance.name)
         assert region is not None
         for placement, shape in _candidate_placements(
             master,
@@ -283,28 +292,26 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
         ):
             if search_states >= job.request.maximum_search_states:
                 exhausted = True
-                return None
+                return True
             search_states += 1
             if any(
-                _conflicts(shape, other, spacing)
+                rectangles_conflict(shape, other, spacing)
                 for other in rectangles.values()
             ):
                 continue
             placements[instance.name] = placement
             rectangles[instance.name] = shape
-            result = None
-            if _hard_constraints_hold(job, rectangles, placements):
-                result = search(index + 1)
+            stop = False
+            if hard_constraints_hold(job, rectangles, placements):
+                stop = search(index + 1)
             placements.pop(instance.name)
             rectangles.pop(instance.name)
-            if result is not None:
-                return result
-            if exhausted:
-                return None
-        return None
+            if stop:
+                return True
+        return False
 
-    solved = search(0)
-    if solved is None:
+    search(0)
+    if best_placements is None or best_rectangles is None or (exhausted and optimizing):
         status = ResultStatus.EXHAUSTED if exhausted else ResultStatus.FAILED
         code = "placement_search_exhausted" if exhausted else "placement_infeasible"
         message = (
@@ -323,7 +330,12 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
             search_states=search_states,
         )
 
-    placements, rectangles = solved
+    placements, rectangles = best_placements, best_rectangles
+    total_score, soft_penalty, objective_values = _placement_score(
+        job,
+        rectangles,
+        placements,
+    )
     occupied_area = sum(shape.area for shape in rectangles.values())
     return PlacementSolveResult(
         status=ResultStatus.SUCCEEDED,
@@ -345,6 +357,12 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
                     "ratio",
                 ),
                 Metric("search_states", search_states, "count"),
+                Metric("placement_score", total_score, "score"),
+                Metric("soft_constraint_penalty", soft_penalty, "score"),
+                *(
+                    Metric(f"objective.{name}", value, unit)
+                    for name, value, unit in objective_values
+                ),
             ),
         ),
     )

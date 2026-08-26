@@ -10,17 +10,25 @@ from sigilicon.layout.pnr import (
     AlignmentConstraint,
     ArrayConstraint,
     Axis,
+    BoundingBoxAreaObjective,
+    BoundingBoxCongestionObjective,
     ConstraintMode,
     ConstraintStatus,
+    DensityOverflowObjective,
+    EstimatedHpwlObjective,
     FenceConstraint,
+    MasterPin,
     Orientation,
     OrderingConstraint,
     PhysicalDesign,
     PhysicalDesignJob,
     PhysicalInstance,
     PhysicalMaster,
+    PhysicalNet,
     PhysicalTechnology,
+    PinReference,
     Placement,
+    PlacementObjective,
     PnrInputError,
     PnrRequest,
     PnrStage,
@@ -335,7 +343,7 @@ def test_search_exhaustion_is_not_reported_as_infeasibility() -> None:
     assert result.stage_reports[0].diagnostics[0].code == "placement_search_exhausted"
 
 
-def test_unimplemented_capability_is_explicitly_unsupported() -> None:
+def test_unimplemented_routing_is_explicitly_unsupported() -> None:
     job = replace(
         _job(),
         request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
@@ -354,13 +362,12 @@ def test_unimplemented_capability_is_explicitly_unsupported() -> None:
     assert result.status is ResultStatus.UNSUPPORTED
     assert result.placements == ()
     assert {item.code for report in result.stage_reports for item in report.diagnostics} == {
-        "unsupported_constraint_mode",
         "unsupported_stage",
     }
-    assert result.constraint_outcomes[0].status is ConstraintStatus.UNSUPPORTED
+    assert result.constraint_outcomes[0].status is ConstraintStatus.NOT_EVALUATED
 
 
-def test_unsupported_constraint_has_a_placement_stage_diagnostic() -> None:
+def test_soft_constraint_ranks_legal_placements() -> None:
     job = replace(
         _job(),
         constraints=(
@@ -375,11 +382,171 @@ def test_unsupported_constraint_has_a_placement_stage_diagnostic() -> None:
 
     result = run(job)
 
-    assert result.status is ResultStatus.UNSUPPORTED
+    assert result.status is ResultStatus.SUCCEEDED
     assert len(result.stage_reports) == 1
     assert result.stage_reports[0].stage is PnrStage.PLACEMENT
-    assert result.stage_reports[0].status is ResultStatus.UNSUPPORTED
-    assert result.stage_reports[0].diagnostics[0].code == "unsupported_constraint_mode"
+    assert result.stage_reports[0].status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[0].status is ConstraintStatus.SATISFIED
+    placements = {item.instance: item.placement for item in result.placements}
+    assert placements["movable"].origin.x >= 20
+
+
+def _net_objective_job(objective: PlacementObjective) -> PhysicalDesignJob:
+    master = PhysicalMaster(
+        "node",
+        10,
+        10,
+        pins=(MasterPin("p"),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    return PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "net-objective",
+            Rect(0, 0, 50, 10),
+            (master,),
+            (
+                PhysicalInstance("blocker", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("moving", master.name),
+                PhysicalInstance("target", master.name, Placement(Point(40, 0))),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (
+                        PinReference("p", "moving"),
+                        PinReference("p", "target"),
+                    ),
+                ),
+            ),
+        ),
+        request=PnrRequest(objectives=(objective,)),
+    )
+
+
+def test_estimated_hpwl_objective_moves_connected_instances_together() -> None:
+    result = run(_net_objective_job(EstimatedHpwlObjective("wirelength")))
+
+    assert result.status is ResultStatus.SUCCEEDED
+    placements = {item.instance: item.placement for item in result.placements}
+    assert placements["moving"].origin == Point(30, 0)
+    metrics = {metric.name: metric.value for metric in result.stage_reports[0].metrics}
+    assert metrics["objective.wirelength"] == 10
+
+
+def test_density_overflow_objective_spreads_occupancy_across_bins() -> None:
+    master = PhysicalMaster(
+        "tile",
+        10,
+        10,
+        allowed_orientations=(Orientation.R0,),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "density",
+            Rect(0, 0, 40, 10),
+            (master,),
+            (
+                PhysicalInstance("fixed", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("moving", master.name),
+            ),
+        ),
+        request=PnrRequest(
+            objectives=(
+                DensityOverflowObjective(
+                    "density-overflow",
+                    bins_x=2,
+                    bins_y=1,
+                    target_density=0.5,
+                ),
+            ),
+        ),
+    )
+
+    result = run(job)
+
+    assert result.status is ResultStatus.SUCCEEDED
+    placements = {item.instance: item.placement for item in result.placements}
+    assert placements["moving"].origin == Point(20, 0)
+    metrics = {metric.name: metric.value for metric in result.stage_reports[0].metrics}
+    assert metrics["objective.density-overflow"] == 0
+
+
+def test_bounding_box_area_and_congestion_proxy_are_observable_objectives() -> None:
+    area_result = run(
+        replace(
+            _job(),
+            request=PnrRequest(objectives=(BoundingBoxAreaObjective("area"),)),
+        )
+    )
+    congestion_result = run(
+        _net_objective_job(
+            BoundingBoxCongestionObjective("congestion", bins_x=5, bins_y=1)
+        )
+    )
+
+    assert area_result.status is ResultStatus.SUCCEEDED
+    assert congestion_result.status is ResultStatus.SUCCEEDED
+    area_metrics = {
+        metric.name: metric.value for metric in area_result.stage_reports[0].metrics
+    }
+    congestion_metrics = {
+        metric.name: metric.value
+        for metric in congestion_result.stage_reports[0].metrics
+    }
+    assert area_metrics["objective.area"] == 400
+    assert congestion_metrics["objective.congestion"] >= 0
+
+
+def test_soft_constraint_violation_does_not_change_hard_legality() -> None:
+    master = PhysicalMaster("square", 10, 10)
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "soft-violation",
+            Rect(0, 0, 30, 30),
+            (master,),
+            (
+                PhysicalInstance("low", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("high", master.name, Placement(Point(10, 10))),
+            ),
+        ),
+        constraints=(
+            AlignmentConstraint(
+                "preferred-alignment",
+                ("low", "high"),
+                Axis.Y,
+                mode=ConstraintMode.SOFT,
+            ),
+        ),
+    )
+
+    result = run(job)
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[0].status is ConstraintStatus.VIOLATED
+    metrics = {metric.name: metric.value for metric in result.stage_reports[0].metrics}
+    assert metrics["soft_constraint_penalty"] == 10
+
+
+def test_density_objective_rejects_off_grid_bin_edges() -> None:
+    job = replace(
+        _job(),
+        request=PnrRequest(
+            objectives=(
+                DensityOverflowObjective(
+                    "off-grid-bins",
+                    bins_x=4,
+                    bins_y=1,
+                    target_density=0.5,
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(PnrInputError, match="bin edges are off-grid"):
+        run(job)
 
 
 def test_structurally_invalid_job_fails_before_solving() -> None:
