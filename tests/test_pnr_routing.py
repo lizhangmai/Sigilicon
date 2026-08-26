@@ -35,6 +35,7 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
+    RoutingSkewConstraint,
     RoutingTrackPattern,
     RoutingViaCountConstraint,
     ViaDefinition,
@@ -388,6 +389,65 @@ def test_congestion_demand_guides_later_net_into_a_less_used_bin() -> None:
     assert guided_metrics["routing_peak_horizontal_demand"] == 1
 
 
+def test_skew_constraint_prioritizes_matched_shortest_routes_over_bin_spreading() -> None:
+    job = _parallel_net_job(congestion_bins_y=2)
+    result = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingSkewConstraint(
+                    "matched-pair",
+                    ("signal", "signal-b"),
+                    0,
+                ),
+            ),
+        )
+    )
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert tuple(
+        sum(
+            abs(segment.end.x - segment.start.x)
+            + abs(segment.end.y - segment.start.y)
+            for segment in route.segments
+        )
+        for route in result.routes
+    ) == (34, 34)
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+
+
+def test_skew_constraint_rejects_unmatched_route_lengths() -> None:
+    job = _parallel_net_job(congestion_bins_y=8)
+    ports = tuple(
+        (
+            PhysicalPort("sink-b", (PinAccess("route", Rect(19, 9, 21, 11)),))
+            if port.name == "sink-b"
+            else port
+        )
+        for port in job.design.ports
+    )
+    result = run(
+        replace(
+            job,
+            design=replace(job.design, ports=ports),
+            routing_constraints=(
+                RoutingSkewConstraint(
+                    "matched-pair",
+                    ("signal", "signal-b"),
+                    0,
+                ),
+            ),
+        )
+    )
+
+    assert result.status is ResultStatus.FAILED
+    assert result.routes == ()
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.VIOLATED
+    assert result.stage_reports[-1].diagnostics[-1].code == (
+        "routing_constraint_violated"
+    )
+
+
 def test_multi_terminal_net_connects_each_terminal_to_the_route_tree() -> None:
     job = _job()
     design = replace(
@@ -678,6 +738,15 @@ def test_routing_constraints_validate_net_layer_and_range() -> None:
                 job,
                 routing_constraints=(
                     RoutingLengthConstraint("bad-range", "signal", 20, 10),
+                ),
+            )
+        )
+    with pytest.raises(PnrInputError, match="needs at least two nets"):
+        run(
+            replace(
+                job,
+                routing_constraints=(
+                    RoutingSkewConstraint("bad-skew", ("signal",), 0),
                 ),
             )
         )

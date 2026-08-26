@@ -120,6 +120,10 @@ _Avoid_: Timing constraint, estimated HPWL
 A Routing Constraint placing an inclusive upper bound on the Via Definition occurrences used by one net.
 _Avoid_: Via cost
 
+**Routing Skew Constraint**:
+A Routing Constraint placing an inclusive upper bound on the difference between the longest and shortest exact Route Segment lengths in a named net group.
+_Avoid_: Clock uncertainty, estimated HPWL difference
+
 **Routing Solution Check**:
 An independent reconstruction of connectivity, resource coverage, obstruction clearance, width, spacing, and via-rule compliance from a Physical Design Job and returned Routing Solution.
 _Avoid_: Solver success flag, signoff DRC/LVS

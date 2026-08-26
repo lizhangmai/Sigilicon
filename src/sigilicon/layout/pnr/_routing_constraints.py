@@ -10,6 +10,7 @@ from sigilicon.layout.pnr.model import (
     RoutingConstraint,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
+    RoutingSkewConstraint,
     RoutingViaCountConstraint,
 )
 
@@ -24,14 +25,19 @@ def validate_routing_constraint(
     errors: list[str] = []
     if not isinstance(
         constraint,
-        (RoutingLayerConstraint, RoutingLengthConstraint, RoutingViaCountConstraint),
+        (
+            RoutingLayerConstraint,
+            RoutingLengthConstraint,
+            RoutingViaCountConstraint,
+            RoutingSkewConstraint,
+        ),
     ):
         return (
             f"routing constraint has unknown type {type(constraint).__name__}",
         )
     if not constraint.name:
         errors.append("routing constraint names must be non-empty")
-    if constraint.net not in known_nets:
+    if not isinstance(constraint, RoutingSkewConstraint) and constraint.net not in known_nets:
         errors.append(
             f"routing constraint {constraint.name} uses unknown net {constraint.net}"
         )
@@ -67,10 +73,34 @@ def validate_routing_constraint(
             errors.append(
                 f"routing length constraint {constraint.name} must be on-grid"
             )
-    elif constraint.maximum_vias < 0:
+    elif isinstance(constraint, RoutingViaCountConstraint) and constraint.maximum_vias < 0:
         errors.append(
             f"routing via constraint {constraint.name} maximum must be non-negative"
         )
+    elif isinstance(constraint, RoutingSkewConstraint):
+        if len(constraint.nets) < 2:
+            errors.append(
+                f"routing skew constraint {constraint.name} needs at least two nets"
+            )
+        if len(set(constraint.nets)) != len(constraint.nets):
+            errors.append(
+                f"routing skew constraint {constraint.name} repeats a net"
+            )
+        unknown = tuple(net for net in constraint.nets if net not in known_nets)
+        if unknown:
+            errors.append(
+                f"routing skew constraint {constraint.name} uses unknown nets: "
+                f"{', '.join(unknown)}"
+            )
+        if constraint.maximum_skew_dbu < 0:
+            errors.append(
+                f"routing skew constraint {constraint.name} maximum must be "
+                "non-negative"
+            )
+        elif constraint.maximum_skew_dbu % grid != 0:
+            errors.append(
+                f"routing skew constraint {constraint.name} must be on-grid"
+            )
     return tuple(errors)
 
 
@@ -101,6 +131,13 @@ def maximum_vias(job: PhysicalDesignJob, net: str) -> int | None:
     return min(limits) if limits else None
 
 
+def has_skew_constraint(job: PhysicalDesignJob, net: str) -> bool:
+    return any(
+        isinstance(constraint, RoutingSkewConstraint) and net in constraint.nets
+        for constraint in job.routing_constraints
+    )
+
+
 def _route_length(route: NetRoute) -> int:
     return sum(
         abs(segment.end.x - segment.start.x)
@@ -117,6 +154,45 @@ def evaluate_routing_constraints(
     vias = {via.name: via for via in job.technology.via_definitions}
     outcomes: list[ConstraintOutcome] = []
     for constraint in job.routing_constraints:
+        if isinstance(constraint, RoutingSkewConstraint):
+            constrained_routes = tuple(
+                route_by_net.get(net) for net in constraint.nets
+            )
+            if any(route is None for route in constrained_routes):
+                outcomes.append(
+                    ConstraintOutcome(
+                        constraint.name,
+                        ConstraintStatus.NOT_EVALUATED,
+                        "routing skew constraint has an incomplete Routing Solution",
+                    )
+                )
+                continue
+            lengths = tuple(
+                _route_length(route)
+                for route in constrained_routes
+                if route is not None
+            )
+            skew = max(lengths) - min(lengths)
+            satisfied = skew <= constraint.maximum_skew_dbu
+            outcomes.append(
+                ConstraintOutcome(
+                    constraint.name,
+                    (
+                        ConstraintStatus.SATISFIED
+                        if satisfied
+                        else ConstraintStatus.VIOLATED
+                    ),
+                    (
+                        "routing skew constraint is satisfied"
+                        if satisfied
+                        else (
+                            f"route length skew {skew} dbu exceeds maximum "
+                            f"{constraint.maximum_skew_dbu} dbu"
+                        )
+                    ),
+                )
+            )
+            continue
         route = route_by_net.get(constraint.net)
         if route is None:
             outcomes.append(

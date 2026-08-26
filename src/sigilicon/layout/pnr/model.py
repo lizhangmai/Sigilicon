@@ -445,10 +445,18 @@ class RoutingViaCountConstraint(CanonicalValue):
     maximum_vias: int
 
 
+@dataclass(frozen=True)
+class RoutingSkewConstraint(CanonicalValue):
+    name: str
+    nets: tuple[str, ...]
+    maximum_skew_dbu: int
+
+
 RoutingConstraint: TypeAlias = (
     RoutingLayerConstraint
     | RoutingLengthConstraint
     | RoutingViaCountConstraint
+    | RoutingSkewConstraint
 )
 
 
