@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sigilicon.layout.pnr._constraints import validate_constraint
 from sigilicon.layout.pnr._placement import solve_placement
 from sigilicon.layout.pnr._serialization import canonical_sha256
 from sigilicon.layout.pnr.model import (
@@ -23,8 +24,8 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 1
-ALGORITHM = "deterministic_bottom_left_v1"
+ENGINE_VERSION = 2
+ALGORITHM = "deterministic_constraint_search_v1"
 
 
 class PnrInputError(ValueError):
@@ -70,6 +71,8 @@ def _validate_job(job: PhysicalDesignJob) -> None:
     spacing = job.request.minimum_instance_spacing_dbu
     if spacing < 0 or not _on_grid(spacing, grid):
         errors.append("minimum instance spacing must be non-negative and on-grid")
+    if job.request.maximum_search_states <= 0:
+        errors.append("maximum search states must be positive")
 
     die_coordinates = (
         design.die.x_min,
@@ -235,29 +238,13 @@ def _validate_job(job: PhysicalDesignJob) -> None:
     if duplicates:
         errors.append(f"duplicate placement constraints: {', '.join(duplicates)}")
     for constraint in job.constraints:
-        if not constraint.name:
-            errors.append("placement constraint names must be non-empty")
-        if not constraint.instances:
-            errors.append(f"constraint {constraint.name} must target an instance")
-        unknown = tuple(name for name in constraint.instances if name not in instances)
-        if unknown:
-            errors.append(
-                f"constraint {constraint.name} targets unknown instances: {', '.join(unknown)}"
+        errors.extend(
+            validate_constraint(
+                constraint,
+                known_instances=frozenset(instances),
+                grid=grid,
             )
-        if len(set(constraint.instances)) != len(constraint.instances):
-            errors.append(f"constraint {constraint.name} repeats an instance")
-        if constraint.weight <= 0:
-            errors.append(f"constraint {constraint.name} weight must be positive")
-        if not isinstance(constraint.mode, ConstraintMode):
-            errors.append(f"constraint {constraint.name} has an invalid mode")
-        coordinates = (
-            constraint.region.x_min,
-            constraint.region.y_min,
-            constraint.region.x_max,
-            constraint.region.y_max,
         )
-        if any(not _on_grid(value, grid) for value in coordinates):
-            errors.append(f"constraint {constraint.name} region is off-grid")
 
     if errors:
         raise PnrInputError("invalid physical-design job: " + "; ".join(errors))
@@ -307,7 +294,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         if unsupported_constraints:
             diagnostic = Diagnostic(
                 code="unsupported_constraint_mode",
-                message="reference engine currently implements hard fences only",
+                message="reference engine currently implements hard constraints only",
                 entities=tuple(item.name for item in unsupported_constraints),
             )
             reports.append(

@@ -6,6 +6,10 @@ values. Database and project formats belong in adapters outside this Module.
 
 from sigilicon.layout.pnr.engine import PnrInputError, run
 from sigilicon.layout.pnr.model import (
+    AlignmentAnchor,
+    AlignmentConstraint,
+    ArrayConstraint,
+    Axis,
     ConstraintMode,
     ConstraintOutcome,
     ConstraintStatus,
@@ -16,6 +20,7 @@ from sigilicon.layout.pnr.model import (
     MasterPin,
     Metric,
     Orientation,
+    OrderingConstraint,
     PhysicalDesign,
     PhysicalDesignJob,
     PhysicalDesignResult,
@@ -28,6 +33,7 @@ from sigilicon.layout.pnr.model import (
     PinAccess,
     PinReference,
     Placement,
+    PlacementConstraint,
     PnrProvenance,
     PnrRequest,
     PnrStage,
@@ -35,10 +41,17 @@ from sigilicon.layout.pnr.model import (
     Rect,
     ResultStatus,
     RoutingDirection,
+    SeparationAxis,
+    SeparationConstraint,
     StageReport,
+    SymmetryConstraint,
 )
 
 __all__ = [
+    "AlignmentAnchor",
+    "AlignmentConstraint",
+    "ArrayConstraint",
+    "Axis",
     "ConstraintMode",
     "ConstraintOutcome",
     "ConstraintStatus",
@@ -49,6 +62,7 @@ __all__ = [
     "MasterPin",
     "Metric",
     "Orientation",
+    "OrderingConstraint",
     "PhysicalDesign",
     "PhysicalDesignJob",
     "PhysicalDesignResult",
@@ -61,6 +75,7 @@ __all__ = [
     "PinAccess",
     "PinReference",
     "Placement",
+    "PlacementConstraint",
     "PnrInputError",
     "PnrProvenance",
     "PnrRequest",
@@ -69,6 +84,9 @@ __all__ = [
     "Rect",
     "ResultStatus",
     "RoutingDirection",
+    "SeparationAxis",
+    "SeparationConstraint",
     "StageReport",
+    "SymmetryConstraint",
     "run",
 ]

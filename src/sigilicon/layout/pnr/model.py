@@ -44,6 +44,23 @@ class ConstraintMode(str, Enum):
     SOFT = "soft"
 
 
+class Axis(str, Enum):
+    X = "x"
+    Y = "y"
+
+
+class AlignmentAnchor(str, Enum):
+    LOW = "low"
+    CENTER = "center"
+    HIGH = "high"
+
+
+class SeparationAxis(str, Enum):
+    X = "x"
+    Y = "y"
+    ANY = "any"
+
+
 class PnrStage(str, Enum):
     PLACEMENT = "placement"
     ROUTING = "routing"
@@ -53,6 +70,7 @@ class ResultStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     UNSUPPORTED = "unsupported"
+    EXHAUSTED = "exhausted"
 
 
 class ConstraintStatus(str, Enum):
@@ -197,13 +215,75 @@ class FenceConstraint(CanonicalValue):
     weight: float = 1.0
 
 
-PlacementConstraint: TypeAlias = FenceConstraint
+@dataclass(frozen=True)
+class AlignmentConstraint(CanonicalValue):
+    name: str
+    instances: tuple[str, ...]
+    axis: Axis
+    anchor: AlignmentAnchor = AlignmentAnchor.LOW
+    mode: ConstraintMode = ConstraintMode.HARD
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class OrderingConstraint(CanonicalValue):
+    name: str
+    first: str
+    second: str
+    axis: Axis
+    minimum_gap_dbu: int = 0
+    mode: ConstraintMode = ConstraintMode.HARD
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class SymmetryConstraint(CanonicalValue):
+    name: str
+    pairs: tuple[tuple[str, str], ...]
+    axis: Axis
+    coordinate_dbu: int
+    mode: ConstraintMode = ConstraintMode.HARD
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class ArrayConstraint(CanonicalValue):
+    name: str
+    instances: tuple[str, ...]
+    columns: int
+    x_pitch_dbu: int
+    y_pitch_dbu: int
+    require_same_orientation: bool = True
+    mode: ConstraintMode = ConstraintMode.HARD
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class SeparationConstraint(CanonicalValue):
+    name: str
+    first: str
+    second: str
+    minimum_gap_dbu: int
+    axis: SeparationAxis = SeparationAxis.ANY
+    mode: ConstraintMode = ConstraintMode.HARD
+    weight: float = 1.0
+
+
+PlacementConstraint: TypeAlias = (
+    FenceConstraint
+    | AlignmentConstraint
+    | OrderingConstraint
+    | SymmetryConstraint
+    | ArrayConstraint
+    | SeparationConstraint
+)
 
 
 @dataclass(frozen=True)
 class PnrRequest(CanonicalValue):
     stages: tuple[PnrStage, ...] = (PnrStage.PLACEMENT,)
     minimum_instance_spacing_dbu: int = 0
+    maximum_search_states: int = 100_000
 
 
 @dataclass(frozen=True)

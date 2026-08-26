@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
+from sigilicon.layout.pnr._constraints import (
+    constraint_outcomes,
+    evaluate_constraint,
+)
 from sigilicon.layout.pnr.model import (
+    ArrayConstraint,
     ConstraintOutcome,
-    ConstraintStatus,
     Diagnostic,
     FenceConstraint,
     InstancePlacement,
@@ -17,10 +22,10 @@ from sigilicon.layout.pnr.model import (
     PhysicalMaster,
     Placement,
     Point,
+    PnrStage,
     Rect,
     ResultStatus,
     StageReport,
-    PnrStage,
 )
 
 
@@ -66,68 +71,85 @@ def _conflicts(candidate: Rect, other: Rect, spacing: int) -> bool:
     )
 
 
-def _instance_region(
-    job: PhysicalDesignJob,
-    instance_name: str,
-) -> Rect | None:
+def _instance_region(job: PhysicalDesignJob, instance_name: str) -> Rect | None:
     region: Rect | None = job.design.die
     for constraint in job.constraints:
+        if not isinstance(constraint, FenceConstraint):
+            continue
         if instance_name not in constraint.instances:
             continue
         region = region.intersection(constraint.region) if region is not None else None
     return region
 
 
-def _candidate_origins(
+def _candidate_placements(
+    master: PhysicalMaster,
     region: Rect,
-    occupied: tuple[Rect, ...],
     *,
-    spacing: int,
     grid: int,
-) -> tuple[Point, ...]:
-    x_values = {_snap_up(region.x_min, grid)}
-    y_values = {_snap_up(region.y_min, grid)}
-    for shape in occupied:
-        x_values.add(_snap_up(shape.x_max + spacing, grid))
-        y_values.add(_snap_up(shape.y_max + spacing, grid))
+) -> Iterator[tuple[Placement, Rect]]:
+    for orientation in master.allowed_orientations:
+        width, height = _dimensions(master, orientation)
+        x_start = _snap_up(region.x_min, grid)
+        y_start = _snap_up(region.y_min, grid)
+        x_stop = region.x_max - width
+        y_stop = region.y_max - height
+        if x_start > x_stop or y_start > y_stop:
+            continue
+        for y in range(y_start, y_stop + 1, grid):
+            for x in range(x_start, x_stop + 1, grid):
+                placement = Placement(Point(x, y), orientation)
+                yield placement, Rect(x, y, x + width, y + height)
+
+
+def _search_order(
+    instances: tuple[PhysicalInstance, ...],
+    job: PhysicalDesignJob,
+    masters: dict[str, PhysicalMaster],
+) -> tuple[PhysicalInstance, ...]:
+    array_rank: dict[str, int] = {}
+    for constraint in job.constraints:
+        if not isinstance(constraint, ArrayConstraint):
+            continue
+        for index, instance_name in enumerate(constraint.instances):
+            array_rank[instance_name] = min(
+                index,
+                array_rank.get(instance_name, index),
+            )
+    unconstrained_rank = len(job.design.instances)
     return tuple(
-        Point(x=x, y=y)
-        for y in sorted(y_values)
-        for x in sorted(x_values)
-        if x < region.x_max and y < region.y_max
+        sorted(
+            instances,
+            key=lambda instance: (
+                array_rank.get(instance.name, unconstrained_rank),
+                -(
+                    masters[instance.master].width_dbu
+                    * masters[instance.master].height_dbu
+                ),
+                instance.name,
+            ),
+        )
     )
 
 
-def _constraint_outcomes(
-    constraints: tuple[FenceConstraint, ...],
+def _hard_constraints_hold(
+    job: PhysicalDesignJob,
     rectangles: dict[str, Rect],
-) -> tuple[ConstraintOutcome, ...]:
-    outcomes: list[ConstraintOutcome] = []
-    for constraint in constraints:
-        missing = tuple(name for name in constraint.instances if name not in rectangles)
-        outside = tuple(
-            name
-            for name in constraint.instances
-            if name in rectangles and not constraint.region.contains(rectangles[name])
-        )
-        if missing or outside:
-            entities = ", ".join((*missing, *outside))
-            outcomes.append(
-                ConstraintOutcome(
-                    constraint=constraint.name,
-                    status=ConstraintStatus.VIOLATED,
-                    message=f"instances do not satisfy fence: {entities}",
-                )
-            )
-        else:
-            outcomes.append(
-                ConstraintOutcome(
-                    constraint=constraint.name,
-                    status=ConstraintStatus.SATISFIED,
-                    message="all constrained instances are inside the fence",
-                )
-            )
-    return tuple(outcomes)
+    placements: dict[str, Placement],
+) -> bool:
+    return all(
+        evaluate_constraint(constraint, rectangles, placements) is not False
+        for constraint in job.constraints
+    )
+
+
+def _ordered_placements(
+    placements: dict[str, Placement],
+) -> tuple[InstancePlacement, ...]:
+    return tuple(
+        InstancePlacement(instance=name, placement=placements[name])
+        for name in sorted(placements)
+    )
 
 
 def _failure(
@@ -137,20 +159,23 @@ def _failure(
     entities: tuple[str, ...],
     placements: dict[str, Placement],
     rectangles: dict[str, Rect],
-    constraints: tuple[FenceConstraint, ...],
+    job: PhysicalDesignJob,
+    status: ResultStatus = ResultStatus.FAILED,
+    search_states: int = 0,
 ) -> PlacementSolveResult:
-    ordered = tuple(
-        InstancePlacement(instance=name, placement=placements[name])
-        for name in sorted(placements)
-    )
     return PlacementSolveResult(
-        status=ResultStatus.FAILED,
-        placements=ordered,
-        constraint_outcomes=_constraint_outcomes(constraints, rectangles),
+        status=status,
+        placements=_ordered_placements(placements),
+        constraint_outcomes=constraint_outcomes(
+            job.constraints,
+            rectangles,
+            placements,
+        ),
         report=StageReport(
             stage=PnrStage.PLACEMENT,
-            status=ResultStatus.FAILED,
+            status=status,
             diagnostics=(Diagnostic(code=code, message=message, entities=entities),),
+            metrics=(Metric("search_states", search_states, "count"),),
         ),
     )
 
@@ -183,7 +208,7 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
                 entities=(instance.name,),
                 placements=placements,
                 rectangles=rectangles,
-                constraints=job.constraints,
+                job=job,
             )
         conflicts = tuple(
             name for name, other in rectangles.items() if _conflicts(shape, other, spacing)
@@ -195,78 +220,119 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
                 entities=(instance.name, *conflicts),
                 placements=placements,
                 rectangles=rectangles,
-                constraints=job.constraints,
+                job=job,
             )
         placements[instance.name] = placement
         rectangles[instance.name] = shape
 
-    movable = tuple(
-        sorted(
-            (
-                instance
-                for instance in job.design.instances
-                if instance.fixed_placement is None
-            ),
-            key=lambda instance: (
-                -(masters[instance.master].width_dbu * masters[instance.master].height_dbu),
-                instance.name,
-            ),
+    if not _hard_constraints_hold(job, rectangles, placements):
+        return _failure(
+            code="fixed_constraint_violation",
+            message="fixed placements violate a hard placement constraint",
+            entities=tuple(instance.name for instance in fixed),
+            placements=placements,
+            rectangles=rectangles,
+            job=job,
         )
+
+    movable = _search_order(
+        tuple(
+            instance
+            for instance in job.design.instances
+            if instance.fixed_placement is None
+        ),
+        job,
+        masters,
     )
-    for instance in movable:
+    empty_regions = tuple(
+        instance.name
+        for instance in movable
+        if _instance_region(job, instance.name) is None
+    )
+    if empty_regions:
+        return _failure(
+            code="empty_instance_region",
+            message="instances have empty legal regions",
+            entities=empty_regions,
+            placements=placements,
+            rectangles=rectangles,
+            job=job,
+        )
+
+    search_states = 0
+    exhausted = False
+
+    def search(index: int) -> tuple[dict[str, Placement], dict[str, Rect]] | None:
+        nonlocal search_states, exhausted
+        if index == len(movable):
+            if all(
+                evaluate_constraint(constraint, rectangles, placements) is True
+                for constraint in job.constraints
+            ):
+                return dict(placements), dict(rectangles)
+            return None
+
+        instance = movable[index]
         master = masters[instance.master]
         region = _instance_region(job, instance.name)
-        if region is None:
-            return _failure(
-                code="empty_instance_region",
-                message=f"instance {instance.name} has an empty legal region",
-                entities=(instance.name,),
-                placements=placements,
-                rectangles=rectangles,
-                constraints=job.constraints,
-            )
-        chosen: tuple[Placement, Rect] | None = None
-        origins = _candidate_origins(
+        assert region is not None
+        for placement, shape in _candidate_placements(
+            master,
             region,
-            tuple(rectangles.values()),
-            spacing=spacing,
             grid=job.technology.manufacturing_grid_dbu,
-        )
-        for orientation in master.allowed_orientations:
-            for origin in origins:
-                placement = Placement(origin=origin, orientation=orientation)
-                shape = _placed_rect(master, placement)
-                if not region.contains(shape):
-                    continue
-                if any(
-                    _conflicts(shape, other, spacing)
-                    for other in rectangles.values()
-                ):
-                    continue
-                chosen = placement, shape
-                break
-            if chosen is not None:
-                break
-        if chosen is None:
-            return _failure(
-                code="placement_infeasible",
-                message=f"reference placer found no legal location for {instance.name}",
-                entities=(instance.name,),
-                placements=placements,
-                rectangles=rectangles,
-                constraints=job.constraints,
-            )
-        placements[instance.name], rectangles[instance.name] = chosen
+        ):
+            if search_states >= job.request.maximum_search_states:
+                exhausted = True
+                return None
+            search_states += 1
+            if any(
+                _conflicts(shape, other, spacing)
+                for other in rectangles.values()
+            ):
+                continue
+            placements[instance.name] = placement
+            rectangles[instance.name] = shape
+            result = None
+            if _hard_constraints_hold(job, rectangles, placements):
+                result = search(index + 1)
+            placements.pop(instance.name)
+            rectangles.pop(instance.name)
+            if result is not None:
+                return result
+            if exhausted:
+                return None
+        return None
 
+    solved = search(0)
+    if solved is None:
+        status = ResultStatus.EXHAUSTED if exhausted else ResultStatus.FAILED
+        code = "placement_search_exhausted" if exhausted else "placement_infeasible"
+        message = (
+            "reference placer exhausted its deterministic search limit"
+            if exhausted
+            else "reference placer found no placement satisfying all hard constraints"
+        )
+        return _failure(
+            code=code,
+            message=message,
+            entities=tuple(instance.name for instance in movable),
+            placements=placements,
+            rectangles=rectangles,
+            job=job,
+            status=status,
+            search_states=search_states,
+        )
+
+    placements, rectangles = solved
     occupied_area = sum(shape.area for shape in rectangles.values())
-    result_placements = tuple(
-        InstancePlacement(instance=name, placement=placements[name])
-        for name in sorted(placements)
-    )
     return PlacementSolveResult(
         status=ResultStatus.SUCCEEDED,
-        placements=result_placements,
-        constraint_outcomes=_constraint_outcomes(job.constraints, rectangles),
+        placements=_ordered_placements(placements),
+        constraint_outcomes=constraint_outcomes(
+            job.constraints,
+            rectangles,
+            placements,
+        ),
         report=StageReport(
             stage=PnrStage.PLACEMENT,
             status=ResultStatus.SUCCEEDED,
@@ -278,6 +344,7 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
                     occupied_area / job.design.die.area,
                     "ratio",
                 ),
+                Metric("search_states", search_states, "count"),
             ),
         ),
     )

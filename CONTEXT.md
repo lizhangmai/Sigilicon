@@ -24,6 +24,26 @@ _Avoid_: Hard-coded PDK
 A named, checkable condition over physical design entities with explicit hardness and satisfaction status.
 _Avoid_: Prompt, hint
 
+**Alignment Constraint**:
+A condition requiring selected geometric anchors of multiple instances to share one coordinate along an axis.
+_Avoid_: Same row
+
+**Ordering Constraint**:
+A directional condition requiring one instance bounding box to precede another along an axis with an optional gap.
+_Avoid_: Signal flow hint
+
+**Symmetry Constraint**:
+A condition requiring paired instance bounding boxes to be geometric reflections across an explicit axis coordinate.
+_Avoid_: Matching pair
+
+**Array Constraint**:
+A condition assigning an ordered set of instance origins to a row-major grid with explicit pitches.
+_Avoid_: Repetition hint
+
+**Separation Constraint**:
+A condition requiring two instance bounding boxes to maintain a minimum gap along a selected axis or along either axis.
+_Avoid_: Keep away
+
 **Placement Solution**:
 Exact instance origins and orientations satisfying the supported placement constraints.
 _Avoid_: Floorplan suggestion

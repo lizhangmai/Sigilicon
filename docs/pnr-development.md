@@ -70,8 +70,11 @@ does not implement routing.
 
 ### M1 — general placement constraint system
 
+Status: hard-constraint search implemented; soft optimization remains in progress.
+
 - typed alignment, ordering, symmetry, array, separation, and region constraints;
-- hard-constraint conflict explanation;
+- deterministic constraint-aware search with explicit search exhaustion;
+- hard-constraint conflict reporting;
 - soft objectives for area, wire length, density, and congestion;
 - legalization separated from optimization inside the implementation;
 - benchmark corpus covering unrelated design styles and technology grids.

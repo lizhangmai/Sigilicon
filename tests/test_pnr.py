@@ -6,10 +6,15 @@ from pathlib import Path
 import pytest
 
 from sigilicon.layout.pnr import (
+    AlignmentAnchor,
+    AlignmentConstraint,
+    ArrayConstraint,
+    Axis,
     ConstraintMode,
     ConstraintStatus,
     FenceConstraint,
     Orientation,
+    OrderingConstraint,
     PhysicalDesign,
     PhysicalDesignJob,
     PhysicalInstance,
@@ -22,6 +27,9 @@ from sigilicon.layout.pnr import (
     Point,
     Rect,
     ResultStatus,
+    SeparationAxis,
+    SeparationConstraint,
+    SymmetryConstraint,
     run,
 )
 
@@ -66,6 +74,212 @@ def test_reference_engine_places_the_same_model_for_distinct_technologies() -> N
     assert first.provenance.deterministic is True
 
 
+def _placements(job: PhysicalDesignJob) -> dict[str, Placement]:
+    result = run(job)
+    assert result.status is ResultStatus.SUCCEEDED
+    assert all(
+        outcome.status is ConstraintStatus.SATISFIED
+        for outcome in result.constraint_outcomes
+    )
+    return {item.instance: item.placement for item in result.placements}
+
+
+def test_alignment_constraint_uses_explicit_geometric_anchor() -> None:
+    master = PhysicalMaster(
+        name="square",
+        width_dbu=10,
+        height_dbu=10,
+        allowed_orientations=(Orientation.R0,),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "alignment",
+            Rect(0, 0, 40, 30),
+            (master,),
+            (
+                PhysicalInstance("anchor", master.name, Placement(Point(0, 10))),
+                PhysicalInstance("moving", master.name),
+            ),
+        ),
+        constraints=(
+            AlignmentConstraint(
+                "align-bottom",
+                ("anchor", "moving"),
+                Axis.Y,
+                AlignmentAnchor.LOW,
+            ),
+        ),
+    )
+
+    placements = _placements(job)
+
+    assert placements["moving"].origin == Point(10, 10)
+
+
+def test_ordering_constraint_enforces_direction_and_gap() -> None:
+    master = PhysicalMaster(
+        "square",
+        10,
+        10,
+        allowed_orientations=(Orientation.R0,),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "ordered",
+            Rect(0, 0, 50, 20),
+            (master,),
+            (
+                PhysicalInstance("first", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("second", master.name),
+            ),
+        ),
+        constraints=(
+            OrderingConstraint(
+                "first-before-second",
+                "first",
+                "second",
+                Axis.X,
+                minimum_gap_dbu=10,
+            ),
+        ),
+    )
+
+    placements = _placements(job)
+
+    assert placements["second"].origin == Point(20, 0)
+
+
+def test_separation_constraint_is_undirected() -> None:
+    master = PhysicalMaster(
+        "square",
+        10,
+        10,
+        allowed_orientations=(Orientation.R0,),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "separated",
+            Rect(0, 0, 50, 20),
+            (master,),
+            (
+                PhysicalInstance("one", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("two", master.name),
+            ),
+        ),
+        constraints=(
+            SeparationConstraint(
+                "gap",
+                "one",
+                "two",
+                minimum_gap_dbu=10,
+                axis=SeparationAxis.ANY,
+            ),
+        ),
+    )
+
+    placements = _placements(job)
+
+    assert placements["two"].origin == Point(20, 0)
+
+
+def test_symmetry_constraint_reflects_bounding_boxes_about_axis() -> None:
+    master = PhysicalMaster(
+        "square",
+        10,
+        10,
+        allowed_orientations=(Orientation.R0,),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "symmetric",
+            Rect(0, 0, 30, 20),
+            (master,),
+            (
+                PhysicalInstance("left", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("right", master.name),
+            ),
+        ),
+        constraints=(
+            SymmetryConstraint(
+                "mirror",
+                (("left", "right"),),
+                Axis.X,
+                coordinate_dbu=10,
+            ),
+        ),
+    )
+
+    placements = _placements(job)
+
+    assert placements["right"].origin == Point(10, 0)
+
+
+def test_array_constraint_assigns_row_major_origins() -> None:
+    master = PhysicalMaster(
+        "tile",
+        10,
+        10,
+        allowed_orientations=(Orientation.R0,),
+    )
+    instances = (
+        PhysicalInstance("a", master.name, Placement(Point(0, 0))),
+        PhysicalInstance("b", master.name),
+        PhysicalInstance("c", master.name),
+        PhysicalInstance("d", master.name),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign("array", Rect(0, 0, 30, 30), (master,), instances),
+        constraints=(
+            ArrayConstraint(
+                "two-by-two",
+                tuple(instance.name for instance in instances),
+                columns=2,
+                x_pitch_dbu=10,
+                y_pitch_dbu=10,
+            ),
+        ),
+    )
+
+    placements = _placements(job)
+
+    assert {name: placement.origin for name, placement in placements.items()} == {
+        "a": Point(0, 0),
+        "b": Point(10, 0),
+        "c": Point(0, 10),
+        "d": Point(10, 10),
+    }
+
+
+def test_conflicting_fixed_constraints_return_a_violation() -> None:
+    master = PhysicalMaster("square", 10, 10)
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 10),
+        PhysicalDesign(
+            "conflict",
+            Rect(0, 0, 30, 30),
+            (master,),
+            (
+                PhysicalInstance("low", master.name, Placement(Point(0, 0))),
+                PhysicalInstance("high", master.name, Placement(Point(10, 10))),
+            ),
+        ),
+        constraints=(
+            AlignmentConstraint("impossible", ("low", "high"), Axis.Y),
+        ),
+    )
+
+    result = run(job)
+
+    assert result.status is ResultStatus.FAILED
+    assert result.constraint_outcomes[0].status is ConstraintStatus.VIOLATED
+    assert result.stage_reports[0].diagnostics[0].code == "fixed_constraint_violation"
+
+
 def test_hard_fence_is_solved_and_reported_through_the_public_interface() -> None:
     job = _job()
     fenced = replace(
@@ -107,6 +321,18 @@ def test_valid_but_infeasible_job_returns_diagnostics_instead_of_raising() -> No
 
     assert result.status is ResultStatus.FAILED
     assert result.stage_reports[0].diagnostics[0].code == "placement_infeasible"
+
+
+def test_search_exhaustion_is_not_reported_as_infeasibility() -> None:
+    job = replace(
+        _job(),
+        request=PnrRequest(maximum_search_states=1),
+    )
+
+    result = run(job)
+
+    assert result.status is ResultStatus.EXHAUSTED
+    assert result.stage_reports[0].diagnostics[0].code == "placement_search_exhausted"
 
 
 def test_unimplemented_capability_is_explicitly_unsupported() -> None:
