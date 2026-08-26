@@ -10,6 +10,10 @@ from sigilicon.layout.pnr._geometry import (
     transformed_obstructions,
     transformed_pin_accesses,
 )
+from sigilicon.layout.pnr._routing_constraints import (
+    allowed_routing_layers,
+    maximum_vias,
+)
 from sigilicon.layout.pnr.model import (
     CutSpacingRule,
     Diagnostic,
@@ -999,7 +1003,6 @@ def _solve_routing_once(
     via_definitions = {
         via.name: via for via in job.technology.via_definitions
     }
-    adjacency = _via_adjacency(usable_vias)
     all_routes: list[NetRoute] = []
     route_states = 0
     grid = job.technology.manufacturing_grid_dbu
@@ -1016,6 +1019,21 @@ def _solve_routing_once(
         else job.request.maximum_route_states
     )
     for net in ordered_nets:
+        allowed_layers = allowed_routing_layers(job, net.name)
+        net_contexts = {
+            layer: context
+            for layer, context in contexts.items()
+            if allowed_layers is None or layer in allowed_layers
+        }
+        via_limit = maximum_vias(job, net.name)
+        net_usable_vias = tuple(
+            via
+            for via in usable_vias
+            if via.lower_layer in net_contexts
+            and via.upper_layer in net_contexts
+            and via_limit != 0
+        )
+        net_adjacency = _via_adjacency(net_usable_vias)
         accesses = tuple(
             _endpoint_accesses(job, reference, placements)
             for reference in net.pins
@@ -1030,22 +1048,38 @@ def _solve_routing_once(
                 route_states=route_states,
             )
         endpoint_states = tuple(
-            _access_states(endpoint, contexts, grid) for endpoint in accesses
+            _access_states(endpoint, net_contexts, grid) for endpoint in accesses
         )
         if any(not states for states in endpoint_states):
             return _result(
-                ResultStatus.UNSUPPORTED,
+                (
+                    ResultStatus.FAILED
+                    if allowed_layers is not None
+                    else ResultStatus.UNSUPPORTED
+                ),
                 routes=tuple(all_routes),
-                code="routing_pin_access_layer_unsupported",
+                code=(
+                    "routing_layer_constraint_unsatisfied"
+                    if allowed_layers is not None
+                    else "routing_pin_access_layer_unsupported"
+                ),
                 message=f"net {net.name} has no access on a usable gridless layer",
                 entities=(net.name,),
                 route_states=route_states,
             )
-        if not _layers_connect(endpoint_states, adjacency):
+        if not _layers_connect(endpoint_states, net_adjacency):
             return _result(
-                ResultStatus.UNSUPPORTED,
+                (
+                    ResultStatus.FAILED
+                    if allowed_layers is not None or via_limit is not None
+                    else ResultStatus.UNSUPPORTED
+                ),
                 routes=tuple(all_routes),
-                code="routing_layer_transition_unsupported",
+                code=(
+                    "routing_constraint_infeasible"
+                    if allowed_layers is not None or via_limit is not None
+                    else "routing_layer_transition_unsupported"
+                ),
                 message=(
                     f"net {net.name} access layers cannot be connected by supported "
                     "via definitions and rules"
@@ -1060,7 +1094,7 @@ def _solve_routing_once(
             all_pin_references,
             tuple(all_routes),
         )
-        center_blockers = _center_blockers(raw_blockers, contexts)
+        center_blockers = _center_blockers(raw_blockers, net_contexts)
         legal_endpoint_states = tuple(
             tuple(
                 state
@@ -1089,9 +1123,9 @@ def _solve_routing_once(
             path, states, exhausted = _astar(
                 starts,
                 frozenset(tree),
-                contexts=contexts,
+                contexts=net_contexts,
                 center_blockers=center_blockers,
-                vias=usable_vias,
+                vias=net_usable_vias,
                 routing_regions=routing_regions,
                 raw_blockers=raw_blockers,
                 congestion_demands=_route_bin_demands(job, tuple(all_routes)),
@@ -1112,7 +1146,24 @@ def _solve_routing_once(
                     entities=(net.name,),
                     route_states=route_states,
                 )
-            new_segments, new_vias = _path_geometry(net.name, path, contexts)
+            new_segments, new_vias = _path_geometry(
+                net.name,
+                path,
+                net_contexts,
+            )
+            prospective_vias = tuple(dict.fromkeys((*route_vias, *new_vias)))
+            if via_limit is not None and len(prospective_vias) > via_limit:
+                return _result(
+                    ResultStatus.FAILED,
+                    routes=tuple(all_routes),
+                    code="routing_via_count_constraint_unsatisfied",
+                    message=(
+                        f"net {net.name} cannot satisfy its maximum via count "
+                        f"of {via_limit}"
+                    ),
+                    entities=(net.name,),
+                    route_states=route_states,
+                )
             segments.extend(new_segments)
             route_vias.extend(new_vias)
             mutable_blockers = {

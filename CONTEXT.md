@@ -104,6 +104,22 @@ _Avoid_: Retry timeout, unbounded rip-up
 A deterministic die partition used to estimate per-layer, per-direction route demand, track-equivalent capacity, and overflow without replacing exact geometry checks.
 _Avoid_: DRC region, signoff congestion result
 
+**Routing Constraint**:
+A named, typed condition over one net's accepted Routing Solution, separate from Placement Constraints and reported through the same explicit constraint outcome states.
+_Avoid_: Router hint, placement constraint
+
+**Routing Layer Constraint**:
+A Routing Constraint limiting one net's conductive path to an explicit set of routing layers.
+_Avoid_: Preferred layer guess
+
+**Routing Length Constraint**:
+A Routing Constraint defining an inclusive DBU length range over the exact Route Segments of one net.
+_Avoid_: Timing constraint, estimated HPWL
+
+**Routing Via Count Constraint**:
+A Routing Constraint placing an inclusive upper bound on the Via Definition occurrences used by one net.
+_Avoid_: Via cost
+
 **Routing Solution Check**:
 An independent reconstruction of connectivity, resource coverage, obstruction clearance, width, spacing, and via-rule compliance from a Physical Design Job and returned Routing Solution.
 _Avoid_: Solver success flag, signoff DRC/LVS

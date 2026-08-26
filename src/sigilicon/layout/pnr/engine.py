@@ -9,6 +9,10 @@ from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
 from sigilicon.layout.pnr._routing import solve_routing
 from sigilicon.layout.pnr._routing_check import check_routing_solution
+from sigilicon.layout.pnr._routing_constraints import (
+    evaluate_routing_constraints,
+    validate_routing_constraint,
+)
 from sigilicon.layout.pnr._serialization import canonical_sha256
 from sigilicon.layout.pnr._technology import (
     technology_capabilities,
@@ -18,6 +22,7 @@ from sigilicon.layout.pnr.model import (
     ConstraintOutcome,
     ConstraintStatus,
     Diagnostic,
+    LayerKind,
     Orientation,
     PhysicalDesignJob,
     PhysicalDesignResult,
@@ -31,7 +36,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 8
+ENGINE_VERSION = 9
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -102,6 +107,8 @@ def _validate_job(job: PhysicalDesignJob) -> None:
             PnrStage.PLACEMENT
         ):
             errors.append("placement must precede routing in request.stages")
+    elif job.routing_constraints:
+        errors.append("routing constraints require the routing stage")
 
     die_coordinates = (
         design.die.x_min,
@@ -252,6 +259,33 @@ def _validate_job(job: PhysicalDesignJob) -> None:
                     f"net {net.name} uses unknown pin {reference.instance}.{reference.pin}"
                 )
 
+    routing_constraint_names = tuple(
+        constraint.name for constraint in job.routing_constraints
+    )
+    duplicates = _duplicates(routing_constraint_names)
+    if duplicates:
+        errors.append(f"duplicate routing constraints: {', '.join(duplicates)}")
+    shared_constraint_names = set(routing_constraint_names) & {
+        constraint.name for constraint in job.constraints
+    }
+    if shared_constraint_names:
+        errors.append(
+            "constraint names must be unique across placement and routing: "
+            + ", ".join(sorted(shared_constraint_names))
+        )
+    routing_layers = frozenset(
+        name for name, layer in layers.items() if layer.kind is LayerKind.ROUTING
+    )
+    for constraint in job.routing_constraints:
+        errors.extend(
+            validate_routing_constraint(
+                constraint,
+                known_nets=frozenset(net_names),
+                known_layers=routing_layers,
+                grid=grid,
+            )
+        )
+
     constraint_names = tuple(constraint.name for constraint in job.constraints)
     duplicates = _duplicates(constraint_names)
     if duplicates:
@@ -283,6 +317,19 @@ def _provenance(job: PhysicalDesignJob) -> PnrProvenance:
         algorithm=ALGORITHM,
         input_sha256=canonical_sha256(job),
         deterministic=True,
+    )
+
+
+def _routing_constraints_not_evaluated(
+    job: PhysicalDesignJob,
+) -> tuple[ConstraintOutcome, ...]:
+    return tuple(
+        ConstraintOutcome(
+            constraint=constraint.name,
+            status=ConstraintStatus.NOT_EVALUATED,
+            message="routing constraint was not evaluated",
+        )
+        for constraint in job.routing_constraints
     )
 
 
@@ -324,7 +371,8 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                     message="constraint was not evaluated",
                 )
                 for constraint in job.constraints
-            ),
+            )
+            + _routing_constraints_not_evaluated(job),
             stage_reports=tuple(reports),
             provenance=_provenance(job),
         )
@@ -334,7 +382,10 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         return PhysicalDesignResult(
             status=placement.status,
             placements=placement.placements,
-            constraint_outcomes=placement.constraint_outcomes,
+            constraint_outcomes=(
+                placement.constraint_outcomes
+                + _routing_constraints_not_evaluated(job)
+            ),
             stage_reports=(placement.report,),
             provenance=_provenance(job),
         )
@@ -346,17 +397,35 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                 placement.placements,
                 routing.routes,
             )
-            if routing_diagnostics:
+            routing_outcomes = evaluate_routing_constraints(job, routing.routes)
+            violated_routing_constraints = tuple(
+                outcome
+                for outcome in routing_outcomes
+                if outcome.status is ConstraintStatus.VIOLATED
+            )
+            if routing_diagnostics or violated_routing_constraints:
+                constraint_diagnostics = tuple(
+                    Diagnostic(
+                        code="routing_constraint_violated",
+                        message=outcome.message,
+                        entities=(outcome.constraint,),
+                    )
+                    for outcome in violated_routing_constraints
+                )
                 return PhysicalDesignResult(
                     status=ResultStatus.FAILED,
                     placements=placement.placements,
-                    constraint_outcomes=placement.constraint_outcomes,
+                    constraint_outcomes=(
+                        placement.constraint_outcomes + routing_outcomes
+                    ),
                     stage_reports=(
                         placement.report,
                         replace(
                             routing.report,
                             status=ResultStatus.FAILED,
-                            diagnostics=routing_diagnostics,
+                            diagnostics=(
+                                routing_diagnostics + constraint_diagnostics
+                            ),
                         ),
                     ),
                     provenance=_provenance(job),
@@ -364,7 +433,14 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         return PhysicalDesignResult(
             status=routing.status,
             placements=placement.placements,
-            constraint_outcomes=placement.constraint_outcomes,
+            constraint_outcomes=(
+                placement.constraint_outcomes
+                + (
+                    evaluate_routing_constraints(job, routing.routes)
+                    if routing.status is ResultStatus.SUCCEEDED
+                    else _routing_constraints_not_evaluated(job)
+                )
+            ),
             stage_reports=(placement.report, routing.report),
             provenance=_provenance(job),
             routes=routing.routes,

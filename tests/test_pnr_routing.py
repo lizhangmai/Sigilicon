@@ -6,6 +6,7 @@ import pytest
 
 from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr import (
+    ConstraintStatus,
     CutSpacingRule,
     EnclosureRule,
     GridlessRoutingResource,
@@ -32,7 +33,10 @@ from sigilicon.layout.pnr import (
     Rect,
     ResultStatus,
     RoutingDirection,
+    RoutingLayerConstraint,
+    RoutingLengthConstraint,
     RoutingTrackPattern,
+    RoutingViaCountConstraint,
     ViaDefinition,
     Axis,
     run,
@@ -513,6 +517,123 @@ def test_router_crosses_two_vias_without_requiring_a_named_stack() -> None:
         "via23",
     }
     assert len(result.routes[0].vias) == 2
+
+
+def test_routing_layer_constraint_is_enforced_during_search() -> None:
+    job = _multilayer_job()
+    constrained = replace(
+        job,
+        routing_constraints=(
+            RoutingLayerConstraint("signal-layers", "signal", ("m1", "m2")),
+        ),
+    )
+
+    result = run(constrained)
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+
+    impossible = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingLayerConstraint("m1-only", "signal", ("m1",)),
+            ),
+        )
+    )
+    assert impossible.status is ResultStatus.FAILED
+    assert impossible.stage_reports[-1].diagnostics[0].code == (
+        "routing_layer_constraint_unsatisfied"
+    )
+
+
+def test_routing_length_constraint_gates_the_returned_solution() -> None:
+    job = _job()
+    exact = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingLengthConstraint("exact-length", "signal", 34, 34),
+            ),
+        )
+    )
+    too_short = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingLengthConstraint("maximum-length", "signal", 0, 33),
+            ),
+        )
+    )
+
+    assert exact.status is ResultStatus.SUCCEEDED
+    assert exact.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert too_short.status is ResultStatus.FAILED
+    assert too_short.routes == ()
+    assert too_short.constraint_outcomes[-1].status is ConstraintStatus.VIOLATED
+    assert too_short.stage_reports[-1].diagnostics[-1].code == (
+        "routing_constraint_violated"
+    )
+
+
+def test_routing_via_count_constraint_is_checked_end_to_end() -> None:
+    two_layer = _multilayer_job()
+    accepted = run(
+        replace(
+            two_layer,
+            routing_constraints=(
+                RoutingViaCountConstraint("one-via", "signal", 1),
+            ),
+        )
+    )
+    three_layer = _multilayer_job(three_layers=True)
+    rejected = run(
+        replace(
+            three_layer,
+            routing_constraints=(
+                RoutingViaCountConstraint("one-via", "signal", 1),
+            ),
+        )
+    )
+
+    assert accepted.status is ResultStatus.SUCCEEDED
+    assert accepted.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert rejected.status is ResultStatus.FAILED
+    assert rejected.stage_reports[-1].diagnostics[0].code == (
+        "routing_via_count_constraint_unsatisfied"
+    )
+
+
+def test_routing_constraints_validate_net_layer_and_range() -> None:
+    job = _job()
+
+    with pytest.raises(PnrInputError, match="unknown net missing"):
+        run(
+            replace(
+                job,
+                routing_constraints=(
+                    RoutingLengthConstraint("unknown-net", "missing", 0, 10),
+                ),
+            )
+        )
+    with pytest.raises(PnrInputError, match="unknown layers: missing"):
+        run(
+            replace(
+                job,
+                routing_constraints=(
+                    RoutingLayerConstraint("unknown-layer", "signal", ("missing",)),
+                ),
+            )
+        )
+    with pytest.raises(PnrInputError, match="invalid range"):
+        run(
+            replace(
+                job,
+                routing_constraints=(
+                    RoutingLengthConstraint("bad-range", "signal", 20, 10),
+                ),
+            )
+        )
 
 
 def test_via_search_avoids_cut_layer_obstruction() -> None:

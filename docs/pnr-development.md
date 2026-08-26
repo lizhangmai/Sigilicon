@@ -101,6 +101,9 @@ routing remains in progress.
 - legal Via Definition occurrences with cut spacing and two-sided enclosure checks;
 - configurable die-bin congestion analysis with layer/direction demand, derived
   track-equivalent capacity, overflow metrics, and demand-aware path costs;
+- typed per-net layer, length-range, and maximum-via Routing Constraints with
+  structural validation, search-time layer/via filtering, and independent result
+  outcomes;
 - bounded deterministic rip-up over alternative net orders when a greedy order
   blocks a later net;
 - independent geometry, spacing, resource-coverage, and connectivity checks over
@@ -113,8 +116,9 @@ routing remains in progress.
 The current reference router deliberately rejects track-only problems and layer
 transitions whose Via Definitions lack complete enclosure or cut-spacing facts.
 Those are capability boundaries, not implicit fallbacks. The next routing increments
-add track-resource search, topology/length/skew/shielding constraints, and
-fine-grained negotiated rip-up beyond the current full-iteration reroute.
+add track-resource search, topology/skew/shielding and richer length-matching
+constraints, plus fine-grained negotiated rip-up beyond the current full-iteration
+reroute.
 
 - global routing and congestion estimation;
 - detailed path and via construction;

@@ -424,6 +424,35 @@ PlacementObjective: TypeAlias = (
 
 
 @dataclass(frozen=True)
+class RoutingLayerConstraint(CanonicalValue):
+    name: str
+    net: str
+    allowed_layers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RoutingLengthConstraint(CanonicalValue):
+    name: str
+    net: str
+    minimum_length_dbu: int = 0
+    maximum_length_dbu: int | None = None
+
+
+@dataclass(frozen=True)
+class RoutingViaCountConstraint(CanonicalValue):
+    name: str
+    net: str
+    maximum_vias: int
+
+
+RoutingConstraint: TypeAlias = (
+    RoutingLayerConstraint
+    | RoutingLengthConstraint
+    | RoutingViaCountConstraint
+)
+
+
+@dataclass(frozen=True)
 class PnrRequest(CanonicalValue):
     stages: tuple[PnrStage, ...] = (PnrStage.PLACEMENT,)
     minimum_instance_spacing_dbu: int = 0
@@ -442,6 +471,7 @@ class PhysicalDesignJob(CanonicalValue):
     design: PhysicalDesign
     constraints: tuple[PlacementConstraint, ...] = ()
     request: PnrRequest = PnrRequest()
+    routing_constraints: tuple[RoutingConstraint, ...] = ()
 
 
 @dataclass(frozen=True)
