@@ -84,6 +84,18 @@ _Avoid_: Floorplan suggestion
 Exact conductive geometry and vias connecting nets under the supported routing constraints.
 _Avoid_: Connectivity suggestion
 
+**Route Segment**:
+An exact-width, axis-aligned conductor between two manufacturing-grid points on one routing layer and owned by one net.
+_Avoid_: Path hint, centerline only
+
+**Route Via**:
+An occurrence of a Via Definition at an exact manufacturing-grid origin and owned by one net.
+_Avoid_: Layer switch, via name without geometry
+
+**Routing Search Budget**:
+The maximum number of deterministic route states a Physical Design Job permits before returning `exhausted` instead of claiming infeasibility.
+_Avoid_: Timeout, failed route
+
 **Materialization Plan**:
 An audited instruction set for writing an accepted physical design solution into a persistent layout database.
 _Avoid_: Physical Design Result

@@ -5,6 +5,7 @@ from __future__ import annotations
 from sigilicon.layout.pnr._constraints import validate_constraint
 from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
+from sigilicon.layout.pnr._routing import solve_routing
 from sigilicon.layout.pnr._serialization import canonical_sha256
 from sigilicon.layout.pnr._technology import (
     technology_capabilities,
@@ -27,8 +28,8 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 4
-ALGORITHM = "deterministic_weighted_search_v1"
+ENGINE_VERSION = 5
+ALGORITHM = "reference_physical_design_v1"
 
 
 class PnrInputError(ValueError):
@@ -72,6 +73,8 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         errors.append("minimum instance spacing must be non-negative and on-grid")
     if job.request.maximum_search_states <= 0:
         errors.append("maximum search states must be positive")
+    if job.request.maximum_route_states <= 0:
+        errors.append("maximum route states must be positive")
     required_capabilities = job.request.required_technology_capabilities
     if any(
         not isinstance(capability, TechnologyCapability)
@@ -82,6 +85,13 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         )
     if len(set(required_capabilities)) != len(required_capabilities):
         errors.append("required technology capabilities contain duplicates")
+    if PnrStage.ROUTING in job.request.stages:
+        if PnrStage.PLACEMENT not in job.request.stages:
+            errors.append("routing requires placement in request.stages")
+        elif job.request.stages.index(PnrStage.ROUTING) < job.request.stages.index(
+            PnrStage.PLACEMENT
+        ):
+            errors.append("placement must precede routing in request.stages")
 
     die_coordinates = (
         design.die.x_min,
@@ -274,43 +284,26 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
     """
 
     _validate_job(job)
-    unsupported_stages = tuple(
-        stage for stage in job.request.stages if stage is not PnrStage.PLACEMENT
-    )
     capabilities = technology_capabilities(job.technology)
     missing_capabilities = tuple(
         capability
         for capability in job.request.required_technology_capabilities
         if capability not in capabilities
     )
-    if unsupported_stages or missing_capabilities:
+    if missing_capabilities:
         reports: list[StageReport] = []
-        for stage in unsupported_stages:
-            diagnostic = Diagnostic(
-                code="unsupported_stage",
-                message=f"reference engine does not implement {stage.value}",
-                entities=(stage.value,),
+        diagnostic = Diagnostic(
+            code="unsupported_technology_capability",
+            message="technology model does not provide required capabilities",
+            entities=tuple(capability.value for capability in missing_capabilities),
+        )
+        reports.append(
+            StageReport(
+                stage=job.request.stages[0],
+                status=ResultStatus.UNSUPPORTED,
+                diagnostics=(diagnostic,),
             )
-            reports.append(
-                StageReport(
-                    stage=stage,
-                    status=ResultStatus.UNSUPPORTED,
-                    diagnostics=(diagnostic,),
-                )
-            )
-        if missing_capabilities:
-            diagnostic = Diagnostic(
-                code="unsupported_technology_capability",
-                message="technology model does not provide required capabilities",
-                entities=tuple(capability.value for capability in missing_capabilities),
-            )
-            reports.append(
-                StageReport(
-                    stage=job.request.stages[0],
-                    status=ResultStatus.UNSUPPORTED,
-                    diagnostics=(diagnostic,),
-                )
-            )
+        )
         return PhysicalDesignResult(
             status=ResultStatus.UNSUPPORTED,
             placements=(),
@@ -327,6 +320,24 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         )
 
     placement = solve_placement(job)
+    if placement.status is not ResultStatus.SUCCEEDED:
+        return PhysicalDesignResult(
+            status=placement.status,
+            placements=placement.placements,
+            constraint_outcomes=placement.constraint_outcomes,
+            stage_reports=(placement.report,),
+            provenance=_provenance(job),
+        )
+    if PnrStage.ROUTING in job.request.stages:
+        routing = solve_routing(job, placement.placements)
+        return PhysicalDesignResult(
+            status=routing.status,
+            placements=placement.placements,
+            constraint_outcomes=placement.constraint_outcomes,
+            stage_reports=(placement.report, routing.report),
+            provenance=_provenance(job),
+            routes=routing.routes,
+        )
     return PhysicalDesignResult(
         status=placement.status,
         placements=placement.placements,

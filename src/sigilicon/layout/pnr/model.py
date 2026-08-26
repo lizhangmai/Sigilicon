@@ -430,6 +430,7 @@ class PnrRequest(CanonicalValue):
     maximum_search_states: int = 100_000
     objectives: tuple[PlacementObjective, ...] = ()
     required_technology_capabilities: tuple[TechnologyCapability, ...] = ()
+    maximum_route_states: int = 200_000
 
 
 @dataclass(frozen=True)
@@ -476,6 +477,29 @@ class StageReport(CanonicalValue):
 
 
 @dataclass(frozen=True)
+class RouteSegment(CanonicalValue):
+    net: str
+    layer: str
+    start: Point
+    end: Point
+    width_dbu: int
+
+
+@dataclass(frozen=True)
+class RouteVia(CanonicalValue):
+    net: str
+    via_definition: str
+    origin: Point
+
+
+@dataclass(frozen=True)
+class NetRoute(CanonicalValue):
+    net: str
+    segments: tuple[RouteSegment, ...]
+    vias: tuple[RouteVia, ...] = ()
+
+
+@dataclass(frozen=True)
 class PnrProvenance(CanonicalValue):
     engine: str
     engine_version: int
@@ -491,3 +515,4 @@ class PhysicalDesignResult(CanonicalValue):
     constraint_outcomes: tuple[ConstraintOutcome, ...]
     stage_reports: tuple[StageReport, ...]
     provenance: PnrProvenance
+    routes: tuple[NetRoute, ...] = ()

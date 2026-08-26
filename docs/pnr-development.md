@@ -65,8 +65,7 @@ Status: implemented.
 - canonical serialization and reproducible input identity;
 - neutral tests that exercise more than one technology model.
 
-M0 is a contract and correctness reference. It is not an optimizing placer and
-does not implement routing.
+M0 is a contract and correctness reference. It is not an optimizing placer.
 
 ### M1 — general placement constraint system
 
@@ -81,8 +80,8 @@ Status: reference implementation complete.
 
 ### M2 — routable physical library and technology rules
 
-Status: normalized technology and master-geometry foundation implemented; routing
-consumption remains in progress.
+Status: normalized technology and master-geometry foundation implemented and
+consumed by the first reference router.
 
 - transformed obstruction and terminal-access geometry;
 - routing tracks and gridless resources;
@@ -91,6 +90,23 @@ consumption remains in progress.
 - capability negotiation for rules that a technology model cannot express.
 
 ### M3 — general routing
+
+Status: first deterministic gridless vertical slice implemented; general routing
+remains in progress.
+
+- exact single-layer Manhattan Route Segments over a gridless Routing Resource;
+- transformed Pin Access and Obstruction consumption;
+- conservative minimum-width and minimum-spacing enforcement;
+- deterministic multi-terminal tree construction and inter-net spacing;
+- explicit distinction between infeasibility, capability gaps, and search-budget
+  exhaustion;
+- partial-stage observability: a successful Placement Solution remains available
+  when the requested Routing Solution cannot be completed.
+
+The current reference router deliberately rejects track-only and layer-transition
+problems. Those are capability boundaries, not implicit fallbacks. The next routing
+increments add legal Via construction, multi-layer state search, and an independent
+solution checker before negotiated congestion and rip-up.
 
 - global routing and congestion estimation;
 - detailed path and via construction;

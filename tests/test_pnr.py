@@ -348,7 +348,7 @@ def test_search_exhaustion_is_not_reported_as_infeasibility() -> None:
     assert result.stage_reports[0].diagnostics[0].code == "placement_search_exhausted"
 
 
-def test_unimplemented_routing_is_explicitly_unsupported() -> None:
+def test_empty_netlist_routing_is_vacuously_succeeded() -> None:
     job = replace(
         _job(),
         request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
@@ -364,12 +364,14 @@ def test_unimplemented_routing_is_explicitly_unsupported() -> None:
 
     result = run(job)
 
-    assert result.status is ResultStatus.UNSUPPORTED
-    assert result.placements == ()
-    assert {item.code for report in result.stage_reports for item in report.diagnostics} == {
-        "unsupported_stage",
-    }
-    assert result.constraint_outcomes[0].status is ConstraintStatus.NOT_EVALUATED
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.placements
+    assert result.routes == ()
+    assert tuple(report.stage for report in result.stage_reports) == (
+        PnrStage.PLACEMENT,
+        PnrStage.ROUTING,
+    )
+    assert result.constraint_outcomes[0].status is ConstraintStatus.SATISFIED
 
 
 def test_soft_constraint_ranks_legal_placements() -> None:
