@@ -476,7 +476,7 @@ def test_routing_iteration_budget_must_be_positive() -> None:
         )
 
 
-def test_track_only_technology_is_explicitly_unsupported_by_reference_router() -> None:
+def test_track_only_technology_routes_only_on_declared_track_coordinates() -> None:
     technology = replace(
         _technology(),
         routing_resources=(
@@ -486,11 +486,58 @@ def test_track_only_technology_is_explicitly_unsupported_by_reference_router() -
 
     result = run(_job(technology=technology))
 
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.routes[0].segments[0].start.y == 6
+    assert result.routes[0].segments[0].end.y == 6
+
+
+def test_track_resource_requires_a_terminal_access_on_a_legal_track() -> None:
+    technology = replace(
+        _technology(),
+        routing_resources=(
+            RoutingTrackPattern("route-tracks", "route", Axis.Y, 0, 4, 10),
+        ),
+    )
+
+    result = run(_job(technology=technology))
+
     assert result.status is ResultStatus.UNSUPPORTED
-    assert result.placements == ()
-    assert result.routes == ()
     assert result.stage_reports[-1].diagnostics[0].code == (
-        "routing_gridless_resource_required"
+        "routing_pin_access_layer_unsupported"
+    )
+
+
+def test_orthogonal_track_layers_connect_at_a_legal_via_intersection() -> None:
+    job = _multilayer_job()
+    technology = replace(
+        job.technology,
+        routing_resources=(
+            RoutingTrackPattern("m1-tracks", "m1", Axis.Y, 2, 4, 10),
+            RoutingTrackPattern("m2-tracks", "m2", Axis.X, 1, 4, 10),
+        ),
+    )
+    design = replace(
+        job.design,
+        ports=(
+            job.design.ports[0],
+            PhysicalPort("sink", (PinAccess("m2", Rect(36, 29, 38, 31)),)),
+        ),
+    )
+
+    result = run(replace(job, technology=technology, design=design))
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert len(result.routes[0].vias) == 1
+    assert {segment.layer for segment in result.routes[0].segments} == {"m1", "m2"}
+    assert all(
+        segment.start.y == segment.end.y
+        for segment in result.routes[0].segments
+        if segment.layer == "m1"
+    )
+    assert all(
+        segment.start.x == segment.end.x
+        for segment in result.routes[0].segments
+        if segment.layer == "m2"
     )
 
 

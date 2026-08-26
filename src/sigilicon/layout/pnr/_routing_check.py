@@ -9,6 +9,7 @@ from sigilicon.layout.pnr._geometry import (
     transformed_pin_accesses,
 )
 from sigilicon.layout.pnr.model import (
+    Axis,
     CutSpacingRule,
     Diagnostic,
     EnclosureRule,
@@ -24,6 +25,7 @@ from sigilicon.layout.pnr.model import (
     Point,
     Rect,
     RouteSegment,
+    RoutingTrackPattern,
     ViaDefinition,
 )
 
@@ -159,7 +161,7 @@ def _spacing(
     return None
 
 
-def _routing_regions(
+def _gridless_regions(
     job: PhysicalDesignJob,
     layer: str,
 ) -> tuple[Rect, ...]:
@@ -171,6 +173,21 @@ def _routing_regions(
             region := (resource.region or job.design.die).intersection(job.design.die)
         )
         is not None
+    )
+
+
+def _track_coordinates(
+    job: PhysicalDesignJob,
+    layer: str,
+    axis: Axis,
+) -> frozenset[int]:
+    return frozenset(
+        resource.start_dbu + resource.pitch_dbu * index
+        for resource in job.technology.routing_resources
+        if isinstance(resource, RoutingTrackPattern)
+        and resource.layer == layer
+        and resource.axis is axis
+        for index in range(resource.count)
     )
 
 
@@ -213,6 +230,31 @@ def _wire_in_regions(
     regions: tuple[Rect, ...],
 ) -> bool:
     return _covered_by_regions(_wire_rectangle(segment), regions)
+
+
+def _segment_on_resource(
+    job: PhysicalDesignJob,
+    segment: RouteSegment,
+) -> bool:
+    if _wire_in_regions(segment, _gridless_regions(job, segment.layer)):
+        return True
+    if segment.start.y == segment.end.y:
+        return segment.start.y in _track_coordinates(job, segment.layer, Axis.Y)
+    return segment.start.x in _track_coordinates(job, segment.layer, Axis.X)
+
+
+def _via_on_resource(
+    job: PhysicalDesignJob,
+    layer: str,
+    origin: Point,
+    shape: Rect,
+) -> bool:
+    if _covered_by_regions(shape, _gridless_regions(job, layer)):
+        return True
+    return (
+        origin.y in _track_coordinates(job, layer, Axis.Y)
+        or origin.x in _track_coordinates(job, layer, Axis.X)
+    ) and job.design.die.contains(shape)
 
 
 def _endpoint_accesses(
@@ -356,11 +398,18 @@ def check_routing_solution(
                 )
                 continue
             minimum_width = _route_width(job, segment.layer)
-            regions = _routing_regions(job, segment.layer)
-            if minimum_width is None or not regions:
+            has_resource = any(
+                isinstance(
+                    resource,
+                    (GridlessRoutingResource, RoutingTrackPattern),
+                )
+                and resource.layer == segment.layer
+                for resource in job.technology.routing_resources
+            )
+            if minimum_width is None or not has_resource:
                 report(
                     "routing_segment_layer_unsupported",
-                    "route segment layer lacks gridless resources or width rules",
+                    "route segment layer lacks routing resources or width rules",
                     entity,
                     segment.layer,
                 )
@@ -378,10 +427,10 @@ def check_routing_solution(
                     "route segment conductor is outside the design die",
                     entity,
                 )
-            if not _wire_in_regions(segment, regions):
+            if not _segment_on_resource(job, segment):
                 report(
                     "routing_segment_outside_resource",
-                    "route segment conductor leaves its gridless routing resources",
+                    "route segment conductor leaves its routing resources",
                     entity,
                 )
             conductors.append(
@@ -426,13 +475,15 @@ def check_routing_solution(
                 if layer in (
                     via.lower_layer,
                     via.upper_layer,
-                ) and not _covered_by_regions(
+                ) and not _via_on_resource(
+                    job,
+                    layer,
+                    route_via.origin,
                     shape,
-                    _routing_regions(job, layer),
                 ):
                     report(
                         "routing_via_outside_resource",
-                        "route via conductor leaves a gridless routing resource",
+                        "route via conductor leaves a routing resource",
                         entity,
                         layer,
                     )

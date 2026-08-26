@@ -1,4 +1,4 @@
-"""Deterministic gridless Manhattan reference routing."""
+"""Deterministic Manhattan routing over normalized routing resources."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from sigilicon.layout.pnr._routing_constraints import (
     maximum_vias,
 )
 from sigilicon.layout.pnr.model import (
+    Axis,
     CutSpacingRule,
     Diagnostic,
     EnclosureRule,
@@ -34,6 +35,7 @@ from sigilicon.layout.pnr.model import (
     ResultStatus,
     RouteSegment,
     RouteVia,
+    RoutingTrackPattern,
     StageReport,
     ViaDefinition,
 )
@@ -53,6 +55,9 @@ class _LayerContext:
     spacing: int
     regions: tuple[Rect, ...]
     raw_regions: tuple[Rect, ...]
+    gridless_regions: tuple[Rect, ...]
+    horizontal_tracks: tuple[int, ...]
+    vertical_tracks: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -156,15 +161,25 @@ def _routing_contexts(
             (
                 resource
                 for resource in job.technology.routing_resources
-                if isinstance(resource, GridlessRoutingResource)
+                if isinstance(
+                    resource,
+                    (GridlessRoutingResource, RoutingTrackPattern),
+                )
             ),
-            key=lambda resource: (resource.layer, resource.name),
+            key=lambda resource: (
+                resource.layer,
+                type(resource).__name__,
+                resource.name,
+            ),
         )
     )
     if not resources:
-        return {}, {}, "routing_gridless_resource_required"
+        return {}, {}, "routing_resource_required"
     grid = job.technology.manufacturing_grid_dbu
-    grouped: dict[str, list[GridlessRoutingResource]] = {}
+    grouped: dict[
+        str,
+        list[GridlessRoutingResource | RoutingTrackPattern],
+    ] = {}
     for resource in resources:
         grouped.setdefault(resource.layer, []).append(resource)
     contexts: dict[str, _LayerContext] = {}
@@ -176,15 +191,28 @@ def _routing_contexts(
         width, spacing = rules
         if width % (2 * grid) != 0:
             return {}, {}, "routing_width_resolution_unsupported"
-        raw_regions = tuple(
-            region
+        gridless_resources = tuple(
+            resource
             for resource in layer_resources
+            if isinstance(resource, GridlessRoutingResource)
+        )
+        track_resources = tuple(
+            resource
+            for resource in layer_resources
+            if isinstance(resource, RoutingTrackPattern)
+        )
+        gridless_regions = tuple(
+            region
+            for resource in gridless_resources
             if (
                 region := (resource.region or job.design.die).intersection(
                     job.design.die
                 )
             )
             is not None
+        )
+        raw_regions = gridless_regions + (
+            (job.design.die,) if track_resources else ()
         )
         routing_regions[layer] = raw_regions
         margin = width // 2
@@ -195,16 +223,45 @@ def _routing_contexts(
                 region.x_max - margin,
                 region.y_max - margin,
             )
-            for region in raw_regions
+            for region in gridless_regions
             if region.width > width and region.height > width
         )
-        if center_regions:
+        horizontal_tracks = tuple(
+            sorted(
+                {
+                    resource.start_dbu + resource.pitch_dbu * index
+                    for resource in track_resources
+                    if resource.axis is Axis.Y
+                    for index in range(resource.count)
+                    if job.design.die.y_min + margin
+                    <= resource.start_dbu + resource.pitch_dbu * index
+                    <= job.design.die.y_max - margin
+                }
+            )
+        )
+        vertical_tracks = tuple(
+            sorted(
+                {
+                    resource.start_dbu + resource.pitch_dbu * index
+                    for resource in track_resources
+                    if resource.axis is Axis.X
+                    for index in range(resource.count)
+                    if job.design.die.x_min + margin
+                    <= resource.start_dbu + resource.pitch_dbu * index
+                    <= job.design.die.x_max - margin
+                }
+            )
+        )
+        if center_regions or horizontal_tracks or vertical_tracks:
             contexts[layer] = _LayerContext(
                 layer=layer,
                 width=width,
                 spacing=spacing,
                 regions=center_regions,
                 raw_regions=raw_regions,
+                gridless_regions=gridless_regions,
+                horizontal_tracks=horizontal_tracks,
+                vertical_tracks=vertical_tracks,
             )
     if not contexts:
         return {}, routing_regions, "routing_region_empty"
@@ -265,21 +322,62 @@ def _access_states(
     contexts: dict[str, _LayerContext],
     grid: int,
 ) -> tuple[_RouteState, ...]:
-    states = {
-        _RouteState(layer, point)
-        for layer, context in contexts.items()
-        for region in context.regions
-        if (
-            point := _access_point(
+    states: set[_RouteState] = set()
+    for layer, context in contexts.items():
+        for region in context.regions:
+            point = _access_point(
                 accesses,
                 layer=layer,
                 width=context.width,
                 grid=grid,
                 region=region,
             )
-        )
-        is not None
-    }
+            if point is not None:
+                states.add(_RouteState(layer, point))
+        margin = context.width // 2
+        for access in accesses:
+            if access.layer != layer:
+                continue
+            low_x = max(
+                access.shape.x_min + margin,
+                min(region.x_min for region in context.raw_regions) + margin,
+            )
+            high_x = min(
+                access.shape.x_max - margin,
+                max(region.x_max for region in context.raw_regions) - margin,
+            )
+            low_y = max(
+                access.shape.y_min + margin,
+                min(region.y_min for region in context.raw_regions) + margin,
+            )
+            high_y = min(
+                access.shape.y_max - margin,
+                max(region.y_max for region in context.raw_regions) - margin,
+            )
+            x = _snap_nearest(
+                access.shape.x_min + access.shape.x_max,
+                low_x,
+                high_x,
+                grid,
+            )
+            y = _snap_nearest(
+                access.shape.y_min + access.shape.y_max,
+                low_y,
+                high_y,
+                grid,
+            )
+            if x is not None:
+                states.update(
+                    _RouteState(layer, Point(x, track))
+                    for track in context.horizontal_tracks
+                    if low_y <= track <= high_y
+                )
+            if y is not None:
+                states.update(
+                    _RouteState(layer, Point(track, y))
+                    for track in context.vertical_tracks
+                    if low_x <= track <= high_x
+                )
     return tuple(
         sorted(states, key=lambda state: (state.layer, state.point.y, state.point.x))
     )
@@ -346,15 +444,38 @@ def _rect_covered_by_regions(shape: Rect, regions: tuple[Rect, ...]) -> bool:
 
 def _point_in_context(point: Point, context: _LayerContext) -> bool:
     margin = context.width // 2
-    return _rect_covered_by_regions(
-        Rect(
-            point.x - margin,
-            point.y - margin,
-            point.x + margin,
-            point.y + margin,
-        ),
-        context.raw_regions,
+    conductor = Rect(
+        point.x - margin,
+        point.y - margin,
+        point.x + margin,
+        point.y + margin,
     )
+    return _rect_covered_by_regions(conductor, context.gridless_regions) or (
+        _rect_covered_by_regions(conductor, context.raw_regions)
+        and (
+            point.y in context.horizontal_tracks
+            or point.x in context.vertical_tracks
+        )
+    )
+
+
+def _move_allowed(
+    current: Point,
+    neighbor: Point,
+    context: _LayerContext,
+) -> bool:
+    margin = context.width // 2
+    movement = Rect(
+        min(current.x, neighbor.x) - margin,
+        min(current.y, neighbor.y) - margin,
+        max(current.x, neighbor.x) + margin,
+        max(current.y, neighbor.y) + margin,
+    )
+    if _rect_covered_by_regions(movement, context.gridless_regions):
+        return True
+    if current.y == neighbor.y:
+        return current.y in context.horizontal_tracks
+    return current.x in context.vertical_tracks
 
 
 def _wire_rectangle(segment: RouteSegment) -> Rect:
@@ -855,6 +976,8 @@ def _astar(
                 current.layer,
                 Point(current.point.x + dx, current.point.y + dy),
             )
+            if not _move_allowed(current.point, neighbor.point, context):
+                continue
             if not _point_in_context(neighbor.point, context):
                 continue
             if _state_blocked(neighbor, center_blockers):
@@ -986,7 +1109,7 @@ def _solve_routing_once(
         return _result(
             status,
             code=context_error,
-            message="technology does not provide a usable gridless routing domain",
+            message="technology does not provide a usable routing domain",
         )
     placements = {
         item.instance: item.placement for item in instance_placements
@@ -1063,7 +1186,7 @@ def _solve_routing_once(
                     if allowed_layers is not None
                     else "routing_pin_access_layer_unsupported"
                 ),
-                message=f"net {net.name} has no access on a usable gridless layer",
+                message=f"net {net.name} has no access on a usable routing layer",
                 entities=(net.name,),
                 route_states=route_states,
             )
