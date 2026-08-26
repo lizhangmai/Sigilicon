@@ -81,6 +81,9 @@ Status: reference implementation complete.
 
 ### M2 — routable physical library and technology rules
 
+Status: normalized technology and master-geometry foundation implemented; routing
+consumption remains in progress.
+
 - transformed obstruction and terminal-access geometry;
 - routing tracks and gridless resources;
 - via definitions and stacks;

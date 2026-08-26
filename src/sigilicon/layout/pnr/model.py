@@ -61,6 +61,18 @@ class SeparationAxis(str, Enum):
     ANY = "any"
 
 
+class TechnologyCapability(str, Enum):
+    TRACK_ROUTING = "track_routing"
+    GRIDLESS_ROUTING = "gridless_routing"
+    VIA_DEFINITIONS = "via_definitions"
+    VIA_STACKS = "via_stacks"
+    MINIMUM_WIDTH_RULES = "minimum_width_rules"
+    MINIMUM_SPACING_RULES = "minimum_spacing_rules"
+    ENCLOSURE_RULES = "enclosure_rules"
+    EXTENSION_RULES = "extension_rules"
+    CUT_SPACING_RULES = "cut_spacing_rules"
+
+
 class PnrStage(str, Enum):
     PLACEMENT = "placement"
     ROUTING = "routing"
@@ -132,8 +144,98 @@ class PhysicalLayer(CanonicalValue):
     name: str
     kind: LayerKind
     direction: RoutingDirection | None = None
-    minimum_width_dbu: int | None = None
-    minimum_spacing_dbu: int | None = None
+
+
+@dataclass(frozen=True)
+class LayerShape(CanonicalValue):
+    layer: str
+    shape: Rect
+
+
+@dataclass(frozen=True)
+class RoutingTrackPattern(CanonicalValue):
+    name: str
+    layer: str
+    axis: Axis
+    start_dbu: int
+    pitch_dbu: int
+    count: int
+
+
+@dataclass(frozen=True)
+class GridlessRoutingResource(CanonicalValue):
+    name: str
+    layer: str
+    region: Rect | None = None
+
+
+RoutingResource: TypeAlias = RoutingTrackPattern | GridlessRoutingResource
+
+
+@dataclass(frozen=True)
+class ViaDefinition(CanonicalValue):
+    name: str
+    lower_layer: str
+    cut_layer: str
+    upper_layer: str
+    lower_shapes: tuple[Rect, ...]
+    cut_shapes: tuple[Rect, ...]
+    upper_shapes: tuple[Rect, ...]
+
+
+@dataclass(frozen=True)
+class ViaStack(CanonicalValue):
+    name: str
+    vias: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MinimumWidthRule(CanonicalValue):
+    name: str
+    layer: str
+    width_dbu: int
+
+
+@dataclass(frozen=True)
+class MinimumSpacingRule(CanonicalValue):
+    name: str
+    layer: str
+    spacing_dbu: int
+
+
+@dataclass(frozen=True)
+class EnclosureRule(CanonicalValue):
+    name: str
+    outer_layer: str
+    inner_layer: str
+    enclosure_x_dbu: int
+    enclosure_y_dbu: int
+
+
+@dataclass(frozen=True)
+class ExtensionRule(CanonicalValue):
+    name: str
+    outer_layer: str
+    inner_layer: str
+    axis: Axis
+    extension_dbu: int
+
+
+@dataclass(frozen=True)
+class CutSpacingRule(CanonicalValue):
+    name: str
+    cut_layer: str
+    spacing_x_dbu: int
+    spacing_y_dbu: int
+
+
+PhysicalRule: TypeAlias = (
+    MinimumWidthRule
+    | MinimumSpacingRule
+    | EnclosureRule
+    | ExtensionRule
+    | CutSpacingRule
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +244,10 @@ class PhysicalTechnology(CanonicalValue):
     dbu_per_micron: int
     manufacturing_grid_dbu: int
     layers: tuple[PhysicalLayer, ...] = ()
+    routing_resources: tuple[RoutingResource, ...] = ()
+    via_definitions: tuple[ViaDefinition, ...] = ()
+    via_stacks: tuple[ViaStack, ...] = ()
+    rules: tuple[PhysicalRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -162,6 +268,7 @@ class PhysicalMaster(CanonicalValue):
     width_dbu: int
     height_dbu: int
     pins: tuple[MasterPin, ...] = ()
+    obstructions: tuple[LayerShape, ...] = ()
     allowed_orientations: tuple[Orientation, ...] = tuple(Orientation)
 
 
@@ -322,6 +429,7 @@ class PnrRequest(CanonicalValue):
     minimum_instance_spacing_dbu: int = 0
     maximum_search_states: int = 100_000
     objectives: tuple[PlacementObjective, ...] = ()
+    required_technology_capabilities: tuple[TechnologyCapability, ...] = ()
 
 
 @dataclass(frozen=True)

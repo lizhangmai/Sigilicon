@@ -17,15 +17,19 @@ from sigilicon.layout.pnr import (
     DensityOverflowObjective,
     EstimatedHpwlObjective,
     FenceConstraint,
+    LayerKind,
     MasterPin,
     Orientation,
     OrderingConstraint,
     PhysicalDesign,
     PhysicalDesignJob,
     PhysicalInstance,
+    PhysicalLayer,
     PhysicalMaster,
     PhysicalNet,
+    PhysicalPort,
     PhysicalTechnology,
+    PinAccess,
     PinReference,
     Placement,
     PlacementObjective,
@@ -35,6 +39,7 @@ from sigilicon.layout.pnr import (
     Point,
     Rect,
     ResultStatus,
+    RoutingDirection,
     SeparationAxis,
     SeparationConstraint,
     SymmetryConstraint,
@@ -432,6 +437,54 @@ def test_estimated_hpwl_objective_moves_connected_instances_together() -> None:
     assert placements["moving"].origin == Point(30, 0)
     metrics = {metric.name: metric.value for metric in result.stage_reports[0].metrics}
     assert metrics["objective.wirelength"] == 10
+
+
+def test_estimated_hpwl_uses_transformed_pin_access_geometry() -> None:
+    layer = PhysicalLayer("routing", LayerKind.ROUTING, RoutingDirection.HORIZONTAL)
+    master = PhysicalMaster(
+        "oriented-master",
+        20,
+        10,
+        pins=(MasterPin("p", (PinAccess("routing", Rect(0, 0, 2, 2)),)),),
+        allowed_orientations=(Orientation.R90,),
+    )
+    job = PhysicalDesignJob(
+        PhysicalTechnology("neutral", 1000, 1, layers=(layer,)),
+        PhysicalDesign(
+            "oriented-pin",
+            Rect(0, 0, 20, 20),
+            (master,),
+            (
+                PhysicalInstance(
+                    "rotated",
+                    master.name,
+                    Placement(Point(0, 0), Orientation.R90),
+                ),
+            ),
+            ports=(
+                PhysicalPort(
+                    "top",
+                    (PinAccess("routing", Rect(18, 0, 20, 2)),),
+                ),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (
+                        PinReference("p", "rotated"),
+                        PinReference("top"),
+                    ),
+                ),
+            ),
+        ),
+        request=PnrRequest(objectives=(EstimatedHpwlObjective("pin-hpwl"),)),
+    )
+
+    result = run(job)
+
+    assert result.status is ResultStatus.SUCCEEDED
+    metrics = {metric.name: metric.value for metric in result.stage_reports[0].metrics}
+    assert metrics["objective.pin-hpwl"] == 10
 
 
 def test_density_overflow_objective_spreads_occupancy_across_bins() -> None:

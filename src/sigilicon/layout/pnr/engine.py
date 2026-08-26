@@ -6,11 +6,14 @@ from sigilicon.layout.pnr._constraints import validate_constraint
 from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
 from sigilicon.layout.pnr._serialization import canonical_sha256
+from sigilicon.layout.pnr._technology import (
+    technology_capabilities,
+    validate_technology,
+)
 from sigilicon.layout.pnr.model import (
     ConstraintOutcome,
     ConstraintStatus,
     Diagnostic,
-    LayerKind,
     Orientation,
     PhysicalDesignJob,
     PhysicalDesignResult,
@@ -18,13 +21,13 @@ from sigilicon.layout.pnr.model import (
     PnrStage,
     Rect,
     ResultStatus,
-    RoutingDirection,
     StageReport,
+    TechnologyCapability,
 )
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 3
+ENGINE_VERSION = 4
 ALGORITHM = "deterministic_weighted_search_v1"
 
 
@@ -53,12 +56,8 @@ def _validate_job(job: PhysicalDesignJob) -> None:
     technology = job.technology
     design = job.design
     grid = technology.manufacturing_grid_dbu
-    if not technology.name:
-        errors.append("technology.name must be non-empty")
-    if technology.dbu_per_micron <= 0:
-        errors.append("technology.dbu_per_micron must be positive")
+    errors.extend(validate_technology(technology))
     if grid <= 0:
-        errors.append("technology.manufacturing_grid_dbu must be positive")
         grid = 1
     if not design.name:
         errors.append("design.name must be non-empty")
@@ -73,6 +72,16 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         errors.append("minimum instance spacing must be non-negative and on-grid")
     if job.request.maximum_search_states <= 0:
         errors.append("maximum search states must be positive")
+    required_capabilities = job.request.required_technology_capabilities
+    if any(
+        not isinstance(capability, TechnologyCapability)
+        for capability in required_capabilities
+    ):
+        errors.append(
+            "required technology capabilities must contain TechnologyCapability values"
+        )
+    if len(set(required_capabilities)) != len(required_capabilities):
+        errors.append("required technology capabilities contain duplicates")
 
     die_coordinates = (
         design.die.x_min,
@@ -83,33 +92,7 @@ def _validate_job(job: PhysicalDesignJob) -> None:
     if any(not _on_grid(value, grid) for value in die_coordinates):
         errors.append("design die must be aligned to the manufacturing grid")
 
-    layer_names = tuple(layer.name for layer in technology.layers)
-    duplicates = _duplicates(layer_names)
-    if duplicates:
-        errors.append(f"duplicate physical layers: {', '.join(duplicates)}")
     layers = {layer.name: layer for layer in technology.layers}
-    for layer in technology.layers:
-        if not layer.name:
-            errors.append("physical layer names must be non-empty")
-        if not isinstance(layer.kind, LayerKind):
-            errors.append(f"physical layer {layer.name} has an invalid kind")
-        if layer.direction is not None and not isinstance(
-            layer.direction, RoutingDirection
-        ):
-            errors.append(f"physical layer {layer.name} has an invalid direction")
-        if layer.kind is LayerKind.ROUTING and layer.direction is None:
-            errors.append(f"routing layer {layer.name} needs a direction")
-        if layer.kind is not LayerKind.ROUTING and layer.direction not in {
-            None,
-            RoutingDirection.ANY,
-        }:
-            errors.append(f"non-routing layer {layer.name} has a routing direction")
-        for field_name, value in (
-            ("minimum_width_dbu", layer.minimum_width_dbu),
-            ("minimum_spacing_dbu", layer.minimum_spacing_dbu),
-        ):
-            if value is not None and (value <= 0 or not _on_grid(value, grid)):
-                errors.append(f"layer {layer.name} {field_name} must be positive and on-grid")
 
     master_names = tuple(master.name for master in design.masters)
     duplicates = _duplicates(master_names)
@@ -162,6 +145,22 @@ def _validate_job(job: PhysicalDesignJob) -> None:
                     errors.append(
                         f"master {master.name} pin {pin.name} access is outside the master"
                     )
+        for obstruction in master.obstructions:
+            if obstruction.layer not in layers:
+                errors.append(
+                    f"master {master.name} obstruction uses unknown layer "
+                    f"{obstruction.layer}"
+                )
+            obstruction_coordinates = (
+                obstruction.shape.x_min,
+                obstruction.shape.y_min,
+                obstruction.shape.x_max,
+                obstruction.shape.y_max,
+            )
+            if any(not _on_grid(value, grid) for value in obstruction_coordinates):
+                errors.append(f"master {master.name} obstruction is off-grid")
+            if master_box is not None and not master_box.contains(obstruction.shape):
+                errors.append(f"master {master.name} obstruction is outside the master")
 
     instance_names = tuple(instance.name for instance in design.instances)
     duplicates = _duplicates(instance_names)
@@ -278,7 +277,13 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
     unsupported_stages = tuple(
         stage for stage in job.request.stages if stage is not PnrStage.PLACEMENT
     )
-    if unsupported_stages:
+    capabilities = technology_capabilities(job.technology)
+    missing_capabilities = tuple(
+        capability
+        for capability in job.request.required_technology_capabilities
+        if capability not in capabilities
+    )
+    if unsupported_stages or missing_capabilities:
         reports: list[StageReport] = []
         for stage in unsupported_stages:
             diagnostic = Diagnostic(
@@ -289,6 +294,19 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             reports.append(
                 StageReport(
                     stage=stage,
+                    status=ResultStatus.UNSUPPORTED,
+                    diagnostics=(diagnostic,),
+                )
+            )
+        if missing_capabilities:
+            diagnostic = Diagnostic(
+                code="unsupported_technology_capability",
+                message="technology model does not provide required capabilities",
+                entities=tuple(capability.value for capability in missing_capabilities),
+            )
+            reports.append(
+                StageReport(
+                    stage=job.request.stages[0],
                     status=ResultStatus.UNSUPPORTED,
                     diagnostics=(diagnostic,),
                 )

@@ -124,7 +124,7 @@ def _placement_score(
     objective_values = tuple(
         (
             objective.name,
-            objective_value(objective, job, rectangles),
+            objective_value(objective, job, rectangles, placements),
             objective_unit(objective),
         )
         for objective in job.request.objectives

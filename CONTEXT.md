@@ -20,6 +20,30 @@ _Avoid_: OA model, GDS model
 A normalized collection of manufacturing units, layers, vias, routing resources, and physical rules supplied by a technology owner.
 _Avoid_: Hard-coded PDK
 
+**Technology Capability**:
+A routing or rule capability derived from facts present in a Technology Model and checked against a Physical Design Job requirement.
+_Avoid_: Tool option, assumed feature
+
+**Routing Resource**:
+A track pattern or gridless region in which conductive geometry may be considered on a routing layer.
+_Avoid_: Route, wire
+
+**Via Definition**:
+Local lower-conductor, cut, and upper-conductor geometry for one legal inter-layer connection.
+_Avoid_: Via name string
+
+**Via Stack**:
+An ordered, layer-continuous sequence of Via Definitions spanning more than one adjacent-layer transition.
+_Avoid_: Independent via list
+
+**Physical Rule**:
+A typed, checkable geometric requirement supplied by a technology owner.
+_Avoid_: Rule-deck text, magic number
+
+**Obstruction**:
+Master-owned layer geometry that routing must not occupy after applying the instance placement transform.
+_Avoid_: Keep-away hint
+
 **Constraint**:
 A named, checkable condition over physical design entities with explicit hardness and satisfaction status.
 _Avoid_: Prompt, hint
@@ -47,6 +71,10 @@ _Avoid_: Keep away
 **Placement Objective**:
 A named, weighted measure used to rank legal Placement Solutions without changing hard legality.
 _Avoid_: Qualification metric, signoff target
+
+**Pin Access**:
+Master-owned layer geometry through which a placed instance terminal may be connected.
+_Avoid_: Pin center estimate
 
 **Placement Solution**:
 Exact instance origins and orientations satisfying the supported placement constraints.

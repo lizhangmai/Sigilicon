@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from sigilicon.layout.pnr._geometry import transformed_pin_accesses
 from sigilicon.layout.pnr.model import (
     BoundingBoxAreaObjective,
     BoundingBoxCongestionObjective,
     DensityOverflowObjective,
     EstimatedHpwlObjective,
     PhysicalDesignJob,
+    Placement,
     PlacementObjective,
     Rect,
 )
@@ -102,7 +104,10 @@ def _port_center2(job: PhysicalDesignJob, port_name: str) -> tuple[int, int]:
 def _net_points2(
     job: PhysicalDesignJob,
     rectangles: Mapping[str, Rect],
+    placements: Mapping[str, Placement],
 ) -> tuple[tuple[tuple[int, int], ...], ...]:
+    instances = {instance.name: instance for instance in job.design.instances}
+    masters = {master.name: master for master in job.design.masters}
     nets: list[tuple[tuple[int, int], ...]] = []
     for net in job.design.nets:
         points: list[tuple[int, int]] = []
@@ -111,12 +116,28 @@ def _net_points2(
                 points.append(_port_center2(job, reference.pin))
                 continue
             rectangle = rectangles[reference.instance]
-            points.append(
-                (
-                    rectangle.x_min + rectangle.x_max,
-                    rectangle.y_min + rectangle.y_max,
-                )
+            instance = instances[reference.instance]
+            accesses = transformed_pin_accesses(
+                masters[instance.master],
+                reference.pin,
+                placements[reference.instance],
             )
+            if accesses:
+                points.append(
+                    (
+                        min(access.shape.x_min for access in accesses)
+                        + max(access.shape.x_max for access in accesses),
+                        min(access.shape.y_min for access in accesses)
+                        + max(access.shape.y_max for access in accesses),
+                    )
+                )
+            else:
+                points.append(
+                    (
+                        rectangle.x_min + rectangle.x_max,
+                        rectangle.y_min + rectangle.y_max,
+                    )
+                )
         nets.append(tuple(points))
     return tuple(nets)
 
@@ -124,9 +145,10 @@ def _net_points2(
 def _estimated_hpwl(
     job: PhysicalDesignJob,
     rectangles: Mapping[str, Rect],
+    placements: Mapping[str, Placement],
 ) -> float:
     result = 0.0
-    for points in _net_points2(job, rectangles):
+    for points in _net_points2(job, rectangles, placements):
         if len(points) < 2:
             continue
         x_values = tuple(point[0] for point in points)
@@ -195,10 +217,11 @@ def _congestion_proxy(
     objective: BoundingBoxCongestionObjective,
     job: PhysicalDesignJob,
     rectangles: Mapping[str, Rect],
+    placements: Mapping[str, Placement],
 ) -> float:
     bins = _bin_rectangles(job.design.die, objective.bins_x, objective.bins_y)
     demand = [0.0 for _ in bins]
-    for points2 in _net_points2(job, rectangles):
+    for points2 in _net_points2(job, rectangles, placements):
         if len(points2) < 2:
             continue
         x_values = tuple(point[0] / 2 for point in points2)
@@ -222,16 +245,17 @@ def objective_value(
     objective: PlacementObjective,
     job: PhysicalDesignJob,
     rectangles: Mapping[str, Rect],
+    placements: Mapping[str, Placement],
 ) -> float:
     if isinstance(objective, BoundingBoxAreaObjective):
         bounding_box = _bounding_box(rectangles)
         return 0.0 if bounding_box is None else float(bounding_box.area)
     if isinstance(objective, EstimatedHpwlObjective):
-        return _estimated_hpwl(job, rectangles)
+        return _estimated_hpwl(job, rectangles, placements)
     if isinstance(objective, DensityOverflowObjective):
         return _density_overflow(objective, job, rectangles)
     if isinstance(objective, BoundingBoxCongestionObjective):
-        return _congestion_proxy(objective, job, rectangles)
+        return _congestion_proxy(objective, job, rectangles, placements)
     raise TypeError(f"unknown placement objective: {type(objective).__name__}")
 
 
