@@ -12,7 +12,7 @@ from sigilicon.layout.pnr._geometry import (
 )
 from sigilicon.layout.pnr._routing_constraints import (
     allowed_routing_layers,
-    has_skew_constraint,
+    has_coupled_routing_constraint,
     maximum_vias,
     required_routing_regions,
 )
@@ -1295,7 +1295,7 @@ def _solve_routing_once(
                 raw_blockers=raw_blockers,
                 congestion_demands=(
                     {}
-                    if has_skew_constraint(job, net.name)
+                    if has_coupled_routing_constraint(job, net.name)
                     else _route_bin_demands(job, tuple(all_routes))
                 ),
                 job=job,

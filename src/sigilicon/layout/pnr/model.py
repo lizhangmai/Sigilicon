@@ -459,12 +459,22 @@ class RoutingRegionConstraint(CanonicalValue):
     required_regions: tuple[LayerShape, ...]
 
 
+@dataclass(frozen=True)
+class RoutingShieldConstraint(CanonicalValue):
+    name: str
+    signal_net: str
+    shield_net: str
+    maximum_spacing_dbu: int
+    layers: tuple[str, ...] = ()
+
+
 RoutingConstraint: TypeAlias = (
     RoutingLayerConstraint
     | RoutingLengthConstraint
     | RoutingViaCountConstraint
     | RoutingSkewConstraint
     | RoutingRegionConstraint
+    | RoutingShieldConstraint
 )
 
 

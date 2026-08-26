@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from sigilicon.layout.pnr._routing_check import check_routing_solution
+from sigilicon.layout.pnr._routing_constraints import evaluate_routing_constraints
 from sigilicon.layout.pnr import (
     ConstraintStatus,
     CutSpacingRule,
@@ -36,6 +37,7 @@ from sigilicon.layout.pnr import (
     RoutingLayerConstraint,
     RoutingLengthConstraint,
     RoutingRegionConstraint,
+    RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingTrackPattern,
     RoutingViaCountConstraint,
@@ -447,6 +449,114 @@ def test_skew_constraint_rejects_unmatched_route_lengths() -> None:
     assert result.stage_reports[-1].diagnostics[-1].code == (
         "routing_constraint_violated"
     )
+
+
+def test_shield_constraint_accepts_continuous_parallel_coverage() -> None:
+    job = _parallel_net_job(congestion_bins_y=2)
+    result = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingShieldConstraint(
+                    "signal-shield",
+                    "signal",
+                    "signal-b",
+                    maximum_spacing_dbu=2,
+                    layers=("route",),
+                ),
+            ),
+        )
+    )
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert tuple(len(route.segments) for route in result.routes) == (1, 1)
+
+    shield = result.routes[1]
+    segment = shield.segments[0]
+    split_shield = replace(
+        shield,
+        segments=(
+            replace(segment, end=Point(20, segment.end.y)),
+            replace(segment, start=Point(20, segment.start.y)),
+        ),
+    )
+    split_outcome = evaluate_routing_constraints(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingShieldConstraint(
+                    "signal-shield",
+                    "signal",
+                    "signal-b",
+                    maximum_spacing_dbu=2,
+                ),
+            ),
+        ),
+        (result.routes[0], split_shield),
+    )
+    assert split_outcome[0].status is ConstraintStatus.SATISFIED
+
+
+def test_shield_constraint_rejects_incomplete_parallel_coverage() -> None:
+    job = _parallel_net_job(congestion_bins_y=8)
+    ports = tuple(
+        (
+            PhysicalPort(
+                port.name,
+                (
+                    PinAccess(
+                        "route",
+                        (
+                            Rect(2, 19, 4, 21)
+                            if port.name == "source-b"
+                            else Rect(36, 19, 38, 21)
+                        ),
+                    ),
+                ),
+            )
+            if port.name in ("source-b", "sink-b")
+            else port
+        )
+        for port in job.design.ports
+    )
+    result = run(
+        replace(
+            job,
+            design=replace(job.design, ports=ports),
+            routing_constraints=(
+                RoutingShieldConstraint(
+                    "signal-shield",
+                    "signal",
+                    "signal-b",
+                    maximum_spacing_dbu=2,
+                ),
+            ),
+        )
+    )
+
+    assert result.status is ResultStatus.FAILED
+    assert result.routes == ()
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.VIOLATED
+
+
+def test_shield_constraint_requires_distinct_known_nets() -> None:
+    job = _job()
+
+    with pytest.raises(PnrInputError, match="needs distinct nets"):
+        run(
+            replace(
+                job,
+                routing_constraints=(
+                    RoutingShieldConstraint(
+                        "self-shield",
+                        "signal",
+                        "signal",
+                        maximum_spacing_dbu=2,
+                    ),
+                ),
+            )
+        )
 
 
 def test_multi_terminal_net_connects_each_terminal_to_the_route_tree() -> None:

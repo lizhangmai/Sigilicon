@@ -15,6 +15,7 @@ from sigilicon.layout.pnr.model import (
     RoutingLayerConstraint,
     RoutingLengthConstraint,
     RoutingRegionConstraint,
+    RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingViaCountConstraint,
 )
@@ -37,6 +38,7 @@ def validate_routing_constraint(
             RoutingViaCountConstraint,
             RoutingSkewConstraint,
             RoutingRegionConstraint,
+            RoutingShieldConstraint,
         ),
     ):
         return (
@@ -44,7 +46,10 @@ def validate_routing_constraint(
         )
     if not constraint.name:
         errors.append("routing constraint names must be non-empty")
-    if not isinstance(constraint, RoutingSkewConstraint) and constraint.net not in known_nets:
+    if not isinstance(
+        constraint,
+        (RoutingSkewConstraint, RoutingShieldConstraint),
+    ) and constraint.net not in known_nets:
         errors.append(
             f"routing constraint {constraint.name} uses unknown net {constraint.net}"
         )
@@ -107,6 +112,42 @@ def validate_routing_constraint(
                 errors.append(
                     f"routing region constraint {constraint.name} is outside the die"
                 )
+    elif isinstance(constraint, RoutingShieldConstraint):
+        unknown = tuple(
+            net
+            for net in (constraint.signal_net, constraint.shield_net)
+            if net not in known_nets
+        )
+        if unknown:
+            errors.append(
+                f"routing shield constraint {constraint.name} uses unknown nets: "
+                f"{', '.join(unknown)}"
+            )
+        if constraint.signal_net == constraint.shield_net:
+            errors.append(
+                f"routing shield constraint {constraint.name} needs distinct nets"
+            )
+        if constraint.maximum_spacing_dbu < 0:
+            errors.append(
+                f"routing shield constraint {constraint.name} maximum spacing "
+                "must be non-negative"
+            )
+        elif constraint.maximum_spacing_dbu % grid != 0:
+            errors.append(
+                f"routing shield constraint {constraint.name} must be on-grid"
+            )
+        if len(set(constraint.layers)) != len(constraint.layers):
+            errors.append(
+                f"routing shield constraint {constraint.name} repeats a layer"
+            )
+        unknown_layers = tuple(
+            layer for layer in constraint.layers if layer not in known_layers
+        )
+        if unknown_layers:
+            errors.append(
+                f"routing shield constraint {constraint.name} uses unknown layers: "
+                f"{', '.join(unknown_layers)}"
+            )
     elif (
         isinstance(constraint, RoutingViaCountConstraint)
         and constraint.maximum_vias < 0
@@ -168,9 +209,16 @@ def maximum_vias(job: PhysicalDesignJob, net: str) -> int | None:
     return min(limits) if limits else None
 
 
-def has_skew_constraint(job: PhysicalDesignJob, net: str) -> bool:
+def has_coupled_routing_constraint(job: PhysicalDesignJob, net: str) -> bool:
     return any(
-        isinstance(constraint, RoutingSkewConstraint) and net in constraint.nets
+        (
+            isinstance(constraint, RoutingSkewConstraint)
+            and net in constraint.nets
+        )
+        or (
+            isinstance(constraint, RoutingShieldConstraint)
+            and net in (constraint.signal_net, constraint.shield_net)
+        )
         for constraint in job.routing_constraints
     )
 
@@ -251,6 +299,80 @@ def _route_shapes(
     )
 
 
+def _shield_interval(
+    signal: RouteSegment,
+    shield: RouteSegment,
+    maximum_spacing: int,
+) -> tuple[int, int] | None:
+    if signal.layer != shield.layer:
+        return None
+    if signal.start.y == signal.end.y and shield.start.y == shield.end.y:
+        edge_spacing = (
+            abs(signal.start.y - shield.start.y)
+            - (signal.width_dbu + shield.width_dbu) // 2
+        )
+        low = max(
+            min(signal.start.x, signal.end.x),
+            min(shield.start.x, shield.end.x),
+        )
+        high = min(
+            max(signal.start.x, signal.end.x),
+            max(shield.start.x, shield.end.x),
+        )
+    elif signal.start.x == signal.end.x and shield.start.x == shield.end.x:
+        edge_spacing = (
+            abs(signal.start.x - shield.start.x)
+            - (signal.width_dbu + shield.width_dbu) // 2
+        )
+        low = max(
+            min(signal.start.y, signal.end.y),
+            min(shield.start.y, shield.end.y),
+        )
+        high = min(
+            max(signal.start.y, signal.end.y),
+            max(shield.start.y, shield.end.y),
+        )
+    else:
+        return None
+    if edge_spacing > maximum_spacing or low >= high:
+        return None
+    return low, high
+
+
+def _segment_is_shielded(
+    signal: RouteSegment,
+    shield_segments: tuple[RouteSegment, ...],
+    maximum_spacing: int,
+) -> bool:
+    intervals = sorted(
+        interval
+        for shield in shield_segments
+        if (
+            interval := _shield_interval(signal, shield, maximum_spacing)
+        )
+        is not None
+    )
+    signal_low, signal_high = (
+        (
+            min(signal.start.x, signal.end.x),
+            max(signal.start.x, signal.end.x),
+        )
+        if signal.start.y == signal.end.y
+        else (
+            min(signal.start.y, signal.end.y),
+            max(signal.start.y, signal.end.y),
+        )
+    )
+    covered_to = signal_low
+    for low, high in intervals:
+        if low > covered_to:
+            return False
+        covered_to = max(covered_to, high)
+        if covered_to >= signal_high:
+            return True
+    return covered_to >= signal_high
+
+
 def evaluate_routing_constraints(
     job: PhysicalDesignJob,
     routes: tuple[NetRoute, ...],
@@ -259,6 +381,52 @@ def evaluate_routing_constraints(
     vias = {via.name: via for via in job.technology.via_definitions}
     outcomes: list[ConstraintOutcome] = []
     for constraint in job.routing_constraints:
+        if isinstance(constraint, RoutingShieldConstraint):
+            signal_route = route_by_net.get(constraint.signal_net)
+            shield_route = route_by_net.get(constraint.shield_net)
+            if signal_route is None or shield_route is None:
+                outcomes.append(
+                    ConstraintOutcome(
+                        constraint.name,
+                        ConstraintStatus.NOT_EVALUATED,
+                        "routing shield constraint has an incomplete Routing Solution",
+                    )
+                )
+                continue
+            signal_segments = tuple(
+                segment
+                for segment in signal_route.segments
+                if not constraint.layers or segment.layer in constraint.layers
+            )
+            unshielded = tuple(
+                index
+                for index, segment in enumerate(signal_segments)
+                if not _segment_is_shielded(
+                    segment,
+                    shield_route.segments,
+                    constraint.maximum_spacing_dbu,
+                )
+            )
+            satisfied = not unshielded
+            outcomes.append(
+                ConstraintOutcome(
+                    constraint.name,
+                    (
+                        ConstraintStatus.SATISFIED
+                        if satisfied
+                        else ConstraintStatus.VIOLATED
+                    ),
+                    (
+                        "routing shield constraint is satisfied"
+                        if satisfied
+                        else (
+                            "signal route has unshielded segment indices: "
+                            + ", ".join(str(index) for index in unshielded)
+                        )
+                    ),
+                )
+            )
+            continue
         if isinstance(constraint, RoutingSkewConstraint):
             constrained_routes = tuple(
                 route_by_net.get(net) for net in constraint.nets

@@ -128,6 +128,10 @@ _Avoid_: Via cost
 A Routing Constraint placing an inclusive upper bound on the difference between the longest and shortest exact Route Segment lengths in a named net group.
 _Avoid_: Clock uncertainty, estimated HPWL difference
 
+**Routing Shield Constraint**:
+A Routing Constraint requiring every selected signal Route Segment to have continuous, same-layer, parallel projection coverage from a named shield net within a maximum edge-to-edge spacing.
+_Avoid_: Net-name convention, proximity hint
+
 **Routing Solution Check**:
 An independent reconstruction of connectivity, resource coverage, obstruction clearance, width, spacing, and via-rule compliance from a Physical Design Job and returned Routing Solution.
 _Avoid_: Solver success flag, signoff DRC/LVS
