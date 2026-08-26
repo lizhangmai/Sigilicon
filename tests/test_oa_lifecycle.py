@@ -28,7 +28,14 @@ class RecordingClient:
             return SimpleNamespace(output="\n".join(rows), errors=[])
         if 'sprintf(nil "P|%s|%s|%s' in source:
             return SimpleNamespace(
-                output='I|X0|CHILD\nP|X0|lch|pPar("parent_l")\nP|X0|w|1e-07',
+                output=(
+                    'I|PIN0|basic|ipin\n'
+                    'I|PIN1|basic|opin\n'
+                    'I|PIN2|basic|iopin\n'
+                    'I|X0|lib|CHILD\n'
+                    'P|X0|lch|pPar("parent_l")\n'
+                    'P|X0|w|1e-07'
+                ),
                 errors=[],
             )
         return SimpleNamespace(output="t", errors=[])
@@ -158,5 +165,6 @@ def test_instance_parameter_validation_reads_parent_oa_properties(
     assert 'dbFindAnyInstByName(cv "X0")' in source
     assert 'dbFindProp(inst "lch")' in source
     assert 'dbFindProp(inst "w")' in source
+    assert 'inst~>master~>libName inst~>master~>cellName' in source
     assert "unwindProtect" in source
     assert "dbClose" in source

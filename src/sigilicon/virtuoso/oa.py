@@ -37,6 +37,7 @@ _ENGINEERING_SCALE = {
     "t": Decimal("1e12"),
 }
 _PARAMETER_REFERENCE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
+_SCHEMATIC_PIN_MASTER_CELLS = frozenset({"ipin", "opin", "iopin"})
 
 
 @dataclass(frozen=True, order=True)
@@ -868,8 +869,8 @@ def validate_instance_parameters(
 {owned_open}
       unless(cv error("cannot open generated schematic"))
       foreach(inst cv~>instances
-        out = strcat(out sprintf(nil "I|%s|%s\\n"
-          inst~>name inst~>master~>cellName)))
+        out = strcat(out sprintf(nil "I|%s|%s|%s\\n"
+          inst~>name inst~>master~>libName inst~>master~>cellName)))
       {chr(10).join(queries)}
       out
     )
@@ -901,10 +902,15 @@ def validate_instance_parameters(
         fields = raw_line.strip().split("|")
         if not fields or not fields[0]:
             continue
-        if fields[0] == "I" and len(fields) == 3:
+        if fields[0] == "I" and len(fields) == 4:
+            if (
+                fields[2] == "basic"
+                and fields[3] in _SCHEMATIC_PIN_MASTER_CELLS
+            ):
+                continue
             if fields[1] in masters:
                 raise RuntimeError(f"duplicate OA instance row: {fields[1]}")
-            masters[fields[1]] = fields[2]
+            masters[fields[1]] = fields[3]
         elif fields[0] == "P" and len(fields) == 4:
             values = actual_parameters.setdefault(fields[1], {})
             if fields[2] in values:
