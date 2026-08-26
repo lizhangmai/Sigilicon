@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr import (
+    CutSpacingRule,
+    EnclosureRule,
     GridlessRoutingResource,
     LayerKind,
     LayerShape,
@@ -27,6 +30,7 @@ from sigilicon.layout.pnr import (
     ResultStatus,
     RoutingDirection,
     RoutingTrackPattern,
+    ViaDefinition,
     Axis,
     run,
 )
@@ -95,6 +99,100 @@ def _job(
     )
 
 
+def _multilayer_job(*, three_layers: bool = False) -> PhysicalDesignJob:
+    layers = [
+        PhysicalLayer("m1", LayerKind.ROUTING, RoutingDirection.ANY),
+        PhysicalLayer("v1", LayerKind.CUT),
+        PhysicalLayer("m2", LayerKind.ROUTING, RoutingDirection.ANY),
+    ]
+    resources = [
+        GridlessRoutingResource("m1-region", "m1"),
+        GridlessRoutingResource("m2-region", "m2"),
+    ]
+    vias = [
+        ViaDefinition(
+            "via12",
+            "m1",
+            "v1",
+            "m2",
+            lower_shapes=(Rect(-2, -2, 2, 2),),
+            cut_shapes=(Rect(-1, -1, 1, 1),),
+            upper_shapes=(Rect(-2, -2, 2, 2),),
+        ),
+    ]
+    rules = [
+        MinimumWidthRule("m1-width", "m1", 2),
+        MinimumSpacingRule("m1-spacing", "m1", 2),
+        MinimumWidthRule("m2-width", "m2", 2),
+        MinimumSpacingRule("m2-spacing", "m2", 2),
+        EnclosureRule("m1-v1-enclosure", "m1", "v1", 1, 1),
+        EnclosureRule("m2-v1-enclosure", "m2", "v1", 1, 1),
+        CutSpacingRule("v1-spacing", "v1", 2, 2),
+    ]
+    sink_layer = "m2"
+    if three_layers:
+        layers.extend(
+            (
+                PhysicalLayer("v2", LayerKind.CUT),
+                PhysicalLayer("m3", LayerKind.ROUTING, RoutingDirection.ANY),
+            )
+        )
+        resources.append(GridlessRoutingResource("m3-region", "m3"))
+        vias.append(
+            ViaDefinition(
+                "via23",
+                "m2",
+                "v2",
+                "m3",
+                lower_shapes=(Rect(-2, -2, 2, 2),),
+                cut_shapes=(Rect(-1, -1, 1, 1),),
+                upper_shapes=(Rect(-2, -2, 2, 2),),
+            )
+        )
+        rules.extend(
+            (
+                MinimumWidthRule("m3-width", "m3", 2),
+                MinimumSpacingRule("m3-spacing", "m3", 2),
+                EnclosureRule("m2-v2-enclosure", "m2", "v2", 1, 1),
+                EnclosureRule("m3-v2-enclosure", "m3", "v2", 1, 1),
+                CutSpacingRule("v2-spacing", "v2", 2, 2),
+            )
+        )
+        sink_layer = "m3"
+    technology = PhysicalTechnology(
+        "neutral-multilayer",
+        dbu_per_micron=1000,
+        manufacturing_grid_dbu=1,
+        layers=tuple(layers),
+        routing_resources=tuple(resources),
+        via_definitions=tuple(vias),
+        rules=tuple(rules),
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "route-across-layers",
+            Rect(0, 0, 40, 40),
+            (),
+            (),
+            ports=(
+                PhysicalPort("source", (PinAccess("m1", Rect(2, 5, 4, 7)),)),
+                PhysicalPort(
+                    "sink",
+                    (PinAccess(sink_layer, Rect(36, 5, 38, 7)),),
+                ),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (PinReference("source"), PinReference("sink")),
+                ),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+    )
+
+
 def _wire_length(job: PhysicalDesignJob) -> int:
     result = run(job)
     assert result.status is ResultStatus.SUCCEEDED
@@ -128,6 +226,26 @@ def test_gridless_router_returns_exact_deterministic_manhattan_geometry() -> Non
     assert {metric.name: metric.value for metric in routing_report.metrics}[
         "routed_net_count"
     ] == 1
+
+
+def test_adjacent_gridless_regions_form_one_exact_routing_domain() -> None:
+    job = _job()
+    technology = replace(
+        job.technology,
+        routing_resources=(
+            GridlessRoutingResource("left", "route", Rect(0, 0, 20, 40)),
+            GridlessRoutingResource("right", "route", Rect(20, 0, 40, 40)),
+        ),
+    )
+
+    result = run(replace(job, technology=technology))
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in result.routes[0].segments
+    ) == 34
 
 
 def test_gridless_router_detours_around_transformed_master_obstruction() -> None:
@@ -236,6 +354,192 @@ def test_track_only_technology_is_explicitly_unsupported_by_reference_router() -
     assert result.stage_reports[-1].diagnostics[0].code == (
         "routing_gridless_resource_required"
     )
+
+
+def test_router_constructs_legal_via_for_two_layer_connection() -> None:
+    result = run(_multilayer_job())
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert len(result.routes) == 1
+    assert len(result.routes[0].vias) == 1
+    assert result.routes[0].vias[0].net == "signal"
+    assert result.routes[0].vias[0].via_definition == "via12"
+    assert result.routes[0].vias[0].origin == Point(3, 6)
+    assert {segment.layer for segment in result.routes[0].segments} <= {"m1", "m2"}
+    metrics = {metric.name: metric.value for metric in result.stage_reports[-1].metrics}
+    assert metrics["via_count"] == 1
+
+
+def test_router_crosses_two_vias_without_requiring_a_named_stack() -> None:
+    result = run(_multilayer_job(three_layers=True))
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert {via.via_definition for via in result.routes[0].vias} == {
+        "via12",
+        "via23",
+    }
+    assert len(result.routes[0].vias) == 2
+
+
+def test_via_search_avoids_cut_layer_obstruction() -> None:
+    job = _multilayer_job()
+    blocker = PhysicalMaster(
+        "cut-blocker",
+        6,
+        12,
+        obstructions=(LayerShape("v1", Rect(0, 0, 6, 12)),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    design = replace(
+        job.design,
+        masters=(blocker,),
+        instances=(
+            PhysicalInstance("cut-blocker", blocker.name, Placement(Point(0, 0))),
+        ),
+    )
+
+    result = run(replace(job, design=design))
+
+    assert result.status is ResultStatus.SUCCEEDED
+    via_origin = result.routes[0].vias[0].origin
+    assert via_origin.x >= 9 or via_origin.y >= 15
+    assert {segment.layer for segment in result.routes[0].segments} == {"m1", "m2"}
+
+
+def test_layer_transition_without_complete_via_rules_is_unsupported() -> None:
+    job = _multilayer_job()
+    technology = replace(
+        job.technology,
+        rules=tuple(
+            rule
+            for rule in job.technology.rules
+            if getattr(rule, "name", "") != "m2-v1-enclosure"
+        ),
+    )
+
+    result = run(replace(job, technology=technology))
+
+    assert result.status is ResultStatus.UNSUPPORTED
+    assert result.routes == ()
+    assert result.stage_reports[-1].diagnostics[0].code == (
+        "routing_layer_transition_unsupported"
+    )
+
+
+def test_layer_transition_rejects_via_definition_with_illegal_cut_spacing() -> None:
+    job = _multilayer_job()
+    via = replace(
+        job.technology.via_definitions[0],
+        cut_shapes=(Rect(-1, -1, 0, 1), Rect(0, -1, 1, 1)),
+    )
+
+    result = run(
+        replace(
+            job,
+            technology=replace(job.technology, via_definitions=(via,)),
+        )
+    )
+
+    assert result.status is ResultStatus.UNSUPPORTED
+    assert result.stage_reports[-1].diagnostics[0].code == (
+        "routing_layer_transition_unsupported"
+    )
+
+
+def test_independent_checker_accepts_single_and_multilayer_reference_routes() -> None:
+    for job in (_job(), _multilayer_job(), _multilayer_job(three_layers=True)):
+        result = run(job)
+
+        assert result.status is ResultStatus.SUCCEEDED
+        assert check_routing_solution(job, result.placements, result.routes) == ()
+
+
+def test_independent_checker_rejects_non_manhattan_and_open_routes() -> None:
+    job = _job()
+    result = run(job)
+    segment = result.routes[0].segments[0]
+    diagonal = replace(
+        segment,
+        end=Point(segment.end.x + 1, segment.end.y + 1),
+    )
+
+    malformed = check_routing_solution(
+        job,
+        result.placements,
+        (replace(result.routes[0], segments=(diagonal,)),),
+    )
+    open_route = check_routing_solution(
+        job,
+        result.placements,
+        (replace(result.routes[0], segments=(), vias=()),),
+    )
+
+    assert "routing_segment_non_manhattan" in {
+        diagnostic.code for diagnostic in malformed
+    }
+    assert "routing_connectivity_open" in {
+        diagnostic.code for diagnostic in open_route
+    }
+
+
+def test_independent_checker_rejects_inter_net_spacing_violation() -> None:
+    job = _job()
+    design = replace(
+        job.design,
+        ports=job.design.ports
+        + (
+            PhysicalPort("source-b", (PinAccess("route", Rect(2, 9, 4, 11)),)),
+            PhysicalPort("sink-b", (PinAccess("route", Rect(36, 9, 38, 11)),)),
+        ),
+        nets=job.design.nets
+        + (
+            PhysicalNet(
+                "signal-b",
+                (PinReference("source-b"), PinReference("sink-b")),
+            ),
+        ),
+    )
+    job = replace(job, design=design)
+    result = run(job)
+    second = result.routes[1]
+    too_close = tuple(
+        replace(
+            segment,
+            start=Point(segment.start.x, segment.start.y - 2),
+            end=Point(segment.end.x, segment.end.y - 2),
+        )
+        for segment in second.segments
+    )
+
+    diagnostics = check_routing_solution(
+        job,
+        result.placements,
+        (result.routes[0], replace(second, segments=too_close)),
+    )
+
+    assert "routing_inter_net_spacing_violation" in {
+        diagnostic.code for diagnostic in diagnostics
+    }
+
+
+def test_independent_checker_applies_cut_spacing_between_same_net_vias() -> None:
+    job = _multilayer_job()
+    result = run(job)
+    route = result.routes[0]
+    duplicate = replace(
+        route.vias[0],
+        origin=Point(route.vias[0].origin.x + 1, route.vias[0].origin.y),
+    )
+
+    diagnostics = check_routing_solution(
+        job,
+        result.placements,
+        (replace(route, vias=route.vias + (duplicate,)),),
+    )
+
+    assert "routing_same_net_cut_spacing_violation" in {
+        diagnostic.code for diagnostic in diagnostics
+    }
 
 
 def test_missing_route_rules_are_explicitly_unsupported() -> None:

@@ -91,22 +91,26 @@ consumed by the first reference router.
 
 ### M3 — general routing
 
-Status: first deterministic gridless vertical slice implemented; general routing
-remains in progress.
+Status: deterministic gridless detailed-routing reference implemented; general
+routing remains in progress.
 
-- exact single-layer Manhattan Route Segments over a gridless Routing Resource;
+- exact multi-layer Manhattan Route Segments over gridless Routing Resources;
 - transformed Pin Access and Obstruction consumption;
 - conservative minimum-width and minimum-spacing enforcement;
 - deterministic multi-terminal tree construction and inter-net spacing;
+- legal Via Definition occurrences with cut spacing and two-sided enclosure checks;
+- independent geometry, spacing, resource-coverage, and connectivity checks over
+  each returned Routing Solution;
 - explicit distinction between infeasibility, capability gaps, and search-budget
   exhaustion;
 - partial-stage observability: a successful Placement Solution remains available
   when the requested Routing Solution cannot be completed.
 
-The current reference router deliberately rejects track-only and layer-transition
-problems. Those are capability boundaries, not implicit fallbacks. The next routing
-increments add legal Via construction, multi-layer state search, and an independent
-solution checker before negotiated congestion and rip-up.
+The current reference router deliberately rejects track-only problems and layer
+transitions whose Via Definitions lack complete enclosure or cut-spacing facts.
+Those are capability boundaries, not implicit fallbacks. The next routing increments
+add track-resource search, topology constraints, global congestion guidance, and
+negotiated rip-up.
 
 - global routing and congestion estimation;
 - detailed path and via construction;

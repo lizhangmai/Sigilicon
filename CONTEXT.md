@@ -96,6 +96,10 @@ _Avoid_: Layer switch, via name without geometry
 The maximum number of deterministic route states a Physical Design Job permits before returning `exhausted` instead of claiming infeasibility.
 _Avoid_: Timeout, failed route
 
+**Routing Solution Check**:
+An independent reconstruction of connectivity, resource coverage, obstruction clearance, width, spacing, and via-rule compliance from a Physical Design Job and returned Routing Solution.
+_Avoid_: Solver success flag, signoff DRC/LVS
+
 **Materialization Plan**:
 An audited instruction set for writing an accepted physical design solution into a persistent layout database.
 _Avoid_: Physical Design Result

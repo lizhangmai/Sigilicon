@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from sigilicon.layout.pnr._constraints import validate_constraint
 from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
 from sigilicon.layout.pnr._routing import solve_routing
+from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr._serialization import canonical_sha256
 from sigilicon.layout.pnr._technology import (
     technology_capabilities,
@@ -28,7 +31,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 5
+ENGINE_VERSION = 6
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -330,6 +333,27 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         )
     if PnrStage.ROUTING in job.request.stages:
         routing = solve_routing(job, placement.placements)
+        if routing.status is ResultStatus.SUCCEEDED:
+            routing_diagnostics = check_routing_solution(
+                job,
+                placement.placements,
+                routing.routes,
+            )
+            if routing_diagnostics:
+                return PhysicalDesignResult(
+                    status=ResultStatus.FAILED,
+                    placements=placement.placements,
+                    constraint_outcomes=placement.constraint_outcomes,
+                    stage_reports=(
+                        placement.report,
+                        replace(
+                            routing.report,
+                            status=ResultStatus.FAILED,
+                            diagnostics=routing_diagnostics,
+                        ),
+                    ),
+                    provenance=_provenance(job),
+                )
         return PhysicalDesignResult(
             status=routing.status,
             placements=placement.placements,
