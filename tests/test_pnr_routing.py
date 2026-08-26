@@ -244,6 +244,8 @@ def _ripup_job(*, maximum_routing_iterations: int = 8) -> PhysicalDesignJob:
             maximum_routing_iterations=maximum_routing_iterations,
         ),
     )
+
+
 def _wire_length(job: PhysicalDesignJob) -> int:
     result = run(job)
     assert result.status is ResultStatus.SUCCEEDED
@@ -252,6 +254,34 @@ def _wire_length(job: PhysicalDesignJob) -> int:
         + abs(segment.end.y - segment.start.y)
         for route in result.routes
         for segment in route.segments
+    )
+
+
+def _parallel_net_job(*, congestion_bins_y: int) -> PhysicalDesignJob:
+    job = _job()
+    design = replace(
+        job.design,
+        ports=job.design.ports
+        + (
+            PhysicalPort("source-b", (PinAccess("route", Rect(2, 9, 4, 11)),)),
+            PhysicalPort("sink-b", (PinAccess("route", Rect(36, 9, 38, 11)),)),
+        ),
+        nets=job.design.nets
+        + (
+            PhysicalNet(
+                "signal-b",
+                (PinReference("source-b"), PinReference("sink-b")),
+            ),
+        ),
+    )
+    return replace(
+        job,
+        design=design,
+        request=replace(
+            job.request,
+            routing_congestion_bins_x=4,
+            routing_congestion_bins_y=congestion_bins_y,
+        ),
     )
 
 
@@ -314,24 +344,7 @@ def test_gridless_router_detours_around_transformed_master_obstruction() -> None
 
 
 def test_exact_minimum_spacing_between_routed_nets_is_legal() -> None:
-    job = _job()
-    design = replace(
-        job.design,
-        ports=job.design.ports
-        + (
-            PhysicalPort("source-b", (PinAccess("route", Rect(2, 9, 4, 11)),)),
-            PhysicalPort("sink-b", (PinAccess("route", Rect(36, 9, 38, 11)),)),
-        ),
-        nets=job.design.nets
-        + (
-            PhysicalNet(
-                "signal-b",
-                (PinReference("source-b"), PinReference("sink-b")),
-            ),
-        ),
-    )
-
-    result = run(replace(job, design=design))
+    result = run(_parallel_net_job(congestion_bins_y=1))
 
     assert result.status is ResultStatus.SUCCEEDED
     assert tuple(len(route.segments) for route in result.routes) == (1, 1)
@@ -341,6 +354,34 @@ def test_exact_minimum_spacing_between_routed_nets_is_legal() -> None:
         for route in result.routes
         for segment in route.segments
     ) == 68
+    metrics = {metric.name: metric.value for metric in result.stage_reports[-1].metrics}
+    assert metrics["routing_peak_horizontal_demand"] == 2
+    assert metrics["routing_peak_vertical_demand"] == 0
+    assert metrics["routing_congested_bin_count"] == 0
+    assert metrics["routing_total_overflow"] == 0
+
+
+def test_congestion_demand_guides_later_net_into_a_less_used_bin() -> None:
+    independent_bins = run(_parallel_net_job(congestion_bins_y=8))
+    shared_bins = run(_parallel_net_job(congestion_bins_y=2))
+
+    independent_second_length = sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in independent_bins.routes[1].segments
+    )
+    guided_second_length = sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in shared_bins.routes[1].segments
+    )
+    guided_metrics = {
+        metric.name: metric.value for metric in shared_bins.stage_reports[-1].metrics
+    }
+
+    assert independent_second_length == 34
+    assert guided_second_length == 54
+    assert guided_metrics["routing_peak_horizontal_demand"] == 1
 
 
 def test_multi_terminal_net_connects_each_terminal_to_the_route_tree() -> None:
@@ -419,6 +460,14 @@ def test_routing_iteration_budget_must_be_positive() -> None:
             replace(
                 job,
                 request=replace(job.request, maximum_routing_iterations=0),
+            )
+        )
+
+    with pytest.raises(PnrInputError, match="routing congestion bin counts"):
+        run(
+            replace(
+                job,
+                request=replace(job.request, routing_congestion_bins_x=0),
             )
         )
 

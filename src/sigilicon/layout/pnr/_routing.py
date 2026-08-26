@@ -370,6 +370,130 @@ def _wire_rectangle(segment: RouteSegment) -> Rect:
     )
 
 
+def _bin_index(value: int, low: int, span: int, bins: int) -> int:
+    return min(bins - 1, max(0, (value - low) * bins // span))
+
+
+def _route_bin_demands(
+    job: PhysicalDesignJob,
+    routes: tuple[NetRoute, ...],
+) -> dict[tuple[str, int, int, str], int]:
+    die = job.design.die
+    bins_x = job.request.routing_congestion_bins_x
+    bins_y = job.request.routing_congestion_bins_y
+    demands: dict[tuple[str, int, int, str], int] = {}
+    for route in routes:
+        for segment in route.segments:
+            if segment.start.y == segment.end.y:
+                y_bin = _bin_index(
+                    segment.start.y,
+                    die.y_min,
+                    die.height,
+                    bins_y,
+                )
+                first = _bin_index(
+                    min(segment.start.x, segment.end.x),
+                    die.x_min,
+                    die.width,
+                    bins_x,
+                )
+                last = _bin_index(
+                    max(segment.start.x, segment.end.x),
+                    die.x_min,
+                    die.width,
+                    bins_x,
+                )
+                keys = (
+                    (segment.layer, x_bin, y_bin, "horizontal")
+                    for x_bin in range(first, last + 1)
+                )
+            else:
+                x_bin = _bin_index(
+                    segment.start.x,
+                    die.x_min,
+                    die.width,
+                    bins_x,
+                )
+                first = _bin_index(
+                    min(segment.start.y, segment.end.y),
+                    die.y_min,
+                    die.height,
+                    bins_y,
+                )
+                last = _bin_index(
+                    max(segment.start.y, segment.end.y),
+                    die.y_min,
+                    die.height,
+                    bins_y,
+                )
+                keys = (
+                    (segment.layer, x_bin, y_bin, "vertical")
+                    for y_bin in range(first, last + 1)
+                )
+            for key in keys:
+                demands[key] = demands.get(key, 0) + 1
+    return demands
+
+
+def _congestion_metrics(
+    job: PhysicalDesignJob,
+    routes: tuple[NetRoute, ...],
+) -> tuple[Metric, ...]:
+    demands = _route_bin_demands(job, routes)
+    die = job.design.die
+    bins_x = job.request.routing_congestion_bins_x
+    bins_y = job.request.routing_congestion_bins_y
+    congested_bins: set[tuple[str, int, int]] = set()
+    total_overflow = 0
+    for (layer, x_bin, y_bin, direction), demand in demands.items():
+        rules = _route_rules(job, layer)
+        if rules is None:
+            continue
+        width, spacing = rules
+        pitch = width + spacing
+        bin_width = (
+            die.x_min + die.width * (x_bin + 1) // bins_x
+            - (die.x_min + die.width * x_bin // bins_x)
+        )
+        bin_height = (
+            die.y_min + die.height * (y_bin + 1) // bins_y
+            - (die.y_min + die.height * y_bin // bins_y)
+        )
+        capacity = (
+            bin_height // pitch
+            if direction == "horizontal"
+            else bin_width // pitch
+        )
+        overflow = max(0, demand - capacity)
+        if overflow:
+            congested_bins.add((layer, x_bin, y_bin))
+            total_overflow += overflow
+    horizontal_demands = tuple(
+        demand
+        for (*_, direction), demand in demands.items()
+        if direction == "horizontal"
+    )
+    vertical_demands = tuple(
+        demand
+        for (*_, direction), demand in demands.items()
+        if direction == "vertical"
+    )
+    return (
+        Metric(
+            "routing_peak_horizontal_demand",
+            max(horizontal_demands, default=0),
+            "tracks",
+        ),
+        Metric(
+            "routing_peak_vertical_demand",
+            max(vertical_demands, default=0),
+            "tracks",
+        ),
+        Metric("routing_congested_bin_count", len(congested_bins), "count"),
+        Metric("routing_total_overflow", total_overflow, "tracks"),
+    )
+
+
 def _via_shapes(
     via: ViaDefinition,
     origin: Point,
@@ -632,6 +756,40 @@ def _layers_connect(
     return False
 
 
+def _edge_congestion_demand(
+    job: PhysicalDesignJob,
+    current: _RouteState,
+    neighbor: _RouteState,
+    via_name: str | None,
+    demands: dict[tuple[str, int, int, str], int],
+) -> int:
+    die = job.design.die
+    x_bin = _bin_index(
+        neighbor.point.x,
+        die.x_min,
+        die.width,
+        job.request.routing_congestion_bins_x,
+    )
+    y_bin = _bin_index(
+        neighbor.point.y,
+        die.y_min,
+        die.height,
+        job.request.routing_congestion_bins_y,
+    )
+    if via_name is None:
+        direction = (
+            "horizontal"
+            if current.point.y == neighbor.point.y
+            else "vertical"
+        )
+        return demands.get((current.layer, x_bin, y_bin, direction), 0)
+    return sum(
+        demands.get((layer, x_bin, y_bin, direction), 0)
+        for layer in (current.layer, neighbor.layer)
+        for direction in ("horizontal", "vertical")
+    )
+
+
 def _astar(
     starts: frozenset[_RouteState],
     targets: frozenset[_RouteState],
@@ -641,6 +799,7 @@ def _astar(
     vias: tuple[ViaDefinition, ...],
     routing_regions: dict[str, tuple[Rect, ...]],
     raw_blockers: dict[str, tuple[Rect, ...]],
+    congestion_demands: dict[tuple[str, int, int, str], int],
     job: PhysicalDesignJob,
     remaining_states: int,
 ) -> tuple[_RoutePath | None, int, bool]:
@@ -716,7 +875,14 @@ def _astar(
             if allowed:
                 neighbors.append((neighbor, via.name))
         for neighbor, via_name in neighbors:
-            neighbor_cost = current_cost + grid
+            congestion_demand = _edge_congestion_demand(
+                job,
+                current,
+                neighbor,
+                via_name,
+                congestion_demands,
+            )
+            neighbor_cost = current_cost + grid * (1 + congestion_demand)
             if neighbor_cost >= cost.get(neighbor, 2**63 - 1):
                 continue
             cost[neighbor] = neighbor_cost
@@ -928,6 +1094,7 @@ def _solve_routing_once(
                 vias=usable_vias,
                 routing_regions=routing_regions,
                 raw_blockers=raw_blockers,
+                congestion_demands=_route_bin_demands(job, tuple(all_routes)),
                 job=job,
                 remaining_states=route_state_limit - route_states,
             )
@@ -1006,6 +1173,27 @@ def _with_iteration_metrics(
     )
 
 
+def _with_congestion_metrics(
+    job: PhysicalDesignJob,
+    result: RoutingSolveResult,
+) -> RoutingSolveResult:
+    congestion_metrics = _congestion_metrics(job, result.routes)
+    names = frozenset(metric.name for metric in congestion_metrics)
+    return RoutingSolveResult(
+        status=result.status,
+        routes=result.routes,
+        report=StageReport(
+            stage=result.report.stage,
+            status=result.report.status,
+            diagnostics=result.report.diagnostics,
+            metrics=tuple(
+                metric for metric in result.report.metrics if metric.name not in names
+            )
+            + congestion_metrics,
+        ),
+    )
+
+
 def solve_routing(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
@@ -1013,10 +1201,13 @@ def solve_routing(
     net_names = tuple(sorted(net.name for net in job.design.nets))
     if len(net_names) < 2:
         result = _solve_routing_once(job, instance_placements)
-        return _with_iteration_metrics(
-            result,
-            route_states=_metric_value(result, "route_states"),
-            routing_iterations=1,
+        return _with_congestion_metrics(
+            job,
+            _with_iteration_metrics(
+                result,
+                route_states=_metric_value(result, "route_states"),
+                routing_iterations=1,
+            ),
         )
 
     order_limit = job.request.maximum_routing_iterations
@@ -1029,18 +1220,21 @@ def solve_routing(
     for iteration, net_order in enumerate(attempted_orders, start=1):
         remaining_states = job.request.maximum_route_states - total_route_states
         if remaining_states <= 0:
-            return _with_iteration_metrics(
-                _result(
-                    ResultStatus.EXHAUSTED,
-                    code="routing_search_exhausted",
-                    message=(
-                        "routing search consumed its state budget across "
-                        "rip-up iterations"
+            return _with_congestion_metrics(
+                job,
+                _with_iteration_metrics(
+                    _result(
+                        ResultStatus.EXHAUSTED,
+                        code="routing_search_exhausted",
+                        message=(
+                            "routing search consumed its state budget across "
+                            "rip-up iterations"
+                        ),
+                        route_states=total_route_states,
                     ),
                     route_states=total_route_states,
+                    routing_iterations=iteration - 1,
                 ),
-                route_states=total_route_states,
-                routing_iterations=iteration - 1,
             )
         result = _solve_routing_once(
             job,
@@ -1055,22 +1249,27 @@ def solve_routing(
             routing_iterations=iteration,
         )
         if result.status is ResultStatus.SUCCEEDED:
-            return result
+            return _with_congestion_metrics(job, result)
         if result.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
-            return result
+            return _with_congestion_metrics(job, result)
         last_result = result
 
     if len(candidate_orders) > order_limit:
-        return _with_iteration_metrics(
-            _result(
-                ResultStatus.EXHAUSTED,
-                code="routing_iteration_exhausted",
-                message="routing could not complete within the rip-up iteration budget",
+        return _with_congestion_metrics(
+            job,
+            _with_iteration_metrics(
+                _result(
+                    ResultStatus.EXHAUSTED,
+                    code="routing_iteration_exhausted",
+                    message=(
+                        "routing could not complete within the rip-up iteration budget"
+                    ),
+                    route_states=total_route_states,
+                ),
                 route_states=total_route_states,
+                routing_iterations=len(attempted_orders),
             ),
-            route_states=total_route_states,
-            routing_iterations=len(attempted_orders),
         )
     if last_result is None:
         raise RuntimeError("routing order search produced no result")
-    return last_result
+    return _with_congestion_metrics(job, last_result)

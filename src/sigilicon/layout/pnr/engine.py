@@ -31,7 +31,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 7
+ENGINE_VERSION = 8
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -80,6 +80,11 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         errors.append("maximum route states must be positive")
     if job.request.maximum_routing_iterations <= 0:
         errors.append("maximum routing iterations must be positive")
+    if (
+        job.request.routing_congestion_bins_x <= 0
+        or job.request.routing_congestion_bins_y <= 0
+    ):
+        errors.append("routing congestion bin counts must be positive")
     required_capabilities = job.request.required_technology_capabilities
     if any(
         not isinstance(capability, TechnologyCapability)

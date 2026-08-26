@@ -100,6 +100,10 @@ _Avoid_: Timeout, failed route
 The maximum number of deterministic net-order attempts allowed when routing discards a failed greedy solution and reroutes the complete net set.
 _Avoid_: Retry timeout, unbounded rip-up
 
+**Routing Congestion Bin**:
+A deterministic die partition used to estimate per-layer, per-direction route demand, track-equivalent capacity, and overflow without replacing exact geometry checks.
+_Avoid_: DRC region, signoff congestion result
+
 **Routing Solution Check**:
 An independent reconstruction of connectivity, resource coverage, obstruction clearance, width, spacing, and via-rule compliance from a Physical Design Job and returned Routing Solution.
 _Avoid_: Solver success flag, signoff DRC/LVS

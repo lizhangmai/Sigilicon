@@ -99,6 +99,8 @@ routing remains in progress.
 - conservative minimum-width and minimum-spacing enforcement;
 - deterministic multi-terminal tree construction and inter-net spacing;
 - legal Via Definition occurrences with cut spacing and two-sided enclosure checks;
+- configurable die-bin congestion analysis with layer/direction demand, derived
+  track-equivalent capacity, overflow metrics, and demand-aware path costs;
 - bounded deterministic rip-up over alternative net orders when a greedy order
   blocks a later net;
 - independent geometry, spacing, resource-coverage, and connectivity checks over
@@ -111,7 +113,7 @@ routing remains in progress.
 The current reference router deliberately rejects track-only problems and layer
 transitions whose Via Definitions lack complete enclosure or cut-spacing facts.
 Those are capability boundaries, not implicit fallbacks. The next routing increments
-add track-resource search, topology constraints, global congestion guidance, and
+add track-resource search, topology/length/skew/shielding constraints, and
 fine-grained negotiated rip-up beyond the current full-iteration reroute.
 
 - global routing and congestion estimation;
