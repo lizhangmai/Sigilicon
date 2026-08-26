@@ -80,15 +80,17 @@ def test_elaborated_netlist_selects_one_completed_history_file(
 def test_elaborated_netlist_accepts_unique_spectre_history_file(
     tmp_path: Path,
 ) -> None:
-    netlist = tmp_path / "ExplorerRORun.0.RO/1/tran_main/netlist/spectre.inp"
+    netlist = tmp_path / "ExplorerRORun.0.RO/1/tran_main/netlist/input.scs"
     netlist.parent.mkdir(parents=True)
-    netlist.write_text("simulator lang=spectre\n", encoding="utf-8")
-    history_copy = tmp_path / "psf" / "tran_main" / "netlist" / "spectre.inp"
+    netlist.write_text(
+        "simulator lang=spectre\nR0 (A B) resistor r=1k\n", encoding="utf-8"
+    )
+    (netlist.parent / "spectre.inp").write_text(
+        "// Spectre Source Statements\n", encoding="utf-8"
+    )
+    history_copy = tmp_path / "psf" / "tran_main" / "netlist" / "input.scs"
     history_copy.parent.mkdir(parents=True)
     history_copy.write_text("simulator lang=spectre\n", encoding="utf-8")
-    (history_copy.parent / "netlist").write_text(
-        "protected config map\n", encoding="utf-8"
-    )
 
     assert _elaborated_netlist(tmp_path, "ExplorerRORun.0.RO") == netlist
 

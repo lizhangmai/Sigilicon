@@ -53,13 +53,14 @@ def _elaborated_netlist(work_dir: Path, history: str) -> Path:
     # An AMS run emits both the elaborated ``netlist.vams`` and a protected
     # file named ``netlist`` that describes the config-view binding.  The
     # latter is not a second elaborated design and must not participate in the
-    # identity comparison.  Current pure-Spectre Maestro runs emit their
-    # elaborated design as ``netlist/spectre.inp``.
+    # selection. Pure-Spectre Maestro runs emit their complete simulator deck
+    # as ``netlist/input.scs``; ``spectre.inp`` is only a short source-statement
+    # marker and is not the elaborated design.
     candidates = ams_netlists
     if not candidates:
         candidates = tuple(
             path
-            for path in work_dir.rglob("spectre.inp")
+            for path in work_dir.rglob("input.scs")
             if path.is_file()
             and path.parent.name == "netlist"
         )
