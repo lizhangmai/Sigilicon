@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr import (
     CutSpacingRule,
@@ -23,6 +25,7 @@ from sigilicon.layout.pnr import (
     PinAccess,
     PinReference,
     Placement,
+    PnrInputError,
     PnrRequest,
     PnrStage,
     Point,
@@ -193,6 +196,54 @@ def _multilayer_job(*, three_layers: bool = False) -> PhysicalDesignJob:
     )
 
 
+def _ripup_job(*, maximum_routing_iterations: int = 8) -> PhysicalDesignJob:
+    side_wall = PhysicalMaster(
+        "side-wall",
+        3,
+        20,
+        obstructions=(LayerShape("route", Rect(0, 0, 3, 20)),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    top_wall = PhysicalMaster(
+        "top-wall",
+        12,
+        3,
+        obstructions=(LayerShape("route", Rect(0, 0, 12, 3)),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    return PhysicalDesignJob(
+        _technology(),
+        PhysicalDesign(
+            "order-dependent-pocket",
+            Rect(0, 0, 40, 40),
+            (side_wall, top_wall),
+            (
+                PhysicalInstance("left-wall", side_wall.name, Placement(Point(15, 10))),
+                PhysicalInstance("right-wall", side_wall.name, Placement(Point(30, 10))),
+                PhysicalInstance("top-wall", top_wall.name, Placement(Point(18, 27))),
+            ),
+            ports=(
+                PhysicalPort("a-left", (PinAccess("route", Rect(2, 5, 4, 7)),)),
+                PhysicalPort("a-right", (PinAccess("route", Rect(36, 5, 38, 7)),)),
+                PhysicalPort("z-inside", (PinAccess("route", Rect(23, 19, 25, 21)),)),
+                PhysicalPort("z-outside", (PinAccess("route", Rect(23, 1, 25, 3)),)),
+            ),
+            nets=(
+                PhysicalNet(
+                    "a-flexible",
+                    (PinReference("a-left"), PinReference("a-right")),
+                ),
+                PhysicalNet(
+                    "z-critical",
+                    (PinReference("z-inside"), PinReference("z-outside")),
+                ),
+            ),
+        ),
+        request=PnrRequest(
+            stages=(PnrStage.PLACEMENT, PnrStage.ROUTING),
+            maximum_routing_iterations=maximum_routing_iterations,
+        ),
+    )
 def _wire_length(job: PhysicalDesignJob) -> int:
     result = run(job)
     assert result.status is ResultStatus.SUCCEEDED
@@ -336,6 +387,40 @@ def test_router_avoids_unconnected_terminal_geometry() -> None:
 
     assert result.status is ResultStatus.SUCCEEDED
     assert _wire_length(replace(job, design=design)) > 34
+
+
+def test_failed_greedy_order_is_ripped_up_and_routed_in_another_order() -> None:
+    result = run(_ripup_job())
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert tuple(route.net for route in result.routes) == (
+        "a-flexible",
+        "z-critical",
+    )
+    metrics = {metric.name: metric.value for metric in result.stage_reports[-1].metrics}
+    assert metrics["routing_iterations"] == 2
+
+
+def test_ripup_iteration_budget_exhaustion_is_explicit() -> None:
+    result = run(_ripup_job(maximum_routing_iterations=1))
+
+    assert result.status is ResultStatus.EXHAUSTED
+    assert result.routes == ()
+    assert result.stage_reports[-1].diagnostics[0].code == (
+        "routing_iteration_exhausted"
+    )
+
+
+def test_routing_iteration_budget_must_be_positive() -> None:
+    job = _job()
+
+    with pytest.raises(PnrInputError, match="maximum routing iterations"):
+        run(
+            replace(
+                job,
+                request=replace(job.request, maximum_routing_iterations=0),
+            )
+        )
 
 
 def test_track_only_technology_is_explicitly_unsupported_by_reference_router() -> None:

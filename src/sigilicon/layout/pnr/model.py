@@ -431,6 +431,7 @@ class PnrRequest(CanonicalValue):
     objectives: tuple[PlacementObjective, ...] = ()
     required_technology_capabilities: tuple[TechnologyCapability, ...] = ()
     maximum_route_states: int = 200_000
+    maximum_routing_iterations: int = 8
 
 
 @dataclass(frozen=True)

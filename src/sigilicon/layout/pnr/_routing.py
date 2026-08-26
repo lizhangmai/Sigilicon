@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import heapq
+from itertools import islice, permutations
 
 from sigilicon.layout.pnr._geometry import (
     transformed_obstructions,
@@ -71,6 +72,7 @@ def _result(
     entities: tuple[str, ...] = (),
     route_states: int = 0,
 ) -> RoutingSolveResult:
+    routes = tuple(sorted(routes, key=lambda route: route.net))
     diagnostics = (
         ()
         if code is None
@@ -795,9 +797,12 @@ def _path_geometry(
     return tuple(segments), tuple(vias)
 
 
-def solve_routing(
+def _solve_routing_once(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
+    *,
+    net_order: tuple[str, ...] | None = None,
+    maximum_route_states: int | None = None,
 ) -> RoutingSolveResult:
     if not job.design.nets:
         return _result(ResultStatus.SUCCEEDED)
@@ -833,7 +838,18 @@ def solve_routing(
     route_states = 0
     grid = job.technology.manufacturing_grid_dbu
 
-    for net in sorted(job.design.nets, key=lambda item: item.name):
+    nets = {net.name: net for net in job.design.nets}
+    ordered_nets = (
+        tuple(nets[name] for name in net_order)
+        if net_order is not None
+        else tuple(sorted(job.design.nets, key=lambda item: item.name))
+    )
+    route_state_limit = (
+        maximum_route_states
+        if maximum_route_states is not None
+        else job.request.maximum_route_states
+    )
+    for net in ordered_nets:
         accesses = tuple(
             _endpoint_accesses(job, reference, placements)
             for reference in net.pins
@@ -913,7 +929,7 @@ def solve_routing(
                 routing_regions=routing_regions,
                 raw_blockers=raw_blockers,
                 job=job,
-                remaining_states=job.request.maximum_route_states - route_states,
+                remaining_states=route_state_limit - route_states,
             )
             route_states += states
             if path is None:
@@ -960,3 +976,101 @@ def solve_routing(
         routes=tuple(all_routes),
         route_states=route_states,
     )
+
+
+def _metric_value(result: RoutingSolveResult, name: str) -> int:
+    return int(next(metric.value for metric in result.report.metrics if metric.name == name))
+
+
+def _with_iteration_metrics(
+    result: RoutingSolveResult,
+    *,
+    route_states: int,
+    routing_iterations: int,
+) -> RoutingSolveResult:
+    metrics = tuple(
+        metric for metric in result.report.metrics if metric.name != "route_states"
+    ) + (
+        Metric("route_states", route_states, "count"),
+        Metric("routing_iterations", routing_iterations, "count"),
+    )
+    return RoutingSolveResult(
+        status=result.status,
+        routes=result.routes,
+        report=StageReport(
+            stage=result.report.stage,
+            status=result.report.status,
+            diagnostics=result.report.diagnostics,
+            metrics=metrics,
+        ),
+    )
+
+
+def solve_routing(
+    job: PhysicalDesignJob,
+    instance_placements: tuple[InstancePlacement, ...],
+) -> RoutingSolveResult:
+    net_names = tuple(sorted(net.name for net in job.design.nets))
+    if len(net_names) < 2:
+        result = _solve_routing_once(job, instance_placements)
+        return _with_iteration_metrics(
+            result,
+            route_states=_metric_value(result, "route_states"),
+            routing_iterations=1,
+        )
+
+    order_limit = job.request.maximum_routing_iterations
+    candidate_orders = tuple(
+        islice(permutations(net_names), order_limit + 1)
+    )
+    attempted_orders = candidate_orders[:order_limit]
+    total_route_states = 0
+    last_result: RoutingSolveResult | None = None
+    for iteration, net_order in enumerate(attempted_orders, start=1):
+        remaining_states = job.request.maximum_route_states - total_route_states
+        if remaining_states <= 0:
+            return _with_iteration_metrics(
+                _result(
+                    ResultStatus.EXHAUSTED,
+                    code="routing_search_exhausted",
+                    message=(
+                        "routing search consumed its state budget across "
+                        "rip-up iterations"
+                    ),
+                    route_states=total_route_states,
+                ),
+                route_states=total_route_states,
+                routing_iterations=iteration - 1,
+            )
+        result = _solve_routing_once(
+            job,
+            instance_placements,
+            net_order=net_order,
+            maximum_route_states=remaining_states,
+        )
+        total_route_states += _metric_value(result, "route_states")
+        result = _with_iteration_metrics(
+            result,
+            route_states=total_route_states,
+            routing_iterations=iteration,
+        )
+        if result.status is ResultStatus.SUCCEEDED:
+            return result
+        if result.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
+            return result
+        last_result = result
+
+    if len(candidate_orders) > order_limit:
+        return _with_iteration_metrics(
+            _result(
+                ResultStatus.EXHAUSTED,
+                code="routing_iteration_exhausted",
+                message="routing could not complete within the rip-up iteration budget",
+                route_states=total_route_states,
+            ),
+            route_states=total_route_states,
+            routing_iterations=len(attempted_orders),
+        )
+    if last_result is None:
+        raise RuntimeError("routing order search produced no result")
+    return last_result

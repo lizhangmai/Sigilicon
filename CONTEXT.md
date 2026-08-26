@@ -96,6 +96,10 @@ _Avoid_: Layer switch, via name without geometry
 The maximum number of deterministic route states a Physical Design Job permits before returning `exhausted` instead of claiming infeasibility.
 _Avoid_: Timeout, failed route
 
+**Routing Iteration Budget**:
+The maximum number of deterministic net-order attempts allowed when routing discards a failed greedy solution and reroutes the complete net set.
+_Avoid_: Retry timeout, unbounded rip-up
+
 **Routing Solution Check**:
 An independent reconstruction of connectivity, resource coverage, obstruction clearance, width, spacing, and via-rule compliance from a Physical Design Job and returned Routing Solution.
 _Avoid_: Solver success flag, signoff DRC/LVS

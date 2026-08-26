@@ -99,6 +99,8 @@ routing remains in progress.
 - conservative minimum-width and minimum-spacing enforcement;
 - deterministic multi-terminal tree construction and inter-net spacing;
 - legal Via Definition occurrences with cut spacing and two-sided enclosure checks;
+- bounded deterministic rip-up over alternative net orders when a greedy order
+  blocks a later net;
 - independent geometry, spacing, resource-coverage, and connectivity checks over
   each returned Routing Solution;
 - explicit distinction between infeasibility, capability gaps, and search-budget
@@ -110,7 +112,7 @@ The current reference router deliberately rejects track-only problems and layer
 transitions whose Via Definitions lack complete enclosure or cut-spacing facts.
 Those are capability boundaries, not implicit fallbacks. The next routing increments
 add track-resource search, topology constraints, global congestion guidance, and
-negotiated rip-up.
+fine-grained negotiated rip-up beyond the current full-iteration reroute.
 
 - global routing and congestion estimation;
 - detailed path and via construction;
