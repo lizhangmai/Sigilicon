@@ -137,10 +137,7 @@ def test_explicit_environment_resolves_private_files_and_public_identity(
     timing = environment.platform_asset("standard-cell-timing")
     assert timing is not None
     assert {member.role for member in timing.members} == {"rvt", "hvt", "lvt"}
-    assert not hasattr(timing, "digest")
     assert str(tmp_path) not in json.dumps(record)
-    assert "digest" not in json.dumps(record)
-    assert "fingerprint" not in json.dumps(record)
 
 
 def test_execution_environment_preserves_multicall_launcher_symlink(
@@ -174,18 +171,10 @@ executable = "{launcher}"
     assert resolved is not None and resolved.is_symlink()
 
 
-def test_preflight_rechecks_environment_after_resolution(tmp_path: Path) -> None:
+def test_preflight_rechecks_capability_availability(tmp_path: Path) -> None:
     contract, paths = _write_environment(tmp_path)
     environment = load_execution_environment(contract)
     engine, plan = _plan()
-
-    paths["rvt"].write_text("mutated timing\n", encoding="utf-8")
-    stale = engine.preflight(plan, environment)
-    assert next(
-        check
-        for check in stale.checks
-        if check.requirement == "standard-cell-timing"
-    ).status == "stale"
 
     paths["executable"].chmod(0o644)
     unavailable = engine.preflight(plan, environment)

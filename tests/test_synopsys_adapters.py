@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from pathlib import Path
 import shutil
 
@@ -240,7 +239,6 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
         timing_members.append(
             ResolvedPlatformAssetMember(
                 role=role,
-                digest=sha256(library.read_bytes()).hexdigest(),
                 location=library,
             )
         )

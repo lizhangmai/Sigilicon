@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-from hashlib import sha256
 import json
 import math
 import os
@@ -139,14 +138,6 @@ _FC_OUTPUT_ENVIRONMENT = {
     "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
 }
 _VERILOG_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-
-
-def _sha256(path: Path) -> str:
-    hasher = sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def _text_mapping(value: object, label: str) -> dict[str, str]:
@@ -482,9 +473,9 @@ class SynopsysDCAdapter:
                 raise FlowExecutionError(
                     f"standard-cell timing DB set omitted {role!r}"
                 )
-            if not member.location.is_file() or _sha256(member.location) != member.digest:
+            if not member.location.is_file():
                 raise FlowExecutionError(
-                    f"resolved standard-cell timing DB {role!r} is stale"
+                    f"resolved standard-cell timing DB {role!r} is unavailable"
                 )
             members[role] = member.location
         return executable, members
@@ -1083,9 +1074,9 @@ class SynopsysFCAdapter:
                 raise FlowExecutionError(
                     f"Synopsys FC asset {asset_role!r} omitted {role!r}"
                 )
-            if not member.location.is_file() or _sha256(member.location) != member.digest:
+            if not member.location.is_file():
                 raise FlowExecutionError(
-                    f"resolved Synopsys FC asset member {asset_role}.{role} is stale"
+                    f"resolved Synopsys FC asset member {asset_role}.{role} is unavailable"
                 )
             result[environment_name] = member.location
         return result
@@ -1328,9 +1319,9 @@ class SynopsysVCSAdapter:
                 raise FlowExecutionError(
                     f"standard-cell Verilog model set omitted {role!r}"
                 )
-            if not member.location.is_file() or _sha256(member.location) != member.digest:
+            if not member.location.is_file():
                 raise FlowExecutionError(
-                    f"resolved standard-cell Verilog model {role!r} is stale"
+                    f"resolved standard-cell Verilog model {role!r} is unavailable"
                 )
             models[role] = member.location
         return executable, models
@@ -1809,8 +1800,10 @@ class SynopsysHSpiceAdapter:
             member = asset.member(role)
             if member is None:
                 raise FlowExecutionError(f"HSPICE model set omitted {role!r}")
-            if not member.location.is_file() or _sha256(member.location) != member.digest:
-                raise FlowExecutionError(f"resolved HSPICE model {role!r} is stale")
+            if not member.location.is_file():
+                raise FlowExecutionError(
+                    f"resolved HSPICE model {role!r} is unavailable"
+                )
             models[role] = member.location
         return executable, models
 

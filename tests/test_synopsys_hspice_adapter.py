@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -343,7 +342,6 @@ def _environment(tmp_path: Path, executable: Path) -> ExecutionEnvironment:
         members.append(
             ResolvedPlatformAssetMember(
                 role=role,
-                digest=sha256(model.read_bytes()).hexdigest(),
                 location=model,
             )
         )

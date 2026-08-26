@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from pathlib import Path
 import subprocess
 
@@ -465,7 +464,6 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
 def _member(path: Path, role: str) -> ResolvedPlatformAssetMember:
     return ResolvedPlatformAssetMember(
         role=role,
-        digest=sha256(path.read_bytes()).hexdigest(),
         location=path,
     )
 
@@ -1371,13 +1369,13 @@ def test_synopsys_fc_adapter_rejects_malformed_implementation_report(
     )
 
 
-def test_synopsys_fc_preflight_rejects_stale_recipe_and_platform(
+def test_synopsys_fc_preflight_rejects_changed_recipe(
     tmp_path: Path,
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root)
     spec, profile = _flow(owner_root)
-    environment, collateral = _environment(tmp_path)
+    environment, _ = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
     plan = engine.plan(spec, "implementation", profile)
 
@@ -1397,14 +1395,5 @@ def test_synopsys_fc_preflight_rejects_stale_recipe_and_platform(
             artifact_root=tmp_path / "source-artifacts",
             environment=environment,
             run_id="c" * 32,
-        )
-    assert not (tmp_path / "source-artifacts").exists()
-
-    clean_plan = engine.plan(spec, "implementation", profile)
-    collateral["tluplus"].write_text("stale TLU+ fixture\n", encoding="utf-8")
-    platform_preflight = engine.preflight(clean_plan, environment)
-    assert platform_preflight.status == "blocked"
-    assert any(
-        check.requirement == "physical-technology" and check.status == "stale"
-        for check in platform_preflight.checks
     )
+    assert not (tmp_path / "source-artifacts").exists()

@@ -10,10 +10,7 @@ from typing import Any, Mapping
 import uuid
 
 from sigilicon.artifacts import atomic_write_json, read_json_object
-from sigilicon.flow.environment import (
-    capability_available,
-    stale_platform_asset_members,
-)
+from sigilicon.flow.environment import capability_available
 from sigilicon.flow.model import (
     ActionArtifact,
     ActionContext,
@@ -354,8 +351,6 @@ class FlowEngine:
                     )
                     else "incomplete"
                     if missing_members
-                    else "stale"
-                    if stale_platform_asset_members(asset)
                     else "available"
                 )
                 checks.append(

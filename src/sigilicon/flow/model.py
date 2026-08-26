@@ -14,7 +14,6 @@ from typing import Any, Mapping
 _IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 _OWNER_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*\Z")
 _RUN_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
-_DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _REQUIREMENTS = frozenset({"accepted", "valid"})
 _RESULT_STATUSES = frozenset({"valid", "failed", "partial", "uncertain"})
 _EXECUTION_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
@@ -625,18 +624,13 @@ class ResolvedCapability:
 
 @dataclass(frozen=True)
 class ResolvedPlatformAssetMember:
-    """One private site file pinned into a resolved platform asset."""
+    """One private site file selected for a resolved platform asset."""
 
     role: str
-    digest: str
     location: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
         identifier(self.role, "resolved platform asset member role")
-        if _DIGEST_RE.fullmatch(self.digest) is None:
-            raise FlowContractError(
-                "resolved platform asset member digest must be sha256"
-            )
         object.__setattr__(self, "location", Path(self.location).resolve())
 
 

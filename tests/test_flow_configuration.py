@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -284,7 +283,6 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
                 members=(
                     ResolvedPlatformAssetMember(
                         role="library",
-                        digest=sha256(installed_library.read_bytes()).hexdigest(),
                         location=installed_library,
                     ),
                 ),
@@ -331,7 +329,6 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
         for check in preflight["checks"]
         if check["requirement"] == "logic-lib"
     )
-    assert "digest" not in platform_check
     assert request["execution_environment"]["capabilities"] == {
         "runtime.action-capability": "fake-action@1",
         "runtime.fake-license": "fake-license@1",

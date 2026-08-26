@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
 import os
 from pathlib import Path
 import tomllib
@@ -53,14 +52,6 @@ def _site_path(
     if preserve_launcher:
         return Path(os.path.abspath(path))
     return path.resolve()
-
-
-def _sha256(path: Path) -> str:
-    hasher = sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def _load_capabilities(value: object) -> dict[str, ResolvedCapability]:
@@ -117,7 +108,6 @@ def _load_platform_assets(value: object) -> tuple[ResolvedPlatformAsset, ...]:
             members.append(
                 ResolvedPlatformAssetMember(
                     role=_text(member.get("role"), f"{member_label}.role"),
-                    digest=_sha256(location),
                     location=location,
                 )
             )
@@ -176,18 +166,7 @@ def capability_available(capability: ResolvedCapability) -> bool:
     )
 
 
-def stale_platform_asset_members(asset: ResolvedPlatformAsset) -> tuple[str, ...]:
-    """Return member roles whose current content differs from the resolved asset."""
-
-    stale: list[str] = []
-    for member in asset.members:
-        if not member.location.is_file() or _sha256(member.location) != member.digest:
-            stale.append(member.role)
-    return tuple(stale)
-
-
 __all__ = [
     "capability_available",
     "load_execution_environment",
-    "stale_platform_asset_members",
 ]
