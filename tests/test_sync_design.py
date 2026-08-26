@@ -66,16 +66,9 @@ class FakeClient:
         self.skill = []
         self.workdir = workdir
         self.ssh_runner = None
-        self.fingerprint = ""
 
     def execute_skill(self, source, **_kwargs):
         self.skill.append(source)
-        fingerprint_match = re.search(
-            r'dbReplaceProp\(cv "flowDesignFingerprint" "string" "([0-9a-f]{64})"\)',
-            source,
-        )
-        if fingerprint_match is not None:
-            self.fingerprint = fingerprint_match.group(1)
         if source == "getWorkingDir()":
             return Response(f'"{self.workdir}"')
         if source == "maeGetSessions()":
@@ -88,12 +81,11 @@ class FakeClient:
             return Response('""')
         if "count = 0" in source and "dbFindOpenCellViewByName" in source:
             return Response("0")
-        if 'sprintf(nil "F|%s|%L' in source:
+        if 'sprintf(nil "T|%s|%s|%s' in source:
             rows = []
             for view in ("schematic", "symbol"):
                 rows.extend(
                     (
-                        f"F|{view}|{self.fingerprint}",
                         f"T|{view}|IN|input",
                         f"T|{view}|OUT|output",
                         f"T|{view}|VDD|inputOutput",
@@ -101,8 +93,6 @@ class FakeClient:
                     )
                 )
             return Response("\n".join(rows))
-        if "actualFingerprint = cv~>flowDesignFingerprint" in source:
-            return Response(self.fingerprint)
         return Response()
 
     def list_windows(self):
@@ -180,11 +170,7 @@ def test_sync_design_consumes_source_and_pdk_config(
     assert result.attempt_dir.parent.parent.name == "design-sync"
     manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
-    assert set(manifest["details"]["oa_view_sha256"]["inv"]) == {
-        "netlist",
-        "schematic",
-        "symbol",
-    }
+    assert manifest["details"]["imported_cells"] == ["inv"]
     assert "DEFINE designLib ./designLib" in (root / "virtuoso" / "cds.lib").read_text()
     assert any("term~>direction" in source for source in client.skill)
 

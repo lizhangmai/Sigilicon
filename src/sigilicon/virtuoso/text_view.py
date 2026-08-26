@@ -166,7 +166,6 @@ def _import_skill_view(
     cell: str,
     view: str,
     source: Path,
-    source_sha256: str,
     operation: Any,
     timeout: int,
 ) -> None:
@@ -174,7 +173,7 @@ def _import_skill_view(
 
     if view != "measurement":
         raise ValueError("SKILL measurement views must use the OA view name measurement")
-    with owned_input_file(source, expected_sha256=source_sha256) as owned_source:
+    with owned_input_file(source) as owned_source:
         payload = os.pread(
             owned_source.fd,
             os.fstat(owned_source.fd).st_size,
@@ -253,7 +252,6 @@ def import_oa_text_view(
     kind: str,
     view: str,
     source: Path,
-    source_sha256: str,
     log_dir: Path,
     work_dir: Path,
     operation: Any,
@@ -275,7 +273,6 @@ def import_oa_text_view(
             cell=cell,
             view=view,
             source=source,
-            source_sha256=source_sha256,
             operation=operation,
             timeout=timeout,
         )
@@ -306,7 +303,7 @@ def import_oa_text_view(
         raise FileNotFoundError("cdsTextTo5x was not found in PATH or CDSHOME")
     library_path = operation.require_project_library_target(client, library)
     with (
-        owned_input_file(source, expected_sha256=source_sha256) as owned_source,
+        owned_input_file(source) as owned_source,
         owned_directory(workdir) as owned_workdir,
         owned_directory(library_path) as owned_library,
         owned_directory(work_dir, create_missing=True) as owned_tool_work,

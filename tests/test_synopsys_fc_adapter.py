@@ -9,7 +9,6 @@ import pytest
 
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.flow import (
-    ActionContext,
     ActionContract,
     AdapterSelection,
     ArtifactBinding,
@@ -22,7 +21,6 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
-    InputArtifact,
     PolicyCheck,
     PolicySpec,
     ResolvedCapability,
@@ -1081,15 +1079,8 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     assert checkpoint_manifest["root"] == "routed.ndm"
     assert reference_manifest["members"][0]["path"] == "library.ndm"
     assert checkpoint_manifest["members"][0]["path"] == "top.ndm"
-    assert "digest" in reference_manifest["members"][0]
-    assert "digest" not in checkpoint_manifest["members"][0]
-    assert reference.artifacts["reference-library"].digest is not None
-    assert all(
-        artifact.digest is None
-        for role, artifact in reference.artifacts.items()
-        if role != "reference-library"
-    )
-    assert all(artifact.digest is None for artifact in implementation.artifacts.values())
+    assert set(reference_manifest["members"][0]) == {"path"}
+    assert set(checkpoint_manifest["members"][0]) == {"path"}
     assert dict(implementation.facts) == {
         "tool-execution-completed": True,
         "design-check-error-count": 0,
@@ -1378,80 +1369,6 @@ def test_synopsys_fc_adapter_rejects_malformed_implementation_report(
     assert "message summary is missing or duplicated" in (
         implementation.reason or ""
     )
-
-
-def test_synopsys_fc_adapter_rejects_stale_reference_before_downstream_use(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(owner_root)
-    spec, profile = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    registry = _registry(owner_root)
-    engine = FlowEngine(registry)
-    plan = engine.plan(spec, "implementation", profile)
-    first = engine.run(
-        plan,
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="d" * 32,
-    )
-    reference_artifact = first.nodes["reference-library"].artifacts[
-        "reference-library"
-    ]
-    reference_manifest = json.loads(
-        reference_artifact.path.read_text(encoding="utf-8")
-    )
-    reference_member = (
-        reference_artifact.path.parent
-        / reference_manifest["root"]
-        / reference_manifest["members"][0]["path"]
-    )
-    reference_member.write_text("stale reference library\n", encoding="utf-8")
-    implementation_node = spec.node("implementation")
-    implementation_action = registry.action(implementation_node.action_kind)
-    bindings = {
-        binding.input: first.nodes[binding.producer].artifacts[binding.output]
-        for binding in implementation_node.bindings
-    }
-    validation_root = tmp_path / "validation"
-    (validation_root / "work").mkdir(parents=True)
-    (validation_root / "outputs").mkdir()
-    context = ActionContext(
-        node_id="implementation",
-        action=implementation_action,
-        run_root=first.run_root,
-        work_root=validation_root / "work",
-        output_root=validation_root / "outputs",
-        log_root=validation_root / "logs",
-        inputs={
-            role: InputArtifact(
-                role=role,
-                kind=artifact.kind,
-                path=artifact.path,
-                digest=artifact.digest,
-                producer=artifact.producer,
-                qualifiers=artifact.qualifiers,
-            )
-            for role, artifact in bindings.items()
-        },
-        action_config=implementation_node.config,
-        adapter_config=profile.selection(
-            "asic.physical-implementation"
-        ).config,
-        capabilities={
-            "tool.synopsys-fc": environment.capabilities["tool.synopsys-fc"]
-        },
-        platform_assets={
-            "physical-technology": environment.platform_asset(
-                "physical-technology"
-            )
-        },
-    )
-
-    diagnostics = registry.adapter("synopsys-fc").validate_inputs(context)
-
-    assert any("missing or stale" in diagnostic for diagnostic in diagnostics)
 
 
 def test_synopsys_fc_preflight_rejects_stale_recipe_and_platform(

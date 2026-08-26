@@ -22,7 +22,6 @@ from sigilicon.domain.oa_library import (
     OAViewReference,
     load_oa_library_source,
 )
-from sigilicon.domain.provenance import design_identity_fingerprint
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
@@ -249,11 +248,7 @@ def _override_inspection_library(
     if inspection.spec.library == library:
         return inspection
     spec = replace(inspection.spec, library=library)
-    return replace(
-        inspection,
-        spec=spec,
-        source_fingerprint=design_identity_fingerprint(spec),
-    )
+    return replace(inspection, spec=spec)
 
 
 def _load_definitions(
@@ -367,6 +362,7 @@ def _plan_designs(
 _PARAMETER_ASSIGNMENT = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_$]*)=(?P<value>[^\s]+)\Z"
 )
+_SPICEIN_MASTER_MAP = {"resistor": "res", "capacitor": "cap"}
 
 
 def _parameter_assignments(
@@ -403,23 +399,22 @@ def _instance_parameter_expectations(
 ) -> tuple[InstanceParameterExpectation, ...]:
     result: list[InstanceParameterExpectation] = []
     for instance in parse_subcircuit_instances(definition):
-        if instance.master not in declared_cells:
-            continue
-        expected = _subcircuit_default_parameters(definitions[instance.master])
-        expected.update(
-            _parameter_assignments(
-                instance.parameters,
-                context=f"instance {definition.name}/{instance.name}",
-            )
-        )
-        if expected:
-            result.append(
-                InstanceParameterExpectation(
-                    instance=instance.name,
-                    master=instance.master,
-                    parameters=tuple(sorted(expected.items())),
+        expected: dict[str, str] = {}
+        if instance.master in declared_cells:
+            expected.update(_subcircuit_default_parameters(definitions[instance.master]))
+            expected.update(
+                _parameter_assignments(
+                    instance.parameters,
+                    context=f"instance {definition.name}/{instance.name}",
                 )
             )
+        result.append(
+            InstanceParameterExpectation(
+                instance=instance.name,
+                master=_SPICEIN_MASTER_MAP.get(instance.master, instance.master),
+                parameters=tuple(sorted(expected.items())),
+            )
+        )
     return tuple(result)
 
 

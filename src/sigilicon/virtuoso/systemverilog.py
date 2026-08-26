@@ -26,7 +26,6 @@ def import_systemverilog_view(
     library: str,
     cell: str,
     source: Path,
-    source_sha256: str,
     log_dir: Path,
     work_dir: Path,
     operation: Any,
@@ -74,7 +73,7 @@ def import_systemverilog_view(
         if deletion.errors:
             raise RuntimeError(deletion.errors[0])
     with (
-        owned_input_file(source, expected_sha256=source_sha256) as owned_source,
+        owned_input_file(source) as owned_source,
         owned_directory(workdir) as owned_workdir,
         owned_directory(library_path) as owned_library,
         owned_directory(work_dir, create_missing=True) as owned_tool_work,

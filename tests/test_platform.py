@@ -33,7 +33,6 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
         tmp_path / "configs/platform/testpdk/simulation.toml",
         tmp_path / "configs/platform/testpdk/oa.toml",
     )
-    assert len(platform.source_sha256) == 64
 
 
 def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:
@@ -60,37 +59,6 @@ def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unsupported fields.*primitive_masters"):
         load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
-
-
-def test_layout_identity_is_scoped_away_from_simulation_models(
-    tmp_path: Path,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_layout_platform(tmp_path)
-    context = RepositoryContext.from_project_root(tmp_path)
-    first = load_platform(context, "testpdk")
-    assert first.layout is not None
-
-    simulation = tmp_path / "configs/platform/testpdk/simulation.toml"
-    simulation.write_text(
-        simulation.read_text(encoding="utf-8").replace("model.scs", "model-v2.scs"),
-        encoding="utf-8",
-    )
-    second = load_platform(context, "testpdk")
-    assert second.layout is not None
-    assert second.source_sha256 != first.source_sha256
-    assert second.layout.configuration_sha256 == first.layout.configuration_sha256
-
-    oa = tmp_path / "configs/platform/testpdk/oa.toml"
-    oa.write_text(
-        oa.read_text(encoding="utf-8").replace(
-            '["deviceLib"]', '["deviceLib", "anotherLib"]'
-        ),
-        encoding="utf-8",
-    )
-    third = load_platform(context, "testpdk")
-    assert third.layout is not None
-    assert third.layout.configuration_sha256 != second.layout.configuration_sha256
 
 
 def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> None:

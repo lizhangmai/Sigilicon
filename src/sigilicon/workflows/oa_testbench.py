@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -124,7 +123,6 @@ def _sync_oa_testbench_impl(
         "devselect := resistor res\ndevselect := capacitor cap\n",
     )
     measurement_source = _native_setup_source(spec)
-    measurement_sha256 = hashlib.sha256(measurement_source.read_bytes()).hexdigest()
     paths = ProjectContext.from_project_root(spec.project_root)
 
     with workspace_operation(
@@ -229,7 +227,6 @@ def _sync_oa_testbench_impl(
                 kind="skill",
                 view="measurement",
                 source=measurement_source,
-                source_sha256=measurement_sha256,
                 log_dir=work.directory("logs", "measurement"),
                 work_dir=work.directory("work", "measurement"),
                 operation=operation,

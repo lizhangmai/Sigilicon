@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import hashlib
 import importlib.util
 from pathlib import Path
 from types import ModuleType
 from typing import Collection, Mapping
+import uuid
 
 from sigilicon.domain.repository import RepositoryContext
 
@@ -96,9 +96,8 @@ def load_native_diagnostic_processor(source: Path) -> NativeDiagnosticProcessor:
     """Load one processor explicitly selected by its native RDB contract."""
 
     source = source.resolve()
-    identity = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
     spec = importlib.util.spec_from_file_location(
-        f"_sigilicon_project_native_diagnostics_{identity}", source
+        f"_sigilicon_project_native_diagnostics_{uuid.uuid4().hex}", source
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load native diagnostic processor: {source}")

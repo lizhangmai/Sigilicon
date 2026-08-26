@@ -147,7 +147,6 @@ def test_instance_parameter_contract_elaborates_child_defaults_and_overrides(
         parameters=(),
         statements=("parameters lch=30n w=100n",),
         source_path=tmp_path / "child.scs",
-        source_sha256="a" * 64,
     )
     parent = NetlistSubcircuit(
         name="PARENT",
@@ -155,7 +154,6 @@ def test_instance_parameter_contract_elaborates_child_defaults_and_overrides(
         parameters=("parent_l=120n",),
         statements=("X0 (A B) CHILD lch=parent_l",),
         source_path=tmp_path / "parent.scs",
-        source_sha256="b" * 64,
     )
 
     expectations = _instance_parameter_expectations(
@@ -359,9 +357,7 @@ def test_check_accepts_git_owned_design_without_prior_state(
     library_path = tmp_path / "virtuoso" / "assembled"
     for view in ("netlist", "schematic", "symbol"):
         _write(library_path / cell / view / "data.dm", f"{view}\n")
-    inspection = SimpleNamespace(
-        spec=SimpleNamespace(cell=cell), source_fingerprint="a" * 64
-    )
+    inspection = SimpleNamespace(spec=SimpleNamespace(cell=cell))
     plan = SimpleNamespace(
         library="assembled",
         cells=(cell,),
@@ -408,7 +404,7 @@ def test_testbench_check_includes_transitive_dependency_materialization(
     design_steps = tuple(
         SimpleNamespace(
             inspection=SimpleNamespace(
-                spec=SimpleNamespace(cell=cell), source_fingerprint=cell
+                spec=SimpleNamespace(cell=cell)
             ),
             dependencies=dependencies,
         )
@@ -471,9 +467,8 @@ def test_check_accepts_current_layout_cache_without_prior_state(
         spec=SimpleNamespace(
             cell=cell,
             view=view,
-            source_fingerprint="a" * 64,
         ),
-        plan=SimpleNamespace(fingerprint="b" * 64),
+        plan=SimpleNamespace(),
     )
     plan = SimpleNamespace(
         library="assembled",

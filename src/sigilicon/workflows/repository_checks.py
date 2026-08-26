@@ -208,7 +208,6 @@ def inspect_repository_designs(
         platforms[name] = {
             "manifest": platform.path.relative_to(root).as_posix(),
             "owner": platform.owner,
-            "source_sha256": platform.source_sha256,
         }
 
     configuration = inspect_project_configurations(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import hashlib
 import json
 from typing import Any, Mapping
 
@@ -58,7 +57,6 @@ class LayoutPlan:
     generator: str
     generator_version: int
     laygo2_version: str
-    source_fingerprint: str
     dbu_per_micron: int
     instances: tuple[LayoutInstance, ...]
     rectangles: tuple[LayoutRect, ...] = ()
@@ -74,38 +72,10 @@ class LayoutPlan:
             payload.pop("vias")
         return payload
 
-    def content_payload(self) -> dict[str, Any]:
-        """Return only identity and physical content written into OA.
-
-        Generator implementation details and source hashes remain available in
-        :meth:`payload` for provenance, but they do not make an unchanged OA
-        layout stale.  This projection is the mutation/reuse contract.
-        """
-
-        payload = self.payload()
-        for field in (
-            "generator",
-            "generator_version",
-            "laygo2_version",
-            "source_fingerprint",
-        ):
-            payload.pop(field)
-        return payload
-
     def canonical_json(self) -> str:
         return json.dumps(
             self.payload(), sort_keys=True, indent=2, ensure_ascii=False
         ) + "\n"
-
-    @property
-    def fingerprint(self) -> str:
-        """Fingerprint OA identity, geometry, parameters and connectivity."""
-
-        encoded = json.dumps(
-            self.content_payload(), sort_keys=True, separators=(",", ":")
-        ).encode()
-        return hashlib.sha256(encoded).hexdigest()
-
 
 def _int_pair(value: Any, label: str) -> tuple[int, int]:
     values = getattr(value, "tolist", lambda: value)()
@@ -126,7 +96,6 @@ def lower_laygo2_design(
     generator: str,
     generator_version: int,
     laygo2_version: str,
-    source_fingerprint: str,
     dbu_per_micron: int,
     terminal_maps: Mapping[str, Mapping[str, str]],
     directions: Mapping[str, str],
@@ -251,7 +220,6 @@ def lower_laygo2_design(
         generator=generator,
         generator_version=generator_version,
         laygo2_version=laygo2_version,
-        source_fingerprint=source_fingerprint,
         dbu_per_micron=dbu_per_micron,
         instances=tuple(instances),
         rectangles=tuple(rectangles),

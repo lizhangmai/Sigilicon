@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-import hashlib
 import importlib
 import importlib.util
 from pathlib import Path
 import sys
 from types import ModuleType
+import uuid
 
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
@@ -85,15 +85,7 @@ def _load_generator_module(
     sources = (source, *dependency_sources)
     _discard_bytecode(sources, project_root=project_root)
     _purge_project_modules(project_root, project_modules, dependency_sources)
-    identity = b"\0".join(
-        (
-            str(source.resolve()).encode(),
-            str(project_root.resolve()).encode(),
-            *(path.read_bytes() for path in sources),
-        )
-    )
-    digest = hashlib.sha256(identity).hexdigest()
-    module_name = f"_sigilicon_layout_generator_{digest}"
+    module_name = f"_sigilicon_layout_generator_{uuid.uuid4().hex}"
     module_spec = importlib.util.spec_from_file_location(module_name, source)
     if module_spec is None or module_spec.loader is None:
         raise ValueError(f"cannot load layout generator source: {source}")
@@ -143,6 +135,4 @@ def build_layout_plan(spec: LayoutSpec) -> LayoutPlan:
         raise ValueError(
             f"layout generator changed spec identity: got={identity}, expected={expected}"
         )
-    if plan.source_fingerprint != spec.source_fingerprint:
-        raise ValueError("layout generator returned a stale source fingerprint")
     return plan

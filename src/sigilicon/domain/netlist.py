@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from collections import Counter
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -20,7 +19,6 @@ class NetlistSnapshot:
 
     source_path: Path
     text: str
-    sha256: str
     interfaces: Mapping[str, tuple[str, ...]]
 
     @property
@@ -47,7 +45,6 @@ class NetlistSubcircuit:
     parameters: tuple[str, ...]
     statements: tuple[str, ...]
     source_path: Path
-    source_sha256: str
 
 
 @dataclass(frozen=True)
@@ -73,13 +70,13 @@ class SpectrePWLSource:
 
 @dataclass(frozen=True)
 class MaterializedNetlist:
-    """A nofollow artifact bound to one regular-file inode and digest."""
+    """A nofollow artifact bound to one read-only regular-file inode."""
 
     path: Path
-    sha256: str
     device: int
     inode: int
     size: int
+    mtime_ns: int
     parent_device: int
     parent_inode: int
 
@@ -108,8 +105,13 @@ class MaterializedNetlist:
                 dir_fd=parent_fd,
             )
             metadata = os.fstat(descriptor)
-            identity = (metadata.st_dev, metadata.st_ino, metadata.st_size)
-            if identity != (self.device, self.inode, self.size):
+            identity = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+            )
+            if identity != (self.device, self.inode, self.size, self.mtime_ns):
                 raise RuntimeError(
                     f"immutable netlist artifact identity changed: {self.path}"
                 )
@@ -121,24 +123,6 @@ class MaterializedNetlist:
                 raise RuntimeError(
                     "immutable netlist artifact is not a read-only, single-link "
                     f"regular file: {self.path}"
-                )
-            digest = hashlib.sha256()
-            while chunk := os.read(descriptor, 1024 * 1024):
-                digest.update(chunk)
-            after = os.fstat(descriptor)
-            if (
-                metadata.st_dev,
-                metadata.st_ino,
-                metadata.st_size,
-                metadata.st_mtime_ns,
-            ) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            ) or digest.hexdigest() != self.sha256:
-                raise RuntimeError(
-                    f"immutable netlist artifact content changed: {self.path}"
                 )
             visible = os.stat(
                 self.path.name,
@@ -249,8 +233,8 @@ def _parse_subckt_interfaces(text: str, *, source: Path) -> dict[str, tuple[str,
 def load_netlist_snapshot(netlist: Path) -> NetlistSnapshot:
     """Read and parse a canonical netlist exactly once.
 
-    Invalid UTF-8 is rejected rather than replaced because the digest, parsed
-    model, and bytes handed to Cadence must describe one identical source.
+    Invalid UTF-8 is rejected rather than replaced because the parsed model and
+    bytes handed to Cadence must describe one identical source read.
     """
 
     source = Path(os.path.abspath(netlist))
@@ -299,7 +283,6 @@ def load_netlist_snapshot(netlist: Path) -> NetlistSnapshot:
     return NetlistSnapshot(
         source_path=source,
         text=text,
-        sha256=hashlib.sha256(payload).hexdigest(),
         interfaces=MappingProxyType(interfaces),
     )
 
@@ -311,8 +294,6 @@ def materialize_netlist_snapshot(
     """Create or verify a read-only artifact containing the exact snapshot bytes."""
 
     payload = snapshot.text.encode("utf-8")
-    if hashlib.sha256(payload).hexdigest() != snapshot.sha256:
-        raise RuntimeError("netlist snapshot content no longer matches its digest")
     destination = Path(os.path.abspath(destination))
     parent_fd = _open_nofollow_directory(destination.parent)
     descriptor: int | None = None
@@ -375,10 +356,10 @@ def materialize_netlist_snapshot(
             )
         artifact = MaterializedNetlist(
             path=destination,
-            sha256=snapshot.sha256,
             device=metadata.st_dev,
             inode=metadata.st_ino,
             size=metadata.st_size,
+            mtime_ns=metadata.st_mtime_ns,
             parent_device=os.fstat(parent_fd).st_dev,
             parent_inode=os.fstat(parent_fd).st_ino,
         )
@@ -504,8 +485,8 @@ def select_subckt_snapshot(snapshot: NetlistSnapshot, cell: str) -> NetlistSnaps
     """Return the exact declared subckt as an immutable one-cell snapshot.
 
     This supports OA cells that share a human-maintained source file but are
-    synchronized independently.  Selection is a framework operation so design
-    runners cannot invent private source slices or fingerprints.
+    synchronized independently. Selection is a framework operation so design
+    runners cannot invent private source slices.
     """
 
     ports = subckt_ports(snapshot, cell)
@@ -528,14 +509,12 @@ def select_subckt_snapshot(snapshot: NetlistSnapshot, cell: str) -> NetlistSnaps
     if stop is None:
         raise ValueError(f"unterminated subckt: {cell}")
     text = "\n".join(lines[start:stop]) + "\n"
-    payload = text.encode("utf-8")
     interfaces = _parse_subckt_interfaces(text, source=snapshot.source_path)
     if tuple(interfaces) != (cell,) or interfaces[cell] != ports:
         raise RuntimeError("selected subckt snapshot changed its declared interface")
     return NetlistSnapshot(
         source_path=snapshot.source_path,
         text=text,
-        sha256=hashlib.sha256(payload).hexdigest(),
         interfaces=MappingProxyType(interfaces),
     )
 
@@ -611,7 +590,6 @@ def parse_subcircuit_definitions(
                 parameters=active_parameters,
                 statements=tuple(statements),
                 source_path=snapshot.source_path,
-                source_sha256=snapshot.sha256,
             )
             active_name = None
             active_ports = ()
@@ -782,7 +760,6 @@ def render_canonical_cdl(
                     parameters=definition.parameters,
                     statements=(statement,),
                     source_path=definition.source_path,
-                    source_sha256=definition.source_sha256,
                 )
             )[0]
             suffix = (
@@ -866,11 +843,9 @@ def lower_subckt_default_parameters(
             raise RuntimeError(
                 "normalized spiceIn source changed the declared subckt interface"
             )
-        payload = lowered_text.encode("utf-8")
         return NetlistSnapshot(
             source_path=snapshot.source_path,
             text=lowered_text,
-            sha256=hashlib.sha256(payload).hexdigest(),
             interfaces=MappingProxyType(interfaces),
         )
 

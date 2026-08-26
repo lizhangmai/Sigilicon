@@ -135,7 +135,7 @@ def import_hierarchy(
     references = tuple(
         dict.fromkeys((library, *reference_libraries, "analogLib", "basic"))
     )
-    source_name = f"{plan.snapshot.sha256}.scs"
+    source_name = "canonical-netlist.scs"
     immutable_netlist = materialize_netlist_snapshot(
         plan.snapshot,
         artifact.path(source_role, source_name),
@@ -223,7 +223,6 @@ def import_hierarchy(
                     "cell": cell,
                     "schematic_confirmed": True,
                     "symbol_confirmed": True,
-                    "source_sha256": plan.snapshot.sha256,
                 },
                 label=f"completed OA cell {library}/{cell}",
             )

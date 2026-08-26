@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,7 +17,6 @@ class PhysicalVerificationPolicy:
     """Owner decisions layered over immutable foundry deck identities."""
 
     path: Path
-    source_sha256: str
     drc_disabled_defines: Mapping[str, int]
     drc_configuration_warnings: tuple[str, ...]
     drc_waiver_layers: tuple[str, ...]
@@ -64,7 +62,6 @@ def load_physical_verification_policy(
     """Load one strict owner policy without resolving any EDA installation."""
 
     resolved = path.resolve()
-    payload = resolved.read_bytes()
     raw = read_toml(resolved)
     require_config_header(
         raw,
@@ -91,7 +88,6 @@ def load_physical_verification_policy(
         )
     return PhysicalVerificationPolicy(
         path=resolved,
-        source_sha256=hashlib.sha256(payload).hexdigest(),
         drc_disabled_defines=_integer_map(
             drc.get("disabled_defines", {}), "drc.disabled_defines"
         ),

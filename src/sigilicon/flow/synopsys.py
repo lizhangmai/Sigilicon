@@ -593,9 +593,6 @@ class SynopsysFCAdapter:
         for role, artifact in context.inputs.items():
             if not artifact.path.is_file():
                 diagnostics.append(f"FC input {role!r} is not a regular file")
-                continue
-            if artifact.digest is not None and _sha256(artifact.path) != artifact.digest:
-                diagnostics.append(f"FC input {role!r} is stale")
         recipe_role = _FC_ACTIONS[context.action.kind]["recipe"]
         recipe = context.inputs.get(recipe_role)
         if recipe is not None:
@@ -745,10 +742,6 @@ class SynopsysFCAdapter:
                 "target": node["target"],
                 "exit_code": execution.exit_code,
                 "qualifiers": dict(qualifiers),
-                "transcripts": {
-                    "stdout": _sha256(stdout),
-                    "stderr": _sha256(stderr),
-                },
             },
         )
         produced.append(
@@ -864,22 +857,18 @@ class SynopsysFCAdapter:
         filename: str,
     ) -> Path:
         artifact = context.input(role)
-        if not artifact.path.is_file() or (
-            artifact.digest is not None and _sha256(artifact.path) != artifact.digest
-        ):
-            raise FlowExecutionError(f"FC input {role!r} is missing or stale")
+        if not artifact.path.is_file():
+            raise FlowExecutionError(f"FC input {role!r} is missing")
         destination = context.work_root / "inputs" / role / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(artifact.path, destination)
-        if artifact.digest is not None and _sha256(destination) != artifact.digest:
-            raise FlowExecutionError(f"FC input {role!r} changed while staging")
         return destination
 
     def _stage_directory_input(self, context: ActionContext, role: str) -> Path:
         artifact = context.input(role)
         root_name, members = self._directory_members(artifact)
         destination_root = context.work_root / "inputs" / role / root_name
-        for relative, source, digest in members:
+        for relative, source in members:
             destination = (destination_root / relative).resolve()
             if not destination.is_relative_to(destination_root.resolve()):
                 raise FlowExecutionError(
@@ -887,20 +876,14 @@ class SynopsysFCAdapter:
                 )
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
-            if _sha256(destination) != digest:
-                raise FlowExecutionError(
-                    f"FC directory input changed while staging: {relative}"
-                )
         return destination_root
 
     def _directory_members(
         self,
         artifact: Any,
-    ) -> tuple[str, tuple[tuple[str, Path, str], ...]]:
-        if not artifact.path.is_file() or _sha256(artifact.path) != artifact.digest:
-            raise FlowExecutionError(
-                f"FC directory artifact {artifact.role!r} is missing or stale"
-            )
+    ) -> tuple[str, tuple[tuple[str, Path], ...]]:
+        if not artifact.path.is_file():
+            raise FlowExecutionError(f"FC directory artifact {artifact.role!r} is missing")
         try:
             raw = json.loads(artifact.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -929,13 +912,12 @@ class SynopsysFCAdapter:
         members_raw = raw.get("members")
         if not isinstance(members_raw, list) or not members_raw:
             raise FlowExecutionError("FC directory manifest has no members")
-        members: list[tuple[str, Path, str]] = []
+        members: list[tuple[str, Path]] = []
         for value in members_raw:
             if not isinstance(value, dict):
                 raise FlowExecutionError("FC directory member must be an object")
             relative_text = value.get("path")
-            digest = value.get("digest")
-            if not isinstance(relative_text, str) or not isinstance(digest, str):
+            if not isinstance(relative_text, str):
                 raise FlowExecutionError("FC directory member identity is invalid")
             relative = Path(relative_text)
             if (
@@ -952,13 +934,12 @@ class SynopsysFCAdapter:
                 not source.is_relative_to(source_root)
                 or not source.is_file()
                 or source.is_symlink()
-                or _sha256(source) != digest
             ):
                 raise FlowExecutionError(
                     f"FC directory member is missing or stale: {relative_text}"
                 )
-            members.append((relative.as_posix(), source, digest))
-        declared = [relative for relative, _source, _digest in members]
+            members.append((relative.as_posix(), source))
+        declared = [relative for relative, _source in members]
         if len(declared) != len(set(declared)):
             raise FlowExecutionError("FC directory manifest repeats a member")
         actual: list[str] = []
@@ -991,16 +972,12 @@ class SynopsysFCAdapter:
         root = resolved.relative_to(role_root).as_posix()
         if len(Path(root).parts) != 1:
             raise FlowExecutionError("FC directory output must use one managed name")
-        content_digest = context.action.output(role).content_digest
         members: list[dict[str, str]] = []
         for path in sorted(resolved.rglob("*")):
             if path.is_symlink():
                 raise FlowExecutionError("FC directory output contains a symlink")
             if path.is_file():
-                member = {"path": path.relative_to(resolved).as_posix()}
-                if content_digest:
-                    member["digest"] = _sha256(path)
-                members.append(member)
+                members.append({"path": path.relative_to(resolved).as_posix()})
         if not members:
             raise FlowExecutionError(f"Synopsys FC produced empty output {role!r}")
         manifest = context.output_path(role, f"{role}.json")
@@ -1258,10 +1235,6 @@ class SynopsysVCSAdapter:
                 "action": context.action.kind,
                 "target": self._target(context),
                 "qualifiers": dict(qualifiers),
-                "transcripts": {
-                    "stdout": _sha256(stdout),
-                    "stderr": _sha256(stderr),
-                },
             },
         )
         return CollectedActionResult(

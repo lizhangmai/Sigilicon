@@ -118,7 +118,6 @@ class ArtifactPort:
     required: bool = True
     multiple: bool = False
     accepted_kinds: tuple[str, ...] = ()
-    content_digest: bool = False
 
     def __post_init__(self) -> None:
         identifier(self.role, "artifact port role")
@@ -712,15 +711,12 @@ class InputArtifact:
     role: str
     kind: str
     path: Path
-    digest: str | None
     producer: str
     qualifiers: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         identifier(self.role, "input artifact role")
         identifier(self.kind, "input artifact kind")
-        if self.digest is not None and _DIGEST_RE.fullmatch(self.digest) is None:
-            raise FlowExecutionError("input artifact digest must be sha256")
         object.__setattr__(self, "path", Path(self.path).resolve())
         object.__setattr__(
             self,
@@ -761,15 +757,12 @@ class ActionArtifact:
     kind: str
     path: Path
     relative_path: str
-    digest: str | None
     producer: str
     qualifiers: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         identifier(self.role, "Action artifact role")
         identifier(self.kind, "Action artifact kind")
-        if self.digest is not None and _DIGEST_RE.fullmatch(self.digest) is None:
-            raise FlowExecutionError("Action artifact digest must be sha256")
         object.__setattr__(self, "path", Path(self.path).resolve())
         object.__setattr__(
             self,

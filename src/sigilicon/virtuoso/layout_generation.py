@@ -253,15 +253,11 @@ def render_layout_plan_skill(
         )
     statements.extend(
         (
-            "dbReplaceProp(cv \"flowLayoutFingerprint\" \"string\" %s)"
-            % skill_quote(plan.fingerprint),
-            "dbReplaceProp(cv \"flowLayoutSourceFingerprint\" \"string\" %s)"
-            % skill_quote(plan.source_fingerprint),
             "dbReplaceProp(cv \"flowLayoutStage\" \"string\" %s)"
             % skill_quote(plan.stage),
             'unless(dbSave(cv) error("generated layout save failed"))',
-            "result = list(%s %s length(cv~>instances) length(cv~>shapes) length(cv~>terminals))"
-            % (skill_quote(plan.fingerprint), skill_quote(plan.stage)),
+            "result = list(%s length(cv~>instances) length(cv~>shapes) length(cv~>terminals))"
+            % skill_quote(plan.stage),
         )
     )
     body = "\n      ".join(statements)
@@ -366,7 +362,7 @@ def validate_layout_plan(
         error(sprintf(nil {skill_quote(f"generated layout master terminals mismatch for {instance.name}: %L")} terminals)))'''
         for instance in plan.instances
     )
-    source = f'''prog((cv expected actual expectedPins actualPins fingerprint stage result inst item terminal terminals)
+    source = f'''prog((cv expected actual expectedPins actualPins stage result inst item terminal terminals)
   cv = nil
   unwindProtect(
     progn(
@@ -387,10 +383,7 @@ def validate_layout_plan(
         unless(inst~>master~>shapes
           error(sprintf(nil "generated layout master has no geometry: %s" inst~>name))))
 {terminal_validations}
-      fingerprint = dbGetq(cv flowLayoutFingerprint)
       stage = dbGetq(cv flowLayoutStage)
-      unless(equal(fingerprint {skill_quote(plan.fingerprint)})
-        error("generated layout content fingerprint mismatch"))
       unless(equal(stage {skill_quote(plan.stage)})
         error("generated layout stage mismatch"))
       result = t)
@@ -425,84 +418,12 @@ def validate_layout_plan(
             "instance_master_presence",
             "instance_master_geometry",
             "master_terminals",
-            "flowLayoutFingerprint",
             "flowLayoutStage",
         ],
-        "layout_fingerprint": plan.fingerprint,
         "stage": plan.stage,
         "instance_count": len(plan.instances),
         "pin_count": len(plan.pins),
     }
-
-
-def delete_generated_layout_view(
-    client: Any,
-    *,
-    library: str,
-    cell: str,
-    view: str,
-    expected_fingerprint: str,
-    expected_stage: str,
-    operation: Any,
-    timeout: int = 60,
-) -> None:
-    """Delete one failed generated view only after exact provenance matching."""
-
-    require_workspace_capability(
-        operation,
-        client,
-        library=library,
-        cell=cell,
-        view=view,
-    )
-    operation.require_active_mutation(
-        client,
-        library,
-        cell,
-        phase="failed generated layout rollback dispatch",
-    )
-    source = f'''prog((cv viewObj fingerprint stage result)
-  cv = nil
-  unwindProtect(
-    progn(
-      cv = dbOpenCellViewByType({skill_quote(library)} {skill_quote(cell)}
-        {skill_quote(view)} "maskLayout" "r")
-      unless(cv error("failed generated layout rollback target is absent"))
-      fingerprint = dbGetq(cv flowLayoutFingerprint)
-      stage = dbGetq(cv flowLayoutStage)
-      unless(equal(fingerprint {skill_quote(expected_fingerprint)})
-        error("refusing generated layout rollback: content fingerprint mismatch"))
-      unless(equal(stage {skill_quote(expected_stage)})
-        error("refusing generated layout rollback: stage mismatch"))
-      unless(dbClose(cv) error("failed generated layout rollback close failed"))
-      cv = nil
-      viewObj = ddGetObj({skill_quote(library)} {skill_quote(cell)} {skill_quote(view)})
-      unless(viewObj error("failed generated layout rollback object disappeared"))
-      unless(ddDeleteObj(viewObj) error("failed generated layout rollback delete failed"))
-      result = t)
-    when(cv
-      unless(dbClose(cv) error("failed generated layout rollback cleanup failed"))
-      cv = nil))
-  return(result)
-)'''
-    label = f"rollback generated layout {library}/{cell}/{view}"
-    result = require_bridge_confirmation(
-        operation,
-        label,
-        lambda: client.execute_skill(
-            audit_cellview_delta_skill(
-                own_synchronous_cellview_delta_skill(source, label=label),
-                label=label,
-                mutation_target=(library, (cell,)),
-            ),
-            timeout=timeout,
-        ),
-    )
-    if result.errors:
-        raise RuntimeError(result.errors[0])
-    output = decode_skill_output(result.output or "")
-    if output != "t":
-        raise RuntimeError(f"generated layout rollback was not confirmed: {output}")
 
 
 def validate_layout_view_absent(

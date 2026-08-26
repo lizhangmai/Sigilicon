@@ -132,7 +132,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort(
                     "reference-library",
                     "library.synopsys-ndm",
-                    content_digest=True,
                 ),
                 ArtifactPort("library-check-report", "report.library-check"),
                 ArtifactPort("execution-evidence", "evidence.tool-execution"),
@@ -177,7 +176,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort(
                     "reference-library",
                     "library.synopsys-ndm",
-                    content_digest=True,
                 ),
             ),
             outputs=(

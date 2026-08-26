@@ -19,7 +19,6 @@ from sigilicon.virtuoso.oa import (
     delete_cell_view,
     open_cell_views,
 )
-from sigilicon.virtuoso.provenance import oa_view_digest
 from sigilicon.virtuoso.workspace import OperationPolicy
 
 
@@ -201,33 +200,6 @@ def test_config_lock_is_detected_and_only_current_vts_owner_can_update(
         allowed_config_owner_pid=os.getpid(),
     ) == ()
     assert lock.is_file()
-
-
-def test_oa_digest_tracks_project_local_cadence_source_link(tmp_path: Path) -> None:
-    view = tmp_path / "virtuoso" / "lib" / "cell" / "systemVerilog"
-    source = tmp_path / "artifacts" / "setup" / "tb.sv"
-    view.mkdir(parents=True)
-    source.parent.mkdir(parents=True)
-    source.write_text("module tb; endmodule\n", encoding="utf-8")
-    (view / "verilog.sv").symlink_to(source)
-    (view / "verilog.sv.old").symlink_to(tmp_path / "missing-old-source.sv")
-
-    before = oa_view_digest(view, allowed_symlink_root=tmp_path)
-    source.write_text("module tb; initial $finish; endmodule\n", encoding="utf-8")
-
-    assert oa_view_digest(view, allowed_symlink_root=tmp_path) != before
-
-
-def test_oa_digest_rejects_source_link_outside_project(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    view = project / "virtuoso" / "lib" / "cell" / "systemVerilog"
-    source = tmp_path / "outside.sv"
-    view.mkdir(parents=True)
-    source.write_text("module tb; endmodule\n", encoding="utf-8")
-    (view / "verilog.sv").symlink_to(source)
-
-    with pytest.raises(RuntimeError, match="leaves the project"):
-        oa_view_digest(view, allowed_symlink_root=project)
 
 
 def test_open_view_inventory_reports_exact_mode_and_visibility() -> None:

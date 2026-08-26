@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from hashlib import sha256
 import json
 from pathlib import Path
 from types import MappingProxyType
@@ -51,14 +50,6 @@ from sigilicon.paths import ArtifactLayout
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _sha256(path: Path) -> str:
-    hasher = sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def _plan_payload(
@@ -153,12 +144,6 @@ class FlowEngine:
                         f"binding {binding.producer}.{binding.output} kind "
                         f"{producer.kind!r} is incompatible with {node.node_id}."
                         f"{binding.input} kind {consumer.kind!r}"
-                    )
-                if consumer.content_digest and not producer.content_digest:
-                    raise FlowContractError(
-                        f"binding {binding.producer}.{binding.output} does not "
-                        f"provide the content digest required by {node.node_id}."
-                        f"{binding.input}"
                     )
                 binding_inputs.setdefault(binding.input, []).append(binding)
                 data_dependencies.append(binding.producer)
@@ -946,7 +931,6 @@ class FlowEngine:
                 role=binding.input,
                 kind=artifact.kind,
                 path=artifact.path,
-                digest=artifact.digest,
                 producer=binding.producer,
                 qualifiers=artifact.qualifiers,
             )
@@ -981,7 +965,6 @@ class FlowEngine:
                 kind=produced.kind,
                 path=path,
                 relative_path=self._managed_relative(path, run_root, "output"),
-                digest=_sha256(path) if port.content_digest else None,
                 producer=context.node_id,
                 qualifiers=produced.qualifiers,
             )
@@ -1051,8 +1034,6 @@ class FlowEngine:
             "producer": artifact.producer,
             "qualifiers": json_value(artifact.qualifiers),
         }
-        if artifact.digest is not None:
-            payload["digest"] = artifact.digest
         return payload
 
     def _environment_payload(

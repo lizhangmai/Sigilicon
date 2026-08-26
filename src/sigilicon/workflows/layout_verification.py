@@ -12,7 +12,6 @@ from typing import Any, Mapping, Sequence
 
 from sigilicon.artifacts import (
     ArtifactRecord,
-    file_sha256,
     new_identity,
     read_nofollow_text,
 )
@@ -23,13 +22,8 @@ from sigilicon.external_tools import (
     run_process_group,
 )
 from sigilicon.domain.netlist import render_canonical_cdl, resolve_netlist_hierarchy
-from sigilicon.domain.provenance import digest, netlist_electrical_fingerprint
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
-from sigilicon.layout.provenance import (
-    layout_hierarchy_fingerprints,
-    layout_verification_fingerprint,
-)
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
@@ -56,7 +50,6 @@ class LayoutVerificationResult:
     run_id: str
     run_dir: Path
     manifest_path: Path
-    layout_fingerprint: str
     details: Mapping[str, object]
 
 
@@ -328,93 +321,6 @@ def _calibre_environment(executable: Path) -> dict[str, str]:
     return environment
 
 
-def _scoped_layout_fingerprint(
-    spec: LayoutSpec,
-    plan: LayoutPlan,
-    check: str,
-) -> str:
-    """Hash only geometry/connectivity relevant to the selected check.
-
-    A source-owned OA library supplies the generated-master closure so child
-    cell renames are represented by child structure instead of by name.  A
-    standalone layout spec safely falls back to exact unresolved master names.
-    """
-
-    if spec.oa_assembly_manifest is None:
-        return layout_verification_fingerprint(plan, scope=check)
-    from sigilicon.workflows.oa_library import plan_oa_library_rebuild
-
-    library_plan = plan_oa_library_rebuild(
-        spec.oa_assembly_manifest,
-        project_root=spec.project_root,
-        library=spec.library,
-    )
-    plans = tuple(step.plan for step in library_plan.layouts)
-    hierarchy = layout_hierarchy_fingerprints(plans, scope=check)
-    key = (plan.library, plan.cell, plan.view)
-    matching = next(
-        (step.plan for step in library_plan.layouts if step.plan.fingerprint == plan.fingerprint),
-        None,
-    )
-    if matching is not None:
-        return hierarchy[key]
-    return layout_verification_fingerprint(
-        plan,
-        scope=check,
-        master_fingerprints=hierarchy,
-    )
-
-
-def _verification_scope(
-    spec: LayoutSpec,
-    plan: LayoutPlan,
-    check: str,
-) -> dict[str, str]:
-    result = {"layout": _scoped_layout_fingerprint(spec, plan, check)}
-    if check == "lvs":
-        hierarchy = resolve_netlist_hierarchy(
-            spec.source_snapshots,
-            top=spec.cell,
-            primitive_masters=spec.primitive_masters,
-        )
-        result["electrical"] = netlist_electrical_fingerprint(
-            hierarchy,
-            primitive_masters=spec.primitive_masters,
-        )
-    return result
-
-
-def _run_fingerprint(
-    spec: LayoutSpec,
-    plan: LayoutPlan,
-    check: str,
-    *,
-    verification_scope: Mapping[str, str] | None = None,
-) -> str:
-    policy = spec.physical_verification
-    if policy is None:
-        raise ValueError(
-            "physical verification requires an owner policy selected by the OA assembly"
-        )
-    deck = spec.layout_pdk.drc_deck if check == "drc" else spec.layout_pdk.lvs_deck
-    payload = {
-        "check": check,
-        "verification_scope": dict(
-            verification_scope or _verification_scope(spec, plan, check)
-        ),
-        "deck_sha256": file_sha256(deck),
-        "layermap_sha256": file_sha256(spec.layout_pdk.layermap),
-        "pdk_configuration_sha256": spec.layout_pdk.configuration_sha256,
-        "xstream_flatten_pcells": spec.layout_pdk.xstream_flatten_pcells,
-        "xstream_suppressed_warnings": spec.layout_pdk.xstream_suppressed_warnings,
-        "physical_verification_policy_sha256": policy.source_sha256,
-        "drc_disabled_defines": dict(policy.drc_disabled_defines),
-        "drc_configuration_warnings": policy.drc_configuration_warnings,
-        "drc_waiver_layers": policy.drc_waiver_layers,
-    }
-    return digest(payload)
-
-
 def _run_xstream(
     record: ArtifactRecord,
     spec: LayoutSpec,
@@ -428,12 +334,6 @@ def _run_xstream(
     cds_lib = ProjectContext.from_project_root(spec.project_root).workspace_root / "cds.lib"
     if not cds_lib.is_file():
         raise FileNotFoundError(f"workspace cds.lib does not exist: {cds_lib}")
-    record.write_json(
-        "inputs",
-        ("xstream-external-inputs.json",),
-        {"cds_lib": str(cds_lib), "cds_lib_sha256": file_sha256(cds_lib)},
-        label="attested XStream workspace inputs",
-    )
     work = record.paths.role("work")
     with owned_directory(work) as owned_work, ExitStack() as resources:
         owned_map = resources.enter_context(owned_input_file(staged_layermap))
@@ -573,12 +473,7 @@ def _run_calibre(
             {
                 "top": spec.cell,
                 "sources": [
-                    {
-                        "path": snapshot.source_path.relative_to(
-                            spec.project_root
-                        ).as_posix(),
-                        "sha256": snapshot.sha256,
-                    }
+                    snapshot.source_path.relative_to(spec.project_root).as_posix()
                     for snapshot in spec.source_snapshots
                 ],
             },
@@ -751,13 +646,6 @@ def verify_layout(
     if plan.stage != "routed":
         raise ValueError("physical verification requires a routed layout plan")
     paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
-    verification_scope = _verification_scope(spec, plan, check)
-    run_fingerprint = _run_fingerprint(
-        spec,
-        plan,
-        check,
-        verification_scope=verification_scope,
-    )
     record = ArtifactRecord.begin(
         paths.artifacts.execution(
             owner=spec.library,
@@ -891,10 +779,7 @@ def verify_layout(
                 "cell": spec.cell,
                 "view": spec.view,
                 "check": check,
-                "layout_fingerprint": plan.fingerprint,
-                "verification_scope_fingerprints": verification_scope,
-                "run_fingerprint": run_fingerprint,
-                "oa_content_fingerprint_confirmed": True,
+                "oa_content_confirmed": True,
                 "library_path": str(library_path),
                 "xstream": str(xstream_executable),
                 "calibre": str(calibre_executable),
@@ -908,11 +793,7 @@ def verify_layout(
             )
             return record.succeed(
                 completion_evidence=(completion,),
-                details={
-                    "layout_fingerprint": plan.fingerprint,
-                    "verification_scope_fingerprints": verification_scope,
-                    **outcome,
-                },
+                details=outcome,
             )
 
         deferred = operation.defer_commit(commit)
@@ -924,7 +805,6 @@ def verify_layout(
         run_id=record.paths.identity,
         run_dir=record.paths.root,
         manifest_path=record.paths.manifest,
-        layout_fingerprint=plan.fingerprint,
         details=outcome,
     )
 

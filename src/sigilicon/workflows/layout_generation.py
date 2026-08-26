@@ -15,12 +15,9 @@ from sigilicon.layout.spec import load_layout_spec
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.layout_generation import (
-    delete_generated_layout_view,
     validate_layout_plan,
-    validate_layout_view_absent,
     write_layout_plan,
 )
-from sigilicon.virtuoso.provenance import oa_view_digest
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.source_control import artifact_source_state
 
@@ -29,7 +26,6 @@ from sigilicon.workflows.source_control import artifact_source_state
 class LayoutGenerationResult:
     attempt_dir: Path | None
     manifest_path: Path | None
-    fingerprint: str
     instance_count: int
 
 
@@ -37,125 +33,6 @@ class LayoutGenerationResult:
 class LayoutPlanningResult:
     spec: LayoutSpec
     plan: LayoutPlan
-
-
-def rollback_generated_layout(
-    spec: LayoutSpec,
-    expected_fingerprint: str,
-    client: Any,
-    *,
-    artifact_root: Path | None = None,
-    timeout: int = 60,
-) -> Path:
-    """Delete exactly one generated pilot view after matching its provenance."""
-
-    paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
-    attempt = ArtifactRecord.begin(
-        paths.artifacts.execution(
-            owner=spec.library,
-            target=spec.cell,
-            flow="layout-generation",
-            variant=spec.view,
-            identity=new_identity(),
-            artifact_kind="layout_generation",
-            identity_kind="attempt_id",
-        ),
-        entities={"library": spec.library, "cell": spec.cell, "view": spec.view},
-        operation="rollback-generated-layout",
-        backend="virtuoso-oa",
-        source=artifact_source_state(spec.project_root),
-    )
-    attempt.write_json(
-        "inputs",
-        ("rollback-target.json",),
-        {
-            "library": spec.library,
-            "cell": spec.cell,
-            "view": spec.view,
-            "expected_fingerprint": expected_fingerprint,
-            "expected_stage": spec.stage,
-        },
-        label="exact generated layout rollback target",
-    )
-    operation = None
-    deleted = False
-    with (
-        attempt.failure_boundary(
-            uncertainty=lambda: operation.uncertain_reason if operation else None,
-            partial_failure=lambda: (
-                {
-                    "completed_stages": ["oa-delete"],
-                    "failed_stage": "absence-validation-or-workspace-audit",
-                    "cell": spec.cell,
-                    "view": spec.view,
-                }
-                if deleted
-                else None
-            ),
-        ),
-        workspace_operation(
-            client,
-            paths.workspace_root,
-            "rollback-generated-layout",
-            policy=OperationPolicy.DIRECT_MUTATION,
-        ) as operation,
-        operation.view_lease(
-            spec.library,
-            cells=(spec.cell,),
-            views=((spec.cell, spec.view),),
-        ),
-    ):
-        operation.register_artifact(attempt)
-        operation.require_project_library_target(client, spec.library)
-
-        def commit() -> Path:
-            completion = attempt.write_json(
-                "outputs",
-                ("completion.json",),
-                {
-                    "library": spec.library,
-                    "cell": spec.cell,
-                    "deleted_view": spec.view,
-                    "matched_fingerprint": expected_fingerprint,
-                    "matched_stage": spec.stage,
-                    "absence_confirmed": True,
-                },
-                label="generated layout rollback proof",
-            )
-            return attempt.succeed(
-                completion_evidence=(completion,),
-                details={"deleted_view": spec.view},
-            )
-
-        deferred = operation.defer_commit(commit)
-        with operation.mutation_scope(
-            spec.library,
-            cells=(spec.cell,),
-            views=((spec.cell, spec.view),),
-            phase=f"delete generated {spec.view} view",
-        ):
-            delete_generated_layout_view(
-                client,
-                library=spec.library,
-                cell=spec.cell,
-                view=spec.view,
-                expected_fingerprint=expected_fingerprint,
-                expected_stage=spec.stage,
-                operation=operation,
-                timeout=timeout,
-            )
-            deleted = True
-        validate_layout_view_absent(
-            client,
-            library=spec.library,
-            cell=spec.cell,
-            view=spec.view,
-            operation=operation,
-            timeout=timeout,
-        )
-    if not deferred.completed:
-        raise RuntimeError("layout rollback completed without committing its artifact")
-    return attempt.paths.manifest
 
 
 def plan_layout_spec(spec_path: Path, project_root: Path) -> LayoutPlanningResult:
@@ -282,12 +159,7 @@ def _generate_layout_impl(
         {
             "top": spec.cell,
             "sources": [
-                {
-                    "path": snapshot.source_path.relative_to(
-                        spec.project_root
-                    ).as_posix(),
-                    "sha256": snapshot.sha256,
-                }
+                snapshot.source_path.relative_to(spec.project_root).as_posix()
                 for snapshot in spec.source_snapshots
             ],
         },
@@ -298,7 +170,6 @@ def _generate_layout_impl(
     )
     operation = None
     oa_written = False
-    oa_sha256: str | None = None
     failure_context = (
         attempt.failure_boundary(
             uncertainty=lambda: operation.uncertain_reason if operation else None,
@@ -341,8 +212,6 @@ def _generate_layout_impl(
             )
 
         def commit() -> Path:
-            if oa_sha256 is None:
-                raise RuntimeError("layout commit is missing its OA content receipt")
             completion = attempt.write_json(
                 "outputs",
                 ("completion.json",),
@@ -352,8 +221,6 @@ def _generate_layout_impl(
                     "view": spec.view,
                     "library_path": str(library_path),
                     "stage": plan.stage,
-                    "layout_fingerprint": plan.fingerprint,
-                    "oa_sha256": oa_sha256,
                     "instance_count": len(plan.instances),
                     "oa_completion_confirmed": True,
                 },
@@ -364,7 +231,6 @@ def _generate_layout_impl(
                 details={
                     "instance_count": len(plan.instances),
                     "stage": plan.stage,
-                    "oa_sha256": oa_sha256,
                 },
             )
 
@@ -389,15 +255,10 @@ def _generate_layout_impl(
             operation=operation,
             timeout=timeout,
         )
-        oa_sha256 = oa_view_digest(
-            paths.workspace_root / spec.library / spec.cell / spec.view,
-            allowed_symlink_root=spec.project_root,
-        )
     if not disposable and (deferred is None or not deferred.completed):
         raise RuntimeError("layout generation completed without committing its artifact")
     return LayoutGenerationResult(
         attempt_dir=attempt.paths.root if not disposable else None,
         manifest_path=attempt.paths.manifest if not disposable else None,
-        fingerprint=plan.fingerprint,
         instance_count=len(plan.instances),
     )

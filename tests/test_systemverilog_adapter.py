@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -97,7 +96,6 @@ def test_systemverilog_external_write_revalidates_at_spawn(
                 library="lib",
                 cell="tb",
                 source=source,
-                source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 log_dir=log_dir,
                 work_dir=work_dir,
                 operation=operation,
@@ -156,7 +154,6 @@ def test_source_owned_text_view_uses_native_systemverilog_identity(
                 kind="system_verilog",
                 view="systemVerilog",
                 source=source,
-                source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 log_dir=log_dir,
                 work_dir=work_dir,
                 operation=operation,
@@ -213,7 +210,6 @@ def test_source_owned_spectre_model_uses_native_stop_view_identity(
                 kind="spectre_model",
                 view="spectre",
                 source=source,
-                source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 log_dir=tmp_path / "logs",
                 work_dir=tmp_path / "work",
                 operation=operation,
@@ -270,7 +266,6 @@ def test_source_owned_veriloga_uses_verilogams_import_language(
                 kind="veriloga",
                 view="veriloga",
                 source=source,
-                source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 log_dir=tmp_path / "logs",
                 work_dir=tmp_path / "work",
                 operation=operation,

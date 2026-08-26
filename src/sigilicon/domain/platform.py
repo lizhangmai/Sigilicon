@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-import hashlib
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
@@ -73,7 +72,6 @@ class OaPlatformConfig:
 class LayoutPdkConfig:
     """Resolved layout and physical-verification platform capability."""
 
-    configuration_sha256: str
     layout_path: Path
     verification_path: Path
     dbu_per_micron: int
@@ -99,7 +97,6 @@ class PdkConfig:
     oa: OaPlatformConfig
     layout: LayoutPdkConfig | None
     source_paths: tuple[Path, ...]
-    source_sha256: str
     asset_root: Path | None = None
     installation_root_environment: str | None = None
 
@@ -332,7 +329,6 @@ def _load_layout(
     ):
         raise ValueError("xstream warnings must use XSTRM-<number> identities")
     return LayoutPdkConfig(
-        configuration_sha256="",
         layout_path=layout_path,
         verification_path=verification_path,
         dbu_per_micron=dbu,
@@ -357,16 +353,6 @@ def _load_layout(
             asset_root, verification_raw.get("calibre_bin"), "calibre_bin"
         ),
     )
-
-
-def _source_digest(root: Path, paths: tuple[Path, ...]) -> str:
-    digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def load_platform(context: RepositoryContext, key: str) -> PdkConfig:
@@ -486,19 +472,6 @@ def load_platform(context: RepositoryContext, key: str) -> PdkConfig:
         )
         source_paths.extend((layout_path, verification_path))
     sources = tuple(source_paths)
-    source_sha256 = _source_digest(root, sources)
-    if layout is not None:
-        layout_source_paths = (
-            catalog_path,
-            manifest,
-            oa_path,
-            layout.layout_path,
-            layout.verification_path,
-        )
-        layout = replace(
-            layout,
-            configuration_sha256=_source_digest(root, layout_source_paths),
-        )
     return PdkConfig(
         key=key,
         path=manifest,
@@ -508,7 +481,6 @@ def load_platform(context: RepositoryContext, key: str) -> PdkConfig:
         oa=oa,
         layout=layout,
         source_paths=sources,
-        source_sha256=source_sha256,
         asset_root=asset_root,
         installation_root_environment=root_environment,
     )

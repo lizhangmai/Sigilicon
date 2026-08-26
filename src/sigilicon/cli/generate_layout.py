@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from sigilicon.cli.common import die
-from sigilicon.paths import ProjectContext, discover_project_context
+from sigilicon.paths import discover_project_context
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.layout_generation import (
     execute_layout_generation_spec,
@@ -39,7 +39,6 @@ def main(
             preview = plan_layout_spec(args.spec, root)
             plan = preview.plan
             print(plan.canonical_json(), end="")
-            print(f"[fingerprint] {plan.fingerprint}")
             return 0
         spec, result = execute_layout_generation_spec(
             args.spec,
@@ -53,6 +52,5 @@ def main(
         f"[generated] {spec.library}/{spec.cell}/{spec.view} "
         f"instances={result.instance_count}"
     )
-    print(f"[fingerprint] {result.fingerprint}")
     print(f"[artifact] {result.manifest_path}")
     return 0

@@ -13,7 +13,6 @@ from typing import Mapping
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_$][A-Za-z0-9_$.-]*\Z")
 _ID_RE = re.compile(r"[0-9a-f]{32}\Z")
-_FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _reject_unknown_fields(
@@ -44,12 +43,6 @@ def validate_artifact_component(value: str, label: str) -> str:
 
 def validate_artifact_id(value: str, label: str) -> str:
     if not isinstance(value, str) or not _ID_RE.fullmatch(value):
-        raise ValueError(f"invalid artifact {label}: {value!r}")
-    return value
-
-
-def validate_fingerprint(value: str, label: str) -> str:
-    if not isinstance(value, str) or not _FINGERPRINT_RE.fullmatch(value):
         raise ValueError(f"invalid artifact {label}: {value!r}")
     return value
 

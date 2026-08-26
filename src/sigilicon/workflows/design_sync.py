@@ -13,7 +13,6 @@ from sigilicon.domain.netlist import (
     lower_subckt_default_parameters,
     materialize_netlist_snapshot,
 )
-from sigilicon.domain.provenance import design_identity_fingerprint
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.library import LibrarySyncResult, ensure_project_library
@@ -22,7 +21,6 @@ from sigilicon.virtuoso.oa import (
     set_cell_port_directions,
     validate_cell_port_directions,
 )
-from sigilicon.virtuoso.provenance import oa_view_digest
 from sigilicon.virtuoso.workspace import (
     OperationPolicy,
     workspace_operation,
@@ -63,23 +61,6 @@ _STANDARD_SPICEIN_DEVICE_MAP = """\
 devselect := resistor res
 devselect := capacitor cap
 """
-
-
-def _design_oa_view_digests(
-    paths: ProjectContext,
-    library: str,
-    cells: tuple[str, ...],
-) -> dict[str, dict[str, str]]:
-    return {
-        cell: {
-            view: oa_view_digest(
-                paths.workspace_root / library / cell / view,
-                allowed_symlink_root=paths.project_root,
-            )
-            for view in ("netlist", "schematic", "symbol")
-        }
-        for cell in cells
-    }
 
 
 def _write_standard_spicein_device_map(attempt: Any) -> Path:
@@ -230,9 +211,6 @@ def _sync_design_impl(
         def commit_sync() -> Path:
             nonlocal current_stage
             current_stage = "artifact-commit"
-            oa_view_sha256 = _design_oa_view_digests(
-                paths, spec.library, imported
-            )
             completion = attempt.write_json(
                 "outputs",
                 ("completion.json",),
@@ -240,18 +218,13 @@ def _sync_design_impl(
                     "library": spec.library,
                     "cell": spec.cell,
                     "imported_cells": list(imported),
-                    "source_fingerprint": design_identity_fingerprint(spec),
-                    "oa_view_sha256": oa_view_sha256,
                     "oa_completion_confirmed": True,
                 },
                 label="OA synchronization completion proof",
             )
             return attempt.succeed(
                 completion_evidence=(completion,),
-                details={
-                    "imported_cells": list(imported),
-                    "oa_view_sha256": oa_view_sha256,
-                },
+                details={"imported_cells": list(imported)},
             )
 
         deferred = (
@@ -324,7 +297,6 @@ def _sync_design_impl(
                     spec.library,
                     spec.cell,
                     spec.directions,
-                    fingerprint=design_identity_fingerprint(spec),
                     operation=operation,
                     timeout=timeout,
                 )
@@ -585,7 +557,6 @@ def _sync_existing_design_target_only_impl(
                 spec.library,
                 spec.cell,
                 spec.directions,
-                fingerprint=design_identity_fingerprint(spec),
                 operation=operation,
                 timeout=timeout,
             )
@@ -597,14 +568,10 @@ def _sync_existing_design_target_only_impl(
             spec.library,
             spec.cell,
             spec.directions,
-            fingerprint=design_identity_fingerprint(spec),
             operation=operation,
             timeout=timeout,
         )
         completed_stages.append("interface-validation")
-        oa_view_sha256 = _design_oa_view_digests(
-            paths, spec.library, (spec.cell,)
-        )
         completion = attempt.write_json(
             "outputs",
             ("completion.json",),
@@ -616,9 +583,6 @@ def _sync_existing_design_target_only_impl(
                 "imported_cells": [spec.cell],
                 "target_only": True,
                 "cds_lib_modified": False,
-                "source_fingerprint": design_identity_fingerprint(spec),
-                "spicein_source_sha256": spicein_snapshot.sha256,
-                "oa_view_sha256": oa_view_sha256,
                 "oa_completion_confirmed": True,
             },
             label="target-only OA synchronization completion proof",
@@ -641,7 +605,6 @@ def _sync_existing_design_target_only_impl(
                         "imported_cells": [spec.cell],
                         "library_path": str(library_path),
                         "technology_library": technology_library,
-                        "oa_view_sha256": oa_view_sha256,
                     },
                 ),
                 on_failure=record_failure,

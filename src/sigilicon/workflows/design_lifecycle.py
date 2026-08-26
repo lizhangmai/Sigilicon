@@ -1,9 +1,8 @@
 """Shared lifecycle for every cataloged canonical design.
 
 Design directories may own topology-specific renderers and measurement
-contracts.  Loading, fingerprinting, OA synchronization, and OA/source
-attestation remain application workflows and must not be reimplemented by a
-design-local script.
+contracts. Loading, OA synchronization, and OA/source attestation remain
+application workflows and must not be reimplemented by a design-local script.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from typing import Any
 
 from sigilicon.domain.design import DesignSpec, load_design_spec
 from sigilicon.domain.netlist import select_subckt_snapshot
-from sigilicon.domain.provenance import design_identity_fingerprint
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.oa import (
     validate_cell_port_directions,
@@ -35,7 +33,6 @@ from sigilicon.workflows.hierarchy_import import plan_hierarchy
 class DesignInspection:
     spec: DesignSpec
     hierarchy: tuple[str, ...]
-    source_fingerprint: str
 
     def as_dict(self) -> dict[str, object]:
         model = self.spec.pdk.simulation.default
@@ -46,7 +43,6 @@ class DesignInspection:
             "source": str(self.spec.source_netlist),
             "ports": list(self.spec.port_order),
             "hierarchy": list(self.hierarchy),
-            "source_fingerprint": self.source_fingerprint,
             "pdk": {
                 "name": self.spec.pdk.name,
                 "technology_library": self.spec.pdk.oa.technology_library,
@@ -78,7 +74,6 @@ def inspect_design(
     return DesignInspection(
         spec=spec,
         hierarchy=plan.ordered_cells,
-        source_fingerprint=design_identity_fingerprint(spec),
     )
 
 
@@ -142,7 +137,6 @@ def attest_oa_design(
             spec.library,
             spec.cell,
             spec.directions,
-            fingerprint=inspection.source_fingerprint,
             operation=operation,
             timeout=timeout,
         )
@@ -174,7 +168,7 @@ def attest_design_set(
 
     Integration runners must name every schematic dependency they consume.
     Keeping the iteration here prevents design-local scripts from inventing
-    weaker fingerprint or OA-view checks.
+    weaker OA-view checks.
     """
 
     reports = tuple(

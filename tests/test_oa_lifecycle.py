@@ -7,7 +7,6 @@ from sigilicon.virtuoso.oa import (
     _owned_db_open_cellview_skill,
     own_synchronous_cellview_delta_skill,
     set_cell_port_directions,
-    validate_cell_fingerprint,
     validate_cell_port_directions,
     validate_instance_parameters,
 )
@@ -22,19 +21,11 @@ class RecordingClient:
     def execute_skill(self, source: str, **_kwargs):
         self.sources.append(source)
         self.calls.append((source, dict(_kwargs)))
-        if 'sprintf(nil "F|%s|%L' in source:
+        if 'sprintf(nil "T|%s|%s|%s' in source:
             rows = []
             for view in ("schematic", "symbol"):
-                rows.extend(
-                    (
-                        f'F|{view}|{"a" * 64}',
-                        f'T|{view}|IN|input',
-                        f'T|{view}|OUT|output',
-                    )
-                )
+                rows.extend((f'T|{view}|IN|input', f'T|{view}|OUT|output'))
             return SimpleNamespace(output="\n".join(rows), errors=[])
-        if "actualFingerprint = cv~>flowDesignFingerprint" in source:
-            return SimpleNamespace(output="a" * 64, errors=[])
         if 'sprintf(nil "P|%s|%s|%s' in source:
             return SimpleNamespace(
                 output='I|X0|CHILD\nP|X0|lch|pPar("parent_l")\nP|X0|w|1e-07',
@@ -113,7 +104,6 @@ def test_every_open_cellview_is_protected_by_unwind_cleanup(workspace_factory) -
                 "lib",
                 "cell",
                 directions,
-                fingerprint="a" * 64,
                 operation=operation,
             )
         validate_cell_port_directions(
@@ -121,18 +111,10 @@ def test_every_open_cellview_is_protected_by_unwind_cleanup(workspace_factory) -
             "lib",
             "cell",
             directions,
-            fingerprint="a" * 64,
-            operation=operation,
-        )
-        validate_cell_fingerprint(
-            client,
-            "lib",
-            "cell",
-            "a" * 64,
             operation=operation,
         )
 
-    assert len(client.sources) == 3
+    assert len(client.sources) == 2
     for source in client.sources:
         assert "unwindProtect" in source
         assert "dbClose" in source
@@ -149,9 +131,7 @@ def test_every_open_cellview_is_protected_by_unwind_cleanup(workspace_factory) -
         assert 'equal(flowOpenCv~>mode "r")' in source
         assert "flowPurgeAttempt = errset(dbPurge(flowOpenCv) t)" in source
         assert "implicit handle close failed" in source
-    assert 'sprintf(nil "F|%s|%L' in client.sources[1]
     assert 'sprintf(nil "T|%s|%s|%s' in client.sources[1]
-    assert "actualFingerprint = cv~>flowDesignFingerprint" in client.sources[2]
 
 
 def test_generated_instance_parameter_values_compare_semantically() -> None:

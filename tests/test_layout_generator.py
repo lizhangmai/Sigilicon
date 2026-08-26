@@ -36,7 +36,6 @@ def build_layout_plan(spec):
         generator=spec.generator,
         generator_version=GENERATOR_VERSION + DEPENDENCY_VERSION,
         laygo2_version="test",
-        source_fingerprint=spec.source_fingerprint,
         dbu_per_micron=1000,
         instances=(),
     )
@@ -57,7 +56,6 @@ def build_layout_plan(spec):
         view="layout",
         stage="placement_probe",
         generator="project_recipe",
-        source_fingerprint="f" * 64,
     )
 
     plan = build_layout_plan(spec)
@@ -69,17 +67,12 @@ def build_layout_plan(spec):
         "GENERATOR_VERSION = 11\n",
         encoding="utf-8",
     )
-    spec.source_fingerprint = "e" * 64
-
     refreshed = build_layout_plan(spec)
 
     assert refreshed.generator_version == 12
-    assert refreshed.source_fingerprint == "e" * 64
 
     dependency.write_text("DEPENDENCY_VERSION = 2\n", encoding="utf-8")
-    spec.source_fingerprint = "d" * 64
 
     dependency_refreshed = build_layout_plan(spec)
 
     assert dependency_refreshed.generator_version == 13
-    assert dependency_refreshed.source_fingerprint == "d" * 64

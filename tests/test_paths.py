@@ -64,7 +64,7 @@ def test_artifact_components_reject_escape_and_separators(unsafe: str) -> None:
         validate_artifact_component(unsafe, "component")
 
 
-def test_ids_fingerprints_and_role_components_are_validated(tmp_path: Path) -> None:
+def test_ids_and_role_components_are_validated(tmp_path: Path) -> None:
     paths = ProjectContext.from_project_root(tmp_path).artifacts
     with pytest.raises(ValueError, match="attempt id"):
         paths.execution(

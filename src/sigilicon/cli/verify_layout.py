@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from sigilicon.cli.common import die
-from sigilicon.paths import ProjectContext, discover_project_context
+from sigilicon.paths import discover_project_context
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.layout_verification import execute_layout_verification_spec
 
@@ -44,7 +44,6 @@ def main(
     for spec, result in results:
         status = "PASS" if result.passed else "FAIL"
         print(f"[{result.check}] {status} {spec.library}/{spec.cell}/{spec.view}")
-        print(f"[fingerprint] {result.layout_fingerprint}")
         print(f"[details] {dict(result.details)}")
         print(f"[artifact] {result.manifest_path}")
     return 0 if all(result.passed for _spec, result in results) else 2

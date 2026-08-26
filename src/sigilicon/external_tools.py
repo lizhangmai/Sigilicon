@@ -7,7 +7,6 @@ import select
 import ast
 import ctypes
 import fcntl
-import hashlib
 import inspect
 import json
 import shutil
@@ -370,7 +369,6 @@ class OwnedFileDescriptor:
     fd: int
     directory_fd: int
     path: Path
-    sha256: str
     watch_fd: int
     watch_descriptor: int
 
@@ -397,13 +395,6 @@ class OwnedFileDescriptor:
             or (visible.st_dev, visible.st_ino) != (held.st_dev, held.st_ino)
         ):
             raise RuntimeError(f"external input pathname changed: {self.path}")
-        digest = hashlib.sha256()
-        offset = 0
-        while chunk := os.pread(self.fd, 1024 * 1024, offset):
-            digest.update(chunk)
-            offset += len(chunk)
-        if digest.hexdigest() != self.sha256:
-            raise RuntimeError(f"external input content changed: {self.path}")
 
     def _require_unmodified_path(self) -> None:
         """Reject every pathname mutation, including a swap that was restored."""
@@ -445,7 +436,6 @@ class OwnedSealedInputDescriptor:
     """Immutable anonymous input inherited by an exact child process."""
 
     fd: int
-    sha256: str
 
     @property
     def child_path(self) -> str:
@@ -455,14 +445,6 @@ class OwnedSealedInputDescriptor:
         if fcntl.fcntl(self.fd, _F_GET_SEALS) != _REQUIRED_MEMFD_SEALS:
             raise RuntimeError("sealed child input lost its immutable seals")
         os.lseek(self.fd, 0, os.SEEK_SET)
-        digest = hashlib.sha256()
-        try:
-            while chunk := os.read(self.fd, 1024 * 1024):
-                digest.update(chunk)
-        finally:
-            os.lseek(self.fd, 0, os.SEEK_SET)
-        if digest.hexdigest() != self.sha256:
-            raise RuntimeError("sealed child input content changed")
 
 
 @dataclass(frozen=True)
@@ -673,7 +655,6 @@ def _watch_owned_directory(descriptor: int) -> tuple[int, int]:
 def owned_input_file(
     path: Path,
     *,
-    expected_sha256: str | None = None,
     require_single_link: bool = True,
 ) -> Iterator[OwnedFileDescriptor]:
     """Hold the exact input inode open until an external invocation completes."""
@@ -693,9 +674,6 @@ def owned_input_file(
             require_single_link and metadata.st_nlink != 1
         ):
             raise RuntimeError(f"external input is not an owned regular file: {absolute}")
-        digest = hashlib.sha256()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
         after = os.fstat(descriptor)
         if (
             metadata.st_dev,
@@ -709,12 +687,6 @@ def owned_input_file(
             after.st_mtime_ns,
         ):
             raise RuntimeError(f"external input changed while attesting it: {absolute}")
-        actual_sha256 = digest.hexdigest()
-        if expected_sha256 is not None and actual_sha256 != expected_sha256:
-            raise RuntimeError(
-                f"external input digest changed: {absolute}; "
-                f"got {actual_sha256}, expected {expected_sha256}"
-            )
         visible = os.stat(
             absolute.name,
             dir_fd=parent_fd,
@@ -728,7 +700,6 @@ def owned_input_file(
             descriptor,
             parent_fd,
             absolute,
-            actual_sha256,
             watch_fd,
             watch_descriptor,
         )
@@ -758,18 +729,13 @@ def owned_input_file(
                 raise RuntimeError(
                     f"external input identity changed during invocation: {absolute}"
                 )
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            final_digest = hashlib.sha256()
-            while chunk := os.read(descriptor, 1024 * 1024):
-                final_digest.update(chunk)
             final_visible = os.stat(
                 absolute.name,
                 dir_fd=parent_fd,
                 follow_symlinks=False,
             )
             if (
-                final_digest.hexdigest() != actual_sha256
-                or (final_visible.st_dev, final_visible.st_ino)
+                (final_visible.st_dev, final_visible.st_ino)
                 != (metadata.st_dev, metadata.st_ino)
             ):
                 raise RuntimeError(
@@ -807,7 +773,6 @@ def owned_sealed_input(
         if descriptor < 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error), name)
-    expected = hashlib.sha256(payload).hexdigest()
     try:
         remaining = memoryview(payload)
         while remaining:
@@ -816,7 +781,7 @@ def owned_sealed_input(
                 raise RuntimeError("could not populate sealed child input")
             remaining = remaining[written:]
         fcntl.fcntl(descriptor, _F_ADD_SEALS, _REQUIRED_MEMFD_SEALS)
-        owned = OwnedSealedInputDescriptor(descriptor, expected)
+        owned = OwnedSealedInputDescriptor(descriptor)
         owned.require_sealed()
         try:
             yield owned

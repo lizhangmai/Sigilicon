@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import importlib.util
-import json
 from pathlib import Path
 import tomllib
 from typing import Any, Mapping
@@ -34,20 +32,15 @@ _DIRECTIONS = {"input", "output", "inputOutput"}
 @dataclass(frozen=True)
 class LayoutSpec:
     path: Path
-    spec_sha256: str
     project_root: Path
     library: str
     cell: str
     view: str
     generator: str
     generator_source: Path
-    generator_source_sha256: str
-    generator_source_declared: bool
     generator_dependencies: tuple[Path, ...]
-    generator_dependency_sha256s: tuple[str, ...]
     generator_modules: tuple[str, ...]
     generator_module_sources: tuple[Path, ...]
-    generator_module_sha256s: tuple[str, ...]
     stage: str
     source_netlist: Path
     source_snapshot: NetlistSnapshot
@@ -60,71 +53,6 @@ class LayoutSpec:
     physical_verification: PhysicalVerificationPolicy | None
     pdk: PdkConfig
     layout_pdk: LayoutPdkConfig
-
-    @property
-    def source_fingerprint(self) -> str:
-        payload: dict[str, Any] = {
-            "layout_spec_sha256": self.spec_sha256,
-            "source_sha256": self.source_snapshot.sha256,
-            "library": self.library,
-            "cell": self.cell,
-            "view": self.view,
-            "generator": self.generator,
-            "stage": self.stage,
-            "ports": self.ports,
-            "directions": dict(self.directions),
-            "primitive_masters": self.primitive_masters,
-            "technology_library": self.pdk.oa.technology_library,
-            "dbu_per_micron": self.layout_pdk.dbu_per_micron,
-            "pdk_configuration_sha256": self.layout_pdk.configuration_sha256,
-        }
-        if self.oa_assembly_manifest is not None:
-            payload["oa_assembly_manifest"] = self.oa_assembly_manifest.relative_to(
-                self.project_root
-            ).as_posix()
-        if self.physical_verification is not None:
-            payload["physical_verification_sha256"] = (
-                self.physical_verification.source_sha256
-            )
-        if self.generator_source_declared:
-            payload["generator_source"] = self.generator_source.relative_to(
-                self.project_root
-            ).as_posix()
-            payload["generator_source_sha256"] = self.generator_source_sha256
-        if self.generator_dependencies:
-            payload["generator_dependencies"] = [
-                {
-                    "path": path.relative_to(self.project_root).as_posix(),
-                    "sha256": sha256,
-                }
-                for path, sha256 in zip(
-                    self.generator_dependencies,
-                    self.generator_dependency_sha256s,
-                    strict=True,
-                )
-            ]
-        if self.generator_modules:
-            payload["generator_modules"] = [
-                {"module": module, "sha256": sha256}
-                for module, sha256 in zip(
-                    self.generator_modules,
-                    self.generator_module_sha256s,
-                    strict=True,
-                )
-            ]
-        if self.dependency_netlists:
-            payload["canonical_sources"] = [
-                {
-                    "path": snapshot.source_path.relative_to(
-                        self.project_root
-                    ).as_posix(),
-                    "sha256": snapshot.sha256,
-                }
-                for snapshot in self.source_snapshots
-            ]
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
-
 
 def _table(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -207,8 +135,7 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
     view = _identifier(layout.get("view", "layout"), "layout.view")
     generator = _identifier(layout.get("generator"), "layout.generator")
     generator_source_value = layout.get("generator_source")
-    generator_source_declared = generator_source_value is not None
-    if generator_source_declared:
+    if generator_source_value is not None:
         generator_source = _required_file(
             generator_source_value,
             "layout.generator_source",
@@ -260,10 +187,6 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
             raise ValueError(
                 "layout.generator_dependencies must stay below the project root"
             ) from exc
-    generator_dependency_sha256s = tuple(
-        hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in generator_dependencies
-    )
     raw_generator_modules = layout.get("generator_modules", [])
     if not isinstance(raw_generator_modules, list) or any(
         not isinstance(value, str) or not value for value in raw_generator_modules
@@ -294,10 +217,6 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
             )
         module_sources.append(source)
     generator_module_sources = tuple(module_sources)
-    generator_module_sha256s = tuple(
-        hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in generator_module_sources
-    )
     stage = layout.get("stage", "placement_probe")
     if stage not in {"placement_probe", "routed"}:
         raise ValueError("layout.stage must be placement_probe or routed")
@@ -380,20 +299,15 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
         )
     return LayoutSpec(
         path=spec_path,
-        spec_sha256=hashlib.sha256(spec_payload).hexdigest(),
         project_root=root,
         library=library,
         cell=cell,
         view=view,
         generator=generator,
         generator_source=generator_source,
-        generator_source_sha256=hashlib.sha256(generator_source.read_bytes()).hexdigest(),
-        generator_source_declared=generator_source_declared,
         generator_dependencies=generator_dependencies,
-        generator_dependency_sha256s=generator_dependency_sha256s,
         generator_modules=generator_modules,
         generator_module_sources=generator_module_sources,
-        generator_module_sha256s=generator_module_sha256s,
         stage=stage,
         source_netlist=source_netlist,
         source_snapshot=source_snapshot,

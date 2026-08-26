@@ -622,7 +622,6 @@ def set_cell_port_directions(
     cell: str,
     directions: Mapping[str, str],
     *,
-    fingerprint: str,
     operation: Any,
     timeout: int = 120,
 ) -> None:
@@ -652,7 +651,6 @@ def set_cell_port_directions(
             )
             term~>direction = direction
           )
-          dbReplaceProp(cv "flowDesignFingerprint" "string" {skill_quote(fingerprint)})
           when(equal(view "schematic") schCheck(cv))
           unless(dbSave(cv) error(sprintf(nil "save failed for %s" view)))
           t
@@ -700,7 +698,6 @@ def validate_cell_port_directions(
     cell: str,
     directions: Mapping[str, str],
     *,
-    fingerprint: str,
     operation: Any,
     timeout: int = 60,
 ) -> None:
@@ -731,8 +728,6 @@ def validate_cell_port_directions(
       progn(
 {owned_open}
         unless(cv error(sprintf(nil "cannot open %s/%s/%s" {skill_quote(library)} {skill_quote(cell)} view)))
-        out = strcat(out sprintf(nil "F|%s|%L\\n"
-          view cv~>flowDesignFingerprint))
         foreach(term cv~>terminals
           out = strcat(out sprintf(nil "T|%s|%s|%s\\n"
             view term~>name term~>direction)))
@@ -762,7 +757,6 @@ def validate_cell_port_directions(
             f"invalid {library}/{cell} port interface; run OA rebuild: {result.errors[0]}"
         )
     decoded = decode_skill_output(result.output or "")
-    fingerprints: dict[str, str] = {}
     actual_directions: dict[str, dict[str, str]] = {
         "schematic": {},
         "symbol": {},
@@ -772,12 +766,7 @@ def validate_cell_port_directions(
         if not line:
             continue
         fields = line.split("|")
-        if fields[0] == "F" and len(fields) == 3:
-            view = fields[1]
-            if view in fingerprints:
-                raise RuntimeError(f"duplicate OA fingerprint row for {library}/{cell}/{view}")
-            fingerprints[view] = fields[2].strip().strip('"')
-        elif fields[0] == "T" and len(fields) == 4:
+        if fields[0] == "T" and len(fields) == 4:
             view, name, direction = fields[1:]
             if view not in actual_directions:
                 raise RuntimeError(f"unexpected OA view in port inventory: {view}")
@@ -786,15 +775,7 @@ def validate_cell_port_directions(
             actual_directions[view][name] = direction
         else:
             raise RuntimeError(f"invalid OA port inventory row: {raw_line!r}")
-    if set(fingerprints) != set(actual_directions):
-        raise RuntimeError(
-            f"incomplete OA fingerprint inventory for {library}/{cell}: {fingerprints}"
-        )
     for view in ("schematic", "symbol"):
-        if fingerprints[view] != fingerprint:
-            raise RuntimeError(
-                f"stale generated design fingerprint in {library}/{cell}/{view}"
-            )
         if actual_directions[view] != dict(directions):
             raise RuntimeError(
                 f"direction inventory mismatch for {library}/{cell}/{view}: "
@@ -837,7 +818,7 @@ def validate_instance_parameters(
     operation: Any,
     timeout: int = 60,
 ) -> dict[str, object]:
-    """Validate source-elaborated child defaults frozen on parent instances."""
+    """Validate the exact source instance/master set and child parameters."""
 
     if not expectations:
         return {"passed": True, "instances": 0, "parameters": 0}
@@ -858,16 +839,15 @@ def validate_instance_parameters(
         label=f"instance parameter validation {library}/{cell}",
     )
     queries: list[str] = []
-    for instance, (master, parameters) in sorted(expectations.items()):
-        queries.extend(
-            (
-                f'inst = dbFindAnyInstByName(cv {skill_quote(instance)})',
-                "unless(inst error(sprintf(nil \"missing source-owned instance %s\" "
-                f"{skill_quote(instance)})))",
-                "out = strcat(out sprintf(nil \"I|%s|%s\\n\" "
-                "inst~>name inst~>master~>cellName))",
+    for instance, (_master, parameters) in sorted(expectations.items()):
+        if parameters:
+            queries.extend(
+                (
+                    f'inst = dbFindAnyInstByName(cv {skill_quote(instance)})',
+                    "unless(inst error(sprintf(nil \"missing source-owned instance %s\" "
+                    f"{skill_quote(instance)})))",
+                )
             )
-        )
         for parameter in sorted(parameters):
             queries.extend(
                 (
@@ -887,6 +867,9 @@ def validate_instance_parameters(
     progn(
 {owned_open}
       unless(cv error("cannot open generated schematic"))
+      foreach(inst cv~>instances
+        out = strcat(out sprintf(nil "I|%s|%s\\n"
+          inst~>name inst~>master~>cellName)))
       {chr(10).join(queries)}
       out
     )
@@ -932,6 +915,12 @@ def validate_instance_parameters(
         else:
             raise RuntimeError(f"invalid OA instance parameter row: {raw_line!r}")
     errors: list[str] = []
+    missing = sorted(set(expectations) - set(masters))
+    extra = sorted(set(masters) - set(expectations))
+    if missing:
+        errors.append(f"missing instances {missing!r}")
+    if extra:
+        errors.append(f"unexpected instances {extra!r}")
     for instance, (expected_master, parameters) in sorted(expectations.items()):
         actual_master = masters.get(instance)
         if actual_master != expected_master:
@@ -957,70 +946,6 @@ def validate_instance_parameters(
         "instances": len(expectations),
         "parameters": sum(len(parameters) for _master, parameters in expectations.values()),
     }
-
-
-def validate_cell_fingerprint(
-    client: Any,
-    library: str,
-    cell: str,
-    fingerprint: str,
-    *,
-    operation: Any,
-    timeout: int = 30,
-) -> None:
-    require_workspace_capability(
-        operation,
-        client,
-        library=library,
-        cell=cell,
-        view="schematic",
-    )
-    owned_open = _owned_db_open_cellview_skill(
-        library=library,
-        cell=cell,
-        view_expression='"schematic"',
-        view_type="",
-        mode="r",
-        result_variable="cv",
-        label=f"fingerprint validation {library}/{cell}",
-    )
-    source = f'''let((cv actualFingerprint)
-  cv = nil
-  unwindProtect(
-    progn(
-{owned_open}
-      unless(cv error("cannot open generated schematic"))
-      actualFingerprint = cv~>flowDesignFingerprint
-      sprintf(nil "%L" actualFingerprint)
-    )
-    when(cv unless(dbClose(cv) error("generated schematic close failed")) cv = nil)
-  )
-  t
-)'''
-    result = require_bridge_confirmation(
-        operation,
-        f"validate fingerprint {library}/{cell}",
-        lambda: client.execute_skill(
-            audit_cellview_delta_skill(
-                own_synchronous_cellview_delta_skill(
-                    source,
-                    label=f"fingerprint validation {library}/{cell}",
-                ),
-                label=f"fingerprint validation {library}/{cell}",
-            ),
-            timeout=timeout,
-        ),
-    )
-    if result.errors:
-        raise RuntimeError(
-            f"{library}/{cell} is stale or unsafe; run OA rebuild: {result.errors[0]}"
-        )
-    actual = decode_skill_output(result.output or "").strip().strip('"')
-    if actual != fingerprint:
-        raise RuntimeError(
-            f"{library}/{cell} is stale; got fingerprint {actual!r}, "
-            f"expected {fingerprint!r}; run OA rebuild"
-        )
 
 
 def virtuoso_workdir(client: Any) -> Path:
