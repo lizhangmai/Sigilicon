@@ -112,6 +112,10 @@ _Avoid_: Router hint, placement constraint
 A Routing Constraint limiting one net's conductive path to an explicit set of routing layers.
 _Avoid_: Preferred layer guess
 
+**Routing Region Constraint**:
+A Routing Constraint requiring one net's exact conductor or via geometry to intersect every named layer region, which the solver treats as topology terminals.
+_Avoid_: Placement fence, vague waypoint hint
+
 **Routing Length Constraint**:
 A Routing Constraint defining an inclusive DBU length range over the exact Route Segments of one net.
 _Avoid_: Timing constraint, estimated HPWL

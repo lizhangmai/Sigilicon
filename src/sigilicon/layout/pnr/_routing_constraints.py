@@ -5,11 +5,16 @@ from __future__ import annotations
 from sigilicon.layout.pnr.model import (
     ConstraintOutcome,
     ConstraintStatus,
+    LayerShape,
     NetRoute,
     PhysicalDesignJob,
+    Point,
+    Rect,
+    RouteSegment,
     RoutingConstraint,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
+    RoutingRegionConstraint,
     RoutingSkewConstraint,
     RoutingViaCountConstraint,
 )
@@ -21,6 +26,7 @@ def validate_routing_constraint(
     known_nets: frozenset[str],
     known_layers: frozenset[str],
     grid: int,
+    die: Rect,
 ) -> tuple[str, ...]:
     errors: list[str] = []
     if not isinstance(
@@ -30,6 +36,7 @@ def validate_routing_constraint(
             RoutingLengthConstraint,
             RoutingViaCountConstraint,
             RoutingSkewConstraint,
+            RoutingRegionConstraint,
         ),
     ):
         return (
@@ -73,7 +80,37 @@ def validate_routing_constraint(
             errors.append(
                 f"routing length constraint {constraint.name} must be on-grid"
             )
-    elif isinstance(constraint, RoutingViaCountConstraint) and constraint.maximum_vias < 0:
+    elif isinstance(constraint, RoutingRegionConstraint):
+        if not constraint.required_regions:
+            errors.append(
+                f"routing region constraint {constraint.name} needs a region"
+            )
+        for region in constraint.required_regions:
+            if region.layer not in known_layers:
+                errors.append(
+                    f"routing region constraint {constraint.name} uses unknown "
+                    f"layer {region.layer}"
+                )
+            if any(
+                coordinate % grid != 0
+                for coordinate in (
+                    region.shape.x_min,
+                    region.shape.y_min,
+                    region.shape.x_max,
+                    region.shape.y_max,
+                )
+            ):
+                errors.append(
+                    f"routing region constraint {constraint.name} is off-grid"
+                )
+            if not die.contains(region.shape):
+                errors.append(
+                    f"routing region constraint {constraint.name} is outside the die"
+                )
+    elif (
+        isinstance(constraint, RoutingViaCountConstraint)
+        and constraint.maximum_vias < 0
+    ):
         errors.append(
             f"routing via constraint {constraint.name} maximum must be non-negative"
         )
@@ -138,11 +175,79 @@ def has_skew_constraint(job: PhysicalDesignJob, net: str) -> bool:
     )
 
 
+def required_routing_regions(
+    job: PhysicalDesignJob,
+    net: str,
+) -> tuple[tuple[LayerShape, ...], ...]:
+    return tuple(
+        constraint.required_regions
+        for constraint in job.routing_constraints
+        if isinstance(constraint, RoutingRegionConstraint)
+        and constraint.net == net
+    )
+
+
 def _route_length(route: NetRoute) -> int:
     return sum(
         abs(segment.end.x - segment.start.x)
         + abs(segment.end.y - segment.start.y)
         for segment in route.segments
+    )
+
+
+def _translated(rectangle: Rect, origin: Point) -> Rect:
+    return Rect(
+        rectangle.x_min + origin.x,
+        rectangle.y_min + origin.y,
+        rectangle.x_max + origin.x,
+        rectangle.y_max + origin.y,
+    )
+
+
+def _segment_shape(segment: RouteSegment) -> Rect:
+    margin = segment.width_dbu // 2
+    if segment.start.y == segment.end.y:
+        return Rect(
+            min(segment.start.x, segment.end.x),
+            segment.start.y - margin,
+            max(segment.start.x, segment.end.x),
+            segment.start.y + margin,
+        )
+    return Rect(
+        segment.start.x - margin,
+        min(segment.start.y, segment.end.y),
+        segment.start.x + margin,
+        max(segment.start.y, segment.end.y),
+    )
+
+
+def _intersects(first: Rect, second: Rect) -> bool:
+    return not (
+        first.x_max < second.x_min
+        or second.x_max < first.x_min
+        or first.y_max < second.y_min
+        or second.y_max < first.y_min
+    )
+
+
+def _route_shapes(
+    job: PhysicalDesignJob,
+    route: NetRoute,
+) -> tuple[tuple[str, Rect], ...]:
+    shapes = tuple(
+        (segment.layer, _segment_shape(segment)) for segment in route.segments
+    )
+    vias = {via.name: via for via in job.technology.via_definitions}
+    return shapes + tuple(
+        (layer, _translated(shape, route_via.origin))
+        for route_via in route.vias
+        if route_via.via_definition in vias
+        for via in (vias[route_via.via_definition],)
+        for layer, layer_shapes in (
+            (via.lower_layer, via.lower_shapes),
+            (via.upper_layer, via.upper_shapes),
+        )
+        for shape in layer_shapes
     )
 
 
@@ -223,6 +328,22 @@ def evaluate_routing_constraints(
             )
             if not satisfied:
                 message = f"route length {length} dbu is outside the allowed range"
+        elif isinstance(constraint, RoutingRegionConstraint):
+            route_shapes = _route_shapes(job, route)
+            missed = tuple(
+                index
+                for index, region in enumerate(constraint.required_regions)
+                if not any(
+                    layer == region.layer and _intersects(shape, region.shape)
+                    for layer, shape in route_shapes
+                )
+            )
+            satisfied = not missed
+            if missed:
+                message = (
+                    "route misses required region indices: "
+                    + ", ".join(str(index) for index in missed)
+                )
         elif isinstance(constraint, RoutingViaCountConstraint):
             count = len(route.vias)
             satisfied = count <= constraint.maximum_vias

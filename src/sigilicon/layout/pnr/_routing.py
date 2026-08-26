@@ -14,6 +14,7 @@ from sigilicon.layout.pnr._routing_constraints import (
     allowed_routing_layers,
     has_skew_constraint,
     maximum_vias,
+    required_routing_regions,
 )
 from sigilicon.layout.pnr.model import (
     Axis,
@@ -1171,10 +1172,10 @@ def _solve_routing_once(
                 entities=(net.name,),
                 route_states=route_states,
             )
-        endpoint_states = tuple(
+        pin_endpoint_states = tuple(
             _access_states(endpoint, net_contexts, grid) for endpoint in accesses
         )
-        if any(not states for states in endpoint_states):
+        if any(not states for states in pin_endpoint_states):
             return _result(
                 (
                     ResultStatus.FAILED
@@ -1191,17 +1192,43 @@ def _solve_routing_once(
                 entities=(net.name,),
                 route_states=route_states,
             )
+        required_regions = tuple(
+            region
+            for constraint_regions in required_routing_regions(job, net.name)
+            for region in constraint_regions
+        )
+        region_states = tuple(
+            _access_states((region,), net_contexts, grid)
+            for region in required_regions
+        )
+        if any(not states for states in region_states):
+            return _result(
+                ResultStatus.FAILED,
+                routes=tuple(all_routes),
+                code="routing_region_constraint_unsatisfied",
+                message=(
+                    f"net {net.name} has a required region without a legal "
+                    "routing-resource access"
+                ),
+                entities=(net.name,),
+                route_states=route_states,
+            )
+        endpoint_states = pin_endpoint_states + region_states
         if not _layers_connect(endpoint_states, net_adjacency):
             return _result(
                 (
                     ResultStatus.FAILED
-                    if allowed_layers is not None or via_limit is not None
+                    if allowed_layers is not None
+                    or via_limit is not None
+                    or required_regions
                     else ResultStatus.UNSUPPORTED
                 ),
                 routes=tuple(all_routes),
                 code=(
                     "routing_constraint_infeasible"
-                    if allowed_layers is not None or via_limit is not None
+                    if allowed_layers is not None
+                    or via_limit is not None
+                    or required_regions
                     else "routing_layer_transition_unsupported"
                 ),
                 message=(
@@ -1228,11 +1255,25 @@ def _solve_routing_once(
             for states in endpoint_states
         )
         if any(not states for states in legal_endpoint_states):
+            blocked_index = next(
+                index
+                for index, states in enumerate(legal_endpoint_states)
+                if not states
+            )
+            region_blocked = blocked_index >= len(pin_endpoint_states)
             return _result(
                 ResultStatus.FAILED,
                 routes=tuple(all_routes),
-                code="routing_pin_access_blocked",
-                message=f"net {net.name} has no unblocked terminal access",
+                code=(
+                    "routing_region_constraint_blocked"
+                    if region_blocked
+                    else "routing_pin_access_blocked"
+                ),
+                message=(
+                    f"net {net.name} has a blocked required routing region"
+                    if region_blocked
+                    else f"net {net.name} has no unblocked terminal access"
+                ),
                 entities=(net.name,),
                 route_states=route_states,
             )

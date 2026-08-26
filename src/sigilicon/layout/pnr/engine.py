@@ -36,7 +36,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 11
+ENGINE_VERSION = 12
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -283,6 +283,7 @@ def _validate_job(job: PhysicalDesignJob) -> None:
                 known_nets=frozenset(net_names),
                 known_layers=routing_layers,
                 grid=grid,
+                die=design.die,
             )
         )
 

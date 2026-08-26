@@ -35,6 +35,7 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
+    RoutingRegionConstraint,
     RoutingSkewConstraint,
     RoutingTrackPattern,
     RoutingViaCountConstraint,
@@ -476,6 +477,48 @@ def test_multi_terminal_net_connects_each_terminal_to_the_route_tree() -> None:
     assert Point(37, 6) in route_points
     assert Point(20, 30) in route_points
     assert _wire_length(replace(job, design=design)) == 58
+
+
+def test_routing_region_constraint_adds_required_geometry_to_the_route_tree() -> None:
+    job = _job()
+    result = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingRegionConstraint(
+                    "required-channel",
+                    "signal",
+                    (LayerShape("route", Rect(19, 19, 21, 21)),),
+                ),
+            ),
+        )
+    )
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in result.routes[0].segments
+    ) == 48
+
+
+def test_routing_region_constraint_must_be_inside_the_die() -> None:
+    job = _job()
+
+    with pytest.raises(PnrInputError, match="outside the die"):
+        run(
+            replace(
+                job,
+                routing_constraints=(
+                    RoutingRegionConstraint(
+                        "outside",
+                        "signal",
+                        (LayerShape("route", Rect(39, 39, 41, 41)),),
+                    ),
+                ),
+            )
+        )
 
 
 def test_router_avoids_unconnected_terminal_geometry() -> None:

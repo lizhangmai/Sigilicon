@@ -452,11 +452,19 @@ class RoutingSkewConstraint(CanonicalValue):
     maximum_skew_dbu: int
 
 
+@dataclass(frozen=True)
+class RoutingRegionConstraint(CanonicalValue):
+    name: str
+    net: str
+    required_regions: tuple[LayerShape, ...]
+
+
 RoutingConstraint: TypeAlias = (
     RoutingLayerConstraint
     | RoutingLengthConstraint
     | RoutingViaCountConstraint
     | RoutingSkewConstraint
+    | RoutingRegionConstraint
 )
 
 
