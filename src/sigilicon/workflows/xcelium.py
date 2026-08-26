@@ -5,16 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any
 
-from sigilicon.artifacts import ArtifactRecord, file_sha256, new_identity
-from sigilicon.domain.fingerprints import source_fingerprint_set
-from sigilicon.domain.provenance import digest
+from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.repository import RepositoryContext
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
 from sigilicon.paths import ProjectContext
-from sigilicon.workflows.source_control import inspect_source_state
+from sigilicon.workflows.source_control import artifact_source_state
 
 
 @dataclass(frozen=True)
@@ -24,7 +21,6 @@ class XceliumCellPlan:
     contract: Path
     spec: VerificationCellSpec
     sources: tuple[Path, ...]
-    source_fingerprints: Any
     command_template: tuple[str, ...]
 
     def as_dict(self, *, project_root: Path) -> dict[str, object]:
@@ -44,8 +40,6 @@ class XceliumCellPlan:
                 else None
             ),
             "sources": [path.relative_to(root).as_posix() for path in self.sources],
-            "source_fingerprint": self.source_fingerprints.exact,
-            "semantic_fingerprint": self.source_fingerprints.semantic,
             "command_template": list(self.command_template),
         }
 
@@ -86,19 +80,6 @@ def plan_xcelium_cell(
     sources = (spec.canonical_source, *spec.dependencies)
     if len(set(sources)) != len(sources):
         raise ValueError(f"verification cell {spec.cell} has duplicate compile sources")
-    fingerprint_inputs: dict[str, Path] = {
-        "contract/cell.toml": contract,
-        "source/canonical": spec.canonical_source,
-    }
-    fingerprint_inputs.update(
-        {
-            f"source/dependency/{index}": path
-            for index, path in enumerate(spec.dependencies)
-        }
-    )
-    if spec.runner is not None:
-        fingerprint_inputs["runner/cell"] = spec.runner
-    fingerprints = source_fingerprint_set(fingerprint_inputs)
     command_template = (
         "xrun",
         "-64bit",
@@ -115,7 +96,6 @@ def plan_xcelium_cell(
         contract=contract,
         spec=spec,
         sources=sources,
-        source_fingerprints=fingerprints,
         command_template=command_template,
     )
 
@@ -133,25 +113,10 @@ def run_xcelium_cell(
     root = project_root.resolve()
     plan = plan_xcelium_cell(contract_path, project_root=root)
     xrun_bin = find_xrun(xrun)
-    source_state = inspect_source_state(root).as_dict()
+    source_state = artifact_source_state(root)
     paths = ProjectContext.from_project_root(root, artifact_root=artifact_root)
     owner = RepositoryContext.from_project_root(root).require_owner(plan.contract).name
     run_id = new_identity()
-    setup_fingerprint = digest(
-        {
-            "simulator": plan.spec.simulator,
-            "dut": plan.spec.dut,
-            "options": list(plan.command_template[:9]),
-            "timeout": timeout,
-        }
-    )
-    run_fingerprint = digest(
-        {
-            "source": plan.source_fingerprints.exact,
-            "semantic": plan.source_fingerprints.semantic,
-            "setup": setup_fingerprint,
-        }
-    )
     attempt = ArtifactRecord.begin(
         paths.artifacts.execution(
             owner=owner,
@@ -169,10 +134,7 @@ def run_xcelium_cell(
         },
         operation="simulate",
         backend="xcelium-rtl-cell",
-        source_fingerprint=plan.source_fingerprints.exact,
-        semantic_fingerprint=plan.source_fingerprints.semantic,
-        setup_fingerprint=setup_fingerprint,
-        run_fingerprint=run_fingerprint,
+        source=source_state,
     )
 
     try:
@@ -182,13 +144,8 @@ def run_xcelium_cell(
             {
                 "schema": 1,
                 "plan": plan.as_dict(project_root=root),
-                "source_state": source_state,
-                "source_fingerprints": {
-                    "exact": plan.source_fingerprints.exact_inputs,
-                    "semantic": plan.source_fingerprints.semantic_inputs,
-                },
             },
-            label="Xcelium source and source-state snapshot",
+            label="Xcelium source plan",
         )
         work_dir = attempt.directory("work")
         xcelium_dir = attempt.directory("work", "xcelium.d")
@@ -237,7 +194,6 @@ def run_xcelium_cell(
             "command": command,
             "returncode": completed.returncode,
             "passed": completed.returncode == 0,
-            "source_state": source_state,
             "logs": {
                 "stdout": str(stdout_path.relative_to(attempt.paths.root)),
                 "stderr": str(stderr_path.relative_to(attempt.paths.root)),
@@ -259,11 +215,7 @@ def run_xcelium_cell(
         else:
             attempt.succeed(
                 completion_evidence=(summary_path,),
-                details={
-                    "product_qualification_conclusion": False,
-                    "stdout_sha256": file_sha256(stdout_path),
-                    "stderr_sha256": file_sha256(stderr_path),
-                },
+                details={"product_qualification_conclusion": False},
             )
         return XceliumCellRun(
             plan=plan,

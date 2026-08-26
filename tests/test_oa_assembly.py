@@ -7,13 +7,11 @@ import pytest
 
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.netlist import NetlistSubcircuit
-from sigilicon.virtuoso.provenance import oa_view_digest
 from sigilicon.workflows.oa_library import (
     _instance_parameter_expectations,
     check_oa_parity,
     rebuild_oa_library,
 )
-from sigilicon.workflows.oa_text_view import oa_text_view_fingerprint
 
 from conftest import write_component_owner
 
@@ -390,17 +388,7 @@ def test_check_accepts_git_owned_design_without_prior_state(
     report = check_oa_parity(plan, object())
 
     assert report["passed"] is True
-    assert report["designs"] == [{"passed": True, "cell": cell, "oa_view_sha256": {
-        "netlist": oa_view_digest(
-            library_path / cell / "netlist", allowed_symlink_root=tmp_path
-        ),
-        "schematic": oa_view_digest(
-            library_path / cell / "schematic", allowed_symlink_root=tmp_path
-        ),
-        "symbol": oa_view_digest(
-            library_path / cell / "symbol", allowed_symlink_root=tmp_path
-        ),
-    }}]
+    assert report["designs"] == [{"passed": True, "cell": cell}]
 
 
 def test_testbench_check_includes_transitive_dependency_materialization(
@@ -517,7 +505,7 @@ def test_check_accepts_current_layout_cache_without_prior_state(
     assert report["stale_or_modified_views"] == {}
 
 
-def test_check_reports_current_text_view_without_history(
+def test_check_reports_current_text_view_without_duplicate_content_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
     cell = "MODEL"
@@ -526,13 +514,6 @@ def test_check_reports_current_text_view_without_history(
     view_path = library_path / cell / view
     _write(view_path / "data.dm", "canonical OA payload\n")
     source = _write(tmp_path / "ip" / "alpha" / "MODEL.sv", "module MODEL; endmodule\n")
-    source_fingerprint = oa_text_view_fingerprint(
-        library="assembled",
-        cell=cell,
-        view=view,
-        kind="system_verilog",
-        source=source,
-    )
     step = SimpleNamespace(
         cell=cell,
         view=SimpleNamespace(
@@ -563,8 +544,6 @@ def test_check_reports_current_text_view_without_history(
         {
             "cell": cell,
             "view": view,
-            "source_fingerprint": source_fingerprint,
-            "oa_sha256": oa_view_digest(view_path, allowed_symlink_root=tmp_path),
         }
     ]
 

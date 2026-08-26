@@ -31,12 +31,10 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
         entities={"library": "lib", "cell": "dut", "testbench": "tb"},
         operation="simulate",
         backend="standalone",
-        setup_fingerprint="2" * 64,
-        run_fingerprint="3" * 64,
     )
 
 
-def test_artifact_manifest_keeps_exact_and_semantic_fingerprints_distinct(
+def test_artifact_manifest_records_git_source_without_parallel_fingerprints(
     tmp_path: Path,
 ) -> None:
     execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
@@ -53,19 +51,24 @@ def test_artifact_manifest_keeps_exact_and_semantic_fingerprints_distinct(
         entities={"library": "lib", "cell": "dut", "testbench": "tb"},
         operation="simulate",
         backend="virtuoso-oa",
-        source_fingerprint="a" * 64,
-        semantic_fingerprint="b" * 64,
-        setup_fingerprint="c" * 64,
-        run_fingerprint="d" * 64,
+        source={
+            "project": {
+                "commit": "a" * 40,
+                "working_tree_dirty": False,
+                "changes": [],
+            }
+        },
     )
 
-    assert record.manifest["fingerprints"] == {
-        "source": "a" * 64,
-        "semantic": "b" * 64,
-        "setup": "c" * 64,
-        "run": "d" * 64,
+    assert "fingerprints" not in record.manifest
+    assert record.manifest["source"] == {
+        "project": {
+            "commit": "a" * 40,
+            "working_tree_dirty": False,
+            "changes": [],
+        }
     }
-    assert validate_manifest(record.manifest)["fingerprints"]["semantic"] == "b" * 64
+    assert validate_manifest(record.manifest)["source"] == record.manifest["source"]
 
 
 
@@ -131,16 +134,16 @@ def test_terminal_artifact_rejects_all_mutation_except_incident_link(
         record.bind_operation("a" * 32)
 
 
-def test_manifest_rejects_invalid_file_metadata(tmp_path: Path) -> None:
+def test_manifest_rejects_digest_metadata_for_local_files(tmp_path: Path) -> None:
     record = _record(tmp_path)
     proof = record.path("outputs", "proof.txt")
     proof.write_text("confirmed\n", encoding="utf-8")
     record.add_file("outputs", proof)
 
-    invalid_digest = copy.deepcopy(record.manifest)
-    invalid_digest["files"]["outputs"][0]["sha256"] = "not-a-digest"
-    with pytest.raises(ArtifactManifestError, match="invalid digest or size"):
-        validate_manifest(invalid_digest)
+    redundant_digest = copy.deepcopy(record.manifest)
+    redundant_digest["files"]["outputs"][0]["sha256"] = "a" * 64
+    with pytest.raises(ArtifactManifestError, match="invalid metadata"):
+        validate_manifest(redundant_digest)
 
 
 def test_run_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
@@ -167,7 +170,6 @@ def test_attempt_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> No
         entities={"library": "lib", "cell": "dut"},
         operation="sync-design",
         backend="oa",
-        source_fingerprint="8" * 64,
     )
     log = record.write_text("logs", ("claimed-proof.log",), "looks successful\n")
 
@@ -191,7 +193,6 @@ def test_oa_text_view_artifact_requires_exact_view_identity(tmp_path: Path) -> N
         entities={"library": "lib", "cell": "dut", "view": "veriloga"},
         operation="sync-oa-text-view",
         backend="virtuoso-oa",
-        source_fingerprint="8" * 64,
     )
 
     assert record.manifest["artifact_kind"] == "oa_text_view"

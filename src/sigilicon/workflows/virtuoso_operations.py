@@ -38,6 +38,7 @@ from sigilicon.workflows.hierarchy_import import (
     import_hierarchy,
     plan_hierarchy,
 )
+from sigilicon.workflows.source_control import artifact_source_state
 
 
 _SPECTRE_RELATIVE_INCLUDE = re.compile(
@@ -140,6 +141,7 @@ def export_project_netlist(
         },
         operation="export-netlist",
         backend=simulator,
+        source=artifact_source_state(paths.project_root),
     )
     record.write_json(
         "inputs",
@@ -499,7 +501,7 @@ def import_spectre_hierarchy(
         },
         operation="manual-import-netlist",
         backend="virtuoso-spicein",
-        source_fingerprint=snapshot.sha256,
+        source=artifact_source_state(paths.project_root),
     )
     operation = None
     completed: tuple[str, ...] = ()

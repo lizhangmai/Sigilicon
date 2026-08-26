@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.domain.oa_simulation import load_oa_simulation_spec, oa_simulation_fingerprint
+from sigilicon.domain.oa_simulation import load_oa_simulation_spec
 from sigilicon.virtuoso.ade import _native_setup_entry_point
-from sigilicon.workflows.oa_simulation import _elaborated_netlist_fingerprint
+from sigilicon.workflows.oa_simulation import _elaborated_netlist
 from conftest import write_component_owner, write_project_context, write_test_platform
 
 
@@ -55,32 +55,29 @@ maestro_procedure = "fixtureNativeMaestro"
     return root, spec
 
 
-def test_elaborated_netlist_fingerprint_requires_one_final_content(
+def test_elaborated_netlist_selects_one_completed_history_file(
     tmp_path: Path,
 ) -> None:
-    netlist = tmp_path / "results" / "netlist" / "netlist.vams"
+    history = "ExplorerRORun.0.RO"
+    netlist = tmp_path / history / "1" / "tran_main" / "netlist" / "netlist.vams"
     netlist.parent.mkdir(parents=True)
     netlist.write_text("module DUT; endmodule\n", encoding="utf-8")
 
-    assert _elaborated_netlist_fingerprint(tmp_path) == (
-        "948dc7a5519832fa3c96b0fcf0def326cd70caff619758826d4082e3bc93301d"
-    )
+    assert _elaborated_netlist(tmp_path, history) == netlist
 
-    history_copy = tmp_path / "history" / "netlist.vams"
-    history_copy.parent.mkdir()
+    history_copy = tmp_path / history / "psf" / "tran_main" / "netlist" / "netlist.vams"
+    history_copy.parent.mkdir(parents=True)
     history_copy.write_text("module DUT; endmodule\n", encoding="utf-8")
-    assert _elaborated_netlist_fingerprint(tmp_path) == (
-        "948dc7a5519832fa3c96b0fcf0def326cd70caff619758826d4082e3bc93301d"
-    )
+    assert _elaborated_netlist(tmp_path, history) == netlist
 
-    conflicting = tmp_path / "other" / "netlist.vams"
-    conflicting.parent.mkdir()
+    conflicting = tmp_path / history / "2" / "tran_main" / "netlist" / "netlist.vams"
+    conflicting.parent.mkdir(parents=True)
     conflicting.write_text("different\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="conflicting elaborated netlist"):
-        _elaborated_netlist_fingerprint(tmp_path)
+    with pytest.raises(RuntimeError, match="did not resolve one final netlist"):
+        _elaborated_netlist(tmp_path, history)
 
 
-def test_elaborated_netlist_fingerprint_accepts_unique_spectre_content(
+def test_elaborated_netlist_accepts_unique_spectre_history_file(
     tmp_path: Path,
 ) -> None:
     netlist = tmp_path / "ExplorerRORun.0.RO/1/tran_main/netlist/spectre.inp"
@@ -93,15 +90,13 @@ def test_elaborated_netlist_fingerprint_accepts_unique_spectre_content(
         "protected config map\n", encoding="utf-8"
     )
 
-    assert _elaborated_netlist_fingerprint(tmp_path) == (
-        "050d088f04a34128775c0e282e9c9a8906363ff14fc7354b5df4833915d0b4af"
-    )
+    assert _elaborated_netlist(tmp_path, "ExplorerRORun.0.RO") == netlist
 
 
-def test_elaborated_netlist_fingerprint_prefers_ams_design_over_config_map(
+def test_elaborated_netlist_prefers_ams_design_over_spectre_config_map(
     tmp_path: Path,
 ) -> None:
-    netlist_dir = tmp_path / "groupRunDataDir" / "netlist"
+    netlist_dir = tmp_path / "ExplorerRORun.0.RO/1/tran_main/netlist"
     netlist_dir.mkdir(parents=True)
     (netlist_dir / "netlist.vams").write_text(
         "module DUT; endmodule\n", encoding="utf-8"
@@ -110,8 +105,8 @@ def test_elaborated_netlist_fingerprint_prefers_ams_design_over_config_map(
         "simulator lang=spectre\n", encoding="utf-8"
     )
 
-    assert _elaborated_netlist_fingerprint(tmp_path) == (
-        "948dc7a5519832fa3c96b0fcf0def326cd70caff619758826d4082e3bc93301d"
+    assert _elaborated_netlist(tmp_path, "ExplorerRORun.0.RO") == (
+        netlist_dir / "netlist.vams"
     )
 
 
@@ -484,19 +479,3 @@ def test_native_setup_entry_point_requires_the_declared_definition(tmp_path: Pat
     source.write_text("procedure(fixturePilotConfig(lib cell dut refs) t)\n", encoding="utf-8")
     with pytest.raises(ValueError, match="does not define declared entry point"):
         _native_setup_entry_point(source, declared="fixtureNativeConfig")
-
-
-def test_native_simulation_fingerprint_includes_setup_source(tmp_path: Path) -> None:
-    root, spec_path = _write_native_simulation_spec(tmp_path)
-    source = spec_path.parent / "testbench.scs"
-    source.write_text("subckt tb_native OUT\nends tb_native\n", encoding="utf-8")
-    spec = load_oa_simulation_spec(spec_path, project_root=root)
-    first = oa_simulation_fingerprint(spec, source)
-    spec.native_setup.source.write_text(
-        "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n"
-        "procedure(fixtureNativeMaestro(session lib cell modelFile modelSection) t)\n"
-        "; changed\n",
-        encoding="utf-8",
-    )
-    second = oa_simulation_fingerprint(spec, source)
-    assert first != second

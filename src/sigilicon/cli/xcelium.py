@@ -52,8 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         emit_json(payload)
     elif not args.execute:
         print(
-            f"Xcelium plan: {payload['cell']} sources={len(payload['sources'])} "
-            f"fingerprint={payload['source_fingerprint']}"
+            f"Xcelium plan: {payload['cell']} sources={len(payload['sources'])}"
         )
     else:
         print(

@@ -121,7 +121,7 @@ def attest_oa_design(
         str, tuple[str, Mapping[str, str]]
     ] | None = None,
 ) -> dict[str, object]:
-    """Fail unless OA schematic+symbol match the canonical source fingerprint."""
+    """Fail unless OA schematic+symbol match the canonical source."""
 
     spec = inspection.spec
     paths = ProjectContext.from_project_root(spec.project_root)
@@ -158,7 +158,6 @@ def attest_oa_design(
         "passed": True,
         "library": spec.library,
         "cell": spec.cell,
-        "source_fingerprint": inspection.source_fingerprint,
         "oa_views": ["schematic", "symbol"],
         "instance_parameters": parameter_report,
     }

@@ -34,6 +34,7 @@ from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
+from sigilicon.workflows.source_control import artifact_source_state
 
 
 _DRC_RESULT = re.compile(
@@ -775,8 +776,7 @@ def verify_layout(
         },
         operation=f"calibre-{check}",
         backend="xstream+calibre",
-        source_fingerprint=spec.source_fingerprint,
-        run_fingerprint=run_fingerprint,
+        source=artifact_source_state(spec.project_root),
     )
     record.copy_file("inputs", ("layout.toml",), spec.path, label="canonical layout intent")
     record.copy_file(

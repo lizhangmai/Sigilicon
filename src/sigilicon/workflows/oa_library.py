@@ -15,11 +15,7 @@ from sigilicon.domain.netlist import (
     parse_subcircuit_definitions,
     parse_subcircuit_instances,
 )
-from sigilicon.domain.oa_simulation import (
-    OASimulationSpec,
-    load_oa_simulation_spec,
-    oa_simulation_fingerprints,
-)
+from sigilicon.domain.oa_simulation import OASimulationSpec, load_oa_simulation_spec
 from sigilicon.domain.oa_library import (
     OACellViewSource,
     OALibrarySource,
@@ -35,7 +31,6 @@ from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.discovery import list_cells
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell, delete_cell_view
-from sigilicon.virtuoso.provenance import oa_view_digest
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.design_lifecycle import (
     DesignInspection,
@@ -48,7 +43,6 @@ from sigilicon.workflows.oa_testbench import (
     sync_oa_testbench,
 )
 from sigilicon.workflows.oa_text_view import (
-    oa_text_view_fingerprint,
     sync_oa_text_view,
 )
 
@@ -630,7 +624,6 @@ def attest_oa_testbench(
         raise ValueError(f"testbench plan identity mismatch: {step.cell} != {spec.cell}")
     if spec.native_setup is None:
         raise ValueError(f"native setup is not declared for {step.cell}")
-    fingerprints = oa_simulation_fingerprints(spec, step.canonical_source)
     paths = ProjectContext.from_project_root(plan.source.project_root)
     with workspace_operation(
         client,
@@ -662,8 +655,6 @@ def attest_oa_testbench(
         "passed": True,
         "library": plan.library,
         "testbench": step.cell,
-        "source_fingerprint": fingerprints.exact,
-        "semantic_fingerprint": fingerprints.semantic,
         "setup_attestation": setup_attestation,
         "simulation_run": False,
         "product_qualification_conclusion": False,
@@ -783,18 +774,6 @@ def check_oa_parity(
         except (OSError, RuntimeError, ValueError) as exc:
             stale_or_modified[f"{cell}/schematic+symbol"] = str(exc)
             continue
-        current_digests: dict[str, str] = {}
-        for view in ("netlist", "schematic", "symbol"):
-            identity = f"{cell}/{view}"
-            try:
-                current_digests[view] = oa_view_digest(
-                    plan.source.oa_library / cell / view,
-                    allowed_symlink_root=plan.source.project_root,
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
-                stale_or_modified[identity] = str(exc)
-                continue
-        report["oa_view_sha256"] = current_digests
         design_reports.append(report)
     if testbench is None:
         layout_steps = tuple(
@@ -826,23 +805,12 @@ def check_oa_parity(
         except (OSError, RuntimeError, ValueError) as exc:
             stale_or_modified["canonical-layouts"] = str(exc)
     for step in layout_steps:
-        identity = f"{step.spec.cell}/{step.spec.view}"
-        try:
-            current_digest = oa_view_digest(
-                plan.source.oa_library / step.spec.cell / step.spec.view,
-                allowed_symlink_root=plan.source.project_root,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            stale_or_modified[identity] = str(exc)
-            continue
         layout_reports.append(
             {
                 "cell": step.spec.cell,
                 "view": step.spec.view,
-                "layout_fingerprint": step.plan.fingerprint,
-                "oa_sha256": current_digest,
             }
-    )
+        )
     testbench_reports: list[dict[str, object]] = []
     for step in plan.testbenches:
         if testbench is not None and step.cell != testbench:
@@ -854,37 +822,10 @@ def check_oa_parity(
         if not present:
             continue
         complete = set(expected).issubset(actual[step.cell])
-        current: dict[str, str] = {}
-        for view in present:
-            identity = f"{step.cell}/{view}"
-            try:
-                current[view] = oa_view_digest(
-                    plan.source.oa_library / step.cell / view,
-                    allowed_symlink_root=plan.source.project_root,
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
-                stale_or_modified[identity] = str(exc)
-                continue
-        exact_fingerprint: str | None = None
-        semantic_fingerprint: str | None = None
-        try:
-            fingerprints = oa_simulation_fingerprints(
-                step.simulation, step.canonical_source
-            )
-            exact_fingerprint = fingerprints.exact
-            semantic_fingerprint = fingerprints.semantic
-        except (AttributeError, FileNotFoundError, TypeError, ValueError):
-            # The parity check remains useful even when a synthetic or
-            # incomplete fixture cannot load its optional setup fingerprint.
-            pass
         testbench_reports.append(
             {
                 "cell": step.cell,
-                "source_fingerprint": exact_fingerprint,
-                "exact_fingerprint": exact_fingerprint,
-                "semantic_fingerprint": semantic_fingerprint,
                 "complete": complete,
-                "oa_view_sha256": current,
             }
         )
     for step in plan.views:
@@ -894,27 +835,10 @@ def check_oa_parity(
             continue
         if step.cell not in actual or step.view.name not in actual[step.cell]:
             continue
-        identity = f"{step.cell}/{step.view.name}"
-        try:
-            current_digest = oa_view_digest(
-                plan.source.oa_library / step.cell / step.view.name,
-                allowed_symlink_root=plan.source.project_root,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            stale_or_modified[identity] = str(exc)
-            continue
         text_view_reports.append(
             {
                 "cell": step.cell,
                 "view": step.view.name,
-                "source_fingerprint": oa_text_view_fingerprint(
-                    library=plan.library,
-                    cell=step.cell,
-                    view=step.view.name,
-                    kind=step.view.kind,
-                    source=step.view.source,
-                ),
-                "oa_sha256": current_digest,
             }
         )
     passed = not any(

@@ -55,21 +55,12 @@ def _oa_plan(root: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
     return plan, step
 
 
-def _fingerprints() -> SimpleNamespace:
-    return SimpleNamespace(exact="a" * 64, semantic="b" * 64)
-
-
 def test_oa_maestro_writes_directly_to_configured_artifact_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     artifact_root = _write_project_context(tmp_path)
     plan, step = _oa_plan(tmp_path)
-    monkeypatch.setattr(
-        oa_simulation,
-        "oa_simulation_fingerprints",
-        lambda *_: _fingerprints(),
-    )
     monkeypatch.setattr(
         tempfile,
         "mkdtemp",
@@ -90,6 +81,9 @@ def test_oa_maestro_writes_directly_to_configured_artifact_root(
         summary = record.write_json(
             "outputs", ("run-summary.json",), {"simulation_completed": True}
         )
+        elaborated_netlist = record.write_text(
+            "outputs", ("elaborated-netlist.vams",), "module fixture; endmodule\n"
+        )
         return oa_simulation.OAMaestroRunResult(
             run_id=record.paths.identity,
             run_dir=record.paths.root,
@@ -97,14 +91,11 @@ def test_oa_maestro_writes_directly_to_configured_artifact_root(
             library="fixture_lib",
             testbench="tb_fixture",
             history="Interactive.1",
-            source_fingerprint="a" * 64,
-            oa_materialization_fingerprint="c" * 64,
-            elaborated_netlist_fingerprint="d" * 64,
+            elaborated_netlist=elaborated_netlist,
             result_database_export=result_export,
             normalized_result_database=normalized,
             run_summary=summary,
             scalar_output_count=1,
-            semantic_fingerprint="b" * 64,
         )
 
     monkeypatch.setattr(
@@ -145,11 +136,6 @@ def test_oa_maestro_records_failure_in_configured_artifact_root(
 ) -> None:
     artifact_root = _write_project_context(tmp_path)
     plan, step = _oa_plan(tmp_path)
-    monkeypatch.setattr(
-        oa_simulation,
-        "oa_simulation_fingerprints",
-        lambda *_: _fingerprints(),
-    )
     monkeypatch.setattr(
         oa_simulation,
         "_run_native_oa_maestro_testbench_impl",

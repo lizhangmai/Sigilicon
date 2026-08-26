@@ -8,10 +8,6 @@ import tomllib
 from typing import Any, Mapping
 
 from sigilicon.domain.platform import PdkConfig, load_platform
-from sigilicon.domain.fingerprints import (
-    SourceFingerprintSet,
-    oa_source_fingerprints,
-)
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
@@ -100,21 +96,6 @@ class OASimulationSpec:
     simulator: str
     native_setup: OANativeSetup
     contract_schema: int = 3
-
-
-def oa_simulation_fingerprint(spec: OASimulationSpec, canonical_source: Path) -> str:
-    """Return the byte-exact identity of the complete native OA source set."""
-
-    return oa_source_fingerprints(spec, canonical_source).exact
-
-
-def oa_simulation_fingerprints(
-    spec: OASimulationSpec,
-    canonical_source: Path,
-) -> SourceFingerprintSet:
-    """Return exact and semantic identities for native OA materialization."""
-
-    return oa_source_fingerprints(spec, canonical_source)
 
 
 def _identifier(value: object, field: str) -> str:

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
-import json
+from importlib.metadata import PackageNotFoundError, version
 import os
 from pathlib import Path
 from typing import Any
@@ -14,33 +13,24 @@ from sigilicon.external_tools import run_process_group
 
 @dataclass(frozen=True)
 class SourceState:
-    """A reproducible description of the checkout at workflow start."""
+    """Git coordinates and worktree state captured at workflow start."""
 
     repository_available: bool
-    head: str | None
+    commit: str | None
     working_tree_dirty: bool | None
-    status: tuple[str, ...]
-    status_sha256: str
-    tracked_diff_sha256: str | None
+    changes: tuple[str, ...]
     error: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema": 1,
             "repository_available": self.repository_available,
-            "head": self.head,
+            "commit": self.commit,
             "working_tree_dirty": self.working_tree_dirty,
-            "status": list(self.status),
-            "status_sha256": self.status_sha256,
-            "tracked_diff_sha256": self.tracked_diff_sha256,
+            "changes": list(self.changes),
         }
         if self.error is not None:
             payload["error"] = self.error
-        payload["source_state_sha256"] = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
         return payload
 
 
@@ -70,11 +60,9 @@ def inspect_source_state(root: Path) -> SourceState:
         status_text = status.stdout
         return SourceState(
             repository_available=False,
-            head=None,
+            commit=None,
             working_tree_dirty=None,
-            status=tuple(status_text.splitlines()),
-            status_sha256=hashlib.sha256(status_text.encode("utf-8")).hexdigest(),
-            tracked_diff_sha256=None,
+            changes=tuple(status_text.splitlines()),
             error=(revision.stdout.strip() or "cannot resolve Git HEAD")[-4000:],
         )
 
@@ -86,23 +74,47 @@ def inspect_source_state(root: Path) -> SourceState:
     )
     if status.returncode != 0:
         raise RuntimeError(f"cannot inspect source checkout:\n{status.stdout}")
-    diff = run_process_group(
-        ["git", "diff", "--binary", "HEAD"],
-        cwd=root,
-        env=environment,
-        timeout=30,
-    )
-    if diff.returncode != 0:
-        raise RuntimeError(f"cannot fingerprint source diff:\n{diff.stdout}")
     status_text = status.stdout
     return SourceState(
         repository_available=True,
-        head=revision.stdout.strip(),
+        commit=revision.stdout.strip(),
         working_tree_dirty=bool(status_text.strip()),
-        status=tuple(status_text.splitlines()),
-        status_sha256=hashlib.sha256(status_text.encode("utf-8")).hexdigest(),
-        tracked_diff_sha256=hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest(),
+        changes=tuple(status_text.splitlines()),
     )
+
+
+def artifact_source_state(project_root: Path) -> dict[str, Any]:
+    """Return Git revisions for the project and this Sigilicon installation.
+
+    Editable installs expose the Sigilicon checkout directly.  Wheels retain
+    their package version without pretending that a surrounding project Git
+    repository owns the installed package.
+    """
+
+    try:
+        package_version = version("sigilicon")
+    except PackageNotFoundError:
+        package_version = "unknown"
+    package_root = Path(__file__).resolve().parents[3]
+    sigilicon: dict[str, Any] = {"version": package_version}
+    if (package_root / "pyproject.toml").is_file() and (
+        package_root / ".git"
+    ).exists():
+        sigilicon.update(inspect_source_state(package_root).as_dict())
+    else:
+        sigilicon.update(
+            {
+                "schema": 1,
+                "repository_available": False,
+                "commit": None,
+                "working_tree_dirty": None,
+                "changes": [],
+            }
+        )
+    return {
+        "project": inspect_source_state(project_root).as_dict(),
+        "sigilicon": sigilicon,
+    }
 
 
 def require_clean_source_commit(root: Path) -> str:

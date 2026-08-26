@@ -32,7 +32,7 @@ from sigilicon.workflows.hierarchy_import import (
     import_hierarchy,
     plan_hierarchy,
 )
-from sigilicon.workflows.source_control import inspect_source_state
+from sigilicon.workflows.source_control import artifact_source_state
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,6 @@ def _sync_design_impl(
             raise RuntimeError("disposable design sync requires a work scope")
         attempt: Any = _disposable_work
     else:
-        source_state = inspect_source_state(spec.project_root)
         attempt = ArtifactRecord.begin(
             paths.artifacts.execution(
                 owner=spec.library,
@@ -172,13 +171,7 @@ def _sync_design_impl(
             entities={"library": spec.library, "cell": spec.cell},
             operation="sync-design",
             backend="virtuoso-oa",
-            source_fingerprint=design_identity_fingerprint(spec),
-        )
-        attempt.write_json(
-            "inputs",
-            ("source-state.json",),
-            source_state.as_dict(),
-            label="source-state snapshot at OA design synchronization start",
+            source=artifact_source_state(spec.project_root),
         )
     hierarchy_plan = plan_hierarchy(spec.netlist_snapshot, top=spec.cell)
     device_map = _write_standard_spicein_device_map(attempt)
@@ -414,7 +407,6 @@ def _sync_existing_design_target_only_impl(
             raise RuntimeError("disposable target-only sync requires a work scope")
         attempt: Any = _disposable_work
     else:
-        source_state = inspect_source_state(spec.project_root)
         attempt = ArtifactRecord.begin(
             paths.artifacts.execution(
                 owner=spec.library,
@@ -428,13 +420,7 @@ def _sync_existing_design_target_only_impl(
             entities={"library": spec.library, "cell": spec.cell},
             operation="sync-existing-design-target-only",
             backend="virtuoso-oa",
-            source_fingerprint=design_identity_fingerprint(spec),
-        )
-        attempt.write_json(
-            "inputs",
-            ("source-state.json",),
-            source_state.as_dict(),
-            label="source-state snapshot at target-only OA synchronization start",
+            source=artifact_source_state(spec.project_root),
         )
     operation = None
     device_map = _write_standard_spicein_device_map(attempt)

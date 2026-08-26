@@ -523,14 +523,7 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
                     "run_id": result.run_id,
                     "run_dir": str(result.run_dir),
                     "manifest": str(result.manifest_path),
-                    "source_fingerprint": result.source_fingerprint,
-                    "semantic_fingerprint": result.semantic_fingerprint,
-                    "oa_materialization_fingerprint": (
-                        result.oa_materialization_fingerprint
-                    ),
-                    "elaborated_netlist_fingerprint": (
-                        result.elaborated_netlist_fingerprint
-                    ),
+                    "elaborated_netlist": str(result.elaborated_netlist),
                     "result_database_export": (
                         str(result.result_database_export)
                     ),

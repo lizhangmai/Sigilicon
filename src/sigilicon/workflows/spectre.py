@@ -26,6 +26,7 @@ from sigilicon.external_tools import (
 )
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.operation_journal import write_operation_incident
+from sigilicon.workflows.source_control import artifact_source_state
 from sigilicon.workflows.virtuoso_operations import export_project_netlist
 
 
@@ -46,14 +47,12 @@ class SpectreExecution:
 
 @dataclass(frozen=True)
 class SpectreArtifactContext:
-    """Generic identity inputs for a design-owned direct-Spectre run."""
+    """Repository and design coordinates for a direct-Spectre run."""
 
     project_root: Path
     library: str
     cell: str
     testbench: str
-    source_fingerprint: str
-    setup_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -88,7 +87,6 @@ class SpectreRunResult:
     raw_curve: Path | None
     passed: bool
     condition: Mapping[str, object]
-    run_fingerprint: str
 
 
 class MeasurementContractFailure(RuntimeError):
@@ -384,7 +382,6 @@ def run_spectre_measurement(
     *,
     kind: str,
     condition: Mapping[str, object],
-    run_fingerprint: str,
     inputs: Sequence[StagedSpectreInput],
     external_input_references: Mapping[str, Any],
     render: Callable[[Mapping[str, str]], str],
@@ -423,9 +420,7 @@ def run_spectre_measurement(
         },
         operation="direct-spectre-characterization",
         backend="spectre",
-        source_fingerprint=context.source_fingerprint,
-        setup_fingerprint=context.setup_fingerprint,
-        run_fingerprint=run_fingerprint,
+        source=artifact_source_state(context.project_root),
     )
     record.bind_operation(new_identity())
     try:
@@ -468,7 +463,6 @@ def run_spectre_measurement(
             raw_curve=raw,
             passed=bool(payload.get("passed")),
             condition=dict(condition),
-            run_fingerprint=run_fingerprint,
         )
         if not result.passed:
             raise MeasurementContractFailure("machine measurement contract failed", result)
@@ -489,7 +483,6 @@ def run_spectre_multi_measurement(
     *,
     kind: str,
     condition: Mapping[str, object],
-    run_fingerprint: str,
     inputs: Sequence[StagedSpectreInput],
     external_input_references: Mapping[str, Any],
     render: Callable[[Mapping[str, str]], str],
@@ -529,9 +522,7 @@ def run_spectre_multi_measurement(
         },
         operation="direct-spectre-characterization",
         backend="spectre",
-        source_fingerprint=context.source_fingerprint,
-        setup_fingerprint=context.setup_fingerprint,
-        run_fingerprint=run_fingerprint,
+        source=artifact_source_state(context.project_root),
     )
     record.bind_operation(new_identity())
     try:
@@ -582,7 +573,6 @@ def run_spectre_multi_measurement(
             raw_curve=None,
             passed=bool(payload.get("passed")),
             condition=dict(condition),
-            run_fingerprint=run_fingerprint,
         )
         if not result.passed:
             raise MeasurementContractFailure("machine measurement contract failed", result)
@@ -605,7 +595,6 @@ def publish_measurement_summary(
     *,
     kind: str,
     condition: Mapping[str, object],
-    run_fingerprint: str,
     inputs: Sequence[StagedSpectreInput],
     result_files: Mapping[str, str],
     payload: Mapping[str, object],
@@ -631,9 +620,7 @@ def publish_measurement_summary(
         },
         operation="characterization-analysis",
         backend="analysis",
-        source_fingerprint=context.source_fingerprint,
-        setup_fingerprint=context.setup_fingerprint,
-        run_fingerprint=run_fingerprint,
+        source=artifact_source_state(context.project_root),
     )
     record.bind_operation(new_identity())
     try:
@@ -661,7 +648,6 @@ def publish_measurement_summary(
             raw_curve=None,
             passed=bool(payload.get("passed")),
             condition=dict(condition),
-            run_fingerprint=run_fingerprint,
         )
         if not result.passed:
             raise MeasurementContractFailure("derived measurement contract failed", result)

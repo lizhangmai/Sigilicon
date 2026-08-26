@@ -5,14 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 from typing import Any
 import uuid
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
-from sigilicon.domain.oa_simulation import oa_simulation_fingerprints
-from sigilicon.domain.provenance import digest
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
@@ -27,6 +24,7 @@ from sigilicon.workflows.oa_library import (
     check_oa_parity,
     plan_oa_library_rebuild,
 )
+from sigilicon.workflows.source_control import artifact_source_state
 
 
 @dataclass(frozen=True)
@@ -39,18 +37,15 @@ class OAMaestroRunResult:
     library: str
     testbench: str
     history: str
-    source_fingerprint: str
-    oa_materialization_fingerprint: str
-    elaborated_netlist_fingerprint: str
+    elaborated_netlist: Path
     result_database_export: Path
     normalized_result_database: Path
     run_summary: Path
     scalar_output_count: int
-    semantic_fingerprint: str = ""
 
 
-def _elaborated_netlist_fingerprint(work_dir: Path) -> str:
-    """Hash the unique final Cadence netlist content from one Maestro run."""
+def _elaborated_netlist(work_dir: Path, history: str) -> Path:
+    """Return the final netlist from the completed Maestro history."""
 
     ams_netlists = tuple(
         path for path in work_dir.rglob("netlist.vams") if path.is_file()
@@ -60,30 +55,31 @@ def _elaborated_netlist_fingerprint(work_dir: Path) -> str:
     # latter is not a second elaborated design and must not participate in the
     # identity comparison.  Current pure-Spectre Maestro runs emit their
     # elaborated design as ``netlist/spectre.inp``.
-    netlists = ams_netlists
-    if not netlists:
-        netlists = tuple(
+    candidates = ams_netlists
+    if not candidates:
+        candidates = tuple(
             path
             for path in work_dir.rglob("spectre.inp")
             if path.is_file()
             and path.parent.name == "netlist"
         )
-    if not netlists:
+    if not candidates:
         raise RuntimeError(
             "Maestro run did not produce an elaborated AMS or Spectre netlist"
         )
-    fingerprints = {
-        hashlib.sha256(path.read_bytes()).hexdigest(): path for path in netlists
-    }
-    if len(fingerprints) != 1:
-        details = [
-            {"path": str(path), "sha256": fingerprint}
-            for fingerprint, path in sorted(fingerprints.items())
-        ]
+    netlists = tuple(
+        path
+        for path in candidates
+        if history in path.parts
+        and "psf" not in path.parts
+        and not any(part.startswith(".tmpADEDir") for part in path.parts)
+    )
+    if len(netlists) != 1:
         raise RuntimeError(
-            f"Maestro run produced conflicting elaborated netlist content: {details}"
+            "Maestro run did not resolve one final netlist for history "
+            f"{history}: {[str(path) for path in candidates]}"
         )
-    return next(iter(fingerprints))
+    return netlists[0]
 
 
 def _run_native_oa_maestro_testbench(
@@ -93,10 +89,6 @@ def _run_native_oa_maestro_testbench(
     *,
     timeout: int,
 ) -> OAMaestroRunResult:
-    fingerprints = oa_simulation_fingerprints(
-        step.simulation,
-        step.canonical_source,
-    )
     owners = {
         cell.owner for cell in plan.source.cells if cell.cell == step.cell
     }
@@ -122,8 +114,7 @@ def _run_native_oa_maestro_testbench(
         },
         operation="canonical-oa-maestro-native-rdb",
         backend="virtuoso-maestro-spectre",
-        source_fingerprint=fingerprints.exact,
-        semantic_fingerprint=fingerprints.semantic,
+        source=artifact_source_state(plan.source.project_root),
     )
     try:
         result = _run_native_oa_maestro_testbench_impl(
@@ -140,11 +131,8 @@ def _run_native_oa_maestro_testbench(
             ),
             details={
                 "history": result.history,
-                "oa_materialization_fingerprint": (
-                    result.oa_materialization_fingerprint
-                ),
-                "elaborated_netlist_fingerprint": (
-                    result.elaborated_netlist_fingerprint
+                "elaborated_netlist": str(
+                    result.elaborated_netlist.relative_to(result.run_dir)
                 ),
             },
         )
@@ -229,30 +217,19 @@ def _run_native_oa_maestro_testbench_impl(
         raise RuntimeError(
             f"OA testbench parity check failed: {oa_check}"
         )
-    oa_materialization_fingerprint = digest(oa_check)
-    fingerprint = str(record.manifest["fingerprints"]["source"])
-    semantic_fingerprint = str(record.manifest["fingerprints"]["semantic"])
     record.copy_file("inputs", ("simulation.toml",), spec.path)
     record.copy_file("inputs", ("setup.il",), native_setup.source)
     record.copy_file("inputs", ("native_rdb.toml",), rdb_contract.path)
     record.copy_file("inputs", ("cell.toml",), spec.path.parent / "cell.toml")
-    rdb_contract_hasher = hashlib.sha256()
     for index, source in enumerate(
         (rdb_contract.path, *rdb_contract.support_sources)
     ):
-        label = f"{index:02d}-{source.name}".encode("utf-8")
-        payload = source.read_bytes()
-        rdb_contract_hasher.update(len(label).to_bytes(8, "big"))
-        rdb_contract_hasher.update(label)
-        rdb_contract_hasher.update(len(payload).to_bytes(8, "big"))
-        rdb_contract_hasher.update(payload)
         if index:
             record.copy_file(
                 "inputs",
                 ("support", f"{index:02d}-{source.name}"),
                 source,
             )
-    rdb_contract_fingerprint = rdb_contract_hasher.hexdigest()
     parsed_results: dict[str, Any] | None = None
     rdb_export = record.path("work", "maestro-rdb.tsv")
     paths = ProjectContext.from_project_root(plan.source.project_root)
@@ -307,8 +284,18 @@ def _run_native_oa_maestro_testbench_impl(
         )
         if parsed_results is None:
             raise RuntimeError("Maestro completed without an official RDB result")
-        elaborated_netlist_fingerprint = _elaborated_netlist_fingerprint(
-            record.paths.role("work")
+        final_netlist = _elaborated_netlist(
+            record.paths.role("work"), result.history
+        )
+        elaborated_netlist = record.copy_file(
+            "outputs",
+            (
+                "elaborated-netlist.vams"
+                if final_netlist.name == "netlist.vams"
+                else "elaborated-netlist.scs",
+            ),
+            final_netlist,
+            label="final Cadence elaborated netlist",
         )
         record.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
         result_export = record.copy_file(
@@ -339,9 +326,7 @@ def _run_native_oa_maestro_testbench_impl(
                 "testbench": step.cell,
                 "view": "maestro",
                 "history": result.history,
-                "source_fingerprint": fingerprint,
-                "semantic_fingerprint": semantic_fingerprint,
-                "native_rdb_contract_fingerprint": rdb_contract_fingerprint,
+                "source": record.manifest["source"],
                 "expected_rdb_identity": {
                     "point_count": rdb_contract.point_count,
                     "corners": list(rdb_contract.corners),
@@ -363,8 +348,9 @@ def _run_native_oa_maestro_testbench_impl(
                     else rdb_contract.diagnostic_equivalence.kind
                 ),
                 "diagnostic_scalar_count": len(rdb_contract.diagnostic_scalar_names),
-                "oa_materialization_fingerprint": oa_materialization_fingerprint,
-                "elaborated_netlist_fingerprint": elaborated_netlist_fingerprint,
+                "elaborated_netlist": str(
+                    elaborated_netlist.relative_to(record.paths.root)
+                ),
                 "result_source": "Cadence maeReadResDB/point->outputs",
                 "point_count": parsed_results["point_count"],
                 "expression_count": parsed_results["expression_count"],
@@ -394,14 +380,11 @@ def _run_native_oa_maestro_testbench_impl(
         library=plan.library,
         testbench=step.cell,
         history=result.history,
-        source_fingerprint=fingerprint,
-        oa_materialization_fingerprint=oa_materialization_fingerprint,
-        elaborated_netlist_fingerprint=elaborated_netlist_fingerprint,
+        elaborated_netlist=elaborated_netlist,
         result_database_export=result_export,
         normalized_result_database=parsed,
         run_summary=run_summary,
         scalar_output_count=int(parsed_results["expression_count"]),
-        semantic_fingerprint=semantic_fingerprint,
     )
 
 

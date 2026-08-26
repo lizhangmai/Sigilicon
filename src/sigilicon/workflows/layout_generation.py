@@ -22,7 +22,7 @@ from sigilicon.virtuoso.layout_generation import (
 )
 from sigilicon.virtuoso.provenance import oa_view_digest
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.source_control import inspect_source_state
+from sigilicon.workflows.source_control import artifact_source_state
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,6 @@ def rollback_generated_layout(
     """Delete exactly one generated pilot view after matching its provenance."""
 
     paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
-    source_state = inspect_source_state(spec.project_root)
     attempt = ArtifactRecord.begin(
         paths.artifacts.execution(
             owner=spec.library,
@@ -64,14 +63,7 @@ def rollback_generated_layout(
         entities={"library": spec.library, "cell": spec.cell, "view": spec.view},
         operation="rollback-generated-layout",
         backend="virtuoso-oa",
-        source_fingerprint=spec.source_fingerprint,
-        run_fingerprint=expected_fingerprint,
-    )
-    attempt.write_json(
-        "inputs",
-        ("source-state.json",),
-        source_state.as_dict(),
-        label="source-state snapshot at generated-layout rollback start",
+        source=artifact_source_state(spec.project_root),
     )
     attempt.write_json(
         "inputs",
@@ -231,7 +223,6 @@ def _generate_layout_impl(
             raise RuntimeError("disposable layout generation requires a work scope")
         attempt: Any = _disposable_work
     else:
-        source_state = inspect_source_state(spec.project_root)
         attempt = ArtifactRecord.begin(
             paths.artifacts.execution(
                 owner=spec.library,
@@ -245,14 +236,7 @@ def _generate_layout_impl(
             entities={"library": spec.library, "cell": spec.cell, "view": spec.view},
             operation="generate-layout",
             backend="laygo2+virtuoso-oa",
-            source_fingerprint=spec.source_fingerprint,
-            run_fingerprint=plan.fingerprint,
-        )
-        attempt.write_json(
-            "inputs",
-            ("source-state.json",),
-            source_state.as_dict(),
-            label="source-state snapshot at OA layout generation start",
+            source=artifact_source_state(spec.project_root),
         )
     attempt.copy_file(
         "inputs", ("layout.toml",), spec.path, label="canonical layout intent"

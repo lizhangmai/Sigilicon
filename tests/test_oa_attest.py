@@ -84,8 +84,6 @@ def test_cli_attest_reports_current_check_without_prior_state(
         "passed": True,
         "library": "fixture_lib",
         "testbench": "tb_main",
-        "source_fingerprint": "a" * 64,
-        "semantic_fingerprint": "b" * 64,
         "simulation_run": False,
         "product_qualification_conclusion": False,
     }

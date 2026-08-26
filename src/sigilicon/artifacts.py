@@ -20,7 +20,6 @@ from sigilicon.paths import (
     operation_incident_reference,
     validate_artifact_component,
     validate_artifact_id,
-    validate_fingerprint,
 )
 
 
@@ -326,7 +325,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "created_at",
         "completed_at",
         "status",
-        "fingerprints",
+        "source",
         "files",
         "partial_failure",
         "uncertain_reason",
@@ -349,9 +348,12 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         validate_artifact_id(run_id if run_id is not None else attempt_id, "execution id")
     except ValueError as exc:
         raise ArtifactManifestError(str(exc)) from exc
-    for field_name in ("entities", "fingerprints", "files"):
+    for field_name in ("entities", "files"):
         if not isinstance(value.get(field_name), dict):
             raise ArtifactManifestError(f"manifest {field_name} must be an object")
+    source = value.get("source")
+    if source is not None and not isinstance(source, dict):
+        raise ArtifactManifestError("manifest source must be an object or null")
     artifact_kind = value.get("artifact_kind")
     if artifact_kind not in ARTIFACT_ROLES:
         raise ArtifactManifestError(f"unsupported artifact_kind: {artifact_kind!r}")
@@ -388,20 +390,6 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             validate_artifact_component(component, f"entity {label}")
         except ValueError as exc:
             raise ArtifactManifestError(str(exc)) from exc
-    fingerprints = value["fingerprints"]
-    if set(fingerprints) not in (
-        {"source", "setup", "run"},
-        {"source", "setup", "run", "semantic"},
-    ):
-        raise ArtifactManifestError(
-            "manifest fingerprints must contain source/setup/run and may contain semantic"
-        )
-    for label, fingerprint in fingerprints.items():
-        if fingerprint is not None:
-            try:
-                validate_fingerprint(fingerprint, f"{label} fingerprint")
-            except ValueError as exc:
-                raise ArtifactManifestError(str(exc)) from exc
     files = value["files"]
     if set(files) != ARTIFACT_ROLES[artifact_kind]:
         raise ArtifactManifestError(
@@ -421,19 +409,20 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             kind = reference.get("kind")
             if kind not in {"file", "directory"}:
                 raise ArtifactManifestError("manifest file reference has invalid kind")
-            sha256 = reference.get("sha256")
             size = reference.get("size")
             if kind == "file" and (
-                not isinstance(sha256, str)
-                or not re_full_sha256(sha256)
+                set(reference).difference({"path", "kind", "size", "label"})
                 or not isinstance(size, int)
                 or isinstance(size, bool)
                 or size < 0
             ):
-                raise ArtifactManifestError("manifest file reference has invalid digest or size")
-            if kind == "directory" and (sha256 is not None or size is not None):
+                raise ArtifactManifestError("manifest file reference has invalid metadata")
+            if kind == "directory" and (
+                set(reference).difference({"path", "kind", "label"})
+                or "size" in reference
+            ):
                 raise ArtifactManifestError(
-                    "manifest directory reference cannot have a digest or size"
+                    "manifest directory reference cannot have file metadata"
                 )
             registered_paths.add(relative)
     completion_evidence = value.get("completion_evidence")
@@ -515,10 +504,6 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(_read_nofollow_bytes(path)).hexdigest()
 
 
-def re_full_sha256(value: str) -> bool:
-    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-
-
 @dataclass
 class ArtifactRecord:
     """Mutable handle to one immutable-identity run or attempt manifest."""
@@ -526,6 +511,9 @@ class ArtifactRecord:
     paths: ArtifactExecutionPaths
     manifest: dict[str, Any]
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    _file_states: dict[str, tuple[int, int, int]] = field(
+        default_factory=dict, repr=False
+    )
 
     @classmethod
     def begin(
@@ -535,19 +523,9 @@ class ArtifactRecord:
         entities: Mapping[str, str],
         operation: str,
         backend: str,
-        source_fingerprint: str | None = None,
-        semantic_fingerprint: str | None = None,
-        setup_fingerprint: str | None = None,
-        run_fingerprint: str | None = None,
+        source: Mapping[str, Any] | None = None,
     ) -> "ArtifactRecord":
         files = {role: [] for role in paths.roles}
-        fingerprints = {
-            "source": source_fingerprint,
-            "setup": setup_fingerprint,
-            "run": run_fingerprint,
-        }
-        if semantic_fingerprint is not None:
-            fingerprints["semantic"] = semantic_fingerprint
         manifest = {
             "artifact_kind": paths.artifact_kind,
             "entities": dict(entities),
@@ -559,7 +537,7 @@ class ArtifactRecord:
             "created_at": utc_now(),
             "completed_at": None,
             "status": "running",
-            "fingerprints": fingerprints,
+            "source": None if source is None else dict(source),
             "files": files,
             "partial_failure": None,
             "uncertain_reason": None,
@@ -608,21 +586,22 @@ class ArtifactRecord:
             )
             metadata = candidate.stat(follow_symlinks=False)
             if stat.S_ISREG(metadata.st_mode):
-                payload = _read_nofollow_bytes(candidate)
                 reference = {
                     "path": candidate.relative_to(self.paths.root).as_posix(),
                     "kind": "file",
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                    "size": len(payload),
+                    "size": metadata.st_size,
                 }
+                self._file_states[reference["path"]] = (
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                )
             elif stat.S_ISDIR(metadata.st_mode):
                 descriptor = _open_nofollow_directory(candidate, create_missing=False)
                 os.close(descriptor)
                 reference = {
                     "path": candidate.relative_to(self.paths.root).as_posix(),
                     "kind": "directory",
-                    "sha256": None,
-                    "size": None,
                 }
             else:
                 raise RuntimeError(f"artifact reference does not exist: {candidate}")
@@ -736,11 +715,15 @@ class ArtifactRecord:
                     raise RuntimeError(
                         f"completion evidence is not registered in manifest: {relative}"
                     )
-                payload = _read_nofollow_bytes(candidate)
+                metadata = candidate.stat(follow_symlinks=False)
+                current_state = (
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                )
                 if (
                     registered["kind"] != "file"
-                    or registered["size"] != len(payload)
-                    or registered["sha256"] != hashlib.sha256(payload).hexdigest()
+                    or self._file_states.get(relative) != current_state
                 ):
                     raise RuntimeError(
                         f"completion evidence changed after registration: {relative}"
