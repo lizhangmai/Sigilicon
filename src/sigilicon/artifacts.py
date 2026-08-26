@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import os
 import stat
@@ -498,10 +497,6 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     return validate_manifest(read_json_object(path, "artifact manifest"))
-
-
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(_read_nofollow_bytes(path)).hexdigest()
 
 
 @dataclass

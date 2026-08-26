@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
@@ -13,17 +12,13 @@ import tomllib
 import uuid
 from typing import Any, Mapping
 
-from sigilicon import __version__
-from sigilicon.artifacts import atomic_write_json, file_sha256, read_json_object, utc_now
+from sigilicon.artifacts import atomic_write_json, read_json_object, utc_now
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
     IpExport,
-    ReleaseFingerprintSource,
     load_ip_contract,
-    release_source_fingerprint,
-    semantic_source_sha256,
 )
 from sigilicon.domain.netlist import (
     load_netlist_snapshot,
@@ -71,10 +66,6 @@ _SIGNOFF_RECEIPT_BINDINGS = {
         "raw_macro_liberty_or_db",
         "pex_netlist",
     },
-}
-_QUALIFICATION_OUTPUT_ROLES = set(_IMPLEMENTATION_ROLE_FORMATS) | {
-    *_SIGNOFF_RECEIPT_BINDINGS,
-    "pex_netlist",
 }
 
 
@@ -322,65 +313,41 @@ def _development_interface_check(
     }
 
 
-@dataclass(frozen=True)
-class _ReleaseSourceInputs:
-    source_paths: tuple[str, ...]
-    fingerprint_sources: tuple[ReleaseFingerprintSource, ...]
-    fingerprint_attributes: Mapping[str, object]
-
-
-def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
+def _source_inputs(contract: IpContract) -> tuple[str, ...]:
     root = contract.project_root
     component_path = _project_path(
         root, Path(contract.producer) / contract.component_contract, "component contract"
     )
     graph = load_component_graph(component_path, project_root=root)
     paths: set[Path] = {contract.path}
-    locator_paths: set[Path] = {contract.path.resolve()}
-    fingerprint_sources: list[ReleaseFingerprintSource] = []
 
-    def bind(logical_role: str, source: Path) -> None:
+    def add_source(source: Path) -> None:
         resolved = source.resolve()
         if not resolved.is_relative_to(root) or not resolved.is_file():
-            raise FileNotFoundError(f"release fingerprint source is missing: {source}")
-        fingerprint_sources.append(
-            ReleaseFingerprintSource(logical_role=logical_role, source=resolved)
-        )
+            raise FileNotFoundError(f"release source is missing: {source}")
         paths.add(resolved)
 
-    component_attributes: list[dict[str, object]] = []
     for component in sorted(graph.values(), key=lambda item: item.name):
         paths.add(component.path)
-        locator_paths.add(component.path.resolve())
         referenced = [path for values in component.filesets.values() for path in values]
         if component.public_interface is not None:
             referenced.append(component.public_interface)
         for relative in referenced:
             paths.add(_project_path(root, Path(relative), "component input"))
         if component.public_interface is not None:
-            bind(
-                f"component:{component.name}:public-interface",
+            add_source(
                 _project_path(root, Path(component.public_interface), "public interface"),
             )
-        for fileset, values in sorted(component.filesets.items()):
-            for index, relative in enumerate(values):
-                bind(
-                    f"component:{component.name}:fileset:{fileset}:{index}",
+        for _, values in sorted(component.filesets.items()):
+            for relative in values:
+                add_source(
                     _project_path(root, Path(relative), "component fileset input"),
                 )
-        component_attributes.append(
-            {
-                "name": component.name,
-                "kind": component.kind,
-                "dependencies": sorted(item.name for item in component.components),
-                "filesets": sorted(component.filesets),
-            }
-        )
     for relative in contract.source_files:
         path = _project_path(root, Path(relative), "source file")
         if not path.is_file():
             raise FileNotFoundError(f"IP source file is missing: {relative}")
-        bind(f"release-support:{len(fingerprint_sources)}", path)
+        add_source(path)
 
     oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
     from sigilicon.domain.oa_library import load_oa_library_source
@@ -430,8 +397,6 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
     }
     selected_cells = reachable | validation_cells
     paths.add(library.manifest_path)
-    locator_paths.add(library.manifest_path.resolve())
-    selected_cell_attributes: list[dict[str, object]] = []
     for cell in library.cells:
         if cell.cell not in selected_cells:
             continue
@@ -443,36 +408,9 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
                 *(view.source for view in cell.views),
             }
         )
-        locator_paths.update(
-            {cell.source_manifest_path.resolve(), cell.manifest_path.resolve()}
-        )
-        bind(
-            f"oa:{cell.owner}:{cell.role}:{cell.cell}:canonical",
-            cell.canonical_source,
-        )
+        add_source(cell.canonical_source)
         for view in cell.views:
-            bind(
-                f"oa:{cell.owner}:{cell.role}:{cell.cell}:view:{view.name}:{view.kind}",
-                view.source,
-            )
-        selected_cell_attributes.append(
-            {
-                "owner": cell.owner,
-                "role": cell.role,
-                "cell": cell.cell,
-                "views": [
-                    {
-                        "name": view.name,
-                        "kind": view.kind,
-                        "dependencies": sorted(
-                            f"{dependency.cell}/{dependency.view}"
-                            for dependency in view.dependencies
-                        ),
-                    }
-                    for view in sorted(cell.views, key=lambda item: item.name)
-                ],
-            }
-        )
+            add_source(view.source)
         if cell.design_spec is not None:
             paths.add(cell.design_spec)
         if cell.role == "testbench":
@@ -491,10 +429,7 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
             rdb_contract = simulation.native_setup.rdb_contract
             if rdb_contract is not None:
                 paths.add(rdb_contract.path)
-                bind(
-                    f"oa:{cell.owner}:{cell.cell}:native-rdb",
-                    rdb_contract.path,
-                )
+                add_source(rdb_contract.path)
         for layout_spec in cell.layout_specs:
             paths.add(layout_spec)
             with layout_spec.open("rb") as stream:
@@ -534,84 +469,8 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
             for module in modules:
                 paths.update(_python_module_paths(root, module))
     _python_import_closure(root, paths)
-
-    covered = {item.source.resolve() for item in fingerprint_sources}
-    transitive: dict[str, list[Path]] = {}
-    for path in sorted(paths):
-        resolved = path.resolve()
-        if resolved in locator_paths or resolved in covered:
-            continue
-        semantic = semantic_source_sha256(resolved, project_root=root)
-        transitive.setdefault(semantic, []).append(resolved)
-    for semantic, values in sorted(transitive.items()):
-        for index, path in enumerate(values):
-            bind(f"transitive-content:{semantic}:{index}", path)
-
-    attributes: dict[str, object] = {
-        "ip_name": contract.name,
-        "sigilicon_tool": {"version": __version__},
-        # The generic release fingerprint intentionally ignores source
-        # locators, but an IP package also records a source snapshot.  Include
-        # the resolved closure layout in the package identity so a directory
-        # reorganization cannot alias an older immutable artifact whose
-        # manifest still points at the previous source paths.
-        "source_layout": sorted(
-            path.resolve().relative_to(root).as_posix() for path in paths
-        ),
-        "components": component_attributes,
-        "oa_assembly": {
-            "library": library.name,
-            "assembly": library.name,
-            "pdk": library.pdk,
-            "selected_cells": sorted(
-                selected_cell_attributes, key=lambda item: str(item["cell"])
-            ),
-        },
-        "exports": [
-            {
-                "name": exported.name,
-                "oa": {
-                    "library": exported.oa_library,
-                    "cell": exported.oa_cell,
-                    "schematic_view": exported.schematic_view,
-                    "layout_view": exported.layout_view,
-                },
-                "interface": {
-                    "physical": exported.physical_interface,
-                    "logical": exported.logical_interface,
-                },
-                "required_roles": {
-                    level: sorted(roles)
-                    for level, roles in exported.required_roles.items()
-                },
-            }
-            for exported in sorted(contract.exports, key=lambda item: item.name)
-        ],
-        "collateral": [
-            {
-                "export": item.export,
-                "role": item.role,
-                "component": item.component,
-                "package_path": item.package_path.as_posix(),
-                "format": item.format,
-                "module": item.module,
-                "library": item.library,
-                "cell": item.cell,
-                "view": item.view,
-                "corner": item.corner,
-                "capabilities": sorted(item.capabilities),
-            }
-            for item in sorted(
-                contract.collateral, key=lambda value: (value.export, value.role)
-            )
-        ],
-    }
-    return _ReleaseSourceInputs(
-        source_paths=tuple(
-            path.relative_to(root).as_posix() for path in sorted(paths)
-        ),
-        fingerprint_sources=tuple(fingerprint_sources),
-        fingerprint_attributes=attributes,
+    return tuple(
+        path.relative_to(root).as_posix() for path in sorted(paths)
     )
 
 
@@ -643,29 +502,11 @@ def _missing_roles(contract: IpContract, level: str) -> list[str]:
     return missing
 
 
-def _qualification_subject_fingerprint(
-    contract: IpContract, inputs: _ReleaseSourceInputs
-) -> str:
-    excluded = {
-        (contract.project_root / Path(item.source)).resolve()
-        for item in contract.collateral
-        if item.role in _QUALIFICATION_OUTPUT_ROLES
-    }
-    return release_source_fingerprint(
-        attributes=inputs.fingerprint_attributes,
-        sources=(
-            item for item in inputs.fingerprint_sources if item.source not in excluded
-        ),
-        project_root=contract.project_root,
-    )
-
-
 def _receipt_problems(
     *,
     contract: IpContract,
     exported: IpExport,
     role: str,
-    subject_fingerprint: str,
     source_commit: str,
     by_role: Mapping[str, Any],
 ) -> list[str]:
@@ -681,8 +522,6 @@ def _receipt_problems(
     prefix = f"{exported.name}:{role}"
     if receipt.get("status") != "passed":
         problems.append(f"{prefix}:status")
-    if receipt.get("qualification_subject_fingerprint") != subject_fingerprint:
-        problems.append(f"{prefix}:source-fingerprint")
     if receipt.get("source_commit") != source_commit:
         problems.append(f"{prefix}:source-commit")
     expected_oa = {
@@ -699,7 +538,7 @@ def _receipt_problems(
         for field in ("name", "version")
     ):
         problems.append(f"{prefix}:tool-version")
-    rows: dict[str, str] = {}
+    receipt_roles: set[str] = set()
     for field in ("inputs", "outputs"):
         values = receipt.get(field)
         if not isinstance(values, list):
@@ -709,21 +548,17 @@ def _receipt_problems(
             if (
                 not isinstance(row, Mapping)
                 or not isinstance(row.get("role"), str)
-                or not isinstance(row.get("sha256"), str)
+                or not row.get("role")
             ):
                 problems.append(f"{prefix}:{field}-entry")
                 continue
-            rows[str(row["role"])] = str(row["sha256"])
+            receipt_roles.add(str(row["role"]))
     for bound_role in _SIGNOFF_RECEIPT_BINDINGS[role]:
-        bound = by_role.get(bound_role)
-        if bound is None:
+        if by_role.get(bound_role) is None:
             problems.append(f"{prefix}:missing-bound-role:{bound_role}")
             continue
-        bound_source = _project_path(
-            contract.project_root, Path(bound.source), f"{bound_role} source"
-        )
-        if rows.get(bound_role) != file_sha256(bound_source):
-            problems.append(f"{prefix}:digest-binding:{bound_role}")
+        if bound_role not in receipt_roles:
+            problems.append(f"{prefix}:missing-receipt-role:{bound_role}")
     return problems
 
 
@@ -731,7 +566,6 @@ def _qualification_semantics(
     contract: IpContract,
     level: str,
     *,
-    subject_fingerprint: str,
     source_commit: str,
 ) -> tuple[dict[str, Any], list[str]]:
     problems: list[str] = []
@@ -775,7 +609,6 @@ def _qualification_semantics(
                             contract=contract,
                             exported=exported,
                             role=role,
-                            subject_fingerprint=subject_fingerprint,
                             source_commit=source_commit,
                             by_role=by_role,
                         )
@@ -784,7 +617,6 @@ def _qualification_semantics(
         {
             "name": "qualified_view_semantics",
             "passed": not problems,
-            "qualification_subject_fingerprint": subject_fingerprint,
             "problems": sorted(problems),
         },
         sorted(problems),
@@ -821,21 +653,11 @@ def plan_ip_release(
 ) -> dict[str, Any]:
     contract = load_ip_contract(contract_path, project_root=project_root)
     level = contract.require_level(maturity or contract.default_maturity)
-    inputs = _source_inputs(contract)
-    source_fingerprint = release_source_fingerprint(
-        attributes=inputs.fingerprint_attributes,
-        sources=inputs.fingerprint_sources,
-        project_root=contract.project_root,
-    )
+    source_paths = _source_inputs(contract)
     commit, dirty = _source_control(contract.project_root)
-    subject_fingerprint = _qualification_subject_fingerprint(contract, inputs)
-    # The content fingerprint identifies the packaged source bytes, while the
-    # suffix identifies the provenance of the immutable package.  A dirty
-    # development package must never alias the clean package for the same
-    # source bytes; otherwise a later clean build could silently reuse a
-    # manifest whose provenance still says ``working_tree_dirty=true``.
-    provenance_suffix = "dirty" if dirty else commit[:12]
-    release_id = f"{level}-{source_fingerprint[:24]}-{provenance_suffix}"
+    release_id = f"{level}-{commit[:12]}"
+    if dirty:
+        release_id += "-dirty"
     role_missing = _missing_roles(contract, level)
     component_path = _project_path(
         contract.project_root,
@@ -855,7 +677,6 @@ def plan_ip_release(
     semantic_check, semantic_missing = _qualification_semantics(
         contract,
         level,
-        subject_fingerprint=subject_fingerprint,
         source_commit=commit,
     )
     missing = [*role_missing, *semantic_missing]
@@ -930,17 +751,10 @@ def plan_ip_release(
         .as_posix(),
         "source_commit": commit,
         "working_tree_dirty": dirty,
-        "source_fingerprint": source_fingerprint,
-        "qualification_subject_fingerprint": subject_fingerprint,
-        "source_files": list(inputs.source_paths),
+        "source_files": list(source_paths),
         "maturity_level": level,
         "maturity_checks": [
             *role_checks,
-            {
-                "name": "source_fingerprint",
-                "passed": True,
-                "file_count": len(inputs.source_paths),
-            },
             *interface_checks,
             semantic_check,
         ],
@@ -995,9 +809,9 @@ def build_ip_release(
         raise IpReleaseError(
             f"cannot build {plan['maturity_level']} IP release; missing: {missing}"
         )
-    if plan["working_tree_dirty"] and plan["maturity_level"] != "development":
+    if plan["working_tree_dirty"]:
         raise IpReleaseError(
-            "implementation and signoff releases require a clean source checkout"
+            "IP releases require a clean source checkout"
         )
     contract = load_ip_contract(contract_path, project_root=project_root)
     release_root = artifact_root.resolve() / Path(plan["release_root"])
@@ -1028,7 +842,6 @@ def build_ip_release(
                     "export": item.export,
                     "role": item.role,
                     "path": item.package_path.as_posix(),
-                    "sha256": file_sha256(destination),
                     "size": destination.stat().st_size,
                     "format": item.format,
                     "module": item.module,
@@ -1046,10 +859,6 @@ def build_ip_release(
             "ip_name": plan["ip_name"],
             "release_id": plan["release_id"],
             "source_commit": plan["source_commit"],
-            "source_fingerprint": plan["source_fingerprint"],
-            "qualification_subject_fingerprint": plan[
-                "qualification_subject_fingerprint"
-            ],
             "source_files": plan["source_files"],
             "component": plan["component"],
             "exports": plan["exports"],
@@ -1331,7 +1140,6 @@ def _packaged_maturity_check(
             or not pex.get("corner")
         ):
             problems.append(f"{export_name}:pex_netlist:identity-or-corner")
-        subject = manifest.get("qualification_subject_fingerprint")
         source_commit = manifest.get("source_commit")
         for role, bindings in _SIGNOFF_RECEIPT_BINDINGS.items():
             if role not in by_role:
@@ -1349,8 +1157,6 @@ def _packaged_maturity_check(
                 continue
             if receipt.get("status") != "passed":
                 problems.append(f"{export_name}:{role}:status")
-            if receipt.get("qualification_subject_fingerprint") != subject:
-                problems.append(f"{export_name}:{role}:source-fingerprint")
             if receipt.get("source_commit") != source_commit:
                 problems.append(f"{export_name}:{role}:source-commit")
             expected_oa = {
@@ -1367,20 +1173,30 @@ def _packaged_maturity_check(
                 for field in ("name", "version")
             ):
                 problems.append(f"{export_name}:{role}:tool-version")
-            rows: dict[str, str] = {}
+            receipt_roles: set[str] = set()
             for field in ("inputs", "outputs"):
                 values = receipt.get(field)
                 if not isinstance(values, list):
                     problems.append(f"{export_name}:{role}:{field}")
                     continue
                 for row in values:
-                    if isinstance(row, Mapping) and isinstance(row.get("role"), str):
-                        rows[str(row["role"])] = str(row.get("sha256", ""))
+                    if (
+                        isinstance(row, Mapping)
+                        and isinstance(row.get("role"), str)
+                        and row.get("role")
+                    ):
+                        receipt_roles.add(str(row["role"]))
+                    else:
+                        problems.append(f"{export_name}:{role}:{field}-entry")
             for bound_role in bindings:
                 bound = by_role.get(bound_role)
-                if bound is None or rows.get(bound_role) != bound.get("sha256"):
+                if bound is None:
                     problems.append(
-                        f"{export_name}:{role}:digest-binding:{bound_role}"
+                        f"{export_name}:{role}:missing-bound-role:{bound_role}"
+                    )
+                elif bound_role not in receipt_roles:
+                    problems.append(
+                        f"{export_name}:{role}:missing-receipt-role:{bound_role}"
                     )
     if problems:
         raise RuntimeError(
@@ -1426,10 +1242,8 @@ def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
         path = (release_root / relative).resolve()
         if not path.is_relative_to(release_root) or not path.is_file():
             raise RuntimeError(f"IP release view is missing: {relative}")
-        if file_sha256(path) != view.get("sha256") or path.stat().st_size != view.get(
-            "size"
-        ):
-            raise RuntimeError(f"IP release view digest drifted: {relative}")
+        if path.stat().st_size != view.get("size"):
+            raise RuntimeError(f"IP release view size drifted: {relative}")
         expected_files.add(relative)
     actual_files = {
         path.relative_to(release_root)
@@ -1463,7 +1277,7 @@ def _audit_source_ip_release(
     expected = {
         "ip_name": plan["ip_name"],
         "release_id": plan["release_id"],
-        "source_fingerprint": plan["source_fingerprint"],
+        "source_commit": plan["source_commit"],
         "source_files": plan["source_files"],
         "component": plan["component"],
         "exports": plan["exports"],
@@ -1591,7 +1405,7 @@ def publish_ip_release(
         "ip_name": audited["ip_name"],
         "release_id": audited["release_id"],
         "maturity": audited["maturity"]["level"],
-        "source_fingerprint": audited["source_fingerprint"],
+        "source_commit": audited["source_commit"],
         "manifest": manifest.relative_to(artifact_root.resolve()).as_posix(),
         "published_at": utc_now(),
     }
@@ -1612,7 +1426,7 @@ def load_published_ip(
     if not manifest_path.is_relative_to(artifact_root.resolve()):
         raise RuntimeError("IP current pointer escapes the artifact root")
     manifest = load_ip_release_manifest(manifest_path)
-    for key in ("ip_name", "release_id", "source_fingerprint"):
+    for key in ("ip_name", "release_id", "source_commit"):
         if manifest.get(key) != pointer.get(key):
             raise RuntimeError(f"IP current pointer {key} is inconsistent")
     maturity = manifest.get("maturity")

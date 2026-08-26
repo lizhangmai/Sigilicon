@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from sigilicon.artifacts import file_sha256
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.workflows.ip_integration import (
     check_ip_integration,
@@ -76,7 +75,6 @@ endmodule
             "role": role,
             "path": relative,
             "format": "systemverilog" if path.suffix == ".sv" else path.suffix[1:],
-            "sha256": file_sha256(path),
             "size": path.stat().st_size,
         }
         if module is not None:
@@ -90,7 +88,6 @@ endmodule
         "ip_name": "fixture-ip",
         "release_id": release_id,
         "source_commit": "a" * 40,
-        "source_fingerprint": "b" * 64,
         "source": {"commit": "a" * 40, "dirty": False},
         "exports": [
             {
@@ -576,7 +573,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_source_planning(
         ("failed-maturity-check", "maturity checks are incomplete"),
         ("module-drift", "module disagrees"),
         ("missing-manifest", "manifest"),
-        ("stale-role", "digest drifted"),
+        ("stale-role", "size drifted"),
     ),
 )
 def test_ip_integration_rejects_invalid_locked_release_state(

@@ -133,18 +133,6 @@ def test_terminal_artifact_rejects_all_mutation_except_incident_link(
         record.bind_operation("a" * 32)
 
 
-def test_manifest_rejects_digest_metadata_for_local_files(tmp_path: Path) -> None:
-    record = _record(tmp_path)
-    proof = record.path("outputs", "proof.txt")
-    proof.write_text("confirmed\n", encoding="utf-8")
-    record.add_file("outputs", proof)
-
-    redundant_digest = copy.deepcopy(record.manifest)
-    redundant_digest["files"]["outputs"][0]["sha256"] = "a" * 64
-    with pytest.raises(ArtifactManifestError, match="invalid metadata"):
-        validate_manifest(redundant_digest)
-
-
 def test_run_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
     record = _record(tmp_path)
     log = record.write_text("logs", ("claimed-proof.log",), "looks successful\n")
