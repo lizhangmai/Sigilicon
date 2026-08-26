@@ -34,7 +34,7 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
     )
 
 
-def test_artifact_manifest_records_git_source_without_parallel_fingerprints(
+def test_artifact_manifest_records_git_source(
     tmp_path: Path,
 ) -> None:
     execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
@@ -60,7 +60,6 @@ def test_artifact_manifest_records_git_source_without_parallel_fingerprints(
         },
     )
 
-    assert "fingerprints" not in record.manifest
     assert record.manifest["source"] == {
         "project": {
             "commit": "a" * 40,

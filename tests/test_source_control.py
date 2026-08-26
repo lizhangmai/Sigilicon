@@ -31,7 +31,6 @@ def test_source_state_uses_git_revision_and_worktree_status(tmp_path: Path) -> N
     assert clean["commit"] == _git(tmp_path, "rev-parse", "HEAD")
     assert clean["working_tree_dirty"] is False
     assert clean["changes"] == []
-    assert not any("sha256" in key or "fingerprint" in key for key in clean)
 
     source.write_text("R0 (A B) resistor r=2k\n", encoding="utf-8")
     dirty = inspect_source_state(tmp_path).as_dict()

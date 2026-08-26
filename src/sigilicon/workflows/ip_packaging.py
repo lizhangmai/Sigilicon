@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -26,7 +25,6 @@ from sigilicon.domain.ip_release import (
     release_source_fingerprint,
     semantic_source_sha256,
 )
-from sigilicon.domain.provenance import digest
 from sigilicon.domain.netlist import (
     load_netlist_snapshot,
     parse_subcircuit_definitions,
@@ -108,22 +106,6 @@ def _python_module_paths(root: Path, module: str) -> set[Path]:
                 paths.add(initializer.resolve())
         return paths
     return set()
-
-
-def _sigilicon_tool_identity() -> dict[str, str]:
-    """Return path-independent identity for the installed workflow implementation."""
-
-    package_root = Path(__file__).resolve().parents[1]
-    sources = sorted(package_root.rglob("*.py"))
-    return {
-        "version": __version__,
-        "source_sha256": digest(
-            {
-                path.relative_to(package_root).as_posix(): file_sha256(path)
-                for path in sources
-            }
-        ),
-    }
 
 
 def _python_import_closure(root: Path, paths: set[Path]) -> None:
@@ -342,7 +324,7 @@ def _development_interface_check(
 
 @dataclass(frozen=True)
 class _ReleaseSourceInputs:
-    files: Mapping[str, str]
+    source_paths: tuple[str, ...]
     fingerprint_sources: tuple[ReleaseFingerprintSource, ...]
     fingerprint_attributes: Mapping[str, object]
 
@@ -567,7 +549,7 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
 
     attributes: dict[str, object] = {
         "ip_name": contract.name,
-        "sigilicon_tool": _sigilicon_tool_identity(),
+        "sigilicon_tool": {"version": __version__},
         # The generic release fingerprint intentionally ignores source
         # locators, but an IP package also records a source snapshot.  Include
         # the resolved closure layout in the package identity so a directory
@@ -625,10 +607,9 @@ def _source_inputs(contract: IpContract) -> _ReleaseSourceInputs:
         ],
     }
     return _ReleaseSourceInputs(
-        files={
-            path.relative_to(root).as_posix(): file_sha256(path)
-            for path in sorted(paths)
-        },
+        source_paths=tuple(
+            path.relative_to(root).as_posix() for path in sorted(paths)
+        ),
         fingerprint_sources=tuple(fingerprint_sources),
         fingerprint_attributes=attributes,
     )
@@ -951,14 +932,14 @@ def plan_ip_release(
         "working_tree_dirty": dirty,
         "source_fingerprint": source_fingerprint,
         "qualification_subject_fingerprint": subject_fingerprint,
-        "source_files": inputs.files,
+        "source_files": list(inputs.source_paths),
         "maturity_level": level,
         "maturity_checks": [
             *role_checks,
             {
                 "name": "source_fingerprint",
                 "passed": True,
-                "file_count": len(inputs.files),
+                "file_count": len(inputs.source_paths),
             },
             *interface_checks,
             semantic_check,
@@ -1109,11 +1090,11 @@ def _load_release(release_root: Path) -> dict[str, Any]:
 
 
 def load_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
-    """Load one exact immutable release manifest without consulting a channel pointer."""
+    """Load and audit one immutable release without consulting a channel pointer."""
 
     if manifest_path.name != "manifest.json" or not manifest_path.is_file():
         raise FileNotFoundError(f"IP release manifest is missing: {manifest_path}")
-    return _load_release(manifest_path.parent)
+    return audit_ip_release_manifest(manifest_path)
 
 
 def _manifest_exports(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -1411,7 +1392,7 @@ def _packaged_maturity_check(
 def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Audit an exact immutable package without consulting producer source."""
 
-    manifest = load_ip_release_manifest(manifest_path)
+    manifest = _load_release(manifest_path.parent)
     if (
         manifest.get("schema") != 1
         or manifest.get("contract_kind") != "ip-release-manifest"
@@ -1526,8 +1507,6 @@ def _audit_source_ip_release(
         path = (release_root / relative).resolve()
         if not path.is_relative_to(release_root.resolve()) or not path.is_file():
             raise RuntimeError(f"IP release view is missing: {relative}")
-        if file_sha256(path) != view.get("sha256") or path.stat().st_size != view.get("size"):
-            raise RuntimeError(f"IP release view digest drifted: {relative}")
         role = str(view.get("role"))
         export = str(view.get("export"))
         role_key = (export, role)
@@ -1632,7 +1611,7 @@ def load_published_ip(
     manifest_path = (artifact_root.resolve() / relative).resolve()
     if not manifest_path.is_relative_to(artifact_root.resolve()):
         raise RuntimeError("IP current pointer escapes the artifact root")
-    manifest = _load_release(manifest_path.parent)
+    manifest = load_ip_release_manifest(manifest_path)
     for key in ("ip_name", "release_id", "source_fingerprint"):
         if manifest.get(key) != pointer.get(key):
             raise RuntimeError(f"IP current pointer {key} is inconsistent")
@@ -1655,8 +1634,6 @@ def resolve_release_role(
     path = (manifest_path.parent / str(view.get("path"))).resolve()
     if not path.is_relative_to(manifest_path.parent.resolve()) or not path.is_file():
         raise RuntimeError(f"IP release role {export}/{role} is missing")
-    if file_sha256(path) != view.get("sha256"):
-        raise RuntimeError(f"IP release role {export}/{role} digest drifted")
     return path
 
 

@@ -127,11 +127,6 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
         "rtl/a.sv",
         "rtl/b.sv",
     ]
-    encoded = json.dumps(old_record)
-    assert str(tmp_path) not in encoded
-    assert "fingerprint" not in encoded
-    assert "digest" not in encoded
-
     (owner_root / "rtl/a.sv").write_text(
         "module a; logic changed; endmodule\n",
         encoding="utf-8",

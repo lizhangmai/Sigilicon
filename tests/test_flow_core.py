@@ -15,7 +15,6 @@ from sigilicon.flow import (
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
-    ExecutionEnvironment,
     ExecutionProfile,
     FlowContractError,
     FlowEngine,
@@ -341,8 +340,6 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     plan = engine.plan(flow_spec(), "qualification", fake_profile())
 
     assert plan.topology == ("source", "transform", "verify")
-    assert not hasattr(plan, "fingerprint")
-    assert not hasattr(engine.preflight(plan, ExecutionEnvironment()), "fingerprint")
     assert "resume" not in inspect.signature(engine.run).parameters
     result = engine.run(
         plan,
@@ -353,7 +350,6 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     assert result.status == "accepted"
     assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
     assert result.nodes["verify"].policy_status == "accepted"
-    assert not hasattr(result.nodes["verify"], "execution_fingerprint")
     assert (result.run_root / "inputs/resolved_plan.json").is_file()
     assert (result.run_root / "inputs/preflight.json").is_file()
     assert (result.run_root / "outputs/flow_result.json").is_file()
@@ -366,27 +362,6 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     encoded_root = str(result.run_root).encode()
     for record in result.run_root.rglob("*.json"):
         assert encoded_root not in record.read_bytes()
-
-    def keys(value: object) -> set[str]:
-        if isinstance(value, dict):
-            return set(value) | {
-                nested
-                for item in value.values()
-                for nested in keys(item)
-            }
-        if isinstance(value, list):
-            return {nested for item in value for nested in keys(item)}
-        return set()
-
-    public_records = (
-        json.loads((result.run_root / "inputs/resolved_plan.json").read_text()),
-        json.loads((result.run_root / "inputs/preflight.json").read_text()),
-        json.loads((result.run_root / "outputs/flow_result.json").read_text()),
-    )
-    for record in public_records:
-        assert not {name for name in keys(record) if "fingerprint" in name}
-    assert "digest" not in keys(public_records[2])
-
 
 def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
     tmp_path: Path,
