@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from sigilicon.layout.pnr._geometry import (
+    route_segment_shape,
+    via_occurrence_shapes,
+)
 from sigilicon.layout.pnr.model import (
     ConstraintOutcome,
     ConstraintStatus,
     LayerShape,
     NetRoute,
     PhysicalDesignJob,
-    Point,
     Rect,
     RouteSegment,
     RoutingConstraint,
@@ -190,32 +193,6 @@ def _route_length(route: NetRoute) -> int:
     )
 
 
-def _translated(rectangle: Rect, origin: Point) -> Rect:
-    return Rect(
-        rectangle.x_min + origin.x,
-        rectangle.y_min + origin.y,
-        rectangle.x_max + origin.x,
-        rectangle.y_max + origin.y,
-    )
-
-
-def _segment_shape(segment: RouteSegment) -> Rect:
-    margin = segment.width_dbu // 2
-    if segment.start.y == segment.end.y:
-        return Rect(
-            min(segment.start.x, segment.end.x),
-            segment.start.y - margin,
-            max(segment.start.x, segment.end.x),
-            segment.start.y + margin,
-        )
-    return Rect(
-        segment.start.x - margin,
-        min(segment.start.y, segment.end.y),
-        segment.start.x + margin,
-        max(segment.start.y, segment.end.y),
-    )
-
-
 def _intersects(first: Rect, second: Rect) -> bool:
     return not (
         first.x_max < second.x_min
@@ -230,19 +207,16 @@ def _route_shapes(
     route: NetRoute,
 ) -> tuple[tuple[str, Rect], ...]:
     shapes = tuple(
-        (segment.layer, _segment_shape(segment)) for segment in route.segments
+        (segment.layer, route_segment_shape(segment)) for segment in route.segments
     )
     vias = {via.name: via for via in job.technology.via_definitions}
     return shapes + tuple(
-        (layer, _translated(shape, route_via.origin))
+        (layer, shape)
         for route_via in route.vias
         if route_via.via_definition in vias
         for via in (vias[route_via.via_definition],)
-        for layer, layer_shapes in (
-            (via.lower_layer, via.lower_shapes),
-            (via.upper_layer, via.upper_shapes),
-        )
-        for shape in layer_shapes
+        for layer, shape in via_occurrence_shapes(via, route_via.origin)
+        if layer in (via.lower_layer, via.upper_layer)
     )
 
 

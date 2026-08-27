@@ -7,8 +7,11 @@ import heapq
 from itertools import islice, permutations
 
 from sigilicon.layout.pnr._geometry import (
+    route_segment_shape,
+    translated_rect,
     transformed_obstructions,
     transformed_pin_accesses,
+    via_occurrence_shapes,
 )
 from sigilicon.layout.pnr._routing_policy import (
     RoutingPolicy,
@@ -395,15 +398,6 @@ def _expanded(rectangle: Rect, distance: int) -> Rect:
     )
 
 
-def _translated(rectangle: Rect, origin: Point) -> Rect:
-    return Rect(
-        rectangle.x_min + origin.x,
-        rectangle.y_min + origin.y,
-        rectangle.x_max + origin.x,
-        rectangle.y_max + origin.y,
-    )
-
-
 def _point_in_interior(point: Point, rectangle: Rect) -> bool:
     return (
         rectangle.x_min < point.x < rectangle.x_max
@@ -479,23 +473,6 @@ def _move_allowed(
     if current.y == neighbor.y:
         return current.y in context.horizontal_tracks
     return current.x in context.vertical_tracks
-
-
-def _wire_rectangle(segment: RouteSegment) -> Rect:
-    margin = segment.width_dbu // 2
-    if segment.start.y == segment.end.y:
-        return Rect(
-            min(segment.start.x, segment.end.x),
-            segment.start.y - margin,
-            max(segment.start.x, segment.end.x),
-            segment.start.y + margin,
-        )
-    return Rect(
-        segment.start.x - margin,
-        min(segment.start.y, segment.end.y),
-        segment.start.x + margin,
-        max(segment.start.y, segment.end.y),
-    )
 
 
 def _bin_index(value: int, low: int, span: int, bins: int) -> int:
@@ -622,21 +599,6 @@ def _congestion_metrics(
     )
 
 
-def _via_shapes(
-    via: ViaDefinition,
-    origin: Point,
-) -> tuple[tuple[str, Rect], ...]:
-    return tuple(
-        (layer, _translated(shape, origin))
-        for layer, shapes in (
-            (via.lower_layer, via.lower_shapes),
-            (via.cut_layer, via.cut_shapes),
-            (via.upper_layer, via.upper_shapes),
-        )
-        for shape in shapes
-    )
-
-
 def _raw_blockers(
     job: PhysicalDesignJob,
     placements: dict[str, Placement],
@@ -661,9 +623,9 @@ def _raw_blockers(
     vias = {via.name: via for via in job.technology.via_definitions}
     for route in prior_routes:
         for segment in route.segments:
-            blockers.setdefault(segment.layer, []).append(_wire_rectangle(segment))
+            blockers.setdefault(segment.layer, []).append(route_segment_shape(segment))
         for route_via in route.vias:
-            for layer, shape in _via_shapes(
+            for layer, shape in via_occurrence_shapes(
                 vias[route_via.via_definition],
                 route_via.origin,
             ):
@@ -821,7 +783,7 @@ def _via_allowed(
     routing_regions: dict[str, tuple[Rect, ...]],
     raw_blockers: dict[str, tuple[Rect, ...]],
 ) -> bool:
-    translated_shapes = _via_shapes(via, origin)
+    translated_shapes = via_occurrence_shapes(via, origin)
     for layer, shape in translated_shapes:
         if not job.design.die.contains(shape):
             return False
@@ -1340,7 +1302,7 @@ def _solve_routing_once(
             for route_via in new_vias:
                 via = via_definitions[route_via.via_definition]
                 mutable_blockers.setdefault(via.cut_layer, []).extend(
-                    _translated(shape, route_via.origin)
+                    translated_rect(shape, route_via.origin)
                     for shape in via.cut_shapes
                 )
             raw_blockers = {

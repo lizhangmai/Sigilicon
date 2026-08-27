@@ -1,4 +1,4 @@
-"""Orthogonal master geometry transforms in normalized DBU coordinates."""
+"""Canonical physical-geometry value transforms in normalized DBU coordinates."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from sigilicon.layout.pnr.model import (
     Placement,
     Point,
     Rect,
+    RouteSegment,
+    ViaDefinition,
 )
 
 
@@ -86,4 +88,51 @@ def transformed_obstructions(
             shape=transform_rect(obstruction.shape, master, placement),
         )
         for obstruction in master.obstructions
+    )
+
+
+def translated_rect(rectangle: Rect, origin: Point) -> Rect:
+    """Translate a local rectangle to an occurrence origin."""
+
+    return Rect(
+        rectangle.x_min + origin.x,
+        rectangle.y_min + origin.y,
+        rectangle.x_max + origin.x,
+        rectangle.y_max + origin.y,
+    )
+
+
+def route_segment_shape(segment: RouteSegment) -> Rect:
+    """Return the exact conductor rectangle represented by a Route Segment."""
+
+    margin = segment.width_dbu // 2
+    if segment.start.y == segment.end.y:
+        return Rect(
+            min(segment.start.x, segment.end.x),
+            segment.start.y - margin,
+            max(segment.start.x, segment.end.x),
+            segment.start.y + margin,
+        )
+    return Rect(
+        segment.start.x - margin,
+        min(segment.start.y, segment.end.y),
+        segment.start.x + margin,
+        max(segment.start.y, segment.end.y),
+    )
+
+
+def via_occurrence_shapes(
+    via: ViaDefinition,
+    origin: Point,
+) -> tuple[tuple[str, Rect], ...]:
+    """Expand one Route Via occurrence into all of its exact layer shapes."""
+
+    return tuple(
+        (layer, translated_rect(shape, origin))
+        for layer, shapes in (
+            (via.lower_layer, via.lower_shapes),
+            (via.cut_layer, via.cut_shapes),
+            (via.upper_layer, via.upper_shapes),
+        )
+        for shape in shapes
     )

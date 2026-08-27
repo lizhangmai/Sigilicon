@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sigilicon.layout.pnr._geometry import (
+    route_segment_shape,
+    translated_rect,
     transformed_obstructions,
     transformed_pin_accesses,
+    via_occurrence_shapes,
 )
 from sigilicon.layout.pnr.model import (
     Axis,
@@ -61,47 +64,6 @@ class _DisjointSet:
 
 def _on_grid(value: int, grid: int) -> bool:
     return value % grid == 0
-
-
-def _translated(rectangle: Rect, origin: Point) -> Rect:
-    return Rect(
-        rectangle.x_min + origin.x,
-        rectangle.y_min + origin.y,
-        rectangle.x_max + origin.x,
-        rectangle.y_max + origin.y,
-    )
-
-
-def _via_shapes(
-    via: ViaDefinition,
-    origin: Point,
-) -> tuple[tuple[str, Rect], ...]:
-    return tuple(
-        (layer, _translated(shape, origin))
-        for layer, shapes in (
-            (via.lower_layer, via.lower_shapes),
-            (via.cut_layer, via.cut_shapes),
-            (via.upper_layer, via.upper_shapes),
-        )
-        for shape in shapes
-    )
-
-
-def _wire_rectangle(segment: RouteSegment) -> Rect:
-    margin = segment.width_dbu // 2
-    if segment.start.y == segment.end.y:
-        return Rect(
-            min(segment.start.x, segment.end.x),
-            segment.start.y - margin,
-            max(segment.start.x, segment.end.x),
-            segment.start.y + margin,
-        )
-    return Rect(
-        segment.start.x - margin,
-        min(segment.start.y, segment.end.y),
-        segment.start.x + margin,
-        max(segment.start.y, segment.end.y),
-    )
 
 
 def _intersects(first: Rect, second: Rect) -> bool:
@@ -229,7 +191,7 @@ def _wire_in_regions(
     segment: RouteSegment,
     regions: tuple[Rect, ...],
 ) -> bool:
-    return _covered_by_regions(_wire_rectangle(segment), regions)
+    return _covered_by_regions(route_segment_shape(segment), regions)
 
 
 def _segment_on_resource(
@@ -420,7 +382,7 @@ def check_routing_solution(
                     "route segment is narrower than the technology minimum",
                     entity,
                 )
-            shape = _wire_rectangle(segment)
+            shape = route_segment_shape(segment)
             if not job.design.die.contains(shape):
                 report(
                     "routing_segment_outside_die",
@@ -464,7 +426,7 @@ def check_routing_solution(
                     entity,
                 )
             via_node = ("via", len(conductors))
-            for layer, shape in _via_shapes(via, route_via.origin):
+            for layer, shape in via_occurrence_shapes(via, route_via.origin):
                 if not job.design.die.contains(shape):
                     report(
                         "routing_via_outside_die",
@@ -500,8 +462,8 @@ def check_routing_solution(
                 )
             elif any(
                 _too_close(
-                    _translated(first, route_via.origin),
-                    _translated(second, route_via.origin),
+                    translated_rect(first, route_via.origin),
+                    translated_rect(second, route_via.origin),
                     cut_spacing[0],
                     cut_spacing[1],
                 )
