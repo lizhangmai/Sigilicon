@@ -247,3 +247,23 @@ _Avoid_: Exit code, pass string, report path
 **Verification Completion**:
 Evidence that a named verification backend executed, whether its authoritative report was parsed, and its exit code. Only executed, parsed, zero-exit completion can support clean or violated Physical Verification Evidence.
 _Avoid_: Process success, output-file existence
+
+**Closure Campaign**:
+A bounded, deterministic sequence of explicit Flow attempts that validates typed physical-design, materialization, verification, and qualification identities, produces attributed feedback, and terminates with closed, repair, unsupported, proven infeasible, state budget, iteration budget, or execution failed.
+_Avoid_: FlowEngine loop, global parameter search, AnalogAgentFlow
+
+**Closure Quality**:
+A typed lexicographic campaign state ordered by identity, materialization, DRC/LVS, P&R conflicts, independent evaluation, optional analyses, project qualification, and exact costs.
+_Avoid_: Float score, report metric tuple
+
+**Closure Feedback Scope**:
+The stable physical owner, fixed blocker, DRC rule, LVS mismatch, materialization reason, or identity evidence to which one proposed next attempt is restricted.
+_Avoid_: Try again, global design mutation
+
+**Closure Campaign State Budget**:
+The maximum number of distinct typed Closure Quality states a Closure Campaign may consume before terminating, independent of its attempt count.
+_Avoid_: Flow retry count, Routing Search Budget
+
+**Closure Campaign Iteration Budget**:
+The maximum number of explicit Flow attempts a Closure Campaign may execute, independent of the number of distinct Closure Quality states observed.
+_Avoid_: Routing Iteration Budget, timeout

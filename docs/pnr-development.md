@@ -63,6 +63,29 @@ this contract. A deliberately unregistered offline Adapter exercises Flow
 failure semantics but is structurally unable to emit clean or violated evidence.
 Exit code zero without a parsed authoritative report is not completion.
 
+## Closure Campaign
+
+`ClosureCampaignRunner.run(campaign)` is a separate workflow Module above
+`FlowEngine`. Every iteration supplies an already resolved Flow target and
+explicit artifact references. `FlowEngine` remains a one-pass deterministic DAG
+executor; the campaign validates canonical job, result, standalone closure,
+Materialization Plan, checked layout/source, DRC, and LVS identities before making
+a closure decision.
+
+Campaign quality is lexicographic rather than a scalar score. Its dominance order
+is: source/layout/result identity; executable materialization; DRC and LVS;
+resource overflow, unrouted branches, blockers, group, via, and topology failures;
+independent checker and constraint evaluation; PEX and post-layout state; project
+qualification; then displacement, area, and power costs. Unknown cost evidence is
+never inferred from report metrics. State budget counts distinct typed quality
+states, while iteration budget counts Flow attempts.
+
+Feedback is restricted to typed physical owners, fixed blockers, DRC rules, LVS
+mismatch categories, or another explicit evidence identity. A campaign does not
+perform unattributed global search. PEX, post-layout analysis, and project
+qualification currently have no general artifact consumer; requesting them yields
+typed `unsupported` state and prevents `closed` rather than manufacturing success.
+
 ## PANDA influence
 
 The architecture borrows four public ideas from
@@ -220,6 +243,9 @@ and unrelated design styles using the same kernel without source edits.
 
 - typed DRC/LVS result ingestion with artifact identity and explicit backend
   completion, without weakening signoff authority;
-- PEX and post-layout metric correlation;
-- iteration provenance connecting a result to its job and verification evidence;
-- deterministic regression and benchmark reporting.
+- deterministic Closure Campaign iteration provenance connecting each Flow Plan
+  and run to its canonical stage artifacts;
+- explicit lexicographic Closure Quality and attributed feedback with independent
+  state and iteration budgets;
+- PEX and post-layout metric correlation remains unsupported until owned typed
+  artifact contracts and real consumers exist.
