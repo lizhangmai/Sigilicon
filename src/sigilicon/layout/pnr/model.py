@@ -286,6 +286,24 @@ class PhysicalInstance(CanonicalValue):
 
 
 @dataclass(frozen=True)
+class RoutingBlockage(CanonicalValue):
+    """Placed top-level routing obstruction with an explicit repair scope.
+
+    Shapes use a local coordinate system bounded by ``width_dbu`` and
+    ``height_dbu``.  A missing ``repair_region`` makes the blockage fixed;
+    otherwise placement repair may move it only within that region.
+    """
+
+    name: str
+    width_dbu: int
+    height_dbu: int
+    shapes: tuple[LayerShape, ...]
+    placement: Placement
+    repair_region: Rect | None = None
+    allowed_orientations: tuple[Orientation, ...] = (Orientation.R0,)
+
+
+@dataclass(frozen=True)
 class PhysicalPort(CanonicalValue):
     name: str
     accesses: tuple[PinAccess, ...] = ()
@@ -311,6 +329,7 @@ class PhysicalDesign(CanonicalValue):
     instances: tuple[PhysicalInstance, ...]
     ports: tuple[PhysicalPort, ...] = ()
     nets: tuple[PhysicalNet, ...] = ()
+    routing_blockages: tuple[RoutingBlockage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -516,6 +535,12 @@ class InstancePlacement(CanonicalValue):
 
 
 @dataclass(frozen=True)
+class RoutingBlockagePlacement(CanonicalValue):
+    blockage: str
+    placement: Placement
+
+
+@dataclass(frozen=True)
 class Diagnostic(CanonicalValue):
     code: str
     message: str
@@ -583,3 +608,4 @@ class PhysicalDesignResult(CanonicalValue):
     stage_reports: tuple[StageReport, ...]
     provenance: PnrProvenance
     routes: tuple[NetRoute, ...] = ()
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] = ()

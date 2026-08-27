@@ -10,17 +10,18 @@ from sigilicon.layout.pnr.model import (
     Point,
     Rect,
     RouteSegment,
+    RoutingBlockage,
     ViaDefinition,
 )
 
 
 def _transform_local_point(
     point: Point,
-    master: PhysicalMaster,
+    width: int,
+    height: int,
     orientation: Orientation,
 ) -> Point:
     x, y = point.x, point.y
-    width, height = master.width_dbu, master.height_dbu
     if orientation is Orientation.R0:
         return Point(x, y)
     if orientation is Orientation.R90:
@@ -46,8 +47,29 @@ def transform_rect(
     master: PhysicalMaster,
     placement: Placement,
 ) -> Rect:
+    return transform_sized_rect(
+        rectangle,
+        master.width_dbu,
+        master.height_dbu,
+        placement,
+    )
+
+
+def transform_sized_rect(
+    rectangle: Rect,
+    width_dbu: int,
+    height_dbu: int,
+    placement: Placement,
+) -> Rect:
+    """Transform local geometry owned by an explicitly sized occurrence."""
+
     corners = tuple(
-        _transform_local_point(point, master, placement.orientation)
+        _transform_local_point(
+            point,
+            width_dbu,
+            height_dbu,
+            placement.orientation,
+        )
         for point in (
             Point(rectangle.x_min, rectangle.y_min),
             Point(rectangle.x_min, rectangle.y_max),
@@ -88,6 +110,24 @@ def transformed_obstructions(
             shape=transform_rect(obstruction.shape, master, placement),
         )
         for obstruction in master.obstructions
+    )
+
+
+def transformed_routing_blockage_shapes(
+    blockage: RoutingBlockage,
+    placement: Placement,
+) -> tuple[LayerShape, ...]:
+    return tuple(
+        LayerShape(
+            layer=item.layer,
+            shape=transform_sized_rect(
+                item.shape,
+                blockage.width_dbu,
+                blockage.height_dbu,
+                placement,
+            ),
+        )
+        for item in blockage.shapes
     )
 
 

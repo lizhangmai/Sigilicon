@@ -9,6 +9,7 @@ from sigilicon.layout.pnr._geometry import (
     translated_rect,
     transformed_obstructions,
     transformed_pin_accesses,
+    transformed_routing_blockage_shapes,
     via_occurrence_shapes,
 )
 from sigilicon.layout.pnr.model import (
@@ -28,6 +29,7 @@ from sigilicon.layout.pnr.model import (
     Point,
     Rect,
     RouteSegment,
+    RoutingBlockagePlacement,
     RoutingTrackPattern,
     ViaDefinition,
 )
@@ -261,10 +263,11 @@ def _all_terminal_accesses(
 def _obstructions(
     job: PhysicalDesignJob,
     placements: dict[str, Placement],
+    routing_blockage_placements: dict[str, Placement],
 ) -> tuple[LayerShape, ...]:
     masters = {master.name: master for master in job.design.masters}
     instances = {instance.name: instance for instance in job.design.instances}
-    return tuple(
+    instance_obstructions = tuple(
         obstruction
         for instance_name, placement in placements.items()
         for obstruction in transformed_obstructions(
@@ -272,6 +275,15 @@ def _obstructions(
             placement,
         )
     )
+    blockage_obstructions = tuple(
+        shape
+        for blockage in job.design.routing_blockages
+        for shape in transformed_routing_blockage_shapes(
+            blockage,
+            routing_blockage_placements[blockage.name],
+        )
+    )
+    return instance_obstructions + blockage_obstructions
 
 
 def _shape_enclosed(
@@ -293,6 +305,7 @@ def check_routing_solution(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
     routes: tuple[NetRoute, ...],
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] | None = None,
 ) -> tuple[Diagnostic, ...]:
     """Return deterministic violations without trusting router implementation state."""
 
@@ -304,6 +317,14 @@ def check_routing_solution(
     grid = job.technology.manufacturing_grid_dbu
     placements = {
         item.instance: item.placement for item in instance_placements
+    }
+    if routing_blockage_placements is None:
+        routing_blockage_placements = tuple(
+            RoutingBlockagePlacement(blockage.name, blockage.placement)
+            for blockage in job.design.routing_blockages
+        )
+    blockage_placements = {
+        item.blockage: item.placement for item in routing_blockage_placements
     }
     design_nets = {net.name: net for net in job.design.nets}
     route_names = tuple(route.net for route in routes)
@@ -519,7 +540,7 @@ def check_routing_solution(
                     )
 
     terminal_accesses = _all_terminal_accesses(job, placements)
-    obstructions = _obstructions(job, placements)
+    obstructions = _obstructions(job, placements, blockage_placements)
     for conductor in conductors:
         spacing = _spacing(job, conductor.layer)
         if spacing is None:

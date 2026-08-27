@@ -130,15 +130,17 @@ general routing remains in progress.
   ownership, branch-level conflict attribution, safe leaf-only rip-up, and
   deterministic escalation to net or Routing Group scope for shared trunks and
   collective topology, length, via, skew, or shielding policy;
-- compiled Physical Owner facts retain stable instance, instance-pin, and port
-  ownership across placed obstruction, pin-access, corridor, and resource
+- compiled Physical Owner facts retain stable instance, instance-pin, port, and
+  top-level Routing Blockage ownership across placed obstruction, pin-access,
+  corridor, and resource
   attribution; fixed and unowned blockers remain explicit;
 - typed Routing Placement Pressure prefers exact physical blocker ownership,
   then affected-resource ownership, before a terminal repair scope fallback; a
   deep Placement Repair Problem Module compiles owner scope, local legal
   candidates, predicted resource release, pin-access impact, displacement,
   rejection history, deterministic order, and an independent state budget;
-- Placement Repair candidates move only attributed instances; acceptance still
+- Placement Repair candidates move only attributed instances or Routing
+  Blockages within their explicit local repair regions; acceptance still
   recompiles the Routing Problem and runs negotiated routing plus independent
   evaluation rather than trusting candidate prediction;
 - a deterministic Placement-Routing Closure outer loop with displacement,

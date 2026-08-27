@@ -11,6 +11,7 @@ from sigilicon.layout.pnr._routing_conflicts import (
 )
 from sigilicon.layout.pnr._routing_ownership import (
     PhysicalOwner,
+    PhysicalOwnerIdentity,
     PhysicalOwnerKind,
     PhysicalOwnerMobility,
 )
@@ -73,6 +74,35 @@ class RoutingPlacementPressure:
                     if owner.mobility is PhysicalOwnerMobility.MOVABLE
                     and owner.repair_instance is not None
                 }
+            )
+        )
+
+    @property
+    def movable_blockages(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    owner.repair_blockage
+                    for site in self.sites
+                    for owner in site.physical_owner_candidates
+                    if owner.mobility is PhysicalOwnerMobility.MOVABLE
+                    and owner.repair_blockage is not None
+                }
+            )
+        )
+
+    @property
+    def movable_owners(self) -> tuple[PhysicalOwnerIdentity, ...]:
+        return tuple(
+            sorted(
+                {
+                    owner.repair_owner
+                    for site in self.sites
+                    for owner in site.physical_owner_candidates
+                    if owner.mobility is PhysicalOwnerMobility.MOVABLE
+                    and owner.repair_owner is not None
+                },
+                key=lambda item: item.stable_name,
             )
         )
 
@@ -142,9 +172,13 @@ def attribute_routing_pressure(
         repair_scope = tuple(
             sorted(
                 {
-                    owner.repair_instance
+                    (
+                        owner.repair_instance
+                        if owner.repair_instance is not None
+                        else owner.identity.stable_name
+                    )
                     for owner in candidates
-                    if owner.repair_instance is not None
+                    if owner.repair_owner is not None
                 }
             )
         )

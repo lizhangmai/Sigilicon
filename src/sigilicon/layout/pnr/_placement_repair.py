@@ -11,9 +11,13 @@ from sigilicon.layout.pnr._legality import (
     placed_rect,
     rectangles_conflict,
 )
-from sigilicon.layout.pnr._placement import _candidate_placements
+from sigilicon.layout.pnr._placement import (
+    _candidate_placements,
+    _candidate_sized_placements,
+)
 from sigilicon.layout.pnr._routing_ownership import (
     OwnedRoutingRegion,
+    PhysicalOwnerKind,
     PhysicalOwnerIdentity,
     RoutingPhysicalOwnership,
     compile_routing_physical_ownership,
@@ -36,10 +40,11 @@ from sigilicon.layout.pnr.model import (
     Placement,
     Point,
     Rect,
+    RoutingBlockagePlacement,
 )
 
 
-PlacementIdentity = tuple[tuple[str, int, int, str], ...]
+PlacementIdentity = tuple[tuple[str, str, int, int, str], ...]
 
 
 class PlacementRepairStatus(str, Enum):
@@ -61,18 +66,32 @@ class PlacementRepairPrediction:
 @dataclass(frozen=True)
 class PlacementRepairCandidate:
     placements: tuple[InstancePlacement, ...]
-    moved_instance: str
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...]
+    moved_owner: PhysicalOwnerIdentity
     attributed_owners: tuple[PhysicalOwnerIdentity, ...]
     displacement_dbu: int
     identity: PlacementIdentity
     prediction: PlacementRepairPrediction
+
+    @property
+    def moved_instance(self) -> str | None:
+        if self.moved_owner.kind is PhysicalOwnerKind.INSTANCE:
+            return self.moved_owner.locator[0]
+        return None
+
+    @property
+    def moved_blockage(self) -> str | None:
+        if self.moved_owner.kind is PhysicalOwnerKind.BLOCKAGE:
+            return self.moved_owner.locator[0]
+        return None
 
 
 @dataclass(frozen=True)
 class PlacementRepairResult:
     status: PlacementRepairStatus
     placements: tuple[InstancePlacement, ...]
-    moved_instance: str | None
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...]
+    moved_owner: PhysicalOwnerIdentity | None
     attributed_owners: tuple[PhysicalOwnerIdentity, ...]
     displacement_dbu: int
     search_states: int
@@ -80,26 +99,49 @@ class PlacementRepairResult:
     prediction: PlacementRepairPrediction | None
     reason: str
 
+    @property
+    def moved_instance(self) -> str | None:
+        if (
+            self.moved_owner is not None
+            and self.moved_owner.kind is PhysicalOwnerKind.INSTANCE
+        ):
+            return self.moved_owner.locator[0]
+        return None
+
+    @property
+    def moved_blockage(self) -> str | None:
+        if (
+            self.moved_owner is not None
+            and self.moved_owner.kind is PhysicalOwnerKind.BLOCKAGE
+        ):
+            return self.moved_owner.locator[0]
+        return None
+
 
 @dataclass(frozen=True)
 class PlacementRepairProblem:
     """Immutable, ordered local repair search behind one narrow Interface."""
 
     current_placements: tuple[InstancePlacement, ...]
+    current_routing_blockage_placements: tuple[RoutingBlockagePlacement, ...]
     candidates: tuple[PlacementRepairCandidate, ...]
     rejected: frozenset[PlacementIdentity]
     search_states: int
     state_budget_exhausted: bool
-    movable_scope: tuple[str, ...]
+    movable_scope: tuple[PhysicalOwnerIdentity, ...]
 
     def next_candidate(self) -> PlacementRepairResult:
-        current_identity = placement_identity(self.current_placements)
+        current_identity = placement_identity(
+            self.current_placements,
+            self.current_routing_blockage_placements,
+        )
         if self.candidates:
             candidate = self.candidates[0]
             return PlacementRepairResult(
                 PlacementRepairStatus.REPAIRED,
                 candidate.placements,
-                candidate.moved_instance,
+                candidate.routing_blockage_placements,
+                candidate.moved_owner,
                 candidate.attributed_owners,
                 candidate.displacement_dbu,
                 self.search_states,
@@ -123,6 +165,7 @@ class PlacementRepairProblem:
         return PlacementRepairResult(
             status,
             self.current_placements,
+            self.current_routing_blockage_placements,
             None,
             (),
             0,
@@ -135,9 +178,11 @@ class PlacementRepairProblem:
 
 def placement_identity(
     placements: tuple[InstancePlacement, ...],
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] = (),
 ) -> PlacementIdentity:
-    return tuple(
+    instance_identity = tuple(
         (
+            PhysicalOwnerKind.INSTANCE.value,
             item.instance,
             item.placement.origin.x,
             item.placement.origin.y,
@@ -145,6 +190,20 @@ def placement_identity(
         )
         for item in sorted(placements, key=lambda item: item.instance)
     )
+    blockage_identity = tuple(
+        (
+            PhysicalOwnerKind.BLOCKAGE.value,
+            item.blockage,
+            item.placement.origin.x,
+            item.placement.origin.y,
+            item.placement.orientation.value,
+        )
+        for item in sorted(
+            routing_blockage_placements,
+            key=lambda item: item.blockage,
+        )
+    )
+    return instance_identity + blockage_identity
 
 
 def _expanded(rectangle: Rect, distance: int) -> Rect:
@@ -166,12 +225,12 @@ def _point_in_interior(point: Point, rectangle: Rect) -> bool:
 def _owner_regions(
     ownership: RoutingPhysicalOwnership,
     site: RoutingPressureSite,
-    instance: str,
+    repair_owner: PhysicalOwnerIdentity,
 ) -> tuple[OwnedRoutingRegion, ...]:
     identities = tuple(
         owner.identity
         for owner in site.physical_owner_candidates
-        if owner.repair_instance == instance
+        if owner.repair_owner == repair_owner
     )
     return tuple(
         region
@@ -230,8 +289,10 @@ def _region_affects_site(
 def _terminal_access_count(
     problem: RoutingProblem,
     ownership: RoutingPhysicalOwnership,
-    instance: str,
+    repair_owner: PhysicalOwnerIdentity,
 ) -> int:
+    if repair_owner.kind is not PhysicalOwnerKind.INSTANCE:
+        return 0
     accessible = 0
     for net in problem.nets:
         policy = problem.policy.for_net(net.name)
@@ -247,7 +308,7 @@ def _terminal_access_count(
         )
         for reference in net.terminal_references:
             owner = ownership.owner_for_reference(reference)
-            if owner.repair_instance != instance:
+            if owner.repair_owner != repair_owner:
                 continue
             if view.access_states(ownership.terminal_accesses(reference)):
                 accessible += 1
@@ -259,10 +320,10 @@ def _prediction(
     pressure: RoutingPlacementPressure,
     current: RoutingPhysicalOwnership,
     proposed: RoutingPhysicalOwnership,
-    instance: str,
+    repair_owner: PhysicalOwnerIdentity,
 ) -> PlacementRepairPrediction:
-    current_access = _terminal_access_count(problem, current, instance)
-    proposed_access = _terminal_access_count(problem, proposed, instance)
+    current_access = _terminal_access_count(problem, current, repair_owner)
+    proposed_access = _terminal_access_count(problem, proposed, repair_owner)
     pin_gain = max(0, proposed_access - current_access)
     pin_loss = max(0, current_access - proposed_access)
     released: set[RoutingResourceIdentity] = set()
@@ -270,18 +331,18 @@ def _prediction(
     remaining_pressure = 0
     for site in pressure.sites:
         if not any(
-            owner.repair_instance == instance
+            owner.repair_owner == repair_owner
             for owner in site.physical_owner_candidates
         ):
             continue
         weight = site.severity + site.cost
         before = any(
             _region_affects_site(problem, site, region)
-            for region in _owner_regions(current, site, instance)
+            for region in _owner_regions(current, site, repair_owner)
         )
         after = any(
             _region_affects_site(problem, site, region)
-            for region in _owner_regions(proposed, site, instance)
+            for region in _owner_regions(proposed, site, repair_owner)
         )
         if before and not after:
             released_pressure += weight
@@ -307,18 +368,25 @@ def _candidate_key(
     candidate: PlacementRepairCandidate,
 ) -> tuple[object, ...]:
     prediction = candidate.prediction
-    placement = next(
-        item.placement
-        for item in candidate.placements
-        if item.instance == candidate.moved_instance
-    )
+    if candidate.moved_instance is not None:
+        placement = next(
+            item.placement
+            for item in candidate.placements
+            if item.instance == candidate.moved_instance
+        )
+    else:
+        placement = next(
+            item.placement
+            for item in candidate.routing_blockage_placements
+            if item.blockage == candidate.moved_blockage
+        )
     return (
         -prediction.released_pressure,
         prediction.remaining_pressure,
         -prediction.pin_access_gain,
         prediction.pin_access_loss,
         candidate.displacement_dbu,
-        candidate.moved_instance,
+        candidate.moved_owner.stable_name,
         placement.origin.y,
         placement.origin.x,
         placement.orientation.value,
@@ -331,22 +399,54 @@ def compile_placement_repair_problem(
     placements: tuple[InstancePlacement, ...],
     pressure: RoutingPlacementPressure,
     *,
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] | None = None,
     rejected: frozenset[PlacementIdentity] = frozenset(),
 ) -> PlacementRepairProblem:
     """Compile legal, predicted, and deterministically ordered repair choices."""
 
     placements = tuple(sorted(placements, key=lambda item: item.instance))
+    if routing_blockage_placements is None:
+        routing_blockage_placements = tuple(
+            RoutingBlockagePlacement(blockage.name, blockage.placement)
+            for blockage in sorted(
+                job.design.routing_blockages,
+                key=lambda item: item.name,
+            )
+        )
+    else:
+        routing_blockage_placements = tuple(
+            sorted(
+                routing_blockage_placements,
+                key=lambda item: item.blockage,
+            )
+        )
     current = {item.instance: item.placement for item in placements}
+    current_blockages = {
+        item.blockage: item.placement for item in routing_blockage_placements
+    }
     masters = {master.name: master for master in job.design.masters}
     instances = {instance.name: instance for instance in job.design.instances}
+    blockages = {
+        blockage.name: blockage for blockage in job.design.routing_blockages
+    }
     movable_scope = tuple(
-        instance
-        for instance in pressure.movable_instances
-        if instance in instances and instances[instance].fixed_placement is None
+        owner
+        for owner in pressure.movable_owners
+        if (
+            owner.kind is PhysicalOwnerKind.INSTANCE
+            and owner.locator[0] in instances
+            and instances[owner.locator[0]].fixed_placement is None
+        )
+        or (
+            owner.kind is PhysicalOwnerKind.BLOCKAGE
+            and owner.locator[0] in blockages
+            and blockages[owner.locator[0]].repair_region is not None
+        )
     )
     if not movable_scope:
         return PlacementRepairProblem(
             placements,
+            routing_blockage_placements,
             (),
             rejected,
             0,
@@ -354,7 +454,11 @@ def compile_placement_repair_problem(
             (),
         )
 
-    routing_problem = compile_routing_problem(job, placements)
+    routing_problem = compile_routing_problem(
+        job,
+        placements,
+        routing_blockage_placements,
+    )
     current_ownership = routing_problem.physical_ownership
     rectangles = {
         name: placed_rect(masters[instances[name].master], placement)
@@ -365,59 +469,88 @@ def compile_placement_repair_problem(
     search_states = 0
     state_budget_exhausted = False
     candidates: list[PlacementRepairCandidate] = []
-    for instance_name in movable_scope:
-        instance = instances[instance_name]
-        master = masters[instance.master]
-        region = instance_region(job, instance_name)
-        if region is None:
-            continue
-        original = current[instance_name]
+    for repair_owner in movable_scope:
         attributed_owners = tuple(
             sorted(
                 {
                     owner.identity
                     for site in pressure.sites
                     for owner in site.physical_owner_candidates
-                    if owner.repair_instance == instance_name
+                    if owner.repair_owner == repair_owner
                 },
                 key=lambda item: item.stable_name,
             )
         )
-        for candidate, shape in _candidate_placements(
-            master,
-            region,
-            grid=job.technology.manufacturing_grid_dbu,
-        ):
+        if repair_owner.kind is PhysicalOwnerKind.INSTANCE:
+            owner_name = repair_owner.locator[0]
+            instance = instances[owner_name]
+            master = masters[instance.master]
+            region = instance_region(job, owner_name)
+            if region is None:
+                continue
+            original = current[owner_name]
+            owner_candidates = _candidate_placements(
+                master,
+                region,
+                grid=job.technology.manufacturing_grid_dbu,
+            )
+        else:
+            owner_name = repair_owner.locator[0]
+            blockage = blockages[owner_name]
+            region = blockage.repair_region
+            if region is None:
+                continue
+            original = current_blockages[owner_name]
+            owner_candidates = _candidate_sized_placements(
+                blockage.width_dbu,
+                blockage.height_dbu,
+                blockage.allowed_orientations,
+                region,
+                grid=job.technology.manufacturing_grid_dbu,
+            )
+
+        for candidate, shape in owner_candidates:
             if search_states >= maximum_states:
                 state_budget_exhausted = True
                 break
             search_states += 1
             if candidate == original:
                 continue
-            if any(
-                rectangles_conflict(shape, other, spacing)
-                for name, other in rectangles.items()
-                if name != instance_name
-            ):
-                continue
             proposed = dict(current)
-            proposed[instance_name] = candidate
+            proposed_blockages = dict(current_blockages)
             proposed_rectangles = dict(rectangles)
-            proposed_rectangles[instance_name] = shape
-            if not hard_constraints_hold(
-                job,
-                proposed_rectangles,
-                proposed,
-            ):
-                continue
+            if repair_owner.kind is PhysicalOwnerKind.INSTANCE:
+                if any(
+                    rectangles_conflict(shape, other, spacing)
+                    for name, other in rectangles.items()
+                    if name != owner_name
+                ):
+                    continue
+                proposed[owner_name] = candidate
+                proposed_rectangles[owner_name] = shape
+                if not hard_constraints_hold(
+                    job,
+                    proposed_rectangles,
+                    proposed,
+                ):
+                    continue
+            else:
+                proposed_blockages[owner_name] = candidate
             ordered = tuple(
-                InstancePlacement(name, proposed[name])
-                for name in sorted(proposed)
+                InstancePlacement(name, proposed[name]) for name in sorted(proposed)
             )
-            identity = placement_identity(ordered)
+            ordered_blockages = tuple(
+                RoutingBlockagePlacement(name, proposed_blockages[name])
+                for name in sorted(proposed_blockages)
+            )
+            identity = placement_identity(ordered, ordered_blockages)
             if identity in rejected:
                 continue
-            proposed_ownership = compile_routing_physical_ownership(job, ordered)
+            proposed_ownership = compile_routing_physical_ownership(
+                job,
+                ordered,
+                ordered_blockages,
+            )
             displacement = (
                 abs(candidate.origin.x - original.origin.x)
                 + abs(candidate.origin.y - original.origin.y)
@@ -425,7 +558,8 @@ def compile_placement_repair_problem(
             candidates.append(
                 PlacementRepairCandidate(
                     ordered,
-                    instance_name,
+                    ordered_blockages,
+                    repair_owner,
                     attributed_owners,
                     displacement,
                     identity,
@@ -434,7 +568,7 @@ def compile_placement_repair_problem(
                         pressure,
                         current_ownership,
                         proposed_ownership,
-                        instance_name,
+                        repair_owner,
                     ),
                 )
             )
@@ -443,6 +577,7 @@ def compile_placement_repair_problem(
 
     return PlacementRepairProblem(
         placements,
+        routing_blockage_placements,
         tuple(sorted(candidates, key=_candidate_key)),
         rejected,
         search_states,

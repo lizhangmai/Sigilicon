@@ -36,6 +36,8 @@ from sigilicon.layout.pnr import (
     Rect,
     ResultStatus,
     RoutingDirection,
+    RoutingBlockage,
+    RoutingBlockagePlacement,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
     RoutingRegionConstraint,
@@ -632,6 +634,84 @@ def _physical_blocker_job(
     )
 
 
+def _standalone_blockage_job(*, fixed: bool = False) -> PhysicalDesignJob:
+    spectator = PhysicalMaster(
+        "standalone-blockage-spectator",
+        2,
+        2,
+        allowed_orientations=(Orientation.R0,),
+    )
+    technology = PhysicalTechnology(
+        "standalone-blockage-track",
+        dbu_per_micron=1000,
+        manufacturing_grid_dbu=1,
+        layers=(
+            PhysicalLayer(
+                "route",
+                LayerKind.ROUTING,
+                RoutingDirection.HORIZONTAL,
+            ),
+        ),
+        routing_resources=(
+            RoutingTrackPattern(
+                "only-horizontal-track",
+                "route",
+                Axis.Y,
+                2,
+                4,
+                1,
+            ),
+        ),
+        rules=(
+            MinimumWidthRule("route-width", "route", 2),
+            MinimumSpacingRule("route-spacing", "route", 2),
+        ),
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "standalone-blockage-closure",
+            Rect(0, 0, 20, 10),
+            (spectator,),
+            (PhysicalInstance("spectator", spectator.name),),
+            ports=(
+                PhysicalPort(
+                    "source",
+                    (PinAccess("route", Rect(1, 1, 3, 3)),),
+                ),
+                PhysicalPort(
+                    "sink",
+                    (PinAccess("route", Rect(17, 1, 19, 3)),),
+                ),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (PinReference("source"), PinReference("sink")),
+                ),
+            ),
+            routing_blockages=(
+                RoutingBlockage(
+                    "channel-reservation",
+                    2,
+                    2,
+                    (LayerShape("route", Rect(0, 0, 2, 2)),),
+                    Placement(Point(7, 0)),
+                    None if fixed else Rect(7, 0, 9, 10),
+                ),
+            ),
+        ),
+        constraints=(
+            FenceConstraint(
+                "spectator-local-region",
+                ("spectator",),
+                Rect(0, 6, 4, 10),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+    )
+
+
 def _constrained_blocker_group_job() -> PhysicalDesignJob:
     blocker = PhysicalMaster(
         "two-track-blocker",
@@ -1070,6 +1150,48 @@ def test_fixed_blocker_does_not_move_an_unrelated_movable_instance() -> None:
     assert first.status is ResultStatus.FAILED
     assert first.placements == initial.placements
     assert first.stage_reports[-1].diagnostics[0].code == "routing_infeasible"
+
+
+def test_standalone_movable_blockage_closes_through_public_run() -> None:
+    job = _standalone_blockage_job()
+    placement = solve_placement(job)
+    initial = solve_routing(job, placement.placements)
+    first = run(job)
+    second = run(job)
+
+    assert first == second
+    assert initial.status is ResultStatus.FAILED
+    assert initial.placement_pressure.movable_instances == ()
+    assert initial.placement_pressure.movable_blockages == (
+        "channel-reservation",
+    )
+    assert tuple(
+        owner.identity.stable_name
+        for owner in initial.placement_pressure.sites[0].physical_owner_candidates
+    ) == ("blockage:channel-reservation",)
+    assert first.status is ResultStatus.SUCCEEDED
+    assert first.placements == placement.placements
+    assert first.routing_blockage_placements == (
+        RoutingBlockagePlacement(
+            "channel-reservation",
+            Placement(Point(7, 5)),
+        ),
+    )
+
+
+def test_standalone_fixed_blockage_preserves_unrelated_placement() -> None:
+    job = _standalone_blockage_job(fixed=True)
+    placement = solve_placement(job)
+    result = run(job)
+
+    assert result.status is ResultStatus.FAILED
+    assert result.placements == placement.placements
+    assert result.routing_blockage_placements == (
+        RoutingBlockagePlacement(
+            "channel-reservation",
+            Placement(Point(7, 0)),
+        ),
+    )
 
 
 def test_pin_access_blocker_closes_through_its_pin_owner() -> None:

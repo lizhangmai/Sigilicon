@@ -13,7 +13,7 @@ from sigilicon.layout.pnr._constraints import (
 from sigilicon.layout.pnr._legality import (
     hard_constraints_hold,
     instance_region,
-    oriented_dimensions,
+    oriented_size,
     placed_rect,
     rectangles_conflict,
 )
@@ -25,6 +25,7 @@ from sigilicon.layout.pnr.model import (
     Diagnostic,
     InstancePlacement,
     Metric,
+    Orientation,
     PhysicalDesignJob,
     PhysicalInstance,
     PhysicalMaster,
@@ -55,8 +56,25 @@ def _candidate_placements(
     *,
     grid: int,
 ) -> Iterator[tuple[Placement, Rect]]:
-    for orientation in master.allowed_orientations:
-        width, height = oriented_dimensions(master, orientation)
+    yield from _candidate_sized_placements(
+        master.width_dbu,
+        master.height_dbu,
+        master.allowed_orientations,
+        region,
+        grid=grid,
+    )
+
+
+def _candidate_sized_placements(
+    width_dbu: int,
+    height_dbu: int,
+    allowed_orientations: tuple[Orientation, ...],
+    region: Rect,
+    *,
+    grid: int,
+) -> Iterator[tuple[Placement, Rect]]:
+    for orientation in allowed_orientations:
+        width, height = oriented_size(width_dbu, height_dbu, orientation)
         x_start = _snap_up(region.x_min, grid)
         y_start = _snap_up(region.y_min, grid)
         x_stop = region.x_max - width

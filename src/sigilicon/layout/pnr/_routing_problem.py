@@ -24,6 +24,7 @@ from sigilicon.layout.pnr.model import (
     PhysicalDesignJob,
     PinReference,
     ResultStatus,
+    RoutingBlockagePlacement,
     ViaDefinition,
 )
 
@@ -98,6 +99,7 @@ def _freeze_blockers(
 def compile_routing_problem(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] | None = None,
 ) -> RoutingProblem:
     """Interpret a job and Placement Solution once for all routing callers."""
 
@@ -119,7 +121,11 @@ def compile_routing_problem(
             resource_graph.issue.code,
         )
     )
-    ownership = compile_routing_physical_ownership(job, instance_placements)
+    ownership = compile_routing_physical_ownership(
+        job,
+        instance_placements,
+        routing_blockage_placements,
+    )
     nets = {net.name: net for net in job.design.nets}
     policy = compile_routing_policy(job.routing_constraints, tuple(sorted(nets)))
 

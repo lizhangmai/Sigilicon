@@ -20,18 +20,46 @@ def oriented_dimensions(
     master: PhysicalMaster,
     orientation: Orientation,
 ) -> tuple[int, int]:
+    return oriented_size(
+        master.width_dbu,
+        master.height_dbu,
+        orientation,
+    )
+
+
+def oriented_size(
+    width_dbu: int,
+    height_dbu: int,
+    orientation: Orientation,
+) -> tuple[int, int]:
     if orientation in {
         Orientation.R90,
         Orientation.R270,
         Orientation.MXR90,
         Orientation.MYR90,
     }:
-        return master.height_dbu, master.width_dbu
-    return master.width_dbu, master.height_dbu
+        return height_dbu, width_dbu
+    return width_dbu, height_dbu
 
 
 def placed_rect(master: PhysicalMaster, placement: Placement) -> Rect:
-    width, height = oriented_dimensions(master, placement.orientation)
+    return placed_sized_rect(
+        master.width_dbu,
+        master.height_dbu,
+        placement,
+    )
+
+
+def placed_sized_rect(
+    width_dbu: int,
+    height_dbu: int,
+    placement: Placement,
+) -> Rect:
+    width, height = oriented_size(
+        width_dbu,
+        height_dbu,
+        placement.orientation,
+    )
     return Rect(
         x_min=placement.origin.x,
         y_min=placement.origin.y,

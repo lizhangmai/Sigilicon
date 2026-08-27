@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from sigilicon.layout.pnr._closure import close_placement_routing
 from sigilicon.layout.pnr._constraints import validate_constraint
+from sigilicon.layout.pnr._legality import placed_sized_rect
 from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
 from sigilicon.layout.pnr._routing_check import check_routing_solution
@@ -31,6 +32,7 @@ from sigilicon.layout.pnr.model import (
     PnrStage,
     Rect,
     ResultStatus,
+    RoutingBlockagePlacement,
     StageReport,
     TechnologyCapability,
 )
@@ -213,6 +215,100 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         if not _on_grid(placement.origin.x, grid) or not _on_grid(placement.origin.y, grid):
             errors.append(f"instance {instance.name} fixed placement is off-grid")
 
+    blockage_names = tuple(blockage.name for blockage in design.routing_blockages)
+    duplicates = _duplicates(blockage_names)
+    if duplicates:
+        errors.append(f"duplicate routing blockages: {', '.join(duplicates)}")
+    for blockage in design.routing_blockages:
+        if not blockage.name:
+            errors.append("routing blockage names must be non-empty")
+        if (
+            blockage.width_dbu <= 0
+            or blockage.height_dbu <= 0
+            or not _on_grid(blockage.width_dbu, grid)
+            or not _on_grid(blockage.height_dbu, grid)
+        ):
+            errors.append(
+                f"routing blockage {blockage.name} dimensions must be positive and on-grid"
+            )
+        if not blockage.shapes:
+            errors.append(f"routing blockage {blockage.name} needs at least one shape")
+        if not blockage.allowed_orientations:
+            errors.append(
+                f"routing blockage {blockage.name} needs an allowed orientation"
+            )
+        if any(
+            not isinstance(orientation, Orientation)
+            for orientation in blockage.allowed_orientations
+        ):
+            errors.append(f"routing blockage {blockage.name} has an invalid orientation")
+        if len(set(blockage.allowed_orientations)) != len(
+            blockage.allowed_orientations
+        ):
+            errors.append(
+                f"routing blockage {blockage.name} repeats an allowed orientation"
+            )
+        if blockage.placement.orientation not in blockage.allowed_orientations:
+            errors.append(
+                f"routing blockage {blockage.name} has a disallowed orientation"
+            )
+        if not _on_grid(
+            blockage.placement.origin.x,
+            grid,
+        ) or not _on_grid(blockage.placement.origin.y, grid):
+            errors.append(f"routing blockage {blockage.name} placement is off-grid")
+        local_box = None
+        if blockage.width_dbu > 0 and blockage.height_dbu > 0:
+            local_box = Rect(0, 0, blockage.width_dbu, blockage.height_dbu)
+        for shape in blockage.shapes:
+            if shape.layer not in layers:
+                errors.append(
+                    f"routing blockage {blockage.name} uses unknown layer {shape.layer}"
+                )
+            coordinates = (
+                shape.shape.x_min,
+                shape.shape.y_min,
+                shape.shape.x_max,
+                shape.shape.y_max,
+            )
+            if any(not _on_grid(value, grid) for value in coordinates):
+                errors.append(f"routing blockage {blockage.name} shape is off-grid")
+            if local_box is not None and not local_box.contains(shape.shape):
+                errors.append(
+                    f"routing blockage {blockage.name} shape is outside its local bounds"
+                )
+        if local_box is not None:
+            placed_box = placed_sized_rect(
+                blockage.width_dbu,
+                blockage.height_dbu,
+                blockage.placement,
+            )
+            if not design.die.contains(placed_box):
+                errors.append(
+                    f"routing blockage {blockage.name} placement is outside the die"
+                )
+            if blockage.repair_region is not None and not blockage.repair_region.contains(
+                placed_box
+            ):
+                errors.append(
+                    f"routing blockage {blockage.name} placement is outside its repair region"
+                )
+        if blockage.repair_region is not None:
+            coordinates = (
+                blockage.repair_region.x_min,
+                blockage.repair_region.y_min,
+                blockage.repair_region.x_max,
+                blockage.repair_region.y_max,
+            )
+            if any(not _on_grid(value, grid) for value in coordinates):
+                errors.append(
+                    f"routing blockage {blockage.name} repair region is off-grid"
+                )
+            if not design.die.contains(blockage.repair_region):
+                errors.append(
+                    f"routing blockage {blockage.name} repair region is outside the die"
+                )
+
     port_names = tuple(port.name for port in design.ports)
     duplicates = _duplicates(port_names)
     if duplicates:
@@ -345,6 +441,18 @@ def _routing_constraints_not_evaluated(
     )
 
 
+def _initial_routing_blockage_placements(
+    job: PhysicalDesignJob,
+) -> tuple[RoutingBlockagePlacement, ...]:
+    return tuple(
+        RoutingBlockagePlacement(blockage.name, blockage.placement)
+        for blockage in sorted(
+            job.design.routing_blockages,
+            key=lambda item: item.name,
+        )
+    )
+
+
 def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
     """Solve a normalized physical-design job without external side effects.
 
@@ -387,6 +495,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             + _routing_constraints_not_evaluated(job),
             stage_reports=tuple(reports),
             provenance=_provenance(job),
+            routing_blockage_placements=_initial_routing_blockage_placements(job),
         )
 
     placement = solve_placement(job)
@@ -400,6 +509,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             ),
             stage_reports=(placement.report,),
             provenance=_provenance(job),
+            routing_blockage_placements=_initial_routing_blockage_placements(job),
         )
     if PnrStage.ROUTING in job.request.stages:
         closure = close_placement_routing(job, placement)
@@ -410,6 +520,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                 job,
                 placement.placements,
                 routing.routes,
+                closure.routing_blockage_placements,
             )
             routing_outcomes = evaluate_routing_constraints(
                 job,
@@ -447,6 +558,10 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                         ),
                     ),
                     provenance=_provenance(job),
+                    routes=routing.routes,
+                    routing_blockage_placements=(
+                        closure.routing_blockage_placements
+                    ),
                 )
         return PhysicalDesignResult(
             status=routing.status,
@@ -466,6 +581,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             stage_reports=(placement.report, routing.report),
             provenance=_provenance(job),
             routes=routing.routes,
+            routing_blockage_placements=closure.routing_blockage_placements,
         )
     return PhysicalDesignResult(
         status=placement.status,
@@ -473,4 +589,5 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         constraint_outcomes=placement.constraint_outcomes,
         stage_reports=(placement.report,),
         provenance=_provenance(job),
+        routing_blockage_placements=_initial_routing_blockage_placements(job),
     )

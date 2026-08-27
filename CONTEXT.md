@@ -61,11 +61,15 @@ A typed attribution from a Routing Conflict Set and affected Routing Resources t
 _Avoid_: Congestion message, global placement retry
 
 **Physical Owner**:
-A stable instance, instance pin, or port identity responsible for placed obstruction or access geometry, with explicit movable, fixed, or unsupported repair status.
+A stable instance, instance pin, port, or top-level Routing Blockage identity responsible for placed obstruction or access geometry, with explicit movable, fixed, or unsupported repair status.
 _Avoid_: Rectangle object identity, inferred blocker name
 
+**Routing Blockage**:
+A named top-level set of routing-obstruction shapes in a bounded local coordinate system, with an exact placement and optional local repair region; absence of a repair region makes the owner fixed.
+_Avoid_: Anonymous rectangle, master instance invented only to carry an obstruction
+
 **Placement Repair**:
-A deterministic, local displacement of only Routing Placement Pressure-attributed movable instances while preserving placement legality and hard constraints.
+A deterministic, local displacement of only Routing Placement Pressure-attributed movable instances or Routing Blockages while preserving placement legality, declared repair regions, and hard constraints.
 _Avoid_: Fresh placement, random perturbation
 
 **Placement Repair Problem**:
@@ -97,7 +101,7 @@ A typed, checkable geometric requirement supplied by a technology owner.
 _Avoid_: Rule-deck text, magic number
 
 **Obstruction**:
-Master-owned layer geometry that routing must not occupy after applying the instance placement transform.
+Layer geometry that routing must not occupy after applying its Physical Owner placement transform; it may be owned by a master instance or a top-level Routing Blockage.
 _Avoid_: Keep-away hint
 
 **Constraint**:

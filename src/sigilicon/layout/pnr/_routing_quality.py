@@ -19,6 +19,7 @@ from sigilicon.layout.pnr.model import (
     InstancePlacement,
     PhysicalDesignJob,
     ResultStatus,
+    RoutingBlockagePlacement,
 )
 
 
@@ -101,12 +102,26 @@ def _placement_displacement(
     )
 
 
+def _routing_blockage_displacement(
+    initial: tuple[RoutingBlockagePlacement, ...],
+    current: tuple[RoutingBlockagePlacement, ...],
+) -> int:
+    initial_by_name = {item.blockage: item.placement for item in initial}
+    return sum(
+        abs(item.placement.origin.x - initial_by_name[item.blockage].origin.x)
+        + abs(item.placement.origin.y - initial_by_name[item.blockage].origin.y)
+        for item in current
+    )
+
+
 def compile_routing_closure_quality(
     job: PhysicalDesignJob,
     routing: RoutingSolveResult,
     placements: tuple[InstancePlacement, ...],
     *,
     initial_placements: tuple[InstancePlacement, ...],
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] = (),
+    initial_routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] = (),
 ) -> RoutingClosureQuality:
     """Compile solver, checker, constraint, pressure, and displacement facts."""
 
@@ -170,6 +185,7 @@ def compile_routing_closure_quality(
         job,
         placements,
         routing.routes,
+        routing_blockage_placements,
     )
     outcomes = evaluate_routing_constraints(
         job,
@@ -227,6 +243,10 @@ def compile_routing_closure_quality(
         placement_displacement_dbu=_placement_displacement(
             initial_placements,
             placements,
+        )
+        + _routing_blockage_displacement(
+            initial_routing_blockage_placements,
+            routing_blockage_placements,
         ),
         routing_termination=routing.termination.reason,
         closed=closed,

@@ -57,6 +57,7 @@ from sigilicon.layout.pnr.model import (
     ResultStatus,
     RouteSegment,
     RouteVia,
+    RoutingBlockagePlacement,
     StageReport,
 )
 
@@ -1702,8 +1703,13 @@ def _length_closure_targets(
 def solve_routing(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] | None = None,
 ) -> RoutingSolveResult:
-    problem = compile_routing_problem(job, instance_placements)
+    problem = compile_routing_problem(
+        job,
+        instance_placements,
+        routing_blockage_placements,
+    )
     state = RoutingState.empty()
     ripped_net_count = 0
     ripped_branch_count = 0

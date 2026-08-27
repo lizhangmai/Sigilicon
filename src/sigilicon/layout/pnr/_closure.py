@@ -28,6 +28,7 @@ from sigilicon.layout.pnr.model import (
     Metric,
     PhysicalDesignJob,
     ResultStatus,
+    RoutingBlockagePlacement,
     StageReport,
 )
 
@@ -45,7 +46,7 @@ class PlacementRoutingTerminationReason(str, Enum):
 class PlacementRoutingRepairEvidence:
     iteration: int
     placement: PlacementIdentity
-    moved_instance: str
+    moved_owner: PhysicalOwnerIdentity
     attributed_owners: tuple[PhysicalOwnerIdentity, ...]
     displacement_dbu: int
     predicted_released_resources: tuple[RoutingResourceIdentity, ...]
@@ -60,12 +61,25 @@ class PlacementRoutingRepairEvidence:
     quality_decision: RoutingClosureQualityDecision
     accepted: bool
 
+    @property
+    def moved_instance(self) -> str | None:
+        if self.moved_owner.kind.value == "instance":
+            return self.moved_owner.locator[0]
+        return None
+
+    @property
+    def moved_blockage(self) -> str | None:
+        if self.moved_owner.kind.value == "blockage":
+            return self.moved_owner.locator[0]
+        return None
+
 
 @dataclass(frozen=True)
 class PlacementRoutingClosureResult:
     status: ResultStatus
     placement: PlacementSolveResult
     routing: RoutingSolveResult
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...]
     quality: RoutingClosureQuality
     repairs: tuple[PlacementRoutingRepairEvidence, ...]
     termination: PlacementRoutingTerminationReason
@@ -140,6 +154,7 @@ def _closure_result(
     job: PhysicalDesignJob,
     initial: PlacementSolveResult,
     placements,
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...],
     routing: RoutingSolveResult,
     repairs: tuple[PlacementRoutingRepairEvidence, ...],
     termination: PlacementRoutingTerminationReason,
@@ -166,11 +181,20 @@ def _closure_result(
         effective_status,
         _final_placement(job, initial, placements, repairs),
         effective_routing,
+        routing_blockage_placements,
         compile_routing_closure_quality(
             job,
             effective_routing,
             placements,
             initial_placements=initial.placements,
+            routing_blockage_placements=routing_blockage_placements,
+            initial_routing_blockage_placements=tuple(
+                RoutingBlockagePlacement(blockage.name, blockage.placement)
+                for blockage in sorted(
+                    job.design.routing_blockages,
+                    key=lambda item: item.name,
+                )
+            ),
         ),
         repairs,
         termination,
@@ -184,12 +208,22 @@ def close_placement_routing(
     """Repair only pressure-attributed placement and recompile every route trial."""
 
     placements = initial.placements
-    routing = solve_routing(job, placements)
+    initial_blockage_placements = tuple(
+        RoutingBlockagePlacement(blockage.name, blockage.placement)
+        for blockage in sorted(
+            job.design.routing_blockages,
+            key=lambda item: item.name,
+        )
+    )
+    routing_blockage_placements = initial_blockage_placements
+    routing = solve_routing(job, placements, routing_blockage_placements)
     quality = compile_routing_closure_quality(
         job,
         routing,
         placements,
         initial_placements=initial.placements,
+        routing_blockage_placements=routing_blockage_placements,
+        initial_routing_blockage_placements=initial_blockage_placements,
     )
     quality_policy = RoutingClosureQualityPolicy()
     if quality.closed:
@@ -197,6 +231,7 @@ def close_placement_routing(
             job,
             initial,
             placements,
+            routing_blockage_placements,
             routing,
             (),
             PlacementRoutingTerminationReason.CLOSED,
@@ -206,6 +241,7 @@ def close_placement_routing(
             job,
             initial,
             placements,
+            routing_blockage_placements,
             routing,
             (),
             PlacementRoutingTerminationReason.INDEPENDENT_EVALUATION_FAILED,
@@ -219,27 +255,30 @@ def close_placement_routing(
             job,
             initial,
             placements,
+            routing_blockage_placements,
             routing,
             (),
             PlacementRoutingTerminationReason.ROUTING_TERMINATED,
         )
     if (
         routing.termination.reason is RoutingTerminationReason.UNSUPPORTED
-        and not routing.placement_pressure.movable_instances
+        and not routing.placement_pressure.movable_owners
     ):
         return _closure_result(
             job,
             initial,
             placements,
+            routing_blockage_placements,
             routing,
             (),
             PlacementRoutingTerminationReason.ROUTING_TERMINATED,
         )
-    if not routing.placement_pressure.movable_instances:
+    if not routing.placement_pressure.movable_owners:
         return _closure_result(
             job,
             initial,
             placements,
+            routing_blockage_placements,
             routing,
             (),
             PlacementRoutingTerminationReason.NO_LEGAL_REPAIR,
@@ -252,6 +291,7 @@ def close_placement_routing(
             job,
             placements,
             routing.placement_pressure,
+            routing_blockage_placements=routing_blockage_placements,
             rejected=frozenset(rejected),
         )
         repair = repair_problem.next_candidate()
@@ -265,24 +305,34 @@ def close_placement_routing(
                 job,
                 initial,
                 placements,
+                routing_blockage_placements,
                 routing,
                 tuple(repairs),
                 termination,
                 diagnostic=Diagnostic(
                     "placement_repair_unavailable",
                     repair.reason,
-                    routing.placement_pressure.movable_instances,
+                    tuple(
+                        owner.stable_name
+                        for owner in routing.placement_pressure.movable_owners
+                    ),
                 ),
             )
         rejected.add(repair.identity)
         if repair.prediction is None:
             raise RuntimeError("repair candidate is missing typed prediction")
-        candidate = solve_routing(job, repair.placements)
+        candidate = solve_routing(
+            job,
+            repair.placements,
+            repair.routing_blockage_placements,
+        )
         candidate_quality = compile_routing_closure_quality(
             job,
             candidate,
             repair.placements,
             initial_placements=initial.placements,
+            routing_blockage_placements=repair.routing_blockage_placements,
+            initial_routing_blockage_placements=initial_blockage_placements,
         )
         routed_improvement = len(candidate.routes) - len(routing.routes)
         conflict_reduction = (
@@ -295,7 +345,7 @@ def close_placement_routing(
             PlacementRoutingRepairEvidence(
                 iteration,
                 repair.identity,
-                repair.moved_instance or "",
+                repair.moved_owner,
                 repair.attributed_owners,
                 repair.displacement_dbu,
                 repair.prediction.released_resources,
@@ -314,6 +364,7 @@ def close_placement_routing(
         if not accepted:
             continue
         placements = repair.placements
+        routing_blockage_placements = repair.routing_blockage_placements
         routing = candidate
         quality = candidate_quality
         if quality.closed:
@@ -321,6 +372,7 @@ def close_placement_routing(
                 job,
                 initial,
                 placements,
+                routing_blockage_placements,
                 routing,
                 tuple(repairs),
                 PlacementRoutingTerminationReason.CLOSED,
@@ -330,6 +382,7 @@ def close_placement_routing(
         job,
         initial,
         placements,
+        routing_blockage_placements,
         routing,
         tuple(repairs),
         PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET,
@@ -337,6 +390,9 @@ def close_placement_routing(
         diagnostic=Diagnostic(
             "placement_repair_iteration_exhausted",
             "placement and routing did not close within the repair iteration budget",
-            routing.placement_pressure.movable_instances,
+            tuple(
+                owner.stable_name
+                for owner in routing.placement_pressure.movable_owners
+            ),
         ),
     )

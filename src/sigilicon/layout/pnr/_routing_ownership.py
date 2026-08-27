@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from sigilicon.layout.pnr._geometry import (
     transformed_obstructions,
     transformed_pin_accesses,
+    transformed_routing_blockage_shapes,
 )
 from sigilicon.layout.pnr.model import (
     InstancePlacement,
@@ -23,6 +24,7 @@ from sigilicon.layout.pnr.model import (
     PhysicalDesignJob,
     PinReference,
     Rect,
+    RoutingBlockagePlacement,
 )
 
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ class PhysicalOwnerKind(str, Enum):
     INSTANCE = "instance"
     PIN = "pin"
     PORT = "port"
+    BLOCKAGE = "blockage"
 
 
 class PhysicalOwnerMobility(str, Enum):
@@ -60,7 +63,25 @@ class PhysicalOwnerIdentity:
 class PhysicalOwner:
     identity: PhysicalOwnerIdentity
     mobility: PhysicalOwnerMobility
-    repair_instance: str | None
+    repair_owner: PhysicalOwnerIdentity | None
+
+    @property
+    def repair_instance(self) -> str | None:
+        if (
+            self.repair_owner is not None
+            and self.repair_owner.kind is PhysicalOwnerKind.INSTANCE
+        ):
+            return self.repair_owner.locator[0]
+        return None
+
+    @property
+    def repair_blockage(self) -> str | None:
+        if (
+            self.repair_owner is not None
+            and self.repair_owner.kind is PhysicalOwnerKind.BLOCKAGE
+        ):
+            return self.repair_owner.locator[0]
+        return None
 
 
 @dataclass(frozen=True)
@@ -176,10 +197,19 @@ def _region_identity(
 def compile_routing_physical_ownership(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
+    routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] | None = None,
 ) -> RoutingPhysicalOwnership:
     """Compile placed obstruction and pin-access ownership once."""
 
     placements = {item.instance: item.placement for item in instance_placements}
+    if routing_blockage_placements is None:
+        routing_blockage_placements = tuple(
+            RoutingBlockagePlacement(blockage.name, blockage.placement)
+            for blockage in job.design.routing_blockages
+        )
+    blockage_placements = {
+        item.blockage: item.placement for item in routing_blockage_placements
+    }
     masters = {master.name: master for master in job.design.masters}
     instances = {instance.name: instance for instance in job.design.instances}
     owners: dict[PhysicalOwnerIdentity, PhysicalOwner] = {}
@@ -205,7 +235,7 @@ def compile_routing_physical_ownership(
         owners[instance_identity] = PhysicalOwner(
             instance_identity,
             mobility,
-            instance_name,
+            instance_identity,
         )
         master = masters[instance.master]
         for index, obstruction in enumerate(
@@ -235,7 +265,7 @@ def compile_routing_physical_ownership(
             owners[pin_identity] = PhysicalOwner(
                 pin_identity,
                 mobility,
-                instance_name,
+                instance_identity,
             )
             pin_regions = tuple(
                 OwnedRoutingRegion(
@@ -291,6 +321,45 @@ def compile_routing_physical_ownership(
         regions.extend(port_regions)
         accesses_by_reference[reference] = port_regions
         owner_by_reference[reference] = port_identity
+
+    for blockage in sorted(
+        job.design.routing_blockages,
+        key=lambda item: item.name,
+    ):
+        blockage_identity = PhysicalOwnerIdentity(
+            PhysicalOwnerKind.BLOCKAGE,
+            (blockage.name,),
+        )
+        mobility = (
+            PhysicalOwnerMobility.MOVABLE
+            if blockage.repair_region is not None
+            else PhysicalOwnerMobility.FIXED
+        )
+        owners[blockage_identity] = PhysicalOwner(
+            blockage_identity,
+            mobility,
+            blockage_identity,
+        )
+        for index, shape in enumerate(
+            transformed_routing_blockage_shapes(
+                blockage,
+                blockage_placements[blockage.name],
+            )
+        ):
+            region = OwnedRoutingRegion(
+                _region_identity(
+                    blockage_identity,
+                    "routing-blockage",
+                    index,
+                    shape,
+                ),
+                shape.layer,
+                shape.shape,
+                (blockage_identity,),
+                "routing-blockage",
+            )
+            regions.append(region)
+            obstructions.append(region)
 
     ordered_owners = tuple(
         owners[identity]
