@@ -37,8 +37,6 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 20
-ALGORITHM = "reference_physical_design_v1"
 
 
 class PnrInputError(ValueError):
@@ -326,8 +324,6 @@ def _provenance(job: PhysicalDesignJob) -> PnrProvenance:
     }
     return PnrProvenance(
         engine=ENGINE_NAME,
-        engine_version=ENGINE_VERSION,
-        algorithm=ALGORITHM,
         input_sha256=canonical_sha256(physical_intent),
         execution_sha256=canonical_sha256(job.execution_policy),
         deterministic=True,

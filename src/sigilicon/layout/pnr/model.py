@@ -569,8 +569,6 @@ class NetRoute(CanonicalValue):
 @dataclass(frozen=True)
 class PnrProvenance(CanonicalValue):
     engine: str
-    engine_version: int
-    algorithm: str
     input_sha256: str
     execution_sha256: str
     deterministic: bool
