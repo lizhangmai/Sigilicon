@@ -29,6 +29,7 @@ from sigilicon.layout.pnr import (
     PinAccess,
     PinReference,
     Placement,
+    PlacementRoutingTerminationReason,
     PnrExecutionPolicy,
     PnrRequest,
     PnrStage,
@@ -44,6 +45,7 @@ from sigilicon.layout.pnr import (
     RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingTrackPattern,
+    RoutingTerminationReason,
     RoutingViaCountConstraint,
     ViaDefinition,
     run,
@@ -54,13 +56,11 @@ from sigilicon.layout.pnr._placement_repair import (
     compile_placement_repair_problem,
 )
 from sigilicon.layout.pnr._closure import (
-    PlacementRoutingTerminationReason,
     close_placement_routing,
 )
 from sigilicon.layout.pnr._routing import solve_routing
 from sigilicon.layout.pnr._routing_conflicts import (
     RoutingConflictKind,
-    RoutingTerminationReason,
 )
 
 
@@ -937,6 +937,12 @@ def test_capacity_iteration_exhaustion_returns_maximum_legal_partial_route() -> 
         "routing_iteration_exhausted"
     )
     assert tuple(route.net for route in result.routes) == ("a-direct",)
+    assert result.closure_evidence is not None
+    assert result.closure_evidence.routing_termination is (
+        RoutingTerminationReason.ITERATION_BUDGET
+    )
+    assert result.closure_evidence.quality.budget_exhaustions > 0
+    assert not result.closure_evidence.quality.closed
 
 
 def test_capacity_benchmark_has_typed_closed_and_iteration_evidence() -> None:
@@ -967,8 +973,16 @@ def test_state_budget_benchmark_has_typed_termination_evidence() -> None:
     job = _state_exhausted_job()
     placement = solve_placement(job)
     routing = solve_routing(job, placement.placements)
+    public = run(job)
 
     assert routing.termination.reason is RoutingTerminationReason.STATE_BUDGET
+    assert public.closure_evidence is not None
+    assert public.closure_evidence.termination is (
+        PlacementRoutingTerminationReason.ROUTING_TERMINATED
+    )
+    assert public.closure_evidence.routing_termination is (
+        RoutingTerminationReason.STATE_BUDGET
+    )
 
 
 def test_multi_terminal_conflict_repairs_only_the_attributed_leaf_branch() -> None:
@@ -1177,6 +1191,26 @@ def test_standalone_movable_blockage_closes_through_public_run() -> None:
             Placement(Point(7, 5)),
         ),
     )
+    evidence = first.closure_evidence
+    assert evidence is not None
+    assert evidence.termination is PlacementRoutingTerminationReason.CLOSED
+    assert evidence.routing_termination is RoutingTerminationReason.CLOSED
+    assert evidence.quality.closed
+    assert evidence.conflict_identities == ()
+    assert evidence.pressure_identities == ()
+    assert len(evidence.repairs) == 1
+    repair = evidence.repairs[0]
+    assert repair.moved_owner.stable_name == "blockage:channel-reservation"
+    assert tuple(owner.stable_name for owner in repair.attributed_owners) == (
+        "blockage:channel-reservation",
+    )
+    assert repair.source_conflicts
+    assert repair.source_pressures == tuple(
+        f"pressure:{identity}" for identity in repair.source_conflicts
+    )
+    assert repair.predicted_released_resources
+    assert repair.decision.value == "improved"
+    assert repair.accepted
 
 
 def test_standalone_fixed_blockage_preserves_unrelated_placement() -> None:
@@ -1192,6 +1226,17 @@ def test_standalone_fixed_blockage_preserves_unrelated_placement() -> None:
             Placement(Point(7, 0)),
         ),
     )
+    evidence = result.closure_evidence
+    assert evidence is not None
+    assert evidence.termination is (
+        PlacementRoutingTerminationReason.NO_LEGAL_REPAIR
+    )
+    assert evidence.routing_termination is RoutingTerminationReason.INFEASIBLE
+    assert not evidence.quality.closed
+    assert evidence.quality.hard_blockers > 0
+    assert evidence.conflict_identities
+    assert evidence.pressure_identities
+    assert evidence.repairs == ()
 
 
 def test_pin_access_blocker_closes_through_its_pin_owner() -> None:
@@ -1274,6 +1319,16 @@ def test_multi_owner_pressure_improvement_continues_until_closure() -> None:
         PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
     )
     assert not limited_closure.quality.closed
+    assert limited.closure_evidence is not None
+    assert limited.closure_evidence.termination is (
+        PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
+    )
+    assert limited.closure_evidence.routing_termination is (
+        RoutingTerminationReason.INFEASIBLE
+    )
+    assert len(limited.closure_evidence.repairs) == 1
+    assert limited.closure_evidence.repairs[0].accepted
+    assert not limited.closure_evidence.quality.closed
 
 
 def test_group_constraints_remain_closed_across_two_stage_blocker_repair() -> None:

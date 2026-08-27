@@ -12,7 +12,10 @@ from sigilicon.layout.pnr._routing_resources import (
     RoutingResourceKind,
     RoutingResourceOverflow,
 )
-from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
+from sigilicon.layout.pnr.model import (
+    PhysicalOwnerIdentity,
+    RoutingTerminationReason,
+)
 
 
 class RoutingConflictKind(str, Enum):
@@ -23,14 +26,6 @@ class RoutingConflictKind(str, Enum):
     VIA_EXHAUSTION = "via_resource_exhaustion"
     TOPOLOGY_CONFLICT = "topology_conflict"
     BUDGET_EXHAUSTION = "budget_exhaustion"
-
-
-class RoutingTerminationReason(str, Enum):
-    CLOSED = "closed"
-    INFEASIBLE = "infeasible"
-    UNSUPPORTED = "unsupported"
-    STATE_BUDGET = "state_budget"
-    ITERATION_BUDGET = "iteration_budget"
 
 
 @dataclass(frozen=True)

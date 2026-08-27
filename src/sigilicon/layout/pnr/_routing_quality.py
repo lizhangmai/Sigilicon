@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
 from sigilicon.layout.pnr._routing import RoutingSolveResult
 from sigilicon.layout.pnr._routing_check import check_routing_solution
-from sigilicon.layout.pnr._routing_conflicts import (
-    RoutingConflictKind,
-    RoutingTerminationReason,
-)
+from sigilicon.layout.pnr._routing_conflicts import RoutingConflictKind
 from sigilicon.layout.pnr._routing_constraints import (
     evaluate_routing_constraints,
 )
@@ -19,37 +15,11 @@ from sigilicon.layout.pnr.model import (
     InstancePlacement,
     PhysicalDesignJob,
     ResultStatus,
+    RoutingClosureQuality,
+    RoutingClosureQualityDecision,
     RoutingBlockagePlacement,
+    RoutingTerminationReason,
 )
-
-
-@dataclass(frozen=True)
-class RoutingClosureQuality:
-    """Complete typed evidence used to compare two closure states."""
-
-    resource_overflow: int
-    unrouted_branches: int
-    hard_blockers: int
-    group_violations: int
-    via_failures: int
-    topology_failures: int
-    unsupported_failures: int
-    budget_exhaustions: int
-    checker_violations: int
-    constraint_violations: int
-    constraint_not_evaluated: int
-    aggregate_placement_pressure: int
-    routed_nets: int
-    routed_branches: int
-    placement_displacement_dbu: int
-    routing_termination: RoutingTerminationReason
-    closed: bool
-
-
-class RoutingClosureQualityDecision(str, Enum):
-    IMPROVED = "improved"
-    EQUIVALENT = "equivalent"
-    REGRESSED = "regressed"
 
 
 @dataclass(frozen=True)

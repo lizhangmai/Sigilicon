@@ -22,6 +22,8 @@ from sigilicon.layout.pnr.model import (
     InstancePlacement,
     LayerShape,
     PhysicalDesignJob,
+    PhysicalOwnerIdentity,
+    PhysicalOwnerKind,
     PinReference,
     Rect,
     RoutingBlockagePlacement,
@@ -34,29 +36,10 @@ if TYPE_CHECKING:
     )
 
 
-class PhysicalOwnerKind(str, Enum):
-    INSTANCE = "instance"
-    PIN = "pin"
-    PORT = "port"
-    BLOCKAGE = "blockage"
-
-
 class PhysicalOwnerMobility(str, Enum):
     MOVABLE = "movable"
     FIXED = "fixed"
     UNSUPPORTED = "unsupported"
-
-
-@dataclass(frozen=True)
-class PhysicalOwnerIdentity:
-    """Stable source identity independent of geometry allocation."""
-
-    kind: PhysicalOwnerKind
-    locator: tuple[str, ...]
-
-    @property
-    def stable_name(self) -> str:
-        return ":".join((self.kind.value, *self.locator))
 
 
 @dataclass(frozen=True)

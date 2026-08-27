@@ -10,7 +10,8 @@ The `PhysicalDesignJob` contains a normalized design, normalized technology fact
 named constraints, requested stages, and a separate `PnrExecutionPolicy`. Physical
 intent and reference-engine search policy have independent provenance identities.
 The `PhysicalDesignResult` contains only observable solver outcomes: exact solutions,
-constraint status, diagnostics, metrics, and deterministic provenance. The kernel
+constraint status, diagnostics, metrics, typed Placement-Routing Closure Evidence,
+and deterministic provenance. The kernel
 performs no file discovery, database mutation, EDA invocation, or project-specific
 interpretation.
 
@@ -150,6 +151,9 @@ general routing remains in progress.
   evaluation, physical-owner pressure, routed progress, and displacement;
 - every repair records current/candidate quality and an improved, equivalent,
   or regressed decision; fewer conflicts cannot mask increased overflow;
+- public Placement-Routing Closure Evidence projects final conflict and pressure
+  identities, distinct routing/outer-loop termination, Routing Closure Quality,
+  and each evaluated attributed repair without exposing mutable routing state;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over

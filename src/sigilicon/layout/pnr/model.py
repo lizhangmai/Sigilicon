@@ -92,10 +92,52 @@ class ConstraintStatus(str, Enum):
     NOT_EVALUATED = "not_evaluated"
 
 
+class PhysicalOwnerKind(str, Enum):
+    INSTANCE = "instance"
+    PIN = "pin"
+    PORT = "port"
+    BLOCKAGE = "blockage"
+
+
+class RoutingTerminationReason(str, Enum):
+    CLOSED = "closed"
+    INFEASIBLE = "infeasible"
+    UNSUPPORTED = "unsupported"
+    STATE_BUDGET = "state_budget"
+    ITERATION_BUDGET = "iteration_budget"
+
+
+class PlacementRoutingTerminationReason(str, Enum):
+    CLOSED = "closed"
+    ROUTING_TERMINATED = "routing_terminated"
+    NO_LEGAL_REPAIR = "no_legal_repair"
+    REPAIR_STATE_BUDGET = "repair_state_budget"
+    REPAIR_ITERATION_BUDGET = "repair_iteration_budget"
+    INDEPENDENT_EVALUATION_FAILED = "independent_evaluation_failed"
+
+
+class RoutingClosureQualityDecision(str, Enum):
+    IMPROVED = "improved"
+    EQUIVALENT = "equivalent"
+    REGRESSED = "regressed"
+
+
 @dataclass(frozen=True)
 class Point(CanonicalValue):
     x: int
     y: int
+
+
+@dataclass(frozen=True)
+class PhysicalOwnerIdentity(CanonicalValue):
+    """Stable source identity independent of geometry allocation."""
+
+    kind: PhysicalOwnerKind
+    locator: tuple[str, ...]
+
+    @property
+    def stable_name(self) -> str:
+        return ":".join((self.kind.value, *self.locator))
 
 
 @dataclass(frozen=True)
@@ -601,6 +643,62 @@ class PnrProvenance(CanonicalValue):
 
 
 @dataclass(frozen=True)
+class RoutingClosureQuality(CanonicalValue):
+    """Complete typed evidence used to compare two closure states."""
+
+    resource_overflow: int
+    unrouted_branches: int
+    hard_blockers: int
+    group_violations: int
+    via_failures: int
+    topology_failures: int
+    unsupported_failures: int
+    budget_exhaustions: int
+    checker_violations: int
+    constraint_violations: int
+    constraint_not_evaluated: int
+    aggregate_placement_pressure: int
+    routed_nets: int
+    routed_branches: int
+    placement_displacement_dbu: int
+    routing_termination: RoutingTerminationReason
+    closed: bool
+
+
+@dataclass(frozen=True)
+class PlacementRoutingRepairSummary(CanonicalValue):
+    """Observable provenance for one evaluated local repair candidate."""
+
+    iteration: int
+    moved_owner: PhysicalOwnerIdentity
+    attributed_owners: tuple[PhysicalOwnerIdentity, ...]
+    source_conflicts: tuple[str, ...]
+    source_pressures: tuple[str, ...]
+    displacement_dbu: int
+    predicted_released_resources: tuple[str, ...]
+    predicted_released_pressure: int
+    predicted_remaining_pressure: int
+    predicted_pin_access_gain: int
+    predicted_pin_access_loss: int
+    current_quality: RoutingClosureQuality
+    candidate_quality: RoutingClosureQuality
+    decision: RoutingClosureQualityDecision
+    accepted: bool
+
+
+@dataclass(frozen=True)
+class PlacementRoutingClosureEvidence(CanonicalValue):
+    """Typed public conclusion of one Placement-Routing closure run."""
+
+    termination: PlacementRoutingTerminationReason
+    routing_termination: RoutingTerminationReason
+    quality: RoutingClosureQuality
+    conflict_identities: tuple[str, ...]
+    pressure_identities: tuple[str, ...]
+    repairs: tuple[PlacementRoutingRepairSummary, ...]
+
+
+@dataclass(frozen=True)
 class PhysicalDesignResult(CanonicalValue):
     status: ResultStatus
     placements: tuple[InstancePlacement, ...]
@@ -609,3 +707,4 @@ class PhysicalDesignResult(CanonicalValue):
     provenance: PnrProvenance
     routes: tuple[NetRoute, ...] = ()
     routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] = ()
+    closure_evidence: PlacementRoutingClosureEvidence | None = None

@@ -9,7 +9,7 @@ A self-contained physical design problem consisting of a normalized design, tech
 _Avoid_: Layout recipe, PDK job
 
 **Physical Design Result**:
-The complete outcome of a Physical Design Job, including solutions, constraint outcomes, diagnostics, metrics, and reproducibility identity.
+The complete outcome of a Physical Design Job, including solutions, constraint outcomes, diagnostics, metrics, typed Placement-Routing Closure Evidence, and reproducibility identity.
 _Avoid_: Successful process, generated layout
 
 **Physical Design Model**:
@@ -84,8 +84,12 @@ _Avoid_: Placement-Routing retry count, timeout
 The bounded sequence of Placement Solution, compiled Routing Problem, negotiated Routing Solution, independent evaluation, Routing Placement Pressure, and Placement Repair that ends in closure or typed termination evidence.
 _Avoid_: Router retry loop, flow coordinator
 
+**Placement-Routing Closure Evidence**:
+The public typed conclusion of Placement-Routing Closure, including distinct routing and outer-loop termination, final Routing Closure Quality, stable final conflict and pressure identities, and accepted or rejected repair provenance.
+_Avoid_: Stage Report parsing, success boolean
+
 **Routing Closure Quality**:
-A typed closure state over resource overflow, unrouted branches, blocker and group failures, via and topology failures, physical-owner pressure, routed progress, independent evaluation, and placement displacement.
+A typed, publicly observable closure state over resource overflow, unrouted branches, blocker and group failures, via and topology failures, physical-owner pressure, routed progress, independent evaluation, and placement displacement.
 _Avoid_: Conflict count, Stage Report metric tuple
 
 **Via Definition**:

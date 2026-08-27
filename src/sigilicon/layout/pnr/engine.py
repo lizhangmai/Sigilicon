@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from sigilicon.layout.pnr._closure import close_placement_routing
+from sigilicon.layout.pnr._closure import (
+    PlacementRoutingClosureResult,
+    close_placement_routing,
+)
 from sigilicon.layout.pnr._constraints import validate_constraint
 from sigilicon.layout.pnr._legality import placed_sized_rect
 from sigilicon.layout.pnr._objectives import validate_objective
@@ -27,6 +30,8 @@ from sigilicon.layout.pnr.model import (
     Orientation,
     PhysicalDesignJob,
     PhysicalDesignResult,
+    PlacementRoutingClosureEvidence,
+    PlacementRoutingRepairSummary,
     PnrExecutionPolicy,
     PnrProvenance,
     PnrStage,
@@ -453,6 +458,49 @@ def _initial_routing_blockage_placements(
     )
 
 
+def _public_closure_evidence(
+    closure: PlacementRoutingClosureResult,
+) -> PlacementRoutingClosureEvidence:
+    return PlacementRoutingClosureEvidence(
+        termination=closure.termination,
+        routing_termination=closure.routing.termination.reason,
+        quality=closure.quality,
+        conflict_identities=tuple(
+            conflict.identity for conflict in closure.routing.conflicts.conflicts
+        ),
+        pressure_identities=tuple(
+            site.identity for site in closure.routing.placement_pressure.sites
+        ),
+        repairs=tuple(
+            PlacementRoutingRepairSummary(
+                iteration=repair.iteration,
+                moved_owner=repair.moved_owner,
+                attributed_owners=repair.attributed_owners,
+                source_conflicts=repair.source_conflicts,
+                source_pressures=repair.source_pressures,
+                displacement_dbu=repair.displacement_dbu,
+                predicted_released_resources=tuple(
+                    resource.stable_name
+                    for resource in repair.predicted_released_resources
+                ),
+                predicted_released_pressure=(
+                    repair.predicted_released_pressure
+                ),
+                predicted_remaining_pressure=(
+                    repair.predicted_remaining_pressure
+                ),
+                predicted_pin_access_gain=repair.predicted_pin_access_gain,
+                predicted_pin_access_loss=repair.predicted_pin_access_loss,
+                current_quality=repair.current_quality,
+                candidate_quality=repair.candidate_quality,
+                decision=repair.quality_decision,
+                accepted=repair.accepted,
+            )
+            for repair in closure.repairs
+        ),
+    )
+
+
 def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
     """Solve a normalized physical-design job without external side effects.
 
@@ -562,6 +610,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                     routing_blockage_placements=(
                         closure.routing_blockage_placements
                     ),
+                    closure_evidence=_public_closure_evidence(closure),
                 )
         return PhysicalDesignResult(
             status=routing.status,
@@ -582,6 +631,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             provenance=_provenance(job),
             routes=routing.routes,
             routing_blockage_placements=closure.routing_blockage_placements,
+            closure_evidence=_public_closure_evidence(closure),
         )
     return PhysicalDesignResult(
         status=placement.status,

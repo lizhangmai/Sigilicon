@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from enum import Enum
 
 from sigilicon.layout.pnr._constraints import constraint_outcomes
 from sigilicon.layout.pnr._legality import placed_rect
@@ -13,33 +12,25 @@ from sigilicon.layout.pnr._placement_repair import (
     PlacementRepairStatus,
     compile_placement_repair_problem,
 )
-from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
 from sigilicon.layout.pnr._routing_resources import RoutingResourceIdentity
 from sigilicon.layout.pnr._routing import RoutingSolveResult, solve_routing
-from sigilicon.layout.pnr._routing_conflicts import RoutingTerminationReason
 from sigilicon.layout.pnr._routing_quality import (
-    RoutingClosureQuality,
-    RoutingClosureQualityDecision,
     RoutingClosureQualityPolicy,
     compile_routing_closure_quality,
 )
 from sigilicon.layout.pnr.model import (
     Diagnostic,
     Metric,
+    PhysicalOwnerIdentity,
     PhysicalDesignJob,
+    PlacementRoutingTerminationReason,
     ResultStatus,
+    RoutingClosureQuality,
+    RoutingClosureQualityDecision,
     RoutingBlockagePlacement,
+    RoutingTerminationReason,
     StageReport,
 )
-
-
-class PlacementRoutingTerminationReason(str, Enum):
-    CLOSED = "closed"
-    ROUTING_TERMINATED = "routing_terminated"
-    NO_LEGAL_REPAIR = "no_legal_repair"
-    REPAIR_STATE_BUDGET = "repair_state_budget"
-    REPAIR_ITERATION_BUDGET = "repair_iteration_budget"
-    INDEPENDENT_EVALUATION_FAILED = "independent_evaluation_failed"
 
 
 @dataclass(frozen=True)
@@ -48,6 +39,8 @@ class PlacementRoutingRepairEvidence:
     placement: PlacementIdentity
     moved_owner: PhysicalOwnerIdentity
     attributed_owners: tuple[PhysicalOwnerIdentity, ...]
+    source_conflicts: tuple[str, ...]
+    source_pressures: tuple[str, ...]
     displacement_dbu: int
     predicted_released_resources: tuple[RoutingResourceIdentity, ...]
     predicted_released_pressure: int
@@ -347,6 +340,26 @@ def close_placement_routing(
                 repair.identity,
                 repair.moved_owner,
                 repair.attributed_owners,
+                tuple(
+                    sorted(
+                        site.source_conflict
+                        for site in routing.placement_pressure.sites
+                        if any(
+                            owner.repair_owner == repair.moved_owner
+                            for owner in site.physical_owner_candidates
+                        )
+                    )
+                ),
+                tuple(
+                    sorted(
+                        site.identity
+                        for site in routing.placement_pressure.sites
+                        if any(
+                            owner.repair_owner == repair.moved_owner
+                            for owner in site.physical_owner_candidates
+                        )
+                    )
+                ),
                 repair.displacement_dbu,
                 repair.prediction.released_resources,
                 repair.prediction.released_pressure,
