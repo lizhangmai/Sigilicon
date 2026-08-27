@@ -31,7 +31,6 @@ from sigilicon.layout.materialization_execution import (
     MaterializationCompletion,
     MaterializationExecutionStatus,
     MaterializationExecutionTarget,
-    canonicalize_gdsii_timestamps,
     materialization_receipt_from_json,
     validate_layout_content,
     validate_materialization_request,
@@ -52,6 +51,7 @@ from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.virtuoso.xstream import (
     XStreamExportError,
     XStreamExportRequest,
+    canonicalize_xstream_gdsii,
     run_xstream_export,
 )
 from sigilicon.workflows.physical_design import (
@@ -1081,7 +1081,7 @@ class OaXStreamMaterializationAdapter:
         )
         raw = _read_regular_bytes(exported.gds_path, "XStream GDSII output")
         validate_layout_content(raw, LayoutArtifactFormat.GDSII)
-        canonical = canonicalize_gdsii_timestamps(raw)
+        canonical = canonicalize_xstream_gdsii(raw)
         layout_path = context.output_path("layout", "layout.gds")
         try:
             layout_path.write_bytes(canonical)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import struct
 import subprocess
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from sigilicon.virtuoso.xstream import (
     XStreamExportError,
     XStreamExportRequest,
+    canonicalize_xstream_gdsii,
     run_xstream_export,
 )
 
@@ -42,6 +44,54 @@ def _write_success(cwd: Path) -> None:
     )
     (cwd / "strmout.sum").write_text("complete\n", encoding="utf-8")
     (cwd / "layout.gds").write_bytes(b"non-empty-gds")
+
+
+def _record(record_type: int, data_type: int = 0, data: bytes = b"") -> bytes:
+    return struct.pack(">HBB", len(data) + 4, record_type, data_type) + data
+
+
+def _gds_string(value: str) -> bytes:
+    encoded = value.encode("ascii")
+    return encoded + (b"\0" if len(encoded) % 2 else b"")
+
+
+def _xstream_pcell_gds(volatile_identity: str) -> bytes:
+    generated = f"unit_CDNS_{volatile_identity}"
+    date = struct.pack(">12H", *(2026, 8, 27, 1, 2, 3) * 2)
+    return b"".join(
+        (
+            _record(0x00, 0x02, struct.pack(">H", 600)),
+            _record(0x01, 0x02, date),
+            _record(0x02, 0x06, _gds_string("LIB")),
+            _record(0x03, 0x05, bytes(16)),
+            _record(0x05, 0x02, date),
+            _record(0x06, 0x06, _gds_string(generated)),
+            _record(0x08),
+            _record(0x0D, 0x02, struct.pack(">H", 1)),
+            _record(0x0E, 0x02, struct.pack(">H", 0)),
+            _record(0x10, 0x03, struct.pack(">10i", 0, 0, 10, 0, 10, 10, 0, 10, 0, 0)),
+            _record(0x11),
+            _record(0x07),
+            _record(0x05, 0x02, date),
+            _record(0x06, 0x06, _gds_string("TOP")),
+            _record(0x0A),
+            _record(0x12, 0x06, _gds_string(generated)),
+            _record(0x10, 0x03, struct.pack(">2i", 0, 0)),
+            _record(0x11),
+            _record(0x07),
+            _record(0x04),
+        )
+    )
+
+
+def test_xstream_gdsii_canonicalizes_volatile_pcell_hierarchy_names() -> None:
+    first = canonicalize_xstream_gdsii(_xstream_pcell_gds("787838128820"))
+    second = canonicalize_xstream_gdsii(_xstream_pcell_gds("787838266050"))
+
+    assert first == second
+    assert b"TOP" in first
+    assert b"787838128820" not in first
+    assert b"787838266050" not in second
 
 
 def test_xstream_export_uses_owned_inputs_and_authoritative_completion(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -15,11 +16,155 @@ from sigilicon.external_tools import (
     owned_input_file,
     run_process_group,
 )
+from sigilicon.layout.materialization_execution import (
+    LayoutArtifactFormat,
+    MaterializationExecutionError,
+    canonicalize_gdsii_timestamps,
+    validate_layout_content,
+)
 
 
 _XSTREAM_COMPLETE = re.compile(
     r"Translation completed\.\s+'0' error\(s\) and '0' warning\(s\) found\."
 )
+_CADENCE_GENERATED_STRUCTURE = re.compile(rb"^(?P<prefix>.+_CDNS_)[0-9]+$")
+
+
+@dataclass(frozen=True)
+class _GdsRecord:
+    record_type: int
+    data_type: int
+    data: bytes
+
+
+def _gds_records(payload: bytes) -> tuple[tuple[_GdsRecord, ...], bool]:
+    records: list[_GdsRecord] = []
+    offset = 0
+    while offset < len(payload):
+        length = int.from_bytes(payload[offset : offset + 2], "big")
+        record_type = payload[offset + 2]
+        records.append(
+            _GdsRecord(
+                record_type,
+                payload[offset + 3],
+                payload[offset + 4 : offset + length],
+            )
+        )
+        offset += length
+        if record_type == 0x04:
+            break
+    return tuple(records), offset < len(payload)
+
+
+def _gds_name(data: bytes) -> bytes:
+    return data[:-1] if data.endswith(b"\0") else data
+
+
+def _gds_name_data(name: bytes) -> bytes:
+    return name + (b"\0" if len(name) % 2 else b"")
+
+
+def _structure_records(
+    records: tuple[_GdsRecord, ...],
+) -> dict[bytes, tuple[_GdsRecord, ...]]:
+    structures: dict[bytes, tuple[_GdsRecord, ...]] = {}
+    start: int | None = None
+    for index, record in enumerate(records):
+        if record.record_type == 0x05:
+            start = index
+        elif record.record_type == 0x07 and start is not None:
+            structure = records[start : index + 1]
+            names = tuple(
+                _gds_name(item.data)
+                for item in structure
+                if item.record_type == 0x06
+            )
+            if len(names) != 1 or names[0] in structures:
+                raise MaterializationExecutionError(
+                    "XStream GDSII has ambiguous structure definitions"
+                )
+            structures[names[0]] = structure
+            start = None
+    return structures
+
+
+def _canonical_generated_structure_names(
+    structures: dict[bytes, tuple[_GdsRecord, ...]],
+) -> dict[bytes, bytes]:
+    generated = {
+        name: match.group("prefix")
+        for name in structures
+        if (match := _CADENCE_GENERATED_STRUCTURE.fullmatch(name)) is not None
+    }
+    digests: dict[bytes, bytes] = {}
+    visiting: set[bytes] = set()
+
+    def structure_digest(name: bytes) -> bytes:
+        if name in digests:
+            return digests[name]
+        if name in visiting:
+            raise MaterializationExecutionError(
+                "XStream GDSII generated structure hierarchy is cyclic"
+            )
+        visiting.add(name)
+        digest = hashlib.sha256()
+        for record in structures[name]:
+            digest.update(bytes((record.record_type, record.data_type)))
+            data = record.data
+            if record.record_type == 0x06:
+                data = generated[name]
+            elif record.record_type == 0x12:
+                reference = _gds_name(data)
+                if reference in generated:
+                    data = generated[reference] + structure_digest(reference)
+                elif _CADENCE_GENERATED_STRUCTURE.fullmatch(reference) is not None:
+                    raise MaterializationExecutionError(
+                        "XStream GDSII references an undefined generated structure"
+                    )
+            digest.update(len(data).to_bytes(4, "big"))
+            digest.update(data)
+        visiting.remove(name)
+        digests[name] = digest.digest()
+        return digests[name]
+
+    replacements = {
+        name: prefix + structure_digest(name).hex()[:16].encode("ascii")
+        for name, prefix in generated.items()
+    }
+    if len(set(replacements.values())) != len(replacements):
+        raise MaterializationExecutionError(
+            "XStream GDSII generated structure identities are ambiguous"
+        )
+    return replacements
+
+
+def canonicalize_xstream_gdsii(payload: bytes) -> bytes:
+    """Remove timestamp and generated-PCell identity variance from XStream GDSII."""
+
+    canonical = canonicalize_gdsii_timestamps(payload)
+    records, padded = _gds_records(canonical)
+    replacements = _canonical_generated_structure_names(
+        _structure_records(records)
+    )
+    if not replacements:
+        return canonical
+    rewritten: list[bytes] = []
+    for record in records:
+        data = record.data
+        if record.record_type in {0x06, 0x12}:
+            name = _gds_name(data)
+            if name in replacements:
+                data = _gds_name_data(replacements[name])
+        rewritten.append(
+            (len(data) + 4).to_bytes(2, "big")
+            + bytes((record.record_type, record.data_type))
+            + data
+        )
+    result = b"".join(rewritten)
+    if padded:
+        result += bytes((-len(result)) % 2048)
+    validate_layout_content(result, LayoutArtifactFormat.GDSII)
+    return result
 
 
 class XStreamExportError(RuntimeError):
@@ -302,6 +447,7 @@ __all__ = [
     "XStreamExportError",
     "XStreamExportRequest",
     "XStreamExportResult",
+    "canonicalize_xstream_gdsii",
     "run_xstream_export",
     "xstream_environment",
 ]
