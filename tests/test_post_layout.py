@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from sigilicon.domain.physical_verification import (
+    CheckedLayoutIdentity,
+    CheckedSourceIdentity,
+    VerificationCompletion,
+)
+from sigilicon.domain.post_layout import (
+    DerivedArtifactIdentity,
+    PexEvidence,
+    PexStatus,
+    PhysicalAnalysisFinding,
+    PhysicalAnalysisStatus,
+    PostLayoutEvidence,
+    QualificationEvidence,
+    pex_evidence_from_json,
+    post_layout_evidence_from_json,
+    qualification_evidence_from_json,
+)
+from sigilicon.flow import (
+    ActionContract,
+    AdapterExecution,
+    AdapterSelection,
+    ArtifactBinding,
+    ArtifactPort,
+    CANONICAL_SOURCE_NETLIST_KIND,
+    CollectedActionResult,
+    ExecutionEnvironment,
+    ExecutionProfile,
+    FlowEngine,
+    FlowNode,
+    FlowSpec,
+    FlowTarget,
+    MATERIALIZED_LAYOUT_KIND,
+    MATERIALIZATION_RECEIPT_KIND,
+    PEX_ACTION,
+    PEX_EVIDENCE_KIND,
+    PEX_NETLIST_KIND,
+    PHYSICAL_QUALIFICATION_ACTION,
+    POST_LAYOUT_ACTION,
+    ResolvedCapability,
+    ResolvedPlatformAsset,
+    ResolvedPlatformAssetMember,
+    builtin_registry,
+)
+
+
+_SOURCE_ACTION = "fixture.post-layout-inputs"
+_SOURCE_ADAPTER = "fixture-post-layout-inputs"
+_PEX_ADAPTER = "fixture-pex"
+
+
+class _NoopAdapter:
+    def validate_inputs(self, context) -> tuple[str, ...]:
+        return ()
+
+    def prepare(self, context) -> None:
+        pass
+
+    def execute(self, context) -> AdapterExecution:
+        return AdapterExecution.succeeded()
+
+    def collect_result(self, context, execution) -> CollectedActionResult:
+        return CollectedActionResult()
+
+
+def _layout() -> CheckedLayoutIdentity:
+    return CheckedLayoutIdentity(
+        "1" * 64,
+        "2" * 64,
+        "3" * 64,
+        "owner",
+        "cell",
+        "4" * 64,
+        "5" * 64,
+        "gdsii",
+    )
+
+
+def _source() -> CheckedSourceIdentity:
+    return CheckedSourceIdentity("6" * 64, "owner", "cell")
+
+
+def _completion(*, proven: bool = True) -> VerificationCompletion:
+    return VerificationCompletion(
+        "fixture-backend",
+        True,
+        proven,
+        0 if proven else 1,
+    )
+
+
+def test_receipt_bound_downstream_evidence_round_trips_without_metric_dicts() -> None:
+    parasitics = DerivedArtifactIdentity("parasitics", PEX_NETLIST_KIND, "7" * 64)
+    pex = PexEvidence(
+        PexStatus.EXTRACTED,
+        _layout(),
+        _source(),
+        _completion(),
+        parasitics,
+        "validated extraction",
+    )
+    post_layout = PostLayoutEvidence(
+        PhysicalAnalysisStatus.PASSED,
+        _layout(),
+        _source(),
+        "8" * 64,
+        parasitics.sha256,
+        "9" * 64,
+        _completion(),
+        (),
+        "specification passed",
+    )
+    qualification = QualificationEvidence(
+        PhysicalAnalysisStatus.VIOLATED,
+        _layout(),
+        _source(),
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        _completion(),
+        (PhysicalAnalysisFinding("timing", 1),),
+        "one canonical requirement failed",
+        "8" * 64,
+        "d" * 64,
+        123,
+        456,
+    )
+
+    assert pex_evidence_from_json(pex.canonical_json()) == pex
+    assert post_layout_evidence_from_json(post_layout.canonical_json()) == post_layout
+    assert qualification_evidence_from_json(
+        qualification.canonical_json()
+    ) == qualification
+
+
+def test_downstream_success_cannot_be_inferred_from_exit_or_artifact_alone() -> None:
+    with pytest.raises(ValueError, match="parsed completion"):
+        PexEvidence(
+            PexStatus.EXTRACTED,
+            _layout(),
+            _source(),
+            _completion(proven=False),
+            DerivedArtifactIdentity("parasitics", PEX_NETLIST_KIND, "7" * 64),
+            "unparsed",
+        )
+    with pytest.raises(ValueError, match="positive findings"):
+        PostLayoutEvidence(
+            PhysicalAnalysisStatus.VIOLATED,
+            _layout(),
+            _source(),
+            "8" * 64,
+            "7" * 64,
+            "9" * 64,
+            _completion(),
+            (),
+            "no authoritative finding",
+        )
+    unavailable = PexEvidence(
+        PexStatus.BACKEND_UNAVAILABLE,
+        _layout(),
+        _source(),
+        VerificationCompletion("missing-backend", False, False, None),
+        None,
+        "backend unavailable",
+    )
+    failed = PexEvidence(
+        PexStatus.EXECUTION_FAILED,
+        _layout(),
+        _source(),
+        _completion(proven=False),
+        None,
+        "backend execution failed",
+    )
+    assert unavailable.status is PexStatus.BACKEND_UNAVAILABLE
+    assert failed.status is PexStatus.EXECUTION_FAILED
+
+
+def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> None:
+    registry = builtin_registry()
+    pex_contract = registry.action(PEX_ACTION)
+    assert pex_contract.adapters == ()
+    assert pex_contract.adapter_extensible
+    assert pex_contract.required_capabilities == ("tool.pex",)
+    assert pex_contract.platform_assets[0].members == ("pex-deck", "qrc-tech")
+    assert registry.action(POST_LAYOUT_ACTION).adapters == ()
+    assert registry.action(PHYSICAL_QUALIFICATION_ACTION).adapters == ()
+
+    registry.register_action(
+        ActionContract(
+            _SOURCE_ACTION,
+            outputs=(
+                ArtifactPort("layout", MATERIALIZED_LAYOUT_KIND),
+                ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
+                ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
+            ),
+            adapters=(_SOURCE_ADAPTER,),
+        )
+    )
+    registry.register_adapter(_SOURCE_ADAPTER, _NoopAdapter())
+    registry.register_action_adapter(PEX_ACTION, _PEX_ADAPTER, _NoopAdapter())
+    engine = FlowEngine(registry)
+    spec = FlowSpec(
+        "owner",
+        "pex-preflight",
+        (
+            FlowNode("inputs", _SOURCE_ACTION),
+            FlowNode(
+                "pex",
+                PEX_ACTION,
+                bindings=(
+                    ArtifactBinding("layout", "inputs", "layout"),
+                    ArtifactBinding("receipt", "inputs", "receipt"),
+                    ArtifactBinding("source", "inputs", "source"),
+                ),
+            ),
+        ),
+        (FlowTarget("pex", ("pex",)),),
+    )
+    profile = ExecutionProfile(
+        "owner",
+        "offline-pex",
+        (
+            AdapterSelection(_SOURCE_ACTION, _SOURCE_ADAPTER),
+            AdapterSelection(
+                PEX_ACTION,
+                _PEX_ADAPTER,
+                platform_asset_identities={"physical-pex": "fixture.pex"},
+            ),
+        ),
+    )
+    plan = engine.plan(spec, "pex", profile)
+    asset = ResolvedPlatformAsset(
+        "physical-pex",
+        "platform.pex",
+        "fixture.pex",
+        (
+            ResolvedPlatformAssetMember("pex-deck", Path("/fixture/pex.deck")),
+            ResolvedPlatformAssetMember("qrc-tech", Path("/fixture/qrc.tech")),
+        ),
+    )
+    ready = engine.preflight(
+        plan,
+        ExecutionEnvironment(
+            {"tool.pex": ResolvedCapability("fixture-pex")},
+            (asset,),
+        ),
+    )
+    blocked = engine.preflight(plan, ExecutionEnvironment({}, (asset,)))
+    incomplete_asset = ResolvedPlatformAsset(
+        "physical-pex",
+        "platform.pex",
+        "fixture.pex",
+        (ResolvedPlatformAssetMember("pex-deck", Path("/fixture/pex.deck")),),
+    )
+    missing_qrc = engine.preflight(
+        plan,
+        ExecutionEnvironment(
+            {"tool.pex": ResolvedCapability("fixture-pex")},
+            (incomplete_asset,),
+        ),
+    )
+
+    assert ready.status == "ready"
+    assert blocked.status == "blocked"
+    assert ("tool.pex", "missing") in {
+        (check.requirement, check.status) for check in blocked.checks
+    }
+    assert missing_qrc.status == "blocked"
+    assert any(
+        check.requirement == "physical-pex"
+        and check.status == "incomplete"
+        for check in missing_qrc.checks
+    )

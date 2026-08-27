@@ -10,11 +10,23 @@ from typing import Mapping
 
 from sigilicon.canonical import canonical_from_json, canonical_json, canonical_sha256
 from sigilicon.domain.physical_verification import (
+    CheckedLayoutIdentity,
+    CheckedSourceIdentity,
     DrcEvidence,
     LvsEvidence,
     PhysicalVerificationStatus,
     drc_evidence_from_json,
     lvs_evidence_from_json,
+)
+from sigilicon.domain.post_layout import (
+    PexEvidence,
+    PexStatus,
+    PhysicalAnalysisStatus,
+    PostLayoutEvidence,
+    QualificationEvidence,
+    pex_evidence_from_json,
+    post_layout_evidence_from_json,
+    qualification_evidence_from_json,
 )
 from sigilicon.flow.model import (
     ActionArtifact,
@@ -39,6 +51,14 @@ from sigilicon.flow.physical_verification import (
     DRC_EVIDENCE_KIND,
     LVS_EVIDENCE_KIND,
     MATERIALIZED_LAYOUT_KIND,
+)
+from sigilicon.flow.post_layout import (
+    PEX_EVIDENCE_KIND,
+    PEX_NETLIST_KIND,
+    PHYSICAL_QUALIFICATION_EVIDENCE_KIND,
+    PHYSICAL_QUALIFICATION_SPEC_KIND,
+    POST_LAYOUT_EVIDENCE_KIND,
+    POST_LAYOUT_SPEC_KIND,
 )
 from sigilicon.layout.materialization import (
     MaterializationDecision,
@@ -132,6 +152,12 @@ class ClosureArtifactBindings:
     source: CampaignArtifactReference | None = None
     drc: CampaignArtifactReference | None = None
     lvs: CampaignArtifactReference | None = None
+    parasitics: CampaignArtifactReference | None = None
+    pex: CampaignArtifactReference | None = None
+    post_layout_specification: CampaignArtifactReference | None = None
+    post_layout: CampaignArtifactReference | None = None
+    qualification_specification: CampaignArtifactReference | None = None
+    qualification: CampaignArtifactReference | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +203,12 @@ class ClosureIteration:
                 self.artifacts.source,
                 self.artifacts.drc,
                 self.artifacts.lvs,
+                self.artifacts.parasitics,
+                self.artifacts.pex,
+                self.artifacts.post_layout_specification,
+                self.artifacts.post_layout,
+                self.artifacts.qualification_specification,
+                self.artifacts.qualification,
             )
             if reference is not None
         )
@@ -490,6 +522,9 @@ class _ObservedClosure:
     receipt: MaterializationReceipt | None
     drc: DrcEvidence | None
     lvs: LvsEvidence | None
+    pex: PexEvidence | None
+    post_layout: PostLayoutEvidence | None
+    qualification: QualificationEvidence | None
     quality: ClosureQuality
     feedback: tuple[ClosureFeedbackScope, ...]
     provenance: ClosureIterationProvenance
@@ -657,6 +692,47 @@ def _future_status(required: bool) -> ClosureStageStatus:
         if required
         else ClosureStageStatus.NOT_REQUESTED
     )
+
+
+def _pex_status(value: PexStatus) -> ClosureStageStatus:
+    return {
+        PexStatus.EXTRACTED: ClosureStageStatus.SATISFIED,
+        PexStatus.UNSUPPORTED: ClosureStageStatus.UNSUPPORTED,
+        PexStatus.BACKEND_UNAVAILABLE: ClosureStageStatus.BACKEND_UNAVAILABLE,
+        PexStatus.EXECUTION_FAILED: ClosureStageStatus.EXECUTION_FAILED,
+    }[value]
+
+
+def _analysis_status(value: PhysicalAnalysisStatus) -> ClosureStageStatus:
+    return {
+        PhysicalAnalysisStatus.PASSED: ClosureStageStatus.SATISFIED,
+        PhysicalAnalysisStatus.VIOLATED: ClosureStageStatus.VIOLATED,
+        PhysicalAnalysisStatus.UNSUPPORTED: ClosureStageStatus.UNSUPPORTED,
+        PhysicalAnalysisStatus.BACKEND_UNAVAILABLE: (
+            ClosureStageStatus.BACKEND_UNAVAILABLE
+        ),
+        PhysicalAnalysisStatus.EXECUTION_FAILED: (
+            ClosureStageStatus.EXECUTION_FAILED
+        ),
+    }[value]
+
+
+def _downstream_status(
+    *,
+    required: bool,
+    reference: CampaignArtifactReference | None,
+    evidence_status: ClosureStageStatus | None,
+    result: FlowResult,
+) -> ClosureStageStatus:
+    if not required:
+        return ClosureStageStatus.NOT_REQUESTED
+    if evidence_status is not None:
+        return evidence_status
+    if reference is None:
+        return ClosureStageStatus.UNSUPPORTED
+    if _reference_execution_failed(result, reference):
+        return ClosureStageStatus.EXECUTION_FAILED
+    return ClosureStageStatus.NOT_EVALUATED
 
 
 def _invalid_quality(scope: ClosureCampaignScope) -> ClosureQuality:
@@ -903,6 +979,28 @@ class ClosureCampaignRunner:
             ("source", bindings.source, CANONICAL_SOURCE_NETLIST_KIND),
             ("drc", bindings.drc, DRC_EVIDENCE_KIND),
             ("lvs", bindings.lvs, LVS_EVIDENCE_KIND),
+            ("parasitics", bindings.parasitics, PEX_NETLIST_KIND),
+            ("pex", bindings.pex, PEX_EVIDENCE_KIND),
+            (
+                "post-layout-specification",
+                bindings.post_layout_specification,
+                POST_LAYOUT_SPEC_KIND,
+            ),
+            (
+                "post-layout",
+                bindings.post_layout,
+                POST_LAYOUT_EVIDENCE_KIND,
+            ),
+            (
+                "qualification-specification",
+                bindings.qualification_specification,
+                PHYSICAL_QUALIFICATION_SPEC_KIND,
+            ),
+            (
+                "qualification",
+                bindings.qualification,
+                PHYSICAL_QUALIFICATION_EVIDENCE_KIND,
+            ),
         ):
             if reference is not None:
                 artifact = _optional_artifact(flow_result, reference, kind)
@@ -947,6 +1045,29 @@ class ClosureCampaignRunner:
             None
             if "lvs" not in artifacts
             else _read_typed(artifacts["lvs"], lvs_evidence_from_json, "LVS evidence")
+        )
+        pex = (
+            None
+            if "pex" not in artifacts
+            else _read_typed(artifacts["pex"], pex_evidence_from_json, "PEX evidence")
+        )
+        post_layout = (
+            None
+            if "post-layout" not in artifacts
+            else _read_typed(
+                artifacts["post-layout"],
+                post_layout_evidence_from_json,
+                "post-layout evidence",
+            )
+        )
+        qualification = (
+            None
+            if "qualification" not in artifacts
+            else _read_typed(
+                artifacts["qualification"],
+                qualification_evidence_from_json,
+                "qualification evidence",
+            )
         )
 
         job_sha256 = canonical_sha256(job)
@@ -1122,6 +1243,181 @@ class ClosureCampaignRunner:
         if drc is not None and lvs is not None and drc.layout != lvs.layout:
             issues.append("DRC and LVS did not check the same layout identity")
 
+        def validate_downstream_subject(
+            label: str,
+            checked_layout: CheckedLayoutIdentity,
+            checked_source: CheckedSourceIdentity,
+        ) -> None:
+            if layout_sha256 is None:
+                issues.append(f"{label} evidence has no bound checked layout artifact")
+            elif checked_layout.artifact_sha256 != layout_sha256:
+                issues.append(f"{label} checked layout artifact identity mismatch")
+            if checked_layout.plan_sha256 != plan_sha256_value:
+                issues.append(f"{label} checked Materialization Plan identity mismatch")
+            if checked_layout.result_sha256 != result_sha256:
+                issues.append(f"{label} checked Physical Design Result identity mismatch")
+            if checked_layout.job_sha256 != job_sha256:
+                issues.append(f"{label} checked Physical Design Job identity mismatch")
+            if checked_layout.receipt_sha256 != receipt_sha256:
+                issues.append(f"{label} checked Materialization Receipt identity mismatch")
+            if receipt is not None:
+                if checked_layout.format != receipt.target.format.value:
+                    issues.append(f"{label} checked layout format mismatch")
+                if (checked_layout.owner, checked_layout.name) != (
+                    receipt.target.owner,
+                    receipt.target.name,
+                ):
+                    issues.append(f"{label} checked layout target mismatch")
+            if source_sha256 is None:
+                issues.append(f"{label} evidence has no bound checked source artifact")
+            elif checked_source.artifact_sha256 != source_sha256:
+                issues.append(f"{label} checked source artifact identity mismatch")
+            if "source" in artifacts:
+                _expect_qualifier(
+                    artifacts["source"], "owner", checked_source.owner, issues
+                )
+                _expect_qualifier(
+                    artifacts["source"], "name", checked_source.name, issues
+                )
+                _expect_qualifier(
+                    artifacts["source"],
+                    "source-sha256",
+                    checked_source.artifact_sha256,
+                    issues,
+                )
+
+        pex_sha256 = None
+        parasitics_sha256 = None
+        if pex is not None:
+            validate_downstream_subject("PEX", pex.layout, pex.source)
+            pex_artifact = artifacts["pex"]
+            pex_sha256 = _file_sha256(pex_artifact.path)
+            for name, expected in (
+                ("layout-sha256", pex.layout.artifact_sha256),
+                ("receipt-sha256", pex.layout.receipt_sha256),
+                ("job-sha256", pex.layout.job_sha256),
+                ("result-sha256", pex.layout.result_sha256),
+                ("plan-sha256", pex.layout.plan_sha256),
+                ("source-sha256", pex.source.artifact_sha256),
+                ("status", pex.status.value),
+                ("evidence-sha256", pex_sha256),
+            ):
+                _expect_qualifier(pex_artifact, name, expected, issues)
+            if pex.parasitics is not None:
+                if "parasitics" not in artifacts:
+                    issues.append("PEX evidence has no bound parasitic artifact")
+                else:
+                    parasitics_artifact = artifacts["parasitics"]
+                    parasitics_sha256 = _file_sha256(parasitics_artifact.path)
+                    if pex.parasitics.sha256 != parasitics_sha256:
+                        issues.append("PEX parasitic artifact identity mismatch")
+                    if pex.parasitics.kind != parasitics_artifact.kind:
+                        issues.append("PEX parasitic artifact kind mismatch")
+                    _expect_qualifier(
+                        parasitics_artifact,
+                        "pex-evidence-sha256",
+                        pex_sha256,
+                        issues,
+                    )
+                    _expect_qualifier(
+                        parasitics_artifact,
+                        "parasitics-sha256",
+                        pex.parasitics.sha256,
+                        issues,
+                    )
+
+        post_layout_sha256 = None
+        if post_layout is not None:
+            validate_downstream_subject(
+                "post-layout",
+                post_layout.layout,
+                post_layout.source,
+            )
+            post_artifact = artifacts["post-layout"]
+            post_layout_sha256 = _file_sha256(post_artifact.path)
+            if post_layout.pex_evidence_sha256 != pex_sha256:
+                issues.append("post-layout PEX evidence identity mismatch")
+            if post_layout.parasitics_sha256 != parasitics_sha256:
+                issues.append("post-layout parasitic identity mismatch")
+            if "post-layout-specification" not in artifacts:
+                issues.append("post-layout evidence has no bound specification")
+            elif post_layout.specification_sha256 != _file_sha256(
+                artifacts["post-layout-specification"].path
+            ):
+                issues.append("post-layout specification identity mismatch")
+            else:
+                _expect_qualifier(
+                    artifacts["post-layout-specification"],
+                    "specification-sha256",
+                    post_layout.specification_sha256,
+                    issues,
+                )
+            for name, expected in (
+                ("layout-sha256", post_layout.layout.artifact_sha256),
+                ("receipt-sha256", post_layout.layout.receipt_sha256),
+                ("source-sha256", post_layout.source.artifact_sha256),
+                ("pex-evidence-sha256", post_layout.pex_evidence_sha256),
+                ("parasitics-sha256", post_layout.parasitics_sha256),
+                ("specification-sha256", post_layout.specification_sha256),
+                ("status", post_layout.status.value),
+                ("evidence-sha256", post_layout_sha256),
+            ):
+                _expect_qualifier(post_artifact, name, expected, issues)
+
+        if qualification is not None:
+            validate_downstream_subject(
+                "qualification",
+                qualification.layout,
+                qualification.source,
+            )
+            qualification_artifact = artifacts["qualification"]
+            qualification_sha256 = _file_sha256(qualification_artifact.path)
+            if (
+                "drc" not in artifacts
+                or qualification.drc_evidence_sha256
+                != _file_sha256(artifacts["drc"].path)
+            ):
+                issues.append("qualification DRC evidence identity mismatch")
+            if (
+                "lvs" not in artifacts
+                or qualification.lvs_evidence_sha256
+                != _file_sha256(artifacts["lvs"].path)
+            ):
+                issues.append("qualification LVS evidence identity mismatch")
+            if qualification.pex_evidence_sha256 != pex_sha256:
+                issues.append("qualification PEX evidence identity mismatch")
+            if qualification.post_layout_evidence_sha256 != post_layout_sha256:
+                issues.append("qualification post-layout evidence identity mismatch")
+            if "qualification-specification" not in artifacts:
+                issues.append("qualification evidence has no bound specification")
+            elif qualification.specification_sha256 != _file_sha256(
+                artifacts["qualification-specification"].path
+            ):
+                issues.append("qualification specification identity mismatch")
+            else:
+                _expect_qualifier(
+                    artifacts["qualification-specification"],
+                    "specification-sha256",
+                    qualification.specification_sha256,
+                    issues,
+                )
+            for name, expected in (
+                ("layout-sha256", qualification.layout.artifact_sha256),
+                ("receipt-sha256", qualification.layout.receipt_sha256),
+                ("source-sha256", qualification.source.artifact_sha256),
+                ("drc-evidence-sha256", qualification.drc_evidence_sha256),
+                ("lvs-evidence-sha256", qualification.lvs_evidence_sha256),
+                ("pex-evidence-sha256", qualification.pex_evidence_sha256),
+                (
+                    "post-layout-evidence-sha256",
+                    qualification.post_layout_evidence_sha256,
+                ),
+                ("specification-sha256", qualification.specification_sha256),
+                ("status", qualification.status.value),
+                ("evidence-sha256", qualification_sha256),
+            ):
+                _expect_qualifier(qualification_artifact, name, expected, issues)
+
         routing_quality = None if closure is None else closure.quality
         quality = ClosureQuality(
             identity=(
@@ -1167,13 +1463,38 @@ class ClosureCampaignRunner:
             ),
             routing=routing_quality,
             independent_evaluator=_independent_status(routing_quality),
-            pex=_future_status(campaign.scope.require_pex),
-            post_layout=_future_status(campaign.scope.require_post_layout),
-            qualification=_future_status(campaign.scope.require_qualification),
+            pex=_downstream_status(
+                required=campaign.scope.require_pex,
+                reference=bindings.pex,
+                evidence_status=None if pex is None else _pex_status(pex.status),
+                result=flow_result,
+            ),
+            post_layout=_downstream_status(
+                required=campaign.scope.require_post_layout,
+                reference=bindings.post_layout,
+                evidence_status=(
+                    None
+                    if post_layout is None
+                    else _analysis_status(post_layout.status)
+                ),
+                result=flow_result,
+            ),
+            qualification=_downstream_status(
+                required=campaign.scope.require_qualification,
+                reference=bindings.qualification,
+                evidence_status=(
+                    None
+                    if qualification is None
+                    else _analysis_status(qualification.status)
+                ),
+                result=flow_result,
+            ),
             cost=ClosureCost(
                 0
                 if routing_quality is None
-                else routing_quality.placement_displacement_dbu
+                else routing_quality.placement_displacement_dbu,
+                None if qualification is None else qualification.area_dbu2,
+                None if qualification is None else qualification.power_femtowatts,
             ),
         )
         if issues:
@@ -1185,6 +1506,9 @@ class ClosureCampaignRunner:
             receipt,
             drc,
             lvs,
+            pex,
+            post_layout,
+            qualification,
             quality,
             _feedback(closure, plan, receipt, drc, lvs),
             self._provenance(iteration, flow_result, plan_sha256, artifacts),

@@ -103,7 +103,9 @@ states, while iteration budget counts Flow attempts.
 Feedback is restricted to typed physical owners, fixed blockers, DRC rules, LVS
 mismatch categories, or another explicit evidence identity. A campaign does not
 perform unattributed global search. PEX, post-layout analysis, and project
-qualification currently have no general artifact consumer; requesting them yields
+qualification cross strict receipt-bound evidence contracts. Their Actions are
+owner-extension seams with no built-in backend; requesting a stage without an
+explicit Adapter, canonical specification, and identity-matched artifacts yields
 typed `unsupported` state and prevents `closed` rather than manufacturing success.
 
 Attributed continuation crosses the independent
@@ -278,5 +280,8 @@ and unrelated design styles using the same kernel without source edits.
   and run to its canonical stage artifacts;
 - explicit lexicographic Closure Quality and attributed feedback with independent
   state and iteration budgets;
-- PEX and post-layout metric correlation remains unsupported until owned typed
-  artifact contracts and real consumers exist.
+- PEX, post-layout, and qualification have typed artifact contracts and Campaign
+  consumers; real backend Adapters and owner specifications remain required before
+  they can move from `unsupported` to satisfied evidence. Area and power cost are
+  consumed only from specification-bound qualification evidence, never recovered
+  from generic report metrics.

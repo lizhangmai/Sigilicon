@@ -8,6 +8,8 @@ import struct
 import pytest
 
 from sigilicon.domain.physical_verification import (
+    CheckedLayoutIdentity,
+    CheckedSourceIdentity,
     DrcEvidence,
     DrcViolation,
     LvsEvidence,
@@ -16,6 +18,17 @@ from sigilicon.domain.physical_verification import (
     VerificationCompletion,
     drc_evidence_from_json,
     lvs_evidence_from_json,
+)
+from sigilicon.domain.post_layout import (
+    DerivedArtifactIdentity,
+    PexEvidence,
+    PexStatus,
+    PhysicalAnalysisStatus,
+    PostLayoutEvidence,
+    QualificationEvidence,
+    pex_evidence_from_json,
+    post_layout_evidence_from_json,
+    qualification_evidence_from_json,
 )
 from sigilicon.flow import (
     ActionContext,
@@ -38,8 +51,17 @@ from sigilicon.flow import (
     LVS_EVIDENCE_KIND,
     MATERIALIZED_GDS_KIND,
     MATERIALIZATION_RECEIPT_KIND,
+    PEX_ACTION,
+    PEX_EVIDENCE_KIND,
+    PEX_NETLIST_KIND,
+    PHYSICAL_QUALIFICATION_ACTION,
+    PHYSICAL_QUALIFICATION_EVIDENCE_KIND,
+    PHYSICAL_QUALIFICATION_SPEC_KIND,
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
     PHYSICAL_VERIFICATION_POLICY_KIND,
+    POST_LAYOUT_ACTION,
+    POST_LAYOUT_EVIDENCE_KIND,
+    POST_LAYOUT_SPEC_KIND,
     PHYSICAL_DESIGN_ACTION,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_MATERIALIZATION_ACTION,
@@ -119,6 +141,9 @@ _BENCHMARK_INPUT_ADAPTER = "benchmark-closure-inputs"
 _BENCHMARK_LAYOUT_ADAPTER = "benchmark-materialize-layout"
 _BENCHMARK_DRC_ADAPTER = "benchmark-drc-parser"
 _BENCHMARK_LVS_ADAPTER = "benchmark-lvs-parser"
+_BENCHMARK_PEX_ADAPTER = "benchmark-pex-parser"
+_BENCHMARK_POST_LAYOUT_ADAPTER = "benchmark-post-layout-parser"
+_BENCHMARK_QUALIFICATION_ADAPTER = "benchmark-qualification-parser"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -135,6 +160,10 @@ _BENCHMARK_ENVIRONMENT = ExecutionEnvironment(
             "benchmark.contract-materializer"
         ),
         "tool.calibre": ResolvedCapability("benchmark.parsed-report-fixture"),
+        "tool.pex": ResolvedCapability("benchmark.parsed-pex-fixture"),
+        "tool.post-layout-simulation": ResolvedCapability(
+            "benchmark.parsed-post-layout-fixture"
+        ),
     },
     platform_assets=(
         ResolvedPlatformAsset(
@@ -146,6 +175,15 @@ _BENCHMARK_ENVIRONMENT = ExecutionEnvironment(
                 ResolvedPlatformAssetMember(
                     "master-layouts", Path("/contract/master-layouts")
                 ),
+            ),
+        ),
+        ResolvedPlatformAsset(
+            "physical-pex",
+            "platform.pex",
+            "benchmark.pex-assets",
+            (
+                ResolvedPlatformAssetMember("pex-deck", Path("/contract/pex-deck")),
+                ResolvedPlatformAssetMember("qrc-tech", Path("/contract/qrc-tech")),
             ),
         ),
         ResolvedPlatformAsset(
@@ -320,6 +358,16 @@ waiver_layers = []
 ''',
             encoding="utf-8",
         )
+        context.output_path("post-layout-specification", "post-layout.toml").write_text(
+            'schema = 1\nowner = "benchmark"\n',
+            encoding="utf-8",
+        )
+        context.output_path(
+            "qualification-specification", "qualification.toml"
+        ).write_text(
+            'schema = 1\nowner = "benchmark"\n',
+            encoding="utf-8",
+        )
         return AdapterExecution.succeeded()
 
     def collect_result(
@@ -330,6 +378,12 @@ waiver_layers = []
         source = context.output_path("source", "canonical-source.cdl")
         policy = context.output_path(
             "verification-policy", "physical-verification.toml"
+        )
+        post_layout_spec = context.output_path(
+            "post-layout-specification", "post-layout.toml"
+        )
+        qualification_spec = context.output_path(
+            "qualification-specification", "qualification.toml"
         )
         return CollectedActionResult(
             artifacts=(
@@ -355,6 +409,20 @@ waiver_layers = []
                     qualifiers={
                         "owner": "benchmark",
                         "policy-sha256": _sha256_file(policy),
+                    },
+                ),
+                ProducedArtifact(
+                    "post-layout-specification",
+                    POST_LAYOUT_SPEC_KIND,
+                    post_layout_spec,
+                    qualifiers={"specification-sha256": _sha256_file(post_layout_spec)},
+                ),
+                ProducedArtifact(
+                    "qualification-specification",
+                    PHYSICAL_QUALIFICATION_SPEC_KIND,
+                    qualification_spec,
+                    qualifiers={
+                        "specification-sha256": _sha256_file(qualification_spec)
                     },
                 ),
             ),
@@ -621,6 +689,201 @@ class _BenchmarkVerificationAdapter:
         )
 
 
+def _downstream_subject(context: ActionContext):
+    layout = context.input("layout")
+    source = context.input("source")
+    return (
+        CheckedLayoutIdentity(
+            str(layout.qualifiers["layout-sha256"]),
+            str(layout.qualifiers["plan-sha256"]),
+            str(layout.qualifiers["result-sha256"]),
+            str(layout.qualifiers["owner"]),
+            str(layout.qualifiers["name"]),
+            str(layout.qualifiers["receipt-sha256"]),
+            str(layout.qualifiers["job-sha256"]),
+            str(layout.qualifiers["format"]),
+        ),
+        CheckedSourceIdentity(
+            _sha256_file(source.path),
+            str(source.qualifiers["owner"]),
+            str(source.qualifiers["name"]),
+        ),
+    )
+
+
+class _BenchmarkDownstreamAdapter:
+    """Test-only parsed downstream evidence; never package-registered."""
+
+    def __init__(self, *, corrupt_layout_identity: bool = False) -> None:
+        self._corrupt_layout_identity = corrupt_layout_identity
+
+    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+        try:
+            self._evidence(context)
+        except (KeyError, OSError, ValueError, TypeError) as exc:
+            return (str(exc),)
+        return ()
+
+    def prepare(self, context: ActionContext) -> None:
+        pass
+
+    def _evidence(
+        self,
+        context: ActionContext,
+    ) -> PexEvidence | PostLayoutEvidence | QualificationEvidence:
+        layout, source = _downstream_subject(context)
+        completion = VerificationCompletion(
+            "benchmark-parsed-downstream-fixture",
+            True,
+            True,
+            0,
+        )
+        if context.action.kind == PEX_ACTION:
+            parasitics = context.output_path("parasitics", "extracted.pex")
+            if not parasitics.exists():
+                parasitics.write_text("* validated fixture parasitics\n", encoding="utf-8")
+            return PexEvidence(
+                PexStatus.EXTRACTED,
+                replace(layout, artifact_sha256="0" * 64)
+                if self._corrupt_layout_identity
+                else layout,
+                source,
+                completion,
+                DerivedArtifactIdentity(
+                    "parasitics",
+                    PEX_NETLIST_KIND,
+                    _sha256_file(parasitics),
+                ),
+                "fixture PEX",
+            )
+        pex_sha256 = _sha256_file(context.input("pex").path)
+        if context.action.kind == POST_LAYOUT_ACTION:
+            parasitics_sha256 = _sha256_file(context.input("parasitics").path)
+            return PostLayoutEvidence(
+                PhysicalAnalysisStatus.PASSED,
+                layout,
+                source,
+                pex_sha256,
+                parasitics_sha256,
+                _sha256_file(context.input("specification").path),
+                completion,
+                (),
+                "fixture post-layout",
+            )
+        return QualificationEvidence(
+            PhysicalAnalysisStatus.PASSED,
+            layout,
+            source,
+            _sha256_file(context.input("drc").path),
+            _sha256_file(context.input("lvs").path),
+            _sha256_file(context.input("specification").path),
+            completion,
+            (),
+            "fixture qualification",
+            pex_sha256,
+            _sha256_file(context.input("post-layout").path),
+            200,
+            300,
+        )
+
+    def execute(self, context: ActionContext) -> AdapterExecution:
+        evidence = self._evidence(context)
+        context.output_path("evidence", "downstream-evidence.json").write_text(
+            evidence.canonical_json(),
+            encoding="utf-8",
+        )
+        return AdapterExecution.succeeded()
+
+    def collect_result(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+    ) -> CollectedActionResult:
+        evidence_path = context.output_path("evidence", "downstream-evidence.json")
+        evidence_sha256 = _sha256_file(evidence_path)
+        if context.action.kind == PEX_ACTION:
+            evidence = pex_evidence_from_json(
+                evidence_path.read_text(encoding="utf-8")
+            )
+            assert evidence.parasitics is not None
+            parasitics = context.output_path("parasitics", "extracted.pex")
+            return CollectedActionResult(
+                artifacts=(
+                    ProducedArtifact(
+                        "parasitics",
+                        PEX_NETLIST_KIND,
+                        parasitics,
+                        qualifiers={
+                            "pex-evidence-sha256": evidence_sha256,
+                            "parasitics-sha256": evidence.parasitics.sha256,
+                        },
+                    ),
+                    ProducedArtifact(
+                        "evidence",
+                        PEX_EVIDENCE_KIND,
+                        evidence_path,
+                        qualifiers={
+                            "layout-sha256": evidence.layout.artifact_sha256,
+                            "receipt-sha256": evidence.layout.receipt_sha256,
+                            "job-sha256": evidence.layout.job_sha256,
+                            "result-sha256": evidence.layout.result_sha256,
+                            "plan-sha256": evidence.layout.plan_sha256,
+                            "source-sha256": evidence.source.artifact_sha256,
+                            "status": evidence.status.value,
+                            "evidence-sha256": evidence_sha256,
+                        },
+                    ),
+                ),
+                facts={"pex-status": evidence.status.value, "pex-completed": True},
+            )
+        if context.action.kind == POST_LAYOUT_ACTION:
+            evidence = post_layout_evidence_from_json(
+                evidence_path.read_text(encoding="utf-8")
+            )
+            kind = POST_LAYOUT_EVIDENCE_KIND
+            qualifiers = {
+                "layout-sha256": evidence.layout.artifact_sha256,
+                "receipt-sha256": evidence.layout.receipt_sha256,
+                "source-sha256": evidence.source.artifact_sha256,
+                "pex-evidence-sha256": evidence.pex_evidence_sha256,
+                "parasitics-sha256": evidence.parasitics_sha256,
+                "specification-sha256": evidence.specification_sha256,
+                "status": evidence.status.value,
+                "evidence-sha256": evidence_sha256,
+            }
+            facts = {
+                "post-layout-status": evidence.status.value,
+                "post-layout-passed": True,
+            }
+        else:
+            evidence = qualification_evidence_from_json(
+                evidence_path.read_text(encoding="utf-8")
+            )
+            kind = PHYSICAL_QUALIFICATION_EVIDENCE_KIND
+            qualifiers = {
+                "layout-sha256": evidence.layout.artifact_sha256,
+                "receipt-sha256": evidence.layout.receipt_sha256,
+                "source-sha256": evidence.source.artifact_sha256,
+                "drc-evidence-sha256": evidence.drc_evidence_sha256,
+                "lvs-evidence-sha256": evidence.lvs_evidence_sha256,
+                "pex-evidence-sha256": evidence.pex_evidence_sha256,
+                "post-layout-evidence-sha256": (
+                    evidence.post_layout_evidence_sha256
+                ),
+                "specification-sha256": evidence.specification_sha256,
+                "status": evidence.status.value,
+                "evidence-sha256": evidence_sha256,
+            }
+            facts = {
+                "qualification-status": evidence.status.value,
+                "qualification-passed": True,
+            }
+        return CollectedActionResult(
+            artifacts=(ProducedArtifact("evidence", kind, evidence_path, qualifiers),),
+            facts=facts,
+        )
+
+
 def _flow(
     job: PhysicalDesignJob,
     *,
@@ -629,6 +892,8 @@ def _flow(
     corrupt_layout_identity: bool = False,
     materialization: str = "materialized",
     corrupt_identity: str | None = None,
+    downstream: bool = False,
+    corrupt_downstream_identity: bool = False,
 ):
     if corrupt_layout_identity:
         corrupt_identity = "result"
@@ -641,6 +906,14 @@ def _flow(
                 ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
                 ArtifactPort(
                     "verification-policy", PHYSICAL_VERIFICATION_POLICY_KIND
+                ),
+                ArtifactPort(
+                    "post-layout-specification",
+                    POST_LAYOUT_SPEC_KIND,
+                ),
+                ArtifactPort(
+                    "qualification-specification",
+                    PHYSICAL_QUALIFICATION_SPEC_KIND,
                 ),
             ),
             adapters=(_BENCHMARK_INPUT_ADAPTER,),
@@ -664,6 +937,23 @@ def _flow(
         LVS_ACTION,
         _BENCHMARK_LVS_ADAPTER,
         _BenchmarkVerificationAdapter(),
+    )
+    registry.register_action_adapter(
+        PEX_ACTION,
+        _BENCHMARK_PEX_ADAPTER,
+        _BenchmarkDownstreamAdapter(
+            corrupt_layout_identity=corrupt_downstream_identity
+        ),
+    )
+    registry.register_action_adapter(
+        POST_LAYOUT_ACTION,
+        _BENCHMARK_POST_LAYOUT_ADAPTER,
+        _BenchmarkDownstreamAdapter(),
+    )
+    registry.register_action_adapter(
+        PHYSICAL_QUALIFICATION_ACTION,
+        _BENCHMARK_QUALIFICATION_ADAPTER,
+        _BenchmarkDownstreamAdapter(),
     )
 
     nodes = [
@@ -766,6 +1056,91 @@ def _flow(
             source=CampaignArtifactReference("inputs", "source"),
             drc=CampaignArtifactReference("drc", "evidence"),
             lvs=CampaignArtifactReference("lvs", "evidence"),
+        )
+
+    if downstream:
+        assert drc is not None and lvs is not None
+        nodes.extend(
+            (
+                FlowNode(
+                    "pex",
+                    PEX_ACTION,
+                    bindings=(
+                        ArtifactBinding("layout", "layout", "layout"),
+                        ArtifactBinding("receipt", "layout", "receipt"),
+                        ArtifactBinding("source", "inputs", "source"),
+                    ),
+                ),
+                FlowNode(
+                    "post-layout",
+                    POST_LAYOUT_ACTION,
+                    bindings=(
+                        ArtifactBinding("layout", "layout", "layout"),
+                        ArtifactBinding("receipt", "layout", "receipt"),
+                        ArtifactBinding("source", "inputs", "source"),
+                        ArtifactBinding("pex", "pex", "evidence"),
+                        ArtifactBinding("parasitics", "pex", "parasitics"),
+                        ArtifactBinding(
+                            "specification",
+                            "inputs",
+                            "post-layout-specification",
+                        ),
+                    ),
+                ),
+                FlowNode(
+                    "qualification",
+                    PHYSICAL_QUALIFICATION_ACTION,
+                    bindings=(
+                        ArtifactBinding("layout", "layout", "layout"),
+                        ArtifactBinding("receipt", "layout", "receipt"),
+                        ArtifactBinding("source", "inputs", "source"),
+                        ArtifactBinding("drc", "drc", "evidence"),
+                        ArtifactBinding("lvs", "lvs", "evidence"),
+                        ArtifactBinding("pex", "pex", "evidence"),
+                        ArtifactBinding(
+                            "post-layout", "post-layout", "evidence"
+                        ),
+                        ArtifactBinding(
+                            "specification",
+                            "inputs",
+                            "qualification-specification",
+                        ),
+                    ),
+                ),
+            )
+        )
+        selections.extend(
+            (
+                AdapterSelection(
+                    PEX_ACTION,
+                    _BENCHMARK_PEX_ADAPTER,
+                    platform_asset_identities={
+                        "physical-pex": "benchmark.pex-assets"
+                    },
+                ),
+                AdapterSelection(
+                    POST_LAYOUT_ACTION,
+                    _BENCHMARK_POST_LAYOUT_ADAPTER,
+                ),
+                AdapterSelection(
+                    PHYSICAL_QUALIFICATION_ACTION,
+                    _BENCHMARK_QUALIFICATION_ADAPTER,
+                ),
+            )
+        )
+        goals = ("qualification",)
+        bindings = replace(
+            bindings,
+            parasitics=CampaignArtifactReference("pex", "parasitics"),
+            pex=CampaignArtifactReference("pex", "evidence"),
+            post_layout_specification=CampaignArtifactReference(
+                "inputs", "post-layout-specification"
+            ),
+            post_layout=CampaignArtifactReference("post-layout", "evidence"),
+            qualification_specification=CampaignArtifactReference(
+                "inputs", "qualification-specification"
+            ),
+            qualification=CampaignArtifactReference("qualification", "evidence"),
         )
 
     spec = FlowSpec(
@@ -1190,3 +1565,60 @@ def test_required_future_analysis_is_explicitly_unsupported(tmp_path: Path) -> N
     assert result.final_quality.post_layout is ClosureStageStatus.UNSUPPORTED
     assert result.final_quality.qualification is ClosureStageStatus.UNSUPPORTED
     assert not result.closed
+
+
+def test_campaign_consumes_receipt_bound_downstream_evidence(tmp_path: Path) -> None:
+    engine, plan, bindings = _flow(
+        _gridless_job(),
+        drc="clean",
+        lvs="clean",
+        downstream=True,
+    )
+    scope = ClosureCampaignScope(
+        require_pex=True,
+        require_post_layout=True,
+        require_qualification=True,
+    )
+    result = _runner(engine, artifact_root=tmp_path / "downstream").run(
+        _campaign(plan, bindings, scope=scope)
+    )
+
+    assert result.termination is ClosureCampaignTermination.CLOSED
+    assert result.final_quality.pex is ClosureStageStatus.SATISFIED
+    assert result.final_quality.post_layout is ClosureStageStatus.SATISFIED
+    assert result.final_quality.qualification is ClosureStageStatus.SATISFIED
+    assert result.final_quality.cost.area_dbu2 == 200
+    assert result.final_quality.cost.power_femtowatts == 300
+    assert {item.label for item in result.iterations[0].provenance.artifacts} >= {
+        "parasitics",
+        "pex",
+        "post-layout-specification",
+        "post-layout",
+        "qualification-specification",
+        "qualification",
+    }
+
+
+def test_campaign_rejects_downstream_subject_identity_drift(tmp_path: Path) -> None:
+    engine, plan, bindings = _flow(
+        _gridless_job(),
+        drc="clean",
+        lvs="clean",
+        downstream=True,
+        corrupt_downstream_identity=True,
+    )
+    result = _runner(engine, artifact_root=tmp_path / "downstream-drift").run(
+        _campaign(
+            plan,
+            bindings,
+            scope=ClosureCampaignScope(
+                require_pex=True,
+                require_post_layout=True,
+                require_qualification=True,
+            ),
+        )
+    )
+
+    assert result.termination is ClosureCampaignTermination.EXECUTION_FAILED
+    assert result.final_quality.identity is ClosureStageStatus.INVALID_IDENTITY
+    assert "PEX checked layout artifact identity mismatch" in result.message
