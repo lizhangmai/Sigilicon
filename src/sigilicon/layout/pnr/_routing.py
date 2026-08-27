@@ -48,6 +48,8 @@ class RoutingSolveResult:
     status: ResultStatus
     routes: tuple[NetRoute, ...]
     report: StageReport
+    route_states: int
+    routing_iterations: int = 0
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,7 @@ def _result(
                 Metric("route_states", route_states, "count"),
             ),
         ),
+        route_states=route_states,
     )
 
 
@@ -1365,10 +1368,6 @@ def _solve_routing_once(
     )
 
 
-def _metric_value(result: RoutingSolveResult, name: str) -> int:
-    return int(next(metric.value for metric in result.report.metrics if metric.name == name))
-
-
 def _with_iteration_metrics(
     result: RoutingSolveResult,
     *,
@@ -1390,6 +1389,8 @@ def _with_iteration_metrics(
             diagnostics=result.report.diagnostics,
             metrics=metrics,
         ),
+        route_states=route_states,
+        routing_iterations=routing_iterations,
     )
 
 
@@ -1411,6 +1412,8 @@ def _with_congestion_metrics(
             )
             + congestion_metrics,
         ),
+        route_states=result.route_states,
+        routing_iterations=result.routing_iterations,
     )
 
 
@@ -1425,7 +1428,7 @@ def solve_routing(
             job,
             _with_iteration_metrics(
                 result,
-                route_states=_metric_value(result, "route_states"),
+                route_states=result.route_states,
                 routing_iterations=1,
             ),
         )
@@ -1462,7 +1465,7 @@ def solve_routing(
             net_order=net_order,
             maximum_route_states=remaining_states,
         )
-        total_route_states += _metric_value(result, "route_states")
+        total_route_states += result.route_states
         result = _with_iteration_metrics(
             result,
             route_states=total_route_states,
