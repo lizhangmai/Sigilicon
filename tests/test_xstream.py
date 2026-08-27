@@ -112,7 +112,7 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
         return subprocess.CompletedProcess(
             command,
             9 if failure == "nonzero" else 0,
-            "",
+            "translator rejected one option\n" if failure == "nonzero" else "",
         )
 
     monkeypatch.setattr("sigilicon.virtuoso.xstream.run_process_group", runner)
@@ -122,3 +122,8 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
 
     assert error.value.executed
     assert error.value.exit_code == (9 if failure == "nonzero" else 0)
+    if failure == "nonzero":
+        assert error.value.diagnostic_path == request.work_root / "xstream-failure.log"
+        diagnostic = error.value.diagnostic_path.read_text(encoding="utf-8")
+        assert "exit_code=9" in diagnostic
+        assert "translator rejected one option" in diagnostic

@@ -1160,6 +1160,25 @@ class OaXStreamMaterializationAdapter:
                                 executable=executable,
                             )
                         except XStreamExportError as exc:
+                            diagnostic_message = ""
+                            if exc.diagnostic_path is not None:
+                                try:
+                                    _write_regular_copy(
+                                        exc.diagnostic_path,
+                                        context.log_root
+                                        / "oa-xstream"
+                                        / "xstream-failure.log",
+                                        "XStream failure diagnostic",
+                                    )
+                                    diagnostic_message = (
+                                        "; managed diagnostic: "
+                                        "logs/materialize/oa-xstream/xstream-failure.log"
+                                    )
+                                except Exception as diagnostic_error:
+                                    diagnostic_message = (
+                                        "; diagnostic persistence failed: "
+                                        f"{diagnostic_error}"
+                                    )
                             self._receipt(
                                 context,
                                 status=MaterializationExecutionStatus.EXECUTION_FAILED,
@@ -1168,7 +1187,10 @@ class OaXStreamMaterializationAdapter:
                                 completed=False,
                                 content_validated=False,
                                 exit_code=exc.exit_code,
-                                message=f"OA/XStream execution failed: {exc}",
+                                message=(
+                                    f"OA/XStream execution failed: {exc}"
+                                    f"{diagnostic_message}"
+                                ),
                             )
                         except Exception as exc:
                             self._receipt(

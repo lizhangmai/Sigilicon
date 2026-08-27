@@ -31,10 +31,12 @@ class XStreamExportError(RuntimeError):
         *,
         executed: bool,
         exit_code: int | None,
+        diagnostic_path: Path | None = None,
     ) -> None:
         super().__init__(message)
         self.executed = executed
         self.exit_code = exit_code
+        self.diagnostic_path = diagnostic_path
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,30 @@ def xstream_environment(executable: Path) -> dict[str, str]:
     environment.setdefault("OA_HOME", str(cds_home / "oa_v22.62.021"))
     _prepend(environment, "LD_LIBRARY_PATH", cds_home / "tools.lnx86" / "lib")
     return environment
+
+
+def _write_failure_diagnostic(
+    work: Path,
+    *,
+    exit_code: int,
+    stdout: str,
+) -> Path:
+    """Persist bounded translator evidence before raising on a nonzero exit."""
+
+    sections = [f"exit_code={exit_code}", "", "[stdout]", stdout[-65536:]]
+    for name in ("strmout.log", "strmout.sum"):
+        path = work / name
+        sections.extend(("", f"[{name}]"))
+        if not path.is_file() or path.is_symlink():
+            sections.append("<not a regular file>")
+            continue
+        try:
+            sections.append(read_nofollow_text(path, errors="replace")[-65536:])
+        except OSError as exc:
+            sections.append(f"<unreadable: {exc}>")
+    diagnostic = work / "xstream-failure.log"
+    diagnostic.write_text("\n".join(sections), encoding="utf-8")
+    return diagnostic
 
 
 def run_xstream_export(request: XStreamExportRequest) -> XStreamExportResult:
@@ -213,10 +239,16 @@ def run_xstream_export(request: XStreamExportRequest) -> XStreamExportResult:
     summary = work / "strmout.sum"
     gds = work / "layout.gds"
     if completed.returncode != 0:
+        diagnostic = _write_failure_diagnostic(
+            work,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+        )
         raise XStreamExportError(
-            f"XStream exited {completed.returncode}",
+            f"XStream exited {completed.returncode}; see managed xstream-failure.log",
             executed=True,
             exit_code=completed.returncode,
+            diagnostic_path=diagnostic,
         )
     for path, label in (
         (native_log, "native log"),
