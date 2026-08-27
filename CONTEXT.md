@@ -12,10 +12,6 @@ _Avoid_: Layout recipe, PDK job
 The complete outcome of a Physical Design Job, including solutions, constraint outcomes, diagnostics, metrics, typed Placement-Routing Closure Evidence, and reproducibility identity.
 _Avoid_: Successful process, generated layout
 
-**Physical Design Flow Artifact**:
-A canonical, strictly validated Physical Design Job, Physical Design Result, or Placement-Routing Closure Evidence value transferred between managed Flow stages.
-_Avoid_: Arbitrary JSON dump, Stage Report reconstruction
-
 **Physical Design Model**:
 A database-neutral description of hierarchy, physical masters, instances, ports, nets, and legal design regions.
 _Avoid_: OA model, GDS model
@@ -229,41 +225,5 @@ An independent reconstruction of connectivity, resource coverage, obstruction cl
 _Avoid_: Solver success flag, signoff DRC/LVS
 
 **Materialization Plan**:
-An immutable, database-neutral instruction set carrying a target, acceptance, provenance, instance and Routing Blockage placements, Route Segments, and Route Vias derived from one Physical Design Result.
-_Avoid_: Physical Design Result, OA write script, DEF file
-
-**Materialization Acceptance**:
-A typed decision that a Materialization Plan is executable, diagnostic-only, or rejected, with a reason preserving closure, budget, unsupported, infeasible, and invalid-solution semantics.
-_Avoid_: Success boolean, non-empty geometry
-
-**Checked Layout Identity**:
-The artifact, Materialization Plan, Physical Design Result, owner, and name identities of exactly the layout candidate examined by physical verification.
-_Avoid_: GDS filename, latest layout
-
-**Physical Verification Evidence**:
-A typed DRC or LVS conclusion tied to a Checked Layout Identity, a backend completion record, exact findings, and, for LVS, a checked source identity. Its mutually exclusive states are clean, violated, unsupported, backend unavailable, and execution failed.
-_Avoid_: Exit code, pass string, report path
-
-**Verification Completion**:
-Evidence that a named verification backend executed, whether its authoritative report was parsed, and its exit code. Only executed, parsed, zero-exit completion can support clean or violated Physical Verification Evidence.
-_Avoid_: Process success, output-file existence
-
-**Closure Campaign**:
-A bounded, deterministic sequence of explicit Flow attempts that validates typed physical-design, materialization, verification, and qualification identities, produces attributed feedback, and terminates with closed, repair, unsupported, proven infeasible, state budget, iteration budget, or execution failed.
-_Avoid_: FlowEngine loop, global parameter search, AnalogAgentFlow
-
-**Closure Quality**:
-A typed lexicographic campaign state ordered by identity, materialization, DRC/LVS, P&R conflicts, independent evaluation, optional analyses, project qualification, and exact costs.
-_Avoid_: Float score, report metric tuple
-
-**Closure Feedback Scope**:
-The stable physical owner, fixed blocker, DRC rule, LVS mismatch, materialization reason, or identity evidence to which one proposed next attempt is restricted.
-_Avoid_: Try again, global design mutation
-
-**Closure Campaign State Budget**:
-The maximum number of distinct typed Closure Quality states a Closure Campaign may consume before terminating, independent of its attempt count.
-_Avoid_: Flow retry count, Routing Search Budget
-
-**Closure Campaign Iteration Budget**:
-The maximum number of explicit Flow attempts a Closure Campaign may execute, independent of the number of distinct Closure Quality states observed.
-_Avoid_: Routing Iteration Budget, timeout
+An audited instruction set for writing an accepted physical design solution into a persistent layout database.
+_Avoid_: Physical Design Result
