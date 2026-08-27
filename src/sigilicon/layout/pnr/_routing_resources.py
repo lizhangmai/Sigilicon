@@ -14,6 +14,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from sigilicon.layout.pnr._geometry import via_occurrence_shapes
+from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
 from sigilicon.layout.pnr.model import (
     Axis,
     CutSpacingRule,
@@ -105,6 +106,7 @@ class RoutingObstacle:
     owner: str | None
     source: str
     branch: str | None = None
+    physical_owners: tuple[PhysicalOwnerIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,7 @@ class BlockedResource:
     hard: bool
     reason: str
     branches: tuple[str, ...] = ()
+    physical_owners: tuple[PhysicalOwnerIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -505,6 +508,7 @@ class RoutingSearchView:
                         evidence.hard,
                         evidence.reason,
                         evidence.branches,
+                        evidence.physical_owners,
                     )
                 )
         adjacency = _via_adjacency(self.vias)
@@ -525,6 +529,7 @@ class RoutingSearchView:
                         via_blockage.hard,
                         via_blockage.reason,
                         via_blockage.branches,
+                        via_blockage.physical_owners,
                     )
                 )
                 continue
@@ -1139,12 +1144,23 @@ def _blocked_resource(
     branches = tuple(
         sorted({item.branch for item in items if item.branch is not None})
     )
+    physical_owners = tuple(
+        sorted(
+            {
+                owner
+                for item in items
+                for owner in item.physical_owners
+            },
+            key=lambda item: item.stable_name,
+        )
+    )
     return BlockedResource(
         resource,
         owners,
         any(item.owner is None for item in items),
         reason,
         branches,
+        physical_owners,
     )
 
 
@@ -1157,5 +1173,6 @@ def _blocked_key(
         blocked.hard,
         blocked.owners,
         blocked.branches,
+        tuple(owner.stable_name for owner in blocked.physical_owners),
         blocked.reason,
     )

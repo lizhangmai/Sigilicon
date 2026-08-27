@@ -57,8 +57,12 @@ The typed conclusion that negotiated routing closed, proved infeasible, found an
 _Avoid_: Process exit status, diagnostic-code parsing
 
 **Routing Placement Pressure**:
-A typed attribution from a Routing Conflict Set to specific movable instances, pin accesses, corridors, and Routing Resources that placement may legally repair.
+A typed attribution from a Routing Conflict Set and affected Routing Resources to stable Physical Owners that placement may legally repair, while preserving fixed, unsupported, and unowned evidence.
 _Avoid_: Congestion message, global placement retry
+
+**Physical Owner**:
+A stable instance, instance pin, or port identity responsible for placed obstruction or access geometry, with explicit movable, fixed, or unsupported repair status.
+_Avoid_: Rectangle object identity, inferred blocker name
 
 **Placement Repair**:
 A deterministic, local displacement of only Routing Placement Pressure-attributed movable instances while preserving placement legality and hard constraints.

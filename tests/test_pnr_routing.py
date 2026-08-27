@@ -380,7 +380,27 @@ def test_routing_problem_compiles_transformed_static_design_facts() -> None:
         (LayerShape("route", Rect(2, 5, 4, 7)),),
         (LayerShape("route", Rect(10, 12, 12, 14)),),
     )
-    assert net.static_blockers == {"route": (Rect(12, 12, 14, 16),)}
+    assert tuple(
+        (region.shape, tuple(owner.stable_name for owner in region.owners))
+        for region in net.static_blockers["route"]
+    ) == ((Rect(12, 12, 14, 16), ("instance:sink",)),)
+    assert tuple(
+        owner.identity.stable_name
+        for owner in problem.physical_ownership.owners
+    ) == (
+        "instance:sink",
+        "pin:sink:pin",
+        "port:source",
+    )
+    pin_owner = problem.physical_ownership.owner_for_reference(
+        PinReference("pin", "sink")
+    )
+    assert tuple(
+        region.source
+        for region in problem.physical_ownership.regions_for_owner(
+            pin_owner.identity
+        )
+    ) == ("pin-access",)
 
 
 def test_adjacent_gridless_regions_form_one_exact_routing_domain() -> None:

@@ -12,6 +12,7 @@ from sigilicon.layout.pnr._routing_resources import (
     RoutingResourceKind,
     RoutingResourceOverflow,
 )
+from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
 
 
 class RoutingConflictKind(str, Enum):
@@ -49,6 +50,7 @@ class RoutingConflict:
     reroute_scope: tuple[str, ...]
     evidence: str
     branch: str | None = None
+    physical_owners: tuple[PhysicalOwnerIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,7 @@ def capacity_conflicts(
                     f"resource usage {overflow.usage} exceeds capacity "
                     f"{overflow.capacity}"
                 ),
+                physical_owners=(),
             )
         )
     return RoutingConflictSet.from_iterable(conflicts)
@@ -246,6 +249,7 @@ def attributed_failure_conflicts(
                     victim_branches=(),
                     reroute_scope=reroute_scope,
                     evidence=evidence,
+                    physical_owners=(),
                 ),
             )
         )
@@ -254,7 +258,8 @@ def attributed_failure_conflicts(
             identity=(
                 f"{kind.value}:{net}:"
                 f"{item.resource.stable_name if item.resource is not None else 'hard'}:"
-                f"{','.join(item.owners)}"
+                f"{','.join(item.owners)}:"
+                f"{','.join(owner.stable_name for owner in item.physical_owners)}"
             ),
             kind=(
                 RoutingConflictKind.HARD_BLOCKER
@@ -285,6 +290,7 @@ def attributed_failure_conflicts(
             ),
             reroute_scope=reroute_scope,
             evidence=f"{evidence}: {item.reason}",
+            physical_owners=item.physical_owners,
         )
         for item in blocked_items
     )

@@ -6,9 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from sigilicon.layout.pnr._geometry import (
-    transformed_obstructions,
-    transformed_pin_accesses,
+from sigilicon.layout.pnr._routing_ownership import (
+    OwnedRoutingRegion,
+    RoutingPhysicalOwnership,
+    compile_routing_physical_ownership,
 )
 from sigilicon.layout.pnr._routing_policy import RoutingPolicy, compile_routing_policy
 from sigilicon.layout.pnr._routing_resources import (
@@ -21,12 +22,7 @@ from sigilicon.layout.pnr.model import (
     InstancePlacement,
     LayerShape,
     PhysicalDesignJob,
-    PhysicalInstance,
-    PhysicalMaster,
-    PhysicalPort,
     PinReference,
-    Placement,
-    Rect,
     ResultStatus,
     ViaDefinition,
 )
@@ -47,7 +43,7 @@ class NetRoutingProblem:
     name: str
     terminal_references: tuple[PinReference, ...]
     terminal_accesses: tuple[tuple[LayerShape, ...], ...]
-    static_blockers: Mapping[str, tuple[Rect, ...]]
+    static_blockers: Mapping[str, tuple[OwnedRoutingRegion, ...]]
 
 
 @dataclass(frozen=True)
@@ -59,6 +55,7 @@ class RoutingProblem:
     resource_graph: RoutingResourceGraph
     policy: RoutingPolicy
     nets: tuple[NetRoutingProblem, ...]
+    physical_ownership: RoutingPhysicalOwnership
     movable_instances: frozenset[str]
     issue: RoutingProblemIssue | None
     _nets_by_name: Mapping[str, NetRoutingProblem]
@@ -87,33 +84,14 @@ class RoutingProblem:
         return tuple(self._nets_by_name[name] for name in names)
 
 
-def _endpoint_accesses(
-    reference: PinReference,
-    placements: Mapping[str, Placement],
-    masters: Mapping[str, PhysicalMaster],
-    instances: Mapping[str, PhysicalInstance],
-    ports: Mapping[str, PhysicalPort],
-) -> tuple[LayerShape, ...]:
-    if reference.instance is None:
-        port = ports[reference.pin]
-        return tuple(
-            LayerShape(layer=access.layer, shape=access.shape)
-            for access in port.accesses
-        )
-    instance = instances[reference.instance]
-    master = masters[instance.master]
-    return transformed_pin_accesses(
-        master,
-        reference.pin,
-        placements[reference.instance],
-    )
-
-
 def _freeze_blockers(
-    blockers: Mapping[str, list[Rect]],
-) -> Mapping[str, tuple[Rect, ...]]:
+    blockers: Mapping[str, list[OwnedRoutingRegion]],
+) -> Mapping[str, tuple[OwnedRoutingRegion, ...]]:
     return MappingProxyType(
-        {layer: tuple(shapes) for layer, shapes in sorted(blockers.items())}
+        {
+            layer: tuple(sorted(shapes, key=lambda item: item.identity))
+            for layer, shapes in sorted(blockers.items())
+        }
     )
 
 
@@ -141,55 +119,23 @@ def compile_routing_problem(
             resource_graph.issue.code,
         )
     )
-    placements = {item.instance: item.placement for item in instance_placements}
-    masters = {master.name: master for master in job.design.masters}
-    instances = {instance.name: instance for instance in job.design.instances}
-    ports = {port.name: port for port in job.design.ports}
+    ownership = compile_routing_physical_ownership(job, instance_placements)
     nets = {net.name: net for net in job.design.nets}
     policy = compile_routing_policy(job.routing_constraints, tuple(sorted(nets)))
 
-    references = tuple(PinReference(port.name) for port in job.design.ports) + tuple(
-        PinReference(pin.name, instance.name)
-        for instance in job.design.instances
-        for pin in masters[instance.master].pins
-    )
-    accesses_by_reference = MappingProxyType(
-        {
-            reference: _endpoint_accesses(
-                reference,
-                placements,
-                masters,
-                instances,
-                ports,
-            )
-            for reference in references
-        }
-    )
-    fixed_obstructions: dict[str, list[Rect]] = {}
-    for instance_name, placement in placements.items():
-        master = masters[instances[instance_name].master]
-        for obstruction in transformed_obstructions(master, placement):
-            fixed_obstructions.setdefault(obstruction.layer, []).append(
-                obstruction.shape
-            )
-
     compiled_nets: list[NetRoutingProblem] = []
     for net_name, net in sorted(nets.items()):
-        blockers = {
-            layer: list(shapes) for layer, shapes in fixed_obstructions.items()
-        }
         connected = frozenset(net.pins)
-        for reference, accesses in accesses_by_reference.items():
-            if reference in connected:
-                continue
-            for access in accesses:
-                blockers.setdefault(access.layer, []).append(access.shape)
+        blockers: dict[str, list[OwnedRoutingRegion]] = {}
+        for region in ownership.blocking_regions(connected):
+            blockers.setdefault(region.layer, []).append(region)
         compiled_nets.append(
             NetRoutingProblem(
                 name=net_name,
                 terminal_references=net.pins,
                 terminal_accesses=tuple(
-                    accesses_by_reference[reference] for reference in net.pins
+                    ownership.terminal_accesses(reference)
+                    for reference in net.pins
                 ),
                 static_blockers=_freeze_blockers(blockers),
             )
@@ -202,6 +148,7 @@ def compile_routing_problem(
         resource_graph=resource_graph,
         policy=policy,
         nets=compiled_nets_tuple,
+        physical_ownership=ownership,
         movable_instances=frozenset(
             instance.name
             for instance in job.design.instances

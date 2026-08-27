@@ -24,6 +24,7 @@ from sigilicon.layout.pnr._routing_conflicts import (
     capacity_conflicts,
 )
 from sigilicon.layout.pnr._routing_policy import RoutingGroupPolicy
+from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
 from sigilicon.layout.pnr._routing_pressure import (
     RoutingPlacementPressure,
     attribute_routing_pressure,
@@ -93,6 +94,7 @@ class _Blocker:
     shape: Rect
     owner: str | None
     branch: str | None = None
+    physical_owners: tuple[PhysicalOwnerIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -370,8 +372,11 @@ def _raw_blockers(
     state: RoutingState,
 ) -> dict[str, tuple[_Blocker, ...]]:
     blockers: dict[str, list[_Blocker]] = {
-        layer: [_Blocker(shape, None) for shape in shapes]
-        for layer, shapes in net.static_blockers.items()
+        layer: [
+            _Blocker(region.shape, None, physical_owners=region.owners)
+            for region in regions
+        ]
+        for layer, regions in net.static_blockers.items()
     }
     for layer, occupancy in state.occupancy_by_layer.items():
         blockers.setdefault(layer, []).extend(
@@ -392,6 +397,7 @@ def _center_blockers(
                 _expanded(blocker.shape, context.width // 2 + context.spacing),
                 blocker.owner,
                 blocker.branch,
+                blocker.physical_owners,
             )
             for blocker in raw_blockers.get(layer, ())
         )
@@ -417,8 +423,9 @@ def _search_resources(
                 layer,
                 blocker.shape,
                 blocker.owner,
-                "fixed" if blocker.owner is None else "route",
+                "physical" if blocker.physical_owners else "route",
                 blocker.branch,
+                blocker.physical_owners,
             )
             for blocker in blockers
         )
