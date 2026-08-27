@@ -74,6 +74,43 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
     assert len(observed["pass_fds"]) == 5
 
 
+def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    wrapper = tmp_path / "cadence" / "share" / "bin" / "cdnWrapperWithOA"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    request.executable.unlink()
+    request.executable.symlink_to(wrapper)
+    request = XStreamExportRequest(
+        executable=request.executable,
+        library=request.library,
+        cell=request.cell,
+        view=request.view,
+        technology_library=request.technology_library,
+        layer_map=request.layer_map,
+        cds_lib=request.cds_lib,
+        work_root=request.work_root,
+    )
+    observed: dict[str, object] = {}
+
+    def runner(command, **kwargs):
+        kwargs["before_spawn"]()
+        observed["command"] = command
+        _write_success(kwargs["cwd"])
+        return subprocess.CompletedProcess(command, 0, "translator stdout")
+
+    monkeypatch.setattr("sigilicon.virtuoso.xstream.run_process_group", runner)
+
+    run_xstream_export(request)
+
+    assert request.executable.is_symlink()
+    assert tuple(observed["command"])[0] == str(request.executable)
+
+
 @pytest.mark.parametrize(
     "failure,expected",
     (

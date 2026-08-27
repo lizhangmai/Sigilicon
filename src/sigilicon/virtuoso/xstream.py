@@ -76,7 +76,15 @@ class XStreamExportRequest:
             )
         if len(set(self.suppressed_warnings)) != len(self.suppressed_warnings):
             raise ValueError("XStream suppressed warnings contain duplicates")
-        for name in ("executable", "layer_map", "cds_lib", "work_root"):
+        # Cadence launchers are commonly multicall symlinks whose invoked path
+        # determines their installation root.  Preserve that exact explicit
+        # launcher while resolving ordinary data and managed directory paths.
+        object.__setattr__(
+            self,
+            "executable",
+            Path(os.path.abspath(self.executable)),
+        )
+        for name in ("layer_map", "cds_lib", "work_root"):
             object.__setattr__(self, name, Path(getattr(self, name)).resolve())
 
 
