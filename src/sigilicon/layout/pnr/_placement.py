@@ -290,7 +290,7 @@ def solve_placement(job: PhysicalDesignJob) -> PlacementSolveResult:
             region,
             grid=job.technology.manufacturing_grid_dbu,
         ):
-            if search_states >= job.request.maximum_search_states:
+            if search_states >= job.execution_policy.maximum_search_states:
                 exhausted = True
                 return True
             search_states += 1

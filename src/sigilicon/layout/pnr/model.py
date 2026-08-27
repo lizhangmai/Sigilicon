@@ -482,9 +482,15 @@ RoutingConstraint: TypeAlias = (
 class PnrRequest(CanonicalValue):
     stages: tuple[PnrStage, ...] = (PnrStage.PLACEMENT,)
     minimum_instance_spacing_dbu: int = 0
-    maximum_search_states: int = 100_000
     objectives: tuple[PlacementObjective, ...] = ()
     required_technology_capabilities: tuple[TechnologyCapability, ...] = ()
+
+
+@dataclass(frozen=True)
+class PnrExecutionPolicy(CanonicalValue):
+    """Reference-engine budgets and analysis resolution, not design intent."""
+
+    maximum_search_states: int = 100_000
     maximum_route_states: int = 200_000
     maximum_routing_iterations: int = 8
     routing_congestion_bins_x: int = 8
@@ -498,6 +504,7 @@ class PhysicalDesignJob(CanonicalValue):
     constraints: tuple[PlacementConstraint, ...] = ()
     request: PnrRequest = PnrRequest()
     routing_constraints: tuple[RoutingConstraint, ...] = ()
+    execution_policy: PnrExecutionPolicy = PnrExecutionPolicy()
 
 
 @dataclass(frozen=True)
@@ -564,6 +571,7 @@ class PnrProvenance(CanonicalValue):
     engine_version: int
     algorithm: str
     input_sha256: str
+    execution_sha256: str
     deterministic: bool
 
 

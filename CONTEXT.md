@@ -93,12 +93,16 @@ An occurrence of a Via Definition at an exact manufacturing-grid origin and owne
 _Avoid_: Layer switch, via name without geometry
 
 **Routing Search Budget**:
-The maximum number of deterministic route states a Physical Design Job permits before returning `exhausted` instead of claiming infeasibility.
+The maximum number of deterministic route states a P&R Execution Policy permits before returning `exhausted` instead of claiming infeasibility.
 _Avoid_: Timeout, failed route
 
 **Routing Iteration Budget**:
-The maximum number of deterministic net-order attempts allowed when routing discards a failed greedy solution and reroutes the complete net set.
+The maximum number of deterministic net-order attempts a P&R Execution Policy allows when routing discards a failed greedy solution and reroutes the complete net set.
 _Avoid_: Retry timeout, unbounded rip-up
+
+**P&R Execution Policy**:
+Reference-engine search budgets and analysis resolution recorded independently from physical-design intent.
+_Avoid_: Design constraint, technology rule
 
 **Routing Congestion Bin**:
 A deterministic die partition used to estimate per-layer, per-direction route demand, track-equivalent capacity, and overflow without replacing exact geometry checks.

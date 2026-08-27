@@ -189,8 +189,8 @@ def _compile_routing_domain(job: PhysicalDesignJob) -> _RoutingDomain:
     return _RoutingDomain(
         die=job.design.die,
         grid=job.technology.manufacturing_grid_dbu,
-        congestion_bins_x=job.request.routing_congestion_bins_x,
-        congestion_bins_y=job.request.routing_congestion_bins_y,
+        congestion_bins_x=job.execution_policy.routing_congestion_bins_x,
+        congestion_bins_y=job.execution_policy.routing_congestion_bins_y,
         route_rules=MappingProxyType(route_rules),
         cut_spacings=MappingProxyType(normalized_cut_spacings),
     )
@@ -1132,7 +1132,7 @@ def _solve_routing_once(
     route_state_limit = (
         maximum_route_states
         if maximum_route_states is not None
-        else job.request.maximum_route_states
+        else job.execution_policy.maximum_route_states
     )
     for net in ordered_nets:
         net_policy = policy.for_net(net.name)
@@ -1425,7 +1425,7 @@ def solve_routing(
             ),
         )
 
-    order_limit = job.request.maximum_routing_iterations
+    order_limit = job.execution_policy.maximum_routing_iterations
     candidate_orders = tuple(
         islice(permutations(net_names), order_limit + 1)
     )
@@ -1433,7 +1433,7 @@ def solve_routing(
     total_route_states = 0
     last_result: RoutingSolveResult | None = None
     for iteration, net_order in enumerate(attempted_orders, start=1):
-        remaining_states = job.request.maximum_route_states - total_route_states
+        remaining_states = job.execution_policy.maximum_route_states - total_route_states
         if remaining_states <= 0:
             return _with_congestion_metrics(
                 domain,

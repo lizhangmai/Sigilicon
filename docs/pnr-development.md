@@ -7,10 +7,12 @@ result = run(job)
 ```
 
 The `PhysicalDesignJob` contains a normalized design, normalized technology facts,
-named constraints, and requested stages. The `PhysicalDesignResult` contains only
-observable solver outcomes: exact solutions, constraint status, diagnostics,
-metrics, and deterministic provenance. The kernel performs no file discovery,
-database mutation, EDA invocation, or project-specific interpretation.
+named constraints, requested stages, and a separate `PnrExecutionPolicy`. Physical
+intent and reference-engine search policy have independent provenance identities.
+The `PhysicalDesignResult` contains only observable solver outcomes: exact solutions,
+constraint status, diagnostics, metrics, and deterministic provenance. The kernel
+performs no file discovery, database mutation, EDA invocation, or project-specific
+interpretation.
 
 ## Product scope
 
@@ -63,6 +65,7 @@ Status: implemented.
 - deterministic bottom-left reference placement;
 - infeasibility and unsupported-capability diagnostics;
 - canonical serialization and reproducible input identity;
+- execution-policy identity separate from physical-design intent;
 - neutral tests that exercise more than one technology model.
 
 M0 is a contract and correctness reference. It is not an optimizing placer.

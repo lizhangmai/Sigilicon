@@ -34,6 +34,7 @@ from sigilicon.layout.pnr import (
     Placement,
     PlacementObjective,
     PnrInputError,
+    PnrExecutionPolicy,
     PnrRequest,
     PnrStage,
     Point,
@@ -85,6 +86,23 @@ def test_reference_engine_places_the_same_model_for_distinct_technologies() -> N
     assert first.placements == second.placements
     assert first.provenance.input_sha256 != second.provenance.input_sha256
     assert first.provenance.deterministic is True
+
+
+def test_execution_policy_has_an_identity_separate_from_physical_intent() -> None:
+    job = _job()
+    first = run(job)
+    second = run(
+        replace(
+            job,
+            execution_policy=replace(
+                job.execution_policy,
+                maximum_search_states=100_001,
+            ),
+        )
+    )
+
+    assert first.provenance.input_sha256 == second.provenance.input_sha256
+    assert first.provenance.execution_sha256 != second.provenance.execution_sha256
 
 
 def _placements(job: PhysicalDesignJob) -> dict[str, Placement]:
@@ -339,7 +357,7 @@ def test_valid_but_infeasible_job_returns_diagnostics_instead_of_raising() -> No
 def test_search_exhaustion_is_not_reported_as_infeasibility() -> None:
     job = replace(
         _job(),
-        request=PnrRequest(maximum_search_states=1),
+        execution_policy=PnrExecutionPolicy(maximum_search_states=1),
     )
 
     result = run(job)

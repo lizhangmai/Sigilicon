@@ -26,6 +26,7 @@ from sigilicon.layout.pnr.model import (
     Orientation,
     PhysicalDesignJob,
     PhysicalDesignResult,
+    PnrExecutionPolicy,
     PnrProvenance,
     PnrStage,
     Rect,
@@ -36,7 +37,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 13
+ENGINE_VERSION = 14
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -61,6 +62,8 @@ def _on_grid(value: int, grid: int) -> bool:
 def _validate_job(job: PhysicalDesignJob) -> None:
     if not isinstance(job, PhysicalDesignJob):
         raise PnrInputError("job must be a PhysicalDesignJob")
+    if not isinstance(job.execution_policy, PnrExecutionPolicy):
+        raise PnrInputError("job.execution_policy must be a PnrExecutionPolicy")
     errors: list[str] = []
     technology = job.technology
     design = job.design
@@ -79,15 +82,15 @@ def _validate_job(job: PhysicalDesignJob) -> None:
     spacing = job.request.minimum_instance_spacing_dbu
     if spacing < 0 or not _on_grid(spacing, grid):
         errors.append("minimum instance spacing must be non-negative and on-grid")
-    if job.request.maximum_search_states <= 0:
+    if job.execution_policy.maximum_search_states <= 0:
         errors.append("maximum search states must be positive")
-    if job.request.maximum_route_states <= 0:
+    if job.execution_policy.maximum_route_states <= 0:
         errors.append("maximum route states must be positive")
-    if job.request.maximum_routing_iterations <= 0:
+    if job.execution_policy.maximum_routing_iterations <= 0:
         errors.append("maximum routing iterations must be positive")
     if (
-        job.request.routing_congestion_bins_x <= 0
-        or job.request.routing_congestion_bins_y <= 0
+        job.execution_policy.routing_congestion_bins_x <= 0
+        or job.execution_policy.routing_congestion_bins_y <= 0
     ):
         errors.append("routing congestion bin counts must be positive")
     required_capabilities = job.request.required_technology_capabilities
@@ -312,11 +315,19 @@ def _validate_job(job: PhysicalDesignJob) -> None:
 
 
 def _provenance(job: PhysicalDesignJob) -> PnrProvenance:
+    physical_intent = {
+        "technology": job.technology,
+        "design": job.design,
+        "constraints": job.constraints,
+        "request": job.request,
+        "routing_constraints": job.routing_constraints,
+    }
     return PnrProvenance(
         engine=ENGINE_NAME,
         engine_version=ENGINE_VERSION,
         algorithm=ALGORITHM,
-        input_sha256=canonical_sha256(job),
+        input_sha256=canonical_sha256(physical_intent),
+        execution_sha256=canonical_sha256(job.execution_policy),
         deterministic=True,
     )
 

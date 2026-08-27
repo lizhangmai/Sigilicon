@@ -28,6 +28,7 @@ from sigilicon.layout.pnr import (
     PinReference,
     Placement,
     PnrInputError,
+    PnrExecutionPolicy,
     PnrRequest,
     PnrStage,
     Point,
@@ -105,6 +106,8 @@ def _job(
         ),
         request=PnrRequest(
             stages=(PnrStage.PLACEMENT, PnrStage.ROUTING),
+        ),
+        execution_policy=PnrExecutionPolicy(
             maximum_route_states=maximum_route_states,
         ),
     )
@@ -249,6 +252,8 @@ def _ripup_job(*, maximum_routing_iterations: int = 8) -> PhysicalDesignJob:
         ),
         request=PnrRequest(
             stages=(PnrStage.PLACEMENT, PnrStage.ROUTING),
+        ),
+        execution_policy=PnrExecutionPolicy(
             maximum_routing_iterations=maximum_routing_iterations,
         ),
     )
@@ -285,8 +290,8 @@ def _parallel_net_job(*, congestion_bins_y: int) -> PhysicalDesignJob:
     return replace(
         job,
         design=design,
-        request=replace(
-            job.request,
+        execution_policy=replace(
+            job.execution_policy,
             routing_congestion_bins_x=4,
             routing_congestion_bins_y=congestion_bins_y,
         ),
@@ -676,7 +681,10 @@ def test_routing_iteration_budget_must_be_positive() -> None:
         run(
             replace(
                 job,
-                request=replace(job.request, maximum_routing_iterations=0),
+                execution_policy=replace(
+                    job.execution_policy,
+                    maximum_routing_iterations=0,
+                ),
             )
         )
 
@@ -684,7 +692,10 @@ def test_routing_iteration_budget_must_be_positive() -> None:
         run(
             replace(
                 job,
-                request=replace(job.request, routing_congestion_bins_x=0),
+                execution_policy=replace(
+                    job.execution_policy,
+                    routing_congestion_bins_x=0,
+                ),
             )
         )
 
