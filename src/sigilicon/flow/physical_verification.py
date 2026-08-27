@@ -14,6 +14,7 @@ MATERIALIZED_LAYOUT_KIND = MATERIALIZED_GDS_KIND
 CANONICAL_SOURCE_NETLIST_KIND = "netlist.canonical-source"
 PHYSICAL_VERIFICATION_POLICY_KIND = "policy.physical-verification"
 PHYSICAL_VERIFICATION_SOURCE_ACTION = "physical-verification.source-inputs"
+RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER = "receipt-bound-verification-source"
 DRC_EVIDENCE_KIND = "evidence.drc"
 LVS_EVIDENCE_KIND = "evidence.lvs"
 DRC_ACTION = "physical-verification.drc"
@@ -43,7 +44,7 @@ def register_physical_verification_actions(registry: FlowRegistry) -> None:
                     PHYSICAL_VERIFICATION_POLICY_KIND,
                 ),
             ),
-            adapters=("source-assets",),
+            adapters=(RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,),
             resolves_source_assets=True,
         )
     )
@@ -99,5 +100,6 @@ __all__ = [
     "OFFLINE_PHYSICAL_VERIFICATION_ADAPTER",
     "PHYSICAL_VERIFICATION_POLICY_KIND",
     "PHYSICAL_VERIFICATION_SOURCE_ACTION",
+    "RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER",
     "register_physical_verification_actions",
 ]

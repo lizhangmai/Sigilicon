@@ -12,6 +12,7 @@ from sigilicon.flow.physical_design import (
 )
 from sigilicon.flow.physical_verification import (
     CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
+    RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
 )
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.workflows.physical_design import (
@@ -20,6 +21,9 @@ from sigilicon.workflows.physical_design import (
 )
 from sigilicon.workflows.layout_verification import (
     CalibrePhysicalVerificationAdapter,
+)
+from sigilicon.workflows.physical_verification import (
+    ReceiptBoundVerificationSourceAdapter,
 )
 from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
 
@@ -37,6 +41,10 @@ def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
     registry.register_adapter(
         CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
         CalibrePhysicalVerificationAdapter(),
+    )
+    registry.register_adapter(
+        RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
+        ReceiptBoundVerificationSourceAdapter(),
     )
     if owner_root is not None:
         registry.register_adapter(

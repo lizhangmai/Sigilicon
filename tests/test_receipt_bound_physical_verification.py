@@ -36,6 +36,7 @@ from sigilicon.flow import (
     OFFLINE_PHYSICAL_VERIFICATION_ADAPTER,
     PHYSICAL_VERIFICATION_POLICY_KIND,
     PHYSICAL_VERIFICATION_SOURCE_ACTION,
+    RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
     ProducedArtifact,
     ResolvedCapability,
     ResolvedPlatformAsset,
@@ -674,7 +675,8 @@ def test_offline_adapter_is_unregistered_and_cannot_claim_clean(
     assert not builtin.has_adapter(OFFLINE_PHYSICAL_VERIFICATION_ADAPTER)
     source = builtin.action(PHYSICAL_VERIFICATION_SOURCE_ACTION)
     assert source.resolves_source_assets
-    assert source.adapters == ("source-assets",)
+    assert source.adapters == (RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,)
+    assert builtin.has_adapter(RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER)
     assert {port.role: port.kind for port in source.outputs} == {
         "source": CANONICAL_SOURCE_NETLIST_KIND,
         "verification-policy": PHYSICAL_VERIFICATION_POLICY_KIND,

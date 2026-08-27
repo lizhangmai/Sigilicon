@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from sigilicon.domain.physical_verification import (
     DrcEvidence,
     LvsEvidence,
@@ -23,6 +25,7 @@ from sigilicon.flow.physical_verification import (
     LVS_ACTION,
     LVS_EVIDENCE_KIND,
 )
+from sigilicon.flow.source_assets import SourceAssetsAdapter
 from sigilicon.workflows.layout_verification import (
     load_receipt_bound_verification_inputs,
 )
@@ -33,6 +36,60 @@ _NON_CONCLUSIONS = {
     PhysicalVerificationStatus.BACKEND_UNAVAILABLE,
     PhysicalVerificationStatus.EXECUTION_FAILED,
 }
+
+
+class ReceiptBoundVerificationSourceAdapter(SourceAssetsAdapter):
+    """Snapshot checked source/policy and bind their exact content identities."""
+
+    def collect_result(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+    ) -> CollectedActionResult:
+        collected = super().collect_result(context, execution)
+        if {artifact.role for artifact in collected.artifacts} != {
+            "source",
+            "verification-policy",
+        }:
+            raise FlowExecutionError(
+                "receipt-bound verification source must provide source and policy"
+            )
+        artifacts: list[ProducedArtifact] = []
+        for artifact in collected.artifacts:
+            qualifiers = dict(artifact.qualifiers)
+            if not isinstance(qualifiers.get("owner"), str):
+                raise FlowExecutionError(
+                    f"{artifact.role} source qualifier 'owner' is required"
+                )
+            if artifact.role == "source" and not isinstance(
+                qualifiers.get("name"), str
+            ):
+                raise FlowExecutionError(
+                    "canonical source qualifier 'name' is required"
+                )
+            identity_name = (
+                "source-sha256"
+                if artifact.role == "source"
+                else "policy-sha256"
+            )
+            qualifiers[identity_name] = hashlib.sha256(
+                artifact.path.read_bytes()
+            ).hexdigest()
+            artifacts.append(
+                ProducedArtifact(
+                    artifact.role,
+                    artifact.kind,
+                    artifact.path,
+                    qualifiers=qualifiers,
+                )
+            )
+        return CollectedActionResult(
+            status=collected.status,
+            artifacts=tuple(artifacts),
+            facts=collected.facts,
+            details=collected.details,
+            evidence=collected.evidence,
+        )
 
 
 class OfflinePhysicalVerificationAdapter:
@@ -182,4 +239,7 @@ class OfflinePhysicalVerificationAdapter:
         )
 
 
-__all__ = ["OfflinePhysicalVerificationAdapter"]
+__all__ = [
+    "OfflinePhysicalVerificationAdapter",
+    "ReceiptBoundVerificationSourceAdapter",
+]
