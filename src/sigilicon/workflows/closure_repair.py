@@ -1,0 +1,687 @@
+"""Compile attributed closure feedback into one explicit next-job repair.
+
+The compiler does not search placement space.  A project-owned policy maps one
+typed feedback identity to one exact physical-owner placement.  This Module
+only proves that the requested local change is representable and legal, then
+rebuilds an immutable :class:`PhysicalDesignJob` with complete parentage.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from enum import Enum
+from typing import TYPE_CHECKING
+
+from sigilicon.canonical import canonical_from_json, canonical_json, canonical_sha256
+from sigilicon.flow.model import identifier, owner_identity, run_identity
+from sigilicon.layout.pnr import (
+    ConstraintMode,
+    PhysicalDesignJob,
+    PhysicalDesignJobLineage,
+    PhysicalDesignResult,
+    PhysicalOwnerIdentity,
+    PhysicalOwnerKind,
+    Placement,
+    Point,
+    Rect,
+    ResultStatus,
+    physical_design_intent_sha256,
+    pnr_execution_sha256,
+)
+from sigilicon.layout.pnr._constraints import evaluate_constraint
+from sigilicon.layout.pnr._legality import (
+    instance_region,
+    placed_rect,
+    placed_sized_rect,
+    rectangles_conflict,
+)
+
+if TYPE_CHECKING:
+    from sigilicon.workflows.closure_campaign import ClosureIterationProvenance
+
+
+class ClosureRepairError(ValueError):
+    """A repair policy, plan, or application request is malformed."""
+
+
+class ClosureRepairDecision(str, Enum):
+    ACCEPTED = "accepted"
+    UNSUPPORTED = "unsupported"
+    UNREPAIRABLE = "unrepairable"
+    INVALID_IDENTITY = "invalid_identity"
+
+
+class ClosureFeedbackKind(str, Enum):
+    PHYSICAL_OWNER = "physical_owner"
+    FIXED_PHYSICAL_BLOCKER = "fixed_physical_blocker"
+    DRC_RULE = "drc_rule"
+    LVS_MISMATCH = "lvs_mismatch"
+    MATERIALIZATION = "materialization"
+    IDENTITY = "identity"
+
+
+@dataclass(frozen=True)
+class ClosureFeedbackScope:
+    """Typed attribution emitted by a closure attempt for repair policy."""
+
+    kind: ClosureFeedbackKind
+    identities: tuple[str, ...]
+    source_evidence: tuple[str, ...]
+    involved_nets: tuple[str, ...] = ()
+    involved_groups: tuple[str, ...] = ()
+    repairable: bool = False
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, tuple)
+            for value in (
+                self.identities,
+                self.source_evidence,
+                self.involved_nets,
+                self.involved_groups,
+            )
+        ):
+            raise ClosureRepairError("closure feedback collections must be tuples")
+        if not self.identities or any(
+            not isinstance(value, str) or not value for value in self.identities
+        ):
+            raise ClosureRepairError("closure feedback needs typed identities")
+        if any(
+            not isinstance(value, str) or not value
+            for value in (
+                *self.source_evidence,
+                *self.involved_nets,
+                *self.involved_groups,
+            )
+        ):
+            raise ClosureRepairError("closure feedback scope must contain text")
+        if type(self.repairable) is not bool:
+            raise ClosureRepairError("closure feedback repairable flag must be bool")
+
+
+@dataclass(frozen=True)
+class PlacementRepairDirective:
+    """One exact project-owned mapping from evidence to a local placement."""
+
+    feedback_kind: ClosureFeedbackKind
+    feedback_identity: str
+    physical_owner: PhysicalOwnerIdentity
+    target: Placement
+    legal_region: Rect
+    maximum_displacement_dbu: int
+
+    def __post_init__(self) -> None:
+        if self.feedback_kind not in {
+            ClosureFeedbackKind.PHYSICAL_OWNER,
+            ClosureFeedbackKind.DRC_RULE,
+        }:
+            raise ClosureRepairError(
+                "placement repair directives support only physical-owner or "
+                "explicit DRC-rule feedback"
+            )
+        if not self.feedback_identity:
+            raise ClosureRepairError("repair directive needs a feedback identity")
+        if self.physical_owner.kind not in {
+            PhysicalOwnerKind.INSTANCE,
+            PhysicalOwnerKind.BLOCKAGE,
+        }:
+            raise ClosureRepairError(
+                "repair directive physical owner must be an instance or blockage"
+            )
+        if len(self.physical_owner.locator) != 1:
+            raise ClosureRepairError(
+                "repair directive physical owner must have one normalized locator"
+            )
+        if (
+            type(self.maximum_displacement_dbu) is not int
+            or self.maximum_displacement_dbu <= 0
+        ):
+            raise ClosureRepairError(
+                "repair directive displacement budget must be positive"
+            )
+
+
+@dataclass(frozen=True)
+class ClosureRepairPolicy:
+    """Explicit owner policy; directive order is canonical, not a search space."""
+
+    owner: str
+    policy_id: str
+    maximum_displacement_dbu: int
+    directives: tuple[PlacementRepairDirective, ...]
+
+    def __post_init__(self) -> None:
+        try:
+            owner_identity(self.owner, "repair policy owner")
+            identifier(self.policy_id, "repair policy identity")
+        except ValueError as exc:
+            raise ClosureRepairError(str(exc)) from exc
+        if (
+            type(self.maximum_displacement_dbu) is not int
+            or self.maximum_displacement_dbu <= 0
+        ):
+            raise ClosureRepairError("repair policy displacement budget must be positive")
+        if not isinstance(self.directives, tuple):
+            raise ClosureRepairError("repair policy directives must be an immutable tuple")
+        keys = tuple(
+            (item.feedback_kind.value, item.feedback_identity)
+            for item in self.directives
+        )
+        if len(keys) != len(set(keys)):
+            raise ClosureRepairError(
+                "repair policy must map each feedback identity exactly once"
+            )
+
+    def canonical_json(self) -> str:
+        return canonical_json(self)
+
+
+def closure_repair_policy_from_json(text: str) -> ClosureRepairPolicy:
+    return canonical_from_json(text, ClosureRepairPolicy)
+
+
+@dataclass(frozen=True)
+class PhysicalPlacementRepair:
+    physical_owner: PhysicalOwnerIdentity
+    source: Placement
+    target: Placement
+    legal_region: Rect
+    displacement_dbu: int
+    maximum_displacement_dbu: int
+
+    def __post_init__(self) -> None:
+        if self.source == self.target:
+            raise ClosureRepairError("physical placement repair must change placement")
+        if type(self.displacement_dbu) is not int or self.displacement_dbu <= 0:
+            raise ClosureRepairError("physical placement repair needs displacement")
+        actual_displacement = abs(self.target.origin.x - self.source.origin.x) + abs(
+            self.target.origin.y - self.source.origin.y
+        )
+        if self.displacement_dbu != actual_displacement:
+            raise ClosureRepairError(
+                "physical placement repair displacement does not match its geometry"
+            )
+        if self.displacement_dbu > self.maximum_displacement_dbu:
+            raise ClosureRepairError("physical placement repair exceeds its budget")
+
+
+@dataclass(frozen=True)
+class RepairPlan:
+    decision: ClosureRepairDecision
+    owner: str
+    policy_id: str
+    parent_job_sha256: str
+    parent_result_sha256: str
+    feedback_sha256: str
+    policy_sha256: str
+    iteration_run_id: str
+    flow_plan_sha256: str
+    evidence_artifact_sha256: tuple[str, ...]
+    source_evidence: tuple[str, ...]
+    action: PhysicalPlacementRepair | None
+    reason: str
+
+    def __post_init__(self) -> None:
+        try:
+            owner_identity(self.owner, "repair plan owner")
+            identifier(self.policy_id, "repair plan policy identity")
+            run_identity(self.iteration_run_id)
+        except ValueError as exc:
+            raise ClosureRepairError(str(exc)) from exc
+        for label, value in (
+            ("parent job", self.parent_job_sha256),
+            ("parent result", self.parent_result_sha256),
+            ("feedback", self.feedback_sha256),
+            ("policy", self.policy_sha256),
+            ("Flow plan", self.flow_plan_sha256),
+            *(("evidence artifact", value) for value in self.evidence_artifact_sha256),
+        ):
+            if len(value) != 64 or any(
+                character not in "0123456789abcdef" for character in value
+            ):
+                raise ClosureRepairError(f"repair plan {label} must be a SHA-256")
+        if not self.reason:
+            raise ClosureRepairError("repair plan needs a reason")
+        if not isinstance(self.evidence_artifact_sha256, tuple) or not isinstance(
+            self.source_evidence, tuple
+        ):
+            raise ClosureRepairError("repair plan evidence must use immutable tuples")
+        if self.decision is ClosureRepairDecision.ACCEPTED:
+            if (
+                self.action is None
+                or not self.source_evidence
+                or not self.evidence_artifact_sha256
+            ):
+                raise ClosureRepairError(
+                    "accepted repair plan needs an action and complete evidence"
+                )
+        elif self.action is not None:
+            raise ClosureRepairError("rejected repair plan cannot carry an action")
+
+    @property
+    def accepted(self) -> bool:
+        return self.decision is ClosureRepairDecision.ACCEPTED
+
+    def canonical_json(self) -> str:
+        return canonical_json(self)
+
+
+def repair_plan_from_json(text: str) -> RepairPlan:
+    return canonical_from_json(text, RepairPlan)
+
+
+def _rejected(
+    decision: ClosureRepairDecision,
+    *,
+    owner: str,
+    policy: ClosureRepairPolicy,
+    job: PhysicalDesignJob,
+    result: PhysicalDesignResult,
+    feedback_sha256: str,
+    provenance: "ClosureIterationProvenance",
+    source_evidence: tuple[str, ...],
+    reason: str,
+) -> RepairPlan:
+    return RepairPlan(
+        decision,
+        owner,
+        policy.policy_id,
+        canonical_sha256(job),
+        canonical_sha256(result),
+        feedback_sha256,
+        canonical_sha256(policy),
+        provenance.run_id,
+        provenance.plan_sha256,
+        tuple(item.sha256 for item in provenance.artifacts),
+        source_evidence,
+        None,
+        reason,
+    )
+
+
+def _provenance_issue(
+    job: PhysicalDesignJob,
+    result: PhysicalDesignResult,
+    provenance: "ClosureIterationProvenance",
+) -> str | None:
+    if result.provenance.input_sha256 != physical_design_intent_sha256(job):
+        return "parent result input identity does not match the parent job"
+    if result.provenance.execution_sha256 != pnr_execution_sha256(
+        job.execution_policy
+    ):
+        return "parent result execution identity does not match the parent job"
+    by_label = {item.label: item for item in provenance.artifacts}
+    if len(by_label) != len(provenance.artifacts):
+        return "iteration provenance contains duplicate artifact labels"
+    if "job" not in by_label or "result" not in by_label:
+        return "iteration provenance omits parent job or result evidence"
+    if by_label["job"].sha256 != canonical_sha256(job):
+        return "iteration provenance job identity does not match the parent job"
+    if by_label["result"].sha256 != canonical_sha256(result):
+        return "iteration provenance result identity does not match the parent result"
+    return None
+
+
+def _feedback_match(
+    directive: PlacementRepairDirective,
+    feedback: tuple[ClosureFeedbackScope, ...],
+) -> ClosureFeedbackScope | None:
+    for scope in feedback:
+        if (
+            scope.repairable
+            and scope.kind is directive.feedback_kind
+            and directive.feedback_identity in scope.identities
+            and (
+                scope.kind is not ClosureFeedbackKind.PHYSICAL_OWNER
+                or directive.physical_owner.stable_name in scope.identities
+            )
+        ):
+            return scope
+    return None
+
+
+def _grid_aligned(point: Point, grid: int) -> bool:
+    return point.x % grid == 0 and point.y % grid == 0
+
+
+def _placement_action(
+    job: PhysicalDesignJob,
+    result: PhysicalDesignResult,
+    directive: PlacementRepairDirective,
+) -> tuple[PhysicalPlacementRepair | None, str]:
+    owner = directive.physical_owner
+    owner_name = owner.locator[0]
+    grid = job.technology.manufacturing_grid_dbu
+    if not _grid_aligned(directive.target.origin, grid):
+        return None, "project-owned target placement is off the manufacturing grid"
+
+    placements = {item.instance: item.placement for item in result.placements}
+    if len(placements) != len(result.placements):
+        return None, "parent result contains duplicate instance placements"
+    blockage_placements = {
+        item.blockage: item.placement for item in result.routing_blockage_placements
+    }
+    if len(blockage_placements) != len(result.routing_blockage_placements):
+        return None, "parent result contains duplicate blockage placements"
+
+    if owner.kind is PhysicalOwnerKind.INSTANCE:
+        instances = {item.name: item for item in job.design.instances}
+        masters = {item.name: item for item in job.design.masters}
+        instance = instances.get(owner_name)
+        if instance is None or owner_name not in placements:
+            return None, "attributed instance is absent from the normalized result"
+        if instance.fixed_placement is not None:
+            return None, "attributed instance is fixed and cannot be repaired"
+        master = masters[instance.master]
+        if directive.target.orientation not in master.allowed_orientations:
+            return None, "project-owned target uses an unsupported orientation"
+        normalized_region = instance_region(job, owner_name)
+        if (
+            normalized_region is None
+            or not normalized_region.contains(directive.legal_region)
+        ):
+            return None, "project repair region exceeds normalized hard constraints"
+        target_shape = placed_rect(master, directive.target)
+        if not directive.legal_region.contains(target_shape):
+            return None, "project-owned target lies outside the repair region"
+
+        masters_by_instance = {
+            item.name: masters[item.master] for item in job.design.instances
+        }
+        if set(placements) != set(masters_by_instance):
+            return None, "parent result does not place every normalized instance"
+        rectangles = {
+            name: placed_rect(masters_by_instance[name], placement)
+            for name, placement in placements.items()
+        }
+        if any(
+            rectangles_conflict(
+                target_shape,
+                other,
+                job.request.minimum_instance_spacing_dbu,
+            )
+            for name, other in rectangles.items()
+            if name != owner_name
+        ):
+            return None, "project-owned target overlaps another placed instance"
+        proposed = dict(placements)
+        proposed[owner_name] = directive.target
+        proposed_rectangles = dict(rectangles)
+        proposed_rectangles[owner_name] = target_shape
+        if not all(
+            evaluate_constraint(constraint, proposed_rectangles, proposed) is True
+            for constraint in job.constraints
+            if constraint.mode is ConstraintMode.HARD
+        ):
+            return None, "project-owned target violates a normalized hard constraint"
+        source = placements[owner_name]
+    else:
+        blockages = {item.name: item for item in job.design.routing_blockages}
+        blockage = blockages.get(owner_name)
+        if blockage is None:
+            return None, "attributed blockage is absent from the normalized job"
+        if blockage.repair_region is None:
+            return None, "attributed blockage is fixed and cannot be repaired"
+        source = blockage_placements.get(owner_name, blockage.placement)
+        if directive.target.orientation not in blockage.allowed_orientations:
+            return None, "project-owned target uses an unsupported orientation"
+        if not job.design.die.contains(directive.legal_region):
+            return None, "project repair region exceeds the normalized die"
+        if not blockage.repair_region.contains(directive.legal_region):
+            return None, "project repair region exceeds the blockage repair region"
+        target_shape = placed_sized_rect(
+            blockage.width_dbu,
+            blockage.height_dbu,
+            directive.target,
+        )
+        if not directive.legal_region.contains(target_shape):
+            return None, "project-owned target lies outside the repair region"
+
+    displacement = abs(directive.target.origin.x - source.origin.x) + abs(
+        directive.target.origin.y - source.origin.y
+    )
+    maximum = directive.maximum_displacement_dbu
+    if displacement == 0:
+        return None, "project-owned target does not change the attributed placement"
+    if displacement > maximum:
+        return None, "project-owned target exceeds the displacement budget"
+    return (
+        PhysicalPlacementRepair(
+            owner,
+            source,
+            directive.target,
+            directive.legal_region,
+            displacement,
+            maximum,
+        ),
+        "project-owned attributed placement repair is legal",
+    )
+
+
+def compile_closure_repair(
+    *,
+    owner: str,
+    job: PhysicalDesignJob,
+    result: PhysicalDesignResult,
+    feedback: tuple[ClosureFeedbackScope, ...],
+    policy: ClosureRepairPolicy,
+    provenance: "ClosureIterationProvenance",
+) -> RepairPlan:
+    """Compile exactly one policy-selected, locally legal next-job repair."""
+
+    try:
+        owner_identity(owner, "closure repair owner")
+    except ValueError as exc:
+        raise ClosureRepairError(str(exc)) from exc
+    feedback_sha256 = canonical_sha256(feedback)
+    source_evidence = tuple(
+        sorted({identity for scope in feedback for identity in scope.source_evidence})
+    )
+    if policy.owner != owner:
+        return _rejected(
+            ClosureRepairDecision.INVALID_IDENTITY,
+            owner=owner,
+            policy=policy,
+            job=job,
+            result=result,
+            feedback_sha256=feedback_sha256,
+            provenance=provenance,
+            source_evidence=source_evidence,
+            reason="repair policy owner does not match the campaign owner",
+        )
+    issue = _provenance_issue(job, result, provenance)
+    if issue is not None:
+        return _rejected(
+            ClosureRepairDecision.INVALID_IDENTITY,
+            owner=owner,
+            policy=policy,
+            job=job,
+            result=result,
+            feedback_sha256=feedback_sha256,
+            provenance=provenance,
+            source_evidence=source_evidence,
+            reason=issue,
+        )
+    if result.status not in {ResultStatus.SUCCEEDED, ResultStatus.EXHAUSTED}:
+        return _rejected(
+            ClosureRepairDecision.UNREPAIRABLE,
+            owner=owner,
+            policy=policy,
+            job=job,
+            result=result,
+            feedback_sha256=feedback_sha256,
+            provenance=provenance,
+            source_evidence=source_evidence,
+            reason="parent physical-design result has no repairable geometry",
+        )
+
+    matched: tuple[PlacementRepairDirective, ClosureFeedbackScope] | None = None
+    for directive in policy.directives:
+        scope = _feedback_match(directive, feedback)
+        if scope is not None:
+            matched = directive, scope
+            break
+    if matched is None:
+        return _rejected(
+            ClosureRepairDecision.UNSUPPORTED,
+            owner=owner,
+            policy=policy,
+            job=job,
+            result=result,
+            feedback_sha256=feedback_sha256,
+            provenance=provenance,
+            source_evidence=source_evidence,
+            reason=(
+                "owner policy has no exact mapping for the attributed feedback; "
+                "LVS, PEX, post-layout, qualification, and unmapped DRC feedback "
+                "remain unsupported"
+            ),
+        )
+
+    directive, scope = matched
+    action, reason = _placement_action(job, result, directive)
+    if action is None:
+        return _rejected(
+            ClosureRepairDecision.UNREPAIRABLE,
+            owner=owner,
+            policy=policy,
+            job=job,
+            result=result,
+            feedback_sha256=feedback_sha256,
+            provenance=provenance,
+            source_evidence=source_evidence,
+            reason=reason,
+        )
+    maximum = min(
+        directive.maximum_displacement_dbu,
+        policy.maximum_displacement_dbu,
+    )
+    if action.displacement_dbu > maximum:
+        return _rejected(
+            ClosureRepairDecision.UNREPAIRABLE,
+            owner=owner,
+            policy=policy,
+            job=job,
+            result=result,
+            feedback_sha256=feedback_sha256,
+            provenance=provenance,
+            source_evidence=source_evidence,
+            reason="project-owned target exceeds the owner policy displacement budget",
+        )
+    action = replace(action, maximum_displacement_dbu=maximum)
+    return RepairPlan(
+        ClosureRepairDecision.ACCEPTED,
+        owner,
+        policy.policy_id,
+        canonical_sha256(job),
+        canonical_sha256(result),
+        feedback_sha256,
+        canonical_sha256(policy),
+        provenance.run_id,
+        provenance.plan_sha256,
+        tuple(item.sha256 for item in provenance.artifacts),
+        tuple(sorted(set(scope.source_evidence))),
+        action,
+        reason,
+    )
+
+
+def apply_repair_plan(job: PhysicalDesignJob, plan: RepairPlan) -> PhysicalDesignJob:
+    """Apply an accepted plan without mutating its parent normalized job."""
+
+    if not plan.accepted or plan.action is None:
+        raise ClosureRepairError("only an accepted RepairPlan can produce a next job")
+    if canonical_sha256(job) != plan.parent_job_sha256:
+        raise ClosureRepairError("RepairPlan parent job identity does not match")
+    action = plan.action
+    grid = job.technology.manufacturing_grid_dbu
+    if not _grid_aligned(action.target.origin, grid):
+        raise ClosureRepairError("RepairPlan target is off the manufacturing grid")
+    owner_name = action.physical_owner.locator[0]
+    if action.physical_owner.kind is PhysicalOwnerKind.INSTANCE:
+        masters = {item.name: item for item in job.design.masters}
+        changed = False
+        instances = []
+        for instance in job.design.instances:
+            if instance.name == owner_name:
+                if instance.fixed_placement is not None:
+                    raise ClosureRepairError("RepairPlan instance is no longer movable")
+                master = masters[instance.master]
+                if action.target.orientation not in master.allowed_orientations:
+                    raise ClosureRepairError(
+                        "RepairPlan target uses an unsupported orientation"
+                    )
+                region = instance_region(job, owner_name)
+                if region is None or not region.contains(action.legal_region):
+                    raise ClosureRepairError(
+                        "RepairPlan region exceeds normalized hard constraints"
+                    )
+                if not action.legal_region.contains(placed_rect(master, action.target)):
+                    raise ClosureRepairError(
+                        "RepairPlan target lies outside its legal region"
+                    )
+                instances.append(replace(instance, fixed_placement=action.target))
+                changed = True
+            else:
+                instances.append(instance)
+        if not changed:
+            raise ClosureRepairError("RepairPlan instance is absent from the parent job")
+        design = replace(job.design, instances=tuple(instances))
+    else:
+        changed = False
+        blockages = []
+        for blockage in job.design.routing_blockages:
+            if blockage.name == owner_name:
+                if blockage.repair_region is None:
+                    raise ClosureRepairError("RepairPlan blockage is no longer movable")
+                if action.target.orientation not in blockage.allowed_orientations:
+                    raise ClosureRepairError(
+                        "RepairPlan target uses an unsupported orientation"
+                    )
+                if (
+                    not job.design.die.contains(action.legal_region)
+                    or not blockage.repair_region.contains(action.legal_region)
+                    or not action.legal_region.contains(
+                        placed_sized_rect(
+                            blockage.width_dbu,
+                            blockage.height_dbu,
+                            action.target,
+                        )
+                    )
+                ):
+                    raise ClosureRepairError(
+                        "RepairPlan blockage target exceeds its legal region"
+                    )
+                blockages.append(replace(blockage, placement=action.target))
+                changed = True
+            else:
+                blockages.append(blockage)
+        if not changed:
+            raise ClosureRepairError("RepairPlan blockage is absent from the parent job")
+        design = replace(job.design, routing_blockages=tuple(blockages))
+
+    lineage = PhysicalDesignJobLineage(
+        plan.owner,
+        plan.parent_job_sha256,
+        plan.parent_result_sha256,
+        plan.feedback_sha256,
+        canonical_sha256(plan),
+        plan.source_evidence,
+    )
+    return replace(job, design=design, repair_lineage=lineage)
+
+
+__all__ = [
+    "ClosureFeedbackKind",
+    "ClosureFeedbackScope",
+    "ClosureRepairDecision",
+    "ClosureRepairError",
+    "ClosureRepairPolicy",
+    "PhysicalPlacementRepair",
+    "PlacementRepairDirective",
+    "RepairPlan",
+    "apply_repair_plan",
+    "closure_repair_policy_from_json",
+    "compile_closure_repair",
+    "repair_plan_from_json",
+]

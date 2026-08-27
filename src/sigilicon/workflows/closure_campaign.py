@@ -70,6 +70,14 @@ from sigilicon.layout.pnr.serialization import (
     placement_routing_closure_evidence_from_json,
     pnr_execution_sha256,
 )
+from sigilicon.workflows.closure_repair import (
+    ClosureFeedbackKind,
+    ClosureFeedbackScope,
+    ClosureRepairDecision,
+    ClosureRepairPolicy,
+    RepairPlan,
+    compile_closure_repair,
+)
 
 
 class ClosureCampaignError(ValueError):
@@ -95,15 +103,6 @@ class ClosureCampaignTermination(str, Enum):
     STATE_BUDGET = "state_budget"
     ITERATION_BUDGET = "iteration_budget"
     EXECUTION_FAILED = "execution_failed"
-
-
-class ClosureFeedbackKind(str, Enum):
-    PHYSICAL_OWNER = "physical_owner"
-    FIXED_PHYSICAL_BLOCKER = "fixed_physical_blocker"
-    DRC_RULE = "drc_rule"
-    LVS_MISMATCH = "lvs_mismatch"
-    MATERIALIZATION = "materialization"
-    IDENTITY = "identity"
 
 
 class ClosureQualityDecision(str, Enum):
@@ -196,6 +195,7 @@ class ClosureCampaign:
     state_budget: int
     iteration_budget: int
     scope: ClosureCampaignScope = ClosureCampaignScope()
+    repair_policy: ClosureRepairPolicy | None = None
 
     def __post_init__(self) -> None:
         owner_identity(self.owner, "closure campaign owner")
@@ -216,6 +216,10 @@ class ClosureCampaign:
                 raise ClosureCampaignError(
                     "closure iteration Flow owner must match campaign owner"
                 )
+        if self.repair_policy is not None and self.repair_policy.owner != self.owner:
+            raise ClosureCampaignError(
+                "closure repair policy owner must match campaign owner"
+            )
 
 
 @dataclass(frozen=True)
@@ -369,33 +373,6 @@ def compare_closure_quality(
 
 
 @dataclass(frozen=True)
-class ClosureFeedbackScope:
-    kind: ClosureFeedbackKind
-    identities: tuple[str, ...]
-    source_evidence: tuple[str, ...]
-    involved_nets: tuple[str, ...] = ()
-    involved_groups: tuple[str, ...] = ()
-    repairable: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.identities or any(
-            not isinstance(value, str) or not value for value in self.identities
-        ):
-            raise ClosureCampaignError("closure feedback needs typed identities")
-        if any(
-            not isinstance(value, str) or not value
-            for value in (
-                *self.source_evidence,
-                *self.involved_nets,
-                *self.involved_groups,
-            )
-        ):
-            raise ClosureCampaignError("closure feedback scope must contain text")
-        if type(self.repairable) is not bool:
-            raise ClosureCampaignError("closure feedback repairable flag must be bool")
-
-
-@dataclass(frozen=True)
 class CampaignArtifactIdentity:
     label: str
     kind: str
@@ -444,7 +421,16 @@ class ClosureIterationResult:
     quality_decision: ClosureQualityDecision | None
     feedback: tuple[ClosureFeedbackScope, ...]
     decision: ClosureCampaignTermination
+    repair_plan: RepairPlan | None
     message: str
+
+    def __post_init__(self) -> None:
+        if self.decision is ClosureCampaignTermination.REPAIR and (
+            self.repair_plan is None or not self.repair_plan.accepted
+        ):
+            raise ClosureCampaignError(
+                "repair continuation requires an accepted public RepairPlan"
+            )
 
 
 @dataclass(frozen=True)
@@ -475,6 +461,14 @@ class ClosureCampaignResult:
             raise ClosureCampaignError(
                 "campaign termination must equal the last iteration decision"
             )
+        if any(
+            item.repair_plan is not None
+            and item.repair_plan.owner != self.owner
+            for item in self.iterations
+        ):
+            raise ClosureCampaignError(
+                "campaign RepairPlan owner must match campaign result owner"
+            )
 
     @property
     def closed(self) -> bool:
@@ -490,6 +484,7 @@ def closure_campaign_result_from_json(text: str) -> ClosureCampaignResult:
 
 @dataclass(frozen=True)
 class _ObservedClosure:
+    job: PhysicalDesignJob
     result: PhysicalDesignResult
     plan: MaterializationPlan
     receipt: MaterializationReceipt | None
@@ -829,6 +824,7 @@ class ClosureCampaignRunner:
                 "state_budget": campaign.state_budget,
                 "iteration_budget": campaign.iteration_budget,
                 "scope": campaign.scope,
+                "repair_policy": campaign.repair_policy,
                 "iterations": [
                     {
                         "iteration_id": iteration.iteration_id,
@@ -1183,6 +1179,7 @@ class ClosureCampaignRunner:
         if issues:
             raise ClosureCampaignError("; ".join(issues))
         return _ObservedClosure(
+            job,
             result,
             plan,
             receipt,
@@ -1293,6 +1290,7 @@ class ClosureCampaignRunner:
                         ),
                     ),
                     ClosureCampaignTermination.EXECUTION_FAILED,
+                    None,
                     str(exc),
                 )
                 outcomes.append(outcome)
@@ -1315,18 +1313,32 @@ class ClosureCampaignRunner:
                 else compare_closure_quality(quality, previous)
             )
             direct = self._direct_termination(observed)
+            repair_plan = None
             if direct is not None:
                 decision = direct
             elif not any(scope.repairable for scope in observed.feedback):
                 decision = ClosureCampaignTermination.UNSUPPORTED
-            elif len(qualities) >= campaign.state_budget:
-                decision = ClosureCampaignTermination.STATE_BUDGET
-            elif index + 1 >= campaign.iteration_budget:
-                decision = ClosureCampaignTermination.ITERATION_BUDGET
-            elif index + 1 >= len(campaign.iterations):
-                decision = ClosureCampaignTermination.REPAIR
+            elif campaign.repair_policy is None:
+                decision = ClosureCampaignTermination.UNSUPPORTED
             else:
-                decision = ClosureCampaignTermination.REPAIR
+                repair_plan = compile_closure_repair(
+                    owner=campaign.owner,
+                    job=observed.job,
+                    result=observed.result,
+                    feedback=observed.feedback,
+                    policy=campaign.repair_policy,
+                    provenance=observed.provenance,
+                )
+                if repair_plan.decision is ClosureRepairDecision.INVALID_IDENTITY:
+                    decision = ClosureCampaignTermination.EXECUTION_FAILED
+                elif not repair_plan.accepted:
+                    decision = ClosureCampaignTermination.UNSUPPORTED
+                elif len(qualities) >= campaign.state_budget:
+                    decision = ClosureCampaignTermination.STATE_BUDGET
+                elif index + 1 >= campaign.iteration_budget:
+                    decision = ClosureCampaignTermination.ITERATION_BUDGET
+                else:
+                    decision = ClosureCampaignTermination.REPAIR
 
             message = {
                 ClosureCampaignTermination.CLOSED: (
@@ -1347,6 +1359,16 @@ class ClosureCampaignRunner:
                     "a Flow attempt failed to produce valid typed evidence"
                 ),
             }[decision]
+            if (
+                repair_plan is not None
+                and not repair_plan.accepted
+                and decision
+                in {
+                    ClosureCampaignTermination.UNSUPPORTED,
+                    ClosureCampaignTermination.EXECUTION_FAILED,
+                }
+            ):
+                message = repair_plan.reason
             outcome = ClosureIterationResult(
                 observed.provenance,
                 flow_result.status,
@@ -1354,6 +1376,7 @@ class ClosureCampaignRunner:
                 quality_decision,
                 observed.feedback,
                 decision,
+                repair_plan,
                 message,
             )
             outcomes.append(outcome)

@@ -106,6 +106,17 @@ perform unattributed global search. PEX, post-layout analysis, and project
 qualification currently have no general artifact consumer; requesting them yields
 typed `unsupported` state and prevents `closed` rather than manufacturing success.
 
+Attributed continuation crosses the independent
+`compile_closure_repair(...) -> RepairPlan` seam. A project-owned typed policy maps
+one exact physical-owner or DRC-rule identity to one exact placement; the compiler
+proves owner mobility, manufacturing-grid alignment, legal repair region, hard
+constraints, and displacement budget without searching or interpreting report
+text. Applying an accepted plan creates a new immutable `PhysicalDesignJob` whose
+lineage binds the parent job/result, feedback, source evidence, and RepairPlan.
+Unmapped DRC, LVS, PEX, post-layout, and qualification feedback remains explicitly
+unsupported. `ClosureCampaignRunner` consumes the public RepairPlan decision and
+does not own or duplicate its compilation algorithm.
+
 ## PANDA influence
 
 The architecture borrows four public ideas from

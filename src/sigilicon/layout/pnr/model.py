@@ -577,6 +577,44 @@ class PnrExecutionPolicy(CanonicalValue):
 
 
 @dataclass(frozen=True)
+class PhysicalDesignJobLineage(CanonicalValue):
+    """Immediate attributed-repair parentage carried by a derived job.
+
+    This is execution provenance, not physical intent.  The complete job SHA
+    includes it while :func:`physical_design_intent_sha256` deliberately does
+    not, so identical normalized intent remains distinguishable from the
+    repair path that produced it without changing solver semantics.
+    """
+
+    owner: str
+    parent_job_sha256: str
+    parent_result_sha256: str
+    feedback_sha256: str
+    repair_plan_sha256: str
+    source_evidence: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.owner:
+            raise ValueError("repair lineage owner must not be empty")
+        for label, value in (
+            ("parent job", self.parent_job_sha256),
+            ("parent result", self.parent_result_sha256),
+            ("feedback", self.feedback_sha256),
+            ("repair plan", self.repair_plan_sha256),
+        ):
+            if len(value) != 64 or any(
+                character not in "0123456789abcdef" for character in value
+            ):
+                raise ValueError(f"repair lineage {label} must be a SHA-256")
+        if not self.source_evidence or any(
+            not isinstance(value, str) or not value for value in self.source_evidence
+        ):
+            raise ValueError("repair lineage needs source evidence identities")
+        if not isinstance(self.source_evidence, tuple):
+            raise ValueError("repair lineage source evidence must be an immutable tuple")
+
+
+@dataclass(frozen=True)
 class PhysicalDesignJob(CanonicalValue):
     technology: PhysicalTechnology
     design: PhysicalDesign
@@ -584,6 +622,7 @@ class PhysicalDesignJob(CanonicalValue):
     request: PnrRequest = PnrRequest()
     routing_constraints: tuple[RoutingConstraint, ...] = ()
     execution_policy: PnrExecutionPolicy = PnrExecutionPolicy()
+    repair_lineage: PhysicalDesignJobLineage | None = None
 
 
 @dataclass(frozen=True)

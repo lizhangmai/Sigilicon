@@ -65,6 +65,8 @@ from sigilicon.layout.pnr import (
     PhysicalDesign,
     PhysicalDesignJob,
     PhysicalLayer,
+    PhysicalOwnerIdentity,
+    PhysicalOwnerKind,
     PhysicalNet,
     PhysicalPort,
     PhysicalTechnology,
@@ -95,6 +97,11 @@ from sigilicon.workflows.closure_campaign import (
     ClosureStageStatus,
     closure_campaign_result_from_json,
     compare_closure_quality,
+)
+from sigilicon.workflows.closure_repair import (
+    ClosureRepairPolicy,
+    PlacementRepairDirective,
+    apply_repair_plan,
 )
 from sigilicon.workflows.layout_verification import (
     load_receipt_bound_verification_inputs,
@@ -235,6 +242,47 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
             ),
         ),
         request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+    )
+
+
+def _repairable_drc_job() -> PhysicalDesignJob:
+    job = _gridless_job()
+    return replace(
+        job,
+        design=replace(
+            job.design,
+            routing_blockages=(
+                RoutingBlockage(
+                    "repairable-keepout",
+                    2,
+                    2,
+                    (LayerShape("route", Rect(0, 0, 2, 2)),),
+                    Placement(Point(0, 6)),
+                    repair_region=Rect(0, 5, 20, 10),
+                ),
+            ),
+        ),
+    )
+
+
+def _drc_repair_policy() -> ClosureRepairPolicy:
+    return ClosureRepairPolicy(
+        "benchmark",
+        "benchmark-drc-repair",
+        2,
+        (
+            PlacementRepairDirective(
+                ClosureFeedbackKind.DRC_RULE,
+                "M1.W.1",
+                PhysicalOwnerIdentity(
+                    PhysicalOwnerKind.BLOCKAGE,
+                    ("repairable-keepout",),
+                ),
+                Placement(Point(2, 6)),
+                Rect(0, 5, 20, 10),
+                2,
+            ),
+        ),
     )
 
 
@@ -743,6 +791,7 @@ def _campaign(
     state_budget: int = 4,
     iteration_budget: int = 4,
     scope: ClosureCampaignScope = ClosureCampaignScope(),
+    repair_policy: ClosureRepairPolicy | None = None,
 ) -> ClosureCampaign:
     return ClosureCampaign(
         "benchmark",
@@ -754,6 +803,7 @@ def _campaign(
         state_budget,
         iteration_budget,
         scope,
+        repair_policy,
     )
 
 
@@ -881,7 +931,9 @@ def test_campaign_preserves_proven_infeasible_and_pnr_state_budget(
 def test_campaign_budgets_are_independent_and_feedback_is_attributed(
     tmp_path: Path,
 ) -> None:
-    engine, plan, bindings = _flow(_gridless_job(), drc="violated", lvs="clean")
+    job = _repairable_drc_job()
+    policy = _drc_repair_policy()
+    engine, plan, bindings = _flow(job, drc="violated", lvs="clean")
     state_limited = _runner(
         engine,
         artifact_root=tmp_path / "state",
@@ -892,6 +944,7 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
             count=2,
             state_budget=1,
             iteration_budget=3,
+            repair_policy=policy,
         )
     )
     iteration_limited = _runner(
@@ -904,6 +957,7 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
             count=2,
             state_budget=3,
             iteration_budget=1,
+            repair_policy=policy,
         )
     )
     repair = _runner(
@@ -916,13 +970,18 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
             count=2,
             state_budget=3,
             iteration_budget=3,
+            repair_policy=policy,
         )
     )
 
     assert state_limited.termination is ClosureCampaignTermination.STATE_BUDGET
+    assert state_limited.iterations[0].repair_plan is not None
+    assert state_limited.iterations[0].repair_plan.accepted
     assert iteration_limited.termination is (
         ClosureCampaignTermination.ITERATION_BUDGET
     )
+    assert iteration_limited.iterations[0].repair_plan is not None
+    assert iteration_limited.iterations[0].repair_plan.accepted
     assert repair.termination is ClosureCampaignTermination.REPAIR
     assert all(item.flow_status == "accepted" for item in repair.iterations)
     assert not repair.closed
@@ -934,6 +993,13 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
     assert feedback.kind is ClosureFeedbackKind.DRC_RULE
     assert feedback.identities == ("M1.W.1",)
     assert feedback.repairable
+    repair_plan = repair.iterations[-1].repair_plan
+    assert repair_plan is not None and repair_plan.accepted
+    next_job = apply_repair_plan(job, repair_plan)
+    assert next_job.design.routing_blockages[0].placement == Placement(Point(2, 6))
+    assert next_job.repair_lineage is not None
+    assert next_job.repair_lineage.parent_job_sha256 == canonical_sha256(job)
+    assert closure_campaign_result_from_json(repair.canonical_json()) == repair
 
 
 def test_lvs_violation_produces_only_typed_mismatch_feedback(tmp_path: Path) -> None:
@@ -942,7 +1008,7 @@ def test_lvs_violation_produces_only_typed_mismatch_feedback(tmp_path: Path) -> 
         _campaign(plan, bindings)
     )
 
-    assert result.termination is ClosureCampaignTermination.REPAIR
+    assert result.termination is ClosureCampaignTermination.UNSUPPORTED
     assert result.iterations[0].flow_status == "accepted"
     assert result.final_quality.lvs is ClosureStageStatus.VIOLATED
     assert result.iterations[0].feedback == (
@@ -952,6 +1018,7 @@ def test_lvs_violation_produces_only_typed_mismatch_feedback(tmp_path: Path) -> 
     assert feedback.kind is ClosureFeedbackKind.LVS_MISMATCH
     assert feedback.identities == ("INCORRECT",)
     assert len(feedback.source_evidence) == 2
+    assert result.iterations[0].repair_plan is None
 
 
 @pytest.mark.parametrize(
@@ -1095,7 +1162,7 @@ def test_campaign_distinguishes_invalid_identity_from_valid_nonclosure(
         artifact_root=tmp_path / "invalid",
     ).run(_campaign(invalid_plan, invalid_bindings))
 
-    assert valid.termination is ClosureCampaignTermination.REPAIR
+    assert valid.termination is ClosureCampaignTermination.UNSUPPORTED
     assert valid.final_quality.identity is ClosureStageStatus.SATISFIED
     assert invalid.termination is ClosureCampaignTermination.EXECUTION_FAILED
     assert invalid.final_quality.identity is ClosureStageStatus.INVALID_IDENTITY
