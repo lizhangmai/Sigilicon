@@ -68,6 +68,14 @@ _Avoid_: Rectangle object identity, inferred blocker name
 A deterministic, local displacement of only Routing Placement Pressure-attributed movable instances while preserving placement legality and hard constraints.
 _Avoid_: Fresh placement, random perturbation
 
+**Placement Repair Problem**:
+An immutable local choice set compiled from a Placement Solution and Routing Placement Pressure, including legal owner scope, predicted resource release, pin-access impact, displacement, rejection history, and a state budget.
+_Avoid_: Global placement retry, candidate list in the closure coordinator
+
+**Placement Repair State Budget**:
+The maximum number of deterministic local placement candidates considered while compiling one Placement Repair Problem, independent of closure iteration count.
+_Avoid_: Placement-Routing retry count, timeout
+
 **Placement-Routing Closure**:
 The bounded sequence of Placement Solution, compiled Routing Problem, negotiated Routing Solution, independent evaluation, Routing Placement Pressure, and Placement Repair that ends in closure or typed termination evidence.
 _Avoid_: Router retry loop, flow coordinator

@@ -86,6 +86,8 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         errors.append("maximum route states must be positive")
     if job.execution_policy.maximum_routing_iterations <= 0:
         errors.append("maximum routing iterations must be positive")
+    if job.execution_policy.maximum_placement_repair_states <= 0:
+        errors.append("maximum placement repair states must be positive")
     if job.execution_policy.maximum_placement_repair_iterations < 0:
         errors.append("maximum placement repair iterations must be non-negative")
     if (

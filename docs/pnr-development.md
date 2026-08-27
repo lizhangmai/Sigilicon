@@ -135,9 +135,12 @@ general routing remains in progress.
   attribution; fixed and unowned blockers remain explicit;
 - typed Routing Placement Pressure prefers exact physical blocker ownership,
   then affected-resource ownership, before a terminal repair scope fallback; a
-  bounded local Placement Repair Module moves only attributed instances, then
+  deep Placement Repair Problem Module compiles owner scope, local legal
+  candidates, predicted resource release, pin-access impact, displacement,
+  rejection history, deterministic order, and an independent state budget;
+- Placement Repair candidates move only attributed instances; acceptance still
   recompiles the Routing Problem and runs negotiated routing plus independent
-  evaluation before accepting improvement;
+  evaluation rather than trusting candidate prediction;
 - a deterministic Placement-Routing Closure outer loop with displacement,
   routing-improvement, no-repair, repair-state, and repair-iteration evidence;
 - independent state and iteration budgets, with partial legal routes retained for

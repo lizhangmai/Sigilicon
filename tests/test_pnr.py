@@ -366,6 +366,22 @@ def test_search_exhaustion_is_not_reported_as_infeasibility() -> None:
     assert result.stage_reports[0].diagnostics[0].code == "placement_search_exhausted"
 
 
+def test_placement_repair_state_budget_must_be_positive() -> None:
+    job = replace(
+        _job(),
+        execution_policy=replace(
+            _job().execution_policy,
+            maximum_placement_repair_states=0,
+        ),
+    )
+
+    with pytest.raises(
+        PnrInputError,
+        match="maximum placement repair states must be positive",
+    ):
+        run(job)
+
+
 def test_empty_netlist_routing_is_vacuously_succeeded() -> None:
     job = replace(
         _job(),

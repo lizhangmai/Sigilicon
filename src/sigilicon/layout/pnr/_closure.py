@@ -11,8 +11,10 @@ from sigilicon.layout.pnr._placement import PlacementSolveResult, _placement_sco
 from sigilicon.layout.pnr._placement_repair import (
     PlacementIdentity,
     PlacementRepairStatus,
-    repair_placement,
+    compile_placement_repair_problem,
 )
+from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
+from sigilicon.layout.pnr._routing_resources import RoutingResourceIdentity
 from sigilicon.layout.pnr._routing import RoutingSolveResult, solve_routing
 from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr._routing_conflicts import RoutingTerminationReason
@@ -41,7 +43,13 @@ class PlacementRoutingRepairEvidence:
     iteration: int
     placement: PlacementIdentity
     moved_instance: str
+    attributed_owners: tuple[PhysicalOwnerIdentity, ...]
     displacement_dbu: int
+    predicted_released_resources: tuple[RoutingResourceIdentity, ...]
+    predicted_released_pressure: int
+    predicted_remaining_pressure: int
+    predicted_pin_access_gain: int
+    predicted_pin_access_loss: int
     routed_net_improvement: int
     conflict_reduction: int
     accepted: bool
@@ -243,12 +251,13 @@ def close_placement_routing(
     rejected: set[PlacementIdentity] = set()
     repairs: list[PlacementRoutingRepairEvidence] = []
     for iteration in range(1, budget + 1):
-        repair = repair_placement(
+        repair_problem = compile_placement_repair_problem(
             job,
             placements,
             routing.placement_pressure,
             rejected=frozenset(rejected),
         )
+        repair = repair_problem.next_candidate()
         if repair.status is not PlacementRepairStatus.REPAIRED:
             termination = (
                 PlacementRoutingTerminationReason.REPAIR_STATE_BUDGET
@@ -269,6 +278,8 @@ def close_placement_routing(
                 ),
             )
         rejected.add(repair.identity)
+        if repair.prediction is None:
+            raise RuntimeError("repair candidate is missing typed prediction")
         candidate = solve_routing(job, repair.placements)
         routed_improvement = len(candidate.routes) - len(routing.routes)
         conflict_reduction = (
@@ -281,7 +292,13 @@ def close_placement_routing(
                 iteration,
                 repair.identity,
                 repair.moved_instance or "",
+                repair.attributed_owners,
                 repair.displacement_dbu,
+                repair.prediction.released_resources,
+                repair.prediction.released_pressure,
+                repair.prediction.remaining_pressure,
+                repair.prediction.pin_access_gain,
+                repair.prediction.pin_access_loss,
                 routed_improvement,
                 conflict_reduction,
                 accepted,

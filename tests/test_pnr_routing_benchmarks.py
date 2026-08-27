@@ -9,6 +9,7 @@ from sigilicon.layout.pnr import (
     ConstraintStatus,
     CutSpacingRule,
     EnclosureRule,
+    FenceConstraint,
     GridlessRoutingResource,
     InstancePlacement,
     LayerKind,
@@ -46,6 +47,10 @@ from sigilicon.layout.pnr import (
     run,
 )
 from sigilicon.layout.pnr._placement import solve_placement
+from sigilicon.layout.pnr._placement_repair import (
+    PlacementRepairStatus,
+    compile_placement_repair_problem,
+)
 from sigilicon.layout.pnr._closure import (
     PlacementRoutingTerminationReason,
     close_placement_routing,
@@ -477,6 +482,125 @@ def _placement_repair_job(
     )
 
 
+def _physical_blocker_job(
+    *,
+    fixed: bool = False,
+    two_blockers: bool = False,
+    maximum_placement_repair_iterations: int = 4,
+) -> PhysicalDesignJob:
+    blocker = PhysicalMaster(
+        "routing-blocker",
+        2,
+        2,
+        obstructions=(LayerShape("route", Rect(0, 0, 2, 2)),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    spectator = PhysicalMaster(
+        "unrelated-spectator",
+        2,
+        2,
+        allowed_orientations=(Orientation.R0,),
+    )
+    blocker_names = (
+        ("blocker-a", "blocker-b")
+        if two_blockers
+        else ("blocker-a",)
+    )
+    fixed_locations = {
+        "blocker-a": Placement(Point(7, 0)),
+        "blocker-b": Placement(Point(10, 0)),
+    }
+    instances = tuple(
+        PhysicalInstance(
+            name,
+            blocker.name,
+            fixed_locations[name] if fixed else None,
+        )
+        for name in blocker_names
+    ) + (PhysicalInstance("spectator", spectator.name),)
+    constraints = (
+        ()
+        if fixed
+        else tuple(
+            FenceConstraint(
+                f"{name}-local-region",
+                (name,),
+                Rect(
+                    fixed_locations[name].origin.x,
+                    0,
+                    fixed_locations[name].origin.x + 2,
+                    8,
+                ),
+            )
+            for name in blocker_names
+        )
+    ) + (
+        FenceConstraint(
+            "spectator-local-region",
+            ("spectator",),
+            Rect(0, 4, 4, 8),
+        ),
+    )
+    technology = PhysicalTechnology(
+        "physical-blocker-track",
+        dbu_per_micron=1000,
+        manufacturing_grid_dbu=1,
+        layers=(
+            PhysicalLayer(
+                "route",
+                LayerKind.ROUTING,
+                RoutingDirection.HORIZONTAL,
+            ),
+        ),
+        routing_resources=(
+            RoutingTrackPattern(
+                "only-horizontal-track",
+                "route",
+                Axis.Y,
+                2,
+                4,
+                1,
+            ),
+        ),
+        rules=(
+            MinimumWidthRule("route-width", "route", 2),
+            MinimumSpacingRule("route-spacing", "route", 2),
+        ),
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "physical-blocker-closure",
+            Rect(0, 0, 20, 8),
+            (blocker, spectator),
+            instances,
+            ports=(
+                PhysicalPort(
+                    "source",
+                    (PinAccess("route", Rect(1, 1, 3, 3)),),
+                ),
+                PhysicalPort(
+                    "sink",
+                    (PinAccess("route", Rect(17, 1, 19, 3)),),
+                ),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (PinReference("source"), PinReference("sink")),
+                ),
+            ),
+        ),
+        constraints=constraints,
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        execution_policy=PnrExecutionPolicy(
+            maximum_placement_repair_iterations=(
+                maximum_placement_repair_iterations
+            ),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "job",
     (_dense_multilayer_job(), _explicit_track_job(), _multi_net_group_job()),
@@ -665,23 +789,75 @@ def test_placement_routing_outer_loop_repairs_only_attributed_instance() -> None
     assert first.placements == (
         InstancePlacement("driver", Placement(Point(0, 1))),
     )
-    assert placement_metrics["placement_repair_iterations"] == 2
+    assert placement_metrics["placement_repair_iterations"] == 1
     assert placement_metrics["placement_repair_accepted_count"] == 1
     assert placement_metrics["placement_repair_displacement"] == 1
 
 
-def test_placement_repair_iteration_budget_is_explicit_and_deterministic() -> None:
+def test_repair_problem_ranks_pin_access_and_hides_rejection_history() -> None:
+    job = _placement_repair_job()
+    placement = solve_placement(job)
+    routing = solve_routing(job, placement.placements)
+    problem = compile_placement_repair_problem(
+        job,
+        placement.placements,
+        routing.placement_pressure,
+    )
+
+    first = problem.next_candidate()
+    repeated = problem.next_candidate()
+    assert first == repeated
+    assert first.status is PlacementRepairStatus.REPAIRED
+    assert first.moved_instance == "driver"
+    assert first.placements == (
+        InstancePlacement("driver", Placement(Point(0, 1))),
+    )
+    assert first.prediction is not None
+    assert first.prediction.pin_access_gain == 1
+    assert first.prediction.pin_access_loss == 0
+
+    next_problem = compile_placement_repair_problem(
+        job,
+        placement.placements,
+        routing.placement_pressure,
+        rejected=frozenset((first.identity,)),
+    )
+    second = next_problem.next_candidate()
+    assert second.status is PlacementRepairStatus.REPAIRED
+    assert second.identity != first.identity
+
+
+def test_repair_problem_has_an_independent_candidate_state_budget() -> None:
+    job = _placement_repair_job()
+    budgeted = replace(
+        job,
+        execution_policy=replace(
+            job.execution_policy,
+            maximum_placement_repair_states=1,
+        ),
+    )
+    placement = solve_placement(budgeted)
+    routing = solve_routing(budgeted, placement.placements)
+
+    repair = compile_placement_repair_problem(
+        budgeted,
+        placement.placements,
+        routing.placement_pressure,
+    ).next_candidate()
+
+    assert repair.status is PlacementRepairStatus.STATE_BUDGET
+    assert repair.search_states == 1
+
+
+def test_one_ranked_placement_repair_closes_with_one_iteration() -> None:
     job = _placement_repair_job(maximum_placement_repair_iterations=1)
     first = run(job)
     second = run(job)
 
     assert first == second
-    assert first.status is ResultStatus.EXHAUSTED
+    assert first.status is ResultStatus.SUCCEEDED
     assert first.placements == (
-        InstancePlacement("driver", Placement(Point(0, 0))),
-    )
-    assert first.stage_reports[-1].diagnostics[-1].code == (
-        "placement_repair_iteration_exhausted"
+        InstancePlacement("driver", Placement(Point(0, 1))),
     )
 
 
@@ -693,9 +869,48 @@ def test_routing_pressure_and_outer_termination_are_typed() -> None:
 
     assert routing.placement_pressure.movable_instances == ("driver",)
     assert routing.placement_pressure.sites[0].pin == "signal"
-    assert closure.termination is (
-        PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
+    assert closure.termination is PlacementRoutingTerminationReason.CLOSED
+    assert closure.repairs[0].predicted_pin_access_gain == 1
+    assert closure.repairs[0].predicted_pin_access_loss == 0
+
+
+def test_unrelated_movable_blocker_is_the_only_repaired_owner() -> None:
+    job = _physical_blocker_job()
+    first = run(job)
+    second = run(job)
+    placements = {
+        item.instance: item.placement
+        for item in first.placements
+    }
+
+    assert first == second
+    assert first.status is ResultStatus.SUCCEEDED
+    assert placements["blocker-a"] == Placement(Point(7, 5))
+    assert placements["spectator"] == Placement(Point(0, 4))
+
+    initial = solve_placement(job)
+    initial_routing = solve_routing(job, initial.placements)
+    closure = close_placement_routing(job, initial)
+    assert initial_routing.placement_pressure.movable_instances == (
+        "blocker-a",
     )
+    assert tuple(
+        owner.stable_name
+        for owner in closure.repairs[0].attributed_owners
+    ) == ("instance:blocker-a",)
+    assert closure.repairs[0].predicted_released_resources
+
+
+def test_fixed_blocker_does_not_move_an_unrelated_movable_instance() -> None:
+    job = _physical_blocker_job(fixed=True)
+    initial = solve_placement(job)
+    first = run(job)
+    second = run(job)
+
+    assert first == second
+    assert first.status is ResultStatus.FAILED
+    assert first.placements == initial.placements
+    assert first.stage_reports[-1].diagnostics[0].code == "routing_infeasible"
 
 
 def test_fixed_pressure_source_has_no_legal_placement_repair() -> None:
