@@ -43,6 +43,7 @@ from sigilicon.layout.materialization_execution import (
     MaterializationExecutionError,
     MaterializationExecutionStatus,
     MaterializationExecutionTarget,
+    canonicalize_gdsii_timestamps,
     materialization_receipt_from_json,
     validate_layout_content,
     validate_materialization_receipt,
@@ -532,6 +533,20 @@ def test_layout_content_contract_rejects_an_empty_gds_structure() -> None:
 
     with pytest.raises(MaterializationExecutionError, match="no materialized geometry"):
         validate_layout_content(empty_structure, LayoutArtifactFormat.GDSII)
+
+
+def test_layout_content_accepts_only_zero_tape_padding_after_endlib() -> None:
+    _job, _result, plan = _artifacts()
+    payload = _contract_gds(plan)
+    padded = payload + bytes(2048 - len(payload))
+
+    validate_layout_content(padded, LayoutArtifactFormat.GDSII)
+    canonical = canonicalize_gdsii_timestamps(padded)
+
+    assert len(canonical) == 2048
+    assert canonical[len(payload) :] == bytes(2048 - len(payload))
+    with pytest.raises(MaterializationExecutionError, match="after ENDLIB"):
+        validate_layout_content(payload + b"\0\0BAD!", LayoutArtifactFormat.GDSII)
 
 
 def test_builtin_registry_exposes_only_the_production_materializer() -> None:

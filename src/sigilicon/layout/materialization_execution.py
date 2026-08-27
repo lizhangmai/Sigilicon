@@ -345,8 +345,8 @@ def validate_materialization_request(
     return MaterializationValidation(valid=not issues, issues=tuple(issues))
 
 
-def _gdsii_records(payload: bytes) -> tuple[int, ...]:
-    record_types: list[int] = []
+def _gdsii_records(payload: bytes) -> tuple[tuple[int, int, int], ...]:
+    records: list[tuple[int, int, int]] = []
     offset = 0
     while offset < len(payload):
         if len(payload) - offset < 4:
@@ -358,8 +358,16 @@ def _gdsii_records(payload: bytes) -> tuple[int, ...]:
             raise MaterializationExecutionError(
                 "GDSII layout contains an invalid record length"
             )
-        record_types.append(payload[offset + 2])
+        record_type = payload[offset + 2]
+        records.append((offset, length, record_type))
         offset += length
+        if record_type == 0x04:
+            if any(payload[offset:]):
+                raise MaterializationExecutionError(
+                    "GDSII layout contains nonzero data after ENDLIB"
+                )
+            break
+    record_types = tuple(record_type for _, _, record_type in records)
     required = {0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x04}
     if (
         not record_types
@@ -375,7 +383,7 @@ def _gdsii_records(payload: bytes) -> tuple[int, ...]:
         raise MaterializationExecutionError(
             "GDSII layout contains no materialized geometry elements"
         )
-    return tuple(record_types)
+    return tuple(records)
 
 
 def validate_layout_content(
@@ -403,11 +411,9 @@ def canonicalize_gdsii_timestamps(payload: bytes) -> bytes:
     canonical_date = b"".join(
         value.to_bytes(2, "big", signed=False) for value in _CANONICAL_GDS_DATE
     )
+    records = _gdsii_records(payload)
     result = bytearray(payload)
-    offset = 0
-    while offset < len(result):
-        length = int.from_bytes(result[offset : offset + 2], "big")
-        record_type = result[offset + 2]
+    for offset, length, record_type in records:
         data_type = result[offset + 3]
         if record_type in {0x01, 0x05}:
             if length != 28 or data_type != 0x02:
@@ -415,7 +421,6 @@ def canonicalize_gdsii_timestamps(payload: bytes) -> bytes:
                     "GDSII timestamp record has an invalid shape"
                 )
             result[offset + 4 : offset + length] = canonical_date
-        offset += length
     canonical = bytes(result)
     validate_layout_content(canonical, LayoutArtifactFormat.GDSII)
     return canonical
