@@ -13,6 +13,7 @@ from sigilicon.flow.registry import FlowRegistry
 MATERIALIZED_LAYOUT_KIND = MATERIALIZED_GDS_KIND
 CANONICAL_SOURCE_NETLIST_KIND = "netlist.canonical-source"
 PHYSICAL_VERIFICATION_POLICY_KIND = "policy.physical-verification"
+PHYSICAL_VERIFICATION_SOURCE_ACTION = "physical-verification.source-inputs"
 DRC_EVIDENCE_KIND = "evidence.drc"
 LVS_EVIDENCE_KIND = "evidence.lvs"
 DRC_ACTION = "physical-verification.drc"
@@ -32,6 +33,20 @@ def _verification_asset(*members: str) -> tuple[PlatformAssetRequirement, ...]:
 
 
 def register_physical_verification_actions(registry: FlowRegistry) -> None:
+    registry.register_action(
+        ActionContract(
+            kind=PHYSICAL_VERIFICATION_SOURCE_ACTION,
+            outputs=(
+                ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
+                ArtifactPort(
+                    "verification-policy",
+                    PHYSICAL_VERIFICATION_POLICY_KIND,
+                ),
+            ),
+            adapters=("source-assets",),
+            resolves_source_assets=True,
+        )
+    )
     registry.register_action(
         ActionContract(
             kind=DRC_ACTION,
@@ -83,5 +98,6 @@ __all__ = [
     "MATERIALIZED_LAYOUT_KIND",
     "OFFLINE_PHYSICAL_VERIFICATION_ADAPTER",
     "PHYSICAL_VERIFICATION_POLICY_KIND",
+    "PHYSICAL_VERIFICATION_SOURCE_ACTION",
     "register_physical_verification_actions",
 ]

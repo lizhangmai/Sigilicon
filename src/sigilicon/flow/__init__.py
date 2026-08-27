@@ -78,6 +78,7 @@ from sigilicon.flow.physical_verification import (
     MATERIALIZED_LAYOUT_KIND,
     OFFLINE_PHYSICAL_VERIFICATION_ADAPTER,
     PHYSICAL_VERIFICATION_POLICY_KIND,
+    PHYSICAL_VERIFICATION_SOURCE_ACTION,
     register_physical_verification_actions,
 )
 from sigilicon.flow.standard_asic import register_standard_asic_actions
@@ -125,6 +126,7 @@ __all__ = [
     "NodeOutcome",
     "OFFLINE_PHYSICAL_VERIFICATION_ADAPTER",
     "PHYSICAL_VERIFICATION_POLICY_KIND",
+    "PHYSICAL_VERIFICATION_SOURCE_ACTION",
     "PHYSICAL_CLOSURE_EVIDENCE_KIND",
     "PHYSICAL_DESIGN_ACTION",
     "PHYSICAL_DESIGN_JOB_KIND",
