@@ -493,6 +493,7 @@ class PnrExecutionPolicy(CanonicalValue):
     maximum_search_states: int = 100_000
     maximum_route_states: int = 200_000
     maximum_routing_iterations: int = 8
+    maximum_placement_repair_iterations: int = 4
     routing_congestion_bins_x: int = 8
     routing_congestion_bins_y: int = 8
 

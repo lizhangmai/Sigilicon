@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import heapq
 
 from sigilicon.layout.pnr._geometry import (
@@ -24,6 +24,10 @@ from sigilicon.layout.pnr._routing_conflicts import (
     capacity_conflicts,
 )
 from sigilicon.layout.pnr._routing_policy import RoutingGroupPolicy
+from sigilicon.layout.pnr._routing_pressure import (
+    RoutingPlacementPressure,
+    attribute_routing_pressure,
+)
 from sigilicon.layout.pnr._routing_resources import (
     BlockedResource,
     RoutingDomain,
@@ -72,6 +76,7 @@ class RoutingSolveResult:
         0,
         (),
     )
+    placement_pressure: RoutingPlacementPressure = RoutingPlacementPressure()
 
 
 _RouteState = RoutingNode
@@ -169,6 +174,7 @@ def _result(
             tuple(route.net for route in routes),
             tuple(conflict.identity for conflict in conflicts.conflicts),
         ),
+        placement_pressure=RoutingPlacementPressure(),
     )
 
 
@@ -1331,6 +1337,7 @@ def _with_iteration_metrics(
                 conflict.identity for conflict in result.conflicts.conflicts
             ),
         ),
+        placement_pressure=result.placement_pressure,
     )
 
 
@@ -1359,6 +1366,7 @@ def _with_congestion_metrics(
         ripped_branch_count=result.ripped_branch_count,
         conflicts=result.conflicts,
         termination=result.termination,
+        placement_pressure=result.placement_pressure,
     )
 
 
@@ -1385,6 +1393,10 @@ def _finish_negotiation(
         route_states=route_states,
         conflicts=conflicts,
         termination_reason=termination_reason,
+    )
+    result = replace(
+        result,
+        placement_pressure=attribute_routing_pressure(problem, conflicts),
     )
     return _with_congestion_metrics(
         problem.domain,

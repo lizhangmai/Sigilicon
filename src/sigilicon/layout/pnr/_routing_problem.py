@@ -45,6 +45,7 @@ class NetRoutingProblem:
     """All static route-search input for one net."""
 
     name: str
+    terminal_references: tuple[PinReference, ...]
     terminal_accesses: tuple[tuple[LayerShape, ...], ...]
     static_blockers: Mapping[str, tuple[Rect, ...]]
 
@@ -58,6 +59,7 @@ class RoutingProblem:
     resource_graph: RoutingResourceGraph
     policy: RoutingPolicy
     nets: tuple[NetRoutingProblem, ...]
+    movable_instances: frozenset[str]
     issue: RoutingProblemIssue | None
     _nets_by_name: Mapping[str, NetRoutingProblem]
 
@@ -185,6 +187,7 @@ def compile_routing_problem(
         compiled_nets.append(
             NetRoutingProblem(
                 name=net_name,
+                terminal_references=net.pins,
                 terminal_accesses=tuple(
                     accesses_by_reference[reference] for reference in net.pins
                 ),
@@ -199,6 +202,11 @@ def compile_routing_problem(
         resource_graph=resource_graph,
         policy=policy,
         nets=compiled_nets_tuple,
+        movable_instances=frozenset(
+            instance.name
+            for instance in job.design.instances
+            if instance.fixed_placement is None
+        ),
         issue=issue,
         _nets_by_name=MappingProxyType(
             {net.name: net for net in compiled_nets_tuple}

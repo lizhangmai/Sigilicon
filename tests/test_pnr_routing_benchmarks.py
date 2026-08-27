@@ -10,8 +10,10 @@ from sigilicon.layout.pnr import (
     CutSpacingRule,
     EnclosureRule,
     GridlessRoutingResource,
+    InstancePlacement,
     LayerKind,
     LayerShape,
+    MasterPin,
     MinimumSpacingRule,
     MinimumWidthRule,
     Orientation,
@@ -43,6 +45,10 @@ from sigilicon.layout.pnr import (
     run,
 )
 from sigilicon.layout.pnr._placement import solve_placement
+from sigilicon.layout.pnr._closure import (
+    PlacementRoutingTerminationReason,
+    close_placement_routing,
+)
 from sigilicon.layout.pnr._routing import solve_routing
 from sigilicon.layout.pnr._routing_conflicts import (
     RoutingConflictKind,
@@ -398,6 +404,64 @@ def _branch_repair_job() -> PhysicalDesignJob:
     )
 
 
+def _placement_repair_job(
+    *, maximum_placement_repair_iterations: int = 2
+) -> PhysicalDesignJob:
+    master = PhysicalMaster(
+        "movable-terminal",
+        2,
+        2,
+        pins=(
+            MasterPin(
+                "signal",
+                (PinAccess("route", Rect(0, 0, 2, 2)),),
+            ),
+        ),
+        allowed_orientations=(Orientation.R0,),
+    )
+    technology = PhysicalTechnology(
+        "placement-repair-tracks",
+        1000,
+        1,
+        layers=(
+            PhysicalLayer(
+                "route", LayerKind.ROUTING, RoutingDirection.HORIZONTAL
+            ),
+        ),
+        routing_resources=(
+            RoutingTrackPattern("horizontal-track", "route", Axis.Y, 2, 4, 1),
+        ),
+        rules=(
+            MinimumWidthRule("route-width", "route", 2),
+            MinimumSpacingRule("route-spacing", "route", 2),
+        ),
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "placement-routing-repair",
+            Rect(0, 0, 20, 8),
+            (master,),
+            (PhysicalInstance("driver", master.name),),
+            ports=(
+                PhysicalPort("sink", (PinAccess("route", Rect(17, 1, 19, 3)),)),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (PinReference("signal", "driver"), PinReference("sink")),
+                ),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        execution_policy=PnrExecutionPolicy(
+            maximum_placement_repair_iterations=(
+                maximum_placement_repair_iterations
+            ),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "job",
     (_dense_multilayer_job(), _explicit_track_job(), _multi_net_group_job()),
@@ -555,3 +619,67 @@ def test_multi_terminal_length_policy_expands_branch_conflict_to_net_scope() -> 
     assert result.status is ResultStatus.SUCCEEDED
     assert metrics["routing_ripped_branch_count"] == 0
     assert metrics["routing_ripped_net_count"] >= 1
+
+
+def test_placement_routing_outer_loop_repairs_only_attributed_instance() -> None:
+    first = run(_placement_repair_job())
+    second = run(_placement_repair_job())
+    placement_metrics = {
+        metric.name: metric.value for metric in first.stage_reports[0].metrics
+    }
+
+    assert first == second
+    assert first.status is ResultStatus.SUCCEEDED
+    assert first.placements == (
+        InstancePlacement("driver", Placement(Point(0, 1))),
+    )
+    assert placement_metrics["placement_repair_iterations"] == 2
+    assert placement_metrics["placement_repair_accepted_count"] == 1
+    assert placement_metrics["placement_repair_displacement"] == 1
+
+
+def test_placement_repair_iteration_budget_is_explicit_and_deterministic() -> None:
+    job = _placement_repair_job(maximum_placement_repair_iterations=1)
+    first = run(job)
+    second = run(job)
+
+    assert first == second
+    assert first.status is ResultStatus.EXHAUSTED
+    assert first.placements == (
+        InstancePlacement("driver", Placement(Point(0, 0))),
+    )
+    assert first.stage_reports[-1].diagnostics[-1].code == (
+        "placement_repair_iteration_exhausted"
+    )
+
+
+def test_routing_pressure_and_outer_termination_are_typed() -> None:
+    job = _placement_repair_job(maximum_placement_repair_iterations=1)
+    placement = solve_placement(job)
+    routing = solve_routing(job, placement.placements)
+    closure = close_placement_routing(job, placement)
+
+    assert routing.placement_pressure.movable_instances == ("driver",)
+    assert routing.placement_pressure.sites[0].pin == "signal"
+    assert closure.termination is (
+        PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
+    )
+
+
+def test_fixed_pressure_source_has_no_legal_placement_repair() -> None:
+    job = _placement_repair_job()
+    fixed_design = replace(
+        job.design,
+        instances=(
+            replace(
+                job.design.instances[0],
+                fixed_placement=Placement(Point(0, 0)),
+            ),
+        ),
+    )
+    result = run(replace(job, design=fixed_design))
+
+    assert result.status is ResultStatus.UNSUPPORTED
+    assert result.placements == (
+        InstancePlacement("driver", Placement(Point(0, 0))),
+    )

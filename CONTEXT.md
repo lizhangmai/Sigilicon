@@ -56,6 +56,18 @@ _Avoid_: Random retry, global net permutation
 The typed conclusion that negotiated routing closed, proved infeasible, found an unsupported capability, exhausted route states, or exhausted conflict-resolution iterations.
 _Avoid_: Process exit status, diagnostic-code parsing
 
+**Routing Placement Pressure**:
+A typed attribution from a Routing Conflict Set to specific movable instances, pin accesses, corridors, and Routing Resources that placement may legally repair.
+_Avoid_: Congestion message, global placement retry
+
+**Placement Repair**:
+A deterministic, local displacement of only Routing Placement Pressure-attributed movable instances while preserving placement legality and hard constraints.
+_Avoid_: Fresh placement, random perturbation
+
+**Placement-Routing Closure**:
+The bounded sequence of Placement Solution, compiled Routing Problem, negotiated Routing Solution, independent evaluation, Routing Placement Pressure, and Placement Repair that ends in closure or typed termination evidence.
+_Avoid_: Router retry loop, flow coordinator
+
 **Via Definition**:
 Local lower-conductor, cut, and upper-conductor geometry for one legal inter-layer connection.
 _Avoid_: Via name string

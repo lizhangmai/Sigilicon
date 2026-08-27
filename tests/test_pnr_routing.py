@@ -902,6 +902,17 @@ def test_routing_iteration_budget_must_be_positive() -> None:
             )
         )
 
+    with pytest.raises(PnrInputError, match="maximum placement repair iterations"):
+        run(
+            replace(
+                job,
+                execution_policy=replace(
+                    job.execution_policy,
+                    maximum_placement_repair_iterations=-1,
+                ),
+            )
+        )
+
 
 def test_track_only_technology_routes_only_on_declared_track_coordinates() -> None:
     technology = replace(

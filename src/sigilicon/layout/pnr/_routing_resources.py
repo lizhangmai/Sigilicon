@@ -281,6 +281,20 @@ class RoutingResourceGraph:
         )
         return tuple(sorted(overflows, key=lambda item: item.resource))
 
+    def bounds(self, identity: RoutingResourceIdentity) -> Rect | None:
+        if identity.kind == RoutingResourceKind.GRIDLESS_CORRIDOR.value:
+            x_bin, y_bin, _ = identity.locator
+            if isinstance(x_bin, int) and isinstance(y_bin, int):
+                return _bin_rect(self.domain, x_bin, y_bin)
+        coordinates = tuple(
+            item for item in identity.locator if isinstance(item, int)
+        )
+        if len(coordinates) >= 2:
+            x, y = coordinates[-2:]
+            half = self.domain.grid
+            return Rect(x - half, y - half, x + half, y + half)
+        return None
+
     def _planar_transition(
         self,
         current: RoutingNode,
@@ -994,8 +1008,18 @@ def _corridor_identity(
     neighbor: RoutingNode,
 ) -> RoutingResourceIdentity:
     point = neighbor.point
-    x_bin = _bin_index(point.x, domain.die.x_min, domain.die.width, domain.congestion_bins_x)
-    y_bin = _bin_index(point.y, domain.die.y_min, domain.die.height, domain.congestion_bins_y)
+    x_bin = _bin_index(
+        point.x,
+        domain.die.x_min,
+        domain.die.width,
+        domain.congestion_bins_x,
+    )
+    y_bin = _bin_index(
+        point.y,
+        domain.die.y_min,
+        domain.die.height,
+        domain.congestion_bins_y,
+    )
     direction = "horizontal" if current.point.y == neighbor.point.y else "vertical"
     return RoutingResourceIdentity(
         RoutingResourceKind.GRIDLESS_CORRIDOR.value,

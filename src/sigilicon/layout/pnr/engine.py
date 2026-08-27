@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from sigilicon.layout.pnr._closure import close_placement_routing
 from sigilicon.layout.pnr._constraints import validate_constraint
 from sigilicon.layout.pnr._objectives import validate_objective
 from sigilicon.layout.pnr._placement import solve_placement
-from sigilicon.layout.pnr._routing import solve_routing
 from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr._routing_constraints import (
     evaluate_routing_constraints,
@@ -37,7 +37,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 19
+ENGINE_VERSION = 20
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -88,6 +88,8 @@ def _validate_job(job: PhysicalDesignJob) -> None:
         errors.append("maximum route states must be positive")
     if job.execution_policy.maximum_routing_iterations <= 0:
         errors.append("maximum routing iterations must be positive")
+    if job.execution_policy.maximum_placement_repair_iterations < 0:
+        errors.append("maximum placement repair iterations must be non-negative")
     if (
         job.execution_policy.routing_congestion_bins_x <= 0
         or job.execution_policy.routing_congestion_bins_y <= 0
@@ -402,7 +404,9 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             provenance=_provenance(job),
         )
     if PnrStage.ROUTING in job.request.stages:
-        routing = solve_routing(job, placement.placements)
+        closure = close_placement_routing(job, placement)
+        placement = closure.placement
+        routing = closure.routing
         if routing.status is ResultStatus.SUCCEEDED:
             routing_diagnostics = check_routing_solution(
                 job,
