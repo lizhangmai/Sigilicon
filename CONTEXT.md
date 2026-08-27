@@ -229,5 +229,9 @@ An independent reconstruction of connectivity, resource coverage, obstruction cl
 _Avoid_: Solver success flag, signoff DRC/LVS
 
 **Materialization Plan**:
-An audited instruction set for writing an accepted physical design solution into a persistent layout database.
-_Avoid_: Physical Design Result
+An immutable, database-neutral instruction set carrying a target, acceptance, provenance, instance and Routing Blockage placements, Route Segments, and Route Vias derived from one Physical Design Result.
+_Avoid_: Physical Design Result, OA write script, DEF file
+
+**Materialization Acceptance**:
+A typed decision that a Materialization Plan is executable, diagnostic-only, or rejected, with a reason preserving closure, budget, unsupported, infeasible, and invalid-solution semantics.
+_Avoid_: Success boolean, non-empty geometry

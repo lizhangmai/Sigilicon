@@ -5,9 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from sigilicon.flow.builtin import builtin_registry
-from sigilicon.flow.physical_design import REFERENCE_PNR_ADAPTER
+from sigilicon.flow.physical_design import (
+    REFERENCE_MATERIALIZATION_ADAPTER,
+    REFERENCE_PNR_ADAPTER,
+)
 from sigilicon.flow.registry import FlowRegistry
-from sigilicon.workflows.physical_design import ReferencePhysicalDesignAdapter
+from sigilicon.workflows.physical_design import (
+    MaterializationPlanAdapter,
+    ReferencePhysicalDesignAdapter,
+)
 
 
 def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
@@ -15,6 +21,10 @@ def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
     registry.register_adapter(
         REFERENCE_PNR_ADAPTER,
         ReferencePhysicalDesignAdapter(),
+    )
+    registry.register_adapter(
+        REFERENCE_MATERIALIZATION_ADAPTER,
+        MaterializationPlanAdapter(),
     )
     return registry
 

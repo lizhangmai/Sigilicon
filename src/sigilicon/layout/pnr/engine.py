@@ -17,7 +17,10 @@ from sigilicon.layout.pnr._routing_constraints import (
     evaluate_routing_constraints,
     validate_routing_constraint,
 )
-from sigilicon.layout.pnr._serialization import canonical_sha256
+from sigilicon.layout.pnr.serialization import (
+    physical_design_intent_sha256,
+    pnr_execution_sha256,
+)
 from sigilicon.layout.pnr._technology import (
     technology_capabilities,
     validate_technology,
@@ -421,17 +424,10 @@ def _validate_job(job: PhysicalDesignJob) -> None:
 
 
 def _provenance(job: PhysicalDesignJob) -> PnrProvenance:
-    physical_intent = {
-        "technology": job.technology,
-        "design": job.design,
-        "constraints": job.constraints,
-        "request": job.request,
-        "routing_constraints": job.routing_constraints,
-    }
     return PnrProvenance(
         engine=ENGINE_NAME,
-        input_sha256=canonical_sha256(physical_intent),
-        execution_sha256=canonical_sha256(job.execution_policy),
+        input_sha256=physical_design_intent_sha256(job),
+        execution_sha256=pnr_execution_sha256(job.execution_policy),
         deterministic=True,
     )
 

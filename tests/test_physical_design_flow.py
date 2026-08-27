@@ -19,12 +19,18 @@ from sigilicon.flow import (
     FlowNode,
     FlowSpec,
     FlowTarget,
+    PHYSICAL_MATERIALIZATION_ACTION,
     PHYSICAL_DESIGN_ACTION,
     PHYSICAL_DESIGN_JOB_KIND,
     PolicyCheck,
     PolicySpec,
     ProducedArtifact,
     REFERENCE_PNR_ADAPTER,
+    REFERENCE_MATERIALIZATION_ADAPTER,
+)
+from sigilicon.layout.materialization import (
+    MaterializationDecision,
+    materialization_plan_from_json,
 )
 from sigilicon.layout.pnr import (
     Axis,
@@ -237,8 +243,28 @@ def _run_flow(
                 bindings=(ArtifactBinding("job", "job", "job"),),
                 policy="require-closure",
             ),
+            FlowNode(
+                "materialize",
+                PHYSICAL_MATERIALIZATION_ACTION,
+                config={
+                    "target": {
+                        "owner": "benchmark",
+                        "name": "layout-candidate",
+                    }
+                },
+                bindings=(
+                    ArtifactBinding("job", "job", "job"),
+                    ArtifactBinding(
+                        "result",
+                        "solve",
+                        "result",
+                        requires="valid",
+                    ),
+                ),
+                policy="require-executable",
+            ),
         ),
-        targets=(FlowTarget("closure", ("solve",)),),
+        targets=(FlowTarget("closure", ("materialize",)),),
         policies=(
             PolicySpec(
                 "require-closure",
@@ -246,6 +272,17 @@ def _run_flow(
                     PolicyCheck(
                         "closed",
                         "physical-design-closed",
+                        "equals",
+                        True,
+                    ),
+                ),
+            ),
+            PolicySpec(
+                "require-executable",
+                (
+                    PolicyCheck(
+                        "executable",
+                        "materialization-executable",
                         "equals",
                         True,
                     ),
@@ -259,6 +296,10 @@ def _run_flow(
         (
             AdapterSelection("benchmark.physical-job", "benchmark-job"),
             AdapterSelection(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
+            AdapterSelection(
+                PHYSICAL_MATERIALIZATION_ACTION,
+                REFERENCE_MATERIALIZATION_ADAPTER,
+            ),
         ),
     )
     engine = FlowEngine(registry)
@@ -354,6 +395,10 @@ def test_reference_pnr_runs_through_public_flow_engine(
     evidence = placement_routing_closure_evidence_from_json(
         evidence_artifact.path.read_text(encoding="utf-8")
     )
+    materialization = flow.nodes["materialize"]
+    materialization_plan = materialization_plan_from_json(
+        materialization.artifacts["plan"].path.read_text(encoding="utf-8")
+    )
 
     assert outcome.execution_status == "succeeded"
     assert outcome.result_status == "valid"
@@ -364,6 +409,16 @@ def test_reference_pnr_runs_through_public_flow_engine(
     assert outcome.facts["iteration-budget-exhausted"] is iteration_budget
     assert result_artifact.qualifiers["result-sha256"] == canonical_sha256(result)
     assert evidence_artifact.qualifiers["closure-sha256"] == canonical_sha256(evidence)
+    assert materialization.execution_status == "succeeded"
+    assert materialization.result_status == "valid"
+    assert materialization_plan.executable is (status is ResultStatus.SUCCEEDED)
+    assert materialization_plan.acceptance.decision is (
+        MaterializationDecision.EXECUTABLE
+        if status is ResultStatus.SUCCEEDED
+        else MaterializationDecision.DIAGNOSTIC
+        if status is ResultStatus.EXHAUSTED
+        else MaterializationDecision.REJECTED
+    )
     assert flow.status == ("accepted" if status is ResultStatus.SUCCEEDED else "failed")
     if name == "fixed-blocker":
         assert evidence.termination is PlacementRoutingTerminationReason.NO_LEGAL_REPAIR

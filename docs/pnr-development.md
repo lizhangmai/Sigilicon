@@ -45,6 +45,15 @@ fields, missing fields, and malformed nested structures. Closure facts are read
 directly from Placement-Routing Closure Evidence, never reconstructed from Stage
 Report metric names.
 
+A result can then cross the independent
+`compile_materialization_plan(job, result, target)` seam. Its immutable,
+database-neutral plan contains exact instance and Routing Blockage placements,
+Route Segments, Route Vias, typed owners, and job/result provenance. Exhausted
+results retain their maximum legal geometry as diagnostic plans; unsupported,
+infeasible, and independently invalid results carry explicit rejection evidence.
+Only a closed result is executable, and this Module never writes OA, DEF, GDS,
+or another persistent database.
+
 ## PANDA influence
 
 The architecture borrows four public ideas from

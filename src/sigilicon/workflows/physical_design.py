@@ -12,9 +12,20 @@ from sigilicon.flow.model import (
     ProducedArtifact,
 )
 from sigilicon.flow.physical_design import (
+    MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND,
     PHYSICAL_CLOSURE_EVIDENCE_KIND,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_DESIGN_RESULT_KIND,
+    PHYSICAL_MATERIALIZATION_PLAN_KIND,
+)
+from sigilicon.layout.materialization import (
+    MaterializationPlan,
+    MaterializationTarget,
+    compile_materialization_plan,
+    materialization_acceptance_from_json,
+    materialization_plan_from_json,
+    materialization_target_from_mapping,
+    validate_materialization_plan,
 )
 from sigilicon.layout.pnr import (
     PhysicalDesignJob,
@@ -187,4 +198,127 @@ class ReferencePhysicalDesignAdapter:
         )
 
 
-__all__ = ["ReferencePhysicalDesignAdapter"]
+def _materialization_facts(plan: MaterializationPlan) -> dict[str, object]:
+    return {
+        "materialization-decision": plan.acceptance.decision.value,
+        "materialization-reason": plan.acceptance.reason.value,
+        "materialization-executable": plan.executable,
+    }
+
+
+class MaterializationPlanAdapter:
+    """Compile typed P&R artifacts without writing a layout database."""
+
+    def _inputs(
+        self,
+        context: ActionContext,
+    ) -> tuple[PhysicalDesignJob, PhysicalDesignResult, MaterializationTarget]:
+        if set(context.action_config) != {"target"}:
+            raise FlowExecutionError(
+                "materialization Action config must contain only 'target'"
+            )
+        job = _read_job(context.input("job").path)
+        result = _read_result(context.input("result").path)
+        try:
+            target = materialization_target_from_mapping(
+                context.action_config["target"]
+            )
+        except (ValueError, TypeError) as exc:
+            raise FlowExecutionError(f"invalid materialization target: {exc}") from exc
+        return job, result, target
+
+    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+        try:
+            self._inputs(context)
+        except FlowExecutionError as exc:
+            return (str(exc),)
+        return ()
+
+    def prepare(self, context: ActionContext) -> None:
+        pass
+
+    def execute(self, context: ActionContext) -> AdapterExecution:
+        job, result, target = self._inputs(context)
+        try:
+            plan = compile_materialization_plan(job, result, target)
+        except ValueError as exc:
+            raise FlowExecutionError(
+                f"cannot compile Materialization Plan: {exc}"
+            ) from exc
+        context.output_path("plan", "materialization-plan.json").write_text(
+            plan.canonical_json(),
+            encoding="utf-8",
+        )
+        context.output_path(
+            "acceptance-evidence",
+            "materialization-acceptance.json",
+        ).write_text(plan.acceptance.canonical_json(), encoding="utf-8")
+        return AdapterExecution.succeeded(details=_materialization_facts(plan))
+
+    def collect_result(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+    ) -> CollectedActionResult:
+        job, result, _target = self._inputs(context)
+        plan_path = context.output_path("plan", "materialization-plan.json")
+        acceptance_path = context.output_path(
+            "acceptance-evidence",
+            "materialization-acceptance.json",
+        )
+        try:
+            plan = materialization_plan_from_json(
+                plan_path.read_text(encoding="utf-8")
+            )
+            acceptance = materialization_acceptance_from_json(
+                acceptance_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            raise FlowExecutionError(
+                f"invalid Materialization Plan artifact: {exc}"
+            ) from exc
+        validation = validate_materialization_plan(job, result, plan)
+        if not validation.valid:
+            raise FlowExecutionError(
+                "collected Materialization Plan failed validation: "
+                + "; ".join(item.code for item in validation.issues)
+            )
+        if acceptance != plan.acceptance:
+            raise FlowExecutionError(
+                "acceptance evidence disagrees with Materialization Plan"
+            )
+        facts = _materialization_facts(plan)
+        if dict(execution.details) != facts:
+            raise FlowExecutionError(
+                "materialization execution details disagree with collected plan"
+            )
+        qualifiers = {
+            "job-sha256": plan.provenance.job_sha256,
+            "result-sha256": plan.provenance.result_sha256,
+            "plan-sha256": canonical_sha256(plan),
+            "executable": plan.executable,
+        }
+        return CollectedActionResult(
+            status="valid",
+            artifacts=(
+                ProducedArtifact(
+                    "plan",
+                    PHYSICAL_MATERIALIZATION_PLAN_KIND,
+                    plan_path,
+                    qualifiers=qualifiers,
+                ),
+                ProducedArtifact(
+                    "acceptance-evidence",
+                    MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND,
+                    acceptance_path,
+                    qualifiers={
+                        **qualifiers,
+                        "acceptance-sha256": canonical_sha256(acceptance),
+                    },
+                ),
+            ),
+            facts=facts,
+        )
+
+
+__all__ = ["MaterializationPlanAdapter", "ReferencePhysicalDesignAdapter"]

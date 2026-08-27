@@ -10,8 +10,10 @@ from sigilicon.layout.pnr.serialization import (
     canonical_json,
     canonical_sha256,
     physical_design_job_from_json,
+    physical_design_intent_sha256,
     physical_design_result_from_json,
     placement_routing_closure_evidence_from_json,
+    pnr_execution_sha256,
 )
 from sigilicon.layout.pnr.model import (
     AlignmentAnchor,
@@ -188,7 +190,9 @@ __all__ = [
     "canonical_json",
     "canonical_sha256",
     "physical_design_job_from_json",
+    "physical_design_intent_sha256",
     "physical_design_result_from_json",
     "placement_routing_closure_evidence_from_json",
+    "pnr_execution_sha256",
     "run",
 ]
