@@ -16,11 +16,14 @@ from sigilicon.layout.pnr._placement_repair import (
 from sigilicon.layout.pnr._routing_ownership import PhysicalOwnerIdentity
 from sigilicon.layout.pnr._routing_resources import RoutingResourceIdentity
 from sigilicon.layout.pnr._routing import RoutingSolveResult, solve_routing
-from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr._routing_conflicts import RoutingTerminationReason
-from sigilicon.layout.pnr._routing_constraints import evaluate_routing_constraints
+from sigilicon.layout.pnr._routing_quality import (
+    RoutingClosureQuality,
+    RoutingClosureQualityDecision,
+    RoutingClosureQualityPolicy,
+    compile_routing_closure_quality,
+)
 from sigilicon.layout.pnr.model import (
-    ConstraintStatus,
     Diagnostic,
     Metric,
     PhysicalDesignJob,
@@ -52,6 +55,9 @@ class PlacementRoutingRepairEvidence:
     predicted_pin_access_loss: int
     routed_net_improvement: int
     conflict_reduction: int
+    current_quality: RoutingClosureQuality
+    candidate_quality: RoutingClosureQuality
+    quality_decision: RoutingClosureQualityDecision
     accepted: bool
 
 
@@ -60,31 +66,9 @@ class PlacementRoutingClosureResult:
     status: ResultStatus
     placement: PlacementSolveResult
     routing: RoutingSolveResult
+    quality: RoutingClosureQuality
     repairs: tuple[PlacementRoutingRepairEvidence, ...]
     termination: PlacementRoutingTerminationReason
-
-
-def _independently_closed(
-    job: PhysicalDesignJob,
-    routing: RoutingSolveResult,
-    placements,
-) -> bool:
-    if routing.status is not ResultStatus.SUCCEEDED:
-        return False
-    if check_routing_solution(job, placements, routing.routes):
-        return False
-    return all(
-        outcome.status is ConstraintStatus.SATISFIED
-        for outcome in evaluate_routing_constraints(job, routing.routes, placements)
-    )
-
-
-def _quality(routing: RoutingSolveResult) -> tuple[int, int, int]:
-    return (
-        -len(routing.routes),
-        routing.conflicts.maximum_severity,
-        len(routing.conflicts.conflicts),
-    )
 
 
 def _final_placement(
@@ -182,6 +166,12 @@ def _closure_result(
         effective_status,
         _final_placement(job, initial, placements, repairs),
         effective_routing,
+        compile_routing_closure_quality(
+            job,
+            effective_routing,
+            placements,
+            initial_placements=initial.placements,
+        ),
         repairs,
         termination,
     )
@@ -195,7 +185,14 @@ def close_placement_routing(
 
     placements = initial.placements
     routing = solve_routing(job, placements)
-    if _independently_closed(job, routing, placements):
+    quality = compile_routing_closure_quality(
+        job,
+        routing,
+        placements,
+        initial_placements=initial.placements,
+    )
+    quality_policy = RoutingClosureQualityPolicy()
+    if quality.closed:
         return _closure_result(
             job,
             initial,
@@ -281,12 +278,19 @@ def close_placement_routing(
         if repair.prediction is None:
             raise RuntimeError("repair candidate is missing typed prediction")
         candidate = solve_routing(job, repair.placements)
+        candidate_quality = compile_routing_closure_quality(
+            job,
+            candidate,
+            repair.placements,
+            initial_placements=initial.placements,
+        )
         routed_improvement = len(candidate.routes) - len(routing.routes)
         conflict_reduction = (
             len(routing.conflicts.conflicts)
             - len(candidate.conflicts.conflicts)
         )
-        accepted = _quality(candidate) < _quality(routing)
+        decision = quality_policy.compare(candidate_quality, quality)
+        accepted = decision is RoutingClosureQualityDecision.IMPROVED
         repairs.append(
             PlacementRoutingRepairEvidence(
                 iteration,
@@ -301,6 +305,9 @@ def close_placement_routing(
                 repair.prediction.pin_access_loss,
                 routed_improvement,
                 conflict_reduction,
+                quality,
+                candidate_quality,
+                decision,
                 accepted,
             )
         )
@@ -308,7 +315,8 @@ def close_placement_routing(
             continue
         placements = repair.placements
         routing = candidate
-        if _independently_closed(job, routing, placements):
+        quality = candidate_quality
+        if quality.closed:
             return _closure_result(
                 job,
                 initial,

@@ -51,6 +51,7 @@ class RoutingConflict:
     evidence: str
     branch: str | None = None
     physical_owners: tuple[PhysicalOwnerIdentity, ...] = ()
+    resource_overflow: int = 0
 
 
 @dataclass(frozen=True)
@@ -217,6 +218,7 @@ def capacity_conflicts(
                     f"{overflow.capacity}"
                 ),
                 physical_owners=(),
+                resource_overflow=overflow.amount,
             )
         )
     return RoutingConflictSet.from_iterable(conflicts)
@@ -250,6 +252,7 @@ def attributed_failure_conflicts(
                     reroute_scope=reroute_scope,
                     evidence=evidence,
                     physical_owners=(),
+                    resource_overflow=0,
                 ),
             )
         )
@@ -291,6 +294,7 @@ def attributed_failure_conflicts(
             reroute_scope=reroute_scope,
             evidence=f"{evidence}: {item.reason}",
             physical_owners=item.physical_owners,
+            resource_overflow=0,
         )
         for item in blocked_items
     )

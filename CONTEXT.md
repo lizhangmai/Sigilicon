@@ -80,6 +80,10 @@ _Avoid_: Placement-Routing retry count, timeout
 The bounded sequence of Placement Solution, compiled Routing Problem, negotiated Routing Solution, independent evaluation, Routing Placement Pressure, and Placement Repair that ends in closure or typed termination evidence.
 _Avoid_: Router retry loop, flow coordinator
 
+**Routing Closure Quality**:
+A typed closure state over resource overflow, unrouted branches, blocker and group failures, via and topology failures, physical-owner pressure, routed progress, independent evaluation, and placement displacement.
+_Avoid_: Conflict count, Stage Report metric tuple
+
 **Via Definition**:
 Local lower-conductor, cut, and upper-conductor geometry for one legal inter-layer connection.
 _Avoid_: Via name string

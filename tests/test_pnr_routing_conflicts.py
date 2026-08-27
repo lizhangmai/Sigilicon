@@ -61,6 +61,7 @@ def test_capacity_conflicts_and_victim_selection_are_stable_and_explicit() -> No
     assert first.conflicts[0].kind is RoutingConflictKind.CAPACITY_OVERFLOW
     assert first.conflicts[0].resource == resource
     assert first.conflicts[0].severity == 2
+    assert first.conflicts[0].resource_overflow == 2
     assert first.conflicts[0].affected_group == "pair"
     assert first.conflicts[0].victim_candidates == ("alpha", "beta", "gamma")
     assert selection is not None
@@ -100,4 +101,6 @@ def test_via_capacity_and_occupancy_conflicts_are_typed_as_exhaustion() -> None:
     )
 
     assert capacity.conflicts[0].kind is RoutingConflictKind.VIA_EXHAUSTION
+    assert capacity.conflicts[0].resource_overflow == 1
     assert occupied.conflicts[0].kind is RoutingConflictKind.VIA_EXHAUSTION
+    assert occupied.conflicts[0].resource_overflow == 0

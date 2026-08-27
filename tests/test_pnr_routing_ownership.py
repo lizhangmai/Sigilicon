@@ -30,11 +30,17 @@ from sigilicon.layout.pnr import (
     RoutingTrackPattern,
 )
 from sigilicon.layout.pnr._routing import solve_routing
+from sigilicon.layout.pnr._routing_conflicts import (
+    RoutingConflict,
+    RoutingConflictKind,
+    RoutingConflictSet,
+)
 from sigilicon.layout.pnr._routing_ownership import (
     PhysicalOwnerKind,
     PhysicalOwnerMobility,
 )
 from sigilicon.layout.pnr._routing_problem import compile_routing_problem
+from sigilicon.layout.pnr._routing_pressure import attribute_routing_pressure
 from sigilicon.layout.pnr._routing_resources import RoutingResourceKind
 
 
@@ -219,3 +225,34 @@ def test_one_resource_can_resolve_multiple_physical_owners_stably() -> None:
         for owner in owners
         if owner.mobility is PhysicalOwnerMobility.MOVABLE
     ) == ("instance:blocker-a", "instance:blocker-b")
+
+
+def test_resource_only_pressure_does_not_invent_a_movable_owner() -> None:
+    job, placements = _blocker_job()
+    problem = compile_routing_problem(job, placements)
+    conflicts = RoutingConflictSet.from_iterable(
+        (
+            RoutingConflict(
+                identity="topology:external-unowned",
+                kind=RoutingConflictKind.TOPOLOGY_CONFLICT,
+                resource=None,
+                aggressor_nets=("external-unowned",),
+                occupant_nets=(),
+                affected_group=None,
+                severity=1,
+                cost=1,
+                victim_candidates=(),
+                victim_branches=(),
+                reroute_scope=(),
+                evidence="no normalized physical owner exists",
+            ),
+        )
+    )
+
+    pressure = attribute_routing_pressure(problem, conflicts)
+    site = pressure.sites[0]
+
+    assert site.physical_owner_candidates == ()
+    assert site.repair_scope == ()
+    assert site.reason == "resource-only pressure has no legal physical owner"
+    assert pressure.movable_instances == ()

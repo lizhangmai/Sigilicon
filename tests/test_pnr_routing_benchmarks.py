@@ -486,13 +486,29 @@ def _physical_blocker_job(
     *,
     fixed: bool = False,
     two_blockers: bool = False,
+    pin_access_blocker: bool = False,
+    multi_terminal: bool = False,
     maximum_placement_repair_iterations: int = 4,
 ) -> PhysicalDesignJob:
     blocker = PhysicalMaster(
         "routing-blocker",
         2,
         2,
-        obstructions=(LayerShape("route", Rect(0, 0, 2, 2)),),
+        pins=(
+            (
+                MasterPin(
+                    "unused",
+                    (PinAccess("route", Rect(0, 0, 2, 2)),),
+                ),
+            )
+            if pin_access_blocker
+            else ()
+        ),
+        obstructions=(
+            ()
+            if pin_access_blocker
+            else (LayerShape("route", Rect(0, 0, 2, 2)),)
+        ),
         allowed_orientations=(Orientation.R0,),
     )
     spectator = PhysicalMaster(
@@ -508,7 +524,7 @@ def _physical_blocker_job(
     )
     fixed_locations = {
         "blocker-a": Placement(Point(7, 0)),
-        "blocker-b": Placement(Point(10, 0)),
+        "blocker-b": Placement(Point(7, 2)),
     }
     instances = tuple(
         PhysicalInstance(
@@ -527,9 +543,9 @@ def _physical_blocker_job(
                 (name,),
                 Rect(
                     fixed_locations[name].origin.x,
-                    0,
+                    fixed_locations[name].origin.y,
                     fixed_locations[name].origin.x + 2,
-                    8,
+                    10,
                 ),
             )
             for name in blocker_names
@@ -538,7 +554,7 @@ def _physical_blocker_job(
         FenceConstraint(
             "spectator-local-region",
             ("spectator",),
-            Rect(0, 4, 4, 8),
+            Rect(0, 6, 4, 10),
         ),
     )
     technology = PhysicalTechnology(
@@ -571,7 +587,7 @@ def _physical_blocker_job(
         technology,
         PhysicalDesign(
             "physical-blocker-closure",
-            Rect(0, 0, 20, 8),
+            Rect(0, 0, 20, 10),
             (blocker, spectator),
             instances,
             ports=(
@@ -583,11 +599,26 @@ def _physical_blocker_job(
                     "sink",
                     (PinAccess("route", Rect(17, 1, 19, 3)),),
                 ),
+            )
+            + (
+                (
+                    PhysicalPort(
+                        "branch",
+                        (PinAccess("route", Rect(13, 1, 15, 3)),),
+                    ),
+                )
+                if multi_terminal
+                else ()
             ),
             nets=(
                 PhysicalNet(
                     "signal",
-                    (PinReference("source"), PinReference("sink")),
+                    (PinReference("source"), PinReference("sink"))
+                    + (
+                        (PinReference("branch"),)
+                        if multi_terminal
+                        else ()
+                    ),
                 ),
             ),
         ),
@@ -597,6 +628,133 @@ def _physical_blocker_job(
             maximum_placement_repair_iterations=(
                 maximum_placement_repair_iterations
             ),
+        ),
+    )
+
+
+def _constrained_blocker_group_job() -> PhysicalDesignJob:
+    blocker = PhysicalMaster(
+        "two-track-blocker",
+        2,
+        6,
+        obstructions=(LayerShape("route", Rect(0, 0, 2, 6)),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    spectator = PhysicalMaster(
+        "group-spectator",
+        2,
+        2,
+        allowed_orientations=(Orientation.R0,),
+    )
+    technology = PhysicalTechnology(
+        "constrained-blocker-group",
+        dbu_per_micron=1000,
+        manufacturing_grid_dbu=1,
+        layers=(
+            PhysicalLayer(
+                "route",
+                LayerKind.ROUTING,
+                RoutingDirection.HORIZONTAL,
+            ),
+        ),
+        routing_resources=(
+            RoutingTrackPattern(
+                "paired-horizontal-tracks",
+                "route",
+                Axis.Y,
+                2,
+                4,
+                2,
+            ),
+        ),
+        rules=(
+            MinimumWidthRule("route-width", "route", 2),
+            MinimumSpacingRule("route-spacing", "route", 2),
+        ),
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "constrained-placement-routing-repair",
+            Rect(0, 0, 20, 16),
+            (blocker, spectator),
+            (
+                PhysicalInstance("blocker", blocker.name),
+                PhysicalInstance("spectator", spectator.name),
+            ),
+            ports=(
+                PhysicalPort(
+                    "signal-left",
+                    (PinAccess("route", Rect(1, 1, 3, 3)),),
+                ),
+                PhysicalPort(
+                    "signal-right",
+                    (PinAccess("route", Rect(17, 1, 19, 3)),),
+                ),
+                PhysicalPort(
+                    "shield-left",
+                    (PinAccess("route", Rect(1, 5, 3, 7)),),
+                ),
+                PhysicalPort(
+                    "shield-right",
+                    (PinAccess("route", Rect(17, 5, 19, 7)),),
+                ),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (
+                        PinReference("signal-left"),
+                        PinReference("signal-right"),
+                    ),
+                ),
+                PhysicalNet(
+                    "shield",
+                    (
+                        PinReference("shield-left"),
+                        PinReference("shield-right"),
+                    ),
+                ),
+            ),
+        ),
+        constraints=(
+            FenceConstraint(
+                "blocker-local-region",
+                ("blocker",),
+                Rect(7, 0, 9, 16),
+            ),
+            FenceConstraint(
+                "spectator-local-region",
+                ("spectator",),
+                Rect(0, 12, 4, 16),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        routing_constraints=(
+            RoutingLengthConstraint("signal-length", "signal", 16, 16),
+            RoutingLengthConstraint("shield-length", "shield", 16, 16),
+            RoutingRegionConstraint(
+                "signal-required-region",
+                "signal",
+                (LayerShape("route", Rect(9, 1, 11, 3)),),
+            ),
+            RoutingSkewConstraint(
+                "matched-length",
+                ("signal", "shield"),
+                0,
+            ),
+            RoutingShieldConstraint(
+                "signal-shielding",
+                "signal",
+                "shield",
+                4,
+                ("route",),
+            ),
+        ),
+        execution_policy=PnrExecutionPolicy(
+            maximum_route_states=300_000,
+            maximum_routing_iterations=8,
+            maximum_placement_repair_iterations=4,
         ),
     )
 
@@ -886,7 +1044,7 @@ def test_unrelated_movable_blocker_is_the_only_repaired_owner() -> None:
     assert first == second
     assert first.status is ResultStatus.SUCCEEDED
     assert placements["blocker-a"] == Placement(Point(7, 5))
-    assert placements["spectator"] == Placement(Point(0, 4))
+    assert placements["spectator"] == Placement(Point(0, 6))
 
     initial = solve_placement(job)
     initial_routing = solve_routing(job, initial.placements)
@@ -899,6 +1057,7 @@ def test_unrelated_movable_blocker_is_the_only_repaired_owner() -> None:
         for owner in closure.repairs[0].attributed_owners
     ) == ("instance:blocker-a",)
     assert closure.repairs[0].predicted_released_resources
+    assert closure.quality.closed
 
 
 def test_fixed_blocker_does_not_move_an_unrelated_movable_instance() -> None:
@@ -911,6 +1070,113 @@ def test_fixed_blocker_does_not_move_an_unrelated_movable_instance() -> None:
     assert first.status is ResultStatus.FAILED
     assert first.placements == initial.placements
     assert first.stage_reports[-1].diagnostics[0].code == "routing_infeasible"
+
+
+def test_pin_access_blocker_closes_through_its_pin_owner() -> None:
+    job = _physical_blocker_job(pin_access_blocker=True)
+    placement = solve_placement(job)
+    routing = solve_routing(job, placement.placements)
+    closure = close_placement_routing(job, placement)
+
+    assert closure.status is ResultStatus.SUCCEEDED
+    assert routing.placement_pressure.movable_instances == ("blocker-a",)
+    assert tuple(
+        owner.identity.stable_name
+        for owner in routing.placement_pressure.sites[0].physical_owner_candidates
+    ) == ("pin:blocker-a:unused",)
+    assert tuple(
+        owner.stable_name
+        for owner in closure.repairs[0].attributed_owners
+    ) == ("pin:blocker-a:unused",)
+
+
+def test_multi_terminal_tree_closes_after_attributed_blocker_repair() -> None:
+    job = _physical_blocker_job(multi_terminal=True)
+    first = run(job)
+    second = run(job)
+    placement = solve_placement(job)
+    closure = close_placement_routing(job, placement)
+
+    assert first == second
+    assert first.status is ResultStatus.SUCCEEDED
+    assert closure.quality.routed_nets == 1
+    assert closure.quality.routed_branches == 2
+    assert closure.repairs[0].moved_instance == "blocker-a"
+
+
+def test_multi_owner_pressure_improvement_continues_until_closure() -> None:
+    job = _physical_blocker_job(two_blockers=True)
+    first = run(job)
+    second = run(job)
+    placement = solve_placement(job)
+    initial_routing = solve_routing(job, placement.placements)
+    repeated_initial_routing = solve_routing(job, placement.placements)
+    closure = close_placement_routing(job, placement)
+    limited_job = replace(
+        job,
+        execution_policy=replace(
+            job.execution_policy,
+            maximum_placement_repair_iterations=1,
+        ),
+    )
+    limited = run(limited_job)
+    limited_placement = solve_placement(limited_job)
+    limited_closure = close_placement_routing(
+        limited_job,
+        limited_placement,
+    )
+
+    initial_site = initial_routing.placement_pressure.sites[0]
+    assert first == second
+    assert initial_routing == repeated_initial_routing
+    assert first.status is ResultStatus.SUCCEEDED
+    assert tuple(
+        owner.identity.stable_name
+        for owner in initial_site.physical_owner_candidates
+    ) == ("instance:blocker-a", "instance:blocker-b")
+    assert tuple(item.moved_instance for item in closure.repairs) == (
+        "blocker-b",
+        "blocker-a",
+    )
+    assert closure.quality.closed
+    assert closure.repairs[0].quality_decision.value == "improved"
+    assert (
+        closure.repairs[0].candidate_quality.aggregate_placement_pressure
+        < closure.repairs[0].current_quality.aggregate_placement_pressure
+    )
+    assert limited.status is ResultStatus.EXHAUSTED
+    assert limited.stage_reports[-1].diagnostics[-1].code == (
+        "placement_repair_iteration_exhausted"
+    )
+    assert limited_closure.termination is (
+        PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
+    )
+    assert not limited_closure.quality.closed
+
+
+def test_group_constraints_remain_closed_across_two_stage_blocker_repair() -> None:
+    job = _constrained_blocker_group_job()
+    first = run(job)
+    second = run(job)
+    placement = solve_placement(job)
+    closure = close_placement_routing(job, placement)
+
+    assert first == second
+    assert first.status is ResultStatus.SUCCEEDED
+    assert all(
+        outcome.status is ConstraintStatus.SATISFIED
+        for outcome in first.constraint_outcomes
+    )
+    assert tuple(item.moved_instance for item in closure.repairs) == (
+        "blocker",
+        "blocker",
+    )
+    assert not closure.repairs[0].candidate_quality.closed
+    assert (
+        closure.repairs[0].candidate_quality.unrouted_branches
+        < closure.repairs[0].current_quality.unrouted_branches
+    )
+    assert closure.quality.closed
 
 
 def test_fixed_pressure_source_has_no_legal_placement_repair() -> None:

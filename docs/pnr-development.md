@@ -143,6 +143,11 @@ general routing remains in progress.
   evaluation rather than trusting candidate prediction;
 - a deterministic Placement-Routing Closure outer loop with displacement,
   routing-improvement, no-repair, repair-state, and repair-iteration evidence;
+- typed Routing Closure Quality with explicit lexicographic policy over resource
+  overflow, unrouted branches, blocker/group/via/topology failures, independent
+  evaluation, physical-owner pressure, routed progress, and displacement;
+- every repair records current/candidate quality and an improved, equivalent,
+  or regressed decision; fewer conflicts cannot mask increased overflow;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over

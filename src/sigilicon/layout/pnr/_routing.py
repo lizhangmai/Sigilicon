@@ -36,6 +36,7 @@ from sigilicon.layout.pnr._routing_resources import (
     RoutingNode,
     RoutingObstacle,
     RoutingResourceIdentity,
+    RoutingResourceKind,
     RoutingSearchView,
 )
 from sigilicon.layout.pnr._routing_state import RoutingState
@@ -781,24 +782,33 @@ def _shield_guidance_states(
     contexts: dict[str, RoutingLayerDomain],
     pin_endpoint_states: tuple[tuple[_RouteState, ...], ...],
     blockers: dict[str, tuple[_Blocker, ...]],
-) -> tuple[tuple[tuple[_RouteState, ...], ...], Diagnostic | None]:
+) -> tuple[
+    tuple[tuple[_RouteState, ...], ...],
+    Diagnostic | None,
+    tuple[BlockedResource, ...],
+]:
     group = problem.policy.group_for_net(net.name)
     if group is None:
-        return (), None
+        return (), None, ()
     relationships = tuple(
         shield for shield in group.shields if shield.shield_net == net.name
     )
     if not relationships:
-        return (), None
+        return (), None, ()
 
     guidance: list[tuple[_RouteState, ...]] = []
+    blocked_resources: set[BlockedResource] = set()
     for relationship in relationships:
         signal_route = state.routes_by_net.get(relationship.signal_net)
         if signal_route is None:
-            return (), Diagnostic(
-                "routing_shield_dependency_missing",
-                f"shield net {net.name} needs signal geometry before routing",
-                (relationship.signal_net, net.name),
+            return (
+                (),
+                Diagnostic(
+                    "routing_shield_dependency_missing",
+                    f"shield net {net.name} needs signal geometry before routing",
+                    (relationship.signal_net, net.name),
+                ),
+                (),
             )
         signal_segments = _ordered_shield_segments(
             tuple(
@@ -812,10 +822,14 @@ def _shield_guidance_states(
             continue
         candidates: list[tuple[int, tuple[_RouteState, ...]]] = []
         if any(segment.layer not in contexts for segment in signal_segments):
-            return (), Diagnostic(
-                "routing_shield_geometry_infeasible",
-                f"shield net {net.name} cannot use every selected signal layer",
-                (relationship.signal_net, net.name),
+            return (
+                (),
+                Diagnostic(
+                    "routing_shield_geometry_infeasible",
+                    f"shield net {net.name} cannot use every selected signal layer",
+                    (relationship.signal_net, net.name),
+                ),
+                (),
             )
         minimum_spacing = max(
             contexts[segment.layer].spacing
@@ -851,7 +865,64 @@ def _shield_guidance_states(
                         if not _point_in_context(route_state.point, context):
                             supported = False
                             break
-                        if _state_blocked(route_state, blockers):
+                        blocked = tuple(
+                            blocker
+                            for blocker in blockers.get(route_state.layer, ())
+                            if _point_in_interior(
+                                route_state.point,
+                                blocker.shape,
+                            )
+                        )
+                        if blocked:
+                            route_owners = tuple(
+                                sorted(
+                                    {
+                                        blocker.owner
+                                        for blocker in blocked
+                                        if blocker.owner is not None
+                                    }
+                                )
+                            )
+                            physical_owners = tuple(
+                                sorted(
+                                    {
+                                        owner
+                                        for blocker in blocked
+                                        for owner in blocker.physical_owners
+                                    },
+                                    key=lambda item: item.stable_name,
+                                )
+                            )
+                            blocked_resources.add(
+                                BlockedResource(
+                                    RoutingResourceIdentity(
+                                        RoutingResourceKind.LAYER_SEGMENT.value,
+                                        route_state.layer,
+                                        (
+                                            route_state.point.x,
+                                            route_state.point.y,
+                                            route_state.point.x,
+                                            route_state.point.y,
+                                        ),
+                                    ),
+                                    route_owners,
+                                    any(
+                                        blocker.owner is None
+                                        for blocker in blocked
+                                    ),
+                                    "shield guidance blockage",
+                                    tuple(
+                                        sorted(
+                                            {
+                                                blocker.branch
+                                                for blocker in blocked
+                                                if blocker.branch is not None
+                                            }
+                                        )
+                                    ),
+                                    physical_owners,
+                                )
+                            )
                             supported = False
                             break
                         if not candidate or candidate[-1] != route_state:
@@ -869,13 +940,31 @@ def _shield_guidance_states(
                     )
                     candidates.append((score, ordered))
         if not candidates:
-            return (), Diagnostic(
-                "routing_shield_geometry_infeasible",
-                (
-                    f"shield net {net.name} has no legal adjacent guidance for "
-                    f"signal net {relationship.signal_net}"
+            return (
+                (),
+                Diagnostic(
+                    "routing_shield_geometry_infeasible",
+                    (
+                        f"shield net {net.name} has no legal adjacent guidance for "
+                        f"signal net {relationship.signal_net}"
+                    ),
+                    (relationship.signal_net, net.name),
                 ),
-                (relationship.signal_net, net.name),
+                tuple(
+                    sorted(
+                        blocked_resources,
+                        key=lambda item: (
+                            ""
+                            if item.resource is None
+                            else item.resource.stable_name,
+                            item.owners,
+                            tuple(
+                                owner.stable_name
+                                for owner in item.physical_owners
+                            ),
+                        ),
+                    )
+                ),
             )
         _, selected = min(
             candidates,
@@ -888,7 +977,7 @@ def _shield_guidance_states(
             ),
         )
         guidance.extend((route_state,) for route_state in selected)
-    return tuple(guidance), None
+    return tuple(guidance), None, ()
 
 
 def _net_route_failure(
@@ -1015,7 +1104,7 @@ def _route_net(
             conflict_kind=RoutingConflictKind.GROUP_CONSTRAINT,
         )
     center_blockers = _center_blockers(raw_blockers, net_contexts)
-    shield_states, shield_diagnostic = _shield_guidance_states(
+    shield_states, shield_diagnostic, shield_blocked = _shield_guidance_states(
         problem,
         net,
         state,
@@ -1030,6 +1119,7 @@ def _route_net(
             shield_diagnostic.code,
             shield_diagnostic.message,
             conflict_kind=RoutingConflictKind.GROUP_CONSTRAINT,
+            blocked_resources=shield_blocked,
         )
     endpoint_states = (
         (pin_endpoint_states[0],)
