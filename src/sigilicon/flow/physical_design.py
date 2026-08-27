@@ -5,6 +5,7 @@ from __future__ import annotations
 from sigilicon.flow.model import (
     ActionContract,
     ArtifactPort,
+    PlatformAssetRequirement,
 )
 from sigilicon.flow.registry import FlowRegistry
 
@@ -17,6 +18,9 @@ PHYSICAL_DESIGN_ACTION = "physical-design.solve"
 PHYSICAL_MATERIALIZATION_ACTION = "physical-design.compile-materialization"
 PHYSICAL_MATERIALIZATION_PLAN_KIND = "physical-design.materialization-plan"
 MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND = "evidence.materialization-acceptance"
+PHYSICAL_MATERIALIZATION_EXECUTION_ACTION = "physical-design.materialize"
+MATERIALIZED_GDS_KIND = "layout.gds"
+MATERIALIZATION_RECEIPT_KIND = "evidence.materialization-receipt"
 REFERENCE_PNR_ADAPTER = "reference-pnr"
 REFERENCE_MATERIALIZATION_ADAPTER = "reference-materialization"
 
@@ -30,6 +34,35 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
             outputs=(ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),),
             adapters=("source-assets",),
             resolves_source_assets=True,
+        )
+    )
+    registry.register_action(
+        ActionContract(
+            kind=PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
+            inputs=(
+                ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),
+                ArtifactPort("result", PHYSICAL_DESIGN_RESULT_KIND),
+                ArtifactPort("plan", PHYSICAL_MATERIALIZATION_PLAN_KIND),
+            ),
+            outputs=(
+                ArtifactPort("layout", MATERIALIZED_GDS_KIND, required=False),
+                ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
+            ),
+            facts=(
+                "materialization-status",
+                "materialized",
+                "backend-executed",
+                "backend-completed",
+            ),
+            required_capabilities=("tool.layout-materializer",),
+            platform_assets=(
+                PlatformAssetRequirement(
+                    "physical-layout",
+                    "platform.layout-view-set",
+                    members=("layer-map", "master-layouts"),
+                ),
+            ),
+            adapter_extensible=True,
         )
     )
     registry.register_action(
@@ -87,8 +120,11 @@ __all__ = [
     "PHYSICAL_DESIGN_RESULT_KIND",
     "PHYSICAL_DESIGN_SOURCE_ACTION",
     "PHYSICAL_MATERIALIZATION_ACTION",
+    "PHYSICAL_MATERIALIZATION_EXECUTION_ACTION",
     "PHYSICAL_MATERIALIZATION_PLAN_KIND",
+    "MATERIALIZED_GDS_KIND",
     "MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND",
+    "MATERIALIZATION_RECEIPT_KIND",
     "REFERENCE_MATERIALIZATION_ADAPTER",
     "REFERENCE_PNR_ADAPTER",
     "register_physical_design_actions",

@@ -12,7 +12,9 @@ from sigilicon.flow.model import (
     ProducedArtifact,
 )
 from sigilicon.flow.physical_design import (
+    MATERIALIZED_GDS_KIND,
     MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND,
+    MATERIALIZATION_RECEIPT_KIND,
     PHYSICAL_CLOSURE_EVIDENCE_KIND,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_DESIGN_RESULT_KIND,
@@ -26,6 +28,17 @@ from sigilicon.layout.materialization import (
     materialization_plan_from_json,
     materialization_target_from_mapping,
     validate_materialization_plan,
+)
+from sigilicon.layout.materialization_execution import (
+    MaterializationCompletion,
+    MaterializationExecutionStatus,
+    MaterializationExecutionTarget,
+    MaterializationReceipt,
+    identify_managed_layout,
+    issue_materialization_receipt,
+    materialization_execution_target_from_mapping,
+    materialization_receipt_from_json,
+    validate_materialization_receipt,
 )
 from sigilicon.layout.pnr import (
     PhysicalDesignJob,
@@ -321,4 +334,172 @@ class MaterializationPlanAdapter:
         )
 
 
-__all__ = ["MaterializationPlanAdapter", "ReferencePhysicalDesignAdapter"]
+def read_materialization_execution_request(
+    context: ActionContext,
+) -> tuple[
+    PhysicalDesignJob,
+    PhysicalDesignResult,
+    MaterializationPlan,
+    MaterializationExecutionTarget,
+]:
+    """Read the strict artifacts shared by every real materializer Adapter."""
+
+    if set(context.action_config) != {"target"}:
+        raise FlowExecutionError(
+            "materialization execution config must contain only 'target'"
+        )
+    job = _read_job(context.input("job").path)
+    result = _read_result(context.input("result").path)
+    try:
+        plan = materialization_plan_from_json(
+            context.input("plan").path.read_text(encoding="utf-8")
+        )
+        target = materialization_execution_target_from_mapping(
+            context.action_config["target"]
+        )
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        raise FlowExecutionError(
+            f"invalid materialization execution request: {exc}"
+        ) from exc
+    return job, result, plan, target
+
+
+def materialization_execution_facts(
+    receipt: MaterializationReceipt,
+) -> dict[str, object]:
+    return {
+        "materialization-status": receipt.status.value,
+        "materialized": receipt.materialized,
+        "backend-executed": receipt.completion.executed,
+        "backend-completed": receipt.completion.proven,
+    }
+
+
+def write_materialization_receipt(
+    context: ActionContext,
+    *,
+    status: MaterializationExecutionStatus,
+    completion: MaterializationCompletion,
+    message: str,
+    layout_path: Path | None = None,
+) -> MaterializationReceipt:
+    """Bind one Adapter outcome to the exact request and managed layout bytes."""
+
+    job, result, plan, target = read_materialization_execution_request(context)
+    layout = (
+        None
+        if layout_path is None
+        else identify_managed_layout(
+            layout_path,
+            target=target,
+            run_root=context.run_root,
+            run_id=context.run_root.name,
+            producer=context.node_id,
+        )
+    )
+    receipt = issue_materialization_receipt(
+        job,
+        result,
+        plan,
+        target,
+        status=status,
+        completion=completion,
+        layout=layout,
+        message=message,
+    )
+    context.output_path("receipt", "materialization-receipt.json").write_text(
+        receipt.canonical_json(),
+        encoding="utf-8",
+    )
+    return receipt
+
+
+def collect_materialization_execution_result(
+    context: ActionContext,
+    execution: AdapterExecution,
+) -> CollectedActionResult:
+    """Collect and independently revalidate one materialization receipt."""
+
+    job, result, plan, target = read_materialization_execution_request(context)
+    receipt_path = context.output_path("receipt", "materialization-receipt.json")
+    try:
+        receipt = materialization_receipt_from_json(
+            receipt_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        raise FlowExecutionError(
+            f"invalid Materialization Receipt artifact: {exc}"
+        ) from exc
+    layout_path = (
+        None
+        if receipt.layout is None
+        else context.output_path("layout", "layout.gds")
+    )
+    validation = validate_materialization_receipt(
+        job,
+        result,
+        plan,
+        target,
+        receipt,
+        layout_path=layout_path,
+        run_root=context.run_root if layout_path is not None else None,
+    )
+    if not validation.valid:
+        raise FlowExecutionError(
+            "collected Materialization Receipt failed validation: "
+            + "; ".join(issue.code for issue in validation.issues)
+        )
+    facts = materialization_execution_facts(receipt)
+    if dict(execution.details) != facts:
+        raise FlowExecutionError(
+            "materialization execution details disagree with collected receipt"
+        )
+    receipt_sha256 = canonical_sha256(receipt)
+    qualifiers = {
+        "owner": target.owner,
+        "name": target.name,
+        "format": target.format.value,
+        "job-sha256": receipt.provenance.job_sha256,
+        "result-sha256": receipt.provenance.result_sha256,
+        "plan-sha256": receipt.provenance.plan_sha256,
+        "receipt-sha256": receipt_sha256,
+        "status": receipt.status.value,
+        "backend": receipt.completion.backend,
+    }
+    artifacts = [
+        ProducedArtifact(
+            "receipt",
+            MATERIALIZATION_RECEIPT_KIND,
+            receipt_path,
+            qualifiers=qualifiers,
+        )
+    ]
+    if receipt.layout is not None:
+        assert layout_path is not None
+        artifacts.insert(
+            0,
+            ProducedArtifact(
+                "layout",
+                MATERIALIZED_GDS_KIND,
+                layout_path,
+                qualifiers={
+                    **qualifiers,
+                    "layout-sha256": receipt.layout.content_sha256,
+                },
+            ),
+        )
+    return CollectedActionResult(
+        status="valid",
+        artifacts=tuple(artifacts),
+        facts=facts,
+    )
+
+
+__all__ = [
+    "MaterializationPlanAdapter",
+    "ReferencePhysicalDesignAdapter",
+    "collect_materialization_execution_result",
+    "materialization_execution_facts",
+    "read_materialization_execution_request",
+    "write_materialization_receipt",
+]

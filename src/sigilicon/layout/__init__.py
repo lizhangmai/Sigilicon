@@ -11,18 +11,40 @@ from sigilicon.layout.materialization import (
     compile_materialization_plan,
     validate_materialization_plan,
 )
+from sigilicon.layout.materialization_execution import (
+    LayoutArtifactFormat,
+    ManagedLayoutArtifact,
+    MaterializationCompletion,
+    MaterializationExecutionStatus,
+    MaterializationExecutionTarget,
+    MaterializationReceipt,
+    identify_managed_layout,
+    issue_materialization_receipt,
+    validate_materialization_receipt,
+    validate_materialization_request,
+)
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 
 __all__ = [
     "LayoutSpec",
+    "LayoutArtifactFormat",
+    "ManagedLayoutArtifact",
     "MaterializationAcceptance",
     "MaterializationDecision",
     "MaterializationError",
     "MaterializationPlan",
     "MaterializationReason",
+    "MaterializationCompletion",
+    "MaterializationExecutionStatus",
+    "MaterializationExecutionTarget",
+    "MaterializationReceipt",
     "MaterializationTarget",
     "build_layout_plan",
     "compile_materialization_plan",
+    "identify_managed_layout",
+    "issue_materialization_receipt",
     "load_layout_spec",
     "validate_materialization_plan",
+    "validate_materialization_receipt",
+    "validate_materialization_request",
 ]

@@ -54,6 +54,18 @@ infeasible, and independently invalid results carry explicit rejection evidence.
 Only a closed result is executable, and this Module never writes OA, DEF, GDS,
 or another persistent database.
 
+Executable plans cross a second, explicit `physical-design.materialize` Action.
+Its ToolAdapter seam consumes the canonical job, result, and plan plus a typed
+format target.  A successful GDSII implementation emits `layout.gds` and an
+immutable Materialization Receipt that binds owner, target, backend completion,
+managed Flow provenance, and the job/result/plan/layout SHA-256 identities.
+Diagnostic or rejected plans are rejected before backend execution. Unsupported,
+backend-unavailable, execution-failed, and invalid-plan/identity outcomes emit a
+receipt but never publish a checked layout. The package registers no synthetic
+materializer; project assembly must provide a real Adapter, capability, layer
+mapping, and master-layout asset. Contract tests use an unregistered GDSII fixture
+Adapter and do not establish a product or signoff conclusion.
+
 Physical verification crosses separate `physical-verification.drc` and
 `physical-verification.lvs` Actions. Their artifacts carry exact checked-layout
 and checked-source identities, backend completion, findings, and one of five
