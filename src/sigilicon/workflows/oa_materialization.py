@@ -671,16 +671,7 @@ def render_oa_materialization_skill(
     body = "\n      ".join(statements)
     target = assets.target
     existing = (
-        "when(ddGetObj(%s %s %s) unless(ddDeleteObj(ddGetObj(%s %s %s)) "
-        "error(\"cannot replace managed materialization view\")))"
-        % (
-            skill_quote(target.library),
-            skill_quote(target.cell),
-            skill_quote(target.view),
-            skill_quote(target.library),
-            skill_quote(target.cell),
-            skill_quote(target.view),
-        )
+        ""
         if target.replace_existing
         else "when(ddGetObj(%s %s %s) error(\"managed materialization view exists\"))"
         % (
@@ -689,6 +680,7 @@ def render_oa_materialization_skill(
             skill_quote(target.view),
         )
     )
+    open_mode = "w" if target.replace_existing else "a"
     return f'''prog((cv master fig viaDef net term pinObj terminal terminals result)
   cv = nil
   master = nil
@@ -696,7 +688,7 @@ def render_oa_materialization_skill(
   unwindProtect(
     progn(
       cv = dbOpenCellViewByType({skill_quote(target.library)} {skill_quote(target.cell)}
-        {skill_quote(target.view)} "maskLayout" "a")
+        {skill_quote(target.view)} "maskLayout" {skill_quote(open_mode)})
       unless(cv error("cannot create managed materialization target"))
       {body})
     progn(

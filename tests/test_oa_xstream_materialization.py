@@ -602,6 +602,8 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     write_source = next(source for source in client.sources if "dbCreatePath" in source)
     assert "dbCreateTerm" in write_source
     assert "sigiliconJobSha256" in write_source
+    assert '"maskLayout" "w"' in write_source
+    assert "ddDeleteObj" not in write_source
     layout_sha256 = receipt.provenance.layout_sha256
     assert layout_sha256 is not None
     assert layout_sha256 == receipt.layout.content_sha256
