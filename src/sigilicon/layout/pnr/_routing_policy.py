@@ -217,7 +217,7 @@ def _relationship_groups(
         grouped.setdefault(find(relationship.nets[0]), []).append(relationship)
 
     group_cost = RoutingCostPolicy(
-        congestion_weight=0,
+        congestion_weight=1,
         history_weight=1,
         group_violation_weight=1,
     )
@@ -341,7 +341,7 @@ def compile_routing_policy(
         group_violation_weight=0,
     )
     length_cost = RoutingCostPolicy(
-        congestion_weight=0,
+        congestion_weight=1,
         history_weight=1,
         group_violation_weight=1,
     )

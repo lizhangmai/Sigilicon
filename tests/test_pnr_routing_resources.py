@@ -109,6 +109,7 @@ def test_search_view_prices_present_and_historical_resource_usage() -> None:
         history_costs={},
         present_weight=1,
         history_weight=1,
+        path_length_weight=0,
     )
     transition = next(
         item
@@ -128,6 +129,7 @@ def test_search_view_prices_present_and_historical_resource_usage() -> None:
         history_costs={corridor: 2},
         present_weight=1,
         history_weight=1,
+        path_length_weight=0,
     )
 
     assert empty.transition_cost(transition) == 1

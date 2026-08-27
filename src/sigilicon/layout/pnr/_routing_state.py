@@ -116,15 +116,6 @@ class RoutingState:
             length_targets=MappingProxyType(merged),
         )
 
-    def select_victim(self, conflicting_nets: Iterable[str]) -> str | None:
-        """Choose the latest routed actual blocker, then break ties by name."""
-
-        conflicts = frozenset(conflicting_nets) & self.routes_by_net.keys()
-        if not conflicts:
-            return None
-        priority = {net: index for index, net in enumerate(self.routed_order)}
-        return max(conflicts, key=lambda net: (priority.get(net, -1), net))
-
     def _replace_routes(
         self,
         routes: Mapping[str, NetRoute],

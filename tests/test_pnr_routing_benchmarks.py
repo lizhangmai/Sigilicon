@@ -40,6 +40,12 @@ from sigilicon.layout.pnr import (
     ViaDefinition,
     run,
 )
+from sigilicon.layout.pnr._placement import solve_placement
+from sigilicon.layout.pnr._routing import solve_routing
+from sigilicon.layout.pnr._routing_conflicts import (
+    RoutingConflictKind,
+    RoutingTerminationReason,
+)
 
 
 def _two_layer_technology(
@@ -243,6 +249,8 @@ def _iteration_exhausted_job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
+
+
     side_wall = PhysicalMaster(
         "side-wall",
         3,
@@ -281,6 +289,57 @@ def _iteration_exhausted_job() -> PhysicalDesignJob:
         ),
         request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
         execution_policy=PnrExecutionPolicy(maximum_routing_iterations=1),
+    )
+
+
+def _capacity_negotiation_job(
+    *, maximum_routing_iterations: int = 8
+) -> PhysicalDesignJob:
+    technology = PhysicalTechnology(
+        "capacity-benchmark",
+        dbu_per_micron=1000,
+        manufacturing_grid_dbu=1,
+        layers=(
+            PhysicalLayer("route", LayerKind.ROUTING, RoutingDirection.ANY),
+        ),
+        routing_resources=(
+            GridlessRoutingResource("route-domain", "route"),
+        ),
+        rules=(
+            MinimumWidthRule("route-width", "route", 2),
+            MinimumSpacingRule("route-spacing", "route", 1),
+        ),
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "capacity-negotiation",
+            Rect(0, 0, 8, 10),
+            (),
+            (),
+            ports=(
+                PhysicalPort("a-source", (PinAccess("route", Rect(1, 0, 3, 2)),)),
+                PhysicalPort("a-sink", (PinAccess("route", Rect(3, 0, 5, 2)),)),
+                PhysicalPort("b-source", (PinAccess("route", Rect(1, 3, 3, 5)),)),
+                PhysicalPort("b-sink", (PinAccess("route", Rect(3, 3, 5, 5)),)),
+            ),
+            nets=(
+                PhysicalNet(
+                    "a-direct",
+                    (PinReference("a-source"), PinReference("a-sink")),
+                ),
+                PhysicalNet(
+                    "b-negotiated",
+                    (PinReference("b-source"), PinReference("b-sink")),
+                ),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        execution_policy=PnrExecutionPolicy(
+            maximum_routing_iterations=maximum_routing_iterations,
+            routing_congestion_bins_x=1,
+            routing_congestion_bins_y=2,
+        ),
     )
 
 
@@ -346,3 +405,54 @@ def test_benchmark_corpus_distinguishes_infeasible_and_budget_exhausted() -> Non
         "routing_iteration_exhausted"
     )
     assert tuple(route.net for route in exhausted.routes) == ("a-flexible",)
+
+
+def test_gridless_capacity_bottleneck_closes_through_historical_cost() -> None:
+    first = run(_capacity_negotiation_job())
+    second = run(_capacity_negotiation_job())
+
+    routing_metrics = {
+        metric.name: metric.value for metric in first.stage_reports[-1].metrics
+    }
+    negotiated = next(route for route in first.routes if route.net == "b-negotiated")
+
+    assert first == second
+    assert first.status is ResultStatus.SUCCEEDED
+    assert routing_metrics["routing_iterations"] == 2
+    assert routing_metrics["routing_ripped_net_count"] == 1
+    assert routing_metrics["routing_total_overflow"] == 0
+    assert any(
+        segment.start.y >= 5 and segment.end.y >= 5
+        for segment in negotiated.segments
+        if segment.start.y == segment.end.y
+    )
+
+
+def test_capacity_iteration_exhaustion_returns_maximum_legal_partial_route() -> None:
+    result = run(_capacity_negotiation_job(maximum_routing_iterations=1))
+
+    assert result.status is ResultStatus.EXHAUSTED
+    assert result.stage_reports[-1].diagnostics[0].code == (
+        "routing_iteration_exhausted"
+    )
+    assert tuple(route.net for route in result.routes) == ("a-direct",)
+
+
+def test_capacity_benchmark_has_typed_closed_and_iteration_evidence() -> None:
+    closed_job = _capacity_negotiation_job()
+    closed_placement = solve_placement(closed_job)
+    closed = solve_routing(closed_job, closed_placement.placements)
+    exhausted_job = _capacity_negotiation_job(maximum_routing_iterations=1)
+    exhausted_placement = solve_placement(exhausted_job)
+    exhausted = solve_routing(exhausted_job, exhausted_placement.placements)
+
+    assert closed.termination.reason is RoutingTerminationReason.CLOSED
+    assert closed.termination.conflict_identities == ()
+    assert exhausted.termination.reason is RoutingTerminationReason.ITERATION_BUDGET
+    assert (
+        exhausted.conflicts.conflicts[0].kind
+        is RoutingConflictKind.CAPACITY_OVERFLOW
+    )
+    assert exhausted.termination.conflict_identities == tuple(
+        conflict.identity for conflict in exhausted.conflicts.conflicts
+    )

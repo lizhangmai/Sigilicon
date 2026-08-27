@@ -48,6 +48,11 @@ class RoutingResourceIdentity:
     layer: str
     locator: tuple[str | int, ...]
 
+    @property
+    def stable_name(self) -> str:
+        locator = ":".join(str(item) for item in self.locator)
+        return f"{self.kind}:{self.layer}:{locator}"
+
 
 @dataclass(frozen=True)
 class RoutingResourceDefinition:
@@ -69,6 +74,18 @@ class RoutingNode:
 class RoutingResourceDemand:
     resource: RoutingResourceIdentity
     amount: int = 1
+
+
+@dataclass(frozen=True)
+class RoutingResourceOverflow:
+    resource: RoutingResourceIdentity
+    usage: int
+    capacity: int
+    occupants: tuple[str, ...]
+
+    @property
+    def amount(self) -> int:
+        return self.usage - self.capacity
 
 
 @dataclass(frozen=True)
@@ -168,6 +185,7 @@ class RoutingResourceGraph:
         history_costs: Mapping[RoutingResourceIdentity, int],
         present_weight: int,
         history_weight: int,
+        path_length_weight: int,
     ) -> RoutingSearchView:
         layers = frozenset(self.layers) if allowed_layers is None else allowed_layers
         usable_vias = tuple(
@@ -186,6 +204,7 @@ class RoutingResourceGraph:
             history_costs=history_costs,
             present_weight=present_weight,
             history_weight=history_weight,
+            path_length_weight=path_length_weight,
         )
 
     def definition(
@@ -242,6 +261,23 @@ class RoutingResourceGraph:
             via = self.via_definitions[occurrence.via_definition]
             identities.add(_via_identity(via, occurrence.origin))
         return tuple(RoutingResourceDemand(identity) for identity in sorted(identities))
+
+    def overflows(
+        self,
+        usage: Mapping[RoutingResourceIdentity, int],
+        occupants: Mapping[RoutingResourceIdentity, tuple[str, ...]],
+    ) -> tuple[RoutingResourceOverflow, ...]:
+        overflows = (
+            RoutingResourceOverflow(
+                resource,
+                amount,
+                self.definition(resource).capacity,
+                occupants.get(resource, ()),
+            )
+            for resource, amount in usage.items()
+            if amount > self.definition(resource).capacity
+        )
+        return tuple(sorted(overflows, key=lambda item: item.resource))
 
     def _planar_transition(
         self,
@@ -307,6 +343,7 @@ class RoutingSearchView:
     history_costs: Mapping[RoutingResourceIdentity, int]
     present_weight: int
     history_weight: int
+    path_length_weight: int
 
     @property
     def grid(self) -> int:
@@ -499,7 +536,7 @@ class RoutingSearchView:
             )
             for demand in transition.demands
         )
-        return base * (1 + congestion)
+        return base * (1 + self.path_length_weight + congestion)
 
     def _via_blockage(
         self,

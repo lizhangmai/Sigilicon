@@ -52,14 +52,12 @@ def _resource_graph():
     )
 
 
-def test_routing_state_selects_latest_actual_blocker_and_rips_only_scope() -> None:
+def test_routing_state_tracks_resource_occupancy_and_rips_only_scope() -> None:
     state = RoutingState.empty()
     resource_graph = _resource_graph()
     state = state.with_route(_route("first", 4), resource_graph)
     state = state.with_route(_route("second", 8), resource_graph)
 
-    assert state.select_victim(("unrouted", "first", "second")) == "second"
-    assert state.select_victim(("unrouted",)) is None
     assert tuple(item.net for item in state.occupancy_by_layer["route"]) == (
         "first",
         "second",

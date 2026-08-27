@@ -123,6 +123,9 @@ general routing remains in progress.
 - a compiled Routing Resource Graph that gives gridless corridors, explicit
   tracks, layer segments, and via sites stable identities and capacities while
   presenting A* only a per-net legal-transition and cost Interface;
+- capacity-aware convergence that constructs a typed Routing Conflict Set,
+  applies a deterministic victim policy, updates present and historical costs,
+  and records typed closure or budget termination evidence;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over

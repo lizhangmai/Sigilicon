@@ -40,6 +40,22 @@ _Avoid_: Geometry object identity, transient search state
 The capacity a Routing Solution claims from a Routing Resource, attributed to its owning net and route scope.
 _Avoid_: Wire-length estimate, post-route metric
 
+**Routing Capacity**:
+The maximum simultaneous demand a Routing Resource can legally carry before negotiated routing must revise an attributed route.
+_Avoid_: Congestion score, utilization metric
+
+**Routing Conflict Set**:
+A stable collection of attributed hard blockers, capacity overflows, unrouted branches, group failures, resource exhaustion, topology conflicts, or budget exhaustion preventing the current Routing State from closing.
+_Avoid_: Error strings, failed-net list
+
+**Routing Victim**:
+A deterministically selected routed net or branch whose attributed scope may be removed to resolve a Routing Conflict Set.
+_Avoid_: Random retry, global net permutation
+
+**Routing Termination Evidence**:
+The typed conclusion that negotiated routing closed, proved infeasible, found an unsupported capability, exhausted route states, or exhausted conflict-resolution iterations.
+_Avoid_: Process exit status, diagnostic-code parsing
+
 **Via Definition**:
 Local lower-conductor, cut, and upper-conductor geometry for one legal inter-layer connection.
 _Avoid_: Via name string

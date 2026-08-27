@@ -13,8 +13,18 @@ from sigilicon.layout.pnr._routing_problem import (
     RoutingProblem,
     compile_routing_problem,
 )
+from sigilicon.layout.pnr._routing_conflicts import (
+    DeterministicVictimPolicy,
+    RoutingConflictKind,
+    RoutingConflictSet,
+    RoutingTerminationEvidence,
+    RoutingTerminationReason,
+    attributed_failure_conflicts,
+    capacity_conflicts,
+)
 from sigilicon.layout.pnr._routing_policy import RoutingGroupPolicy
 from sigilicon.layout.pnr._routing_resources import (
+    BlockedResource,
     RoutingDomain,
     RoutingLayerDomain,
     RoutingNode,
@@ -48,6 +58,13 @@ class RoutingSolveResult:
     routing_iterations: int = 0
     route_attempts: int = 0
     ripped_net_count: int = 0
+    conflicts: RoutingConflictSet = RoutingConflictSet()
+    termination: RoutingTerminationEvidence = RoutingTerminationEvidence(
+        RoutingTerminationReason.CLOSED,
+        0,
+        0,
+        (),
+    )
 
 
 _RouteState = RoutingNode
@@ -70,7 +87,7 @@ class _RouteSearchResult:
     path: _RoutePath | None
     states: int
     exhausted: bool
-    blocking_nets: frozenset[str] = frozenset()
+    blocked_resources: tuple[BlockedResource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,7 +96,8 @@ class _NetRouteAttempt:
     route: NetRoute | None
     diagnostic: Diagnostic | None
     route_states: int
-    blocking_nets: frozenset[str] = frozenset()
+    conflict_kind: RoutingConflictKind = RoutingConflictKind.TOPOLOGY_CONFLICT
+    blocked_resources: tuple[BlockedResource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,6 +115,8 @@ def _result(
     message: str = "",
     entities: tuple[str, ...] = (),
     route_states: int = 0,
+    conflicts: RoutingConflictSet = RoutingConflictSet(),
+    termination_reason: RoutingTerminationReason | None = None,
 ) -> RoutingSolveResult:
     routes = tuple(sorted(routes, key=lambda route: route.net))
     diagnostics = (
@@ -126,6 +146,20 @@ def _result(
             ),
         ),
         route_states=route_states,
+        conflicts=conflicts,
+        termination=RoutingTerminationEvidence(
+            termination_reason
+            or {
+                ResultStatus.SUCCEEDED: RoutingTerminationReason.CLOSED,
+                ResultStatus.FAILED: RoutingTerminationReason.INFEASIBLE,
+                ResultStatus.UNSUPPORTED: RoutingTerminationReason.UNSUPPORTED,
+                ResultStatus.EXHAUSTED: RoutingTerminationReason.STATE_BUDGET,
+            }[status],
+            0,
+            route_states,
+            tuple(route.net for route in routes),
+            tuple(conflict.identity for conflict in conflicts.conflicts),
+        ),
     )
 
 
@@ -356,6 +390,7 @@ def _search_resources(
     allow_vias: bool,
     present_weight: int,
     history_weight: int,
+    path_length_weight: int,
 ) -> RoutingSearchView:
     obstacles = {
         layer: tuple(
@@ -377,6 +412,7 @@ def _search_resources(
         history_costs=state.history_costs,
         present_weight=present_weight,
         history_weight=history_weight,
+        path_length_weight=path_length_weight,
     )
 
 
@@ -417,7 +453,7 @@ def _astar(
             (heuristic(start), 0, start.layer, start.point.y, start.point.x, start),
         )
     came_from: dict[_RouteState, tuple[_RouteState, str | None]] = {}
-    encountered_blockers: set[str] = set()
+    encountered_blockers: set[BlockedResource] = set()
     states = 0
     while frontier:
         if states >= remaining_states:
@@ -425,7 +461,7 @@ def _astar(
                 None,
                 states,
                 True,
-                frozenset(encountered_blockers),
+                tuple(sorted(encountered_blockers, key=_blocked_resource_key)),
             )
         _, current_cost, _, _, _, current = heapq.heappop(frontier)
         if current_cost != cost[current]:
@@ -450,9 +486,7 @@ def _astar(
             current,
             frozenset(state for state in forbidden_states if state not in targets),
         )
-        encountered_blockers.update(
-            owner for blocked in query.blocked for owner in blocked.owners
-        )
+        encountered_blockers.update(query.blocked)
         for transition in query.transitions:
             neighbor = transition.end
             via_name = transition.via_definition
@@ -476,7 +510,16 @@ def _astar(
         None,
         states,
         False,
-        frozenset(encountered_blockers),
+        tuple(sorted(encountered_blockers, key=_blocked_resource_key)),
+    )
+
+
+def _blocked_resource_key(blocked: BlockedResource) -> tuple[object, ...]:
+    return (
+        "" if blocked.resource is None else blocked.resource.stable_name,
+        blocked.hard,
+        blocked.owners,
+        blocked.reason,
     )
 
 
@@ -780,14 +823,16 @@ def _net_route_failure(
     message: str,
     *,
     route_states: int = 0,
-    blocking_nets: frozenset[str] = frozenset(),
+    conflict_kind: RoutingConflictKind = RoutingConflictKind.TOPOLOGY_CONFLICT,
+    blocked_resources: tuple[BlockedResource, ...] = (),
 ) -> _NetRouteAttempt:
     return _NetRouteAttempt(
         status=status,
         route=None,
         diagnostic=Diagnostic(code, message, (net,)),
         route_states=route_states,
-        blocking_nets=blocking_nets,
+        conflict_kind=conflict_kind,
+        blocked_resources=blocked_resources,
     )
 
 
@@ -817,6 +862,7 @@ def _route_net(
             ResultStatus.FAILED,
             "routing_pin_access_missing",
             f"net {net.name} has a terminal without access geometry",
+            conflict_kind=RoutingConflictKind.UNROUTED_TERMINAL,
         )
     raw_blockers = _raw_blockers(net, state)
     search_resources = _search_resources(
@@ -827,6 +873,7 @@ def _route_net(
         allow_vias=via_limit != 0,
         present_weight=net_policy.cost.congestion_weight,
         history_weight=net_policy.cost.history_weight,
+        path_length_weight=net_policy.cost.group_violation_weight,
     )
     pin_endpoint_states = tuple(
         search_resources.access_states(endpoint) for endpoint in accesses
@@ -842,6 +889,7 @@ def _route_net(
                 else "routing_pin_access_layer_unsupported"
             ),
             f"net {net.name} has no access on a usable routing layer",
+            conflict_kind=RoutingConflictKind.UNROUTED_TERMINAL,
         )
     required_regions = net_policy.required_regions
     region_states = tuple(
@@ -856,6 +904,7 @@ def _route_net(
                 f"net {net.name} has a required region without a legal "
                 "routing-resource access"
             ),
+            conflict_kind=RoutingConflictKind.GROUP_CONSTRAINT,
         )
     center_blockers = _center_blockers(raw_blockers, net_contexts)
     shield_states, shield_diagnostic = _shield_guidance_states(
@@ -872,6 +921,7 @@ def _route_net(
             ResultStatus.FAILED,
             shield_diagnostic.code,
             shield_diagnostic.message,
+            conflict_kind=RoutingConflictKind.GROUP_CONSTRAINT,
         )
     endpoint_states = (
         (pin_endpoint_states[0],)
@@ -905,6 +955,11 @@ def _route_net(
                 f"net {net.name} access layers cannot be connected by supported "
                 "via definitions and rules"
             ),
+            conflict_kind=(
+                RoutingConflictKind.GROUP_CONSTRAINT
+                if constrained
+                else RoutingConflictKind.TOPOLOGY_CONFLICT
+            ),
         )
     legal_endpoint_states = tuple(
         tuple(
@@ -921,14 +976,10 @@ def _route_net(
             if not states
         )
         region_blocked = endpoint_kinds[blocked_index] == "region"
-        blockers = frozenset(
-            owner
+        blocked_resources = tuple(
+            blocked
             for endpoint_state in endpoint_states[blocked_index]
-            for owner in (
-                ()
-                if search_resources.blockage(endpoint_state) is None
-                else search_resources.blockage(endpoint_state).owners
-            )
+            if (blocked := search_resources.blockage(endpoint_state)) is not None
         )
         return _net_route_failure(
             net.name,
@@ -943,7 +994,12 @@ def _route_net(
                 if region_blocked
                 else f"net {net.name} has no unblocked terminal access"
             ),
-            blocking_nets=blockers,
+            conflict_kind=(
+                RoutingConflictKind.GROUP_CONSTRAINT
+                if region_blocked
+                else RoutingConflictKind.UNROUTED_TERMINAL
+            ),
+            blocked_resources=blocked_resources,
         )
     tree: set[_RouteState] = set(legal_endpoint_states[0])
     previous_terminal: set[_RouteState] = set(legal_endpoint_states[0])
@@ -970,6 +1026,7 @@ def _route_net(
             allow_vias=via_limit != 0,
             present_weight=net_policy.cost.congestion_weight,
             history_weight=net_policy.cost.history_weight,
+            path_length_weight=net_policy.cost.group_violation_weight,
         )
         search = _astar(
             starts,
@@ -998,7 +1055,12 @@ def _route_net(
                 ),
                 f"reference router could not connect net {net.name}",
                 route_states=route_states,
-                blocking_nets=search.blocking_nets,
+                conflict_kind=(
+                    RoutingConflictKind.BUDGET_EXHAUSTION
+                    if search.exhausted
+                    else RoutingConflictKind.TOPOLOGY_CONFLICT
+                ),
+                blocked_resources=search.blocked_resources,
             )
         new_segments, new_vias = _path_geometry(
             net.name,
@@ -1016,6 +1078,7 @@ def _route_net(
                     f"of {via_limit}"
                 ),
                 route_states=route_states,
+                conflict_kind=RoutingConflictKind.VIA_EXHAUSTION,
             )
         segments.extend(new_segments)
         route_vias.extend(new_vias)
@@ -1055,6 +1118,7 @@ def _route_net(
             "routing_length_window_infeasible",
             f"net {net.name} cannot satisfy its compiled route-length window",
             route_states=route_states,
+            conflict_kind=RoutingConflictKind.GROUP_CONSTRAINT,
         )
     if current_length < target_length:
         if (target_length - current_length) % (2 * grid) != 0:
@@ -1064,6 +1128,7 @@ def _route_net(
                 "routing_length_window_infeasible",
                 f"net {net.name} needs an unreachable Manhattan route length",
                 route_states=route_states,
+                conflict_kind=RoutingConflictKind.GROUP_CONSTRAINT,
             )
         compensation = _compensate_route_length(
             route,
@@ -1092,6 +1157,11 @@ def _route_net(
                     "length compensation"
                 ),
                 route_states=route_states,
+                conflict_kind=(
+                    RoutingConflictKind.BUDGET_EXHAUSTION
+                    if compensation.exhausted
+                    else RoutingConflictKind.GROUP_CONSTRAINT
+                ),
             )
         route = compensation.route
     return _NetRouteAttempt(
@@ -1131,6 +1201,16 @@ def _with_iteration_metrics(
         routing_iterations=routing_iterations,
         route_attempts=route_attempts,
         ripped_net_count=ripped_net_count,
+        conflicts=result.conflicts,
+        termination=RoutingTerminationEvidence(
+            result.termination.reason,
+            routing_iterations,
+            route_states,
+            tuple(route.net for route in result.routes),
+            tuple(
+                conflict.identity for conflict in result.conflicts.conflicts
+            ),
+        ),
     )
 
 
@@ -1156,6 +1236,8 @@ def _with_congestion_metrics(
         routing_iterations=result.routing_iterations,
         route_attempts=result.route_attempts,
         ripped_net_count=result.ripped_net_count,
+        conflicts=result.conflicts,
+        termination=result.termination,
     )
 
 
@@ -1169,6 +1251,8 @@ def _finish_negotiation(
     route_attempts: int,
     ripped_net_count: int,
     diagnostic: Diagnostic | None = None,
+    conflicts: RoutingConflictSet = RoutingConflictSet(),
+    termination_reason: RoutingTerminationReason | None = None,
 ) -> RoutingSolveResult:
     result = _result(
         status,
@@ -1177,6 +1261,8 @@ def _finish_negotiation(
         message="" if diagnostic is None else diagnostic.message,
         entities=() if diagnostic is None else diagnostic.entities,
         route_states=route_states,
+        conflicts=conflicts,
+        termination_reason=termination_reason,
     )
     return _with_congestion_metrics(
         problem.domain,
@@ -1188,6 +1274,65 @@ def _finish_negotiation(
             ripped_net_count=ripped_net_count,
         ),
     )
+
+
+def _attempt_conflicts(
+    problem: RoutingProblem,
+    net: str,
+    attempt: _NetRouteAttempt,
+) -> RoutingConflictSet:
+    group = problem.policy.group_for_net(net)
+    diagnostic = attempt.diagnostic
+    return attributed_failure_conflicts(
+        net=net,
+        kind=attempt.conflict_kind,
+        blocked=attempt.blocked_resources,
+        affected_group=None if group is None else group.name,
+        reroute_scope=problem.policy.reroute_scope(net),
+        evidence=(
+            f"net {net} could not be routed"
+            if diagnostic is None
+            else diagnostic.message
+        ),
+    )
+
+
+def _capacity_conflicts(
+    problem: RoutingProblem,
+    state: RoutingState,
+) -> RoutingConflictSet:
+    overflows = problem.resource_graph.overflows(
+        state.resource_usage,
+        state.resource_occupants,
+    )
+    return capacity_conflicts(
+        overflows,
+        group_by_net={
+            net: (
+                None
+                if problem.policy.group_for_net(net) is None
+                else problem.policy.group_for_net(net).name
+            )
+            for net in problem.net_names
+        },
+        reroute_scope_by_net={
+            net: problem.policy.reroute_scope(net) for net in problem.net_names
+        },
+    )
+
+
+def _conflict_history_penalty(
+    conflicts: RoutingConflictSet,
+) -> dict[RoutingResourceIdentity, int]:
+    penalties: dict[RoutingResourceIdentity, int] = {}
+    for conflict in conflicts.conflicts:
+        if conflict.resource is None:
+            continue
+        penalties[conflict.resource] = max(
+            penalties.get(conflict.resource, 0),
+            max(1, conflict.severity),
+        )
+    return penalties
 
 
 def _reroute_order(
@@ -1283,6 +1428,10 @@ def solve_routing(
     iteration = 1
     route_attempts = 0
     ripped_net_count = 0
+    victim_policy = DeterministicVictimPolicy()
+    reroute_scopes = {
+        net: problem.policy.reroute_scope(net) for net in problem.net_names
+    }
     while pending:
         net_name, *remaining_pending = pending
         pending = tuple(remaining_pending)
@@ -1323,6 +1472,14 @@ def solve_routing(
                 net_name,
             )
             if length_diagnostic is not None:
+                length_conflicts = attributed_failure_conflicts(
+                    net=net_name,
+                    kind=RoutingConflictKind.GROUP_CONSTRAINT,
+                    blocked=(),
+                    affected_group=None if group is None else group.name,
+                    reroute_scope=problem.policy.reroute_scope(net_name),
+                    evidence=length_diagnostic.message,
+                )
                 return _finish_negotiation(
                     problem,
                     state,
@@ -1332,11 +1489,24 @@ def solve_routing(
                     route_attempts=route_attempts,
                     ripped_net_count=ripped_net_count,
                     diagnostic=length_diagnostic,
+                    conflicts=length_conflicts,
+                    termination_reason=RoutingTerminationReason.INFEASIBLE,
                 )
             if length_targets:
                 if group is None:
                     raise RuntimeError("length targets require a routing group")
                 if iteration >= maximum_iterations:
+                    group_conflicts = attributed_failure_conflicts(
+                        net=net_name,
+                        kind=RoutingConflictKind.GROUP_CONSTRAINT,
+                        blocked=(),
+                        affected_group=group.name,
+                        reroute_scope=group.reroute_scope,
+                        evidence=(
+                            "routing group length did not close within the "
+                            "iteration budget"
+                        ),
+                    )
                     return _finish_negotiation(
                         problem,
                         state,
@@ -1353,6 +1523,8 @@ def solve_routing(
                             ),
                             group.nets,
                         ),
+                        conflicts=group_conflicts,
+                        termination_reason=RoutingTerminationReason.ITERATION_BUDGET,
                     )
                 affected = frozenset(group.reroute_scope)
                 ripped_net_count += len(affected & state.routes_by_net.keys())
@@ -1365,7 +1537,72 @@ def solve_routing(
                 pending = reroute + tuple(
                     net for net in pending if net not in affected
                 )
+                continue
+
+            overflow_conflicts = _capacity_conflicts(problem, state)
+            if overflow_conflicts.conflicts:
+                selection = victim_policy.select(
+                    overflow_conflicts,
+                    routed_order=state.routed_order,
+                    routed_nets=state.routes_by_net,
+                    reroute_scope_by_net=reroute_scopes,
+                )
+                if selection is None:
+                    return _finish_negotiation(
+                        problem,
+                        state,
+                        ResultStatus.FAILED,
+                        route_states=total_route_states,
+                        routing_iterations=iteration,
+                        route_attempts=route_attempts,
+                        ripped_net_count=ripped_net_count,
+                        diagnostic=Diagnostic(
+                            "routing_capacity_infeasible",
+                            "routing resources remain over capacity without a legal victim",
+                            overflow_conflicts.victim_candidates,
+                        ),
+                        conflicts=overflow_conflicts,
+                        termination_reason=RoutingTerminationReason.INFEASIBLE,
+                    )
+                if iteration >= maximum_iterations:
+                    returned_state = state.rip_up(
+                        selection.reroute_scope,
+                        problem.resource_graph,
+                    )
+                    return _finish_negotiation(
+                        problem,
+                        returned_state,
+                        ResultStatus.EXHAUSTED,
+                        route_states=total_route_states,
+                        routing_iterations=iteration,
+                        route_attempts=route_attempts,
+                        ripped_net_count=(
+                            ripped_net_count
+                            + len(
+                                frozenset(selection.reroute_scope)
+                                & state.routes_by_net.keys()
+                            )
+                        ),
+                        diagnostic=Diagnostic(
+                            "routing_iteration_exhausted",
+                            "routing resources remain over capacity at the iteration budget",
+                            overflow_conflicts.victim_candidates,
+                        ),
+                        conflicts=overflow_conflicts,
+                        termination_reason=RoutingTerminationReason.ITERATION_BUDGET,
+                    )
+                affected = frozenset(selection.reroute_scope)
+                ripped_net_count += len(affected & state.routes_by_net.keys())
+                state = state.with_history_penalty(
+                    _conflict_history_penalty(overflow_conflicts)
+                ).rip_up(affected, problem.resource_graph)
+                iteration += 1
+                reroute = _reroute_order(problem, selection.victim, affected)
+                pending = reroute + tuple(
+                    net for net in pending if net not in affected
+                )
             continue
+        attempt_conflicts = _attempt_conflicts(problem, net_name, attempt)
         if attempt.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
             return _finish_negotiation(
                 problem,
@@ -1376,10 +1613,21 @@ def solve_routing(
                 route_attempts=route_attempts,
                 ripped_net_count=ripped_net_count,
                 diagnostic=attempt.diagnostic,
+                conflicts=attempt_conflicts,
+                termination_reason=(
+                    RoutingTerminationReason.UNSUPPORTED
+                    if attempt.status is ResultStatus.UNSUPPORTED
+                    else RoutingTerminationReason.STATE_BUDGET
+                ),
             )
 
-        victim = state.select_victim(attempt.blocking_nets)
-        if victim is None:
+        selection = victim_policy.select(
+            attempt_conflicts,
+            routed_order=state.routed_order,
+            routed_nets=state.routes_by_net,
+            reroute_scope_by_net=reroute_scopes,
+        )
+        if selection is None:
             return _finish_negotiation(
                 problem,
                 state,
@@ -1389,6 +1637,8 @@ def solve_routing(
                 route_attempts=route_attempts,
                 ripped_net_count=ripped_net_count,
                 diagnostic=attempt.diagnostic,
+                conflicts=attempt_conflicts,
+                termination_reason=RoutingTerminationReason.INFEASIBLE,
             )
         if iteration >= maximum_iterations:
             return _finish_negotiation(
@@ -1405,20 +1655,24 @@ def solve_routing(
                         "routing could not resolve an attributed conflict within "
                         "the negotiation iteration budget"
                     ),
-                    (net_name, victim),
+                    (net_name, selection.victim),
                 ),
+                conflicts=attempt_conflicts,
+                termination_reason=RoutingTerminationReason.ITERATION_BUDGET,
             )
 
         affected = frozenset(
             problem.policy.reroute_scope(net_name)
-            + problem.policy.reroute_scope(victim)
+            + selection.reroute_scope
         )
         routed_victims = tuple(
             state.routes_by_net[net]
             for net in sorted(affected & state.routes_by_net.keys())
         )
         ripped_net_count += len(routed_victims)
-        history_penalty = _route_resource_demands(problem, routed_victims)
+        history_penalty = _conflict_history_penalty(attempt_conflicts)
+        if not history_penalty:
+            history_penalty = _route_resource_demands(problem, routed_victims)
         state = state.with_history_penalty(history_penalty).rip_up(
             affected,
             problem.resource_graph,

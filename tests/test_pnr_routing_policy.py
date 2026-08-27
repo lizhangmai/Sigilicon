@@ -70,7 +70,7 @@ def test_compiler_builds_one_explicit_transitive_routing_group_policy() -> None:
     assert peer.required_regions == (required_region,)
     assert peer.length_window == RoutingLengthWindow(30, 50)
     assert signal.cost == group.cost
-    assert signal.cost.congestion_weight == 0
+    assert signal.cost.congestion_weight == 1
     assert signal.cost.history_weight == 1
     assert independent.cost.congestion_weight == 1
     assert independent.cost.group_violation_weight == 0
@@ -89,5 +89,5 @@ def test_compiler_intersects_length_windows_without_router_type_checks() -> None
     assert window == RoutingLengthWindow(40, 60)
     assert window.feasible
     assert window.target_dbu is None
-    assert policy.for_net("signal").cost.congestion_weight == 0
+    assert policy.for_net("signal").cost.congestion_weight == 1
     assert policy.groups == ()

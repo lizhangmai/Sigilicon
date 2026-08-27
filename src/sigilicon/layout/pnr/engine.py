@@ -37,7 +37,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 17
+ENGINE_VERSION = 18
 ALGORITHM = "reference_physical_design_v1"
 
 
