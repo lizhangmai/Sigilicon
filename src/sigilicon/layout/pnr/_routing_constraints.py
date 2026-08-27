@@ -182,59 +182,6 @@ def validate_routing_constraint(
     return tuple(errors)
 
 
-def allowed_routing_layers(
-    job: PhysicalDesignJob,
-    net: str,
-) -> frozenset[str] | None:
-    constraints = tuple(
-        constraint
-        for constraint in job.routing_constraints
-        if isinstance(constraint, RoutingLayerConstraint) and constraint.net == net
-    )
-    if not constraints:
-        return None
-    allowed = set(constraints[0].allowed_layers)
-    for constraint in constraints[1:]:
-        allowed.intersection_update(constraint.allowed_layers)
-    return frozenset(allowed)
-
-
-def maximum_vias(job: PhysicalDesignJob, net: str) -> int | None:
-    limits = tuple(
-        constraint.maximum_vias
-        for constraint in job.routing_constraints
-        if isinstance(constraint, RoutingViaCountConstraint)
-        and constraint.net == net
-    )
-    return min(limits) if limits else None
-
-
-def has_coupled_routing_constraint(job: PhysicalDesignJob, net: str) -> bool:
-    return any(
-        (
-            isinstance(constraint, RoutingSkewConstraint)
-            and net in constraint.nets
-        )
-        or (
-            isinstance(constraint, RoutingShieldConstraint)
-            and net in (constraint.signal_net, constraint.shield_net)
-        )
-        for constraint in job.routing_constraints
-    )
-
-
-def required_routing_regions(
-    job: PhysicalDesignJob,
-    net: str,
-) -> tuple[tuple[LayerShape, ...], ...]:
-    return tuple(
-        constraint.required_regions
-        for constraint in job.routing_constraints
-        if isinstance(constraint, RoutingRegionConstraint)
-        and constraint.net == net
-    )
-
-
 def _route_length(route: NetRoute) -> int:
     return sum(
         abs(segment.end.x - segment.start.x)

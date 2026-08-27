@@ -10,11 +10,9 @@ from sigilicon.layout.pnr._geometry import (
     transformed_obstructions,
     transformed_pin_accesses,
 )
-from sigilicon.layout.pnr._routing_constraints import (
-    allowed_routing_layers,
-    has_coupled_routing_constraint,
-    maximum_vias,
-    required_routing_regions,
+from sigilicon.layout.pnr._routing_policy import (
+    RoutingPolicy,
+    compile_routing_policy,
 )
 from sigilicon.layout.pnr.model import (
     Axis,
@@ -1099,6 +1097,7 @@ def _solve_routing_once(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
     *,
+    policy: RoutingPolicy,
     net_order: tuple[str, ...] | None = None,
     maximum_route_states: int | None = None,
 ) -> RoutingSolveResult:
@@ -1147,13 +1146,14 @@ def _solve_routing_once(
         else job.request.maximum_route_states
     )
     for net in ordered_nets:
-        allowed_layers = allowed_routing_layers(job, net.name)
+        net_policy = policy.for_net(net.name)
+        allowed_layers = net_policy.allowed_layers
         net_contexts = {
             layer: context
             for layer, context in contexts.items()
             if allowed_layers is None or layer in allowed_layers
         }
-        via_limit = maximum_vias(job, net.name)
+        via_limit = net_policy.maximum_vias
         net_usable_vias = tuple(
             via
             for via in usable_vias
@@ -1195,11 +1195,7 @@ def _solve_routing_once(
                 entities=(net.name,),
                 route_states=route_states,
             )
-        required_regions = tuple(
-            region
-            for constraint_regions in required_routing_regions(job, net.name)
-            for region in constraint_regions
-        )
+        required_regions = net_policy.required_regions
         region_states = tuple(
             _access_states((region,), net_contexts, grid)
             for region in required_regions
@@ -1297,9 +1293,9 @@ def _solve_routing_once(
                 routing_regions=routing_regions,
                 raw_blockers=raw_blockers,
                 congestion_demands=(
-                    {}
-                    if has_coupled_routing_constraint(job, net.name)
-                    else _route_bin_demands(job, tuple(all_routes))
+                    _route_bin_demands(job, tuple(all_routes))
+                    if net_policy.congestion_cost_enabled
+                    else {}
                 ),
                 job=job,
                 remaining_states=route_state_limit - route_states,
@@ -1422,8 +1418,13 @@ def solve_routing(
     instance_placements: tuple[InstancePlacement, ...],
 ) -> RoutingSolveResult:
     net_names = tuple(sorted(net.name for net in job.design.nets))
+    policy = compile_routing_policy(job.routing_constraints, net_names)
     if len(net_names) < 2:
-        result = _solve_routing_once(job, instance_placements)
+        result = _solve_routing_once(
+            job,
+            instance_placements,
+            policy=policy,
+        )
         return _with_congestion_metrics(
             job,
             _with_iteration_metrics(
@@ -1462,6 +1463,7 @@ def solve_routing(
         result = _solve_routing_once(
             job,
             instance_placements,
+            policy=policy,
             net_order=net_order,
             maximum_route_states=remaining_states,
         )
