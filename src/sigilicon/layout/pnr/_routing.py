@@ -329,6 +329,19 @@ def _route_bin_demands(
     return demands
 
 
+def _weighted_congestion_demands(
+    domain: RoutingDomain,
+    routes: tuple[NetRoute, ...],
+    weight: int,
+) -> dict[tuple[str, int, int, str], int]:
+    if weight == 0:
+        return {}
+    return {
+        key: demand * weight
+        for key, demand in _route_bin_demands(domain, routes).items()
+    }
+
+
 def _congestion_metrics(
     domain: RoutingDomain,
     routes: tuple[NetRoute, ...],
@@ -880,10 +893,10 @@ def _solve_routing_once(
                 center_blockers=center_blockers,
                 vias=net_usable_vias,
                 raw_blockers=raw_blockers,
-                congestion_demands=(
-                    _route_bin_demands(domain, tuple(all_routes))
-                    if net_policy.congestion_cost_enabled
-                    else {}
+                congestion_demands=_weighted_congestion_demands(
+                    domain,
+                    tuple(all_routes),
+                    net_policy.cost.congestion_weight,
                 ),
                 domain=domain,
                 remaining_states=maximum_route_states - route_states,
@@ -1006,7 +1019,7 @@ def solve_routing(
     instance_placements: tuple[InstancePlacement, ...],
 ) -> RoutingSolveResult:
     problem = compile_routing_problem(job, instance_placements)
-    net_names = problem.net_names
+    net_names = problem.policy.route_order
     domain = problem.domain
     if len(net_names) < 2:
         result = _solve_routing_once(
