@@ -1,0 +1,203 @@
+"""Offline Adapter for testing physical-verification Flow semantics only."""
+
+from __future__ import annotations
+
+import hashlib
+
+from sigilicon.domain.physical_verification import (
+    CheckedLayoutIdentity,
+    CheckedSourceIdentity,
+    DrcEvidence,
+    LvsEvidence,
+    PhysicalVerificationStatus,
+    VerificationCompletion,
+    drc_evidence_from_json,
+    lvs_evidence_from_json,
+)
+from sigilicon.flow.model import (
+    ActionContext,
+    AdapterExecution,
+    CollectedActionResult,
+    FlowExecutionError,
+    ProducedArtifact,
+)
+from sigilicon.flow.physical_verification import (
+    DRC_ACTION,
+    DRC_EVIDENCE_KIND,
+    LVS_ACTION,
+    LVS_EVIDENCE_KIND,
+)
+
+
+_NON_CONCLUSIONS = {
+    PhysicalVerificationStatus.UNSUPPORTED,
+    PhysicalVerificationStatus.BACKEND_UNAVAILABLE,
+    PhysicalVerificationStatus.EXECUTION_FAILED,
+}
+
+
+def _sha256(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _qualifier(context: ActionContext, role: str, name: str) -> str:
+    value = context.input(role).qualifiers.get(name)
+    if not isinstance(value, str) or not value:
+        raise FlowExecutionError(
+            f"{role} artifact requires string qualifier {name!r}"
+        )
+    return value
+
+
+class OfflinePhysicalVerificationAdapter:
+    """Emit only non-conclusive evidence; never claim clean or violated layout."""
+
+    def _status(self, context: ActionContext) -> PhysicalVerificationStatus:
+        if set(context.action_config) - {"outcome"}:
+            raise FlowExecutionError(
+                "offline physical-verification config accepts only 'outcome'"
+            )
+        raw = context.action_config.get(
+            "outcome",
+            PhysicalVerificationStatus.BACKEND_UNAVAILABLE.value,
+        )
+        try:
+            status = PhysicalVerificationStatus(raw)
+        except ValueError as exc:
+            raise FlowExecutionError(
+                f"unknown offline physical-verification outcome: {raw!r}"
+            ) from exc
+        if status not in _NON_CONCLUSIONS:
+            raise FlowExecutionError(
+                "offline physical verification cannot claim clean or violated"
+            )
+        return status
+
+    def _layout(self, context: ActionContext) -> CheckedLayoutIdentity:
+        artifact = context.input("layout")
+        result_sha256 = artifact.qualifiers.get("result-sha256")
+        if result_sha256 is not None and not isinstance(result_sha256, str):
+            raise FlowExecutionError("layout result-sha256 qualifier must be a string")
+        return CheckedLayoutIdentity(
+            artifact_sha256=_sha256(artifact.path),
+            plan_sha256=_qualifier(context, "layout", "plan-sha256"),
+            result_sha256=result_sha256,
+            owner=_qualifier(context, "layout", "owner"),
+            name=_qualifier(context, "layout", "name"),
+        )
+
+    def _completion(
+        self,
+        status: PhysicalVerificationStatus,
+    ) -> VerificationCompletion:
+        return VerificationCompletion(
+            backend="sigilicon.offline-physical-verification",
+            executed=status is PhysicalVerificationStatus.EXECUTION_FAILED,
+            report_parsed=False,
+            exit_code=(
+                1 if status is PhysicalVerificationStatus.EXECUTION_FAILED else None
+            ),
+        )
+
+    def _evidence(self, context: ActionContext) -> DrcEvidence | LvsEvidence:
+        status = self._status(context)
+        completion = self._completion(status)
+        layout = self._layout(context)
+        if context.action.kind == DRC_ACTION:
+            return DrcEvidence(
+                status,
+                layout,
+                completion,
+                (),
+                "offline Adapter cannot produce a DRC conclusion",
+            )
+        if context.action.kind == LVS_ACTION:
+            source = context.input("source")
+            return LvsEvidence(
+                status,
+                layout,
+                CheckedSourceIdentity(
+                    artifact_sha256=_sha256(source.path),
+                    owner=_qualifier(context, "source", "owner"),
+                    name=_qualifier(context, "source", "name"),
+                ),
+                completion,
+                (),
+                "offline Adapter cannot produce an LVS conclusion",
+            )
+        raise FlowExecutionError(
+            f"offline physical verification cannot implement {context.action.kind!r}"
+        )
+
+    @staticmethod
+    def _facts(evidence: DrcEvidence | LvsEvidence) -> dict[str, object]:
+        prefix = "drc" if isinstance(evidence, DrcEvidence) else "lvs"
+        return {
+            f"{prefix}-status": evidence.status.value,
+            f"{prefix}-clean": evidence.clean,
+            f"{prefix}-completed": evidence.completion.proven,
+        }
+
+    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+        try:
+            self._evidence(context)
+        except (FlowExecutionError, ValueError, OSError) as exc:
+            return (str(exc),)
+        return ()
+
+    def prepare(self, context: ActionContext) -> None:
+        pass
+
+    def execute(self, context: ActionContext) -> AdapterExecution:
+        evidence = self._evidence(context)
+        context.output_path("evidence", "physical-verification-evidence.json").write_text(
+            evidence.canonical_json(),
+            encoding="utf-8",
+        )
+        return AdapterExecution.succeeded(details=self._facts(evidence))
+
+    def collect_result(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+    ) -> CollectedActionResult:
+        path = context.output_path(
+            "evidence",
+            "physical-verification-evidence.json",
+        )
+        try:
+            evidence = (
+                drc_evidence_from_json(path.read_text(encoding="utf-8"))
+                if context.action.kind == DRC_ACTION
+                else lvs_evidence_from_json(path.read_text(encoding="utf-8"))
+            )
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            raise FlowExecutionError(
+                f"invalid physical-verification evidence artifact: {exc}"
+            ) from exc
+        facts = self._facts(evidence)
+        if dict(execution.details) != facts:
+            raise FlowExecutionError(
+                "physical-verification execution details disagree with evidence"
+            )
+        return CollectedActionResult(
+            status="valid",
+            artifacts=(
+                ProducedArtifact(
+                    "evidence",
+                    DRC_EVIDENCE_KIND
+                    if isinstance(evidence, DrcEvidence)
+                    else LVS_EVIDENCE_KIND,
+                    path,
+                    qualifiers={
+                        "layout-sha256": evidence.layout.artifact_sha256,
+                        "plan-sha256": evidence.layout.plan_sha256,
+                        "status": evidence.status.value,
+                    },
+                ),
+            ),
+            facts=facts,
+        )
+
+
+__all__ = ["OfflinePhysicalVerificationAdapter"]

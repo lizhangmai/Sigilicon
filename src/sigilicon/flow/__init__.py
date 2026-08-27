@@ -64,6 +64,16 @@ from sigilicon.flow.physical_design import (
     REFERENCE_PNR_ADAPTER,
     register_physical_design_actions,
 )
+from sigilicon.flow.physical_verification import (
+    CANONICAL_SOURCE_NETLIST_KIND,
+    DRC_ACTION,
+    DRC_EVIDENCE_KIND,
+    LVS_ACTION,
+    LVS_EVIDENCE_KIND,
+    MATERIALIZED_LAYOUT_KIND,
+    OFFLINE_PHYSICAL_VERIFICATION_ADAPTER,
+    register_physical_verification_actions,
+)
 from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.synopsys import (
     SynopsysDCAdapter,
@@ -85,6 +95,9 @@ __all__ = [
     "ArtifactBinding",
     "ArtifactPort",
     "CollectedActionResult",
+    "CANONICAL_SOURCE_NETLIST_KIND",
+    "DRC_ACTION",
+    "DRC_EVIDENCE_KIND",
     "ExecutionEnvironment",
     "ExecutionProfile",
     "FlowCatalog",
@@ -99,7 +112,11 @@ __all__ = [
     "FlowSpec",
     "FlowTarget",
     "InputArtifact",
+    "LVS_ACTION",
+    "LVS_EVIDENCE_KIND",
+    "MATERIALIZED_LAYOUT_KIND",
     "NodeOutcome",
+    "OFFLINE_PHYSICAL_VERIFICATION_ADAPTER",
     "PHYSICAL_CLOSURE_EVIDENCE_KIND",
     "PHYSICAL_DESIGN_ACTION",
     "PHYSICAL_DESIGN_JOB_KIND",
@@ -134,6 +151,7 @@ __all__ = [
     "fake_profile",
     "register_standard_asic_actions",
     "register_physical_design_actions",
+    "register_physical_verification_actions",
     "SynopsysDCAdapter",
     "SynopsysFCAdapter",
     "SynopsysHSpiceAdapter",

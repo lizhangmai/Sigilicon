@@ -7,8 +7,8 @@ from enum import Enum
 from collections.abc import Mapping
 from typing import Iterable
 
+from sigilicon.canonical import canonical_from_json
 from sigilicon.layout.pnr._legality import placed_sized_rect
-from sigilicon.layout.pnr._serialization import canonical_from_json
 from sigilicon.layout.pnr.model import (
     LayerKind,
     PhysicalDesignJob,

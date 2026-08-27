@@ -54,6 +54,15 @@ infeasible, and independently invalid results carry explicit rejection evidence.
 Only a closed result is executable, and this Module never writes OA, DEF, GDS,
 or another persistent database.
 
+Physical verification crosses separate `physical-verification.drc` and
+`physical-verification.lvs` Actions. Their artifacts carry exact checked-layout
+and checked-source identities, backend completion, findings, and one of five
+typed conclusions: clean, violated, unsupported, backend unavailable, or
+execution failed. The existing report parsers project real tool results into
+this contract. A deliberately unregistered offline Adapter exercises Flow
+failure semantics but is structurally unable to emit clean or violated evidence.
+Exit code zero without a parsed authoritative report is not completion.
+
 ## PANDA influence
 
 The architecture borrows four public ideas from
@@ -209,7 +218,8 @@ and unrelated design styles using the same kernel without source edits.
 
 ### M5 — independent closure feedback
 
-- DRC/LVS result ingestion without weakening signoff authority;
+- typed DRC/LVS result ingestion with artifact identity and explicit backend
+  completion, without weakening signoff authority;
 - PEX and post-layout metric correlation;
 - iteration provenance connecting a result to its job and verification evidence;
 - deterministic regression and benchmark reporting.

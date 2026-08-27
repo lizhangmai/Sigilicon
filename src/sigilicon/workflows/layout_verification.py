@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,17 @@ from sigilicon.external_tools import (
     run_process_group,
 )
 from sigilicon.domain.netlist import render_canonical_cdl, resolve_netlist_hierarchy
+from sigilicon.domain.physical_verification import (
+    CheckedLayoutIdentity,
+    CheckedSourceIdentity,
+    DrcEvidence,
+    DrcViolation,
+    LvsEvidence,
+    LvsMismatch,
+    PhysicalVerificationEvidence,
+    PhysicalVerificationStatus,
+    VerificationCompletion,
+)
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
@@ -51,6 +63,7 @@ class LayoutVerificationResult:
     run_dir: Path
     manifest_path: Path
     details: Mapping[str, object]
+    evidence: PhysicalVerificationEvidence
 
 
 def _replace_exact(text: str, old: str, new: str, *, label: str) -> str:
@@ -237,6 +250,9 @@ def parse_drc_summary(
             + ", ".join(sorted(missing_waiver_layers))
         )
     waiver_layers_used = any(layers[name] != 0 for name in configured_waiver_layers)
+    used_waiver_layers = tuple(
+        sorted(name for name in configured_waiver_layers if layers[name] != 0)
+    )
     return {
         "passed": violation_count == 0 and not waiver_layers_used,
         "result_count": total,
@@ -245,6 +261,8 @@ def parse_drc_summary(
         "runtime_warnings": runtime_warnings,
         "violation_count": violation_count,
         "waiver_layers_used": waiver_layers_used,
+        "used_waiver_layers": used_waiver_layers,
+        "configuration_warning_rules": tuple(sorted(configured_warnings)),
         "nonzero_rulechecks": {
             name: count for name, count in sorted(counts.items()) if count
         },
@@ -261,6 +279,115 @@ def parse_lvs_report(text: str, *, primary: str) -> dict[str, object]:
         raise RuntimeError("Calibre LVS report has no top-cell comparison result")
     comparison = match.group(1)
     return {"passed": comparison == "CORRECT", "comparison_result": comparison}
+
+
+def drc_evidence_from_summary(
+    text: str,
+    *,
+    layout: CheckedLayoutIdentity,
+    backend: str,
+    exit_code: int,
+    configuration_warnings: Sequence[str] = (),
+    waiver_layers: Sequence[str] = (),
+) -> DrcEvidence:
+    """Project the canonical DRC parser result into typed completion evidence."""
+
+    parsed = parse_drc_summary(
+        text,
+        configuration_warnings=configuration_warnings,
+        waiver_layers=waiver_layers,
+    )
+    warnings = frozenset(configuration_warnings)
+    violations = tuple(
+        DrcViolation(str(rule), int(count))
+        for rule, count in parsed["nonzero_rulechecks"].items()
+        if rule not in warnings
+    ) + tuple(
+        DrcViolation(f"waiver-layer:{layer}", 1)
+        for layer in parsed["used_waiver_layers"]
+    )
+    status = (
+        PhysicalVerificationStatus.EXECUTION_FAILED
+        if exit_code != 0
+        else PhysicalVerificationStatus.CLEAN
+        if parsed["passed"]
+        else PhysicalVerificationStatus.VIOLATED
+    )
+    return DrcEvidence(
+        status=status,
+        layout=layout,
+        completion=VerificationCompletion(
+            backend=backend,
+            executed=True,
+            report_parsed=True,
+            exit_code=exit_code,
+        ),
+        violations=violations,
+        message=(
+            "DRC report is clean"
+            if status is PhysicalVerificationStatus.CLEAN
+            else "DRC report contains violations"
+            if status is PhysicalVerificationStatus.VIOLATED
+            else "DRC backend execution failed"
+        ),
+    )
+
+
+def lvs_evidence_from_report(
+    text: str,
+    *,
+    primary: str,
+    layout: CheckedLayoutIdentity,
+    source: CheckedSourceIdentity,
+    backend: str,
+    exit_code: int,
+) -> LvsEvidence:
+    """Project the canonical LVS parser result into typed completion evidence."""
+
+    parsed = parse_lvs_report(text, primary=primary)
+    status = (
+        PhysicalVerificationStatus.EXECUTION_FAILED
+        if exit_code != 0
+        else PhysicalVerificationStatus.CLEAN
+        if parsed["passed"]
+        else PhysicalVerificationStatus.VIOLATED
+    )
+    mismatches = (
+        ()
+        if parsed["passed"]
+        else (LvsMismatch(str(parsed["comparison_result"]), 1),)
+    )
+    return LvsEvidence(
+        status=status,
+        layout=layout,
+        source=source,
+        completion=VerificationCompletion(
+            backend=backend,
+            executed=True,
+            report_parsed=True,
+            exit_code=exit_code,
+        ),
+        mismatches=mismatches,
+        message=(
+            "LVS report is clean"
+            if status is PhysicalVerificationStatus.CLEAN
+            else "LVS report contains mismatches"
+            if status is PhysicalVerificationStatus.VIOLATED
+            else "LVS backend execution failed"
+        ),
+    )
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _find_executable(name: str, explicit: Path | None, candidates: Sequence[Path]) -> Path:
@@ -709,6 +836,7 @@ def verify_layout(
     completed_stages: list[str] = []
     operation = None
     outcome: dict[str, object] | None = None
+    typed_evidence: PhysicalVerificationEvidence | None = None
     library_path: Path | None = None
     deferred = None
     with (
@@ -770,10 +898,45 @@ def verify_layout(
             timeout=calibre_timeout,
         )
         completed_stages.append(f"calibre-{check}")
+        layout_identity = CheckedLayoutIdentity(
+            artifact_sha256=_sha256_file(gds),
+            plan_sha256=_sha256_bytes(plan.canonical_json().encode("utf-8")),
+            result_sha256=None,
+            owner=spec.library,
+            name=spec.cell,
+        )
+        if check == "drc":
+            typed_evidence = drc_evidence_from_summary(
+                read_nofollow_text(
+                    record.paths.role("outputs") / "drc-summary.rep"
+                ),
+                layout=layout_identity,
+                backend="xstream+calibre",
+                exit_code=0,
+                configuration_warnings=(
+                    spec.physical_verification.drc_configuration_warnings
+                ),
+                waiver_layers=spec.physical_verification.drc_waiver_layers,
+            )
+        else:
+            canonical_source = render_canonical_source_cdl(spec).encode("utf-8")
+            typed_evidence = lvs_evidence_from_report(
+                read_nofollow_text(record.paths.role("outputs") / "lvs-report"),
+                primary=spec.cell,
+                layout=layout_identity,
+                source=CheckedSourceIdentity(
+                    artifact_sha256=_sha256_bytes(canonical_source),
+                    owner=spec.library,
+                    name=spec.cell,
+                ),
+                backend="xstream+calibre",
+                exit_code=0,
+            )
         record.add_file("work", record.paths.role("work"), label="native verification work directory")
 
         def commit() -> Path:
             assert outcome is not None
+            assert typed_evidence is not None
             completion_payload = {
                 "library": spec.library,
                 "cell": spec.cell,
@@ -791,13 +954,24 @@ def verify_layout(
                 completion_payload,
                 label="physical verification completion proof",
             )
+            evidence_path = record.write_text(
+                "outputs",
+                ("typed-evidence.json",),
+                typed_evidence.canonical_json(),
+                label="typed physical verification evidence",
+            )
             return record.succeed(
-                completion_evidence=(completion,),
+                completion_evidence=(completion, evidence_path),
                 details=outcome,
             )
 
         deferred = operation.defer_commit(commit)
-    if deferred is None or not deferred.completed or outcome is None:
+    if (
+        deferred is None
+        or not deferred.completed
+        or outcome is None
+        or typed_evidence is None
+    ):
         raise RuntimeError("layout verification completed without committing its artifact")
     return LayoutVerificationResult(
         check=check,
@@ -806,6 +980,7 @@ def verify_layout(
         run_dir=record.paths.root,
         manifest_path=record.paths.manifest,
         details=outcome,
+        evidence=typed_evidence,
     )
 
 

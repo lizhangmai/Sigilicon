@@ -235,3 +235,15 @@ _Avoid_: Physical Design Result, OA write script, DEF file
 **Materialization Acceptance**:
 A typed decision that a Materialization Plan is executable, diagnostic-only, or rejected, with a reason preserving closure, budget, unsupported, infeasible, and invalid-solution semantics.
 _Avoid_: Success boolean, non-empty geometry
+
+**Checked Layout Identity**:
+The artifact, Materialization Plan, Physical Design Result, owner, and name identities of exactly the layout candidate examined by physical verification.
+_Avoid_: GDS filename, latest layout
+
+**Physical Verification Evidence**:
+A typed DRC or LVS conclusion tied to a Checked Layout Identity, a backend completion record, exact findings, and, for LVS, a checked source identity. Its mutually exclusive states are clean, violated, unsupported, backend unavailable, and execution failed.
+_Avoid_: Exit code, pass string, report path
+
+**Verification Completion**:
+Evidence that a named verification backend executed, whether its authoritative report was parsed, and its exit code. Only executed, parsed, zero-exit completion can support clean or violated Physical Verification Evidence.
+_Avoid_: Process success, output-file existence
