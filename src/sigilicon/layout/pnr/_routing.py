@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import heapq
 from itertools import islice, permutations
+from types import MappingProxyType
 
 from sigilicon.layout.pnr._geometry import (
     route_segment_shape,
@@ -63,6 +65,22 @@ class _LayerContext:
     gridless_regions: tuple[Rect, ...]
     horizontal_tracks: tuple[int, ...]
     vertical_tracks: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _RoutingDomain:
+    die: Rect
+    grid: int
+    congestion_bins_x: int
+    congestion_bins_y: int
+    route_rules: Mapping[str, tuple[int, int]]
+    cut_spacings: Mapping[str, tuple[int, int]]
+
+    def rules_for(self, layer: str) -> tuple[int, int] | None:
+        return self.route_rules.get(layer)
+
+    def cut_spacing_for(self, layer: str) -> tuple[int, int] | None:
+        return self.cut_spacings.get(layer)
 
 
 @dataclass(frozen=True)
@@ -143,24 +161,44 @@ def _endpoint_accesses(
     )
 
 
-def _route_rules(job: PhysicalDesignJob, layer: str) -> tuple[int, int] | None:
-    widths = tuple(
-        rule.width_dbu
-        for rule in job.technology.rules
-        if isinstance(rule, MinimumWidthRule) and rule.layer == layer
+def _compile_routing_domain(job: PhysicalDesignJob) -> _RoutingDomain:
+    widths: dict[str, list[int]] = {}
+    spacings: dict[str, list[int]] = {}
+    cut_spacings: dict[str, list[tuple[int, int]]] = {}
+    for rule in job.technology.rules:
+        if isinstance(rule, MinimumWidthRule):
+            widths.setdefault(rule.layer, []).append(rule.width_dbu)
+        elif isinstance(rule, MinimumSpacingRule):
+            spacings.setdefault(rule.layer, []).append(rule.spacing_dbu)
+        elif isinstance(rule, CutSpacingRule):
+            cut_spacings.setdefault(rule.cut_layer, []).append(
+                (rule.spacing_x_dbu, rule.spacing_y_dbu)
+            )
+    route_rules = {
+        layer: (max(layer_widths), max(spacings[layer]))
+        for layer, layer_widths in widths.items()
+        if layer in spacings
+    }
+    normalized_cut_spacings = {
+        layer: (
+            max(spacing[0] for spacing in layer_spacings),
+            max(spacing[1] for spacing in layer_spacings),
+        )
+        for layer, layer_spacings in cut_spacings.items()
+    }
+    return _RoutingDomain(
+        die=job.design.die,
+        grid=job.technology.manufacturing_grid_dbu,
+        congestion_bins_x=job.request.routing_congestion_bins_x,
+        congestion_bins_y=job.request.routing_congestion_bins_y,
+        route_rules=MappingProxyType(route_rules),
+        cut_spacings=MappingProxyType(normalized_cut_spacings),
     )
-    spacings = tuple(
-        rule.spacing_dbu
-        for rule in job.technology.rules
-        if isinstance(rule, MinimumSpacingRule) and rule.layer == layer
-    )
-    if not widths or not spacings:
-        return None
-    return max(widths), max(spacings)
 
 
 def _routing_contexts(
     job: PhysicalDesignJob,
+    domain: _RoutingDomain,
 ) -> tuple[dict[str, _LayerContext], dict[str, tuple[Rect, ...]], str | None]:
     resources = tuple(
         sorted(
@@ -181,7 +219,7 @@ def _routing_contexts(
     )
     if not resources:
         return {}, {}, "routing_resource_required"
-    grid = job.technology.manufacturing_grid_dbu
+    grid = domain.grid
     grouped: dict[
         str,
         list[GridlessRoutingResource | RoutingTrackPattern],
@@ -191,7 +229,7 @@ def _routing_contexts(
     contexts: dict[str, _LayerContext] = {}
     routing_regions: dict[str, tuple[Rect, ...]] = {}
     for layer, layer_resources in sorted(grouped.items()):
-        rules = _route_rules(job, layer)
+        rules = domain.rules_for(layer)
         if rules is None:
             return {}, {}, "routing_rule_capability_missing"
         width, spacing = rules
@@ -480,12 +518,12 @@ def _bin_index(value: int, low: int, span: int, bins: int) -> int:
 
 
 def _route_bin_demands(
-    job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     routes: tuple[NetRoute, ...],
 ) -> dict[tuple[str, int, int, str], int]:
-    die = job.design.die
-    bins_x = job.request.routing_congestion_bins_x
-    bins_y = job.request.routing_congestion_bins_y
+    die = domain.die
+    bins_x = domain.congestion_bins_x
+    bins_y = domain.congestion_bins_y
     demands: dict[tuple[str, int, int, str], int] = {}
     for route in routes:
         for segment in route.segments:
@@ -541,17 +579,17 @@ def _route_bin_demands(
 
 
 def _congestion_metrics(
-    job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     routes: tuple[NetRoute, ...],
 ) -> tuple[Metric, ...]:
-    demands = _route_bin_demands(job, routes)
-    die = job.design.die
-    bins_x = job.request.routing_congestion_bins_x
-    bins_y = job.request.routing_congestion_bins_y
+    demands = _route_bin_demands(domain, routes)
+    die = domain.die
+    bins_x = domain.congestion_bins_x
+    bins_y = domain.congestion_bins_y
     congested_bins: set[tuple[str, int, int]] = set()
     total_overflow = 0
     for (layer, x_bin, y_bin, direction), demand in demands.items():
-        rules = _route_rules(job, layer)
+        rules = domain.rules_for(layer)
         if rules is None:
             continue
         width, spacing = rules
@@ -656,20 +694,6 @@ def _state_blocked(
     )
 
 
-def _cut_spacing(job: PhysicalDesignJob, layer: str) -> tuple[int, int] | None:
-    rules = tuple(
-        rule
-        for rule in job.technology.rules
-        if isinstance(rule, CutSpacingRule) and rule.cut_layer == layer
-    )
-    if not rules:
-        return None
-    return (
-        max(rule.spacing_x_dbu for rule in rules),
-        max(rule.spacing_y_dbu for rule in rules),
-    )
-
-
 def _shape_enclosed(
     inner: Rect,
     outers: tuple[Rect, ...],
@@ -687,12 +711,13 @@ def _shape_enclosed(
 
 def _via_definition_supported(
     job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     via: ViaDefinition,
     contexts: dict[str, _LayerContext],
 ) -> bool:
     if via.lower_layer not in contexts or via.upper_layer not in contexts:
         return False
-    cut_spacing = _cut_spacing(job, via.cut_layer)
+    cut_spacing = domain.cut_spacing_for(via.cut_layer)
     if cut_spacing is None:
         return False
     if any(
@@ -752,12 +777,13 @@ def _via_definition_supported(
 
 def _usable_vias(
     job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     contexts: dict[str, _LayerContext],
 ) -> tuple[ViaDefinition, ...]:
     return tuple(
         via
         for via in sorted(job.technology.via_definitions, key=lambda item: item.name)
-        if _via_definition_supported(job, via, contexts)
+        if _via_definition_supported(job, domain, via, contexts)
     )
 
 
@@ -776,7 +802,7 @@ def _rectangles_too_close(
 
 
 def _via_allowed(
-    job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     via: ViaDefinition,
     origin: Point,
     contexts: dict[str, _LayerContext],
@@ -785,7 +811,7 @@ def _via_allowed(
 ) -> bool:
     translated_shapes = via_occurrence_shapes(via, origin)
     for layer, shape in translated_shapes:
-        if not job.design.die.contains(shape):
+        if not domain.die.contains(shape):
             return False
         if layer in contexts and not _rect_covered_by_regions(
             shape,
@@ -795,7 +821,7 @@ def _via_allowed(
         if layer in contexts:
             spacing_x = spacing_y = contexts[layer].spacing
         else:
-            cut_spacing = _cut_spacing(job, layer)
+            cut_spacing = domain.cut_spacing_for(layer)
             if cut_spacing is None:
                 return False
             spacing_x, spacing_y = cut_spacing
@@ -847,24 +873,24 @@ def _layers_connect(
 
 
 def _edge_congestion_demand(
-    job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     current: _RouteState,
     neighbor: _RouteState,
     via_name: str | None,
     demands: dict[tuple[str, int, int, str], int],
 ) -> int:
-    die = job.design.die
+    die = domain.die
     x_bin = _bin_index(
         neighbor.point.x,
         die.x_min,
         die.width,
-        job.request.routing_congestion_bins_x,
+        domain.congestion_bins_x,
     )
     y_bin = _bin_index(
         neighbor.point.y,
         die.y_min,
         die.height,
-        job.request.routing_congestion_bins_y,
+        domain.congestion_bins_y,
     )
     if via_name is None:
         direction = (
@@ -890,7 +916,7 @@ def _astar(
     routing_regions: dict[str, tuple[Rect, ...]],
     raw_blockers: dict[str, tuple[Rect, ...]],
     congestion_demands: dict[tuple[str, int, int, str], int],
-    job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     remaining_states: int,
 ) -> tuple[_RoutePath | None, int, bool]:
     def heuristic(state: _RouteState) -> int:
@@ -900,7 +926,7 @@ def _astar(
             for target in targets
         )
 
-    grid = job.technology.manufacturing_grid_dbu
+    grid = domain.grid
     adjacency = _via_adjacency(vias)
     frontier: list[tuple[int, int, str, int, int, _RouteState]] = []
     cost: dict[_RouteState, int] = {}
@@ -956,7 +982,7 @@ def _astar(
             allowed = via_cache.get(cache_key)
             if allowed is None:
                 allowed = _via_allowed(
-                    job,
+                    domain,
                     via,
                     current.point,
                     contexts,
@@ -968,7 +994,7 @@ def _astar(
                 neighbors.append((neighbor, via.name))
         for neighbor, via_name in neighbors:
             congestion_demand = _edge_congestion_demand(
-                job,
+                domain,
                 current,
                 neighbor,
                 via_name,
@@ -1059,13 +1085,14 @@ def _solve_routing_once(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
     *,
+    domain: _RoutingDomain,
     policy: RoutingPolicy,
     net_order: tuple[str, ...] | None = None,
     maximum_route_states: int | None = None,
 ) -> RoutingSolveResult:
     if not job.design.nets:
         return _result(ResultStatus.SUCCEEDED)
-    contexts, routing_regions, context_error = _routing_contexts(job)
+    contexts, routing_regions, context_error = _routing_contexts(job, domain)
     if context_error is not None:
         status = (
             ResultStatus.FAILED
@@ -1088,13 +1115,13 @@ def _solve_routing_once(
         for instance in job.design.instances
         for pin in masters[instance.master].pins
     )
-    usable_vias = _usable_vias(job, contexts)
+    usable_vias = _usable_vias(job, domain, contexts)
     via_definitions = {
         via.name: via for via in job.technology.via_definitions
     }
     all_routes: list[NetRoute] = []
     route_states = 0
-    grid = job.technology.manufacturing_grid_dbu
+    grid = domain.grid
 
     nets = {net.name: net for net in job.design.nets}
     ordered_nets = (
@@ -1255,11 +1282,11 @@ def _solve_routing_once(
                 routing_regions=routing_regions,
                 raw_blockers=raw_blockers,
                 congestion_demands=(
-                    _route_bin_demands(job, tuple(all_routes))
+                    _route_bin_demands(domain, tuple(all_routes))
                     if net_policy.congestion_cost_enabled
                     else {}
                 ),
-                job=job,
+                domain=domain,
                 remaining_states=route_state_limit - route_states,
             )
             route_states += states
@@ -1353,10 +1380,10 @@ def _with_iteration_metrics(
 
 
 def _with_congestion_metrics(
-    job: PhysicalDesignJob,
+    domain: _RoutingDomain,
     result: RoutingSolveResult,
 ) -> RoutingSolveResult:
-    congestion_metrics = _congestion_metrics(job, result.routes)
+    congestion_metrics = _congestion_metrics(domain, result.routes)
     names = frozenset(metric.name for metric in congestion_metrics)
     return RoutingSolveResult(
         status=result.status,
@@ -1380,15 +1407,17 @@ def solve_routing(
     instance_placements: tuple[InstancePlacement, ...],
 ) -> RoutingSolveResult:
     net_names = tuple(sorted(net.name for net in job.design.nets))
+    domain = _compile_routing_domain(job)
     policy = compile_routing_policy(job.routing_constraints, net_names)
     if len(net_names) < 2:
         result = _solve_routing_once(
             job,
             instance_placements,
+            domain=domain,
             policy=policy,
         )
         return _with_congestion_metrics(
-            job,
+            domain,
             _with_iteration_metrics(
                 result,
                 route_states=result.route_states,
@@ -1407,7 +1436,7 @@ def solve_routing(
         remaining_states = job.request.maximum_route_states - total_route_states
         if remaining_states <= 0:
             return _with_congestion_metrics(
-                job,
+                domain,
                 _with_iteration_metrics(
                     _result(
                         ResultStatus.EXHAUSTED,
@@ -1425,6 +1454,7 @@ def solve_routing(
         result = _solve_routing_once(
             job,
             instance_placements,
+            domain=domain,
             policy=policy,
             net_order=net_order,
             maximum_route_states=remaining_states,
@@ -1436,14 +1466,14 @@ def solve_routing(
             routing_iterations=iteration,
         )
         if result.status is ResultStatus.SUCCEEDED:
-            return _with_congestion_metrics(job, result)
+            return _with_congestion_metrics(domain, result)
         if result.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
-            return _with_congestion_metrics(job, result)
+            return _with_congestion_metrics(domain, result)
         last_result = result
 
     if len(candidate_orders) > order_limit:
         return _with_congestion_metrics(
-            job,
+            domain,
             _with_iteration_metrics(
                 _result(
                     ResultStatus.EXHAUSTED,
@@ -1459,4 +1489,4 @@ def solve_routing(
         )
     if last_result is None:
         raise RuntimeError("routing order search produced no result")
-    return _with_congestion_metrics(job, last_result)
+    return _with_congestion_metrics(domain, last_result)
