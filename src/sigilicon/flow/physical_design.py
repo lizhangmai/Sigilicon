@@ -23,6 +23,7 @@ MATERIALIZED_GDS_KIND = "layout.gds"
 MATERIALIZATION_RECEIPT_KIND = "evidence.materialization-receipt"
 REFERENCE_PNR_ADAPTER = "reference-pnr"
 REFERENCE_MATERIALIZATION_ADAPTER = "reference-materialization"
+OA_XSTREAM_MATERIALIZATION_ADAPTER = "oa-virtuoso-xstream-materialization"
 
 
 def register_physical_design_actions(registry: FlowRegistry) -> None:
@@ -62,6 +63,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
                     members=("layer-map", "master-layouts"),
                 ),
             ),
+            adapters=(OA_XSTREAM_MATERIALIZATION_ADAPTER,),
             adapter_extensible=True,
         )
     )
@@ -125,6 +127,7 @@ __all__ = [
     "MATERIALIZED_GDS_KIND",
     "MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND",
     "MATERIALIZATION_RECEIPT_KIND",
+    "OA_XSTREAM_MATERIALIZATION_ADAPTER",
     "REFERENCE_MATERIALIZATION_ADAPTER",
     "REFERENCE_PNR_ADAPTER",
     "register_physical_design_actions",

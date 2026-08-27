@@ -20,7 +20,6 @@ from sigilicon.artifacts import (
 )
 from sigilicon.canonical import canonical_sha256
 from sigilicon.external_tools import (
-    cadence_subprocess_env,
     owned_directory,
     owned_input_file,
     run_process_group,
@@ -66,6 +65,7 @@ from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
+from sigilicon.virtuoso.xstream import XStreamExportRequest, run_xstream_export
 from sigilicon.workflows.source_control import artifact_source_state
 
 
@@ -77,9 +77,6 @@ _ORIGINAL_LAYER = re.compile(
     r"^LAYER (?P<name>\S+) \.+ TOTAL Original Geometry Count = "
     r"(?P<count>\d+)\s+\(\d+\)$",
     re.MULTILINE,
-)
-_XSTREAM_COMPLETE = re.compile(
-    r"Translation completed\.\s+'0' error\(s\) and '0' warning\(s\) found\."
 )
 @dataclass(frozen=True)
 class LayoutVerificationResult:
@@ -606,17 +603,6 @@ def _prepend(environment: dict[str, str], name: str, value: Path) -> None:
     environment[name] = str(value) + (os.pathsep + existing if existing else "")
 
 
-def _xstream_environment(executable: Path) -> dict[str, str]:
-    environment = cadence_subprocess_env()
-    cds_home = Path(environment.get("CDSHOME", executable.parents[3]))
-    environment.setdefault("CDSHOME", str(cds_home))
-    environment.setdefault("CDSROOT", str(cds_home))
-    environment.setdefault("CDS_INST_DIR", str(cds_home))
-    environment.setdefault("OA_HOME", str(cds_home / "oa_v22.62.021"))
-    _prepend(environment, "LD_LIBRARY_PATH", cds_home / "tools.lnx86" / "lib")
-    return environment
-
-
 def _calibre_environment(executable: Path) -> dict[str, str]:
     environment = dict(os.environ)
     home = executable.parent.parent
@@ -644,101 +630,41 @@ def _run_xstream(
     if not cds_lib.is_file():
         raise FileNotFoundError(f"workspace cds.lib does not exist: {cds_lib}")
     work = record.paths.role("work")
-    with owned_directory(work) as owned_work, ExitStack() as resources:
-        owned_map = resources.enter_context(owned_input_file(staged_layermap))
-        owned_cds = resources.enter_context(
-            owned_input_file(cds_lib, require_single_link=False)
+    exported = run_xstream_export(
+        XStreamExportRequest(
+            executable=xstream,
+            library=spec.library,
+            cell=spec.cell,
+            view=spec.view,
+            technology_library=spec.pdk.oa.technology_library,
+            layer_map=staged_layermap,
+            cds_lib=cds_lib,
+            work_root=work,
+            timeout_seconds=timeout,
+            flatten_pcells=spec.layout_pdk.xstream_flatten_pcells,
+            suppressed_warnings=spec.layout_pdk.xstream_suppressed_warnings,
         )
-        command_parts = [
-            str(xstream),
-            "-library",
-            spec.library,
-            "-strmFile",
-            str(work / "layout.gds"),
-            "-runDir",
-            str(work),
-            "-topCell",
-            spec.cell,
-            "-view",
-            spec.view,
-            "-logFile",
-            str(work / "strmout.log"),
-            "-summaryFile",
-            str(work / "strmout.sum"),
-            "-techLib",
-            spec.pdk.oa.technology_library,
-            "-layerMap",
-            owned_map.child_named_path,
-        ]
-        if spec.layout_pdk.xstream_flatten_pcells:
-            command_parts.append("-flattenPcells")
-        if spec.layout_pdk.xstream_suppressed_warnings:
-            command_parts.extend(
-                [
-                    "-noWarn",
-                    " ".join(
-                        warning.removeprefix("XSTRM-")
-                        for warning in spec.layout_pdk.xstream_suppressed_warnings
-                    ),
-                ]
-            )
-        command_parts.extend(
-            [
-            "-flattenVias",
-            "-convertPin",
-            "geometryAndText",
-            "-cdslib",
-            owned_cds.child_named_path,
-            ]
-        )
-        command = tuple(command_parts)
-        record.write_json(
-            "inputs",
-            ("xstream-command.json",),
-            {"argv": list(command), "cwd": str(work), "timeout_seconds": timeout},
-            label="guarded XStream command",
-        )
-
-        def validate_spawn() -> None:
-            owned_map.require_visible()
-            owned_cds.require_visible()
-
-        completed = run_process_group(
-            command,
-            cwd=work,
-            env=_xstream_environment(xstream),
-            timeout=timeout,
-            before_spawn=validate_spawn,
-            pass_fds=(
-                owned_work.fd,
-                owned_map.fd,
-                owned_map.directory_fd,
-                owned_cds.fd,
-                owned_cds.directory_fd,
-            ),
-        )
-    record.write_text(
-        "logs", ("xstream-stdout.log",), completed.stdout, label="XStream stdout/stderr"
     )
-    for name, label in (
-        ("strmout.log", "XStream native log"),
-        ("strmout.sum", "XStream summary"),
+    record.write_json(
+        "inputs",
+        ("xstream-command.json",),
+        {
+            "argv": list(exported.command),
+            "cwd": str(work),
+            "timeout_seconds": timeout,
+        },
+        label="guarded XStream command",
+    )
+    record.write_text(
+        "logs", ("xstream-stdout.log",), exported.stdout, label="XStream stdout/stderr"
+    )
+    for path, name, label in (
+        (exported.native_log_path, "strmout.log", "XStream native log"),
+        (exported.summary_path, "strmout.sum", "XStream summary"),
     ):
-        candidate = work / name
-        if not candidate.is_file():
-            raise RuntimeError(f"XStream did not produce {name}")
-        record.copy_file("logs", (name,), candidate, label=label)
-    if completed.returncode != 0:
-        raise RuntimeError(f"XStream exited {completed.returncode}")
-    native_log = read_nofollow_text(work / "strmout.log", errors="replace")
-    summary = read_nofollow_text(work / "strmout.sum", errors="replace")
-    if _XSTREAM_COMPLETE.search(native_log + "\n" + summary + "\n" + completed.stdout) is None:
-        raise RuntimeError("XStream summary does not prove a zero-warning translation")
-    gds = work / "layout.gds"
-    if not gds.is_file() or gds.stat().st_size == 0:
-        raise RuntimeError("XStream did not produce a non-empty GDS")
+        record.copy_file("logs", (name,), path, label=label)
     staged_gds = record.copy_file(
-        "inputs", ("layout.gds",), gds, label="XStream layout export"
+        "inputs", ("layout.gds",), exported.gds_path, label="XStream layout export"
     )
     staged_gds.chmod(0o444)
     return staged_gds

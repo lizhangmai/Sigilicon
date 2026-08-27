@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import struct
 
@@ -25,6 +26,7 @@ from sigilicon.flow import (
     PHYSICAL_DESIGN_RESULT_KIND,
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
     PHYSICAL_MATERIALIZATION_PLAN_KIND,
+    OA_XSTREAM_MATERIALIZATION_ADAPTER,
     ProducedArtifact,
     ResolvedCapability,
     ResolvedPlatformAsset,
@@ -337,10 +339,19 @@ def _plan(engine: FlowEngine, *, outcome: str = "materialized"):
 
 
 def _environment(tmp_path: Path) -> ExecutionEnvironment:
-    layer_map = tmp_path / "layer.map"
-    master_layouts = tmp_path / "masters.lib"
-    layer_map.write_text("contract fixture\n", encoding="utf-8")
-    master_layouts.write_text("contract fixture\n", encoding="utf-8")
+    member_paths = {}
+    for role in (
+        "oa-target",
+        "technology-library",
+        "layer-map",
+        "master-layouts",
+        "via-map",
+        "xstream-layer-map",
+        "xstream-options",
+    ):
+        path = tmp_path / f"{role}.fixture"
+        path.write_text("contract fixture\n", encoding="utf-8")
+        member_paths[role] = path
     return ExecutionEnvironment(
         capabilities={
             "tool.layout-materializer": ResolvedCapability(
@@ -352,9 +363,9 @@ def _environment(tmp_path: Path) -> ExecutionEnvironment:
                 "physical-layout",
                 "platform.layout-view-set",
                 "benchmark.layout-assets",
-                (
-                    ResolvedPlatformAssetMember("layer-map", layer_map),
-                    ResolvedPlatformAssetMember("master-layouts", master_layouts),
+                tuple(
+                    ResolvedPlatformAssetMember(role, path)
+                    for role, path in member_paths.items()
                 ),
             ),
         ),
@@ -412,6 +423,29 @@ def test_materialization_action_emits_content_bound_receipt(tmp_path: Path) -> N
     assert layout.qualifiers["receipt-sha256"] == outcome.artifacts["receipt"].qualifiers[
         "receipt-sha256"
     ]
+    assert receipt.layout is not None
+    forged_run = replace(
+        receipt,
+        layout=replace(receipt.layout, run_id="f" * 32),
+    )
+    forged_producer = replace(
+        receipt,
+        layout=replace(receipt.layout, producer="another-node"),
+    )
+    for forged in (forged_run, forged_producer):
+        forged_validation = validate_materialization_receipt(
+            job,
+            result,
+            plan,
+            target,
+            forged,
+            layout_path=layout.path,
+            run_root=flow_result.run_root,
+        )
+        assert not forged_validation.valid
+        assert {item.code for item in forged_validation.issues} == {
+            "invalid_layout_content"
+        }
 
 
 @pytest.mark.parametrize(
@@ -482,12 +516,31 @@ def test_layout_content_contract_rejects_plan_json_empty_and_arbitrary_bytes() -
         validate_layout_content(b"not-a-layout", LayoutArtifactFormat.GDSII)
 
 
-def test_builtin_registry_does_not_install_a_fixture_materializer() -> None:
+def test_layout_content_contract_rejects_an_empty_gds_structure() -> None:
+    empty_structure = b"".join(
+        (
+            _record(0x00, 0x02, struct.pack(">H", 600)),
+            _record(0x01, 0x02, bytes(24)),
+            _record(0x02, 0x06, _gds_string("EMPTY")),
+            _record(0x03, 0x05, bytes(16)),
+            _record(0x05, 0x02, bytes(24)),
+            _record(0x06, 0x06, _gds_string("EMPTY")),
+            _record(0x07),
+            _record(0x04),
+        )
+    )
+
+    with pytest.raises(MaterializationExecutionError, match="no materialized geometry"):
+        validate_layout_content(empty_structure, LayoutArtifactFormat.GDSII)
+
+
+def test_builtin_registry_exposes_only_the_production_materializer() -> None:
     registry = builtin_workflow_registry()
     contract = registry.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION)
 
-    assert contract.adapters == ()
+    assert contract.adapters == (OA_XSTREAM_MATERIALIZATION_ADAPTER,)
     assert contract.adapter_extensible
     assert not registry.has_adapter(_MATERIALIZER)
+    assert not registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
     assert contract.output("layout").kind == MATERIALIZED_GDS_KIND
     assert contract.output("receipt").kind == MATERIALIZATION_RECEIPT_KIND

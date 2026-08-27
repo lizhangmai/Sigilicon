@@ -80,6 +80,37 @@ def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> Non
     assert platform.layout.lvs_deck.name == "lvs.deck"
 
 
+def test_layout_platform_resolves_atomic_oa_materialization_mapping(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    layout = tmp_path / "configs/platform/testpdk/layout.toml"
+    layout.write_text(
+        layout.read_text(encoding="utf-8")
+        + '''
+[oa_materialization.layers.routing1]
+layer = "M1"
+drawing_purpose = "drawing"
+pin_purpose = "pin"
+blockage_purpose = "drawing"
+
+[oa_materialization.vias]
+routing1_routing2 = "M2_M1c"
+''',
+        encoding="utf-8",
+    )
+
+    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+
+    assert platform.layout is not None
+    mapping = platform.layout.oa_materialization
+    assert mapping is not None
+    assert mapping.layers["routing1"].layer == "M1"
+    assert mapping.layers["routing1"].pin_purpose == "pin"
+    assert mapping.vias == {"routing1_routing2": "M2_M1c"}
+
+
 def test_platform_layout_rejects_owner_specific_technology_roles(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)

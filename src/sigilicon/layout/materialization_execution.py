@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
+import os
 from pathlib import Path
 import re
 import stat
@@ -29,6 +30,7 @@ from sigilicon.layout.pnr.serialization import canonical_json, canonical_sha256
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
 _LAYOUT_KIND_BY_FORMAT = {"gdsii": "layout.gds"}
+_CANONICAL_GDS_DATE = (2000, 1, 1, 0, 0, 0) * 2
 
 
 class MaterializationExecutionError(ValueError):
@@ -368,6 +370,11 @@ def _gdsii_records(payload: bytes) -> tuple[int, ...]:
         raise MaterializationExecutionError(
             "GDSII layout lacks the required library and structure records"
         )
+    element_records = {0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x15, 0x2D}
+    if element_records.isdisjoint(record_types):
+        raise MaterializationExecutionError(
+            "GDSII layout contains no materialized geometry elements"
+        )
     return tuple(record_types)
 
 
@@ -387,6 +394,31 @@ def validate_layout_content(
     raise MaterializationExecutionError(
         f"unsupported materialization layout format: {layout_format!r}"
     )
+
+
+def canonicalize_gdsii_timestamps(payload: bytes) -> bytes:
+    """Remove backend wall-clock variance without changing GDSII geometry."""
+
+    validate_layout_content(payload, LayoutArtifactFormat.GDSII)
+    canonical_date = b"".join(
+        value.to_bytes(2, "big", signed=False) for value in _CANONICAL_GDS_DATE
+    )
+    result = bytearray(payload)
+    offset = 0
+    while offset < len(result):
+        length = int.from_bytes(result[offset : offset + 2], "big")
+        record_type = result[offset + 2]
+        data_type = result[offset + 3]
+        if record_type in {0x01, 0x05}:
+            if length != 28 or data_type != 0x02:
+                raise MaterializationExecutionError(
+                    "GDSII timestamp record has an invalid shape"
+                )
+            result[offset + 4 : offset + length] = canonical_date
+        offset += length
+    canonical = bytes(result)
+    validate_layout_content(canonical, LayoutArtifactFormat.GDSII)
+    return canonical
 
 
 def identify_managed_layout(
@@ -417,12 +449,62 @@ def identify_managed_layout(
         raise MaterializationExecutionError(
             "materialized layout escaped its managed Flow Run"
         )
+    if root.name != run_id:
+        raise MaterializationExecutionError(
+            "managed layout run identity disagrees with its Flow Run root"
+        )
+    relative = resolved.relative_to(root)
+    if (
+        len(relative.parts) != 4
+        or relative.parts[:3] != ("outputs", producer, role)
+    ):
+        raise MaterializationExecutionError(
+            "managed layout producer or role disagrees with its output path"
+        )
+    descriptor: int | None = None
     try:
-        payload = resolved.read_bytes()
+        descriptor = os.open(
+            candidate,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise MaterializationExecutionError(
+                "materialized layout identity changed before it was read"
+            )
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        visible = candidate.lstat()
+        identity = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+        )
+        if identity != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or (visible.st_dev, visible.st_ino) != identity[:2]:
+            raise MaterializationExecutionError(
+                "materialized layout identity changed while it was read"
+            )
+        payload = b"".join(chunks)
+    except MaterializationExecutionError:
+        raise
     except OSError as exc:
         raise MaterializationExecutionError(
             f"cannot read materialized layout: {exc}"
         ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     validate_layout_content(payload, target.format)
     return ManagedLayoutArtifact(
         kind=_LAYOUT_KIND_BY_FORMAT[target.format.value],
@@ -432,7 +514,7 @@ def identify_managed_layout(
         run_id=run_id,
         producer=producer,
         role=role,
-        relative_path=resolved.relative_to(root).as_posix(),
+        relative_path=relative.as_posix(),
     )
 
 
@@ -616,6 +698,7 @@ __all__ = [
     "MaterializationExecutionStatus",
     "MaterializationExecutionTarget",
     "MaterializationReceipt",
+    "canonicalize_gdsii_timestamps",
     "identify_managed_layout",
     "issue_materialization_receipt",
     "materialization_execution_target_from_mapping",

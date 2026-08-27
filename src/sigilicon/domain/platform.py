@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import read_toml, require_config_header
@@ -69,6 +70,24 @@ class OaPlatformConfig:
 
 
 @dataclass(frozen=True)
+class OaLayerPurposeMapping:
+    """One logical physical layer's explicit OA layer-purpose mapping."""
+
+    layer: str
+    drawing_purpose: str
+    pin_purpose: str
+    blockage_purpose: str
+
+
+@dataclass(frozen=True)
+class OaMaterializationMapping:
+    """Atomic logical-layer and via mapping owned by a platform contract."""
+
+    layers: Mapping[str, OaLayerPurposeMapping]
+    vias: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class LayoutPdkConfig:
     """Resolved layout and physical-verification platform capability."""
 
@@ -83,6 +102,7 @@ class LayoutPdkConfig:
     xstream_suppressed_warnings: tuple[str, ...] = ()
     xstream_bin: Path | None = None
     calibre_bin: Path | None = None
+    oa_materialization: OaMaterializationMapping | None = None
 
 
 @dataclass(frozen=True)
@@ -284,6 +304,87 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
     )
 
 
+def _parse_oa_materialization(
+    value: object,
+) -> OaMaterializationMapping | None:
+    if value is None:
+        return None
+    raw = _table(value, "layout.oa_materialization")
+    _reject_unknown(raw, {"layers", "vias"}, "layout.oa_materialization")
+    layers_raw = _table(raw.get("layers"), "layout.oa_materialization.layers")
+    layers: dict[str, OaLayerPurposeMapping] = {}
+    for logical_value, item_value in layers_raw.items():
+        logical = _text(logical_value, "layout.oa_materialization.layers key")
+        item = _table(
+            item_value,
+            f"layout.oa_materialization.layers.{logical}",
+        )
+        _reject_unknown(
+            item,
+            {
+                "layer",
+                "drawing_purpose",
+                "pin_purpose",
+                "blockage_purpose",
+            },
+            f"layout.oa_materialization.layers.{logical}",
+        )
+        layers[logical] = OaLayerPurposeMapping(
+            layer=_text(item.get("layer"), f"layers.{logical}.layer"),
+            drawing_purpose=_text(
+                item.get("drawing_purpose"),
+                f"layers.{logical}.drawing_purpose",
+            ),
+            pin_purpose=_text(
+                item.get("pin_purpose"),
+                f"layers.{logical}.pin_purpose",
+            ),
+            blockage_purpose=_text(
+                item.get("blockage_purpose"),
+                f"layers.{logical}.blockage_purpose",
+            ),
+        )
+    vias_raw = _table(raw.get("vias"), "layout.oa_materialization.vias")
+    vias = {
+        _text(logical_value, "layout.oa_materialization.vias key"): _identifier(
+            via_value,
+            f"layout.oa_materialization.vias.{logical_value}",
+        )
+        for logical_value, via_value in vias_raw.items()
+    }
+    return OaMaterializationMapping(
+        layers=MappingProxyType(layers),
+        vias=MappingProxyType(vias),
+    )
+
+
+def load_oa_materialization_mapping(
+    path: Path,
+) -> tuple[int, OaMaterializationMapping]:
+    """Load one atomic platform layout contract for an OA backend."""
+
+    contract_path = Path(path).resolve()
+    raw = read_toml(contract_path)
+    require_config_header(
+        raw,
+        contract_path,
+        contract_kind="platform-layout",
+        path_scope="platform",
+    )
+    _reject_unknown(
+        raw,
+        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization"},
+        "platform layout contract",
+    )
+    dbu = raw.get("dbu_per_micron")
+    if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
+        raise ValueError("layout.dbu_per_micron must be a positive integer")
+    mapping = _parse_oa_materialization(raw.get("oa_materialization"))
+    if mapping is None:
+        raise ValueError("platform layout contract omits oa_materialization")
+    return dbu, mapping
+
+
 def _load_layout(
     layout_path: Path,
     layout_raw: Mapping[str, Any],
@@ -294,7 +395,7 @@ def _load_layout(
 ) -> LayoutPdkConfig:
     _reject_unknown(
         layout_raw,
-        _HEADER_FIELDS | {"dbu_per_micron"},
+        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization"},
         "platform layout contract",
     )
     _reject_unknown(
@@ -315,6 +416,9 @@ def _load_layout(
     dbu = layout_raw.get("dbu_per_micron")
     if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
         raise ValueError("layout.dbu_per_micron must be a positive integer")
+    oa_materialization = _parse_oa_materialization(
+        layout_raw.get("oa_materialization")
+    )
     xstream_flatten = verification_raw.get("xstream_flatten_pcells", True)
     if not isinstance(xstream_flatten, bool):
         raise ValueError("verification.xstream_flatten_pcells must be boolean")
@@ -352,6 +456,7 @@ def _load_layout(
         calibre_bin=_optional_executable(
             asset_root, verification_raw.get("calibre_bin"), "calibre_bin"
         ),
+        oa_materialization=oa_materialization,
     )
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sigilicon.flow.builtin import builtin_registry
 from sigilicon.flow.physical_design import (
+    OA_XSTREAM_MATERIALIZATION_ADAPTER,
     REFERENCE_MATERIALIZATION_ADAPTER,
     REFERENCE_PNR_ADAPTER,
 )
@@ -20,6 +21,7 @@ from sigilicon.workflows.physical_design import (
 from sigilicon.workflows.layout_verification import (
     CalibrePhysicalVerificationAdapter,
 )
+from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
 
 
 def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
@@ -36,6 +38,11 @@ def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
         CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
         CalibrePhysicalVerificationAdapter(),
     )
+    if owner_root is not None:
+        registry.register_adapter(
+            OA_XSTREAM_MATERIALIZATION_ADAPTER,
+            OaXStreamMaterializationAdapter(owner_root),
+        )
     return registry
 
 
