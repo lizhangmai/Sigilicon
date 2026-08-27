@@ -603,7 +603,7 @@ def test_shield_constraint_accepts_continuous_parallel_coverage() -> None:
     assert split_outcome[0].status is ConstraintStatus.SATISFIED
 
 
-def test_shield_constraint_rejects_incomplete_parallel_coverage() -> None:
+def test_shield_constraint_actively_routes_from_remote_shield_terminals() -> None:
     job = _parallel_net_job(congestion_bins_y=8)
     ports = tuple(
         (
@@ -625,24 +625,75 @@ def test_shield_constraint_rejects_incomplete_parallel_coverage() -> None:
         )
         for port in job.design.ports
     )
-    result = run(
-        replace(
-            job,
-            design=replace(job.design, ports=ports),
-            routing_constraints=(
-                RoutingShieldConstraint(
-                    "signal-shield",
-                    "signal",
-                    "signal-b",
-                    maximum_spacing_dbu=2,
-                ),
+    unconstrained_job = replace(job, design=replace(job.design, ports=ports))
+    constrained_job = replace(
+        unconstrained_job,
+        routing_constraints=(
+            RoutingShieldConstraint(
+                "signal-shield",
+                "signal",
+                "signal-b",
+                maximum_spacing_dbu=2,
             ),
-        )
+        ),
+    )
+    unconstrained = run(unconstrained_job)
+    independent_outcome = evaluate_routing_constraints(
+        constrained_job,
+        unconstrained.routes,
+    )
+    result = run(constrained_job)
+
+    assert independent_outcome[0].status is ConstraintStatus.VIOLATED
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert any(
+        segment.start.y == segment.end.y == 10
+        for segment in result.routes[1].segments
     )
 
-    assert result.status is ResultStatus.FAILED
-    assert result.routes == ()
-    assert result.constraint_outcomes[-1].status is ConstraintStatus.VIOLATED
+
+def test_router_constructs_continuous_multilayer_shield_with_via() -> None:
+    job = _multilayer_job()
+    design = replace(
+        job.design,
+        ports=job.design.ports
+        + (
+            PhysicalPort("source-b", (PinAccess("m1", Rect(2, 11, 4, 13)),)),
+            PhysicalPort("sink-b", (PinAccess("m2", Rect(36, 11, 38, 13)),)),
+        ),
+        nets=job.design.nets
+        + (
+            PhysicalNet(
+                "signal-b",
+                (PinReference("source-b"), PinReference("sink-b")),
+            ),
+        ),
+    )
+    constrained = replace(
+        job,
+        design=design,
+        routing_constraints=(
+            RoutingShieldConstraint(
+                "multilayer-shield",
+                "signal",
+                "signal-b",
+                maximum_spacing_dbu=4,
+            ),
+        ),
+    )
+
+    result = run(constrained)
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert tuple(len(route.vias) for route in result.routes) == (1, 1)
+    independently_rejected = evaluate_routing_constraints(
+        constrained,
+        (result.routes[0], replace(result.routes[1], vias=())),
+    )
+    assert independently_rejected[0].status is ConstraintStatus.VIOLATED
+    assert "vias=0" in independently_rejected[0].message
 
 
 def test_shield_constraint_requires_distinct_known_nets() -> None:
@@ -715,7 +766,49 @@ def test_routing_region_constraint_adds_required_geometry_to_the_route_tree() ->
         abs(segment.end.x - segment.start.x)
         + abs(segment.end.y - segment.start.y)
         for segment in result.routes[0].segments
-    ) == 48
+    ) == 62
+
+
+def test_routing_regions_form_an_ordered_primary_topology() -> None:
+    job = _job()
+    regions = (
+        LayerShape("route", Rect(9, 29, 11, 31)),
+        LayerShape("route", Rect(29, 9, 31, 11)),
+    )
+    ordered_job = replace(
+        job,
+        routing_constraints=(
+            RoutingRegionConstraint(
+                "ordered-channel",
+                "signal",
+                regions,
+            ),
+        ),
+    )
+    result = run(ordered_job)
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in result.routes[0].segments
+    ) == 82
+    reverse_outcome = evaluate_routing_constraints(
+        replace(
+            ordered_job,
+            routing_constraints=(
+                RoutingRegionConstraint(
+                    "reverse-channel",
+                    "signal",
+                    tuple(reversed(regions)),
+                ),
+            ),
+        ),
+        result.routes,
+    )
+    assert reverse_outcome[0].status is ConstraintStatus.VIOLATED
+    assert "in order" in reverse_outcome[0].message
 
 
 def test_routing_region_constraint_must_be_inside_the_die() -> None:

@@ -129,7 +129,7 @@ A Routing Constraint limiting one net's conductive path to an explicit set of ro
 _Avoid_: Preferred layer guess
 
 **Routing Region Constraint**:
-A Routing Constraint requiring one net's exact conductor or via geometry to intersect every named layer region, which the solver treats as topology terminals.
+A Routing Constraint requiring the primary path between a net's first two terminals to visit every named layer region in declared order.
 _Avoid_: Placement fence, vague waypoint hint
 
 **Routing Length Constraint**:
@@ -145,7 +145,7 @@ A Routing Constraint placing an inclusive upper bound on the difference between 
 _Avoid_: Clock uncertainty, estimated HPWL difference
 
 **Routing Shield Constraint**:
-A Routing Constraint requiring every selected signal Route Segment to have continuous, same-layer, parallel projection coverage from a named shield net within a maximum edge-to-edge spacing.
+A Routing Constraint requiring every selected signal Route Segment and layer transition to have continuous nearby coverage from a connected named shield route, including a corresponding shield via.
 _Avoid_: Net-name convention, proximity hint
 
 **Routing Solution Check**:

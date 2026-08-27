@@ -37,7 +37,7 @@ from sigilicon.layout.pnr.model import (
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
-ENGINE_VERSION = 16
+ENGINE_VERSION = 17
 ALGORITHM = "reference_physical_design_v1"
 
 
@@ -409,7 +409,11 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                 placement.placements,
                 routing.routes,
             )
-            routing_outcomes = evaluate_routing_constraints(job, routing.routes)
+            routing_outcomes = evaluate_routing_constraints(
+                job,
+                routing.routes,
+                placement.placements,
+            )
             violated_routing_constraints = tuple(
                 outcome
                 for outcome in routing_outcomes
@@ -448,7 +452,11 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             constraint_outcomes=(
                 placement.constraint_outcomes
                 + (
-                    evaluate_routing_constraints(job, routing.routes)
+                    evaluate_routing_constraints(
+                        job,
+                        routing.routes,
+                        placement.placements,
+                    )
                     if routing.status is ResultStatus.SUCCEEDED
                     else _routing_constraints_not_evaluated(job)
                 )

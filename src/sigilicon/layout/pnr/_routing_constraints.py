@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from sigilicon.layout.pnr._geometry import (
     route_segment_shape,
+    transformed_pin_accesses,
     via_occurrence_shapes,
 )
 from sigilicon.layout.pnr.model import (
     ConstraintOutcome,
     ConstraintStatus,
+    InstancePlacement,
     LayerShape,
     NetRoute,
     PhysicalDesignJob,
+    PinReference,
+    Placement,
+    Point,
     Rect,
     RouteSegment,
+    RouteVia,
     RoutingConstraint,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
@@ -21,6 +27,7 @@ from sigilicon.layout.pnr.model import (
     RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingViaCountConstraint,
+    ViaDefinition,
 )
 
 
@@ -294,12 +301,190 @@ def _segment_is_shielded(
     return covered_to >= signal_high
 
 
+def _rectangle_edge_spacing(first: Rect, second: Rect) -> int:
+    x_spacing = max(
+        0,
+        first.x_min - second.x_max,
+        second.x_min - first.x_max,
+    )
+    y_spacing = max(
+        0,
+        first.y_min - second.y_max,
+        second.y_min - first.y_max,
+    )
+    return max(x_spacing, y_spacing)
+
+
+def _via_is_shielded(
+    signal_via: RouteVia,
+    shield_vias: tuple[RouteVia, ...],
+    via_definitions: dict[str, ViaDefinition],
+    maximum_spacing: int,
+) -> bool:
+    signal_definition = via_definitions.get(signal_via.via_definition)
+    if signal_definition is None:
+        return False
+    signal_cuts = tuple(
+        shape
+        for layer, shape in via_occurrence_shapes(
+            signal_definition,
+            signal_via.origin,
+        )
+        if layer == signal_definition.cut_layer
+    )
+    for shield_via in shield_vias:
+        shield_definition = via_definitions.get(shield_via.via_definition)
+        if shield_definition is None or (
+            shield_definition.lower_layer,
+            shield_definition.upper_layer,
+        ) != (
+            signal_definition.lower_layer,
+            signal_definition.upper_layer,
+        ):
+            continue
+        shield_cuts = tuple(
+            shape
+            for layer, shape in via_occurrence_shapes(
+                shield_definition,
+                shield_via.origin,
+            )
+            if layer == shield_definition.cut_layer
+        )
+        if any(
+            _rectangle_edge_spacing(signal_cut, shield_cut) <= maximum_spacing
+            for signal_cut in signal_cuts
+            for shield_cut in shield_cuts
+        ):
+            return True
+    return False
+
+
+def _terminal_accesses(
+    job: PhysicalDesignJob,
+    reference: PinReference,
+    placements: dict[str, Placement],
+) -> tuple[LayerShape, ...] | None:
+    if reference.instance is None:
+        port = next(port for port in job.design.ports if port.name == reference.pin)
+        return tuple(LayerShape(access.layer, access.shape) for access in port.accesses)
+    placement = placements.get(reference.instance)
+    if placement is None:
+        return None
+    instances = {instance.name: instance for instance in job.design.instances}
+    masters = {master.name: master for master in job.design.masters}
+    instance = instances[reference.instance]
+    return transformed_pin_accesses(
+        masters[instance.master],
+        reference.pin,
+        placement,
+    )
+
+
+def _point_in_shape(point: Point, shape: Rect) -> bool:
+    return (
+        shape.x_min <= point.x <= shape.x_max
+        and shape.y_min <= point.y <= shape.y_max
+    )
+
+
+def _route_graph(
+    job: PhysicalDesignJob,
+    route: NetRoute,
+) -> dict[tuple[str, Point], set[tuple[str, Point]]]:
+    grid = job.technology.manufacturing_grid_dbu
+    graph: dict[tuple[str, Point], set[tuple[str, Point]]] = {}
+
+    def connect(first: tuple[str, Point], second: tuple[str, Point]) -> None:
+        graph.setdefault(first, set()).add(second)
+        graph.setdefault(second, set()).add(first)
+
+    for segment in route.segments:
+        dx = (segment.end.x > segment.start.x) - (
+            segment.end.x < segment.start.x
+        )
+        dy = (segment.end.y > segment.start.y) - (
+            segment.end.y < segment.start.y
+        )
+        current = segment.start
+        graph.setdefault((segment.layer, current), set())
+        while current != segment.end:
+            neighbor = Point(current.x + dx * grid, current.y + dy * grid)
+            connect((segment.layer, current), (segment.layer, neighbor))
+            current = neighbor
+    vias = {via.name: via for via in job.technology.via_definitions}
+    for route_via in route.vias:
+        via = vias.get(route_via.via_definition)
+        if via is not None:
+            connect(
+                (via.lower_layer, route_via.origin),
+                (via.upper_layer, route_via.origin),
+            )
+    return graph
+
+
+def _regions_are_ordered(
+    job: PhysicalDesignJob,
+    route: NetRoute,
+    required_regions: tuple[LayerShape, ...],
+    placements: dict[str, Placement],
+) -> bool | None:
+    net = next(net for net in job.design.nets if net.name == route.net)
+    source_accesses = _terminal_accesses(job, net.pins[0], placements)
+    sink_accesses = _terminal_accesses(job, net.pins[1], placements)
+    if source_accesses is None or sink_accesses is None:
+        return None
+    graph = _route_graph(job, route)
+    sources = tuple(
+        node
+        for node in graph
+        for access in source_accesses
+        if node[0] == access.layer and _point_in_shape(node[1], access.shape)
+    )
+    sinks = frozenset(
+        node
+        for node in graph
+        for access in sink_accesses
+        if node[0] == access.layer and _point_in_shape(node[1], access.shape)
+    )
+    frontier = list(sources)
+    distances = {source: 0 for source in sources}
+    while frontier:
+        node = frontier.pop(0)
+        for neighbor in sorted(
+            graph.get(node, ()),
+            key=lambda item: (item[0], item[1].y, item[1].x),
+        ):
+            if neighbor not in distances:
+                distances[neighbor] = distances[node] + 1
+                frontier.append(neighbor)
+    sink_distances = tuple(distances[sink] for sink in sinks if sink in distances)
+    if not sink_distances:
+        return False
+    region_distances: list[int] = []
+    for region in required_regions:
+        hits = tuple(
+            distance
+            for node, distance in distances.items()
+            if node[0] == region.layer and _point_in_shape(node[1], region.shape)
+        )
+        if not hits:
+            return False
+        region_distances.append(min(hits))
+    return region_distances == sorted(region_distances) and (
+        not region_distances or region_distances[-1] <= min(sink_distances)
+    )
+
+
 def evaluate_routing_constraints(
     job: PhysicalDesignJob,
     routes: tuple[NetRoute, ...],
+    instance_placements: tuple[InstancePlacement, ...] = (),
 ) -> tuple[ConstraintOutcome, ...]:
     route_by_net = {route.net: route for route in routes}
     vias = {via.name: via for via in job.technology.via_definitions}
+    placements = {
+        item.instance: item.placement for item in instance_placements
+    }
     outcomes: list[ConstraintOutcome] = []
     for constraint in job.routing_constraints:
         if isinstance(constraint, RoutingShieldConstraint):
@@ -328,7 +513,28 @@ def evaluate_routing_constraints(
                     constraint.maximum_spacing_dbu,
                 )
             )
-            satisfied = not unshielded
+            signal_vias = tuple(
+                route_via
+                for route_via in signal_route.vias
+                if route_via.via_definition in vias
+                for via in (vias[route_via.via_definition],)
+                if not constraint.layers
+                or (
+                    via.lower_layer in constraint.layers
+                    and via.upper_layer in constraint.layers
+                )
+            )
+            unshielded_vias = tuple(
+                index
+                for index, route_via in enumerate(signal_vias)
+                if not _via_is_shielded(
+                    route_via,
+                    shield_route.vias,
+                    vias,
+                    constraint.maximum_spacing_dbu,
+                )
+            )
+            satisfied = not unshielded and not unshielded_vias
             outcomes.append(
                 ConstraintOutcome(
                     constraint.name,
@@ -340,9 +546,17 @@ def evaluate_routing_constraints(
                     (
                         "routing shield constraint is satisfied"
                         if satisfied
-                        else (
-                            "signal route has unshielded segment indices: "
-                            + ", ".join(str(index) for index in unshielded)
+                        else "signal route has unshielded geometry: "
+                        + (
+                            "segments=" + ",".join(map(str, unshielded))
+                            if unshielded
+                            else ""
+                        )
+                        + ("; " if unshielded and unshielded_vias else "")
+                        + (
+                            "vias=" + ",".join(map(str, unshielded_vias))
+                            if unshielded_vias
+                            else ""
                         )
                     ),
                 )
@@ -433,6 +647,16 @@ def evaluate_routing_constraints(
                     "route misses required region indices: "
                     + ", ".join(str(index) for index in missed)
                 )
+            else:
+                ordered = _regions_are_ordered(
+                    job,
+                    route,
+                    constraint.required_regions,
+                    placements,
+                )
+                if ordered is False:
+                    satisfied = False
+                    message = "route does not visit required regions in order"
         elif isinstance(constraint, RoutingViaCountConstraint):
             count = len(route.vias)
             satisfied = count <= constraint.maximum_vias

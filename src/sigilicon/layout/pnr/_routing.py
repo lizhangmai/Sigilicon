@@ -632,6 +632,7 @@ def _astar(
     center_blockers: dict[str, tuple[_Blocker, ...]],
     vias: tuple[ViaDefinition, ...],
     raw_blockers: dict[str, tuple[_Blocker, ...]],
+    forbidden_states: frozenset[_RouteState],
     congestion_demands: dict[tuple[str, int, int, str], int],
     domain: RoutingDomain,
     remaining_states: int,
@@ -698,6 +699,8 @@ def _astar(
                 continue
             if not _point_in_context(neighbor.point, context):
                 continue
+            if neighbor in forbidden_states and neighbor not in targets:
+                continue
             if _state_blocked(neighbor, center_blockers):
                 encountered_blockers.update(
                     _blocking_nets(neighbor, center_blockers)
@@ -707,6 +710,8 @@ def _astar(
         for next_layer, via in adjacency.get(current.layer, ()):
             neighbor = _RouteState(next_layer, current.point)
             if not _point_in_context(neighbor.point, contexts[next_layer]):
+                continue
+            if neighbor in forbidden_states and neighbor not in targets:
                 continue
             cache_key = via.name, current.point
             cached = via_cache.get(cache_key)
@@ -926,6 +931,129 @@ def _compensate_route_length(
     return _RouteCompensation(None, route_states)
 
 
+def _state_distance(first: _RouteState, second: _RouteState) -> int:
+    layer_penalty = 0 if first.layer == second.layer else 2**32
+    return (
+        abs(first.point.x - second.point.x)
+        + abs(first.point.y - second.point.y)
+        + layer_penalty
+    )
+
+
+def _shield_guidance_states(
+    problem: RoutingProblem,
+    net: NetRoutingProblem,
+    state: RoutingState,
+    contexts: dict[str, RoutingLayerDomain],
+    pin_endpoint_states: tuple[tuple[_RouteState, ...], ...],
+    blockers: dict[str, tuple[_Blocker, ...]],
+) -> tuple[tuple[tuple[_RouteState, ...], ...], Diagnostic | None]:
+    group = problem.policy.group_for_net(net.name)
+    if group is None:
+        return (), None
+    relationships = tuple(
+        shield for shield in group.shields if shield.shield_net == net.name
+    )
+    if not relationships:
+        return (), None
+
+    guidance: list[tuple[_RouteState, ...]] = []
+    for relationship in relationships:
+        signal_route = state.routes_by_net.get(relationship.signal_net)
+        if signal_route is None:
+            return (), Diagnostic(
+                "routing_shield_dependency_missing",
+                f"shield net {net.name} needs signal geometry before routing",
+                (relationship.signal_net, net.name),
+            )
+        signal_segments = tuple(
+            segment
+            for segment in signal_route.segments
+            if not relationship.layers or segment.layer in relationship.layers
+        )
+        if not signal_segments:
+            continue
+        candidates: list[tuple[int, tuple[_RouteState, ...]]] = []
+        if any(segment.layer not in contexts for segment in signal_segments):
+            return (), Diagnostic(
+                "routing_shield_geometry_infeasible",
+                f"shield net {net.name} cannot use every selected signal layer",
+                (relationship.signal_net, net.name),
+            )
+        minimum_spacing = max(
+            contexts[segment.layer].spacing
+            for segment in signal_segments
+            if segment.layer in contexts
+        )
+        for edge_spacing in range(
+            minimum_spacing,
+            relationship.maximum_spacing_dbu + 1,
+            problem.domain.grid,
+        ):
+            for sign in (-1, 1):
+                candidate: list[_RouteState] = []
+                supported = True
+                for segment in signal_segments:
+                    context = contexts.get(segment.layer)
+                    if context is None or context.spacing > edge_spacing:
+                        supported = False
+                        break
+                    distance = (
+                        segment.width_dbu + context.width
+                    ) // 2 + edge_spacing
+                    offset_x, offset_y = (
+                        (0, sign * distance)
+                        if segment.start.y == segment.end.y
+                        else (sign * distance, 0)
+                    )
+                    for point in (segment.start, segment.end):
+                        route_state = _RouteState(
+                            segment.layer,
+                            Point(point.x + offset_x, point.y + offset_y),
+                        )
+                        if not _point_in_context(route_state.point, context):
+                            supported = False
+                            break
+                        if _state_blocked(route_state, blockers):
+                            supported = False
+                            break
+                        if not candidate or candidate[-1] != route_state:
+                            candidate.append(route_state)
+                    if not supported:
+                        break
+                if not supported:
+                    continue
+                for ordered in (tuple(candidate), tuple(reversed(candidate))):
+                    score = min(
+                        _state_distance(source, ordered[0])
+                        + _state_distance(ordered[-1], sink)
+                        for source in pin_endpoint_states[0]
+                        for sink in pin_endpoint_states[1]
+                    )
+                    candidates.append((score, ordered))
+        if not candidates:
+            return (), Diagnostic(
+                "routing_shield_geometry_infeasible",
+                (
+                    f"shield net {net.name} has no legal adjacent guidance for "
+                    f"signal net {relationship.signal_net}"
+                ),
+                (relationship.signal_net, net.name),
+            )
+        _, selected = min(
+            candidates,
+            key=lambda item: (
+                item[0],
+                tuple(
+                    (state.layer, state.point.y, state.point.x)
+                    for state in item[1]
+                ),
+            ),
+        )
+        guidance.extend((route_state,) for route_state in selected)
+    return tuple(guidance), None
+
+
 def _net_route_failure(
     net: str,
     status: ResultStatus,
@@ -1008,12 +1136,42 @@ def _route_net(
                 "routing-resource access"
             ),
         )
-    endpoint_states = pin_endpoint_states + region_states
+    raw_blockers = _raw_blockers(net, state)
+    center_blockers = _center_blockers(raw_blockers, net_contexts)
+    shield_states, shield_diagnostic = _shield_guidance_states(
+        problem,
+        net,
+        state,
+        net_contexts,
+        pin_endpoint_states,
+        center_blockers,
+    )
+    if shield_diagnostic is not None:
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED,
+            shield_diagnostic.code,
+            shield_diagnostic.message,
+        )
+    endpoint_states = (
+        (pin_endpoint_states[0],)
+        + region_states
+        + shield_states
+        + (pin_endpoint_states[1],)
+        + pin_endpoint_states[2:]
+    )
+    endpoint_kinds = (
+        ("pin",)
+        + ("region",) * len(region_states)
+        + ("shield",) * len(shield_states)
+        + ("pin",) * (len(pin_endpoint_states) - 1)
+    )
     if not _layers_connect(endpoint_states, net_adjacency):
         constrained = (
             allowed_layers is not None
             or via_limit is not None
             or bool(required_regions)
+            or bool(shield_states)
         )
         return _net_route_failure(
             net.name,
@@ -1028,8 +1186,6 @@ def _route_net(
                 "via definitions and rules"
             ),
         )
-    raw_blockers = _raw_blockers(net, state)
-    center_blockers = _center_blockers(raw_blockers, net_contexts)
     legal_endpoint_states = tuple(
         tuple(
             endpoint_state
@@ -1044,7 +1200,7 @@ def _route_net(
             for index, states in enumerate(legal_endpoint_states)
             if not states
         )
-        region_blocked = blocked_index >= len(pin_endpoint_states)
+        region_blocked = endpoint_kinds[blocked_index] == "region"
         blockers = frozenset(
             owner
             for endpoint_state in endpoint_states[blocked_index]
@@ -1066,20 +1222,34 @@ def _route_net(
             blocking_nets=blockers,
         )
     tree: set[_RouteState] = set(legal_endpoint_states[0])
+    previous_terminal: set[_RouteState] = set(legal_endpoint_states[0])
+    ordered_topology_end = 1 + len(region_states) + len(shield_states)
     segments: list[RouteSegment] = []
     route_vias: list[RouteVia] = []
-    for terminal_states in legal_endpoint_states[1:]:
+    for endpoint_index, terminal_states in enumerate(
+        legal_endpoint_states[1:],
+        start=1,
+    ):
         starts = frozenset(terminal_states)
-        if starts & tree:
+        targets = frozenset(
+            previous_terminal if endpoint_index <= ordered_topology_end else tree
+        )
+        if starts & targets:
             tree.update(starts)
+            previous_terminal = set(starts)
             continue
         search = _astar(
             starts,
-            frozenset(tree),
+            targets,
             contexts=net_contexts,
             center_blockers=center_blockers,
             vias=net_usable_vias,
             raw_blockers=raw_blockers,
+            forbidden_states=(
+                frozenset(tree)
+                if endpoint_index <= ordered_topology_end
+                else frozenset()
+            ),
             congestion_demands=_route_search_costs(
                 domain,
                 state,
@@ -1140,6 +1310,7 @@ def _route_net(
         }
         tree.update(search.path.states)
         tree.update(starts)
+        previous_terminal = set(starts)
     route = NetRoute(
         net.name,
         tuple(segments),

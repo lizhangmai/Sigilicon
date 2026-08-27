@@ -112,6 +112,8 @@ general routing remains in progress.
   outcomes;
 - deterministic grid-aligned length compensation and negotiated multi-net skew
   closure against compiled length targets and feasible windows;
+- ordered required-region primary paths and signal-derived shield guidance that
+  constructs continuous parallel conductors and corresponding cross-layer vias;
 - deterministic negotiated routing that attributes dynamic blockers, accumulates
   historical congestion cost, and rips up only the affected net or compiled
   Routing Group;
@@ -127,9 +129,9 @@ general routing remains in progress.
 The current reference router deliberately rejects track problems whose terminals
 have no legal track access and layer transitions whose Via Definitions lack complete
 enclosure or cut-spacing facts.
-Those are capability boundaries, not implicit fallbacks. The next routing increments
-add active ordered-topology and via-shielding closure over the compiled Routing Group
-policy.
+Those are capability boundaries, not implicit fallbacks. Further routing increments
+broaden negotiated group closure and benchmark coverage without weakening the
+independent checker or constraint evaluator.
 
 - global routing and congestion estimation;
 - detailed path and via construction;
