@@ -485,7 +485,46 @@ def test_skew_constraint_prioritizes_matched_shortest_routes_over_bin_spreading(
     assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
 
 
-def test_skew_constraint_rejects_unmatched_route_lengths() -> None:
+def test_skew_constraint_actively_compensates_the_shorter_group_route() -> None:
+    job = _parallel_net_job(congestion_bins_y=8)
+    ports = tuple(
+        (
+            PhysicalPort("sink-b", (PinAccess("route", Rect(24, 9, 26, 11)),))
+            if port.name == "sink-b"
+            else port
+        )
+        for port in job.design.ports
+    )
+    result = run(
+        replace(
+            job,
+            design=replace(job.design, ports=ports),
+            routing_constraints=(
+                RoutingSkewConstraint(
+                    "matched-pair",
+                    ("signal", "signal-b"),
+                    0,
+                ),
+            ),
+        )
+    )
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert tuple(
+        sum(
+            abs(segment.end.x - segment.start.x)
+            + abs(segment.end.y - segment.start.y)
+            for segment in route.segments
+        )
+        for route in result.routes
+    ) == (34, 34)
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    metrics = {metric.name: metric.value for metric in result.stage_reports[-1].metrics}
+    assert metrics["routing_iterations"] == 2
+    assert metrics["routing_ripped_net_count"] == 2
+
+
+def test_skew_constraint_reports_unreachable_matching_parity_during_search() -> None:
     job = _parallel_net_job(congestion_bins_y=8)
     ports = tuple(
         (
@@ -510,10 +549,10 @@ def test_skew_constraint_rejects_unmatched_route_lengths() -> None:
     )
 
     assert result.status is ResultStatus.FAILED
-    assert result.routes == ()
-    assert result.constraint_outcomes[-1].status is ConstraintStatus.VIOLATED
+    assert tuple(route.net for route in result.routes) == ("signal",)
+    assert result.constraint_outcomes[-1].status is ConstraintStatus.NOT_EVALUATED
     assert result.stage_reports[-1].diagnostics[-1].code == (
-        "routing_constraint_violated"
+        "routing_length_window_infeasible"
     )
 
 
@@ -889,13 +928,21 @@ def test_routing_layer_constraint_is_enforced_during_search() -> None:
     )
 
 
-def test_routing_length_constraint_gates_the_returned_solution() -> None:
+def test_routing_length_constraint_actively_compensates_the_route() -> None:
     job = _job()
-    exact = run(
+    exact_shortest = run(
         replace(
             job,
             routing_constraints=(
                 RoutingLengthConstraint("exact-length", "signal", 34, 34),
+            ),
+        )
+    )
+    exact_compensated = run(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingLengthConstraint("compensated-length", "signal", 54, 54),
             ),
         )
     )
@@ -908,14 +955,37 @@ def test_routing_length_constraint_gates_the_returned_solution() -> None:
         )
     )
 
-    assert exact.status is ResultStatus.SUCCEEDED
-    assert exact.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert exact_shortest.status is ResultStatus.SUCCEEDED
+    assert exact_shortest.constraint_outcomes[-1].status is ConstraintStatus.SATISFIED
+    assert exact_compensated.status is ResultStatus.SUCCEEDED
+    assert exact_compensated.constraint_outcomes[-1].status is (
+        ConstraintStatus.SATISFIED
+    )
+    assert sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in exact_compensated.routes[0].segments
+    ) == 54
+    assert len(exact_compensated.routes[0].segments) == 3
     assert too_short.status is ResultStatus.FAILED
     assert too_short.routes == ()
-    assert too_short.constraint_outcomes[-1].status is ConstraintStatus.VIOLATED
-    assert too_short.stage_reports[-1].diagnostics[-1].code == (
-        "routing_constraint_violated"
+    assert too_short.constraint_outcomes[-1].status is (
+        ConstraintStatus.NOT_EVALUATED
     )
+    assert too_short.stage_reports[-1].diagnostics[-1].code == (
+        "routing_length_window_infeasible"
+    )
+
+    independently_violated = evaluate_routing_constraints(
+        replace(
+            job,
+            routing_constraints=(
+                RoutingLengthConstraint("maximum-length", "signal", 0, 33),
+            ),
+        ),
+        exact_shortest.routes,
+    )
+    assert independently_violated[0].status is ConstraintStatus.VIOLATED
 
 
 def test_routing_via_count_constraint_is_checked_end_to_end() -> None:

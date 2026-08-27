@@ -89,4 +89,5 @@ def test_compiler_intersects_length_windows_without_router_type_checks() -> None
     assert window == RoutingLengthWindow(40, 60)
     assert window.feasible
     assert window.target_dbu is None
+    assert policy.for_net("signal").cost.congestion_weight == 0
     assert policy.groups == ()

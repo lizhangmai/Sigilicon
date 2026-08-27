@@ -33,6 +33,7 @@ class RoutingState:
     occupancy_by_layer: Mapping[str, tuple[RouteOccupancy, ...]]
     routed_order: tuple[str, ...]
     history_costs: Mapping[RoutingCostKey, int]
+    length_targets: Mapping[str, int]
 
     @classmethod
     def empty(cls) -> RoutingState:
@@ -41,6 +42,7 @@ class RoutingState:
             occupancy_by_layer=MappingProxyType({}),
             routed_order=(),
             history_costs=MappingProxyType({}),
+            length_targets=MappingProxyType({}),
         )
 
     @property
@@ -87,6 +89,19 @@ class RoutingState:
             occupancy_by_layer=self.occupancy_by_layer,
             routed_order=self.routed_order,
             history_costs=MappingProxyType(history),
+            length_targets=self.length_targets,
+        )
+
+    def with_length_targets(self, targets: Mapping[str, int]) -> RoutingState:
+        merged = dict(self.length_targets)
+        for net, target in sorted(targets.items()):
+            merged[net] = max(merged.get(net, 0), target)
+        return RoutingState(
+            routes_by_net=self.routes_by_net,
+            occupancy_by_layer=self.occupancy_by_layer,
+            routed_order=self.routed_order,
+            history_costs=self.history_costs,
+            length_targets=MappingProxyType(merged),
         )
 
     def select_victim(self, conflicting_nets: Iterable[str]) -> str | None:
@@ -126,4 +141,5 @@ class RoutingState:
             ),
             routed_order=order,
             history_costs=self.history_costs,
+            length_targets=self.length_targets,
         )

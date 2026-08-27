@@ -16,6 +16,7 @@ from sigilicon.layout.pnr._routing_problem import (
     RoutingProblem,
     compile_routing_problem,
 )
+from sigilicon.layout.pnr._routing_policy import RoutingGroupPolicy
 from sigilicon.layout.pnr._routing_state import RoutingState
 from sigilicon.layout.pnr.model import (
     Diagnostic,
@@ -79,6 +80,13 @@ class _NetRouteAttempt:
     diagnostic: Diagnostic | None
     route_states: int
     blocking_nets: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _RouteCompensation:
+    route: NetRoute | None
+    route_states: int
+    exhausted: bool = False
 
 
 def _result(
@@ -810,6 +818,114 @@ def _path_geometry(
     return tuple(segments), tuple(vias)
 
 
+def _route_length(route: NetRoute) -> int:
+    return sum(
+        abs(segment.end.x - segment.start.x)
+        + abs(segment.end.y - segment.start.y)
+        for segment in route.segments
+    )
+
+
+def _planar_path_legal(
+    points: tuple[Point, ...],
+    context: RoutingLayerDomain,
+    blockers: dict[str, tuple[_Blocker, ...]],
+    *,
+    grid: int,
+    maximum_route_states: int,
+    route_states: int,
+) -> tuple[bool, int, bool]:
+    current_states = route_states
+    for start, end in zip(points, points[1:]):
+        dx = (end.x > start.x) - (end.x < start.x)
+        dy = (end.y > start.y) - (end.y < start.y)
+        current = start
+        while current != end:
+            if current_states >= maximum_route_states:
+                return False, current_states, True
+            neighbor = Point(
+                current.x + dx * grid,
+                current.y + dy * grid,
+            )
+            if not _move_allowed(current, neighbor, context):
+                return False, current_states, False
+            state = _RouteState(context.layer, neighbor)
+            current_states += 1
+            if not _point_in_context(neighbor, context) or _state_blocked(
+                state,
+                blockers,
+            ):
+                return False, current_states, False
+            current = neighbor
+    return True, current_states, False
+
+
+def _compensate_route_length(
+    route: NetRoute,
+    target_length: int,
+    *,
+    contexts: dict[str, RoutingLayerDomain],
+    blockers: dict[str, tuple[_Blocker, ...]],
+    grid: int,
+    maximum_route_states: int,
+) -> _RouteCompensation:
+    current_length = _route_length(route)
+    delta = target_length - current_length
+    if delta <= 0:
+        return _RouteCompensation(route, 0)
+    if delta % (2 * grid) != 0:
+        return _RouteCompensation(None, 0)
+    offset = delta // 2
+    route_states = 0
+    for index, segment in enumerate(route.segments):
+        context = contexts[segment.layer]
+        if segment.start.y == segment.end.y:
+            offsets = ((0, -offset), (0, offset))
+        else:
+            offsets = ((-offset, 0), (offset, 0))
+        for offset_x, offset_y in offsets:
+            shifted_start = Point(
+                segment.start.x + offset_x,
+                segment.start.y + offset_y,
+            )
+            shifted_end = Point(
+                segment.end.x + offset_x,
+                segment.end.y + offset_y,
+            )
+            points = (
+                segment.start,
+                shifted_start,
+                shifted_end,
+                segment.end,
+            )
+            legal, route_states, exhausted = _planar_path_legal(
+                points,
+                context,
+                blockers,
+                grid=grid,
+                maximum_route_states=maximum_route_states,
+                route_states=route_states,
+            )
+            if exhausted:
+                return _RouteCompensation(None, route_states, True)
+            if not legal:
+                continue
+            replacement = _segments(
+                route.net,
+                segment.layer,
+                segment.width_dbu,
+                points,
+            )
+            compensated = NetRoute(
+                route.net,
+                route.segments[:index] + replacement + route.segments[index + 1 :],
+                route.vias,
+            )
+            if _route_length(compensated) == target_length:
+                return _RouteCompensation(compensated, route_states)
+    return _RouteCompensation(None, route_states)
+
+
 def _net_route_failure(
     net: str,
     status: ResultStatus,
@@ -1024,13 +1140,69 @@ def _route_net(
         }
         tree.update(search.path.states)
         tree.update(starts)
+    route = NetRoute(
+        net.name,
+        tuple(segments),
+        tuple(dict.fromkeys(route_vias)),
+    )
+    window = net_policy.length_window
+    target_length = max(
+        window.minimum_dbu,
+        state.length_targets.get(net.name, 0),
+    )
+    current_length = _route_length(route)
+    if window.maximum_dbu is not None and (
+        current_length > window.maximum_dbu
+        or target_length > window.maximum_dbu
+    ):
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED,
+            "routing_length_window_infeasible",
+            f"net {net.name} cannot satisfy its compiled route-length window",
+            route_states=route_states,
+        )
+    if current_length < target_length:
+        if (target_length - current_length) % (2 * grid) != 0:
+            return _net_route_failure(
+                net.name,
+                ResultStatus.FAILED,
+                "routing_length_window_infeasible",
+                f"net {net.name} needs an unreachable Manhattan route length",
+                route_states=route_states,
+            )
+        compensation = _compensate_route_length(
+            route,
+            target_length,
+            contexts=net_contexts,
+            blockers=center_blockers,
+            grid=grid,
+            maximum_route_states=maximum_route_states - route_states,
+        )
+        route_states += compensation.route_states
+        if compensation.route is None:
+            return _net_route_failure(
+                net.name,
+                (
+                    ResultStatus.EXHAUSTED
+                    if compensation.exhausted
+                    else ResultStatus.UNSUPPORTED
+                ),
+                (
+                    "routing_search_exhausted"
+                    if compensation.exhausted
+                    else "routing_length_compensation_unsupported"
+                ),
+                (
+                    f"net {net.name} could not construct deterministic "
+                    "length compensation"
+                ),
+                route_states=route_states,
+            )
+        route = compensation.route
     return _NetRouteAttempt(
         ResultStatus.SUCCEEDED,
-        NetRoute(
-            net.name,
-            tuple(segments),
-            tuple(dict.fromkeys(route_vias)),
-        ),
+        route,
         None,
         route_states,
     )
@@ -1143,6 +1315,42 @@ def _reroute_order(
     return (failed_net,) + remaining_order
 
 
+def _length_closure_targets(
+    problem: RoutingProblem,
+    state: RoutingState,
+    routed_net: str,
+) -> tuple[RoutingGroupPolicy | None, dict[str, int], Diagnostic | None]:
+    group = problem.policy.group_for_net(routed_net)
+    if group is None or not group.length_matches:
+        return None, {}, None
+    matched_nets = frozenset(
+        net for match in group.length_matches for net in match.nets
+    )
+    if not matched_nets.issubset(state.routes_by_net):
+        return group, {}, None
+
+    targets: dict[str, int] = {}
+    for match in group.length_matches:
+        lengths = {
+            net: _route_length(state.routes_by_net[net]) for net in match.nets
+        }
+        longest = max(lengths.values())
+        if longest - min(lengths.values()) <= match.maximum_skew_dbu:
+            continue
+        for net, length in lengths.items():
+            if longest - length > match.maximum_skew_dbu:
+                targets[net] = max(targets.get(net, 0), longest)
+    for net, target in targets.items():
+        maximum = problem.policy.for_net(net).length_window.maximum_dbu
+        if maximum is not None and target > maximum:
+            return group, {}, Diagnostic(
+                "routing_group_length_infeasible",
+                f"routing group {group.name} has no common feasible length target",
+                group.nets,
+            )
+    return group, targets, None
+
+
 def solve_routing(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
@@ -1215,6 +1423,54 @@ def solve_routing(
             if attempt.route is None:
                 raise RuntimeError("successful net route attempt has no route")
             state = state.with_route(attempt.route, problem.via_definitions)
+            group, length_targets, length_diagnostic = _length_closure_targets(
+                problem,
+                state,
+                net_name,
+            )
+            if length_diagnostic is not None:
+                return _finish_negotiation(
+                    problem,
+                    state,
+                    ResultStatus.FAILED,
+                    route_states=total_route_states,
+                    routing_iterations=iteration,
+                    route_attempts=route_attempts,
+                    ripped_net_count=ripped_net_count,
+                    diagnostic=length_diagnostic,
+                )
+            if length_targets:
+                if group is None:
+                    raise RuntimeError("length targets require a routing group")
+                if iteration >= maximum_iterations:
+                    return _finish_negotiation(
+                        problem,
+                        state,
+                        ResultStatus.EXHAUSTED,
+                        route_states=total_route_states,
+                        routing_iterations=iteration,
+                        route_attempts=route_attempts,
+                        ripped_net_count=ripped_net_count,
+                        diagnostic=Diagnostic(
+                            "routing_iteration_exhausted",
+                            (
+                                "routing could not close group length within the "
+                                "negotiation iteration budget"
+                            ),
+                            group.nets,
+                        ),
+                    )
+                affected = frozenset(group.reroute_scope)
+                ripped_net_count += len(affected & state.routes_by_net.keys())
+                state = state.with_length_targets(length_targets).rip_up(
+                    affected,
+                    problem.via_definitions,
+                )
+                iteration += 1
+                reroute = _reroute_order(problem, net_name, affected)
+                pending = reroute + tuple(
+                    net for net in pending if net not in affected
+                )
             continue
         if attempt.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
             return _finish_negotiation(

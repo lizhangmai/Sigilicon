@@ -340,6 +340,11 @@ def compile_routing_policy(
         history_weight=1,
         group_violation_weight=0,
     )
+    length_cost = RoutingCostPolicy(
+        congestion_weight=0,
+        history_weight=1,
+        group_violation_weight=1,
+    )
     policies: dict[str, NetRoutingPolicy] = {}
     for net in net_names:
         allowed = layer_sets.get(net, [])
@@ -358,7 +363,11 @@ def compile_routing_policy(
             cost=(
                 group_by_net[net].cost
                 if net in group_by_net
-                else independent_cost
+                else (
+                    length_cost
+                    if windows[net] != RoutingLengthWindow()
+                    else independent_cost
+                )
             ),
         )
     return RoutingPolicy(

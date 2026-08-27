@@ -110,6 +110,8 @@ general routing remains in progress.
   and continuous parallel shielding Routing Constraints with structural validation,
   search-time topology/layer/via/objective filtering, and independent result
   outcomes;
+- deterministic grid-aligned length compensation and negotiated multi-net skew
+  closure against compiled length targets and feasible windows;
 - deterministic negotiated routing that attributes dynamic blockers, accumulates
   historical congestion cost, and rips up only the affected net or compiled
   Routing Group;
@@ -126,8 +128,8 @@ The current reference router deliberately rejects track problems whose terminals
 have no legal track access and layer transitions whose Via Definitions lack complete
 enclosure or cut-spacing facts.
 Those are capability boundaries, not implicit fallbacks. The next routing increments
-add active topology, length-matching, and via-shielding closure over the compiled
-Routing Group policy.
+add active ordered-topology and via-shielding closure over the compiled Routing Group
+policy.
 
 - global routing and congestion estimation;
 - detailed path and via construction;

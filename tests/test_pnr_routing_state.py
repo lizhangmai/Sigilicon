@@ -32,3 +32,6 @@ def test_routing_state_selects_latest_actual_blocker_and_rips_only_scope() -> No
     assert tuple(item.net for item in updated.occupancy_by_layer["route"]) == (
         "first",
     )
+
+    targeted = updated.with_length_targets({"first": 40})
+    assert targeted.length_targets == {"first": 40}
