@@ -112,6 +112,14 @@ _Avoid_: Floorplan suggestion
 Exact conductive geometry and vias connecting nets under the supported routing constraints.
 _Avoid_: Connectivity suggestion
 
+**Routing Tree**:
+The deterministic trunk-and-branch topology connecting every terminal of one multi-terminal net while preserving shared conductor ownership.
+_Avoid_: Pairwise route list, Steiner estimate
+
+**Route Branch**:
+A stable terminal-to-tree portion of a Routing Tree with attributed geometry and Routing Resource Demand; a leaf branch is locally revisable only when no collective constraint depends on its topology.
+_Avoid_: Arbitrary segment slice, whole net
+
 **Route Segment**:
 An exact-width, axis-aligned conductor between two manufacturing-grid points on one routing layer and owned by one net.
 _Avoid_: Path hint, centerline only

@@ -104,6 +104,7 @@ class RoutingObstacle:
     shape: Rect
     owner: str | None
     source: str
+    branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ class BlockedResource:
     owners: tuple[str, ...]
     hard: bool
     reason: str
+    branches: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -488,6 +490,7 @@ class RoutingSearchView:
                         evidence.owners,
                         evidence.hard,
                         evidence.reason,
+                        evidence.branches,
                     )
                 )
         adjacency = _via_adjacency(self.vias)
@@ -507,6 +510,7 @@ class RoutingSearchView:
                         via_blockage.owners,
                         via_blockage.hard,
                         via_blockage.reason,
+                        via_blockage.branches,
                     )
                 )
                 continue
@@ -1108,11 +1112,15 @@ def _blocked_resource(
 ) -> BlockedResource:
     items = tuple(obstacles)
     owners = tuple(sorted({item.owner for item in items if item.owner is not None}))
+    branches = tuple(
+        sorted({item.branch for item in items if item.branch is not None})
+    )
     return BlockedResource(
         resource,
         owners,
         any(item.owner is None for item in items),
         reason,
+        branches,
     )
 
 
@@ -1124,5 +1132,6 @@ def _blocked_key(
         blocked.resource,
         blocked.hard,
         blocked.owners,
+        blocked.branches,
         blocked.reason,
     )

@@ -33,6 +33,8 @@ from sigilicon.layout.pnr import (
     Rect,
     ResultStatus,
     RoutingDirection,
+    RoutingLayerConstraint,
+    RoutingLengthConstraint,
     RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingTrackPattern,
@@ -310,6 +312,8 @@ def _capacity_negotiation_job(
             MinimumSpacingRule("route-spacing", "route", 1),
         ),
     )
+
+
     return PhysicalDesignJob(
         technology,
         PhysicalDesign(
@@ -338,6 +342,57 @@ def _capacity_negotiation_job(
         execution_policy=PnrExecutionPolicy(
             maximum_routing_iterations=maximum_routing_iterations,
             routing_congestion_bins_x=1,
+            routing_congestion_bins_y=2,
+        ),
+    )
+
+
+def _branch_repair_job() -> PhysicalDesignJob:
+    technology = _two_layer_technology(
+        resources=(
+            GridlessRoutingResource("lower-bottom", "lower", Rect(0, 0, 20, 4)),
+            GridlessRoutingResource("lower-vertical", "lower", Rect(8, 0, 12, 16)),
+            GridlessRoutingResource("lower-crossing", "lower", Rect(0, 5, 20, 9)),
+            GridlessRoutingResource("upper-domain", "upper"),
+        )
+    )
+    return PhysicalDesignJob(
+        technology,
+        PhysicalDesign(
+            "local-branch-repair",
+            Rect(0, 0, 20, 20),
+            (),
+            (),
+            ports=(
+                PhysicalPort("tree-left", (PinAccess("lower", Rect(1, 1, 3, 3)),)),
+                PhysicalPort("tree-right", (PinAccess("lower", Rect(17, 1, 19, 3)),)),
+                PhysicalPort("tree-leaf", (PinAccess("lower", Rect(9, 13, 11, 15)),)),
+                PhysicalPort("cross-left", (PinAccess("lower", Rect(1, 6, 3, 8)),)),
+                PhysicalPort("cross-right", (PinAccess("lower", Rect(17, 6, 19, 8)),)),
+            ),
+            nets=(
+                PhysicalNet(
+                    "a-tree",
+                    (
+                        PinReference("tree-left"),
+                        PinReference("tree-right"),
+                        PinReference("tree-leaf"),
+                    ),
+                ),
+                PhysicalNet(
+                    "z-cross",
+                    (PinReference("cross-left"), PinReference("cross-right")),
+                ),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        routing_constraints=(
+            RoutingLayerConstraint("cross-lower-only", "z-cross", ("lower",)),
+        ),
+        execution_policy=PnrExecutionPolicy(
+            maximum_route_states=300_000,
+            maximum_routing_iterations=6,
+            routing_congestion_bins_x=2,
             routing_congestion_bins_y=2,
         ),
     )
@@ -456,3 +511,47 @@ def test_capacity_benchmark_has_typed_closed_and_iteration_evidence() -> None:
     assert exhausted.termination.conflict_identities == tuple(
         conflict.identity for conflict in exhausted.conflicts.conflicts
     )
+
+
+def test_multi_terminal_conflict_repairs_only_the_attributed_leaf_branch() -> None:
+    first = run(_branch_repair_job())
+    second = run(_branch_repair_job())
+    metrics = {
+        metric.name: metric.value for metric in first.stage_reports[-1].metrics
+    }
+    tree_route = next(route for route in first.routes if route.net == "a-tree")
+
+    assert first == second
+    assert first.status is ResultStatus.SUCCEEDED
+    assert metrics["routing_iterations"] == 2
+    assert metrics["routing_ripped_net_count"] == 0
+    assert metrics["routing_ripped_branch_count"] == 1
+    assert {segment.layer for segment in tree_route.segments} == {
+        "lower",
+        "upper",
+    }
+    assert len(tree_route.vias) == 2
+
+
+def test_multi_terminal_length_policy_expands_branch_conflict_to_net_scope() -> None:
+    job = _branch_repair_job()
+    result = run(
+        replace(
+            job,
+            routing_constraints=job.routing_constraints
+            + (
+                RoutingLengthConstraint(
+                    "tree-length-window",
+                    "a-tree",
+                    maximum_length_dbu=100,
+                ),
+            ),
+        )
+    )
+    metrics = {
+        metric.name: metric.value for metric in result.stage_reports[-1].metrics
+    }
+
+    assert result.status is ResultStatus.SUCCEEDED
+    assert metrics["routing_ripped_branch_count"] == 0
+    assert metrics["routing_ripped_net_count"] >= 1

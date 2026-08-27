@@ -44,6 +44,7 @@ class RoutingConflict:
     severity: int
     cost: int
     victim_candidates: tuple[str, ...]
+    victim_branches: tuple[str, ...]
     reroute_scope: tuple[str, ...]
     evidence: str
     branch: str | None = None
@@ -97,6 +98,7 @@ class RoutingVictimSelection:
     conflict: str
     victim: str
     reroute_scope: tuple[str, ...]
+    branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,7 @@ class DeterministicVictimPolicy:
         routed_order: tuple[str, ...],
         routed_nets: Iterable[str],
         reroute_scope_by_net: Mapping[str, tuple[str, ...]],
+        branch_safety: Mapping[str, bool],
     ) -> RoutingVictimSelection | None:
         routed = frozenset(routed_nets)
         priority = {net: index for index, net in enumerate(routed_order)}
@@ -130,10 +133,22 @@ class DeterministicVictimPolicy:
                 key=lambda net: (priority.get(net, -1), net),
             )
             scope = reroute_scope_by_net.get(victim, (victim,))
+            safe_branches = tuple(
+                branch
+                for branch in conflict.victim_branches
+                if branch.startswith(f"{victim}:")
+                and branch_safety.get(branch, False)
+            )
+            branch = (
+                safe_branches[0]
+                if len(safe_branches) == 1 and scope == (victim,)
+                else None
+            )
             return RoutingVictimSelection(
                 conflict.identity,
                 victim,
                 scope or (victim,),
+                branch,
             )
         return None
 
@@ -152,6 +167,7 @@ def capacity_conflicts(
     *,
     group_by_net: Mapping[str, str | None],
     reroute_scope_by_net: Mapping[str, tuple[str, ...]],
+    branch_occupants: Mapping[RoutingResourceIdentity, tuple[str, ...]],
 ) -> RoutingConflictSet:
     conflicts: list[RoutingConflict] = []
     for overflow in overflows:
@@ -187,6 +203,7 @@ def capacity_conflicts(
                 severity=overflow.amount,
                 cost=overflow.amount,
                 victim_candidates=overflow.occupants,
+                victim_branches=branch_occupants.get(overflow.resource, ()),
                 reroute_scope=scope,
                 evidence=(
                     f"resource usage {overflow.usage} exceeds capacity "
@@ -205,6 +222,7 @@ def attributed_failure_conflicts(
     affected_group: str | None,
     reroute_scope: tuple[str, ...],
     evidence: str,
+    branch_occupants: Mapping[RoutingResourceIdentity, tuple[str, ...]],
 ) -> RoutingConflictSet:
     blocked_items = tuple(blocked)
     if not blocked_items:
@@ -220,6 +238,7 @@ def attributed_failure_conflicts(
                     severity=1,
                     cost=1,
                     victim_candidates=(),
+                    victim_branches=(),
                     reroute_scope=reroute_scope,
                     evidence=evidence,
                 ),
@@ -244,6 +263,16 @@ def attributed_failure_conflicts(
             severity=1,
             cost=1,
             victim_candidates=item.owners,
+            victim_branches=tuple(
+                sorted(
+                    set(item.branches)
+                    | (
+                        set()
+                        if item.resource is None
+                        else set(branch_occupants.get(item.resource, ()))
+                    )
+                )
+            ),
             reroute_scope=reroute_scope,
             evidence=f"{evidence}: {item.reason}",
         )

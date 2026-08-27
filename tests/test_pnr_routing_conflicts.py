@@ -30,6 +30,7 @@ def test_capacity_conflicts_and_victim_selection_are_stable_and_explicit() -> No
             "beta": ("beta", "gamma"),
             "gamma": ("beta", "gamma"),
         },
+        branch_occupants={resource: ("alpha:terminal:2",)},
     )
     second = capacity_conflicts(
         (overflow,),
@@ -39,6 +40,7 @@ def test_capacity_conflicts_and_victim_selection_are_stable_and_explicit() -> No
             "beta": ("beta", "gamma"),
             "alpha": ("alpha",),
         },
+        branch_occupants={resource: ("alpha:terminal:2",)},
     )
     selection = DeterministicVictimPolicy().select(
         first,
@@ -49,6 +51,7 @@ def test_capacity_conflicts_and_victim_selection_are_stable_and_explicit() -> No
             "beta": ("beta", "gamma"),
             "gamma": ("beta", "gamma"),
         },
+        branch_safety={"alpha:terminal:2": True},
     )
 
     assert first == second

@@ -126,6 +126,10 @@ general routing remains in progress.
 - capacity-aware convergence that constructs a typed Routing Conflict Set,
   applies a deterministic victim policy, updates present and historical costs,
   and records typed closure or budget termination evidence;
+- explicit multi-terminal Routing Trees with stable primary/leaf Route Branch
+  ownership, branch-level conflict attribution, safe leaf-only rip-up, and
+  deterministic escalation to net or Routing Group scope for shared trunks and
+  collective topology, length, via, skew, or shielding policy;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over

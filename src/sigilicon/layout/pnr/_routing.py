@@ -19,6 +19,7 @@ from sigilicon.layout.pnr._routing_conflicts import (
     RoutingConflictSet,
     RoutingTerminationEvidence,
     RoutingTerminationReason,
+    RoutingVictimSelection,
     attributed_failure_conflicts,
     capacity_conflicts,
 )
@@ -33,6 +34,11 @@ from sigilicon.layout.pnr._routing_resources import (
     RoutingSearchView,
 )
 from sigilicon.layout.pnr._routing_state import RoutingState
+from sigilicon.layout.pnr._routing_tree import (
+    RouteBranch,
+    RoutingTree,
+    whole_route_tree,
+)
 from sigilicon.layout.pnr.model import (
     Diagnostic,
     InstancePlacement,
@@ -58,6 +64,7 @@ class RoutingSolveResult:
     routing_iterations: int = 0
     route_attempts: int = 0
     ripped_net_count: int = 0
+    ripped_branch_count: int = 0
     conflicts: RoutingConflictSet = RoutingConflictSet()
     termination: RoutingTerminationEvidence = RoutingTerminationEvidence(
         RoutingTerminationReason.CLOSED,
@@ -80,6 +87,7 @@ class _RoutePath:
 class _Blocker:
     shape: Rect
     owner: str | None
+    branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +106,7 @@ class _NetRouteAttempt:
     route_states: int
     conflict_kind: RoutingConflictKind = RoutingConflictKind.TOPOLOGY_CONFLICT
     blocked_resources: tuple[BlockedResource, ...] = ()
+    tree: RoutingTree | None = None
 
 
 @dataclass(frozen=True)
@@ -360,7 +369,9 @@ def _raw_blockers(
     }
     for layer, occupancy in state.occupancy_by_layer.items():
         blockers.setdefault(layer, []).extend(
-            _Blocker(item.shape, item.net) for item in occupancy
+            _Blocker(item.shape, item.net, item.branch)
+            for item in occupancy
+            if item.net != net.name
         )
     return {layer: tuple(shapes) for layer, shapes in blockers.items()}
 
@@ -374,6 +385,7 @@ def _center_blockers(
             _Blocker(
                 _expanded(blocker.shape, context.width // 2 + context.spacing),
                 blocker.owner,
+                blocker.branch,
             )
             for blocker in raw_blockers.get(layer, ())
         )
@@ -386,6 +398,7 @@ def _search_resources(
     state: RoutingState,
     raw_blockers: dict[str, tuple[_Blocker, ...]],
     *,
+    net: str,
     allowed_layers: frozenset[str] | None,
     allow_vias: bool,
     present_weight: int,
@@ -399,6 +412,7 @@ def _search_resources(
                 blocker.shape,
                 blocker.owner,
                 "fixed" if blocker.owner is None else "route",
+                blocker.branch,
             )
             for blocker in blockers
         )
@@ -408,7 +422,7 @@ def _search_resources(
         allowed_layers=allowed_layers,
         allow_vias=allow_vias,
         obstacles=obstacles,
-        present_usage=state.resource_usage,
+        present_usage=state.usage_without(net),
         history_costs=state.history_costs,
         present_weight=present_weight,
         history_weight=history_weight,
@@ -519,6 +533,7 @@ def _blocked_resource_key(blocked: BlockedResource) -> tuple[object, ...]:
         "" if blocked.resource is None else blocked.resource.stable_name,
         blocked.hard,
         blocked.owners,
+        blocked.branches,
         blocked.reason,
     )
 
@@ -836,6 +851,23 @@ def _net_route_failure(
     )
 
 
+def _branch_local_ripup_safe(
+    problem: RoutingProblem,
+    net: str,
+    endpoint_index: int,
+    ordered_topology_end: int,
+) -> bool:
+    policy = problem.policy.for_net(net)
+    return (
+        endpoint_index > ordered_topology_end
+        and problem.policy.group_for_net(net) is None
+        and not policy.required_regions
+        and policy.maximum_vias is None
+        and policy.length_window.minimum_dbu == 0
+        and policy.length_window.maximum_dbu is None
+    )
+
+
 def _route_net(
     problem: RoutingProblem,
     net: NetRoutingProblem,
@@ -864,11 +896,27 @@ def _route_net(
             f"net {net.name} has a terminal without access geometry",
             conflict_kind=RoutingConflictKind.UNROUTED_TERMINAL,
         )
+    retained_tree = state.trees_by_net.get(net.name)
     raw_blockers = _raw_blockers(net, state)
+    if retained_tree is not None:
+        mutable_blockers = {
+            layer: list(shapes) for layer, shapes in raw_blockers.items()
+        }
+        for retained_branch in retained_tree.branches:
+            for route_via in retained_branch.vias:
+                via = problem.via_definitions[route_via.via_definition]
+                mutable_blockers.setdefault(via.cut_layer, []).extend(
+                    _Blocker(translated_rect(shape, route_via.origin), None)
+                    for shape in via.cut_shapes
+                )
+        raw_blockers = {
+            layer: tuple(shapes) for layer, shapes in mutable_blockers.items()
+        }
     search_resources = _search_resources(
         problem,
         state,
         raw_blockers,
+        net=net.name,
         allowed_layers=allowed_layers,
         allow_vias=via_limit != 0,
         present_weight=net_policy.cost.congestion_weight,
@@ -1001,11 +1049,34 @@ def _route_net(
             ),
             blocked_resources=blocked_resources,
         )
-    tree: set[_RouteState] = set(legal_endpoint_states[0])
-    previous_terminal: set[_RouteState] = set(legal_endpoint_states[0])
     ordered_topology_end = 1 + len(region_states) + len(shield_states)
-    segments: list[RouteSegment] = []
-    route_vias: list[RouteVia] = []
+    expected_branches = tuple(
+        (
+            f"{net.name}:primary:{endpoint_index}"
+            if endpoint_index <= ordered_topology_end
+            else f"{net.name}:terminal:{endpoint_index}"
+        )
+        for endpoint_index in range(1, len(legal_endpoint_states))
+    )
+    retained_branches = (
+        {}
+        if retained_tree is None
+        or retained_tree.expected_branches != expected_branches
+        else {branch.identity: branch for branch in retained_tree.branches}
+    )
+    tree: set[_RouteState] = set(legal_endpoint_states[0])
+    for retained_branch in retained_branches.values():
+        tree.update(retained_branch.nodes)
+    previous_terminal: set[_RouteState] = set(legal_endpoint_states[0])
+    branches = dict(retained_branches)
+    segments: list[RouteSegment] = [
+        segment
+        for branch in retained_branches.values()
+        for segment in branch.segments
+    ]
+    route_vias: list[RouteVia] = [
+        via for branch in retained_branches.values() for via in branch.vias
+    ]
     for endpoint_index, terminal_states in enumerate(
         legal_endpoint_states[1:],
         start=1,
@@ -1014,7 +1085,35 @@ def _route_net(
         targets = frozenset(
             previous_terminal if endpoint_index <= ordered_topology_end else tree
         )
+        branch_identity = expected_branches[endpoint_index - 1]
+        retained_branch = retained_branches.get(branch_identity)
+        if retained_branch is not None:
+            previous_terminal = set(starts)
+            continue
         if starts & targets:
+            branches[branch_identity] = RouteBranch(
+                branch_identity,
+                net.name,
+                endpoint_index,
+                tuple(
+                    sorted(
+                        starts,
+                        key=lambda item: (
+                            item.layer,
+                            item.point.y,
+                            item.point.x,
+                        ),
+                    )
+                ),
+                (),
+                (),
+                _branch_local_ripup_safe(
+                    problem,
+                    net.name,
+                    endpoint_index,
+                    ordered_topology_end,
+                ),
+            )
             tree.update(starts)
             previous_terminal = set(starts)
             continue
@@ -1022,6 +1121,7 @@ def _route_net(
             problem,
             state,
             raw_blockers,
+            net=net.name,
             allowed_layers=allowed_layers,
             allow_vias=via_limit != 0,
             present_weight=net_policy.cost.congestion_weight,
@@ -1082,6 +1182,20 @@ def _route_net(
             )
         segments.extend(new_segments)
         route_vias.extend(new_vias)
+        branches[branch_identity] = RouteBranch(
+            branch_identity,
+            net.name,
+            endpoint_index,
+            search.path.states,
+            new_segments,
+            new_vias,
+            _branch_local_ripup_safe(
+                problem,
+                net.name,
+                endpoint_index,
+                ordered_topology_end,
+            ),
+        )
         mutable_blockers = {
             layer: list(shapes) for layer, shapes in raw_blockers.items()
         }
@@ -1097,11 +1211,12 @@ def _route_net(
         tree.update(search.path.states)
         tree.update(starts)
         previous_terminal = set(starts)
-    route = NetRoute(
+    routing_tree = RoutingTree(
         net.name,
-        tuple(segments),
-        tuple(dict.fromkeys(route_vias)),
+        expected_branches,
+        tuple(branches[identity] for identity in expected_branches),
     )
+    route = routing_tree.route
     window = net_policy.length_window
     target_length = max(
         window.minimum_dbu,
@@ -1164,11 +1279,13 @@ def _route_net(
                 ),
             )
         route = compensation.route
+        routing_tree = whole_route_tree(route)
     return _NetRouteAttempt(
         ResultStatus.SUCCEEDED,
         route,
         None,
         route_states,
+        tree=routing_tree,
     )
 
 
@@ -1179,6 +1296,7 @@ def _with_iteration_metrics(
     routing_iterations: int,
     route_attempts: int,
     ripped_net_count: int,
+    ripped_branch_count: int,
 ) -> RoutingSolveResult:
     metrics = tuple(
         metric for metric in result.report.metrics if metric.name != "route_states"
@@ -1187,6 +1305,7 @@ def _with_iteration_metrics(
         Metric("routing_iterations", routing_iterations, "count"),
         Metric("routing_route_attempts", route_attempts, "count"),
         Metric("routing_ripped_net_count", ripped_net_count, "count"),
+        Metric("routing_ripped_branch_count", ripped_branch_count, "count"),
     )
     return RoutingSolveResult(
         status=result.status,
@@ -1201,6 +1320,7 @@ def _with_iteration_metrics(
         routing_iterations=routing_iterations,
         route_attempts=route_attempts,
         ripped_net_count=ripped_net_count,
+        ripped_branch_count=ripped_branch_count,
         conflicts=result.conflicts,
         termination=RoutingTerminationEvidence(
             result.termination.reason,
@@ -1236,6 +1356,7 @@ def _with_congestion_metrics(
         routing_iterations=result.routing_iterations,
         route_attempts=result.route_attempts,
         ripped_net_count=result.ripped_net_count,
+        ripped_branch_count=result.ripped_branch_count,
         conflicts=result.conflicts,
         termination=result.termination,
     )
@@ -1250,6 +1371,7 @@ def _finish_negotiation(
     routing_iterations: int,
     route_attempts: int,
     ripped_net_count: int,
+    ripped_branch_count: int = 0,
     diagnostic: Diagnostic | None = None,
     conflicts: RoutingConflictSet = RoutingConflictSet(),
     termination_reason: RoutingTerminationReason | None = None,
@@ -1272,12 +1394,14 @@ def _finish_negotiation(
             routing_iterations=routing_iterations,
             route_attempts=route_attempts,
             ripped_net_count=ripped_net_count,
+            ripped_branch_count=ripped_branch_count,
         ),
     )
 
 
 def _attempt_conflicts(
     problem: RoutingProblem,
+    state: RoutingState,
     net: str,
     attempt: _NetRouteAttempt,
 ) -> RoutingConflictSet:
@@ -1294,6 +1418,7 @@ def _attempt_conflicts(
             if diagnostic is None
             else diagnostic.message
         ),
+        branch_occupants=state.branch_resource_occupants,
     )
 
 
@@ -1318,6 +1443,7 @@ def _capacity_conflicts(
         reroute_scope_by_net={
             net: problem.policy.reroute_scope(net) for net in problem.net_names
         },
+        branch_occupants=state.branch_resource_occupants,
     )
 
 
@@ -1333,6 +1459,33 @@ def _conflict_history_penalty(
             max(1, conflict.severity),
         )
     return penalties
+
+
+def _branch_safety(state: RoutingState) -> dict[str, bool]:
+    return {
+        branch.identity: branch.local_ripup_safe
+        for tree in state.trees_by_net.values()
+        for branch in tree.branches
+    }
+
+
+def _rip_up_selection(
+    state: RoutingState,
+    selection: RoutingVictimSelection,
+    problem: RoutingProblem,
+) -> tuple[RoutingState, int, int]:
+    if selection.branch is not None:
+        return (
+            state.rip_up_branch(selection.branch, problem.resource_graph),
+            0,
+            1,
+        )
+    affected = frozenset(selection.reroute_scope)
+    return (
+        state.rip_up(affected, problem.resource_graph),
+        len(affected & state.routes_by_net.keys()),
+        0,
+    )
 
 
 def _reroute_order(
@@ -1396,6 +1549,8 @@ def solve_routing(
 ) -> RoutingSolveResult:
     problem = compile_routing_problem(job, instance_placements)
     state = RoutingState.empty()
+    ripped_net_count = 0
+    ripped_branch_count = 0
     if not problem.nets:
         return _finish_negotiation(
             problem,
@@ -1427,7 +1582,6 @@ def solve_routing(
     total_route_states = 0
     iteration = 1
     route_attempts = 0
-    ripped_net_count = 0
     victim_policy = DeterministicVictimPolicy()
     reroute_scopes = {
         net: problem.policy.reroute_scope(net) for net in problem.net_names
@@ -1445,6 +1599,7 @@ def solve_routing(
                 routing_iterations=iteration,
                 route_attempts=route_attempts,
                 ripped_net_count=ripped_net_count,
+                ripped_branch_count=ripped_branch_count,
                 diagnostic=Diagnostic(
                     "routing_search_exhausted",
                     (
@@ -1465,7 +1620,9 @@ def solve_routing(
         if attempt.status is ResultStatus.SUCCEEDED:
             if attempt.route is None:
                 raise RuntimeError("successful net route attempt has no route")
-            state = state.with_route(attempt.route, problem.resource_graph)
+            if attempt.tree is None:
+                raise RuntimeError("successful net route attempt has no route tree")
+            state = state.with_tree(attempt.tree, problem.resource_graph)
             group, length_targets, length_diagnostic = _length_closure_targets(
                 problem,
                 state,
@@ -1479,6 +1636,7 @@ def solve_routing(
                     affected_group=None if group is None else group.name,
                     reroute_scope=problem.policy.reroute_scope(net_name),
                     evidence=length_diagnostic.message,
+                    branch_occupants=state.branch_resource_occupants,
                 )
                 return _finish_negotiation(
                     problem,
@@ -1488,6 +1646,7 @@ def solve_routing(
                     routing_iterations=iteration,
                     route_attempts=route_attempts,
                     ripped_net_count=ripped_net_count,
+                    ripped_branch_count=ripped_branch_count,
                     diagnostic=length_diagnostic,
                     conflicts=length_conflicts,
                     termination_reason=RoutingTerminationReason.INFEASIBLE,
@@ -1506,6 +1665,7 @@ def solve_routing(
                             "routing group length did not close within the "
                             "iteration budget"
                         ),
+                        branch_occupants=state.branch_resource_occupants,
                     )
                     return _finish_negotiation(
                         problem,
@@ -1515,6 +1675,7 @@ def solve_routing(
                         routing_iterations=iteration,
                         route_attempts=route_attempts,
                         ripped_net_count=ripped_net_count,
+                        ripped_branch_count=ripped_branch_count,
                         diagnostic=Diagnostic(
                             "routing_iteration_exhausted",
                             (
@@ -1546,6 +1707,7 @@ def solve_routing(
                     routed_order=state.routed_order,
                     routed_nets=state.routes_by_net,
                     reroute_scope_by_net=reroute_scopes,
+                    branch_safety=_branch_safety(state),
                 )
                 if selection is None:
                     return _finish_negotiation(
@@ -1556,18 +1718,27 @@ def solve_routing(
                         routing_iterations=iteration,
                         route_attempts=route_attempts,
                         ripped_net_count=ripped_net_count,
+                        ripped_branch_count=ripped_branch_count,
                         diagnostic=Diagnostic(
                             "routing_capacity_infeasible",
-                            "routing resources remain over capacity without a legal victim",
+                            (
+                                "routing resources remain over capacity without "
+                                "a legal victim"
+                            ),
                             overflow_conflicts.victim_candidates,
                         ),
                         conflicts=overflow_conflicts,
                         termination_reason=RoutingTerminationReason.INFEASIBLE,
                     )
                 if iteration >= maximum_iterations:
-                    returned_state = state.rip_up(
-                        selection.reroute_scope,
-                        problem.resource_graph,
+                    (
+                        returned_state,
+                        returned_ripped_nets,
+                        returned_ripped_branches,
+                    ) = _rip_up_selection(
+                        state,
+                        selection,
+                        problem,
                     )
                     return _finish_negotiation(
                         problem,
@@ -1576,33 +1747,39 @@ def solve_routing(
                         route_states=total_route_states,
                         routing_iterations=iteration,
                         route_attempts=route_attempts,
-                        ripped_net_count=(
-                            ripped_net_count
-                            + len(
-                                frozenset(selection.reroute_scope)
-                                & state.routes_by_net.keys()
-                            )
+                        ripped_net_count=ripped_net_count + returned_ripped_nets,
+                        ripped_branch_count=(
+                            ripped_branch_count + returned_ripped_branches
                         ),
                         diagnostic=Diagnostic(
                             "routing_iteration_exhausted",
-                            "routing resources remain over capacity at the iteration budget",
+                            (
+                                "routing resources remain over capacity at the "
+                                "iteration budget"
+                            ),
                             overflow_conflicts.victim_candidates,
                         ),
                         conflicts=overflow_conflicts,
                         termination_reason=RoutingTerminationReason.ITERATION_BUDGET,
                     )
                 affected = frozenset(selection.reroute_scope)
-                ripped_net_count += len(affected & state.routes_by_net.keys())
-                state = state.with_history_penalty(
+                penalized = state.with_history_penalty(
                     _conflict_history_penalty(overflow_conflicts)
-                ).rip_up(affected, problem.resource_graph)
+                )
+                state, ripped, ripped_branches = _rip_up_selection(
+                    penalized,
+                    selection,
+                    problem,
+                )
+                ripped_net_count += ripped
+                ripped_branch_count += ripped_branches
                 iteration += 1
                 reroute = _reroute_order(problem, selection.victim, affected)
                 pending = reroute + tuple(
                     net for net in pending if net not in affected
                 )
             continue
-        attempt_conflicts = _attempt_conflicts(problem, net_name, attempt)
+        attempt_conflicts = _attempt_conflicts(problem, state, net_name, attempt)
         if attempt.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
             return _finish_negotiation(
                 problem,
@@ -1612,6 +1789,7 @@ def solve_routing(
                 routing_iterations=iteration,
                 route_attempts=route_attempts,
                 ripped_net_count=ripped_net_count,
+                ripped_branch_count=ripped_branch_count,
                 diagnostic=attempt.diagnostic,
                 conflicts=attempt_conflicts,
                 termination_reason=(
@@ -1626,6 +1804,7 @@ def solve_routing(
             routed_order=state.routed_order,
             routed_nets=state.routes_by_net,
             reroute_scope_by_net=reroute_scopes,
+            branch_safety=_branch_safety(state),
         )
         if selection is None:
             return _finish_negotiation(
@@ -1636,6 +1815,7 @@ def solve_routing(
                 routing_iterations=iteration,
                 route_attempts=route_attempts,
                 ripped_net_count=ripped_net_count,
+                ripped_branch_count=ripped_branch_count,
                 diagnostic=attempt.diagnostic,
                 conflicts=attempt_conflicts,
                 termination_reason=RoutingTerminationReason.INFEASIBLE,
@@ -1649,6 +1829,7 @@ def solve_routing(
                 routing_iterations=iteration,
                 route_attempts=route_attempts,
                 ripped_net_count=ripped_net_count,
+                ripped_branch_count=ripped_branch_count,
                 diagnostic=Diagnostic(
                     "routing_iteration_exhausted",
                     (
@@ -1673,10 +1854,21 @@ def solve_routing(
         history_penalty = _conflict_history_penalty(attempt_conflicts)
         if not history_penalty:
             history_penalty = _route_resource_demands(problem, routed_victims)
-        state = state.with_history_penalty(history_penalty).rip_up(
-            affected,
-            problem.resource_graph,
-        )
+        penalized = state.with_history_penalty(history_penalty)
+        if (
+            selection.branch is not None
+            and problem.policy.reroute_scope(net_name) == (net_name,)
+        ):
+            state, ripped, ripped_branches = _rip_up_selection(
+                penalized,
+                selection,
+                problem,
+            )
+            ripped_net_count -= len(routed_victims)
+            ripped_net_count += ripped
+            ripped_branch_count += ripped_branches
+        else:
+            state = penalized.rip_up(affected, problem.resource_graph)
         iteration += 1
         reroute = _reroute_order(problem, net_name, affected)
         pending = reroute + tuple(
@@ -1691,4 +1883,5 @@ def solve_routing(
         routing_iterations=iteration,
         route_attempts=route_attempts,
         ripped_net_count=ripped_net_count,
+        ripped_branch_count=ripped_branch_count,
     )
