@@ -6,13 +6,16 @@ import pytest
 
 from sigilicon.layout.pnr._routing_check import check_routing_solution
 from sigilicon.layout.pnr._routing_constraints import evaluate_routing_constraints
+from sigilicon.layout.pnr._routing_problem import compile_routing_problem
 from sigilicon.layout.pnr import (
     ConstraintStatus,
     CutSpacingRule,
     EnclosureRule,
     GridlessRoutingResource,
+    InstancePlacement,
     LayerKind,
     LayerShape,
+    MasterPin,
     MinimumSpacingRule,
     MinimumWidthRule,
     Orientation,
@@ -320,6 +323,64 @@ def test_gridless_router_returns_exact_deterministic_manhattan_geometry() -> Non
     assert {metric.name: metric.value for metric in routing_report.metrics}[
         "routed_net_count"
     ] == 1
+
+
+def test_routing_problem_compiles_transformed_static_design_facts() -> None:
+    master = PhysicalMaster(
+        "endpoint",
+        4,
+        4,
+        pins=(
+            MasterPin(
+                "pin",
+                (PinAccess("route", Rect(0, 0, 2, 2)),),
+            ),
+        ),
+        obstructions=(LayerShape("route", Rect(2, 0, 4, 4)),),
+        allowed_orientations=(Orientation.R0,),
+    )
+    placement = Placement(Point(10, 12))
+    job = PhysicalDesignJob(
+        _technology(),
+        PhysicalDesign(
+            "compiled-route-problem",
+            Rect(0, 0, 40, 40),
+            (master,),
+            (PhysicalInstance("sink", master.name, placement),),
+            ports=(
+                PhysicalPort(
+                    "source",
+                    (PinAccess("route", Rect(2, 5, 4, 7)),),
+                ),
+            ),
+            nets=(
+                PhysicalNet(
+                    "signal",
+                    (
+                        PinReference("source"),
+                        PinReference("pin", "sink"),
+                    ),
+                ),
+            ),
+        ),
+        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+    )
+
+    problem = compile_routing_problem(
+        job,
+        (InstancePlacement("sink", placement),),
+    )
+
+    assert problem.issue is None
+    assert problem.net_names == ("signal",)
+    assert problem.domain.rules_for("route") == (2, 2)
+    assert problem.layers["route"].regions == (Rect(1, 1, 39, 39),)
+    net = problem.net("signal")
+    assert net.terminal_accesses == (
+        (LayerShape("route", Rect(2, 5, 4, 7)),),
+        (LayerShape("route", Rect(10, 12, 12, 14)),),
+    )
+    assert net.static_blockers == {"route": (Rect(12, 12, 14, 16),)}
 
 
 def test_adjacent_gridless_regions_form_one_exact_routing_domain() -> None:

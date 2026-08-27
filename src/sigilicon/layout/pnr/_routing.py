@@ -2,45 +2,35 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 import heapq
 from itertools import islice, permutations
-from types import MappingProxyType
 
 from sigilicon.layout.pnr._geometry import (
     route_segment_shape,
     translated_rect,
-    transformed_obstructions,
-    transformed_pin_accesses,
     via_occurrence_shapes,
 )
-from sigilicon.layout.pnr._routing_policy import (
-    RoutingPolicy,
-    compile_routing_policy,
+from sigilicon.layout.pnr._routing_problem import (
+    NetRoutingProblem,
+    RoutingDomain,
+    RoutingLayerDomain,
+    RoutingProblem,
+    compile_routing_problem,
 )
 from sigilicon.layout.pnr.model import (
-    Axis,
-    CutSpacingRule,
     Diagnostic,
-    EnclosureRule,
-    GridlessRoutingResource,
     InstancePlacement,
     LayerShape,
     Metric,
-    MinimumSpacingRule,
-    MinimumWidthRule,
     NetRoute,
     PhysicalDesignJob,
-    PinReference,
-    Placement,
     Point,
     PnrStage,
     Rect,
     ResultStatus,
     RouteSegment,
     RouteVia,
-    RoutingTrackPattern,
     StageReport,
     ViaDefinition,
 )
@@ -53,34 +43,6 @@ class RoutingSolveResult:
     report: StageReport
     route_states: int
     routing_iterations: int = 0
-
-
-@dataclass(frozen=True)
-class _LayerContext:
-    layer: str
-    width: int
-    spacing: int
-    regions: tuple[Rect, ...]
-    raw_regions: tuple[Rect, ...]
-    gridless_regions: tuple[Rect, ...]
-    horizontal_tracks: tuple[int, ...]
-    vertical_tracks: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class _RoutingDomain:
-    die: Rect
-    grid: int
-    congestion_bins_x: int
-    congestion_bins_y: int
-    route_rules: Mapping[str, tuple[int, int]]
-    cut_spacings: Mapping[str, tuple[int, int]]
-
-    def rules_for(self, layer: str) -> tuple[int, int] | None:
-        return self.route_rules.get(layer)
-
-    def cut_spacing_for(self, layer: str) -> tuple[int, int] | None:
-        return self.cut_spacings.get(layer)
 
 
 @dataclass(frozen=True)
@@ -135,183 +97,6 @@ def _result(
     )
 
 
-def _endpoint_accesses(
-    job: PhysicalDesignJob,
-    reference: PinReference,
-    placements: dict[str, Placement],
-) -> tuple[LayerShape, ...]:
-    if reference.instance is None:
-        port = next(port for port in job.design.ports if port.name == reference.pin)
-        return tuple(
-            LayerShape(layer=access.layer, shape=access.shape)
-            for access in port.accesses
-        )
-    instance = next(
-        instance
-        for instance in job.design.instances
-        if instance.name == reference.instance
-    )
-    master = next(
-        master for master in job.design.masters if master.name == instance.master
-    )
-    return transformed_pin_accesses(
-        master,
-        reference.pin,
-        placements[reference.instance],
-    )
-
-
-def _compile_routing_domain(job: PhysicalDesignJob) -> _RoutingDomain:
-    widths: dict[str, list[int]] = {}
-    spacings: dict[str, list[int]] = {}
-    cut_spacings: dict[str, list[tuple[int, int]]] = {}
-    for rule in job.technology.rules:
-        if isinstance(rule, MinimumWidthRule):
-            widths.setdefault(rule.layer, []).append(rule.width_dbu)
-        elif isinstance(rule, MinimumSpacingRule):
-            spacings.setdefault(rule.layer, []).append(rule.spacing_dbu)
-        elif isinstance(rule, CutSpacingRule):
-            cut_spacings.setdefault(rule.cut_layer, []).append(
-                (rule.spacing_x_dbu, rule.spacing_y_dbu)
-            )
-    route_rules = {
-        layer: (max(layer_widths), max(spacings[layer]))
-        for layer, layer_widths in widths.items()
-        if layer in spacings
-    }
-    normalized_cut_spacings = {
-        layer: (
-            max(spacing[0] for spacing in layer_spacings),
-            max(spacing[1] for spacing in layer_spacings),
-        )
-        for layer, layer_spacings in cut_spacings.items()
-    }
-    return _RoutingDomain(
-        die=job.design.die,
-        grid=job.technology.manufacturing_grid_dbu,
-        congestion_bins_x=job.execution_policy.routing_congestion_bins_x,
-        congestion_bins_y=job.execution_policy.routing_congestion_bins_y,
-        route_rules=MappingProxyType(route_rules),
-        cut_spacings=MappingProxyType(normalized_cut_spacings),
-    )
-
-
-def _routing_contexts(
-    job: PhysicalDesignJob,
-    domain: _RoutingDomain,
-) -> tuple[dict[str, _LayerContext], dict[str, tuple[Rect, ...]], str | None]:
-    resources = tuple(
-        sorted(
-            (
-                resource
-                for resource in job.technology.routing_resources
-                if isinstance(
-                    resource,
-                    (GridlessRoutingResource, RoutingTrackPattern),
-                )
-            ),
-            key=lambda resource: (
-                resource.layer,
-                type(resource).__name__,
-                resource.name,
-            ),
-        )
-    )
-    if not resources:
-        return {}, {}, "routing_resource_required"
-    grid = domain.grid
-    grouped: dict[
-        str,
-        list[GridlessRoutingResource | RoutingTrackPattern],
-    ] = {}
-    for resource in resources:
-        grouped.setdefault(resource.layer, []).append(resource)
-    contexts: dict[str, _LayerContext] = {}
-    routing_regions: dict[str, tuple[Rect, ...]] = {}
-    for layer, layer_resources in sorted(grouped.items()):
-        rules = domain.rules_for(layer)
-        if rules is None:
-            return {}, {}, "routing_rule_capability_missing"
-        width, spacing = rules
-        if width % (2 * grid) != 0:
-            return {}, {}, "routing_width_resolution_unsupported"
-        gridless_resources = tuple(
-            resource
-            for resource in layer_resources
-            if isinstance(resource, GridlessRoutingResource)
-        )
-        track_resources = tuple(
-            resource
-            for resource in layer_resources
-            if isinstance(resource, RoutingTrackPattern)
-        )
-        gridless_regions = tuple(
-            region
-            for resource in gridless_resources
-            if (
-                region := (resource.region or job.design.die).intersection(
-                    job.design.die
-                )
-            )
-            is not None
-        )
-        raw_regions = gridless_regions + (
-            (job.design.die,) if track_resources else ()
-        )
-        routing_regions[layer] = raw_regions
-        margin = width // 2
-        center_regions = tuple(
-            Rect(
-                region.x_min + margin,
-                region.y_min + margin,
-                region.x_max - margin,
-                region.y_max - margin,
-            )
-            for region in gridless_regions
-            if region.width > width and region.height > width
-        )
-        horizontal_tracks = tuple(
-            sorted(
-                {
-                    resource.start_dbu + resource.pitch_dbu * index
-                    for resource in track_resources
-                    if resource.axis is Axis.Y
-                    for index in range(resource.count)
-                    if job.design.die.y_min + margin
-                    <= resource.start_dbu + resource.pitch_dbu * index
-                    <= job.design.die.y_max - margin
-                }
-            )
-        )
-        vertical_tracks = tuple(
-            sorted(
-                {
-                    resource.start_dbu + resource.pitch_dbu * index
-                    for resource in track_resources
-                    if resource.axis is Axis.X
-                    for index in range(resource.count)
-                    if job.design.die.x_min + margin
-                    <= resource.start_dbu + resource.pitch_dbu * index
-                    <= job.design.die.x_max - margin
-                }
-            )
-        )
-        if center_regions or horizontal_tracks or vertical_tracks:
-            contexts[layer] = _LayerContext(
-                layer=layer,
-                width=width,
-                spacing=spacing,
-                regions=center_regions,
-                raw_regions=raw_regions,
-                gridless_regions=gridless_regions,
-                horizontal_tracks=horizontal_tracks,
-                vertical_tracks=vertical_tracks,
-            )
-    if not contexts:
-        return {}, routing_regions, "routing_region_empty"
-    return contexts, routing_regions, None
-
-
 def _snap_nearest(value2: int, low: int, high: int, grid: int) -> int | None:
     first = -(-low // grid) * grid
     last = high // grid * grid
@@ -363,7 +148,7 @@ def _access_point(
 
 def _access_states(
     accesses: tuple[LayerShape, ...],
-    contexts: dict[str, _LayerContext],
+    contexts: dict[str, RoutingLayerDomain],
     grid: int,
 ) -> tuple[_RouteState, ...]:
     states: set[_RouteState] = set()
@@ -443,41 +228,7 @@ def _point_in_interior(point: Point, rectangle: Rect) -> bool:
     )
 
 
-def _rect_covered_by_regions(shape: Rect, regions: tuple[Rect, ...]) -> bool:
-    x_breaks = sorted(
-        {shape.x_min, shape.x_max}
-        | {
-            coordinate
-            for region in regions
-            for coordinate in (region.x_min, region.x_max)
-            if shape.x_min < coordinate < shape.x_max
-        }
-    )
-    for x_min, x_max in zip(x_breaks, x_breaks[1:]):
-        intervals = sorted(
-            (
-                max(shape.y_min, region.y_min),
-                min(shape.y_max, region.y_max),
-            )
-            for region in regions
-            if region.x_min <= x_min
-            and x_max <= region.x_max
-            and region.y_min < shape.y_max
-            and shape.y_min < region.y_max
-        )
-        covered_to = shape.y_min
-        for y_min, y_max in intervals:
-            if y_min > covered_to:
-                break
-            covered_to = max(covered_to, y_max)
-            if covered_to >= shape.y_max:
-                break
-        if covered_to < shape.y_max:
-            return False
-    return bool(x_breaks)
-
-
-def _point_in_context(point: Point, context: _LayerContext) -> bool:
+def _point_in_context(point: Point, context: RoutingLayerDomain) -> bool:
     margin = context.width // 2
     conductor = Rect(
         point.x - margin,
@@ -485,8 +236,8 @@ def _point_in_context(point: Point, context: _LayerContext) -> bool:
         point.x + margin,
         point.y + margin,
     )
-    return _rect_covered_by_regions(conductor, context.gridless_regions) or (
-        _rect_covered_by_regions(conductor, context.raw_regions)
+    return context.covers_gridless(conductor) or (
+        context.covers(conductor)
         and (
             point.y in context.horizontal_tracks
             or point.x in context.vertical_tracks
@@ -497,7 +248,7 @@ def _point_in_context(point: Point, context: _LayerContext) -> bool:
 def _move_allowed(
     current: Point,
     neighbor: Point,
-    context: _LayerContext,
+    context: RoutingLayerDomain,
 ) -> bool:
     margin = context.width // 2
     movement = Rect(
@@ -506,7 +257,7 @@ def _move_allowed(
         max(current.x, neighbor.x) + margin,
         max(current.y, neighbor.y) + margin,
     )
-    if _rect_covered_by_regions(movement, context.gridless_regions):
+    if context.covers_gridless(movement):
         return True
     if current.y == neighbor.y:
         return current.y in context.horizontal_tracks
@@ -518,7 +269,7 @@ def _bin_index(value: int, low: int, span: int, bins: int) -> int:
 
 
 def _route_bin_demands(
-    domain: _RoutingDomain,
+    domain: RoutingDomain,
     routes: tuple[NetRoute, ...],
 ) -> dict[tuple[str, int, int, str], int]:
     die = domain.die
@@ -579,7 +330,7 @@ def _route_bin_demands(
 
 
 def _congestion_metrics(
-    domain: _RoutingDomain,
+    domain: RoutingDomain,
     routes: tuple[NetRoute, ...],
 ) -> tuple[Metric, ...]:
     demands = _route_bin_demands(domain, routes)
@@ -638,33 +389,19 @@ def _congestion_metrics(
 
 
 def _raw_blockers(
-    job: PhysicalDesignJob,
-    placements: dict[str, Placement],
-    net_references: frozenset[PinReference],
-    all_pin_references: tuple[PinReference, ...],
+    problem: RoutingProblem,
+    net: NetRoutingProblem,
     prior_routes: tuple[NetRoute, ...],
 ) -> dict[str, tuple[Rect, ...]]:
-    masters = {master.name: master for master in job.design.masters}
-    instances = {instance.name: instance for instance in job.design.instances}
-    blockers: dict[str, list[Rect]] = {}
-    for instance_name, placement in placements.items():
-        for obstruction in transformed_obstructions(
-            masters[instances[instance_name].master],
-            placement,
-        ):
-            blockers.setdefault(obstruction.layer, []).append(obstruction.shape)
-    for reference in all_pin_references:
-        if reference in net_references:
-            continue
-        for access in _endpoint_accesses(job, reference, placements):
-            blockers.setdefault(access.layer, []).append(access.shape)
-    vias = {via.name: via for via in job.technology.via_definitions}
+    blockers = {
+        layer: list(shapes) for layer, shapes in net.static_blockers.items()
+    }
     for route in prior_routes:
         for segment in route.segments:
             blockers.setdefault(segment.layer, []).append(route_segment_shape(segment))
         for route_via in route.vias:
             for layer, shape in via_occurrence_shapes(
-                vias[route_via.via_definition],
+                problem.via_definitions[route_via.via_definition],
                 route_via.origin,
             ):
                 blockers.setdefault(layer, []).append(shape)
@@ -673,7 +410,7 @@ def _raw_blockers(
 
 def _center_blockers(
     raw_blockers: dict[str, tuple[Rect, ...]],
-    contexts: dict[str, _LayerContext],
+    contexts: dict[str, RoutingLayerDomain],
 ) -> dict[str, tuple[Rect, ...]]:
     return {
         layer: tuple(
@@ -694,99 +431,6 @@ def _state_blocked(
     )
 
 
-def _shape_enclosed(
-    inner: Rect,
-    outers: tuple[Rect, ...],
-    enclosure_x: int,
-    enclosure_y: int,
-) -> bool:
-    return any(
-        outer.x_min <= inner.x_min - enclosure_x
-        and outer.y_min <= inner.y_min - enclosure_y
-        and inner.x_max + enclosure_x <= outer.x_max
-        and inner.y_max + enclosure_y <= outer.y_max
-        for outer in outers
-    )
-
-
-def _via_definition_supported(
-    job: PhysicalDesignJob,
-    domain: _RoutingDomain,
-    via: ViaDefinition,
-    contexts: dict[str, _LayerContext],
-) -> bool:
-    if via.lower_layer not in contexts or via.upper_layer not in contexts:
-        return False
-    cut_spacing = domain.cut_spacing_for(via.cut_layer)
-    if cut_spacing is None:
-        return False
-    if any(
-        _rectangles_too_close(
-            first,
-            second,
-            cut_spacing[0],
-            cut_spacing[1],
-        )
-        for index, first in enumerate(via.cut_shapes)
-        for second in via.cut_shapes[index + 1 :]
-    ):
-        return False
-    origin = Point(0, 0)
-    if not any(
-        shape.x_min <= origin.x <= shape.x_max
-        and shape.y_min <= origin.y <= shape.y_max
-        for shape in via.lower_shapes
-    ):
-        return False
-    if not any(
-        shape.x_min <= origin.x <= shape.x_max
-        and shape.y_min <= origin.y <= shape.y_max
-        for shape in via.upper_shapes
-    ):
-        return False
-    for layer, shapes in (
-        (via.lower_layer, via.lower_shapes),
-        (via.upper_layer, via.upper_shapes),
-    ):
-        width = contexts[layer].width
-        if any(shape.width < width or shape.height < width for shape in shapes):
-            return False
-        enclosure_rules = tuple(
-            rule
-            for rule in job.technology.rules
-            if isinstance(rule, EnclosureRule)
-            and rule.outer_layer == layer
-            and rule.inner_layer == via.cut_layer
-        )
-        if not enclosure_rules:
-            return False
-        enclosure_x = max(rule.enclosure_x_dbu for rule in enclosure_rules)
-        enclosure_y = max(rule.enclosure_y_dbu for rule in enclosure_rules)
-        if any(
-            not _shape_enclosed(
-                cut,
-                shapes,
-                enclosure_x,
-                enclosure_y,
-            )
-            for cut in via.cut_shapes
-        ):
-            return False
-    return True
-
-
-def _usable_vias(
-    job: PhysicalDesignJob,
-    domain: _RoutingDomain,
-    contexts: dict[str, _LayerContext],
-) -> tuple[ViaDefinition, ...]:
-    return tuple(
-        via
-        for via in sorted(job.technology.via_definitions, key=lambda item: item.name)
-        if _via_definition_supported(job, domain, via, contexts)
-    )
-
-
 def _rectangles_too_close(
     first: Rect,
     second: Rect,
@@ -802,21 +446,17 @@ def _rectangles_too_close(
 
 
 def _via_allowed(
-    domain: _RoutingDomain,
+    domain: RoutingDomain,
     via: ViaDefinition,
     origin: Point,
-    contexts: dict[str, _LayerContext],
-    routing_regions: dict[str, tuple[Rect, ...]],
+    contexts: dict[str, RoutingLayerDomain],
     raw_blockers: dict[str, tuple[Rect, ...]],
 ) -> bool:
     translated_shapes = via_occurrence_shapes(via, origin)
     for layer, shape in translated_shapes:
         if not domain.die.contains(shape):
             return False
-        if layer in contexts and not _rect_covered_by_regions(
-            shape,
-            routing_regions[layer],
-        ):
+        if layer in contexts and not contexts[layer].covers(shape):
             return False
         if layer in contexts:
             spacing_x = spacing_y = contexts[layer].spacing
@@ -873,7 +513,7 @@ def _layers_connect(
 
 
 def _edge_congestion_demand(
-    domain: _RoutingDomain,
+    domain: RoutingDomain,
     current: _RouteState,
     neighbor: _RouteState,
     via_name: str | None,
@@ -910,13 +550,12 @@ def _astar(
     starts: frozenset[_RouteState],
     targets: frozenset[_RouteState],
     *,
-    contexts: dict[str, _LayerContext],
+    contexts: dict[str, RoutingLayerDomain],
     center_blockers: dict[str, tuple[Rect, ...]],
     vias: tuple[ViaDefinition, ...],
-    routing_regions: dict[str, tuple[Rect, ...]],
     raw_blockers: dict[str, tuple[Rect, ...]],
     congestion_demands: dict[tuple[str, int, int, str], int],
-    domain: _RoutingDomain,
+    domain: RoutingDomain,
     remaining_states: int,
 ) -> tuple[_RoutePath | None, int, bool]:
     def heuristic(state: _RouteState) -> int:
@@ -986,7 +625,6 @@ def _astar(
                     via,
                     current.point,
                     contexts,
-                    routing_regions,
                     raw_blockers,
                 )
                 via_cache[cache_key] = allowed
@@ -1048,7 +686,7 @@ def _segments(
 def _path_geometry(
     net: str,
     path: _RoutePath,
-    contexts: dict[str, _LayerContext],
+    contexts: dict[str, RoutingLayerDomain],
 ) -> tuple[tuple[RouteSegment, ...], tuple[RouteVia, ...]]:
     segments: list[RouteSegment] = []
     vias: list[RouteVia] = []
@@ -1082,60 +720,27 @@ def _path_geometry(
 
 
 def _solve_routing_once(
-    job: PhysicalDesignJob,
-    instance_placements: tuple[InstancePlacement, ...],
+    problem: RoutingProblem,
     *,
-    domain: _RoutingDomain,
-    policy: RoutingPolicy,
     net_order: tuple[str, ...] | None = None,
-    maximum_route_states: int | None = None,
+    maximum_route_states: int,
 ) -> RoutingSolveResult:
-    if not job.design.nets:
+    if not problem.nets:
         return _result(ResultStatus.SUCCEEDED)
-    contexts, routing_regions, context_error = _routing_contexts(job, domain)
-    if context_error is not None:
-        status = (
-            ResultStatus.FAILED
-            if context_error == "routing_region_empty"
-            else ResultStatus.UNSUPPORTED
-        )
+    if problem.issue is not None:
         return _result(
-            status,
-            code=context_error,
+            problem.issue.status,
+            code=problem.issue.code,
             message="technology does not provide a usable routing domain",
         )
-    placements = {
-        item.instance: item.placement for item in instance_placements
-    }
-    masters = {master.name: master for master in job.design.masters}
-    all_pin_references = tuple(
-        PinReference(port.name) for port in job.design.ports
-    ) + tuple(
-        PinReference(pin.name, instance.name)
-        for instance in job.design.instances
-        for pin in masters[instance.master].pins
-    )
-    usable_vias = _usable_vias(job, domain, contexts)
-    via_definitions = {
-        via.name: via for via in job.technology.via_definitions
-    }
+    domain = problem.domain
+    contexts = problem.layers
     all_routes: list[NetRoute] = []
     route_states = 0
     grid = domain.grid
 
-    nets = {net.name: net for net in job.design.nets}
-    ordered_nets = (
-        tuple(nets[name] for name in net_order)
-        if net_order is not None
-        else tuple(sorted(job.design.nets, key=lambda item: item.name))
-    )
-    route_state_limit = (
-        maximum_route_states
-        if maximum_route_states is not None
-        else job.execution_policy.maximum_route_states
-    )
-    for net in ordered_nets:
-        net_policy = policy.for_net(net.name)
+    for net in problem.nets_in_order(net_order):
+        net_policy = problem.policy.for_net(net.name)
         allowed_layers = net_policy.allowed_layers
         net_contexts = {
             layer: context
@@ -1145,16 +750,13 @@ def _solve_routing_once(
         via_limit = net_policy.maximum_vias
         net_usable_vias = tuple(
             via
-            for via in usable_vias
+            for via in problem.vias
             if via.lower_layer in net_contexts
             and via.upper_layer in net_contexts
             and via_limit != 0
         )
         net_adjacency = _via_adjacency(net_usable_vias)
-        accesses = tuple(
-            _endpoint_accesses(job, reference, placements)
-            for reference in net.pins
-        )
+        accesses = net.terminal_accesses
         if any(not endpoint for endpoint in accesses):
             return _result(
                 ResultStatus.FAILED,
@@ -1227,10 +829,8 @@ def _solve_routing_once(
                 route_states=route_states,
             )
         raw_blockers = _raw_blockers(
-            job,
-            placements,
-            frozenset(net.pins),
-            all_pin_references,
+            problem,
+            net,
             tuple(all_routes),
         )
         center_blockers = _center_blockers(raw_blockers, net_contexts)
@@ -1279,7 +879,6 @@ def _solve_routing_once(
                 contexts=net_contexts,
                 center_blockers=center_blockers,
                 vias=net_usable_vias,
-                routing_regions=routing_regions,
                 raw_blockers=raw_blockers,
                 congestion_demands=(
                     _route_bin_demands(domain, tuple(all_routes))
@@ -1287,7 +886,7 @@ def _solve_routing_once(
                     else {}
                 ),
                 domain=domain,
-                remaining_states=route_state_limit - route_states,
+                remaining_states=maximum_route_states - route_states,
             )
             route_states += states
             if path is None:
@@ -1327,7 +926,7 @@ def _solve_routing_once(
                 layer: list(shapes) for layer, shapes in raw_blockers.items()
             }
             for route_via in new_vias:
-                via = via_definitions[route_via.via_definition]
+                via = problem.via_definitions[route_via.via_definition]
                 mutable_blockers.setdefault(via.cut_layer, []).extend(
                     translated_rect(shape, route_via.origin)
                     for shape in via.cut_shapes
@@ -1380,7 +979,7 @@ def _with_iteration_metrics(
 
 
 def _with_congestion_metrics(
-    domain: _RoutingDomain,
+    domain: RoutingDomain,
     result: RoutingSolveResult,
 ) -> RoutingSolveResult:
     congestion_metrics = _congestion_metrics(domain, result.routes)
@@ -1406,15 +1005,13 @@ def solve_routing(
     job: PhysicalDesignJob,
     instance_placements: tuple[InstancePlacement, ...],
 ) -> RoutingSolveResult:
-    net_names = tuple(sorted(net.name for net in job.design.nets))
-    domain = _compile_routing_domain(job)
-    policy = compile_routing_policy(job.routing_constraints, net_names)
+    problem = compile_routing_problem(job, instance_placements)
+    net_names = problem.net_names
+    domain = problem.domain
     if len(net_names) < 2:
         result = _solve_routing_once(
-            job,
-            instance_placements,
-            domain=domain,
-            policy=policy,
+            problem,
+            maximum_route_states=job.execution_policy.maximum_route_states,
         )
         return _with_congestion_metrics(
             domain,
@@ -1452,10 +1049,7 @@ def solve_routing(
                 ),
             )
         result = _solve_routing_once(
-            job,
-            instance_placements,
-            domain=domain,
-            policy=policy,
+            problem,
             net_order=net_order,
             maximum_route_states=remaining_states,
         )
