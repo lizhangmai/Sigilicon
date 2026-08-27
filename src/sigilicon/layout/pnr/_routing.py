@@ -7,21 +7,25 @@ import heapq
 
 from sigilicon.layout.pnr._geometry import (
     translated_rect,
-    via_occurrence_shapes,
 )
 from sigilicon.layout.pnr._routing_problem import (
     NetRoutingProblem,
-    RoutingDomain,
-    RoutingLayerDomain,
     RoutingProblem,
     compile_routing_problem,
 )
 from sigilicon.layout.pnr._routing_policy import RoutingGroupPolicy
+from sigilicon.layout.pnr._routing_resources import (
+    RoutingDomain,
+    RoutingLayerDomain,
+    RoutingNode,
+    RoutingObstacle,
+    RoutingResourceIdentity,
+    RoutingSearchView,
+)
 from sigilicon.layout.pnr._routing_state import RoutingState
 from sigilicon.layout.pnr.model import (
     Diagnostic,
     InstancePlacement,
-    LayerShape,
     Metric,
     NetRoute,
     PhysicalDesignJob,
@@ -32,7 +36,6 @@ from sigilicon.layout.pnr.model import (
     RouteSegment,
     RouteVia,
     StageReport,
-    ViaDefinition,
 )
 
 
@@ -47,10 +50,7 @@ class RoutingSolveResult:
     ripped_net_count: int = 0
 
 
-@dataclass(frozen=True)
-class _RouteState:
-    layer: str
-    point: Point
+_RouteState = RoutingNode
 
 
 @dataclass(frozen=True)
@@ -126,121 +126,6 @@ def _result(
             ),
         ),
         route_states=route_states,
-    )
-
-
-def _snap_nearest(value2: int, low: int, high: int, grid: int) -> int | None:
-    first = -(-low // grid) * grid
-    last = high // grid * grid
-    if first > last:
-        return None
-    floor = value2 // (2 * grid) * grid
-    candidates = {
-        first,
-        last,
-        min(max(floor, first), last),
-        min(max(floor + grid, first), last),
-    }
-    return min(candidates, key=lambda value: (abs(2 * value - value2), value))
-
-
-def _access_point(
-    accesses: tuple[LayerShape, ...],
-    *,
-    layer: str,
-    width: int,
-    grid: int,
-    region: Rect,
-) -> Point | None:
-    margin = width // 2
-    candidates: list[Point] = []
-    for access in accesses:
-        if access.layer != layer:
-            continue
-        low_x = max(access.shape.x_min + margin, region.x_min)
-        high_x = min(access.shape.x_max - margin, region.x_max)
-        low_y = max(access.shape.y_min + margin, region.y_min)
-        high_y = min(access.shape.y_max - margin, region.y_max)
-        x = _snap_nearest(
-            access.shape.x_min + access.shape.x_max,
-            low_x,
-            high_x,
-            grid,
-        )
-        y = _snap_nearest(
-            access.shape.y_min + access.shape.y_max,
-            low_y,
-            high_y,
-            grid,
-        )
-        if x is not None and y is not None:
-            candidates.append(Point(x, y))
-    return min(candidates, key=lambda point: (point.y, point.x)) if candidates else None
-
-
-def _access_states(
-    accesses: tuple[LayerShape, ...],
-    contexts: dict[str, RoutingLayerDomain],
-    grid: int,
-) -> tuple[_RouteState, ...]:
-    states: set[_RouteState] = set()
-    for layer, context in contexts.items():
-        for region in context.regions:
-            point = _access_point(
-                accesses,
-                layer=layer,
-                width=context.width,
-                grid=grid,
-                region=region,
-            )
-            if point is not None:
-                states.add(_RouteState(layer, point))
-        margin = context.width // 2
-        for access in accesses:
-            if access.layer != layer:
-                continue
-            low_x = max(
-                access.shape.x_min + margin,
-                min(region.x_min for region in context.raw_regions) + margin,
-            )
-            high_x = min(
-                access.shape.x_max - margin,
-                max(region.x_max for region in context.raw_regions) - margin,
-            )
-            low_y = max(
-                access.shape.y_min + margin,
-                min(region.y_min for region in context.raw_regions) + margin,
-            )
-            high_y = min(
-                access.shape.y_max - margin,
-                max(region.y_max for region in context.raw_regions) - margin,
-            )
-            x = _snap_nearest(
-                access.shape.x_min + access.shape.x_max,
-                low_x,
-                high_x,
-                grid,
-            )
-            y = _snap_nearest(
-                access.shape.y_min + access.shape.y_max,
-                low_y,
-                high_y,
-                grid,
-            )
-            if x is not None:
-                states.update(
-                    _RouteState(layer, Point(x, track))
-                    for track in context.horizontal_tracks
-                    if low_y <= track <= high_y
-                )
-            if y is not None:
-                states.update(
-                    _RouteState(layer, Point(track, y))
-                    for track in context.vertical_tracks
-                    if low_x <= track <= high_x
-                )
-    return tuple(
-        sorted(states, key=lambda state: (state.layer, state.point.y, state.point.x))
     )
 
 
@@ -361,34 +246,15 @@ def _route_bin_demands(
     return demands
 
 
-def _weighted_congestion_demands(
-    domain: RoutingDomain,
+def _route_resource_demands(
+    problem: RoutingProblem,
     routes: tuple[NetRoute, ...],
-    weight: int,
-) -> dict[tuple[str, int, int, str], int]:
-    if weight == 0:
-        return {}
-    return {
-        key: demand * weight
-        for key, demand in _route_bin_demands(domain, routes).items()
-    }
-
-
-def _route_search_costs(
-    domain: RoutingDomain,
-    state: RoutingState,
-    *,
-    congestion_weight: int,
-    history_weight: int,
-) -> dict[tuple[str, int, int, str], int]:
-    costs = _weighted_congestion_demands(
-        domain,
-        state.routes,
-        congestion_weight,
-    )
-    for key, history_cost in state.history_costs.items():
-        costs[key] = costs.get(key, 0) + history_weight * history_cost
-    return costs
+) -> dict[RoutingResourceIdentity, int]:
+    demands: dict[RoutingResourceIdentity, int] = {}
+    for route in routes:
+        for demand in problem.resource_graph.route_demands(route):
+            demands[demand.resource] = demands.get(demand.resource, 0) + demand.amount
+    return demands
 
 
 def _congestion_metrics(
@@ -481,15 +347,36 @@ def _center_blockers(
     }
 
 
-def _blocking_nets(
-    state: _RouteState,
-    blockers: dict[str, tuple[_Blocker, ...]],
-) -> frozenset[str]:
-    return frozenset(
-        blocker.owner
-        for blocker in blockers.get(state.layer, ())
-        if blocker.owner is not None
-        and _point_in_interior(state.point, blocker.shape)
+def _search_resources(
+    problem: RoutingProblem,
+    state: RoutingState,
+    raw_blockers: dict[str, tuple[_Blocker, ...]],
+    *,
+    allowed_layers: frozenset[str] | None,
+    allow_vias: bool,
+    present_weight: int,
+    history_weight: int,
+) -> RoutingSearchView:
+    obstacles = {
+        layer: tuple(
+            RoutingObstacle(
+                layer,
+                blocker.shape,
+                blocker.owner,
+                "fixed" if blocker.owner is None else "route",
+            )
+            for blocker in blockers
+        )
+        for layer, blockers in raw_blockers.items()
+    }
+    return problem.resource_graph.search_view(
+        allowed_layers=allowed_layers,
+        allow_vias=allow_vias,
+        obstacles=obstacles,
+        present_usage=state.resource_usage,
+        history_costs=state.history_costs,
+        present_weight=present_weight,
+        history_weight=history_weight,
     )
 
 
@@ -503,138 +390,12 @@ def _state_blocked(
     )
 
 
-def _rectangles_too_close(
-    first: Rect,
-    second: Rect,
-    spacing_x: int,
-    spacing_y: int,
-) -> bool:
-    return not (
-        first.x_max + spacing_x <= second.x_min
-        or second.x_max + spacing_x <= first.x_min
-        or first.y_max + spacing_y <= second.y_min
-        or second.y_max + spacing_y <= first.y_min
-    )
-
-
-def _via_allowed(
-    domain: RoutingDomain,
-    via: ViaDefinition,
-    origin: Point,
-    contexts: dict[str, RoutingLayerDomain],
-    raw_blockers: dict[str, tuple[_Blocker, ...]],
-) -> tuple[bool, frozenset[str]]:
-    blocking_nets: set[str] = set()
-    translated_shapes = via_occurrence_shapes(via, origin)
-    for layer, shape in translated_shapes:
-        if not domain.die.contains(shape):
-            return False, frozenset()
-        if layer in contexts and not contexts[layer].covers(shape):
-            return False, frozenset()
-        if layer in contexts:
-            spacing_x = spacing_y = contexts[layer].spacing
-        else:
-            cut_spacing = domain.cut_spacing_for(layer)
-            if cut_spacing is None:
-                return False
-            spacing_x, spacing_y = cut_spacing
-        blocked = tuple(
-            blocker
-            for blocker in raw_blockers.get(layer, ())
-            if _rectangles_too_close(
-                shape,
-                blocker.shape,
-                spacing_x,
-                spacing_y,
-            )
-        )
-        if blocked:
-            blocking_nets.update(
-                blocker.owner for blocker in blocked if blocker.owner is not None
-            )
-            return False, frozenset(blocking_nets)
-    return True, frozenset()
-
-
-def _via_adjacency(
-    vias: tuple[ViaDefinition, ...],
-) -> dict[str, tuple[tuple[str, ViaDefinition], ...]]:
-    adjacency: dict[str, list[tuple[str, ViaDefinition]]] = {}
-    for via in vias:
-        adjacency.setdefault(via.lower_layer, []).append((via.upper_layer, via))
-        adjacency.setdefault(via.upper_layer, []).append((via.lower_layer, via))
-    return {
-        layer: tuple(sorted(edges, key=lambda edge: (edge[0], edge[1].name)))
-        for layer, edges in adjacency.items()
-    }
-
-
-def _layers_connect(
-    endpoint_states: tuple[tuple[_RouteState, ...], ...],
-    adjacency: dict[str, tuple[tuple[str, ViaDefinition], ...]],
-) -> bool:
-    endpoint_layers = tuple(
-        frozenset(state.layer for state in states) for states in endpoint_states
-    )
-    for start_layer in sorted(endpoint_layers[0]):
-        reachable = {start_layer}
-        frontier = [start_layer]
-        while frontier:
-            layer = frontier.pop()
-            for neighbor, _ in adjacency.get(layer, ()):
-                if neighbor not in reachable:
-                    reachable.add(neighbor)
-                    frontier.append(neighbor)
-        if all(reachable & layers for layers in endpoint_layers[1:]):
-            return True
-    return False
-
-
-def _edge_congestion_demand(
-    domain: RoutingDomain,
-    current: _RouteState,
-    neighbor: _RouteState,
-    via_name: str | None,
-    demands: dict[tuple[str, int, int, str], int],
-) -> int:
-    die = domain.die
-    x_bin = _bin_index(
-        neighbor.point.x,
-        die.x_min,
-        die.width,
-        domain.congestion_bins_x,
-    )
-    y_bin = _bin_index(
-        neighbor.point.y,
-        die.y_min,
-        die.height,
-        domain.congestion_bins_y,
-    )
-    if via_name is None:
-        direction = (
-            "horizontal"
-            if current.point.y == neighbor.point.y
-            else "vertical"
-        )
-        return demands.get((current.layer, x_bin, y_bin, direction), 0)
-    return sum(
-        demands.get((layer, x_bin, y_bin, direction), 0)
-        for layer in (current.layer, neighbor.layer)
-        for direction in ("horizontal", "vertical")
-    )
-
-
 def _astar(
     starts: frozenset[_RouteState],
     targets: frozenset[_RouteState],
     *,
-    contexts: dict[str, RoutingLayerDomain],
-    center_blockers: dict[str, tuple[_Blocker, ...]],
-    vias: tuple[ViaDefinition, ...],
-    raw_blockers: dict[str, tuple[_Blocker, ...]],
+    resources: RoutingSearchView,
     forbidden_states: frozenset[_RouteState],
-    congestion_demands: dict[tuple[str, int, int, str], int],
-    domain: RoutingDomain,
     remaining_states: int,
 ) -> _RouteSearchResult:
     def heuristic(state: _RouteState) -> int:
@@ -644,8 +405,6 @@ def _astar(
             for target in targets
         )
 
-    grid = domain.grid
-    adjacency = _via_adjacency(vias)
     frontier: list[tuple[int, int, str, int, int, _RouteState]] = []
     cost: dict[_RouteState, int] = {}
     for start in sorted(
@@ -658,7 +417,6 @@ def _astar(
             (heuristic(start), 0, start.layer, start.point.y, start.point.x, start),
         )
     came_from: dict[_RouteState, tuple[_RouteState, str | None]] = {}
-    via_cache: dict[tuple[str, Point], tuple[bool, frozenset[str]]] = {}
     encountered_blockers: set[str] = set()
     states = 0
     while frontier:
@@ -688,56 +446,17 @@ def _astar(
                 False,
             )
 
-        context = contexts[current.layer]
-        neighbors: list[tuple[_RouteState, str | None]] = []
-        for dx, dy in ((grid, 0), (0, grid), (-grid, 0), (0, -grid)):
-            neighbor = _RouteState(
-                current.layer,
-                Point(current.point.x + dx, current.point.y + dy),
-            )
-            if not _move_allowed(current.point, neighbor.point, context):
-                continue
-            if not _point_in_context(neighbor.point, context):
-                continue
-            if neighbor in forbidden_states and neighbor not in targets:
-                continue
-            if _state_blocked(neighbor, center_blockers):
-                encountered_blockers.update(
-                    _blocking_nets(neighbor, center_blockers)
-                )
-                continue
-            neighbors.append((neighbor, None))
-        for next_layer, via in adjacency.get(current.layer, ()):
-            neighbor = _RouteState(next_layer, current.point)
-            if not _point_in_context(neighbor.point, contexts[next_layer]):
-                continue
-            if neighbor in forbidden_states and neighbor not in targets:
-                continue
-            cache_key = via.name, current.point
-            cached = via_cache.get(cache_key)
-            if cached is None:
-                cached = _via_allowed(
-                    domain,
-                    via,
-                    current.point,
-                    contexts,
-                    raw_blockers,
-                )
-                via_cache[cache_key] = cached
-            allowed, blocking_nets = cached
-            if allowed:
-                neighbors.append((neighbor, via.name))
-            else:
-                encountered_blockers.update(blocking_nets)
-        for neighbor, via_name in neighbors:
-            congestion_demand = _edge_congestion_demand(
-                domain,
-                current,
-                neighbor,
-                via_name,
-                congestion_demands,
-            )
-            neighbor_cost = current_cost + grid * (1 + congestion_demand)
+        query = resources.neighbors(
+            current,
+            frozenset(state for state in forbidden_states if state not in targets),
+        )
+        encountered_blockers.update(
+            owner for blocked in query.blocked for owner in blocked.owners
+        )
+        for transition in query.transitions:
+            neighbor = transition.end
+            via_name = transition.via_definition
+            neighbor_cost = current_cost + resources.transition_cost(transition)
             if neighbor_cost >= cost.get(neighbor, 2**63 - 1):
                 continue
             cost[neighbor] = neighbor_cost
@@ -1091,14 +810,6 @@ def _route_net(
         if allowed_layers is None or layer in allowed_layers
     }
     via_limit = net_policy.maximum_vias
-    net_usable_vias = tuple(
-        via
-        for via in problem.vias
-        if via.lower_layer in net_contexts
-        and via.upper_layer in net_contexts
-        and via_limit != 0
-    )
-    net_adjacency = _via_adjacency(net_usable_vias)
     accesses = net.terminal_accesses
     if any(not endpoint for endpoint in accesses):
         return _net_route_failure(
@@ -1107,8 +818,18 @@ def _route_net(
             "routing_pin_access_missing",
             f"net {net.name} has a terminal without access geometry",
         )
+    raw_blockers = _raw_blockers(net, state)
+    search_resources = _search_resources(
+        problem,
+        state,
+        raw_blockers,
+        allowed_layers=allowed_layers,
+        allow_vias=via_limit != 0,
+        present_weight=net_policy.cost.congestion_weight,
+        history_weight=net_policy.cost.history_weight,
+    )
     pin_endpoint_states = tuple(
-        _access_states(endpoint, net_contexts, grid) for endpoint in accesses
+        search_resources.access_states(endpoint) for endpoint in accesses
     )
     if any(not states for states in pin_endpoint_states):
         constrained = allowed_layers is not None
@@ -1124,7 +845,7 @@ def _route_net(
         )
     required_regions = net_policy.required_regions
     region_states = tuple(
-        _access_states((region,), net_contexts, grid) for region in required_regions
+        search_resources.access_states((region,)) for region in required_regions
     )
     if any(not states for states in region_states):
         return _net_route_failure(
@@ -1136,7 +857,6 @@ def _route_net(
                 "routing-resource access"
             ),
         )
-    raw_blockers = _raw_blockers(net, state)
     center_blockers = _center_blockers(raw_blockers, net_contexts)
     shield_states, shield_diagnostic = _shield_guidance_states(
         problem,
@@ -1166,7 +886,7 @@ def _route_net(
         + ("shield",) * len(shield_states)
         + ("pin",) * (len(pin_endpoint_states) - 1)
     )
-    if not _layers_connect(endpoint_states, net_adjacency):
+    if not search_resources.layers_connect(endpoint_states):
         constrained = (
             allowed_layers is not None
             or via_limit is not None
@@ -1190,7 +910,7 @@ def _route_net(
         tuple(
             endpoint_state
             for endpoint_state in states
-            if not _state_blocked(endpoint_state, center_blockers)
+            if search_resources.blockage(endpoint_state) is None
         )
         for states in endpoint_states
     )
@@ -1204,7 +924,11 @@ def _route_net(
         blockers = frozenset(
             owner
             for endpoint_state in endpoint_states[blocked_index]
-            for owner in _blocking_nets(endpoint_state, center_blockers)
+            for owner in (
+                ()
+                if search_resources.blockage(endpoint_state) is None
+                else search_resources.blockage(endpoint_state).owners
+            )
         )
         return _net_route_failure(
             net.name,
@@ -1238,25 +962,24 @@ def _route_net(
             tree.update(starts)
             previous_terminal = set(starts)
             continue
+        search_resources = _search_resources(
+            problem,
+            state,
+            raw_blockers,
+            allowed_layers=allowed_layers,
+            allow_vias=via_limit != 0,
+            present_weight=net_policy.cost.congestion_weight,
+            history_weight=net_policy.cost.history_weight,
+        )
         search = _astar(
             starts,
             targets,
-            contexts=net_contexts,
-            center_blockers=center_blockers,
-            vias=net_usable_vias,
-            raw_blockers=raw_blockers,
+            resources=search_resources,
             forbidden_states=(
                 frozenset(tree)
                 if endpoint_index <= ordered_topology_end
                 else frozenset()
             ),
-            congestion_demands=_route_search_costs(
-                domain,
-                state,
-                congestion_weight=net_policy.cost.congestion_weight,
-                history_weight=net_policy.cost.history_weight,
-            ),
-            domain=domain,
             remaining_states=maximum_route_states - route_states,
         )
         route_states += search.states
@@ -1593,7 +1316,7 @@ def solve_routing(
         if attempt.status is ResultStatus.SUCCEEDED:
             if attempt.route is None:
                 raise RuntimeError("successful net route attempt has no route")
-            state = state.with_route(attempt.route, problem.via_definitions)
+            state = state.with_route(attempt.route, problem.resource_graph)
             group, length_targets, length_diagnostic = _length_closure_targets(
                 problem,
                 state,
@@ -1635,7 +1358,7 @@ def solve_routing(
                 ripped_net_count += len(affected & state.routes_by_net.keys())
                 state = state.with_length_targets(length_targets).rip_up(
                     affected,
-                    problem.via_definitions,
+                    problem.resource_graph,
                 )
                 iteration += 1
                 reroute = _reroute_order(problem, net_name, affected)
@@ -1695,10 +1418,10 @@ def solve_routing(
             for net in sorted(affected & state.routes_by_net.keys())
         )
         ripped_net_count += len(routed_victims)
-        history_penalty = _route_bin_demands(problem.domain, routed_victims)
+        history_penalty = _route_resource_demands(problem, routed_victims)
         state = state.with_history_penalty(history_penalty).rip_up(
             affected,
-            problem.via_definitions,
+            problem.resource_graph,
         )
         iteration += 1
         reroute = _reroute_order(problem, net_name, affected)

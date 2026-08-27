@@ -10,10 +10,14 @@ from sigilicon.layout.pnr._geometry import (
     route_segment_shape,
     via_occurrence_shapes,
 )
-from sigilicon.layout.pnr.model import NetRoute, Rect, ViaDefinition
+from sigilicon.layout.pnr._routing_resources import (
+    RoutingResourceGraph,
+    RoutingResourceIdentity,
+)
+from sigilicon.layout.pnr.model import NetRoute, Rect
 
 
-RoutingCostKey = tuple[str, int, int, str]
+RoutingCostKey = RoutingResourceIdentity
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,8 @@ class RoutingState:
 
     routes_by_net: Mapping[str, NetRoute]
     occupancy_by_layer: Mapping[str, tuple[RouteOccupancy, ...]]
+    resource_usage: Mapping[RoutingResourceIdentity, int]
+    resource_occupants: Mapping[RoutingResourceIdentity, tuple[str, ...]]
     routed_order: tuple[str, ...]
     history_costs: Mapping[RoutingCostKey, int]
     length_targets: Mapping[str, int]
@@ -40,6 +46,8 @@ class RoutingState:
         return cls(
             routes_by_net=MappingProxyType({}),
             occupancy_by_layer=MappingProxyType({}),
+            resource_usage=MappingProxyType({}),
+            resource_occupants=MappingProxyType({}),
             routed_order=(),
             history_costs=MappingProxyType({}),
             length_targets=MappingProxyType({}),
@@ -54,19 +62,19 @@ class RoutingState:
     def with_route(
         self,
         route: NetRoute,
-        via_definitions: Mapping[str, ViaDefinition],
+        resource_graph: RoutingResourceGraph,
     ) -> RoutingState:
         routes = dict(self.routes_by_net)
         routes[route.net] = route
         order = tuple(net for net in self.routed_order if net != route.net) + (
             route.net,
         )
-        return self._replace_routes(routes, order, via_definitions)
+        return self._replace_routes(routes, order, resource_graph)
 
     def rip_up(
         self,
         nets: Iterable[str],
-        via_definitions: Mapping[str, ViaDefinition],
+        resource_graph: RoutingResourceGraph,
     ) -> RoutingState:
         victims = frozenset(nets)
         routes = {
@@ -75,7 +83,7 @@ class RoutingState:
             if net not in victims
         }
         order = tuple(net for net in self.routed_order if net not in victims)
-        return self._replace_routes(routes, order, via_definitions)
+        return self._replace_routes(routes, order, resource_graph)
 
     def with_history_penalty(
         self,
@@ -87,6 +95,8 @@ class RoutingState:
         return RoutingState(
             routes_by_net=self.routes_by_net,
             occupancy_by_layer=self.occupancy_by_layer,
+            resource_usage=self.resource_usage,
+            resource_occupants=self.resource_occupants,
             routed_order=self.routed_order,
             history_costs=MappingProxyType(history),
             length_targets=self.length_targets,
@@ -99,6 +109,8 @@ class RoutingState:
         return RoutingState(
             routes_by_net=self.routes_by_net,
             occupancy_by_layer=self.occupancy_by_layer,
+            resource_usage=self.resource_usage,
+            resource_occupants=self.resource_occupants,
             routed_order=self.routed_order,
             history_costs=self.history_costs,
             length_targets=MappingProxyType(merged),
@@ -117,16 +129,19 @@ class RoutingState:
         self,
         routes: Mapping[str, NetRoute],
         order: tuple[str, ...],
-        via_definitions: Mapping[str, ViaDefinition],
+        resource_graph: RoutingResourceGraph,
     ) -> RoutingState:
         occupancy: dict[str, list[RouteOccupancy]] = {}
+        resource_occupants: dict[RoutingResourceIdentity, set[str]] = {}
         for net, route in sorted(routes.items()):
+            for demand in resource_graph.route_demands(route):
+                resource_occupants.setdefault(demand.resource, set()).add(net)
             for segment in route.segments:
                 occupancy.setdefault(segment.layer, []).append(
                     RouteOccupancy(net, segment.layer, route_segment_shape(segment))
                 )
             for route_via in route.vias:
-                via = via_definitions[route_via.via_definition]
+                via = resource_graph.via_definitions[route_via.via_definition]
                 for layer, shape in via_occurrence_shapes(via, route_via.origin):
                     occupancy.setdefault(layer, []).append(
                         RouteOccupancy(net, layer, shape)
@@ -137,6 +152,18 @@ class RoutingState:
                 {
                     layer: tuple(shapes)
                     for layer, shapes in sorted(occupancy.items())
+                }
+            ),
+            resource_usage=MappingProxyType(
+                {
+                    resource: len(nets)
+                    for resource, nets in sorted(resource_occupants.items())
+                }
+            ),
+            resource_occupants=MappingProxyType(
+                {
+                    resource: tuple(sorted(nets))
+                    for resource, nets in sorted(resource_occupants.items())
                 }
             ),
             routed_order=order,

@@ -28,6 +28,18 @@ _Avoid_: Tool option, assumed feature
 A track pattern or gridless region in which conductive geometry may be considered on a routing layer.
 _Avoid_: Route, wire
 
+**Routing Resource Graph**:
+The compiled set of gridless corridors, explicit tracks, layer segments, and via sites with their legal-use and capacity facts for one Routing Problem.
+_Avoid_: Congestion bins, technology model wrapper
+
+**Routing Resource Identity**:
+A stable name for one capacity-bearing resource that is unchanged by route order or solver allocation.
+_Avoid_: Geometry object identity, transient search state
+
+**Routing Resource Demand**:
+The capacity a Routing Solution claims from a Routing Resource, attributed to its owning net and route scope.
+_Avoid_: Wire-length estimate, post-route metric
+
 **Via Definition**:
 Local lower-conductor, cut, and upper-conductor geometry for one legal inter-layer connection.
 _Avoid_: Via name string

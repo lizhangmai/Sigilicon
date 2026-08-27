@@ -120,6 +120,9 @@ general routing remains in progress.
 - deterministic negotiated routing that attributes dynamic blockers, accumulates
   historical congestion cost, and rips up only the affected net or compiled
   Routing Group;
+- a compiled Routing Resource Graph that gives gridless corridors, explicit
+  tracks, layer segments, and via sites stable identities and capacities while
+  presenting A* only a per-net legal-transition and cost Interface;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over
