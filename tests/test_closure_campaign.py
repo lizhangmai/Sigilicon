@@ -5,6 +5,8 @@ import hashlib
 from pathlib import Path
 import struct
 
+import pytest
+
 from sigilicon.domain.physical_verification import (
     DrcEvidence,
     DrcViolation,
@@ -358,8 +360,14 @@ def _benchmark_gds(plan) -> bytes:
 class _BenchmarkLayoutAdapter:
     """Unregistered materialization contract fixture, never product evidence."""
 
-    def __init__(self, *, corrupt_result_identity: bool = False) -> None:
-        self._corrupt_result_identity = corrupt_result_identity
+    def __init__(
+        self,
+        *,
+        outcome: str = "materialized",
+        corrupt_identity: str | None = None,
+    ) -> None:
+        self._outcome = MaterializationExecutionStatus(outcome)
+        self._corrupt_identity = corrupt_identity
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         try:
@@ -377,18 +385,38 @@ class _BenchmarkLayoutAdapter:
         _job, _result, plan, _target = read_materialization_execution_request(
             context
         )
-        layout = context.output_path("layout", "layout.gds")
-        layout.write_bytes(_benchmark_gds(plan))
-        receipt = write_materialization_receipt(
-            context,
-            status=MaterializationExecutionStatus.MATERIALIZED,
-            completion=MaterializationCompletion(
+        if self._outcome is MaterializationExecutionStatus.MATERIALIZED:
+            layout = context.output_path("layout", "layout.gds")
+            layout.write_bytes(_benchmark_gds(plan))
+            completion = MaterializationCompletion(
                 "benchmark.contract-materializer",
                 True,
                 True,
                 True,
                 0,
-            ),
+            )
+        elif self._outcome is MaterializationExecutionStatus.EXECUTION_FAILED:
+            layout = None
+            completion = MaterializationCompletion(
+                "benchmark.contract-materializer",
+                True,
+                False,
+                False,
+                1,
+            )
+        else:
+            layout = None
+            completion = MaterializationCompletion(
+                "benchmark.contract-materializer",
+                False,
+                False,
+                False,
+                None,
+            )
+        receipt = write_materialization_receipt(
+            context,
+            status=self._outcome,
+            completion=completion,
             layout_path=layout,
             message="benchmark contract materialization evidence",
         )
@@ -402,14 +430,22 @@ class _BenchmarkLayoutAdapter:
         execution: AdapterExecution,
     ) -> CollectedActionResult:
         collected = collect_materialization_execution_result(context, execution)
-        if not self._corrupt_result_identity:
+        if self._corrupt_identity is None:
             return collected
         artifacts = tuple(
             replace(
                 artifact,
-                qualifiers={**artifact.qualifiers, "result-sha256": "0" * 64},
+                qualifiers={
+                    **artifact.qualifiers,
+                    {
+                        "result": "result-sha256",
+                        "receipt": "receipt-sha256",
+                        "layout": "layout-sha256",
+                    }[self._corrupt_identity]: "0" * 64,
+                },
             )
-            if artifact.role == "layout"
+            if artifact.role
+            == ("receipt" if self._corrupt_identity == "receipt" else "layout")
             else artifact
             for artifact in collected.artifacts
         )
@@ -424,12 +460,30 @@ class _BenchmarkVerificationAdapter:
 
     def _evidence(self, context: ActionContext) -> DrcEvidence | LvsEvidence:
         status = self._status(context)
-        completion = VerificationCompletion(
-            "benchmark-parsed-report-fixture",
-            True,
-            True,
-            0,
-        )
+        if status in {
+            PhysicalVerificationStatus.CLEAN,
+            PhysicalVerificationStatus.VIOLATED,
+        }:
+            completion = VerificationCompletion(
+                "benchmark-parsed-report-fixture",
+                True,
+                True,
+                0,
+            )
+        elif status is PhysicalVerificationStatus.EXECUTION_FAILED:
+            completion = VerificationCompletion(
+                "benchmark-parsed-report-fixture",
+                True,
+                False,
+                1,
+            )
+        else:
+            completion = VerificationCompletion(
+                "benchmark-parsed-report-fixture",
+                False,
+                False,
+                None,
+            )
         inputs = load_receipt_bound_verification_inputs(context)
         layout = inputs.layout
         if context.action.kind == DRC_ACTION:
@@ -437,6 +491,8 @@ class _BenchmarkVerificationAdapter:
                 ()
                 if status is PhysicalVerificationStatus.CLEAN
                 else (DrcViolation("M1.W.1", 1),)
+                if status is PhysicalVerificationStatus.VIOLATED
+                else ()
             )
             return DrcEvidence(status, layout, completion, violations, "fixture DRC")
         assert inputs.source is not None
@@ -444,6 +500,8 @@ class _BenchmarkVerificationAdapter:
             ()
             if status is PhysicalVerificationStatus.CLEAN
             else (LvsMismatch("INCORRECT", 1),)
+            if status is PhysicalVerificationStatus.VIOLATED
+            else ()
         )
         return LvsEvidence(
             status,
@@ -459,10 +517,7 @@ class _BenchmarkVerificationAdapter:
             evidence = self._evidence(context)
         except (KeyError, ValueError, OSError) as exc:
             return (str(exc),)
-        return () if evidence.status in {
-            PhysicalVerificationStatus.CLEAN,
-            PhysicalVerificationStatus.VIOLATED,
-        } else ("fixture supports only clean and violated",)
+        return ()
 
     def prepare(self, context: ActionContext) -> None:
         pass
@@ -524,7 +579,11 @@ def _flow(
     drc: str | None = None,
     lvs: str | None = None,
     corrupt_layout_identity: bool = False,
+    materialization: str = "materialized",
+    corrupt_identity: str | None = None,
 ):
+    if corrupt_layout_identity:
+        corrupt_identity = "result"
     registry = builtin_workflow_registry()
     registry.register_action(
         ActionContract(
@@ -543,7 +602,10 @@ def _flow(
     registry.register_action_adapter(
         PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
         _BENCHMARK_LAYOUT_ADAPTER,
-        _BenchmarkLayoutAdapter(corrupt_result_identity=corrupt_layout_identity),
+        _BenchmarkLayoutAdapter(
+            outcome=materialization,
+            corrupt_identity=corrupt_identity,
+        ),
     )
     registry.register_action_adapter(
         DRC_ACTION,
@@ -651,6 +713,7 @@ def _flow(
         goals = ("drc", "lvs")
         bindings = replace(
             bindings,
+            materialization_receipt=CampaignArtifactReference("layout", "receipt"),
             layout=CampaignArtifactReference("layout", "layout"),
             source=CampaignArtifactReference("inputs", "source"),
             drc=CampaignArtifactReference("drc", "evidence"),
@@ -702,9 +765,20 @@ def _runner(engine: FlowEngine, *, artifact_root: Path) -> ClosureCampaignRunner
     )
 
 
-def test_campaign_closes_typed_reference_flow_deterministically(tmp_path: Path) -> None:
+def test_public_dbu_campaign_closes_full_receipt_bound_graph_deterministically(
+    tmp_path: Path,
+) -> None:
     engine, plan, bindings = _flow(_gridless_job(), drc="clean", lvs="clean")
     campaign = _campaign(plan, bindings)
+
+    assert tuple(item.node.action_kind for item in plan.nodes) == (
+        _BENCHMARK_INPUT_ACTION,
+        PHYSICAL_DESIGN_ACTION,
+        PHYSICAL_MATERIALIZATION_ACTION,
+        PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
+        DRC_ACTION,
+        LVS_ACTION,
+    )
 
     first = _runner(
         engine,
@@ -726,6 +800,7 @@ def test_campaign_closes_typed_reference_flow_deterministically(tmp_path: Path) 
         "layout",
         "lvs",
         "materialization-plan",
+        "materialization-receipt",
         "result",
         "source",
     }
@@ -762,6 +837,20 @@ def test_campaign_closes_typed_reference_flow_deterministically(tmp_path: Path) 
         routing_failed,
         drc_failed,
     ) is ClosureQualityDecision.IMPROVED
+
+
+def test_campaign_requires_explicit_receipt_reference_without_node_scanning(
+    tmp_path: Path,
+) -> None:
+    engine, plan, bindings = _flow(_gridless_job(), drc="clean", lvs="clean")
+    missing_receipt = replace(bindings, materialization_receipt=None)
+    result = _runner(engine, artifact_root=tmp_path / "missing-receipt").run(
+        _campaign(plan, missing_receipt)
+    )
+
+    assert result.iterations[0].flow_status == "failed"
+    assert result.termination is ClosureCampaignTermination.EXECUTION_FAILED
+    assert result.final_quality.identity is ClosureStageStatus.INVALID_IDENTITY
 
 
 def test_campaign_preserves_proven_infeasible_and_pnr_state_budget(
@@ -835,6 +924,8 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
         ClosureCampaignTermination.ITERATION_BUDGET
     )
     assert repair.termination is ClosureCampaignTermination.REPAIR
+    assert all(item.flow_status == "accepted" for item in repair.iterations)
+    assert not repair.closed
     assert len(repair.iterations) == 2
     assert repair.iterations[1].quality_decision is ClosureQualityDecision.EQUIVALENT
     assert repair.final_quality.drc is ClosureStageStatus.VIOLATED
@@ -843,6 +934,142 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
     assert feedback.kind is ClosureFeedbackKind.DRC_RULE
     assert feedback.identities == ("M1.W.1",)
     assert feedback.repairable
+
+
+def test_lvs_violation_produces_only_typed_mismatch_feedback(tmp_path: Path) -> None:
+    engine, plan, bindings = _flow(_gridless_job(), drc="clean", lvs="violated")
+    result = _runner(engine, artifact_root=tmp_path / "lvs-violated").run(
+        _campaign(plan, bindings)
+    )
+
+    assert result.termination is ClosureCampaignTermination.REPAIR
+    assert result.iterations[0].flow_status == "accepted"
+    assert result.final_quality.lvs is ClosureStageStatus.VIOLATED
+    assert result.iterations[0].feedback == (
+        result.iterations[0].feedback[0],
+    )
+    feedback = result.iterations[0].feedback[0]
+    assert feedback.kind is ClosureFeedbackKind.LVS_MISMATCH
+    assert feedback.identities == ("INCORRECT",)
+    assert len(feedback.source_evidence) == 2
+
+
+@pytest.mark.parametrize(
+    "materialization,expected_status,expected_termination",
+    (
+        (
+            "unsupported",
+            ClosureStageStatus.UNSUPPORTED,
+            ClosureCampaignTermination.UNSUPPORTED,
+        ),
+        (
+            "backend_unavailable",
+            ClosureStageStatus.BACKEND_UNAVAILABLE,
+            ClosureCampaignTermination.UNSUPPORTED,
+        ),
+        (
+            "execution_failed",
+            ClosureStageStatus.EXECUTION_FAILED,
+            ClosureCampaignTermination.EXECUTION_FAILED,
+        ),
+    ),
+)
+def test_campaign_preserves_non_materialized_receipt_status(
+    tmp_path: Path,
+    materialization: str,
+    expected_status: ClosureStageStatus,
+    expected_termination: ClosureCampaignTermination,
+) -> None:
+    engine, plan, bindings = _flow(
+        _gridless_job(),
+        drc="clean",
+        lvs="clean",
+        materialization=materialization,
+    )
+    result = _runner(
+        engine,
+        artifact_root=tmp_path / materialization,
+    ).run(_campaign(plan, bindings))
+
+    assert result.termination is expected_termination
+    assert result.final_quality.materialization is expected_status
+    assert result.final_quality.drc is ClosureStageStatus.NOT_EVALUATED
+    assert result.final_quality.lvs is ClosureStageStatus.NOT_EVALUATED
+    assert result.iterations[0].feedback[0].kind is (
+        ClosureFeedbackKind.MATERIALIZATION
+    )
+
+
+@pytest.mark.parametrize(
+    "stage,status,expected_stage,expected_termination",
+    (
+        (
+            "drc",
+            "backend_unavailable",
+            ClosureStageStatus.BACKEND_UNAVAILABLE,
+            ClosureCampaignTermination.UNSUPPORTED,
+        ),
+        (
+            "drc",
+            "execution_failed",
+            ClosureStageStatus.EXECUTION_FAILED,
+            ClosureCampaignTermination.EXECUTION_FAILED,
+        ),
+        (
+            "lvs",
+            "unsupported",
+            ClosureStageStatus.UNSUPPORTED,
+            ClosureCampaignTermination.UNSUPPORTED,
+        ),
+        (
+            "lvs",
+            "execution_failed",
+            ClosureStageStatus.EXECUTION_FAILED,
+            ClosureCampaignTermination.EXECUTION_FAILED,
+        ),
+    ),
+)
+def test_campaign_preserves_verification_nonconclusions(
+    tmp_path: Path,
+    stage: str,
+    status: str,
+    expected_stage: ClosureStageStatus,
+    expected_termination: ClosureCampaignTermination,
+) -> None:
+    engine, plan, bindings = _flow(
+        _gridless_job(),
+        drc=status if stage == "drc" else "clean",
+        lvs=status if stage == "lvs" else "clean",
+    )
+    result = _runner(
+        engine,
+        artifact_root=tmp_path / f"{stage}-{status}",
+    ).run(_campaign(plan, bindings))
+
+    assert result.termination is expected_termination
+    assert getattr(result.final_quality, stage) is expected_stage
+    assert result.iterations[0].flow_status == "accepted"
+
+
+@pytest.mark.parametrize("corrupt", ("receipt", "layout", "result"))
+def test_campaign_rejects_each_materialization_identity_link(
+    tmp_path: Path,
+    corrupt: str,
+) -> None:
+    engine, plan, bindings = _flow(
+        _gridless_job(),
+        drc="clean",
+        lvs="clean",
+        corrupt_identity=corrupt,
+    )
+    result = _runner(
+        engine,
+        artifact_root=tmp_path / f"corrupt-{corrupt}",
+    ).run(_campaign(plan, bindings))
+
+    assert result.termination is ClosureCampaignTermination.EXECUTION_FAILED
+    assert result.final_quality.identity is ClosureStageStatus.INVALID_IDENTITY
+    assert not result.closed
 
 
 def test_campaign_distinguishes_invalid_identity_from_valid_nonclosure(
@@ -883,10 +1110,16 @@ def test_required_future_analysis_is_explicitly_unsupported(tmp_path: Path) -> N
         _campaign(
             plan,
             bindings,
-            scope=ClosureCampaignScope(require_pex=True),
+            scope=ClosureCampaignScope(
+                require_pex=True,
+                require_post_layout=True,
+                require_qualification=True,
+            ),
         )
     )
 
     assert result.termination is ClosureCampaignTermination.UNSUPPORTED
     assert result.final_quality.pex is ClosureStageStatus.UNSUPPORTED
+    assert result.final_quality.post_layout is ClosureStageStatus.UNSUPPORTED
+    assert result.final_quality.qualification is ClosureStageStatus.UNSUPPORTED
     assert not result.closed

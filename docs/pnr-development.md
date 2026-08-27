@@ -86,8 +86,11 @@ failure, not clean or violated evidence.
 `FlowEngine`. Every iteration supplies an already resolved Flow target and
 explicit artifact references. `FlowEngine` remains a one-pass deterministic DAG
 executor; the campaign validates canonical job, result, standalone closure,
-Materialization Plan, checked layout/source, DRC, and LVS identities before making
-a closure decision.
+Materialization Plan, Materialization Receipt, managed checked layout/source, DRC,
+and LVS identities before making a closure decision. A bound optional output that
+was not produced blocks its consumers instead of causing an untyped executor
+lookup failure. Flow acceptance records Action execution only; campaign closure
+still requires a materialized receipt and every required typed conclusion.
 
 Campaign quality is lexicographic rather than a scalar score. Its dominance order
 is: source/layout/result identity; executable materialization; DRC and LVS;

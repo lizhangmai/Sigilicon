@@ -903,6 +903,11 @@ class FlowEngine:
                     f"input {binding.input!r} requires {binding.requires} result "
                     f"from {binding.producer!r}"
                 )
+            if binding.output not in producer.artifacts:
+                return (
+                    f"input {binding.input!r} requires artifact role "
+                    f"{binding.output!r} from {binding.producer!r}"
+                )
         for predecessor in node.order_after:
             if predecessor not in binding_producers and outcomes[predecessor].status != "accepted":
                 return f"ordering predecessor {predecessor!r} was not accepted"
