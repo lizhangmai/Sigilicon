@@ -30,6 +30,21 @@ Output adapters lower accepted results into a Materialization Plan or another
 persistent representation after the seam. Independent DRC, LVS, PEX, and
 post-layout analysis remain authoritative.
 
+## Flow integration
+
+The tool-independent `physical-design.solve` Action consumes a canonical
+`physical-design.job` artifact and emits a canonical `physical-design.result`
+plus optional `evidence.physical-closure`. The in-process reference Adapter is
+assembled in the workflow layer, where the generic Flow and layout Modules may
+legally meet. It reports Adapter execution separately from the typed physical
+result: failed, unsupported, and budget-exhausted P&R conclusions are valid
+artifacts, while owner Flow policy decides whether they are accepted.
+
+Serialization is reversible and rejects unknown fields, enum values, duplicate
+fields, missing fields, and malformed nested structures. Closure facts are read
+directly from Placement-Routing Closure Evidence, never reconstructed from Stage
+Report metric names.
+
 ## PANDA influence
 
 The architecture borrows four public ideas from

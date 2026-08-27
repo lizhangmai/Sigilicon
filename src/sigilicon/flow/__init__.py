@@ -51,6 +51,15 @@ from sigilicon.flow.model import (
     SourceMember,
 )
 from sigilicon.flow.registry import FlowRegistry, ToolAdapter
+from sigilicon.flow.physical_design import (
+    PHYSICAL_CLOSURE_EVIDENCE_KIND,
+    PHYSICAL_DESIGN_ACTION,
+    PHYSICAL_DESIGN_JOB_KIND,
+    PHYSICAL_DESIGN_RESULT_KIND,
+    PHYSICAL_DESIGN_SOURCE_ACTION,
+    REFERENCE_PNR_ADAPTER,
+    register_physical_design_actions,
+)
 from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.synopsys import (
     SynopsysDCAdapter,
@@ -87,6 +96,11 @@ __all__ = [
     "FlowTarget",
     "InputArtifact",
     "NodeOutcome",
+    "PHYSICAL_CLOSURE_EVIDENCE_KIND",
+    "PHYSICAL_DESIGN_ACTION",
+    "PHYSICAL_DESIGN_JOB_KIND",
+    "PHYSICAL_DESIGN_RESULT_KIND",
+    "PHYSICAL_DESIGN_SOURCE_ACTION",
     "PolicyCheck",
     "PolicySpec",
     "PlatformAssetRequirement",
@@ -96,6 +110,7 @@ __all__ = [
     "ResolvedPlatformAsset",
     "ResolvedCapability",
     "ResolvedPlatformAssetMember",
+    "REFERENCE_PNR_ADAPTER",
     "GitSource",
     "SourceArtifact",
     "SourceAssets",
@@ -110,6 +125,7 @@ __all__ = [
     "fake_registry",
     "fake_profile",
     "register_standard_asic_actions",
+    "register_physical_design_actions",
     "SynopsysDCAdapter",
     "SynopsysFCAdapter",
     "SynopsysHSpiceAdapter",

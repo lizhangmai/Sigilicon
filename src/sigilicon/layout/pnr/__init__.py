@@ -5,6 +5,14 @@ values. Database and project formats belong in adapters outside this Module.
 """
 
 from sigilicon.layout.pnr.engine import PnrInputError, run
+from sigilicon.layout.pnr.serialization import (
+    CanonicalSerializationError,
+    canonical_json,
+    canonical_sha256,
+    physical_design_job_from_json,
+    physical_design_result_from_json,
+    placement_routing_closure_evidence_from_json,
+)
 from sigilicon.layout.pnr.model import (
     AlignmentAnchor,
     AlignmentConstraint,
@@ -98,6 +106,7 @@ __all__ = [
     "Axis",
     "BoundingBoxAreaObjective",
     "BoundingBoxCongestionObjective",
+    "CanonicalSerializationError",
     "ConstraintMode",
     "ConstraintOutcome",
     "ConstraintStatus",
@@ -176,5 +185,10 @@ __all__ = [
     "TechnologyCapability",
     "ViaDefinition",
     "ViaStack",
+    "canonical_json",
+    "canonical_sha256",
+    "physical_design_job_from_json",
+    "physical_design_result_from_json",
+    "placement_routing_closure_evidence_from_json",
     "run",
 ]

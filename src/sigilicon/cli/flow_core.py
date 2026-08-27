@@ -16,11 +16,11 @@ from sigilicon.flow import (
     ExecutionProfile,
     FlowExecutionError,
     FlowRegistry,
-    builtin_registry,
     load_catalog_selection,
     load_execution_environment,
     load_flow_catalog,
 )
+from sigilicon.workflows.builtin import builtin_workflow_registry
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -116,7 +116,7 @@ def _execution_environment(
 def main(
     argv: Sequence[str] | None = None,
     *,
-    registry_factory: Callable[[Path | None], FlowRegistry] = builtin_registry,
+    registry_factory: Callable[[Path | None], FlowRegistry] = builtin_workflow_registry,
     environment_factory: Callable[[ExecutionProfile], ExecutionEnvironment] = (
         lambda _profile: ExecutionEnvironment()
     ),

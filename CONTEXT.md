@@ -12,6 +12,10 @@ _Avoid_: Layout recipe, PDK job
 The complete outcome of a Physical Design Job, including solutions, constraint outcomes, diagnostics, metrics, typed Placement-Routing Closure Evidence, and reproducibility identity.
 _Avoid_: Successful process, generated layout
 
+**Physical Design Flow Artifact**:
+A canonical, strictly validated Physical Design Job, Physical Design Result, or Placement-Routing Closure Evidence value transferred between managed Flow stages.
+_Avoid_: Arbitrary JSON dump, Stage Report reconstruction
+
 **Physical Design Model**:
 A database-neutral description of hierarchy, physical masters, instances, ports, nets, and legal design regions.
 _Avoid_: OA model, GDS model
