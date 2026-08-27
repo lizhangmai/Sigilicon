@@ -287,8 +287,6 @@ def _pinned_owner_runner(
 class SynopsysDCAdapter:
     """Run one owner recipe behind the typed ``asic.synthesis`` interface."""
 
-    version = "1"
-
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()
 
@@ -563,8 +561,6 @@ class SynopsysDCAdapter:
 
 class SynopsysFCAdapter:
     """Run managed reference-library and place-and-route Action interfaces."""
-
-    version = "2"
 
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()
@@ -1112,8 +1108,6 @@ class SynopsysFCAdapter:
 class SynopsysVCSAdapter:
     """Run owner VCS recipes behind typed simulation Action interfaces."""
 
-    version = "1"
-
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()
 
@@ -1328,8 +1322,6 @@ class SynopsysVCSAdapter:
 
 class SynopsysHSpiceAdapter:
     """Run an owner-selected HSPICE regression or characterization campaign."""
-
-    version = "3"
 
     def __init__(self, owner_root: Path) -> None:
         self._owner_root = Path(owner_root).resolve()

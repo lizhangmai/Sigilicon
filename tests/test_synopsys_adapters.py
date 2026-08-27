@@ -29,8 +29,6 @@ from sigilicon.flow import (
 
 
 class SourceAssetsAdapter:
-    version = "1"
-
     def __init__(self, owner_root: Path) -> None:
         self.owner_root = owner_root
 

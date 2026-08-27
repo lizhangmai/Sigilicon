@@ -277,11 +277,6 @@ class FlowEngine:
                         requirement=planned.adapter,
                         requirement_kind="adapter",
                         status="available" if available else "missing",
-                        identity=(
-                            self._registry.adapter(planned.adapter).version
-                            if available
-                            else None
-                        ),
                     )
                 )
             if planned.source_assets is not None:
@@ -508,7 +503,6 @@ class FlowEngine:
                 "node": node.node_id,
                 "action": node.action_kind,
                 "adapter": planned.adapter,
-                "adapter_version": adapter.version,
                 "action_config": json_value(node.config),
                 "adapter_config": json_value(planned.adapter_config),
                 "execution_environment": environment_payload,

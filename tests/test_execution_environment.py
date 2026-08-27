@@ -24,8 +24,6 @@ from sigilicon.flow import (
 
 
 class PlanningAdapter:
-    version = "1"
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return ()
 

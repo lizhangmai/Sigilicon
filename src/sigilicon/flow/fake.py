@@ -17,8 +17,6 @@ from sigilicon.flow.registry import FlowRegistry
 
 
 class _SourceAdapter:
-    version = "1"
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return (
             ()
@@ -54,8 +52,6 @@ class _SourceAdapter:
 
 
 class _TransformAdapter:
-    version = "1"
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return ()
 
@@ -90,8 +86,6 @@ class _TransformAdapter:
 
 
 class _VerifyAdapter:
-    version = "1"
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return (
             ()

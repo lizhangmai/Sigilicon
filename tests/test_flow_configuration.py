@@ -30,8 +30,6 @@ from sigilicon.flow import (
 
 
 class RequirementAdapter:
-    version = "1"
-
     def __init__(self) -> None:
         self.executions = 0
         self.platform_location: Path | None = None

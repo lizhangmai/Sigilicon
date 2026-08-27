@@ -16,8 +16,6 @@ from sigilicon.flow.model import (
 
 
 class ToolAdapter(Protocol):
-    version: str
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]: ...
 
     def prepare(self, context: ActionContext) -> None: ...
@@ -47,9 +45,6 @@ class FlowRegistry:
         identity = identifier(name, "Adapter name")
         if identity in self._adapters:
             raise FlowContractError(f"Adapter {identity!r} is already registered")
-        version = getattr(adapter, "version", None)
-        if not isinstance(version, str) or not version:
-            raise FlowContractError(f"Adapter {identity!r} has no version identity")
         for operation in (
             "validate_inputs",
             "prepare",

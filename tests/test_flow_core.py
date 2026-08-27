@@ -32,8 +32,6 @@ from sigilicon.flow import (
 
 
 class SourceAdapter:
-    version = "1"
-
     def __init__(self) -> None:
         self.executions = 0
 
@@ -71,8 +69,6 @@ class SourceAdapter:
 
 
 class TransformAdapter:
-    version = "1"
-
     def __init__(self) -> None:
         self.executions = 0
 
@@ -112,8 +108,6 @@ class TransformAdapter:
 
 
 class VerifyAdapter:
-    version = "1"
-
     def __init__(self) -> None:
         self.executions = 0
 
@@ -574,8 +568,6 @@ expected = true
 
 
 class TerminalAdapter:
-    version = "1"
-
     def __init__(self, result_status: str | None = None) -> None:
         self.result_status = result_status
         self.executions = 0

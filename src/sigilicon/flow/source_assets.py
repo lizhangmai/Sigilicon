@@ -236,8 +236,6 @@ def resolve_node_source_assets(
 class SourceAssetsAdapter:
     """Snapshot selected source below one managed Action directory."""
 
-    version = "2"
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         source = context.source_assets
         if source is None:
