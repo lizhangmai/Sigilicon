@@ -91,6 +91,12 @@ def test_resource_graph_compiles_gridless_track_segment_and_via_demands() -> Non
         RoutingResourceKind.VIA.value,
     }
     assert all(graph.definition(item.resource).capacity >= 1 for item in first)
+    via_resource = next(
+        demand.resource
+        for demand in first
+        if demand.resource.kind == RoutingResourceKind.VIA.value
+    )
+    assert graph.definition(via_resource).capacity == 1
     assert tuple(item.capacity for item in graph.resources) == (3, 3)
 
 

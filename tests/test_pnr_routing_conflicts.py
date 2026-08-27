@@ -3,10 +3,13 @@ from __future__ import annotations
 from sigilicon.layout.pnr._routing_conflicts import (
     DeterministicVictimPolicy,
     RoutingConflictKind,
+    attributed_failure_conflicts,
     capacity_conflicts,
 )
 from sigilicon.layout.pnr._routing_resources import (
+    BlockedResource,
     RoutingResourceIdentity,
+    RoutingResourceKind,
     RoutingResourceOverflow,
 )
 
@@ -63,3 +66,38 @@ def test_capacity_conflicts_and_victim_selection_are_stable_and_explicit() -> No
     assert selection is not None
     assert selection.victim == "beta"
     assert selection.reroute_scope == ("beta", "gamma")
+
+
+def test_via_capacity_and_occupancy_conflicts_are_typed_as_exhaustion() -> None:
+    resource = RoutingResourceIdentity(
+        RoutingResourceKind.VIA.value,
+        "cut",
+        ("lower-upper", 10, 12),
+    )
+    capacity = capacity_conflicts(
+        (
+            RoutingResourceOverflow(
+                resource,
+                usage=2,
+                capacity=1,
+                occupants=("alpha", "beta"),
+            ),
+        ),
+        group_by_net={"alpha": None, "beta": None},
+        reroute_scope_by_net={"alpha": ("alpha",), "beta": ("beta",)},
+        branch_occupants={},
+    )
+    occupied = attributed_failure_conflicts(
+        net="beta",
+        kind=RoutingConflictKind.TOPOLOGY_CONFLICT,
+        blocked=(
+            BlockedResource(resource, ("alpha",), False, "occupied via site"),
+        ),
+        affected_group=None,
+        reroute_scope=("beta",),
+        evidence="cannot enter via",
+        branch_occupants={},
+    )
+
+    assert capacity.conflicts[0].kind is RoutingConflictKind.VIA_EXHAUSTION
+    assert occupied.conflicts[0].kind is RoutingConflictKind.VIA_EXHAUSTION

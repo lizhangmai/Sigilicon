@@ -9,6 +9,7 @@ from enum import Enum
 from sigilicon.layout.pnr._routing_resources import (
     BlockedResource,
     RoutingResourceIdentity,
+    RoutingResourceKind,
     RoutingResourceOverflow,
 )
 
@@ -195,7 +196,11 @@ def capacity_conflicts(
                     f"capacity:{overflow.resource.stable_name}:"
                     f"{','.join(overflow.occupants)}"
                 ),
-                kind=RoutingConflictKind.CAPACITY_OVERFLOW,
+                kind=(
+                    RoutingConflictKind.VIA_EXHAUSTION
+                    if overflow.resource.kind == RoutingResourceKind.VIA.value
+                    else RoutingConflictKind.CAPACITY_OVERFLOW
+                ),
                 resource=overflow.resource,
                 aggressor_nets=overflow.occupants,
                 occupant_nets=overflow.occupants,
@@ -254,7 +259,12 @@ def attributed_failure_conflicts(
             kind=(
                 RoutingConflictKind.HARD_BLOCKER
                 if item.hard and not item.owners
-                else kind
+                else (
+                    RoutingConflictKind.VIA_EXHAUSTION
+                    if item.resource is not None
+                    and item.resource.kind == RoutingResourceKind.VIA.value
+                    else kind
+                )
             ),
             resource=item.resource,
             aggressor_nets=(net,),
