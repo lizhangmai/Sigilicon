@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from enum import Enum
 
 from sigilicon.layout.pnr._routing_resources import (
     BlockedResource,
@@ -14,18 +13,9 @@ from sigilicon.layout.pnr._routing_resources import (
 )
 from sigilicon.layout.pnr.model import (
     PhysicalOwnerIdentity,
+    RoutingConflictKind,
     RoutingTerminationReason,
 )
-
-
-class RoutingConflictKind(str, Enum):
-    HARD_BLOCKER = "hard_blocker"
-    CAPACITY_OVERFLOW = "capacity_overflow"
-    UNROUTED_TERMINAL = "unrouted_terminal"
-    GROUP_CONSTRAINT = "group_constraint_failure"
-    VIA_EXHAUSTION = "via_resource_exhaustion"
-    TOPOLOGY_CONFLICT = "topology_conflict"
-    BUDGET_EXHAUSTION = "budget_exhaustion"
 
 
 @dataclass(frozen=True)

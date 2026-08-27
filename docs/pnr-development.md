@@ -152,8 +152,9 @@ general routing remains in progress.
 - every repair records current/candidate quality and an improved, equivalent,
   or regressed decision; fewer conflicts cannot mask increased overflow;
 - public Placement-Routing Closure Evidence projects final conflict and pressure
-  identities, distinct routing/outer-loop termination, Routing Closure Quality,
-  and each evaluated attributed repair without exposing mutable routing state;
+  summaries, owner mobility and attribution reason, distinct routing/outer-loop
+  termination, Routing Closure Quality, and each evaluated attributed repair
+  without exposing mutable routing state or Routing Resource Graph internals;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over

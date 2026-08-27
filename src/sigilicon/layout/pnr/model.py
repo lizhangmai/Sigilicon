@@ -99,6 +99,22 @@ class PhysicalOwnerKind(str, Enum):
     BLOCKAGE = "blockage"
 
 
+class PhysicalOwnerMobility(str, Enum):
+    MOVABLE = "movable"
+    FIXED = "fixed"
+    UNSUPPORTED = "unsupported"
+
+
+class RoutingConflictKind(str, Enum):
+    HARD_BLOCKER = "hard_blocker"
+    CAPACITY_OVERFLOW = "capacity_overflow"
+    UNROUTED_TERMINAL = "unrouted_terminal"
+    GROUP_CONSTRAINT = "group_constraint_failure"
+    VIA_EXHAUSTION = "via_resource_exhaustion"
+    TOPOLOGY_CONFLICT = "topology_conflict"
+    BUDGET_EXHAUSTION = "budget_exhaustion"
+
+
 class RoutingTerminationReason(str, Enum):
     CLOSED = "closed"
     INFEASIBLE = "infeasible"
@@ -666,6 +682,45 @@ class RoutingClosureQuality(CanonicalValue):
 
 
 @dataclass(frozen=True)
+class PhysicalOwnerSummary(CanonicalValue):
+    identity: PhysicalOwnerIdentity
+    mobility: PhysicalOwnerMobility
+    repair_owner: PhysicalOwnerIdentity | None
+
+
+@dataclass(frozen=True)
+class RoutingConflictSummary(CanonicalValue):
+    identity: str
+    kind: RoutingConflictKind
+    resource: str | None
+    aggressor_nets: tuple[str, ...]
+    occupant_nets: tuple[str, ...]
+    affected_group: str | None
+    severity: int
+    cost: int
+    evidence: str
+    physical_owners: tuple[PhysicalOwnerIdentity, ...]
+    resource_overflow: int
+
+
+@dataclass(frozen=True)
+class RoutingPlacementPressureSummary(CanonicalValue):
+    identity: str
+    source_conflict: str
+    conflict_kind: RoutingConflictKind
+    resource: str | None
+    region: Rect | None
+    physical_owner_candidates: tuple[PhysicalOwnerSummary, ...]
+    involved_nets: tuple[str, ...]
+    involved_groups: tuple[str, ...]
+    severity: int
+    cost: int
+    evidence: str
+    reason: str
+    repair_scope: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PlacementRoutingRepairSummary(CanonicalValue):
     """Observable provenance for one evaluated local repair candidate."""
 
@@ -674,6 +729,7 @@ class PlacementRoutingRepairSummary(CanonicalValue):
     attributed_owners: tuple[PhysicalOwnerIdentity, ...]
     source_conflicts: tuple[str, ...]
     source_pressures: tuple[str, ...]
+    source_pressure: tuple[RoutingPlacementPressureSummary, ...]
     displacement_dbu: int
     predicted_released_resources: tuple[str, ...]
     predicted_released_pressure: int
@@ -695,6 +751,8 @@ class PlacementRoutingClosureEvidence(CanonicalValue):
     quality: RoutingClosureQuality
     conflict_identities: tuple[str, ...]
     pressure_identities: tuple[str, ...]
+    conflicts: tuple[RoutingConflictSummary, ...]
+    placement_pressure: tuple[RoutingPlacementPressureSummary, ...]
     repairs: tuple[PlacementRoutingRepairSummary, ...]
 
 

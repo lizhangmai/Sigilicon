@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -24,6 +23,7 @@ from sigilicon.layout.pnr.model import (
     PhysicalDesignJob,
     PhysicalOwnerIdentity,
     PhysicalOwnerKind,
+    PhysicalOwnerMobility,
     PinReference,
     Rect,
     RoutingBlockagePlacement,
@@ -34,12 +34,6 @@ if TYPE_CHECKING:
         RoutingResourceGraph,
         RoutingResourceIdentity,
     )
-
-
-class PhysicalOwnerMobility(str, Enum):
-    MOVABLE = "movable"
-    FIXED = "fixed"
-    UNSUPPORTED = "unsupported"
 
 
 @dataclass(frozen=True)

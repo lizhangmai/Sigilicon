@@ -85,7 +85,7 @@ The bounded sequence of Placement Solution, compiled Routing Problem, negotiated
 _Avoid_: Router retry loop, flow coordinator
 
 **Placement-Routing Closure Evidence**:
-The public typed conclusion of Placement-Routing Closure, including distinct routing and outer-loop termination, final Routing Closure Quality, stable final conflict and pressure identities, and accepted or rejected repair provenance.
+The public typed conclusion of Placement-Routing Closure, including distinct routing and outer-loop termination, final Routing Closure Quality, stable conflict summaries, Routing Placement Pressure summaries with owner mobility and attribution reason, and accepted or rejected repair provenance.
 _Avoid_: Stage Report parsing, success boolean
 
 **Routing Closure Quality**:

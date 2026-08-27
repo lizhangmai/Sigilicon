@@ -13,6 +13,7 @@ from sigilicon.layout.pnr._placement_repair import (
     compile_placement_repair_problem,
 )
 from sigilicon.layout.pnr._routing_resources import RoutingResourceIdentity
+from sigilicon.layout.pnr._routing_pressure import RoutingPressureSite
 from sigilicon.layout.pnr._routing import RoutingSolveResult, solve_routing
 from sigilicon.layout.pnr._routing_quality import (
     RoutingClosureQualityPolicy,
@@ -41,6 +42,7 @@ class PlacementRoutingRepairEvidence:
     attributed_owners: tuple[PhysicalOwnerIdentity, ...]
     source_conflicts: tuple[str, ...]
     source_pressures: tuple[str, ...]
+    source_pressure: tuple[RoutingPressureSite, ...]
     displacement_dbu: int
     predicted_released_resources: tuple[RoutingResourceIdentity, ...]
     predicted_released_pressure: int
@@ -334,32 +336,23 @@ def close_placement_routing(
         )
         decision = quality_policy.compare(candidate_quality, quality)
         accepted = decision is RoutingClosureQualityDecision.IMPROVED
+        source_pressure = tuple(
+            site
+            for site in routing.placement_pressure.sites
+            if any(
+                owner.repair_owner == repair.moved_owner
+                for owner in site.physical_owner_candidates
+            )
+        )
         repairs.append(
             PlacementRoutingRepairEvidence(
                 iteration,
                 repair.identity,
                 repair.moved_owner,
                 repair.attributed_owners,
-                tuple(
-                    sorted(
-                        site.source_conflict
-                        for site in routing.placement_pressure.sites
-                        if any(
-                            owner.repair_owner == repair.moved_owner
-                            for owner in site.physical_owner_candidates
-                        )
-                    )
-                ),
-                tuple(
-                    sorted(
-                        site.identity
-                        for site in routing.placement_pressure.sites
-                        if any(
-                            owner.repair_owner == repair.moved_owner
-                            for owner in site.physical_owner_candidates
-                        )
-                    )
-                ),
+                tuple(site.source_conflict for site in source_pressure),
+                tuple(site.identity for site in source_pressure),
+                source_pressure,
                 repair.displacement_dbu,
                 repair.prediction.released_resources,
                 repair.prediction.released_pressure,

@@ -24,6 +24,7 @@ from sigilicon.layout.pnr import (
     PhysicalLayer,
     PhysicalMaster,
     PhysicalNet,
+    PhysicalOwnerMobility,
     PhysicalPort,
     PhysicalTechnology,
     PinAccess,
@@ -1208,6 +1209,15 @@ def test_standalone_movable_blockage_closes_through_public_run() -> None:
     assert repair.source_pressures == tuple(
         f"pressure:{identity}" for identity in repair.source_conflicts
     )
+    assert tuple(item.identity for item in repair.source_pressure) == (
+        repair.source_pressures
+    )
+    assert repair.source_pressure[0].reason == "physical blocker ownership"
+    assert repair.source_pressure[0].resource is not None
+    assert repair.source_pressure[0].region is not None
+    assert repair.source_pressure[0].physical_owner_candidates[0].mobility is (
+        PhysicalOwnerMobility.MOVABLE
+    )
     assert repair.predicted_released_resources
     assert repair.decision.value == "improved"
     assert repair.accepted
@@ -1236,6 +1246,24 @@ def test_standalone_fixed_blockage_preserves_unrelated_placement() -> None:
     assert evidence.quality.hard_blockers > 0
     assert evidence.conflict_identities
     assert evidence.pressure_identities
+    assert tuple(item.identity for item in evidence.conflicts) == (
+        evidence.conflict_identities
+    )
+    assert tuple(item.identity for item in evidence.placement_pressure) == (
+        evidence.pressure_identities
+    )
+    pressure = evidence.placement_pressure[0]
+    assert pressure.source_conflict == evidence.conflicts[0].identity
+    assert pressure.reason == "physical blocker ownership"
+    assert pressure.resource == evidence.conflicts[0].resource
+    assert pressure.region is not None
+    assert pressure.physical_owner_candidates[0].identity.stable_name == (
+        "blockage:channel-reservation"
+    )
+    assert pressure.physical_owner_candidates[0].mobility is (
+        PhysicalOwnerMobility.FIXED
+    )
+    assert pressure.repair_scope == ("blockage:channel-reservation",)
     assert evidence.repairs == ()
 
 

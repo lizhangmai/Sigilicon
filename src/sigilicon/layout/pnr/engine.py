@@ -30,6 +30,7 @@ from sigilicon.layout.pnr.model import (
     Orientation,
     PhysicalDesignJob,
     PhysicalDesignResult,
+    PhysicalOwnerSummary,
     PlacementRoutingClosureEvidence,
     PlacementRoutingRepairSummary,
     PnrExecutionPolicy,
@@ -38,6 +39,8 @@ from sigilicon.layout.pnr.model import (
     Rect,
     ResultStatus,
     RoutingBlockagePlacement,
+    RoutingConflictSummary,
+    RoutingPlacementPressureSummary,
     StageReport,
     TechnologyCapability,
 )
@@ -458,6 +461,53 @@ def _initial_routing_blockage_placements(
     )
 
 
+def _public_owner_summary(owner) -> PhysicalOwnerSummary:
+    return PhysicalOwnerSummary(
+        identity=owner.identity,
+        mobility=owner.mobility,
+        repair_owner=owner.repair_owner,
+    )
+
+
+def _public_conflict_summary(conflict) -> RoutingConflictSummary:
+    return RoutingConflictSummary(
+        identity=conflict.identity,
+        kind=conflict.kind,
+        resource=(
+            None if conflict.resource is None else conflict.resource.stable_name
+        ),
+        aggressor_nets=conflict.aggressor_nets,
+        occupant_nets=conflict.occupant_nets,
+        affected_group=conflict.affected_group,
+        severity=conflict.severity,
+        cost=conflict.cost,
+        evidence=conflict.evidence,
+        physical_owners=conflict.physical_owners,
+        resource_overflow=conflict.resource_overflow,
+    )
+
+
+def _public_pressure_summary(site) -> RoutingPlacementPressureSummary:
+    return RoutingPlacementPressureSummary(
+        identity=site.identity,
+        source_conflict=site.source_conflict,
+        conflict_kind=site.conflict_kind,
+        resource=None if site.resource is None else site.resource.stable_name,
+        region=site.region,
+        physical_owner_candidates=tuple(
+            _public_owner_summary(owner)
+            for owner in site.physical_owner_candidates
+        ),
+        involved_nets=site.involved_nets,
+        involved_groups=site.involved_groups,
+        severity=site.severity,
+        cost=site.cost,
+        evidence=site.evidence,
+        reason=site.reason,
+        repair_scope=site.repair_scope,
+    )
+
+
 def _public_closure_evidence(
     closure: PlacementRoutingClosureResult,
 ) -> PlacementRoutingClosureEvidence:
@@ -471,6 +521,14 @@ def _public_closure_evidence(
         pressure_identities=tuple(
             site.identity for site in closure.routing.placement_pressure.sites
         ),
+        conflicts=tuple(
+            _public_conflict_summary(conflict)
+            for conflict in closure.routing.conflicts.conflicts
+        ),
+        placement_pressure=tuple(
+            _public_pressure_summary(site)
+            for site in closure.routing.placement_pressure.sites
+        ),
         repairs=tuple(
             PlacementRoutingRepairSummary(
                 iteration=repair.iteration,
@@ -478,6 +536,10 @@ def _public_closure_evidence(
                 attributed_owners=repair.attributed_owners,
                 source_conflicts=repair.source_conflicts,
                 source_pressures=repair.source_pressures,
+                source_pressure=tuple(
+                    _public_pressure_summary(site)
+                    for site in repair.source_pressure
+                ),
                 displacement_dbu=repair.displacement_dbu,
                 predicted_released_resources=tuple(
                     resource.stable_name
