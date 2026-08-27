@@ -723,6 +723,50 @@ def _state_distance(first: _RouteState, second: _RouteState) -> int:
     )
 
 
+def _ordered_shield_segments(
+    segments: tuple[RouteSegment, ...],
+) -> tuple[RouteSegment, ...]:
+    """Orient one planar route chain before deriving shield waypoints.
+
+    Ordered required regions can split a straight route into segments whose
+    stored directions do not form a traversal.  A shield follows geometry,
+    not that incidental serialization.  Only an unambiguous single-layer
+    chain is normalized; branch and disconnected topology retains the
+    original ordering for the existing conservative behavior.
+    """
+
+    if len(segments) < 2 or len({segment.layer for segment in segments}) != 1:
+        return segments
+    incident: dict[Point, list[int]] = {}
+    for index, segment in enumerate(segments):
+        incident.setdefault(segment.start, []).append(index)
+        incident.setdefault(segment.end, []).append(index)
+    if any(len(indices) > 2 for indices in incident.values()):
+        return segments
+    endpoints = tuple(
+        point for point, indices in incident.items() if len(indices) == 1
+    )
+    if len(endpoints) != 2:
+        return segments
+
+    current = min(endpoints, key=lambda point: (point.y, point.x))
+    remaining = set(range(len(segments)))
+    ordered: list[RouteSegment] = []
+    while remaining:
+        candidates = tuple(
+            index for index in incident[current] if index in remaining
+        )
+        if len(candidates) != 1:
+            return segments
+        index = candidates[0]
+        segment = segments[index]
+        other = segment.end if segment.start == current else segment.start
+        ordered.append(replace(segment, start=current, end=other))
+        remaining.remove(index)
+        current = other
+    return tuple(ordered) if current in endpoints else segments
+
+
 def _shield_guidance_states(
     problem: RoutingProblem,
     net: NetRoutingProblem,
@@ -749,10 +793,13 @@ def _shield_guidance_states(
                 f"shield net {net.name} needs signal geometry before routing",
                 (relationship.signal_net, net.name),
             )
-        signal_segments = tuple(
-            segment
-            for segment in signal_route.segments
-            if not relationship.layers or segment.layer in relationship.layers
+        signal_segments = _ordered_shield_segments(
+            tuple(
+                segment
+                for segment in signal_route.segments
+                if not relationship.layers
+                or segment.layer in relationship.layers
+            )
         )
         if not signal_segments:
             continue

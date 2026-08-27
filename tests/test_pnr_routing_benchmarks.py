@@ -37,6 +37,7 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     RoutingLayerConstraint,
     RoutingLengthConstraint,
+    RoutingRegionConstraint,
     RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingTrackPattern,
@@ -213,6 +214,12 @@ def _multi_net_group_job() -> PhysicalDesignJob:
         ),
         request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
         routing_constraints=(
+            RoutingLengthConstraint("signal-length", "signal", 54, 54),
+            RoutingRegionConstraint(
+                "signal-required-channel",
+                "signal",
+                (LayerShape("route", Rect(29, 5, 31, 7)),),
+            ),
             RoutingShieldConstraint("signal-shield", "signal", "shield", 2),
             RoutingSkewConstraint("signal-match", ("signal", "matched"), 0),
         ),
@@ -297,6 +304,14 @@ def _iteration_exhausted_job() -> PhysicalDesignJob:
         ),
         request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
         execution_policy=PnrExecutionPolicy(maximum_routing_iterations=1),
+    )
+
+
+def _state_exhausted_job() -> PhysicalDesignJob:
+    job = _dense_multilayer_job()
+    return replace(
+        job,
+        execution_policy=replace(job.execution_policy, maximum_route_states=1),
     )
 
 
@@ -515,10 +530,15 @@ def test_explicit_track_benchmark_closes_with_finite_via_policy() -> None:
 
 def test_benchmark_corpus_distinguishes_infeasible_and_budget_exhausted() -> None:
     infeasible = run(_infeasible_wall_job())
+    state_exhausted = run(_state_exhausted_job())
     exhausted = run(_iteration_exhausted_job())
 
     assert infeasible.status is ResultStatus.FAILED
     assert infeasible.stage_reports[-1].diagnostics[0].code == "routing_infeasible"
+    assert state_exhausted.status is ResultStatus.EXHAUSTED
+    assert state_exhausted.stage_reports[-1].diagnostics[0].code == (
+        "routing_search_exhausted"
+    )
     assert exhausted.status is ResultStatus.EXHAUSTED
     assert exhausted.stage_reports[-1].diagnostics[0].code == (
         "routing_iteration_exhausted"
@@ -568,6 +588,10 @@ def test_capacity_benchmark_has_typed_closed_and_iteration_evidence() -> None:
     assert closed.termination.reason is RoutingTerminationReason.CLOSED
     assert closed.termination.conflict_identities == ()
     assert exhausted.termination.reason is RoutingTerminationReason.ITERATION_BUDGET
+    assert all(
+        site.resource is not None and site.region is not None
+        for site in exhausted.placement_pressure.sites
+    )
     assert (
         exhausted.conflicts.conflicts[0].kind
         is RoutingConflictKind.CAPACITY_OVERFLOW
@@ -575,6 +599,14 @@ def test_capacity_benchmark_has_typed_closed_and_iteration_evidence() -> None:
     assert exhausted.termination.conflict_identities == tuple(
         conflict.identity for conflict in exhausted.conflicts.conflicts
     )
+
+
+def test_state_budget_benchmark_has_typed_termination_evidence() -> None:
+    job = _state_exhausted_job()
+    placement = solve_placement(job)
+    routing = solve_routing(job, placement.placements)
+
+    assert routing.termination.reason is RoutingTerminationReason.STATE_BUDGET
 
 
 def test_multi_terminal_conflict_repairs_only_the_attributed_leaf_branch() -> None:
