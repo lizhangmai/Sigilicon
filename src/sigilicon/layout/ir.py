@@ -55,8 +55,6 @@ class LayoutPlan:
     view: str
     stage: str
     generator: str
-    generator_version: int
-    laygo2_version: str
     dbu_per_micron: int
     instances: tuple[LayoutInstance, ...]
     rectangles: tuple[LayoutRect, ...] = ()
@@ -64,7 +62,7 @@ class LayoutPlan:
     vias: tuple[LayoutVia, ...] = ()
 
     def payload(self) -> dict[str, Any]:
-        """Return the complete plan, including generator provenance."""
+        """Return the complete layout plan."""
 
         payload = asdict(self)
         # Keep empty via lists out of the compact current representation.
@@ -94,8 +92,6 @@ def lower_laygo2_design(
     view: str,
     stage: str,
     generator: str,
-    generator_version: int,
-    laygo2_version: str,
     dbu_per_micron: int,
     terminal_maps: Mapping[str, Mapping[str, str]],
     directions: Mapping[str, str],
@@ -218,8 +214,6 @@ def lower_laygo2_design(
         view=view,
         stage=stage,
         generator=generator,
-        generator_version=generator_version,
-        laygo2_version=laygo2_version,
         dbu_per_micron=dbu_per_micron,
         instances=tuple(instances),
         rectangles=tuple(rectangles),

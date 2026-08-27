@@ -14,19 +14,19 @@ def test_project_generator_imports_declared_project_code_without_cwd(
     project_root = tmp_path / "project"
     project_root.mkdir()
     (project_root / "project_recipe.py").write_text(
-        "GENERATOR_VERSION = 7\n",
+        "GENERATOR_OFFSET = 7\n",
         encoding="utf-8",
     )
     dependency = project_root / "project_dependency.py"
-    dependency.write_text("DEPENDENCY_VERSION = 1\n", encoding="utf-8")
+    dependency.write_text("DEPENDENCY_OFFSET = 1\n", encoding="utf-8")
     generator = project_root / "layout_generator.py"
     generator.write_text(
         """from sigilicon.layout.ir import LayoutPlan
 
 
 def build_layout_plan(spec):
-    from project_recipe import GENERATOR_VERSION
-    from project_dependency import DEPENDENCY_VERSION
+    from project_recipe import GENERATOR_OFFSET
+    from project_dependency import DEPENDENCY_OFFSET
 
     return LayoutPlan(
         library=spec.library,
@@ -34,9 +34,7 @@ def build_layout_plan(spec):
         view=spec.view,
         stage=spec.stage,
         generator=spec.generator,
-        generator_version=GENERATOR_VERSION + DEPENDENCY_VERSION,
-        laygo2_version="test",
-        dbu_per_micron=1000,
+        dbu_per_micron=1000 + GENERATOR_OFFSET + DEPENDENCY_OFFSET,
         instances=(),
     )
 """,
@@ -60,19 +58,19 @@ def build_layout_plan(spec):
 
     plan = build_layout_plan(spec)
 
-    assert plan.generator_version == 8
+    assert plan.dbu_per_micron == 1008
     assert str(project_root) not in sys.path
 
     (project_root / "project_recipe.py").write_text(
-        "GENERATOR_VERSION = 11\n",
+        "GENERATOR_OFFSET = 11\n",
         encoding="utf-8",
     )
     refreshed = build_layout_plan(spec)
 
-    assert refreshed.generator_version == 12
+    assert refreshed.dbu_per_micron == 1012
 
-    dependency.write_text("DEPENDENCY_VERSION = 2\n", encoding="utf-8")
+    dependency.write_text("DEPENDENCY_OFFSET = 2\n", encoding="utf-8")
 
     dependency_refreshed = build_layout_plan(spec)
 
-    assert dependency_refreshed.generator_version == 13
+    assert dependency_refreshed.dbu_per_micron == 1013
