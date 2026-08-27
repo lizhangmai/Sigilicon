@@ -723,16 +723,26 @@ def test_failed_greedy_order_is_ripped_up_and_routed_in_another_order() -> None:
     )
     metrics = {metric.name: metric.value for metric in result.stage_reports[-1].metrics}
     assert metrics["routing_iterations"] == 2
+    assert metrics["routing_route_attempts"] == 4
+    assert metrics["routing_ripped_net_count"] == 1
 
 
 def test_ripup_iteration_budget_exhaustion_is_explicit() -> None:
     result = run(_ripup_job(maximum_routing_iterations=1))
 
     assert result.status is ResultStatus.EXHAUSTED
-    assert result.routes == ()
+    assert tuple(route.net for route in result.routes) == ("a-flexible",)
     assert result.stage_reports[-1].diagnostics[0].code == (
         "routing_iteration_exhausted"
     )
+    assert result.stage_reports[-1].diagnostics[0].entities == (
+        "z-critical",
+        "a-flexible",
+    )
+    metrics = {metric.name: metric.value for metric in result.stage_reports[-1].metrics}
+    assert metrics["routing_iterations"] == 1
+    assert metrics["routing_route_attempts"] == 2
+    assert metrics["routing_ripped_net_count"] == 0
 
 
 def test_routing_iteration_budget_must_be_positive() -> None:

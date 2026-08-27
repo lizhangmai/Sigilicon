@@ -97,8 +97,20 @@ The maximum number of deterministic route states a P&R Execution Policy permits 
 _Avoid_: Timeout, failed route
 
 **Routing Iteration Budget**:
-The maximum number of deterministic net-order attempts a P&R Execution Policy allows when routing discards a failed greedy solution and reroutes the complete net set.
+The maximum number of deterministic conflict-resolution rounds a P&R Execution Policy allows while routing selectively revises affected nets.
 _Avoid_: Retry timeout, unbounded rip-up
+
+**Routing Group Policy**:
+A compiled collective policy for related nets that names length matching, shielding, route-order dependencies, reroute scope, and closure costs.
+_Avoid_: Coupled-constraint flag, special net class
+
+**Routing State**:
+The changing partial Routing Solution, occupancy, and accumulated conflict history used during one negotiated routing run, separate from the static Physical Design Job.
+_Avoid_: Routing Problem, Stage Report metrics
+
+**Negotiated Routing**:
+Deterministic routing that attributes a conflict, raises its historical cost, and revises only the affected net or Routing Group.
+_Avoid_: Full net-order permutation, unbounded retry
 
 **P&R Execution Policy**:
 Reference-engine search budgets and analysis resolution recorded independently from physical-design intent.

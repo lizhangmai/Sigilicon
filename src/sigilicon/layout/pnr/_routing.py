@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import heapq
-from itertools import islice, permutations
 
 from sigilicon.layout.pnr._geometry import (
-    route_segment_shape,
     translated_rect,
     via_occurrence_shapes,
 )
@@ -18,6 +16,7 @@ from sigilicon.layout.pnr._routing_problem import (
     RoutingProblem,
     compile_routing_problem,
 )
+from sigilicon.layout.pnr._routing_state import RoutingState
 from sigilicon.layout.pnr.model import (
     Diagnostic,
     InstancePlacement,
@@ -43,6 +42,8 @@ class RoutingSolveResult:
     report: StageReport
     route_states: int
     routing_iterations: int = 0
+    route_attempts: int = 0
+    ripped_net_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,29 @@ class _RouteState:
 class _RoutePath:
     states: tuple[_RouteState, ...]
     transition_vias: tuple[str | None, ...]
+
+
+@dataclass(frozen=True)
+class _Blocker:
+    shape: Rect
+    owner: str | None
+
+
+@dataclass(frozen=True)
+class _RouteSearchResult:
+    path: _RoutePath | None
+    states: int
+    exhausted: bool
+    blocking_nets: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _NetRouteAttempt:
+    status: ResultStatus
+    route: NetRoute | None
+    diagnostic: Diagnostic | None
+    route_states: int
+    blocking_nets: frozenset[str] = frozenset()
 
 
 def _result(
@@ -342,6 +366,23 @@ def _weighted_congestion_demands(
     }
 
 
+def _route_search_costs(
+    domain: RoutingDomain,
+    state: RoutingState,
+    *,
+    congestion_weight: int,
+    history_weight: int,
+) -> dict[tuple[str, int, int, str], int]:
+    costs = _weighted_congestion_demands(
+        domain,
+        state.routes,
+        congestion_weight,
+    )
+    for key, history_cost in state.history_costs.items():
+        costs[key] = costs.get(key, 0) + history_weight * history_cost
+    return costs
+
+
 def _congestion_metrics(
     domain: RoutingDomain,
     routes: tuple[NetRoute, ...],
@@ -402,45 +443,55 @@ def _congestion_metrics(
 
 
 def _raw_blockers(
-    problem: RoutingProblem,
     net: NetRoutingProblem,
-    prior_routes: tuple[NetRoute, ...],
-) -> dict[str, tuple[Rect, ...]]:
-    blockers = {
-        layer: list(shapes) for layer, shapes in net.static_blockers.items()
+    state: RoutingState,
+) -> dict[str, tuple[_Blocker, ...]]:
+    blockers: dict[str, list[_Blocker]] = {
+        layer: [_Blocker(shape, None) for shape in shapes]
+        for layer, shapes in net.static_blockers.items()
     }
-    for route in prior_routes:
-        for segment in route.segments:
-            blockers.setdefault(segment.layer, []).append(route_segment_shape(segment))
-        for route_via in route.vias:
-            for layer, shape in via_occurrence_shapes(
-                problem.via_definitions[route_via.via_definition],
-                route_via.origin,
-            ):
-                blockers.setdefault(layer, []).append(shape)
+    for layer, occupancy in state.occupancy_by_layer.items():
+        blockers.setdefault(layer, []).extend(
+            _Blocker(item.shape, item.net) for item in occupancy
+        )
     return {layer: tuple(shapes) for layer, shapes in blockers.items()}
 
 
 def _center_blockers(
-    raw_blockers: dict[str, tuple[Rect, ...]],
+    raw_blockers: dict[str, tuple[_Blocker, ...]],
     contexts: dict[str, RoutingLayerDomain],
-) -> dict[str, tuple[Rect, ...]]:
+) -> dict[str, tuple[_Blocker, ...]]:
     return {
         layer: tuple(
-            _expanded(shape, context.width // 2 + context.spacing)
-            for shape in raw_blockers.get(layer, ())
+            _Blocker(
+                _expanded(blocker.shape, context.width // 2 + context.spacing),
+                blocker.owner,
+            )
+            for blocker in raw_blockers.get(layer, ())
         )
         for layer, context in contexts.items()
     }
 
 
+def _blocking_nets(
+    state: _RouteState,
+    blockers: dict[str, tuple[_Blocker, ...]],
+) -> frozenset[str]:
+    return frozenset(
+        blocker.owner
+        for blocker in blockers.get(state.layer, ())
+        if blocker.owner is not None
+        and _point_in_interior(state.point, blocker.shape)
+    )
+
+
 def _state_blocked(
     state: _RouteState,
-    blockers: dict[str, tuple[Rect, ...]],
+    blockers: dict[str, tuple[_Blocker, ...]],
 ) -> bool:
     return any(
-        _point_in_interior(state.point, rectangle)
-        for rectangle in blockers.get(state.layer, ())
+        _point_in_interior(state.point, blocker.shape)
+        for blocker in blockers.get(state.layer, ())
     )
 
 
@@ -463,14 +514,15 @@ def _via_allowed(
     via: ViaDefinition,
     origin: Point,
     contexts: dict[str, RoutingLayerDomain],
-    raw_blockers: dict[str, tuple[Rect, ...]],
-) -> bool:
+    raw_blockers: dict[str, tuple[_Blocker, ...]],
+) -> tuple[bool, frozenset[str]]:
+    blocking_nets: set[str] = set()
     translated_shapes = via_occurrence_shapes(via, origin)
     for layer, shape in translated_shapes:
         if not domain.die.contains(shape):
-            return False
+            return False, frozenset()
         if layer in contexts and not contexts[layer].covers(shape):
-            return False
+            return False, frozenset()
         if layer in contexts:
             spacing_x = spacing_y = contexts[layer].spacing
         else:
@@ -478,17 +530,22 @@ def _via_allowed(
             if cut_spacing is None:
                 return False
             spacing_x, spacing_y = cut_spacing
-        if any(
-            _rectangles_too_close(
+        blocked = tuple(
+            blocker
+            for blocker in raw_blockers.get(layer, ())
+            if _rectangles_too_close(
                 shape,
-                blocker,
+                blocker.shape,
                 spacing_x,
                 spacing_y,
             )
-            for blocker in raw_blockers.get(layer, ())
-        ):
-            return False
-    return True
+        )
+        if blocked:
+            blocking_nets.update(
+                blocker.owner for blocker in blocked if blocker.owner is not None
+            )
+            return False, frozenset(blocking_nets)
+    return True, frozenset()
 
 
 def _via_adjacency(
@@ -564,13 +621,13 @@ def _astar(
     targets: frozenset[_RouteState],
     *,
     contexts: dict[str, RoutingLayerDomain],
-    center_blockers: dict[str, tuple[Rect, ...]],
+    center_blockers: dict[str, tuple[_Blocker, ...]],
     vias: tuple[ViaDefinition, ...],
-    raw_blockers: dict[str, tuple[Rect, ...]],
+    raw_blockers: dict[str, tuple[_Blocker, ...]],
     congestion_demands: dict[tuple[str, int, int, str], int],
     domain: RoutingDomain,
     remaining_states: int,
-) -> tuple[_RoutePath | None, int, bool]:
+) -> _RouteSearchResult:
     def heuristic(state: _RouteState) -> int:
         return min(
             abs(state.point.x - target.point.x)
@@ -592,11 +649,17 @@ def _astar(
             (heuristic(start), 0, start.layer, start.point.y, start.point.x, start),
         )
     came_from: dict[_RouteState, tuple[_RouteState, str | None]] = {}
-    via_cache: dict[tuple[str, Point], bool] = {}
+    via_cache: dict[tuple[str, Point], tuple[bool, frozenset[str]]] = {}
+    encountered_blockers: set[str] = set()
     states = 0
     while frontier:
         if states >= remaining_states:
-            return None, states, True
+            return _RouteSearchResult(
+                None,
+                states,
+                True,
+                frozenset(encountered_blockers),
+            )
         _, current_cost, _, _, _, current = heapq.heappop(frontier)
         if current_cost != cost[current]:
             continue
@@ -610,7 +673,11 @@ def _astar(
                 path_vias.append(via_name)
             path_states.reverse()
             path_vias.reverse()
-            return _RoutePath(tuple(path_states), tuple(path_vias)), states, False
+            return _RouteSearchResult(
+                _RoutePath(tuple(path_states), tuple(path_vias)),
+                states,
+                False,
+            )
 
         context = contexts[current.layer]
         neighbors: list[tuple[_RouteState, str | None]] = []
@@ -624,6 +691,9 @@ def _astar(
             if not _point_in_context(neighbor.point, context):
                 continue
             if _state_blocked(neighbor, center_blockers):
+                encountered_blockers.update(
+                    _blocking_nets(neighbor, center_blockers)
+                )
                 continue
             neighbors.append((neighbor, None))
         for next_layer, via in adjacency.get(current.layer, ()):
@@ -631,18 +701,21 @@ def _astar(
             if not _point_in_context(neighbor.point, contexts[next_layer]):
                 continue
             cache_key = via.name, current.point
-            allowed = via_cache.get(cache_key)
-            if allowed is None:
-                allowed = _via_allowed(
+            cached = via_cache.get(cache_key)
+            if cached is None:
+                cached = _via_allowed(
                     domain,
                     via,
                     current.point,
                     contexts,
                     raw_blockers,
                 )
-                via_cache[cache_key] = allowed
+                via_cache[cache_key] = cached
+            allowed, blocking_nets = cached
             if allowed:
                 neighbors.append((neighbor, via.name))
+            else:
+                encountered_blockers.update(blocking_nets)
         for neighbor, via_name in neighbors:
             congestion_demand = _edge_congestion_demand(
                 domain,
@@ -667,7 +740,12 @@ def _astar(
                     neighbor,
                 ),
             )
-    return None, states, False
+    return _RouteSearchResult(
+        None,
+        states,
+        False,
+        frozenset(encountered_blockers),
+    )
 
 
 def _segments(
@@ -732,236 +810,229 @@ def _path_geometry(
     return tuple(segments), tuple(vias)
 
 
-def _solve_routing_once(
-    problem: RoutingProblem,
+def _net_route_failure(
+    net: str,
+    status: ResultStatus,
+    code: str,
+    message: str,
     *,
-    net_order: tuple[str, ...] | None = None,
+    route_states: int = 0,
+    blocking_nets: frozenset[str] = frozenset(),
+) -> _NetRouteAttempt:
+    return _NetRouteAttempt(
+        status=status,
+        route=None,
+        diagnostic=Diagnostic(code, message, (net,)),
+        route_states=route_states,
+        blocking_nets=blocking_nets,
+    )
+
+
+def _route_net(
+    problem: RoutingProblem,
+    net: NetRoutingProblem,
+    state: RoutingState,
+    *,
     maximum_route_states: int,
-) -> RoutingSolveResult:
-    if not problem.nets:
-        return _result(ResultStatus.SUCCEEDED)
-    if problem.issue is not None:
-        return _result(
-            problem.issue.status,
-            code=problem.issue.code,
-            message="technology does not provide a usable routing domain",
-        )
+) -> _NetRouteAttempt:
     domain = problem.domain
     contexts = problem.layers
-    all_routes: list[NetRoute] = []
     route_states = 0
     grid = domain.grid
-
-    for net in problem.nets_in_order(net_order):
-        net_policy = problem.policy.for_net(net.name)
-        allowed_layers = net_policy.allowed_layers
-        net_contexts = {
-            layer: context
-            for layer, context in contexts.items()
-            if allowed_layers is None or layer in allowed_layers
-        }
-        via_limit = net_policy.maximum_vias
-        net_usable_vias = tuple(
-            via
-            for via in problem.vias
-            if via.lower_layer in net_contexts
-            and via.upper_layer in net_contexts
-            and via_limit != 0
+    net_policy = problem.policy.for_net(net.name)
+    allowed_layers = net_policy.allowed_layers
+    net_contexts = {
+        layer: context
+        for layer, context in contexts.items()
+        if allowed_layers is None or layer in allowed_layers
+    }
+    via_limit = net_policy.maximum_vias
+    net_usable_vias = tuple(
+        via
+        for via in problem.vias
+        if via.lower_layer in net_contexts
+        and via.upper_layer in net_contexts
+        and via_limit != 0
+    )
+    net_adjacency = _via_adjacency(net_usable_vias)
+    accesses = net.terminal_accesses
+    if any(not endpoint for endpoint in accesses):
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED,
+            "routing_pin_access_missing",
+            f"net {net.name} has a terminal without access geometry",
         )
-        net_adjacency = _via_adjacency(net_usable_vias)
-        accesses = net.terminal_accesses
-        if any(not endpoint for endpoint in accesses):
-            return _result(
-                ResultStatus.FAILED,
-                routes=tuple(all_routes),
-                code="routing_pin_access_missing",
-                message=f"net {net.name} has a terminal without access geometry",
-                entities=(net.name,),
-                route_states=route_states,
-            )
-        pin_endpoint_states = tuple(
-            _access_states(endpoint, net_contexts, grid) for endpoint in accesses
+    pin_endpoint_states = tuple(
+        _access_states(endpoint, net_contexts, grid) for endpoint in accesses
+    )
+    if any(not states for states in pin_endpoint_states):
+        constrained = allowed_layers is not None
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED if constrained else ResultStatus.UNSUPPORTED,
+            (
+                "routing_layer_constraint_unsatisfied"
+                if constrained
+                else "routing_pin_access_layer_unsupported"
+            ),
+            f"net {net.name} has no access on a usable routing layer",
         )
-        if any(not states for states in pin_endpoint_states):
-            return _result(
-                (
-                    ResultStatus.FAILED
-                    if allowed_layers is not None
-                    else ResultStatus.UNSUPPORTED
-                ),
-                routes=tuple(all_routes),
-                code=(
-                    "routing_layer_constraint_unsatisfied"
-                    if allowed_layers is not None
-                    else "routing_pin_access_layer_unsupported"
-                ),
-                message=f"net {net.name} has no access on a usable routing layer",
-                entities=(net.name,),
-                route_states=route_states,
-            )
-        required_regions = net_policy.required_regions
-        region_states = tuple(
-            _access_states((region,), net_contexts, grid)
-            for region in required_regions
+    required_regions = net_policy.required_regions
+    region_states = tuple(
+        _access_states((region,), net_contexts, grid) for region in required_regions
+    )
+    if any(not states for states in region_states):
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED,
+            "routing_region_constraint_unsatisfied",
+            (
+                f"net {net.name} has a required region without a legal "
+                "routing-resource access"
+            ),
         )
-        if any(not states for states in region_states):
-            return _result(
-                ResultStatus.FAILED,
-                routes=tuple(all_routes),
-                code="routing_region_constraint_unsatisfied",
-                message=(
-                    f"net {net.name} has a required region without a legal "
-                    "routing-resource access"
-                ),
-                entities=(net.name,),
-                route_states=route_states,
-            )
-        endpoint_states = pin_endpoint_states + region_states
-        if not _layers_connect(endpoint_states, net_adjacency):
-            return _result(
-                (
-                    ResultStatus.FAILED
-                    if allowed_layers is not None
-                    or via_limit is not None
-                    or required_regions
-                    else ResultStatus.UNSUPPORTED
-                ),
-                routes=tuple(all_routes),
-                code=(
-                    "routing_constraint_infeasible"
-                    if allowed_layers is not None
-                    or via_limit is not None
-                    or required_regions
-                    else "routing_layer_transition_unsupported"
-                ),
-                message=(
-                    f"net {net.name} access layers cannot be connected by supported "
-                    "via definitions and rules"
-                ),
-                entities=(net.name,),
-                route_states=route_states,
-            )
-        raw_blockers = _raw_blockers(
-            problem,
-            net,
-            tuple(all_routes),
+    endpoint_states = pin_endpoint_states + region_states
+    if not _layers_connect(endpoint_states, net_adjacency):
+        constrained = (
+            allowed_layers is not None
+            or via_limit is not None
+            or bool(required_regions)
         )
-        center_blockers = _center_blockers(raw_blockers, net_contexts)
-        legal_endpoint_states = tuple(
-            tuple(
-                state
-                for state in states
-                if not _state_blocked(state, center_blockers)
-            )
-            for states in endpoint_states
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED if constrained else ResultStatus.UNSUPPORTED,
+            (
+                "routing_constraint_infeasible"
+                if constrained
+                else "routing_layer_transition_unsupported"
+            ),
+            (
+                f"net {net.name} access layers cannot be connected by supported "
+                "via definitions and rules"
+            ),
         )
-        if any(not states for states in legal_endpoint_states):
-            blocked_index = next(
-                index
-                for index, states in enumerate(legal_endpoint_states)
-                if not states
-            )
-            region_blocked = blocked_index >= len(pin_endpoint_states)
-            return _result(
-                ResultStatus.FAILED,
-                routes=tuple(all_routes),
-                code=(
-                    "routing_region_constraint_blocked"
-                    if region_blocked
-                    else "routing_pin_access_blocked"
-                ),
-                message=(
-                    f"net {net.name} has a blocked required routing region"
-                    if region_blocked
-                    else f"net {net.name} has no unblocked terminal access"
-                ),
-                entities=(net.name,),
-                route_states=route_states,
-            )
-        tree: set[_RouteState] = set(legal_endpoint_states[0])
-        segments: list[RouteSegment] = []
-        route_vias: list[RouteVia] = []
-        for terminal_states in legal_endpoint_states[1:]:
-            starts = frozenset(terminal_states)
-            if starts & tree:
-                tree.update(starts)
-                continue
-            path, states, exhausted = _astar(
-                starts,
-                frozenset(tree),
-                contexts=net_contexts,
-                center_blockers=center_blockers,
-                vias=net_usable_vias,
-                raw_blockers=raw_blockers,
-                congestion_demands=_weighted_congestion_demands(
-                    domain,
-                    tuple(all_routes),
-                    net_policy.cost.congestion_weight,
-                ),
-                domain=domain,
-                remaining_states=maximum_route_states - route_states,
-            )
-            route_states += states
-            if path is None:
-                return _result(
-                    ResultStatus.EXHAUSTED if exhausted else ResultStatus.FAILED,
-                    routes=tuple(all_routes),
-                    code=(
-                        "routing_search_exhausted"
-                        if exhausted
-                        else "routing_infeasible"
-                    ),
-                    message=f"reference router could not connect net {net.name}",
-                    entities=(net.name,),
-                    route_states=route_states,
-                )
-            new_segments, new_vias = _path_geometry(
-                net.name,
-                path,
-                net_contexts,
-            )
-            prospective_vias = tuple(dict.fromkeys((*route_vias, *new_vias)))
-            if via_limit is not None and len(prospective_vias) > via_limit:
-                return _result(
-                    ResultStatus.FAILED,
-                    routes=tuple(all_routes),
-                    code="routing_via_count_constraint_unsatisfied",
-                    message=(
-                        f"net {net.name} cannot satisfy its maximum via count "
-                        f"of {via_limit}"
-                    ),
-                    entities=(net.name,),
-                    route_states=route_states,
-                )
-            segments.extend(new_segments)
-            route_vias.extend(new_vias)
-            mutable_blockers = {
-                layer: list(shapes) for layer, shapes in raw_blockers.items()
-            }
-            for route_via in new_vias:
-                via = problem.via_definitions[route_via.via_definition]
-                mutable_blockers.setdefault(via.cut_layer, []).extend(
-                    translated_rect(shape, route_via.origin)
-                    for shape in via.cut_shapes
-                )
-            raw_blockers = {
-                layer: tuple(shapes)
-                for layer, shapes in mutable_blockers.items()
-            }
-            tree.update(path.states)
+    raw_blockers = _raw_blockers(net, state)
+    center_blockers = _center_blockers(raw_blockers, net_contexts)
+    legal_endpoint_states = tuple(
+        tuple(
+            endpoint_state
+            for endpoint_state in states
+            if not _state_blocked(endpoint_state, center_blockers)
+        )
+        for states in endpoint_states
+    )
+    if any(not states for states in legal_endpoint_states):
+        blocked_index = next(
+            index
+            for index, states in enumerate(legal_endpoint_states)
+            if not states
+        )
+        region_blocked = blocked_index >= len(pin_endpoint_states)
+        blockers = frozenset(
+            owner
+            for endpoint_state in endpoint_states[blocked_index]
+            for owner in _blocking_nets(endpoint_state, center_blockers)
+        )
+        return _net_route_failure(
+            net.name,
+            ResultStatus.FAILED,
+            (
+                "routing_region_constraint_blocked"
+                if region_blocked
+                else "routing_pin_access_blocked"
+            ),
+            (
+                f"net {net.name} has a blocked required routing region"
+                if region_blocked
+                else f"net {net.name} has no unblocked terminal access"
+            ),
+            blocking_nets=blockers,
+        )
+    tree: set[_RouteState] = set(legal_endpoint_states[0])
+    segments: list[RouteSegment] = []
+    route_vias: list[RouteVia] = []
+    for terminal_states in legal_endpoint_states[1:]:
+        starts = frozenset(terminal_states)
+        if starts & tree:
             tree.update(starts)
-        all_routes.append(
-            NetRoute(
-                net.name,
-                tuple(segments),
-                tuple(dict.fromkeys(route_vias)),
-            )
+            continue
+        search = _astar(
+            starts,
+            frozenset(tree),
+            contexts=net_contexts,
+            center_blockers=center_blockers,
+            vias=net_usable_vias,
+            raw_blockers=raw_blockers,
+            congestion_demands=_route_search_costs(
+                domain,
+                state,
+                congestion_weight=net_policy.cost.congestion_weight,
+                history_weight=net_policy.cost.history_weight,
+            ),
+            domain=domain,
+            remaining_states=maximum_route_states - route_states,
         )
-
-    return _result(
+        route_states += search.states
+        if search.path is None:
+            return _net_route_failure(
+                net.name,
+                (
+                    ResultStatus.EXHAUSTED
+                    if search.exhausted
+                    else ResultStatus.FAILED
+                ),
+                (
+                    "routing_search_exhausted"
+                    if search.exhausted
+                    else "routing_infeasible"
+                ),
+                f"reference router could not connect net {net.name}",
+                route_states=route_states,
+                blocking_nets=search.blocking_nets,
+            )
+        new_segments, new_vias = _path_geometry(
+            net.name,
+            search.path,
+            net_contexts,
+        )
+        prospective_vias = tuple(dict.fromkeys((*route_vias, *new_vias)))
+        if via_limit is not None and len(prospective_vias) > via_limit:
+            return _net_route_failure(
+                net.name,
+                ResultStatus.FAILED,
+                "routing_via_count_constraint_unsatisfied",
+                (
+                    f"net {net.name} cannot satisfy its maximum via count "
+                    f"of {via_limit}"
+                ),
+                route_states=route_states,
+            )
+        segments.extend(new_segments)
+        route_vias.extend(new_vias)
+        mutable_blockers = {
+            layer: list(shapes) for layer, shapes in raw_blockers.items()
+        }
+        for route_via in new_vias:
+            via = problem.via_definitions[route_via.via_definition]
+            mutable_blockers.setdefault(via.cut_layer, []).extend(
+                _Blocker(translated_rect(shape, route_via.origin), None)
+                for shape in via.cut_shapes
+            )
+        raw_blockers = {
+            layer: tuple(shapes) for layer, shapes in mutable_blockers.items()
+        }
+        tree.update(search.path.states)
+        tree.update(starts)
+    return _NetRouteAttempt(
         ResultStatus.SUCCEEDED,
-        routes=tuple(all_routes),
-        route_states=route_states,
+        NetRoute(
+            net.name,
+            tuple(segments),
+            tuple(dict.fromkeys(route_vias)),
+        ),
+        None,
+        route_states,
     )
 
 
@@ -970,12 +1041,16 @@ def _with_iteration_metrics(
     *,
     route_states: int,
     routing_iterations: int,
+    route_attempts: int,
+    ripped_net_count: int,
 ) -> RoutingSolveResult:
     metrics = tuple(
         metric for metric in result.report.metrics if metric.name != "route_states"
     ) + (
         Metric("route_states", route_states, "count"),
         Metric("routing_iterations", routing_iterations, "count"),
+        Metric("routing_route_attempts", route_attempts, "count"),
+        Metric("routing_ripped_net_count", ripped_net_count, "count"),
     )
     return RoutingSolveResult(
         status=result.status,
@@ -988,6 +1063,8 @@ def _with_iteration_metrics(
         ),
         route_states=route_states,
         routing_iterations=routing_iterations,
+        route_attempts=route_attempts,
+        ripped_net_count=ripped_net_count,
     )
 
 
@@ -1011,7 +1088,59 @@ def _with_congestion_metrics(
         ),
         route_states=result.route_states,
         routing_iterations=result.routing_iterations,
+        route_attempts=result.route_attempts,
+        ripped_net_count=result.ripped_net_count,
     )
+
+
+def _finish_negotiation(
+    problem: RoutingProblem,
+    state: RoutingState,
+    status: ResultStatus,
+    *,
+    route_states: int,
+    routing_iterations: int,
+    route_attempts: int,
+    ripped_net_count: int,
+    diagnostic: Diagnostic | None = None,
+) -> RoutingSolveResult:
+    result = _result(
+        status,
+        routes=state.routes,
+        code=None if diagnostic is None else diagnostic.code,
+        message="" if diagnostic is None else diagnostic.message,
+        entities=() if diagnostic is None else diagnostic.entities,
+        route_states=route_states,
+    )
+    return _with_congestion_metrics(
+        problem.domain,
+        _with_iteration_metrics(
+            result,
+            route_states=route_states,
+            routing_iterations=routing_iterations,
+            route_attempts=route_attempts,
+            ripped_net_count=ripped_net_count,
+        ),
+    )
+
+
+def _reroute_order(
+    problem: RoutingProblem,
+    failed_net: str,
+    affected_nets: frozenset[str],
+) -> tuple[str, ...]:
+    failed_scope = frozenset(problem.policy.reroute_scope(failed_net))
+    failed_order = tuple(
+        net for net in problem.policy.route_order if net in failed_scope
+    )
+    remaining_order = tuple(
+        net
+        for net in problem.policy.route_order
+        if net in affected_nets and net not in failed_scope
+    )
+    if problem.policy.group_for_net(failed_net) is not None:
+        return failed_order + remaining_order
+    return (failed_net,) + remaining_order
 
 
 def solve_routing(
@@ -1019,81 +1148,143 @@ def solve_routing(
     instance_placements: tuple[InstancePlacement, ...],
 ) -> RoutingSolveResult:
     problem = compile_routing_problem(job, instance_placements)
-    net_names = problem.policy.route_order
-    domain = problem.domain
-    if len(net_names) < 2:
-        result = _solve_routing_once(
+    state = RoutingState.empty()
+    if not problem.nets:
+        return _finish_negotiation(
             problem,
-            maximum_route_states=job.execution_policy.maximum_route_states,
+            state,
+            ResultStatus.SUCCEEDED,
+            route_states=0,
+            routing_iterations=1,
+            route_attempts=0,
+            ripped_net_count=0,
         )
-        return _with_congestion_metrics(
-            domain,
-            _with_iteration_metrics(
-                result,
-                route_states=result.route_states,
-                routing_iterations=1,
+    if problem.issue is not None:
+        return _finish_negotiation(
+            problem,
+            state,
+            problem.issue.status,
+            route_states=0,
+            routing_iterations=1,
+            route_attempts=0,
+            ripped_net_count=0,
+            diagnostic=Diagnostic(
+                problem.issue.code,
+                "technology does not provide a usable routing domain",
             ),
         )
 
-    order_limit = job.execution_policy.maximum_routing_iterations
-    candidate_orders = tuple(
-        islice(permutations(net_names), order_limit + 1)
-    )
-    attempted_orders = candidate_orders[:order_limit]
+    maximum_route_states = job.execution_policy.maximum_route_states
+    maximum_iterations = job.execution_policy.maximum_routing_iterations
+    pending = problem.policy.route_order
     total_route_states = 0
-    last_result: RoutingSolveResult | None = None
-    for iteration, net_order in enumerate(attempted_orders, start=1):
-        remaining_states = job.execution_policy.maximum_route_states - total_route_states
+    iteration = 1
+    route_attempts = 0
+    ripped_net_count = 0
+    while pending:
+        net_name, *remaining_pending = pending
+        pending = tuple(remaining_pending)
+        remaining_states = maximum_route_states - total_route_states
         if remaining_states <= 0:
-            return _with_congestion_metrics(
-                domain,
-                _with_iteration_metrics(
-                    _result(
-                        ResultStatus.EXHAUSTED,
-                        code="routing_search_exhausted",
-                        message=(
-                            "routing search consumed its state budget across "
-                            "rip-up iterations"
-                        ),
-                        route_states=total_route_states,
+            return _finish_negotiation(
+                problem,
+                state,
+                ResultStatus.EXHAUSTED,
+                route_states=total_route_states,
+                routing_iterations=iteration,
+                route_attempts=route_attempts,
+                ripped_net_count=ripped_net_count,
+                diagnostic=Diagnostic(
+                    "routing_search_exhausted",
+                    (
+                        "routing search consumed its state budget across "
+                        "negotiation iterations"
                     ),
-                    route_states=total_route_states,
-                    routing_iterations=iteration - 1,
+                    (net_name,),
                 ),
             )
-        result = _solve_routing_once(
+        route_attempts += 1
+        attempt = _route_net(
             problem,
-            net_order=net_order,
+            problem.net(net_name),
+            state,
             maximum_route_states=remaining_states,
         )
-        total_route_states += result.route_states
-        result = _with_iteration_metrics(
-            result,
-            route_states=total_route_states,
-            routing_iterations=iteration,
-        )
-        if result.status is ResultStatus.SUCCEEDED:
-            return _with_congestion_metrics(domain, result)
-        if result.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
-            return _with_congestion_metrics(domain, result)
-        last_result = result
-
-    if len(candidate_orders) > order_limit:
-        return _with_congestion_metrics(
-            domain,
-            _with_iteration_metrics(
-                _result(
-                    ResultStatus.EXHAUSTED,
-                    code="routing_iteration_exhausted",
-                    message=(
-                        "routing could not complete within the rip-up iteration budget"
-                    ),
-                    route_states=total_route_states,
-                ),
+        total_route_states += attempt.route_states
+        if attempt.status is ResultStatus.SUCCEEDED:
+            if attempt.route is None:
+                raise RuntimeError("successful net route attempt has no route")
+            state = state.with_route(attempt.route, problem.via_definitions)
+            continue
+        if attempt.status in (ResultStatus.UNSUPPORTED, ResultStatus.EXHAUSTED):
+            return _finish_negotiation(
+                problem,
+                state,
+                attempt.status,
                 route_states=total_route_states,
-                routing_iterations=len(attempted_orders),
-            ),
+                routing_iterations=iteration,
+                route_attempts=route_attempts,
+                ripped_net_count=ripped_net_count,
+                diagnostic=attempt.diagnostic,
+            )
+
+        victim = state.select_victim(attempt.blocking_nets)
+        if victim is None:
+            return _finish_negotiation(
+                problem,
+                state,
+                ResultStatus.FAILED,
+                route_states=total_route_states,
+                routing_iterations=iteration,
+                route_attempts=route_attempts,
+                ripped_net_count=ripped_net_count,
+                diagnostic=attempt.diagnostic,
+            )
+        if iteration >= maximum_iterations:
+            return _finish_negotiation(
+                problem,
+                state,
+                ResultStatus.EXHAUSTED,
+                route_states=total_route_states,
+                routing_iterations=iteration,
+                route_attempts=route_attempts,
+                ripped_net_count=ripped_net_count,
+                diagnostic=Diagnostic(
+                    "routing_iteration_exhausted",
+                    (
+                        "routing could not resolve an attributed conflict within "
+                        "the negotiation iteration budget"
+                    ),
+                    (net_name, victim),
+                ),
+            )
+
+        affected = frozenset(
+            problem.policy.reroute_scope(net_name)
+            + problem.policy.reroute_scope(victim)
         )
-    if last_result is None:
-        raise RuntimeError("routing order search produced no result")
-    return _with_congestion_metrics(domain, last_result)
+        routed_victims = tuple(
+            state.routes_by_net[net]
+            for net in sorted(affected & state.routes_by_net.keys())
+        )
+        ripped_net_count += len(routed_victims)
+        history_penalty = _route_bin_demands(problem.domain, routed_victims)
+        state = state.with_history_penalty(history_penalty).rip_up(
+            affected,
+            problem.via_definitions,
+        )
+        iteration += 1
+        reroute = _reroute_order(problem, net_name, affected)
+        pending = reroute + tuple(
+            net for net in pending if net not in affected
+        )
+
+    return _finish_negotiation(
+        problem,
+        state,
+        ResultStatus.SUCCEEDED,
+        route_states=total_route_states,
+        routing_iterations=iteration,
+        route_attempts=route_attempts,
+        ripped_net_count=ripped_net_count,
+    )

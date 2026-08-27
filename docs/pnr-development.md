@@ -110,8 +110,11 @@ general routing remains in progress.
   and continuous parallel shielding Routing Constraints with structural validation,
   search-time topology/layer/via/objective filtering, and independent result
   outcomes;
-- bounded deterministic rip-up over alternative net orders when a greedy order
-  blocks a later net;
+- deterministic negotiated routing that attributes dynamic blockers, accumulates
+  historical congestion cost, and rips up only the affected net or compiled
+  Routing Group;
+- independent state and iteration budgets, with partial legal routes retained for
+  infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over
   each returned Routing Solution;
 - explicit distinction between infeasibility, capability gaps, and search-budget
@@ -123,8 +126,8 @@ The current reference router deliberately rejects track problems whose terminals
 have no legal track access and layer transitions whose Via Definitions lack complete
 enclosure or cut-spacing facts.
 Those are capability boundaries, not implicit fallbacks. The next routing increments
-add richer topology/length-matching and via-shielding constraints, plus fine-grained
-negotiated rip-up beyond the current full-iteration reroute.
+add active topology, length-matching, and via-shielding closure over the compiled
+Routing Group policy.
 
 - global routing and congestion estimation;
 - detailed path and via construction;
