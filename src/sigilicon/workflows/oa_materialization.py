@@ -639,14 +639,24 @@ def render_oa_materialization_skill(
                 (
                     "fig = dbCreateRect(cv %s list(list(%s %s) list(%s %s)))"
                     % (
-                        _lpp(mapping, mapping.pin_purpose),
+                        _lpp(mapping, mapping.drawing_purpose),
                         _micron(rectangle.x_min, assets.dbu_per_micron),
                         _micron(rectangle.y_min, assets.dbu_per_micron),
                         _micron(rectangle.x_max, assets.dbu_per_micron),
                         _micron(rectangle.y_max, assets.dbu_per_micron),
                     ),
                     *_property(identity),
-                    "pinObj = dbCreatePin(net fig)",
+                    "pinFig = dbCreateRect(cv %s list(list(%s %s) list(%s %s)))"
+                    % (
+                        _lpp(mapping, mapping.pin_purpose),
+                        _micron(rectangle.x_min, assets.dbu_per_micron),
+                        _micron(rectangle.y_min, assets.dbu_per_micron),
+                        _micron(rectangle.x_max, assets.dbu_per_micron),
+                        _micron(rectangle.y_max, assets.dbu_per_micron),
+                    ),
+                    "unless(pinFig error(%s))"
+                    % skill_quote(f"cannot create top-level pin figure {port.name}"),
+                    "pinObj = dbCreatePin(net pinFig)",
                     "unless(pinObj error(%s))"
                     % skill_quote(f"cannot create top-level pin {port.name}"),
                 )
@@ -681,7 +691,7 @@ def render_oa_materialization_skill(
         )
     )
     open_mode = "w" if target.replace_existing else "a"
-    return f'''prog((cv master fig viaDef net term pinObj terminal terminals result)
+    return f'''prog((cv master fig pinFig viaDef net term pinObj terminal terminals result)
   cv = nil
   master = nil
   {existing}

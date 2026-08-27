@@ -604,6 +604,9 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     assert "sigiliconJobSha256" in write_source
     assert '"maskLayout" "w"' in write_source
     assert "ddDeleteObj" not in write_source
+    assert write_source.count('list("M1" "drawing")') >= 1
+    assert write_source.count('list("M1" "pin")') >= 1
+    assert "dbCreatePin(net pinFig)" in write_source
     layout_sha256 = receipt.provenance.layout_sha256
     assert layout_sha256 is not None
     assert layout_sha256 == receipt.layout.content_sha256
