@@ -114,6 +114,9 @@ general routing remains in progress.
   closure against compiled length targets and feasible windows;
 - ordered required-region primary paths and signal-derived shield guidance that
   constructs continuous parallel conductors and corresponding cross-layer vias;
+- neutral routing benchmark corpus spanning dense gridless multilayer obstacles,
+  finite-via orthogonal tracks, transitive multi-net groups, static infeasibility,
+  and state/iteration-budget exhaustion;
 - deterministic negotiated routing that attributes dynamic blockers, accumulates
   historical congestion cost, and rips up only the affected net or compiled
   Routing Group;
