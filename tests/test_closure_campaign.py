@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import struct
 
 from sigilicon.domain.physical_verification import (
-    CheckedLayoutIdentity,
-    CheckedSourceIdentity,
     DrcEvidence,
     DrcViolation,
     LvsEvidence,
@@ -27,6 +26,7 @@ from sigilicon.flow import (
     CollectedActionResult,
     DRC_ACTION,
     DRC_EVIDENCE_KIND,
+    ExecutionEnvironment,
     ExecutionProfile,
     FlowEngine,
     FlowNode,
@@ -34,7 +34,10 @@ from sigilicon.flow import (
     FlowTarget,
     LVS_ACTION,
     LVS_EVIDENCE_KIND,
-    MATERIALIZED_LAYOUT_KIND,
+    MATERIALIZED_GDS_KIND,
+    MATERIALIZATION_RECEIPT_KIND,
+    PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
+    PHYSICAL_VERIFICATION_POLICY_KIND,
     PHYSICAL_DESIGN_ACTION,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_MATERIALIZATION_ACTION,
@@ -42,8 +45,14 @@ from sigilicon.flow import (
     ProducedArtifact,
     REFERENCE_MATERIALIZATION_ADAPTER,
     REFERENCE_PNR_ADAPTER,
+    ResolvedCapability,
+    ResolvedPlatformAsset,
+    ResolvedPlatformAssetMember,
 )
-from sigilicon.layout.materialization import materialization_plan_from_json
+from sigilicon.layout.materialization_execution import (
+    MaterializationCompletion,
+    MaterializationExecutionStatus,
+)
 from sigilicon.layout.pnr import (
     Axis,
     GridlessRoutingResource,
@@ -85,11 +94,19 @@ from sigilicon.workflows.closure_campaign import (
     closure_campaign_result_from_json,
     compare_closure_quality,
 )
+from sigilicon.workflows.layout_verification import (
+    load_receipt_bound_verification_inputs,
+)
+from sigilicon.workflows.physical_design import (
+    collect_materialization_execution_result,
+    materialization_execution_facts,
+    read_materialization_execution_request,
+    write_materialization_receipt,
+)
 
 
 _BENCHMARK_INPUT_ACTION = "benchmark.closure-inputs"
 _BENCHMARK_INPUT_ADAPTER = "benchmark-closure-inputs"
-_BENCHMARK_LAYOUT_ACTION = "benchmark.materialize-layout"
 _BENCHMARK_LAYOUT_ADAPTER = "benchmark-materialize-layout"
 _BENCHMARK_DRC_ADAPTER = "benchmark-drc-parser"
 _BENCHMARK_LVS_ADAPTER = "benchmark-lvs-parser"
@@ -101,6 +118,38 @@ def _sha256_bytes(value: bytes) -> str:
 
 def _sha256_file(path: Path) -> str:
     return _sha256_bytes(path.read_bytes())
+
+
+_BENCHMARK_ENVIRONMENT = ExecutionEnvironment(
+    capabilities={
+        "tool.layout-materializer": ResolvedCapability(
+            "benchmark.contract-materializer"
+        ),
+        "tool.calibre": ResolvedCapability("benchmark.parsed-report-fixture"),
+    },
+    platform_assets=(
+        ResolvedPlatformAsset(
+            "physical-layout",
+            "platform.layout-view-set",
+            "benchmark.layout-assets",
+            (
+                ResolvedPlatformAssetMember("layer-map", Path("/contract/layer-map")),
+                ResolvedPlatformAssetMember(
+                    "master-layouts", Path("/contract/master-layouts")
+                ),
+            ),
+        ),
+        ResolvedPlatformAsset(
+            "physical-verification",
+            "platform.calibre-verification",
+            "benchmark.verification-decks",
+            (
+                ResolvedPlatformAssetMember("drc-deck", Path("/contract/drc-deck")),
+                ResolvedPlatformAssetMember("lvs-deck", Path("/contract/lvs-deck")),
+            ),
+        ),
+    ),
+)
 
 
 def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
@@ -203,7 +252,22 @@ class _BenchmarkInputsAdapter:
             encoding="utf-8",
         )
         context.output_path("source", "canonical-source.cdl").write_text(
-            ".SUBCKT campaign source sink\n.ENDS campaign\n",
+            ".SUBCKT campaign-layout source sink\n.ENDS campaign-layout\n",
+            encoding="utf-8",
+        )
+        context.output_path(
+            "verification-policy", "physical-verification.toml"
+        ).write_text(
+            '''schema = 1
+contract_kind = "physical-verification-policy"
+path_scope = "owner"
+owner = "benchmark"
+
+[drc]
+disabled_defines = {}
+configuration_warnings = []
+waiver_layers = []
+''',
             encoding="utf-8",
         )
         return AdapterExecution.succeeded()
@@ -213,6 +277,10 @@ class _BenchmarkInputsAdapter:
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
+        source = context.output_path("source", "canonical-source.cdl")
+        policy = context.output_path(
+            "verification-policy", "physical-verification.toml"
+        )
         return CollectedActionResult(
             artifacts=(
                 ProducedArtifact(
@@ -223,25 +291,81 @@ class _BenchmarkInputsAdapter:
                 ProducedArtifact(
                     "source",
                     CANONICAL_SOURCE_NETLIST_KIND,
-                    context.output_path("source", "canonical-source.cdl"),
-                    qualifiers={"owner": "benchmark", "name": "campaign-source"},
+                    source,
+                    qualifiers={
+                        "owner": "benchmark",
+                        "name": "campaign-layout",
+                        "source-sha256": _sha256_file(source),
+                    },
+                ),
+                ProducedArtifact(
+                    "verification-policy",
+                    PHYSICAL_VERIFICATION_POLICY_KIND,
+                    policy,
+                    qualifiers={
+                        "owner": "benchmark",
+                        "policy-sha256": _sha256_file(policy),
+                    },
                 ),
             ),
         )
 
 
+def _gds_record(record_type: int, data_type: int = 0, data: bytes = b"") -> bytes:
+    assert len(data) % 2 == 0
+    return struct.pack(">HBB", len(data) + 4, record_type, data_type) + data
+
+
+def _gds_text(value: str) -> bytes:
+    payload = value.encode("ascii")
+    return payload if len(payload) % 2 == 0 else payload + b"\0"
+
+
+def _benchmark_gds(plan) -> bytes:
+    """Plan-derived GDSII contract evidence; never a signoff layout."""
+
+    segment = plan.route_segments[0]
+    return b"".join(
+        (
+            _gds_record(0x00, 0x02, struct.pack(">H", 600)),
+            _gds_record(0x01, 0x02, bytes(24)),
+            _gds_record(0x02, 0x06, _gds_text("CAMPAIGN-CONTRACT")),
+            _gds_record(0x03, 0x05, bytes(16)),
+            _gds_record(0x05, 0x02, bytes(24)),
+            _gds_record(0x06, 0x06, _gds_text("campaign-layout")),
+            _gds_record(0x09),
+            _gds_record(0x0D, 0x02, struct.pack(">H", 1)),
+            _gds_record(0x0E, 0x02, struct.pack(">H", 0)),
+            _gds_record(0x0F, 0x03, struct.pack(">i", segment.width_dbu)),
+            _gds_record(
+                0x10,
+                0x03,
+                struct.pack(
+                    ">iiii",
+                    segment.start.x,
+                    segment.start.y,
+                    segment.end.x,
+                    segment.end.y,
+                ),
+            ),
+            _gds_record(0x11),
+            _gds_record(0x07),
+            _gds_record(0x04),
+        )
+    )
+
+
 class _BenchmarkLayoutAdapter:
+    """Unregistered materialization contract fixture, never product evidence."""
+
     def __init__(self, *, corrupt_result_identity: bool = False) -> None:
         self._corrupt_result_identity = corrupt_result_identity
 
-    def _plan(self, context: ActionContext):
-        return materialization_plan_from_json(
-            context.input("plan").path.read_text(encoding="utf-8")
-        )
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         try:
-            plan = self._plan(context)
+            _job, _result, plan, _target = read_materialization_execution_request(
+                context
+            )
         except (OSError, UnicodeError, ValueError, TypeError) as exc:
             return (str(exc),)
         return () if plan.executable else ("plan is diagnostic-only",)
@@ -250,36 +374,46 @@ class _BenchmarkLayoutAdapter:
         pass
 
     def execute(self, context: ActionContext) -> AdapterExecution:
-        plan = self._plan(context)
-        context.output_path("layout", "benchmark-layout.bin").write_bytes(
-            b"benchmark-layout\n" + plan.canonical_json().encode("utf-8")
+        _job, _result, plan, _target = read_materialization_execution_request(
+            context
         )
-        return AdapterExecution.succeeded()
+        layout = context.output_path("layout", "layout.gds")
+        layout.write_bytes(_benchmark_gds(plan))
+        receipt = write_materialization_receipt(
+            context,
+            status=MaterializationExecutionStatus.MATERIALIZED,
+            completion=MaterializationCompletion(
+                "benchmark.contract-materializer",
+                True,
+                True,
+                True,
+                0,
+            ),
+            layout_path=layout,
+            message="benchmark contract materialization evidence",
+        )
+        return AdapterExecution.succeeded(
+            details=materialization_execution_facts(receipt)
+        )
 
     def collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
-        plan = self._plan(context)
-        result_sha256 = plan.provenance.result_sha256
-        if self._corrupt_result_identity:
-            result_sha256 = "0" * 64
-        return CollectedActionResult(
-            artifacts=(
-                ProducedArtifact(
-                    "layout",
-                    MATERIALIZED_LAYOUT_KIND,
-                    context.output_path("layout", "benchmark-layout.bin"),
-                    qualifiers={
-                        "plan-sha256": canonical_sha256(plan),
-                        "result-sha256": result_sha256,
-                        "owner": "benchmark",
-                        "name": "campaign-layout",
-                    },
-                ),
-            ),
+        collected = collect_materialization_execution_result(context, execution)
+        if not self._corrupt_result_identity:
+            return collected
+        artifacts = tuple(
+            replace(
+                artifact,
+                qualifiers={**artifact.qualifiers, "result-sha256": "0" * 64},
+            )
+            if artifact.role == "layout"
+            else artifact
+            for artifact in collected.artifacts
         )
+        return replace(collected, artifacts=artifacts)
 
 
 class _BenchmarkVerificationAdapter:
@@ -287,16 +421,6 @@ class _BenchmarkVerificationAdapter:
 
     def _status(self, context: ActionContext) -> PhysicalVerificationStatus:
         return PhysicalVerificationStatus(str(context.action_config["outcome"]))
-
-    def _layout(self, context: ActionContext) -> CheckedLayoutIdentity:
-        artifact = context.input("layout")
-        return CheckedLayoutIdentity(
-            _sha256_file(artifact.path),
-            str(artifact.qualifiers["plan-sha256"]),
-            str(artifact.qualifiers["result-sha256"]),
-            str(artifact.qualifiers["owner"]),
-            str(artifact.qualifiers["name"]),
-        )
 
     def _evidence(self, context: ActionContext) -> DrcEvidence | LvsEvidence:
         status = self._status(context)
@@ -306,7 +430,8 @@ class _BenchmarkVerificationAdapter:
             True,
             0,
         )
-        layout = self._layout(context)
+        inputs = load_receipt_bound_verification_inputs(context)
+        layout = inputs.layout
         if context.action.kind == DRC_ACTION:
             violations = (
                 ()
@@ -314,7 +439,7 @@ class _BenchmarkVerificationAdapter:
                 else (DrcViolation("M1.W.1", 1),)
             )
             return DrcEvidence(status, layout, completion, violations, "fixture DRC")
-        source = context.input("source")
+        assert inputs.source is not None
         mismatches = (
             ()
             if status is PhysicalVerificationStatus.CLEAN
@@ -323,11 +448,7 @@ class _BenchmarkVerificationAdapter:
         return LvsEvidence(
             status,
             layout,
-            CheckedSourceIdentity(
-                _sha256_file(source.path),
-                str(source.qualifiers["owner"]),
-                str(source.qualifiers["name"]),
-            ),
+            inputs.source,
             completion,
             mismatches,
             "fixture LVS",
@@ -376,7 +497,15 @@ class _BenchmarkVerificationAdapter:
                     path,
                     qualifiers={
                         "layout-sha256": evidence.layout.artifact_sha256,
+                        "receipt-sha256": str(evidence.layout.receipt_sha256),
+                        "job-sha256": str(evidence.layout.job_sha256),
                         "plan-sha256": evidence.layout.plan_sha256,
+                        "result-sha256": str(evidence.layout.result_sha256),
+                        **(
+                            {"source-sha256": evidence.source.artifact_sha256}
+                            if isinstance(evidence, LvsEvidence)
+                            else {}
+                        ),
                         "status": evidence.status.value,
                     },
                 ),
@@ -403,20 +532,16 @@ def _flow(
             outputs=(
                 ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),
                 ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
+                ArtifactPort(
+                    "verification-policy", PHYSICAL_VERIFICATION_POLICY_KIND
+                ),
             ),
             adapters=(_BENCHMARK_INPUT_ADAPTER,),
         )
     )
     registry.register_adapter(_BENCHMARK_INPUT_ADAPTER, _BenchmarkInputsAdapter(job))
-    registry.register_action(
-        ActionContract(
-            _BENCHMARK_LAYOUT_ACTION,
-            inputs=(ArtifactPort("plan", PHYSICAL_MATERIALIZATION_PLAN_KIND),),
-            outputs=(ArtifactPort("layout", MATERIALIZED_LAYOUT_KIND),),
-            adapters=(_BENCHMARK_LAYOUT_ADAPTER,),
-        )
-    )
-    registry.register_adapter(
+    registry.register_action_adapter(
+        PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
         _BENCHMARK_LAYOUT_ADAPTER,
         _BenchmarkLayoutAdapter(corrupt_result_identity=corrupt_layout_identity),
     )
@@ -468,14 +593,33 @@ def _flow(
             (
                 FlowNode(
                     "layout",
-                    _BENCHMARK_LAYOUT_ACTION,
-                    bindings=(ArtifactBinding("plan", "compile", "plan"),),
+                    PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
+                    config={
+                        "target": {
+                            "owner": "benchmark",
+                            "name": "campaign-layout",
+                            "format": "gdsii",
+                        }
+                    },
+                    bindings=(
+                        ArtifactBinding("job", "inputs", "job"),
+                        ArtifactBinding("result", "solve", "result"),
+                        ArtifactBinding("plan", "compile", "plan"),
+                    ),
                 ),
                 FlowNode(
                     "drc",
                     DRC_ACTION,
                     config={"outcome": drc},
-                    bindings=(ArtifactBinding("layout", "layout", "layout"),),
+                    bindings=(
+                        ArtifactBinding("layout", "layout", "layout"),
+                        ArtifactBinding("receipt", "layout", "receipt"),
+                        ArtifactBinding(
+                            "verification-policy",
+                            "inputs",
+                            "verification-policy",
+                        ),
+                    ),
                 ),
                 FlowNode(
                     "lvs",
@@ -483,7 +627,13 @@ def _flow(
                     config={"outcome": lvs},
                     bindings=(
                         ArtifactBinding("layout", "layout", "layout"),
+                        ArtifactBinding("receipt", "layout", "receipt"),
                         ArtifactBinding("source", "inputs", "source"),
+                        ArtifactBinding(
+                            "verification-policy",
+                            "inputs",
+                            "verification-policy",
+                        ),
                     ),
                 ),
             )
@@ -491,7 +641,7 @@ def _flow(
         selections.extend(
             (
                 AdapterSelection(
-                    _BENCHMARK_LAYOUT_ACTION,
+                    PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
                     _BENCHMARK_LAYOUT_ADAPTER,
                 ),
                 AdapterSelection(DRC_ACTION, _BENCHMARK_DRC_ADAPTER),
@@ -544,15 +694,23 @@ def _campaign(
     )
 
 
+def _runner(engine: FlowEngine, *, artifact_root: Path) -> ClosureCampaignRunner:
+    return ClosureCampaignRunner(
+        engine,
+        artifact_root=artifact_root,
+        environment=_BENCHMARK_ENVIRONMENT,
+    )
+
+
 def test_campaign_closes_typed_reference_flow_deterministically(tmp_path: Path) -> None:
     engine, plan, bindings = _flow(_gridless_job(), drc="clean", lvs="clean")
     campaign = _campaign(plan, bindings)
 
-    first = ClosureCampaignRunner(
+    first = _runner(
         engine,
         artifact_root=tmp_path / "first",
     ).run(campaign)
-    second = ClosureCampaignRunner(
+    second = _runner(
         engine,
         artifact_root=tmp_path / "second",
     ).run(campaign)
@@ -611,14 +769,14 @@ def test_campaign_preserves_proven_infeasible_and_pnr_state_budget(
 ) -> None:
     scope = ClosureCampaignScope(require_drc=False, require_lvs=False)
     fixed_engine, fixed_plan, fixed_bindings = _flow(_fixed_blockage_job())
-    fixed = ClosureCampaignRunner(
+    fixed = _runner(
         fixed_engine,
         artifact_root=tmp_path / "fixed",
     ).run(_campaign(fixed_plan, fixed_bindings, scope=scope))
     budget_engine, budget_plan, budget_bindings = _flow(
         _gridless_job(maximum_route_states=1)
     )
-    budget = ClosureCampaignRunner(
+    budget = _runner(
         budget_engine,
         artifact_root=tmp_path / "budget",
     ).run(_campaign(budget_plan, budget_bindings, scope=scope))
@@ -635,7 +793,7 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
     tmp_path: Path,
 ) -> None:
     engine, plan, bindings = _flow(_gridless_job(), drc="violated", lvs="clean")
-    state_limited = ClosureCampaignRunner(
+    state_limited = _runner(
         engine,
         artifact_root=tmp_path / "state",
     ).run(
@@ -647,7 +805,7 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
             iteration_budget=3,
         )
     )
-    iteration_limited = ClosureCampaignRunner(
+    iteration_limited = _runner(
         engine,
         artifact_root=tmp_path / "iteration",
     ).run(
@@ -659,7 +817,7 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
             iteration_budget=1,
         )
     )
-    repair = ClosureCampaignRunner(
+    repair = _runner(
         engine,
         artifact_root=tmp_path / "repair",
     ).run(
@@ -695,7 +853,7 @@ def test_campaign_distinguishes_invalid_identity_from_valid_nonclosure(
         drc="violated",
         lvs="clean",
     )
-    valid = ClosureCampaignRunner(
+    valid = _runner(
         valid_engine,
         artifact_root=tmp_path / "valid",
     ).run(_campaign(valid_plan, valid_bindings))
@@ -705,7 +863,7 @@ def test_campaign_distinguishes_invalid_identity_from_valid_nonclosure(
         lvs="clean",
         corrupt_layout_identity=True,
     )
-    invalid = ClosureCampaignRunner(
+    invalid = _runner(
         invalid_engine,
         artifact_root=tmp_path / "invalid",
     ).run(_campaign(invalid_plan, invalid_bindings))
@@ -718,7 +876,7 @@ def test_campaign_distinguishes_invalid_identity_from_valid_nonclosure(
 
 def test_required_future_analysis_is_explicitly_unsupported(tmp_path: Path) -> None:
     engine, plan, bindings = _flow(_gridless_job(), drc="clean", lvs="clean")
-    result = ClosureCampaignRunner(
+    result = _runner(
         engine,
         artifact_root=tmp_path / "future",
     ).run(

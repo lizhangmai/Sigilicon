@@ -22,6 +22,7 @@ from sigilicon.layout.materialization_execution import (
     issue_materialization_receipt,
     validate_materialization_receipt,
     validate_materialization_request,
+    validate_receipt_bound_layout,
 )
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 
@@ -47,4 +48,5 @@ __all__ = [
     "validate_materialization_plan",
     "validate_materialization_receipt",
     "validate_materialization_request",
+    "validate_receipt_bound_layout",
 ]

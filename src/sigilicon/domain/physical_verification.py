@@ -45,12 +45,19 @@ class CheckedLayoutIdentity:
     result_sha256: str | None
     owner: str
     name: str
+    receipt_sha256: str | None = None
+    job_sha256: str | None = None
+    format: str | None = None
 
     def __post_init__(self) -> None:
         _sha256(self.artifact_sha256, "layout artifact identity")
         _sha256(self.plan_sha256, "layout plan identity")
         if self.result_sha256 is not None:
             _sha256(self.result_sha256, "physical-design result identity")
+        if self.receipt_sha256 is not None:
+            _sha256(self.receipt_sha256, "materialization receipt identity")
+        if self.job_sha256 is not None:
+            _sha256(self.job_sha256, "physical-design job identity")
         if (
             not isinstance(self.owner, str)
             or not self.owner
@@ -58,6 +65,10 @@ class CheckedLayoutIdentity:
             or not self.name
         ):
             raise ValueError("checked layout owner and name must be non-empty")
+        if self.format is not None and (
+            not isinstance(self.format, str) or not self.format
+        ):
+            raise ValueError("checked layout format must be non-empty or null")
 
 
 @dataclass(frozen=True)

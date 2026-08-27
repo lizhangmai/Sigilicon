@@ -9,13 +9,16 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 from typing import Any, Mapping, Sequence
 
 from sigilicon.artifacts import (
     ArtifactRecord,
+    atomic_write_json,
     new_identity,
     read_nofollow_text,
 )
+from sigilicon.canonical import canonical_sha256
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
@@ -30,12 +33,35 @@ from sigilicon.domain.physical_verification import (
     DrcViolation,
     LvsEvidence,
     LvsMismatch,
+    PhysicalVerificationPolicy,
     PhysicalVerificationEvidence,
     PhysicalVerificationStatus,
     VerificationCompletion,
+    drc_evidence_from_json,
+    load_physical_verification_policy,
+    lvs_evidence_from_json,
+)
+from sigilicon.flow.model import (
+    ActionContext,
+    AdapterExecution,
+    CollectedActionResult,
+    FlowExecutionError,
+    ProducedArtifact,
+)
+from sigilicon.flow.physical_verification import (
+    CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
+    DRC_ACTION,
+    DRC_EVIDENCE_KIND,
+    LVS_ACTION,
+    LVS_EVIDENCE_KIND,
 )
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
+from sigilicon.layout.materialization_execution import (
+    MaterializationReceipt,
+    materialization_receipt_from_json,
+    validate_receipt_bound_layout,
+)
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
@@ -64,6 +90,19 @@ class LayoutVerificationResult:
     manifest_path: Path
     details: Mapping[str, object]
     evidence: PhysicalVerificationEvidence
+
+
+@dataclass(frozen=True)
+class ReceiptBoundVerificationInputs:
+    """Validated content identities consumed by a verification Adapter."""
+
+    receipt: MaterializationReceipt
+    receipt_sha256: str
+    layout: CheckedLayoutIdentity
+    layout_path: Path
+    source: CheckedSourceIdentity | None
+    source_path: Path | None
+    policy: PhysicalVerificationPolicy
 
 
 def _replace_exact(text: str, old: str, new: str, *, label: str) -> str:
@@ -388,6 +427,149 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _required_qualifier(
+    context: ActionContext,
+    role: str,
+    name: str,
+) -> str:
+    value = context.input(role).qualifiers.get(name)
+    if not isinstance(value, str) or not value:
+        raise FlowExecutionError(
+            f"{role} artifact requires string qualifier {name!r}"
+        )
+    return value
+
+
+def _check_qualifiers(
+    context: ActionContext,
+    role: str,
+    expected: Mapping[str, str],
+) -> None:
+    for name, value in expected.items():
+        if _required_qualifier(context, role, name) != value:
+            raise FlowExecutionError(
+                f"{role} artifact qualifier {name!r} disagrees with checked identity"
+            )
+
+
+def load_receipt_bound_verification_inputs(
+    context: ActionContext,
+) -> ReceiptBoundVerificationInputs:
+    """Close receipt, GDSII, source, plan, result, job, and policy identity."""
+
+    if context.action.kind not in {DRC_ACTION, LVS_ACTION}:
+        raise FlowExecutionError(
+            "receipt-bound verification requires a DRC or LVS Action"
+        )
+    receipt_artifact = context.input("receipt")
+    layout_artifact = context.input("layout")
+    if receipt_artifact.producer != layout_artifact.producer:
+        raise FlowExecutionError(
+            "layout and Materialization Receipt must have the same producer"
+        )
+    try:
+        receipt = materialization_receipt_from_json(
+            receipt_artifact.path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        raise FlowExecutionError(f"invalid Materialization Receipt: {exc}") from exc
+    receipt_sha256 = canonical_sha256(receipt)
+    if _sha256_file(receipt_artifact.path) != receipt_sha256:
+        raise FlowExecutionError(
+            "Materialization Receipt file is not its canonical content identity"
+        )
+    validation = validate_receipt_bound_layout(
+        receipt,
+        layout_artifact.path,
+        run_root=context.run_root,
+    )
+    if not validation.valid:
+        raise FlowExecutionError(
+            "receipt-bound layout failed validation: "
+            + "; ".join(issue.code for issue in validation.issues)
+        )
+    assert receipt.layout is not None
+    common = {
+        "owner": receipt.target.owner,
+        "name": receipt.target.name,
+        "format": receipt.target.format.value,
+        "job-sha256": receipt.provenance.job_sha256,
+        "result-sha256": receipt.provenance.result_sha256,
+        "plan-sha256": receipt.provenance.plan_sha256,
+        "receipt-sha256": receipt_sha256,
+        "status": receipt.status.value,
+        "backend": receipt.completion.backend,
+    }
+    _check_qualifiers(context, "receipt", common)
+    _check_qualifiers(
+        context,
+        "layout",
+        {**common, "layout-sha256": receipt.layout.content_sha256},
+    )
+    layout = CheckedLayoutIdentity(
+        artifact_sha256=receipt.layout.content_sha256,
+        plan_sha256=receipt.provenance.plan_sha256,
+        result_sha256=receipt.provenance.result_sha256,
+        owner=receipt.target.owner,
+        name=receipt.target.name,
+        receipt_sha256=receipt_sha256,
+        job_sha256=receipt.provenance.job_sha256,
+        format=receipt.target.format.value,
+    )
+
+    source = None
+    source_path = None
+    if context.action.kind == LVS_ACTION:
+        source_artifact = context.input("source")
+        source_sha256 = _sha256_file(source_artifact.path)
+        source_owner = _required_qualifier(context, "source", "owner")
+        source_name = _required_qualifier(context, "source", "name")
+        _check_qualifiers(
+            context,
+            "source",
+            {
+                "source-sha256": source_sha256,
+                "owner": receipt.target.owner,
+                "name": receipt.target.name,
+            },
+        )
+        source = CheckedSourceIdentity(
+            artifact_sha256=source_sha256,
+            owner=source_owner,
+            name=source_name,
+        )
+        source_path = source_artifact.path
+
+    policy_artifact = context.input("verification-policy")
+    policy_sha256 = _sha256_file(policy_artifact.path)
+    _check_qualifiers(
+        context,
+        "verification-policy",
+        {
+            "owner": receipt.target.owner,
+            "policy-sha256": policy_sha256,
+        },
+    )
+    try:
+        policy = load_physical_verification_policy(
+            policy_artifact.path,
+            owner=receipt.target.owner,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        raise FlowExecutionError(
+            f"invalid physical-verification policy: {exc}"
+        ) from exc
+    return ReceiptBoundVerificationInputs(
+        receipt=receipt,
+        receipt_sha256=receipt_sha256,
+        layout=layout,
+        layout_path=layout_artifact.path,
+        source=source,
+        source_path=source_path,
+        policy=policy,
+    )
 
 
 def _find_executable(name: str, explicit: Path | None, candidates: Sequence[Path]) -> Path:
@@ -750,6 +932,415 @@ def _run_calibre(
     if result["passed"] and "LVS completed. CORRECT." not in completed.stdout:
         raise RuntimeError("Calibre log does not independently confirm correct LVS completion")
     return result
+
+
+_CALIBRE_PRIMARY = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
+
+
+def _verification_facts(
+    evidence: DrcEvidence | LvsEvidence,
+) -> dict[str, object]:
+    prefix = "drc" if isinstance(evidence, DrcEvidence) else "lvs"
+    return {
+        f"{prefix}-status": evidence.status.value,
+        f"{prefix}-clean": evidence.clean,
+        f"{prefix}-completed": evidence.completion.proven,
+    }
+
+
+def _nonconclusive_verification_evidence(
+    inputs: ReceiptBoundVerificationInputs,
+    *,
+    check: str,
+    backend: str,
+    status: PhysicalVerificationStatus,
+    executed: bool,
+    exit_code: int | None,
+    message: str,
+) -> DrcEvidence | LvsEvidence:
+    completion = VerificationCompletion(
+        backend=backend,
+        executed=executed,
+        report_parsed=False,
+        exit_code=exit_code,
+    )
+    if check == "drc":
+        return DrcEvidence(status, inputs.layout, completion, (), message)
+    assert inputs.source is not None
+    return LvsEvidence(
+        status,
+        inputs.layout,
+        inputs.source,
+        completion,
+        (),
+        message,
+    )
+
+
+def _copy_regular_backend_output(source: Path, destination: Path, label: str) -> Path:
+    try:
+        metadata = source.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"Calibre did not produce {label}") from exc
+    if not stat.S_ISREG(metadata.st_mode) or source.is_symlink():
+        raise RuntimeError(f"Calibre {label} is not a regular file")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(source.read_bytes())
+    return destination
+
+
+class CalibrePhysicalVerificationAdapter:
+    """Run receipt-bound GDSII DRC/LVS and project authoritative reports."""
+
+    def _configuration(self, context: ActionContext) -> int:
+        if context.action_config:
+            raise FlowExecutionError(
+                "Calibre physical-verification Action config must be empty"
+            )
+        if set(context.adapter_config) - {"timeout_seconds"}:
+            raise FlowExecutionError(
+                "Calibre physical-verification Adapter config accepts only "
+                "'timeout_seconds'"
+            )
+        timeout = context.adapter_config.get("timeout_seconds", 600)
+        if type(timeout) is not int or timeout <= 0:
+            raise FlowExecutionError(
+                "Calibre physical-verification timeout must be a positive integer"
+            )
+        return timeout
+
+    def _resources(self, context: ActionContext) -> tuple[str, Path, Path]:
+        capability = context.capabilities.get("tool.calibre")
+        if capability is None or capability.executable is None:
+            raise FlowExecutionError(
+                "Calibre capability requires a resolved executable"
+            )
+        executable = capability.executable
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise FlowExecutionError("resolved Calibre executable is unavailable")
+        asset = context.platform_assets.get("physical-verification")
+        if asset is None or asset.kind != "platform.calibre-verification":
+            raise FlowExecutionError(
+                "Calibre requires a resolved physical-verification deck view"
+            )
+        member_role = "drc-deck" if context.action.kind == DRC_ACTION else "lvs-deck"
+        member = asset.member(member_role)
+        if member is None or not member.location.is_file():
+            raise FlowExecutionError(
+                f"physical-verification deck view omitted {member_role!r}"
+            )
+        return capability.identity, executable, member.location
+
+    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+        diagnostics: list[str] = []
+        try:
+            inputs = load_receipt_bound_verification_inputs(context)
+            if _CALIBRE_PRIMARY.fullmatch(inputs.receipt.target.name) is None:
+                raise FlowExecutionError(
+                    "materialization target is not a legal Calibre primary name"
+                )
+            self._configuration(context)
+            self._resources(context)
+        except (FlowExecutionError, OSError, ValueError, TypeError) as exc:
+            diagnostics.append(str(exc))
+        return tuple(diagnostics)
+
+    def prepare(self, context: ActionContext) -> None:
+        (context.output_root / "reports").mkdir()
+
+    def _invoke(
+        self,
+        context: ActionContext,
+        inputs: ReceiptBoundVerificationInputs,
+        *,
+        executable: Path,
+        deck_path: Path,
+        timeout: int,
+    ):
+        check = "drc" if context.action.kind == DRC_ACTION else "lvs"
+        work = context.work_root
+        source_text = read_nofollow_text(deck_path)
+        with owned_directory(work) as owned_work, ExitStack() as resources:
+            owned_layout = resources.enter_context(
+                owned_input_file(inputs.layout_path)
+            )
+            owned_source = (
+                resources.enter_context(owned_input_file(inputs.source_path))
+                if inputs.source_path is not None
+                else None
+            )
+            invocation = (
+                render_drc_run_deck(
+                    source_text,
+                    layout_path=owned_layout.child_named_path,
+                    primary=inputs.receipt.target.name,
+                    results_path=str(work / "drc-results.db"),
+                    summary_path=str(work / "drc-summary.rep"),
+                    disabled_defines=inputs.policy.drc_disabled_defines,
+                )
+                if check == "drc"
+                else render_lvs_run_deck(
+                    source_text,
+                    layout_path=owned_layout.child_named_path,
+                    source_path=(
+                        owned_source.child_named_path if owned_source is not None else ""
+                    ),
+                    primary=inputs.receipt.target.name,
+                    work_dir=str(work),
+                )
+            )
+            invocation_path = work / f"run.tool.{check}"
+            invocation_path.write_text(invocation, encoding="utf-8")
+            invocation_path.chmod(0o444)
+            owned_deck = resources.enter_context(owned_input_file(invocation_path))
+            command = (
+                str(executable),
+                f"-{check}",
+                "-hier",
+                owned_deck.child_named_path,
+            )
+            atomic_write_json(
+                work / "calibre-command.json",
+                {
+                    "argv": list(command),
+                    "cwd": str(work),
+                    "timeout_seconds": timeout,
+                },
+            )
+
+            def validate_spawn() -> None:
+                owned_layout.require_visible()
+                owned_deck.require_visible()
+                if owned_source is not None:
+                    owned_source.require_visible()
+
+            pass_fds = [
+                owned_work.fd,
+                owned_layout.fd,
+                owned_layout.directory_fd,
+                owned_deck.fd,
+                owned_deck.directory_fd,
+            ]
+            if owned_source is not None:
+                pass_fds.extend((owned_source.fd, owned_source.directory_fd))
+            return run_process_group(
+                command,
+                cwd=work,
+                env=_calibre_environment(executable),
+                timeout=timeout,
+                before_spawn=validate_spawn,
+                pass_fds=tuple(dict.fromkeys(pass_fds)),
+            )
+
+    def _parsed_evidence(
+        self,
+        context: ActionContext,
+        inputs: ReceiptBoundVerificationInputs,
+        *,
+        backend: str,
+        stdout: str,
+    ) -> DrcEvidence | LvsEvidence:
+        reports = context.output_root / "reports"
+        work = context.work_root
+        if context.action.kind == DRC_ACTION:
+            _copy_regular_backend_output(
+                work / "drc-results.db",
+                reports / "drc-results.db",
+                "DRC results database",
+            )
+            summary = _copy_regular_backend_output(
+                work / "drc-summary.rep",
+                reports / "drc-summary.rep",
+                "DRC summary report",
+            )
+            return drc_evidence_from_summary(
+                read_nofollow_text(summary),
+                layout=inputs.layout,
+                backend=backend,
+                exit_code=0,
+                configuration_warnings=inputs.policy.drc_configuration_warnings,
+                waiver_layers=inputs.policy.drc_waiver_layers,
+            )
+
+        names = (
+            ("lvs.rep", "lvs-report"),
+            ("lvs.rep.ext", "lvs-extraction-report"),
+            ("calibre_erc.db", "calibre-erc-db"),
+            ("calibre_erc.sum", "calibre-erc-summary"),
+        )
+        copied = {
+            source_name: _copy_regular_backend_output(
+                work / source_name,
+                reports / output_name,
+                output_name,
+            )
+            for source_name, output_name in names
+        }
+        extracted = work / "svdb" / f"{inputs.receipt.target.name}.sp"
+        _copy_regular_backend_output(
+            extracted,
+            reports / "extracted.sp",
+            "extracted layout netlist",
+        )
+        assert inputs.source is not None
+        evidence = lvs_evidence_from_report(
+            read_nofollow_text(copied["lvs.rep"]),
+            primary=inputs.receipt.target.name,
+            layout=inputs.layout,
+            source=inputs.source,
+            backend=backend,
+            exit_code=0,
+        )
+        if evidence.clean and "LVS completed. CORRECT." not in stdout:
+            raise RuntimeError(
+                "Calibre log does not independently confirm correct LVS completion"
+            )
+        return evidence
+
+    def execute(self, context: ActionContext) -> AdapterExecution:
+        inputs = load_receipt_bound_verification_inputs(context)
+        timeout = self._configuration(context)
+        backend, executable, deck = self._resources(context)
+        check = "drc" if context.action.kind == DRC_ACTION else "lvs"
+        try:
+            completed = self._invoke(
+                context,
+                inputs,
+                executable=executable,
+                deck_path=deck,
+                timeout=timeout,
+            )
+        except FileNotFoundError as exc:
+            evidence = _nonconclusive_verification_evidence(
+                inputs,
+                check=check,
+                backend=backend,
+                status=PhysicalVerificationStatus.BACKEND_UNAVAILABLE,
+                executed=False,
+                exit_code=None,
+                message=f"Calibre backend unavailable: {exc}",
+            )
+        except Exception as exc:
+            evidence = _nonconclusive_verification_evidence(
+                inputs,
+                check=check,
+                backend=backend,
+                status=PhysicalVerificationStatus.EXECUTION_FAILED,
+                executed=True,
+                exit_code=None,
+                message=f"Calibre execution failed: {exc}",
+            )
+        else:
+            log_path = context.log_root / f"calibre-{check}.log"
+            log_path.write_text(completed.stdout, encoding="utf-8")
+            if completed.returncode != 0:
+                evidence = _nonconclusive_verification_evidence(
+                    inputs,
+                    check=check,
+                    backend=backend,
+                    status=PhysicalVerificationStatus.EXECUTION_FAILED,
+                    executed=True,
+                    exit_code=completed.returncode,
+                    message=f"Calibre {check.upper()} exited {completed.returncode}",
+                )
+            else:
+                try:
+                    evidence = self._parsed_evidence(
+                        context,
+                        inputs,
+                        backend=backend,
+                        stdout=completed.stdout,
+                    )
+                except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                    evidence = _nonconclusive_verification_evidence(
+                        inputs,
+                        check=check,
+                        backend=backend,
+                        status=PhysicalVerificationStatus.EXECUTION_FAILED,
+                        executed=True,
+                        exit_code=0,
+                        message=f"Calibre report collection failed: {exc}",
+                    )
+        evidence_path = context.output_path(
+            "evidence",
+            "drc-evidence.json" if isinstance(evidence, DrcEvidence) else "lvs-evidence.json",
+        )
+        evidence_path.write_text(evidence.canonical_json(), encoding="utf-8")
+        return AdapterExecution.succeeded(details=_verification_facts(evidence))
+
+    def collect_result(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+    ) -> CollectedActionResult:
+        inputs = load_receipt_bound_verification_inputs(context)
+        is_drc = context.action.kind == DRC_ACTION
+        path = context.output_path(
+            "evidence", "drc-evidence.json" if is_drc else "lvs-evidence.json"
+        )
+        try:
+            evidence = (
+                drc_evidence_from_json(path.read_text(encoding="utf-8"))
+                if is_drc
+                else lvs_evidence_from_json(path.read_text(encoding="utf-8"))
+            )
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            raise FlowExecutionError(
+                f"invalid receipt-bound physical-verification evidence: {exc}"
+            ) from exc
+        if evidence.layout != inputs.layout:
+            raise FlowExecutionError(
+                "physical-verification evidence changed the checked layout identity"
+            )
+        if isinstance(evidence, LvsEvidence) and evidence.source != inputs.source:
+            raise FlowExecutionError(
+                "LVS evidence changed the checked source identity"
+            )
+        facts = _verification_facts(evidence)
+        if dict(execution.details) != facts:
+            raise FlowExecutionError(
+                "physical-verification execution details disagree with evidence"
+            )
+        qualifiers = {
+            "owner": inputs.layout.owner,
+            "name": inputs.layout.name,
+            "layout-sha256": inputs.layout.artifact_sha256,
+            "receipt-sha256": inputs.receipt_sha256,
+            "job-sha256": str(inputs.layout.job_sha256),
+            "result-sha256": str(inputs.layout.result_sha256),
+            "plan-sha256": inputs.layout.plan_sha256,
+            "status": evidence.status.value,
+            "backend": evidence.completion.backend,
+        }
+        if isinstance(evidence, LvsEvidence):
+            qualifiers["source-sha256"] = evidence.source.artifact_sha256
+        reports = context.output_root / "reports"
+        report_evidence = tuple(
+            path
+            for path in (
+                context.log_root / (
+                    "calibre-drc.log" if is_drc else "calibre-lvs.log"
+                ),
+                *(sorted(reports.iterdir()) if reports.is_dir() else ()),
+            )
+            if path.is_file()
+        )
+        return CollectedActionResult(
+            status="valid",
+            artifacts=(
+                ProducedArtifact(
+                    "evidence",
+                    DRC_EVIDENCE_KIND if is_drc else LVS_EVIDENCE_KIND,
+                    path,
+                    qualifiers={
+                        **qualifiers,
+                        "evidence-sha256": canonical_sha256(evidence),
+                    },
+                ),
+            ),
+            facts=facts,
+            evidence=report_evidence,
+        )
 
 
 def verify_layout(

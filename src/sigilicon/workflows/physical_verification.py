@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-
 from sigilicon.domain.physical_verification import (
-    CheckedLayoutIdentity,
-    CheckedSourceIdentity,
     DrcEvidence,
     LvsEvidence,
     PhysicalVerificationStatus,
@@ -27,6 +23,9 @@ from sigilicon.flow.physical_verification import (
     LVS_ACTION,
     LVS_EVIDENCE_KIND,
 )
+from sigilicon.workflows.layout_verification import (
+    load_receipt_bound_verification_inputs,
+)
 
 
 _NON_CONCLUSIONS = {
@@ -36,28 +35,19 @@ _NON_CONCLUSIONS = {
 }
 
 
-def _sha256(path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _qualifier(context: ActionContext, role: str, name: str) -> str:
-    value = context.input(role).qualifiers.get(name)
-    if not isinstance(value, str) or not value:
-        raise FlowExecutionError(
-            f"{role} artifact requires string qualifier {name!r}"
-        )
-    return value
-
-
 class OfflinePhysicalVerificationAdapter:
     """Emit only non-conclusive evidence; never claim clean or violated layout."""
 
     def _status(self, context: ActionContext) -> PhysicalVerificationStatus:
-        if set(context.action_config) - {"outcome"}:
+        if context.action_config:
             raise FlowExecutionError(
-                "offline physical-verification config accepts only 'outcome'"
+                "offline physical-verification Action config must be empty"
             )
-        raw = context.action_config.get(
+        if set(context.adapter_config) - {"outcome"}:
+            raise FlowExecutionError(
+                "offline physical-verification Adapter config accepts only 'outcome'"
+            )
+        raw = context.adapter_config.get(
             "outcome",
             PhysicalVerificationStatus.BACKEND_UNAVAILABLE.value,
         )
@@ -72,19 +62,6 @@ class OfflinePhysicalVerificationAdapter:
                 "offline physical verification cannot claim clean or violated"
             )
         return status
-
-    def _layout(self, context: ActionContext) -> CheckedLayoutIdentity:
-        artifact = context.input("layout")
-        result_sha256 = artifact.qualifiers.get("result-sha256")
-        if result_sha256 is not None and not isinstance(result_sha256, str):
-            raise FlowExecutionError("layout result-sha256 qualifier must be a string")
-        return CheckedLayoutIdentity(
-            artifact_sha256=_sha256(artifact.path),
-            plan_sha256=_qualifier(context, "layout", "plan-sha256"),
-            result_sha256=result_sha256,
-            owner=_qualifier(context, "layout", "owner"),
-            name=_qualifier(context, "layout", "name"),
-        )
 
     def _completion(
         self,
@@ -102,7 +79,8 @@ class OfflinePhysicalVerificationAdapter:
     def _evidence(self, context: ActionContext) -> DrcEvidence | LvsEvidence:
         status = self._status(context)
         completion = self._completion(status)
-        layout = self._layout(context)
+        inputs = load_receipt_bound_verification_inputs(context)
+        layout = inputs.layout
         if context.action.kind == DRC_ACTION:
             return DrcEvidence(
                 status,
@@ -112,15 +90,11 @@ class OfflinePhysicalVerificationAdapter:
                 "offline Adapter cannot produce a DRC conclusion",
             )
         if context.action.kind == LVS_ACTION:
-            source = context.input("source")
+            assert inputs.source is not None
             return LvsEvidence(
                 status,
                 layout,
-                CheckedSourceIdentity(
-                    artifact_sha256=_sha256(source.path),
-                    owner=_qualifier(context, "source", "owner"),
-                    name=_qualifier(context, "source", "name"),
-                ),
+                inputs.source,
                 completion,
                 (),
                 "offline Adapter cannot produce an LVS conclusion",
@@ -191,7 +165,15 @@ class OfflinePhysicalVerificationAdapter:
                     path,
                     qualifiers={
                         "layout-sha256": evidence.layout.artifact_sha256,
+                        "receipt-sha256": str(evidence.layout.receipt_sha256),
+                        "job-sha256": str(evidence.layout.job_sha256),
                         "plan-sha256": evidence.layout.plan_sha256,
+                        "result-sha256": str(evidence.layout.result_sha256),
+                        **(
+                            {"source-sha256": evidence.source.artifact_sha256}
+                            if isinstance(evidence, LvsEvidence)
+                            else {}
+                        ),
                         "status": evidence.status.value,
                     },
                 ),

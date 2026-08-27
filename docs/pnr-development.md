@@ -67,13 +67,18 @@ mapping, and master-layout asset. Contract tests use an unregistered GDSII fixtu
 Adapter and do not establish a product or signoff conclusion.
 
 Physical verification crosses separate `physical-verification.drc` and
-`physical-verification.lvs` Actions. Their artifacts carry exact checked-layout
-and checked-source identities, backend completion, findings, and one of five
-typed conclusions: clean, violated, unsupported, backend unavailable, or
-execution failed. The existing report parsers project real tool results into
-this contract. A deliberately unregistered offline Adapter exercises Flow
-failure semantics but is structurally unable to emit clean or violated evidence.
-Exit code zero without a parsed authoritative report is not completion.
+`physical-verification.lvs` Actions. Both require the exact `layout.gds` and
+Materialization Receipt from one producer plus an owner verification policy;
+LVS also requires the canonical checked source. Their artifacts carry the
+receipt, job, result, plan, layout, and source identities, backend completion,
+findings, and one of five typed conclusions: clean, violated, unsupported,
+backend unavailable, or execution failed. The production Calibre Adapter uses
+the same run-deck renderers, guarded process execution, and authoritative report
+parsers as the managed OA workflow. Capability and DRC/LVS deck views are explicit
+preflight requirements. A deliberately unregistered offline Adapter exercises
+Flow failure semantics but is structurally unable to emit clean or violated
+evidence. Exit code zero without a parsed authoritative report is execution
+failure, not clean or violated evidence.
 
 ## Closure Campaign
 

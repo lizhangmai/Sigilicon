@@ -213,8 +213,10 @@ def forbid_real_eda_processes(monkeypatch):
     original = subprocess.Popen
     forbidden = {
         "cdsTextTo5x",
+        "calibre",
         "spiceIn",
         "spectre",
+        "strmout",
         "virtuoso",
         "xrun",
     }

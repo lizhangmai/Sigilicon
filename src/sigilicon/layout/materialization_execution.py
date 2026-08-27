@@ -568,6 +568,45 @@ def validate_materialization_receipt(
     return MaterializationValidation(valid=not issues, issues=tuple(issues))
 
 
+def validate_receipt_bound_layout(
+    receipt: MaterializationReceipt,
+    layout_path: Path,
+    *,
+    run_root: Path,
+) -> MaterializationValidation:
+    """Validate the checked bytes and managed provenance bound by a receipt."""
+
+    issues: list[MaterializationIssue] = []
+    if not receipt.materialized or receipt.layout is None:
+        issues.append(
+            MaterializationIssue(
+                "receipt_not_materialized",
+                "physical verification requires a materialized receipt",
+            )
+        )
+        return MaterializationValidation(False, tuple(issues))
+    try:
+        actual = identify_managed_layout(
+            layout_path,
+            target=receipt.target,
+            run_root=run_root,
+            run_id=receipt.layout.run_id,
+            producer=receipt.layout.producer,
+            role=receipt.layout.role,
+        )
+    except MaterializationExecutionError as exc:
+        issues.append(MaterializationIssue("invalid_layout_content", str(exc)))
+    else:
+        if actual != receipt.layout:
+            issues.append(
+                MaterializationIssue(
+                    "layout_identity_mismatch",
+                    "checked layout content or managed provenance disagrees with receipt",
+                )
+            )
+    return MaterializationValidation(valid=not issues, issues=tuple(issues))
+
+
 __all__ = [
     "LayoutArtifactFormat",
     "ManagedLayoutArtifact",
@@ -584,4 +623,5 @@ __all__ = [
     "validate_layout_content",
     "validate_materialization_receipt",
     "validate_materialization_request",
+    "validate_receipt_bound_layout",
 ]
