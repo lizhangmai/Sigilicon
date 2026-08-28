@@ -206,6 +206,8 @@ def test_open_view_inventory_reports_exact_mode_and_visibility() -> None:
     class Client:
         def execute_skill(self, source, **_kwargs):
             assert 'equal(cv~>libName "lib")' in source
+            assert "window != hiGetCIWindow()" in source
+            assert 'equal(hiGetWidgetType(window) "graphics")' in source
             return type(
                 "Response",
                 (),
@@ -242,6 +244,8 @@ def test_exact_hidden_cellview_cleanup_uses_dbid_and_never_name_matching(
     assert "sprintf(nil \"%L\" flowCv)" in client.source
     assert "dbClose(flowCv)" in client.source
     assert "geGetWindowCellView(flowWindow)" in client.source
+    assert "flowWindow != hiGetCIWindow()" in client.source
+    assert 'equal(hiGetWidgetType(flowWindow) "graphics")' in client.source
 
 
 def test_delete_cell_uses_exact_deletion_scope(workspace_factory) -> None:

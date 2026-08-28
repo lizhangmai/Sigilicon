@@ -6,6 +6,7 @@ import pytest
 
 from sigilicon.virtuoso.discovery import list_cells, list_libraries
 from sigilicon.virtuoso.layout import _protected_layout_skill
+from sigilicon.virtuoso.oa import cell_exists, cell_view_exists
 from sigilicon.virtuoso.schematic import read_schematic
 
 
@@ -38,6 +39,38 @@ def test_readonly_discovery_escapes_skill_strings() -> None:
 
     assert data["cells"] == [{"name": "cell", "views": ["schematic"]}]
     assert all('lib\\"unsafe' in source for source in client.sources)
+
+
+@pytest.mark.parametrize(
+    ("query", "arguments"),
+    (
+        (cell_exists, ("lib", "cell")),
+        (cell_view_exists, ("lib", "cell", "layout")),
+    ),
+)
+@pytest.mark.parametrize(("output", "expected"), (("t", True), ("nil", False)))
+def test_oa_existence_queries_return_only_skill_booleans(
+    query,
+    arguments,
+    output: str,
+    expected: bool,
+) -> None:
+    client = RecordingClient((output,))
+
+    assert query(client, *arguments) is expected
+
+    source = client.sources[0]
+    assert source.startswith("if(ddGetObj(")
+    assert source.endswith(" t nil)")
+
+
+@pytest.mark.parametrize("query", (cell_exists, cell_view_exists))
+def test_oa_existence_queries_reject_native_handle_results(query) -> None:
+    client = RecordingClient(("dd:0x123",))
+    arguments = ("lib", "cell") if query is cell_exists else ("lib", "cell", "layout")
+
+    with pytest.raises(RuntimeError, match="invalid SKILL boolean"):
+        query(client, *arguments)
 
 
 def test_readonly_schematic_and_layout_sources_close_their_handles(

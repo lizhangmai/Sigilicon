@@ -11,6 +11,7 @@ from sigilicon.virtuoso.oa import (
     validate_instance_parameters,
 )
 from sigilicon.virtuoso.importer import check_and_save_schematic
+from sigilicon.virtuoso.maestro import build_owned_maestro_setup_transaction_skill
 
 
 class RecordingClient:
@@ -89,6 +90,8 @@ def test_synchronous_scope_closes_only_hidden_exact_delta_handles() -> None:
     assert "flowSyncBefore = dbGetOpenCellViews()" in source
     assert "member(flowSyncCv flowSyncBefore)" in source
     assert "geGetWindowCellView(flowSyncWindow)" in source
+    assert "flowSyncWindow != hiGetCIWindow()" in source
+    assert 'equal(hiGetWidgetType(flowSyncWindow) "graphics")' in source
     assert "if(flowSyncVisible" in source
     assert "flowSyncCloseAttempt = errset(dbClose(flowSyncCv) t)" in source
     assert 'equal(flowSyncCv~>mode "r")' in source
@@ -96,6 +99,19 @@ def test_synchronous_scope_closes_only_hidden_exact_delta_handles() -> None:
     assert "member(flowSyncCv dbGetOpenCellViews())" in source
     assert "exact synchronous handle cleanup failed" in source
     assert "unwindProtect(" in source
+
+
+def test_maestro_cleanup_checks_only_graphics_windows_for_visible_views() -> None:
+    source = build_owned_maestro_setup_transaction_skill(
+        "lib",
+        "cell",
+        scope_token="a" * 32,
+        body="t",
+    )
+
+    assert "geGetWindowCellView(flowWindow)" in source
+    assert "flowWindow != hiGetCIWindow()" in source
+    assert 'equal(hiGetWidgetType(flowWindow) "graphics")' in source
 
 
 

@@ -325,6 +325,8 @@ def test_close_cell_skill_uses_exact_cellview_identity_and_escaping(
     assert 'lib\\"name' in source
     assert "hidden or unowned open cellview" in source
     assert "target windows remained open" in source
+    assert "window != hiGetCIWindow()" in source
+    assert 'equal(hiGetWidgetType(window) "graphics")' in source
 
 
 def test_parameter_update_escapes_values_and_releases_cdf_and_oa_state(

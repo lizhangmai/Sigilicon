@@ -83,7 +83,9 @@ def own_synchronous_cellview_delta_skill(source: str, *, label: str) -> str:
       foreach(flowSyncCv flowSyncAfter
         unless(member(flowSyncCv flowSyncBefore)
           flowSyncOwned = cons(flowSyncCv flowSyncOwned)))
-      flowSyncWindows = hiGetWindowList()
+      flowSyncWindows = setof(flowSyncWindow hiGetWindowList()
+        flowSyncWindow != hiGetCIWindow() &&
+        equal(hiGetWidgetType(flowSyncWindow) "graphics"))
       flowSyncFailures = nil
       foreach(flowSyncCv flowSyncOwned
         flowSyncVisible = nil
@@ -233,22 +235,29 @@ def virtuoso_pid(client: Any) -> int:
 
 def cell_exists(client: Any, library: str, cell: str) -> bool:
     result = client.execute_skill(
-        f"ddGetObj({skill_quote(library)} {skill_quote(cell)})",
+        f"if(ddGetObj({skill_quote(library)} {skill_quote(cell)}) t nil)",
         timeout=20,
     )
     if result.errors:
         raise RuntimeError(result.errors[0])
-    return (result.output or "").strip() not in {"", "nil", '"nil"'}
+    raw = (result.output or "").strip()
+    if raw not in {"t", "nil"}:
+        raise RuntimeError(f"invalid SKILL boolean for OA cell existence: {raw!r}")
+    return raw == "t"
 
 
 def cell_view_exists(client: Any, library: str, cell: str, view: str) -> bool:
     result = client.execute_skill(
-        f"ddGetObj({skill_quote(library)} {skill_quote(cell)} {skill_quote(view)})",
+        f"if(ddGetObj({skill_quote(library)} {skill_quote(cell)} "
+        f"{skill_quote(view)}) t nil)",
         timeout=20,
     )
     if result.errors:
         raise RuntimeError(result.errors[0])
-    return (result.output or "").strip() not in {"", "nil", '"nil"'}
+    raw = (result.output or "").strip()
+    if raw not in {"t", "nil"}:
+        raise RuntimeError(f"invalid SKILL boolean for OA view existence: {raw!r}")
+    return raw == "t"
 
 
 def delete_cell(
@@ -418,9 +427,11 @@ def open_cell_views(
         else f"equal(cv~>libName {skill_quote(library)})"
     )
     result = client.execute_skill(
-        f'''let((out windows visible)
+        f'''let((out windows visible window)
   out = ""
-  windows = hiGetWindowList()
+  windows = setof(window hiGetWindowList()
+    window != hiGetCIWindow() &&
+    equal(hiGetWidgetType(window) "graphics"))
   foreach(cv dbGetOpenCellViews()
     when({library_filter}
       visible = nil
@@ -494,6 +505,7 @@ def close_exact_hidden_cell_views(
         )
     expected = " ".join(skill_quote(identity) for identity in identities)
     source = f'''let((flowExpected flowCurrent flowTargets flowCv flowWindow
+  flowWindows
   flowFailures flowCloseAttempt flowPurgeAttempt flowVisible)
   flowExpected = list({expected})
   flowCurrent = dbGetOpenCellViews()
@@ -502,11 +514,14 @@ def close_exact_hidden_cell_views(
   unless(equal(length(flowTargets) length(flowExpected))
     error(sprintf(nil "exact hidden-cellview cleanup identity set changed: %L"
       flowExpected)))
+  flowWindows = setof(flowWindow hiGetWindowList()
+    flowWindow != hiGetCIWindow() &&
+    equal(hiGetWidgetType(flowWindow) "graphics"))
   foreach(flowCv flowTargets
     unless(equal(flowCv~>mode "r")
       error(sprintf(nil "refusing writable handle cleanup: %L" flowCv)))
     flowVisible = nil
-    foreach(flowWindow hiGetWindowList()
+    foreach(flowWindow flowWindows
       when(equal(geGetWindowCellView(flowWindow) flowCv)
         flowVisible = t))
     when(flowVisible
@@ -563,13 +578,16 @@ def close_visible_cell_windows(
     )
     operation.require_project_library_target(client, library)
     view_match = "t" if view is None else f"cv~>viewName == {skill_quote(view)}"
-    source = f'''let((targets openViews cv visible count remaining)
+    source = f'''let((targets openViews windows window cv visible count remaining)
   targets = nil
+  windows = setof(window hiGetWindowList()
+    window != hiGetCIWindow() &&
+    equal(hiGetWidgetType(window) "graphics"))
   openViews = setof(item dbGetOpenCellViews()
     item~>libName == {skill_quote(library)} &&
     item~>cellName == {skill_quote(cell)} &&
     {('t' if view is None else f'item~>viewName == {skill_quote(view)}')})
-  foreach(window hiGetWindowList()
+  foreach(window windows
     cv = geGetWindowCellView(window)
     when(cv && cv~>libName == {skill_quote(library)} &&
       cv~>cellName == {skill_quote(cell)} && {view_match}
@@ -588,7 +606,10 @@ def close_visible_cell_windows(
     hiCloseWindow(window)
     count = count + 1)
   remaining = 0
-  foreach(window hiGetWindowList()
+  windows = setof(window hiGetWindowList()
+    window != hiGetCIWindow() &&
+    equal(hiGetWidgetType(window) "graphics"))
+  foreach(window windows
     cv = geGetWindowCellView(window)
     when(cv && cv~>libName == {skill_quote(library)} &&
       cv~>cellName == {skill_quote(cell)} && {view_match}

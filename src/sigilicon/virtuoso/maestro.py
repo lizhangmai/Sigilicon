@@ -104,7 +104,9 @@ def build_owned_maestro_setup_transaction_skill(
               flowCleanupFailures)
             else
               flowCurrentViews = dbGetOpenCellViews()
-              flowWindows = hiGetWindowList()
+              flowWindows = setof(flowWindow hiGetWindowList()
+                flowWindow != hiGetCIWindow() &&
+                equal(hiGetWidgetType(flowWindow) "graphics"))
               foreach(flowOwnedCv flowOwnedViews
                 unless(member(flowOwnedCv flowCurrentViews)
                   flowCleanupFailures = cons(
