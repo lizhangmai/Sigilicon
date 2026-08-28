@@ -420,9 +420,9 @@ def test_materialization_action_emits_content_bound_receipt(tmp_path: Path) -> N
     assert receipt.materialized
     assert validation.valid
     assert layout.kind == MATERIALIZED_GDS_KIND
-    assert layout.qualifiers["layout-sha256"] == receipt.provenance.layout_sha256
-    assert layout.qualifiers["receipt-sha256"] == outcome.artifacts["receipt"].qualifiers[
-        "receipt-sha256"
+    assert layout.qualifiers["layout-identity"] == receipt.provenance.layout_identity
+    assert layout.qualifiers["receipt-identity"] == outcome.artifacts["receipt"].qualifiers[
+        "receipt-identity"
     ]
     assert receipt.layout is not None
     forged_run = replace(
@@ -483,7 +483,7 @@ def test_non_materialized_outcomes_never_publish_layout(
     assert set(outcome.artifacts) == {"receipt"}
     assert receipt.status.value == status
     assert receipt.completion.executed is executed
-    assert receipt.provenance.layout_sha256 is None
+    assert receipt.provenance.layout_identity is None
 
 
 def test_diagnostic_plan_is_rejected_before_backend_execution(tmp_path: Path) -> None:

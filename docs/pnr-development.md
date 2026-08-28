@@ -58,7 +58,8 @@ Executable plans cross a second, explicit `physical-design.materialize` Action.
 Its ToolAdapter seam consumes the canonical job, result, and plan plus a typed
 format target.  A successful GDSII implementation emits `layout.gds` and an
 immutable Materialization Receipt that binds owner, target, backend completion,
-managed Flow provenance, and the job/result/plan/layout SHA-256 identities.
+managed Flow provenance, and explicit job/result/plan/layout semantic identities;
+recovery also compares their complete typed records.
 Diagnostic or rejected plans are rejected before backend execution. Unsupported,
 backend-unavailable, execution-failed, and invalid-plan/identity outcomes emit a
 receipt but never publish a checked layout. The package registers no synthetic

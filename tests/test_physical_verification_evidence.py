@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 
 from sigilicon.domain.physical_verification import (
@@ -20,15 +18,15 @@ from sigilicon.workflows.layout_verification import (
 )
 
 
-def _digest(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
+def _identity(value: bytes) -> str:
+    return f"fixture:{value.decode('ascii')}"
 
 
 def _layout() -> CheckedLayoutIdentity:
     return CheckedLayoutIdentity(
-        artifact_sha256=_digest(b"layout"),
-        plan_sha256=_digest(b"plan"),
-        result_sha256=_digest(b"result"),
+        artifact_identity=_identity(b"layout"),
+        plan_identity=_identity(b"plan"),
+        result_identity=_identity(b"result"),
         owner="benchmark",
         name="layout-candidate",
     )
@@ -36,7 +34,7 @@ def _layout() -> CheckedLayoutIdentity:
 
 def _source() -> CheckedSourceIdentity:
     return CheckedSourceIdentity(
-        artifact_sha256=_digest(b"source"),
+        artifact_identity=_identity(b"source"),
         owner="benchmark",
         name="canonical-source",
     )

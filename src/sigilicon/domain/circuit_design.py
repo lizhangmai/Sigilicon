@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import json
+from pathlib import Path
 import re
 
 from sigilicon.canonical import (
     canonical_from_exact_json,
     canonical_json,
-    canonical_sha256,
 )
 
 
@@ -29,7 +29,6 @@ _OWNER = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:[._-][A-Za-z0-9_$]+)*\Z")
 _SEMANTIC_IDENTITY = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 _TOKEN = re.compile(r"[^\s;\\/]+\Z")
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _owner(value: str, label: str = "artifact owner") -> None:
@@ -52,9 +51,16 @@ def _token(value: str, label: str) -> None:
         raise ValueError(f"invalid {label}: {value!r}")
 
 
-def _sha256(value: str, label: str) -> None:
-    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
-        raise ValueError(f"{label} must be a SHA-256 identity")
+def _artifact_identity(value: str, label: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or "\x00" in value
+        or Path(value).is_absolute()
+        or ".." in Path(value).parts
+    ):
+        raise ValueError(f"invalid {label}: {value!r}")
 
 
 def _unique(values: tuple[str, ...], label: str) -> None:
@@ -67,25 +73,27 @@ class ArtifactMetadata:
     schema: int
     kind: str
     owner: str
+    artifact_id: str
 
     def __post_init__(self) -> None:
         if type(self.schema) is not int or self.schema != ARTIFACT_SCHEMA:
             raise ValueError(f"artifact schema must be {ARTIFACT_SCHEMA}")
         _semantic_identity(self.kind, "artifact kind")
         _owner(self.owner)
+        _artifact_identity(self.artifact_id, "artifact ID")
 
 
 @dataclass(frozen=True)
 class ArtifactReference:
     owner: str
     kind: str
-    sha256: str
+    identity: str
     release_identity: str | None
 
     def __post_init__(self) -> None:
         _owner(self.owner, "artifact reference owner")
         _semantic_identity(self.kind, "artifact reference kind")
-        _sha256(self.sha256, "artifact reference")
+        _artifact_identity(self.identity, "artifact reference")
         if self.release_identity is not None:
             _semantic_identity(self.release_identity, "release identity")
 
@@ -100,7 +108,7 @@ class CanonicalDesignArtifact:
 
     @property
     def identity(self) -> str:
-        return canonical_sha256(self)
+        return self.metadata.artifact_id
 
     def reference(self, *, release_identity: str | None = None) -> ArtifactReference:
         return ArtifactReference(
@@ -144,14 +152,14 @@ class EvidenceRole(str, Enum):
 class ProposalProvenance:
     producer: str
     version: str
-    parent_sha256: tuple[str, ...] = ()
+    parent_identity: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _semantic_identity(self.producer, "proposal producer")
         _token(self.version, "proposal producer version")
-        for identity in self.parent_sha256:
-            _sha256(identity, "proposal parent")
-        _unique(self.parent_sha256, "proposal parents")
+        for identity in self.parent_identity:
+            _artifact_identity(identity, "proposal parent")
+        _unique(self.parent_identity, "proposal parents")
 
 
 @dataclass(frozen=True)
@@ -215,7 +223,7 @@ class StateSemantic:
 class CircuitTopologyProposal(CanonicalDesignArtifact):
     metadata: ArtifactMetadata
     design: str
-    source_snapshot_sha256: str
+    source_snapshot_identity: str
     origin: TopologyOrigin
     ports: tuple[CircuitPort, ...]
     parameters: tuple[CircuitParameter, ...]
@@ -229,7 +237,7 @@ class CircuitTopologyProposal(CanonicalDesignArtifact):
                 f"topology artifact kind must be {CIRCUIT_TOPOLOGY_KIND!r}"
             )
         _identifier(self.design, "topology design")
-        _sha256(self.source_snapshot_sha256, "topology source snapshot")
+        _artifact_identity(self.source_snapshot_identity, "topology source snapshot")
         if not isinstance(self.origin, TopologyOrigin):
             raise ValueError("topology origin must be typed")
         if not self.ports:
@@ -623,15 +631,21 @@ class DesignEvidence(CanonicalDesignArtifact):
             raise ValueError("evidence conclusion must be typed")
         if self.role in {EvidenceRole.QUALIFICATION, EvidenceRole.SIGNOFF} and self.specification is None:
             raise ValueError("qualification/signoff evidence requires a specification")
-        if self.producer.kind in {
-            EvidenceProducerKind.OFFLINE,
-            EvidenceProducerKind.FAKE,
-            EvidenceProducerKind.LLM,
-        } and self.conclusion in {
+        if self.producer.kind is EvidenceProducerKind.LLM and self.conclusion in {
             EvidenceConclusion.SATISFIED,
             EvidenceConclusion.VIOLATED,
         }:
-            raise ValueError("offline/fake/LLM evidence cannot make a conclusive claim")
+            raise ValueError("LLM evidence cannot make a verification conclusion")
+        if (
+            self.producer.kind
+            in {EvidenceProducerKind.OFFLINE, EvidenceProducerKind.FAKE}
+            and self.role in {EvidenceRole.QUALIFICATION, EvidenceRole.SIGNOFF}
+            and self.conclusion
+            in {EvidenceConclusion.SATISFIED, EvidenceConclusion.VIOLATED}
+        ):
+            raise ValueError(
+                "offline/fake qualification or signoff evidence cannot be conclusive"
+            )
         if self.conclusion is EvidenceConclusion.SATISFIED:
             if not self.completion.proven:
                 raise ValueError("satisfied evidence requires proven completion")
@@ -734,10 +748,10 @@ class DesignCandidate(CanonicalDesignArtifact):
         if self.parent_candidate is not None and self.parent_candidate.kind != DESIGN_CANDIDATE_KIND:
             raise ValueError("Candidate parent has the wrong artifact kind")
         _unique(
-            tuple(item.sha256 for item in self.canonical_specifications),
+            tuple(item.identity for item in self.canonical_specifications),
             "Candidate specification references",
         )
-        _unique(tuple(item.sha256 for item in self.evidence), "Candidate evidence references")
+        _unique(tuple(item.identity for item in self.evidence), "Candidate evidence references")
 
 
 class DesignDecisionConclusion(str, Enum):
@@ -778,7 +792,7 @@ class DesignDecision(CanonicalDesignArtifact):
             raise ValueError("Design Decision evidence has the wrong artifact kind")
         for item in self.evidence:
             _reference_for_owner(item, self.metadata.owner, "decision evidence")
-        _unique(tuple(item.sha256 for item in self.evidence), "decision evidence")
+        _unique(tuple(item.identity for item in self.evidence), "decision evidence")
         if not isinstance(self.conclusion, DesignDecisionConclusion):
             raise ValueError("decision conclusion must be typed")
         if self.conclusion in {
@@ -792,18 +806,18 @@ class DesignDecision(CanonicalDesignArtifact):
 
 @dataclass(frozen=True)
 class CandidateValidation:
-    candidate_sha256: str
+    candidate_identity: str
     resolved_artifacts: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _sha256(self.candidate_sha256, "validated Candidate")
+        _artifact_identity(self.candidate_identity, "validated Candidate")
         for identity in self.resolved_artifacts:
-            _sha256(identity, "resolved Candidate artifact")
+            _artifact_identity(identity, "resolved Candidate artifact")
         _unique(self.resolved_artifacts, "resolved Candidate artifacts")
 
 
 def _reference_key(reference: ArtifactReference) -> tuple[str, str, str]:
-    return reference.owner, reference.kind, reference.sha256
+    return reference.owner, reference.kind, reference.identity
 
 
 def validate_design_candidate(
@@ -812,9 +826,15 @@ def validate_design_candidate(
 ) -> CandidateValidation:
     """Resolve every stage reference through canonical bytes and validate lineage."""
 
-    available = {
-        _reference_key(artifact.reference()): artifact for artifact in artifacts
-    }
+    available: dict[tuple[str, str, str], CanonicalDesignArtifact] = {}
+    for artifact in artifacts:
+        key = _reference_key(artifact.reference())
+        previous = available.get(key)
+        if previous is not None:
+            if previous != artifact:
+                raise ValueError("same artifact ID resolves to different typed records")
+            raise ValueError("duplicate artifact record supplied for one artifact ID")
+        available[key] = artifact
     required = tuple(
         reference
         for reference in (
@@ -840,7 +860,7 @@ def validate_design_candidate(
         raise ValueError("Candidate topology reference resolved to the wrong type")
     if topology.design != candidate.design:
         raise ValueError("Candidate topology design identity drift")
-    if topology.source_snapshot_sha256 != candidate.source.sha256:
+    if topology.source_snapshot_identity != candidate.source.identity:
         raise ValueError("Candidate source snapshot identity drift")
     if candidate.sizing_problem is not None:
         problem = available[_reference_key(candidate.sizing_problem)]
@@ -896,7 +916,15 @@ def validate_design_decision(
         raise ValueError("Design Decision Candidate identity drift")
     if decision.policy not in candidate.canonical_specifications:
         raise ValueError("Design Decision policy is not a Candidate specification")
-    available = {_reference_key(item.reference()): item for item in evidences}
+    available: dict[tuple[str, str, str], DesignEvidence] = {}
+    for item in evidences:
+        key = _reference_key(item.reference())
+        previous = available.get(key)
+        if previous is not None:
+            if previous != item:
+                raise ValueError("same evidence ID resolves to different typed records")
+            raise ValueError("duplicate evidence record supplied for one evidence ID")
+        available[key] = item
     candidate_evidence = {_reference_key(item) for item in candidate.evidence}
     resolved: list[DesignEvidence] = []
     for reference in decision.evidence:

@@ -122,6 +122,23 @@ def test_ip_oa_contract_can_own_sources_and_assemble_the_library(
     ]
 
 
+def test_pre_layout_oa_assembly_can_omit_physical_verification(
+    tmp_path: Path,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'physical_verification = "ip/alpha/configs/physical_verification.toml"\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    assembly = load_oa_library_source(manifest, project_root=root)
+
+    assert assembly.physical_verification is None
+
+
 def test_oa_assembly_rejects_unknown_physical_verification_policy_fields(
     tmp_path: Path,
 ) -> None:

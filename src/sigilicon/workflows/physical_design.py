@@ -38,6 +38,7 @@ from sigilicon.layout.materialization_execution import (
     issue_materialization_receipt,
     materialization_execution_target_from_mapping,
     materialization_receipt_from_json,
+    materialization_receipt_id,
     validate_materialization_receipt,
 )
 from sigilicon.layout.pnr import (
@@ -50,9 +51,11 @@ from sigilicon.layout.pnr import (
     run,
 )
 from sigilicon.layout.pnr.serialization import (
-    canonical_sha256,
+    physical_closure_evidence_id,
     physical_design_job_from_json,
+    physical_design_job_id,
     physical_design_result_from_json,
+    physical_design_result_id,
     placement_routing_closure_evidence_from_json,
 )
 
@@ -162,10 +165,8 @@ class ReferencePhysicalDesignAdapter:
                 "reference P&R execution details disagree with collected result"
             )
         result_qualifiers = {
-            "job-sha256": canonical_sha256(job),
-            "result-sha256": canonical_sha256(result),
-            "input-sha256": result.provenance.input_sha256,
-            "execution-sha256": result.provenance.execution_sha256,
+            "job-identity": physical_design_job_id(job),
+            "result-identity": physical_design_result_id(result),
             "deterministic": result.provenance.deterministic,
         }
         artifacts = [
@@ -200,7 +201,7 @@ class ReferencePhysicalDesignAdapter:
                     evidence_path,
                     qualifiers={
                         **result_qualifiers,
-                        "closure-sha256": canonical_sha256(evidence),
+                        "closure-identity": physical_closure_evidence_id(evidence),
                     },
                 )
             )
@@ -306,9 +307,9 @@ class MaterializationPlanAdapter:
                 "materialization execution details disagree with collected plan"
             )
         qualifiers = {
-            "job-sha256": plan.provenance.job_sha256,
-            "result-sha256": plan.provenance.result_sha256,
-            "plan-sha256": canonical_sha256(plan),
+            "job-identity": plan.provenance.job_identity,
+            "result-identity": plan.provenance.result_identity,
+            "plan-identity": plan.artifact_id,
             "executable": plan.executable,
         }
         return CollectedActionResult(
@@ -326,7 +327,7 @@ class MaterializationPlanAdapter:
                     acceptance_path,
                     qualifiers={
                         **qualifiers,
-                        "acceptance-sha256": canonical_sha256(acceptance),
+                        "acceptance-identity": f"{plan.artifact_id}:acceptance",
                     },
                 ),
             ),
@@ -454,15 +455,15 @@ def collect_materialization_execution_result(
         raise FlowExecutionError(
             "materialization execution details disagree with collected receipt"
         )
-    receipt_sha256 = canonical_sha256(receipt)
+    receipt_identity = materialization_receipt_id(receipt)
     qualifiers = {
         "owner": target.owner,
         "name": target.name,
         "format": target.format.value,
-        "job-sha256": receipt.provenance.job_sha256,
-        "result-sha256": receipt.provenance.result_sha256,
-        "plan-sha256": receipt.provenance.plan_sha256,
-        "receipt-sha256": receipt_sha256,
+        "job-identity": receipt.provenance.job_identity,
+        "result-identity": receipt.provenance.result_identity,
+        "plan-identity": receipt.provenance.plan_identity,
+        "receipt-identity": receipt_identity,
         "status": receipt.status.value,
         "backend": receipt.completion.backend,
     }
@@ -484,7 +485,7 @@ def collect_materialization_execution_result(
                 layout_path,
                 qualifiers={
                     **qualifiers,
-                    "layout-sha256": receipt.layout.content_sha256,
+                    "layout-identity": receipt.layout.content_identity,
                 },
             ),
         )

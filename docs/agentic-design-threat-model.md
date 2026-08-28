@@ -1,6 +1,6 @@
 # Agentic circuit-design threat model
 
-Status: Phase 0 frozen threat model, 2026-08-28.
+Status: Phase 0-5 implemented threat model, 2026-08-28.
 
 This model covers Sigilicon's future native MCP process, its application Interface,
 managed artifacts, and deterministic Flow/EDA adapters. MCP clients, models,
@@ -36,13 +36,14 @@ Trust boundaries are:
 | --- | --- | --- |
 | path traversal, absolute path, or symlink escape | semantic IDs only at MCP; explicit ProjectContext; owner-root resolution; existing no-follow/dirfd artifact I/O | `..`, absolute, backslash, symlink, and replaced-inode cases are rejected |
 | generic command or environment injection | no shell/command/env fields; allowlisted Flow target and Adapter; guarded process Module owns argv | shell metacharacters and option-like identities never reach an executor |
-| cross-owner artifact substitution | owner+kind+SHA reference; release identity required across owners; authorization checked again on read | mismatched owner, kind, hash, or missing release identity is rejected |
-| Candidate identity drift | identity derived from canonical bytes; every parent/reference rehashed before use | altered field or substituted artifact invalidates the Candidate |
+| cross-owner artifact substitution | owner+kind reference; release identity required across owners; typed artifact and authorization checked again on read | mismatched owner, kind, typed value, or missing release identity is rejected |
+| Candidate identity drift | every parent/reference resolves to an immutable typed value and its declared owner/kind/lineage | altered structure or substituted artifact invalidates the Candidate |
 | fake/offline false success | producer class and backend completion are typed; offline/fake cannot issue qualification/signoff pass | zero exit, existing file, or fake parser cannot create passing evidence |
 | missing/malformed authoritative report | completion requires executed backend, parsed report, checked identity, and zero exit | missing or malformed report yields execution failure/non-conclusion |
 | prompt injection in logs, reports, or repository text | treat text as data; expose typed facts and bounded escaped excerpts; never turn content into tool arguments or authorization | malicious instructions do not change next operations or permissions |
 | secret, PDK path, or oversized output leakage | response projection allowlist; path redaction; size/page limits; private cache scope | secrets and site paths are absent; oversized results return resource links |
-| replay or duplicate request | idempotency identity binds caller, operation, input, and policy; immutable terminal records | duplicate call returns the same handle/result or a typed conflict |
+| replay or duplicate request | idempotency identity binds caller, operation, input, policy, and execution-environment identity; immutable terminal records | duplicate call returns the same handle/result or a typed conflict; a changed environment cannot reuse an old Flow attempt |
+| forged semantic repair | proposal cannot carry a pass conclusion; owner policy recompiles a typed Repair Plan and the campaign verifies parent/child lineage | wrong campaign, attribution, evidence, owner, repair kind, or child parent is rejected before continuation |
 | run-handle guessing or confused deputy | opaque handle plus authorization on every request; bounded lifetime and owner binding | another principal/owner cannot inspect, cancel, or resume a run |
 | cancellation race | cooperative managed process-group cancellation and immutable terminal state | cancel cannot rewrite completed state; cancelled outputs cannot appear valid |
 | concurrent OA/workspace mutation | existing operation lock, exact lease, open-view/lock checks, confirmation, mutation scope, receipt | second writer, live view, replaced lock, or expired lease blocks mutation |
@@ -58,6 +59,12 @@ record secrets, unrestricted environment data, complete PDK paths, or raw prompt
 content. Resource and handle retention is explicit and bounded; terminal evidence
 remains immutable for the project retention period.
 
-OA mutation and real EDA are intentionally absent from Phase 0-2. Adding either
-requires a separate authorization checkpoint, the project launcher/session
-conditions, and the existing OA/Flow safety tests; MCP cannot weaken those controls.
+Design Campaign checkpoints are canonical states referenced by append-only,
+monotonic sequence events. A mutable state pointer is only a cache and is rebuilt from
+the ordered events after a missing or partial write. Baseline and continuation execution
+failures are recorded as terminal fail-closed states, including when no Candidate
+iteration could be observed.
+
+OA mutation and real EDA require the project launcher/session conditions, explicit
+grant capability, and the existing OA/Flow safety tests; MCP cannot weaken those
+controls or reinterpret regression evidence as qualification.

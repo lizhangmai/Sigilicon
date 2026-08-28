@@ -15,11 +15,11 @@ from sigilicon.workflows.agentic_execution import (
     AgenticExecutionBudget,
     AgenticExecutionInterface,
 )
+from sigilicon.identifiers import RUN_ID_PATTERN
 
 
 _OWNER_PATTERN = r"[A-Za-z][A-Za-z0-9_.-]*"
 _IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
-_RUN_PATTERN = r"[0-9a-f]{32}"
 
 _RESPONSE_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -28,7 +28,7 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
         "schema": {"const": 1},
         "contract_kind": {"const": READ_RESULT_KIND},
         "operation": {"type": "string"},
-        "project_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "project_id": {"type": "string", "minLength": 1},
         "authority": {"type": "string"},
         "conclusion": {"type": "string"},
         "summary": {"type": "string"},
@@ -86,7 +86,7 @@ _RUN_INPUT_SCHEMA: dict[str, Any] = {
         "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
         "flow": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
         "target": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
-        "run_id": {"type": "string", "pattern": f"^{_RUN_PATTERN}$"},
+        "run_id": {"type": "string", "pattern": f"^{RUN_ID_PATTERN}$"},
     },
     "required": ["owner", "flow", "target", "run_id"],
     "additionalProperties": False,
@@ -109,6 +109,25 @@ _CANDIDATE_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_PROMOTION_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
+        "candidate": {"type": "string", "maxLength": 1_000_000},
+        "artifacts": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 1_000_000},
+            "minItems": 1,
+            "maxItems": 128,
+        },
+        "decision": {"type": "string", "maxLength": 1_000_000},
+        "request": {"type": "string", "maxLength": 1_000_000},
+    },
+    "required": ["owner", "candidate", "artifacts", "decision", "request"],
+    "additionalProperties": False,
+}
+
 _CAMPAIGN_PLAN_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -123,7 +142,7 @@ _FLOW_RUN_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
-        "plan_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "plan_identity": {"type": "string", "minLength": 1},
         "budget": {
             "type": "object",
             "properties": {
@@ -142,7 +161,7 @@ _RUN_CANCEL_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
-        "run_id": {"type": "string", "pattern": f"^{_RUN_PATTERN}$"},
+        "run_id": {"type": "string", "pattern": f"^{RUN_ID_PATTERN}$"},
     },
     "required": ["run_id"],
     "additionalProperties": False,
@@ -155,10 +174,15 @@ _CAMPAIGN_RUN_INPUT_SCHEMA: dict[str, Any] = {
         "campaign": {"type": "string", "maxLength": 2_000_000},
         "campaign_identity": {
             "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
+            "minLength": 1,
         },
+        "run_id": {"type": "string", "pattern": f"^{RUN_ID_PATTERN}$"},
+        "proposal": {"type": "string", "maxLength": 2_000_000},
     },
-    "required": ["campaign", "campaign_identity"],
+    "oneOf": [
+        {"required": ["campaign", "campaign_identity"]},
+        {"required": ["run_id", "proposal"]},
+    ],
     "additionalProperties": False,
 }
 
@@ -235,6 +259,17 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
             outputSchema=_RESPONSE_SCHEMA,
             annotations=annotations,
         ),
+        types.Tool(
+            name="candidate.promotion_plan",
+            title="Prepare Sigilicon Candidate Promotion Plan",
+            description=(
+                "Validate exact Candidate, Decision, and Evidence identities and compile "
+                "an immutable human-review plan. This tool cannot write source or apply a patch."
+            ),
+            inputSchema=_PROMOTION_INPUT_SCHEMA,
+            outputSchema=_RESPONSE_SCHEMA,
+            annotations=annotations,
+        ),
     ]
     if execution_enabled:
         execute_annotations = types.ToolAnnotations(
@@ -271,9 +306,9 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
                     name="campaign.run",
                     title="Run approved bounded Sigilicon Design Campaign",
                     description=(
-                        "Execute one exact launcher-approved Campaign identity through "
-                        "DesignCampaignRunner. No command, path, environment, or Adapter "
-                        "selector is accepted."
+                        "Start one exact launcher-approved Campaign or resume its durable "
+                        "run with one strict semantic proposal. No command, path, environment, "
+                        "future attempt, result, or Adapter selector is accepted."
                     ),
                     inputSchema=_CAMPAIGN_RUN_INPUT_SCHEMA,
                     outputSchema=_RESPONSE_SCHEMA,
@@ -362,11 +397,18 @@ def _resource_segments(uri: str) -> tuple[str, ...]:
 
 
 def create_server(
-    interface: AgenticReadInterface,
-    *,
-    execution: AgenticExecutionInterface | None = None,
+    application: AgenticReadInterface | AgenticExecutionInterface,
 ) -> Server[object]:
     """Create the standards-compliant protocol shell around one bound Interface."""
+
+    if isinstance(application, AgenticExecutionInterface):
+        execution: AgenticExecutionInterface | None = application
+        interface = application.read
+    elif isinstance(application, AgenticReadInterface):
+        execution = None
+        interface = application
+    else:
+        raise TypeError("MCP requires one Agentic application Interface")
 
     async def list_tools(
         _context: ServerRequestContext[object],
@@ -460,6 +502,41 @@ def create_server(
                         "tool arguments do not match the declared schema"
                     )
                 payload = interface.plan_campaign(campaign_json=campaign_json)
+            elif operation == "candidate.promotion_plan":
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset(
+                        {"owner", "candidate", "artifacts", "decision", "request"}
+                    ),
+                    required=frozenset(
+                        {"owner", "candidate", "artifacts", "decision", "request"}
+                    ),
+                )
+                artifact_values = arguments.get("artifacts")
+                texts = (
+                    arguments.get("candidate"),
+                    arguments.get("decision"),
+                    arguments.get("request"),
+                )
+                if (
+                    not isinstance(artifact_values, list)
+                    or not artifact_values
+                    or len(artifact_values) > 128
+                    or any(
+                        not isinstance(item, str) or len(item) > 1_000_000
+                        for item in (*artifact_values, *texts)
+                    )
+                ):
+                    raise _RequestRejected(
+                        "tool arguments do not match the declared schema"
+                    )
+                payload = interface.plan_candidate_promotion(
+                    owner=_required_text(arguments, "owner"),
+                    candidate_json=_required_text(arguments, "candidate"),
+                    artifact_json=tuple(artifact_values),
+                    decision_json=_required_text(arguments, "decision"),
+                    request_json=_required_text(arguments, "request"),
+                )
             elif operation == "flow.run" and execution is not None:
                 arguments = _strict_arguments(
                     params.arguments,
@@ -495,21 +572,44 @@ def create_server(
             elif operation == "campaign.run" and execution is not None:
                 arguments = _strict_arguments(
                     params.arguments,
-                    allowed=frozenset({"campaign", "campaign_identity"}),
-                    required=frozenset({"campaign", "campaign_identity"}),
+                    allowed=frozenset(
+                        {"campaign", "campaign_identity", "run_id", "proposal"}
+                    ),
+                    required=frozenset(),
                 )
-                campaign_json = _required_text(arguments, "campaign")
-                if len(campaign_json) > 2_000_000:
+                start_fields = {"campaign", "campaign_identity"}
+                resume_fields = {"run_id", "proposal"}
+                argument_fields = frozenset(arguments)
+                if argument_fields not in {
+                    frozenset(start_fields),
+                    frozenset(resume_fields),
+                }:
                     raise _RequestRejected(
                         "tool arguments do not match the declared schema"
                     )
-                payload = execution.run_campaign(
-                    campaign_json=campaign_json,
-                    campaign_identity=_required_text(
-                        arguments,
-                        "campaign_identity",
-                    ),
-                )
+                if argument_fields == start_fields:
+                    campaign_json = _required_text(arguments, "campaign")
+                    if len(campaign_json) > 2_000_000:
+                        raise _RequestRejected(
+                            "tool arguments do not match the declared schema"
+                        )
+                    payload = execution.run_campaign(
+                        campaign_json=campaign_json,
+                        campaign_identity=_required_text(
+                            arguments,
+                            "campaign_identity",
+                        ),
+                    )
+                else:
+                    proposal_json = _required_text(arguments, "proposal")
+                    if len(proposal_json) > 2_000_000:
+                        raise _RequestRejected(
+                            "tool arguments do not match the declared schema"
+                        )
+                    payload = execution.run_campaign(
+                        run_id=_required_text(arguments, "run_id"),
+                        proposal_json=proposal_json,
+                    )
             else:
                 return _tool_result(
                     _error_response(

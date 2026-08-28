@@ -54,15 +54,15 @@ from sigilicon.workflows.design_repair import (
 
 
 OWNER = "example"
-SOURCE = ArtifactReference(OWNER, "source.netlist", "1" * 64, None)
-POLICY = ArtifactReference(OWNER, "spec.design-policy", "2" * 64, None)
+SOURCE = ArtifactReference(OWNER, "source.netlist", "source-fixture", None)
+POLICY = ArtifactReference(OWNER, "spec.design-policy", "design-policy-fixture", None)
 
 
 def _topology(*, master: str = "INV", origin: TopologyOrigin = TopologyOrigin.SOURCE_AUTHORED) -> CircuitTopologyProposal:
     return CircuitTopologyProposal(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, OWNER),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, OWNER, f"{OWNER}:topology:{master}"),
         "pilot",
-        SOURCE.sha256,
+        SOURCE.identity,
         origin,
         (
             CircuitPort("IN", PortDirection.INPUT, "signal"),
@@ -77,7 +77,7 @@ def _topology(*, master: str = "INV", origin: TopologyOrigin = TopologyOrigin.SO
 
 def _evidence(subject: ArtifactReference, *, conclusion: EvidenceConclusion = EvidenceConclusion.VIOLATED) -> DesignEvidence:
     return DesignEvidence(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, OWNER),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, OWNER, f"{OWNER}:evidence:{subject.identity}"),
         subject,
         SOURCE,
         POLICY,
@@ -104,7 +104,7 @@ def _candidate(
     result: CircuitSizingResult | None = None,
 ) -> DesignCandidate:
     return DesignCandidate(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, OWNER),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, OWNER, f"{OWNER}:candidate:{topology.identity}"),
         "pilot",
         SOURCE,
         None,
@@ -133,10 +133,10 @@ def _problem(topology: CircuitTopologyProposal) -> CircuitSizingProblem:
         for name, value in (("minimum", values[0]), ("baseline", values[1]))
     )
     return CircuitSizingProblem(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, OWNER),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, OWNER, f"{OWNER}:sizing-problem:repair"),
         "pilot",
         topology.reference(),
-        ArtifactReference(OWNER, "spec.sizing", "3" * 64, None),
+        ArtifactReference(OWNER, "spec.sizing", "sizing-specification", None),
         "tb_pilot",
         EvidenceRole.DIAGNOSTIC,
         parameters,
@@ -149,7 +149,7 @@ def _problem(topology: CircuitTopologyProposal) -> CircuitSizingProblem:
 
 def _result(problem: CircuitSizingProblem) -> CircuitSizingResult:
     return CircuitSizingResult(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_RESULT_KIND, OWNER),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_RESULT_KIND, OWNER, f"{OWNER}:sizing-result:repair"),
         problem.reference(),
         EvidenceRole.DIAGNOSTIC,
         "test-sweep",

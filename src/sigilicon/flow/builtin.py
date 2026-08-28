@@ -12,6 +12,7 @@ from sigilicon.flow.physical_verification import (
 )
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import SourceAssetsAdapter
+from sigilicon.flow.circuit_design import register_circuit_design_actions
 from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.synopsys import (
     SynopsysDCAdapter,
@@ -29,6 +30,7 @@ def builtin_registry(owner_root: Path | None = None) -> FlowRegistry:
     register_physical_design_actions(registry)
     register_physical_verification_actions(registry)
     register_post_layout_actions(registry)
+    register_circuit_design_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
     if owner_root is not None:
         registry.register_adapter("synopsys-dc", SynopsysDCAdapter(owner_root))

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -18,7 +17,7 @@ from sigilicon.artifacts import (
     new_identity,
     read_nofollow_text,
 )
-from sigilicon.canonical import canonical_sha256
+from sigilicon.canonical import canonical_json
 from sigilicon.external_tools import (
     owned_directory,
     owned_input_file,
@@ -34,6 +33,8 @@ from sigilicon.domain.physical_verification import (
     LvsMismatch,
     PhysicalVerificationPolicy,
     PhysicalVerificationEvidence,
+    drc_evidence_id,
+    lvs_evidence_id,
     PhysicalVerificationStatus,
     VerificationCompletion,
     drc_evidence_from_json,
@@ -59,6 +60,7 @@ from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.materialization_execution import (
     MaterializationReceipt,
     materialization_receipt_from_json,
+    materialization_receipt_id,
     validate_receipt_bound_layout,
 )
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
@@ -94,7 +96,7 @@ class ReceiptBoundLayoutSourceInputs:
     """Validated materialization identities shared by downstream physical Actions."""
 
     receipt: MaterializationReceipt
-    receipt_sha256: str
+    receipt_identity: str
     layout: CheckedLayoutIdentity
     layout_path: Path
     source: CheckedSourceIdentity | None
@@ -420,20 +422,6 @@ def lvs_evidence_from_report(
     )
 
 
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    """Hash one already-resolved regular artifact without following aliases."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _required_qualifier(
     context: ActionContext,
     role: str,
@@ -459,6 +447,21 @@ def _check_qualifiers(
             )
 
 
+def _validate_source_structure(path: Path, name: str) -> None:
+    text = read_nofollow_text(path)
+    declarations = {
+        match.group("name")
+        for match in re.finditer(
+            r"(?im)^\s*\.?subckt\s+(?P<name>[^\s]+)",
+            text,
+        )
+    }
+    if name not in declarations:
+        raise FlowExecutionError(
+            f"canonical source has no declared subcircuit {name!r}"
+        )
+
+
 def load_receipt_bound_layout_source_inputs(
     context: ActionContext,
     *,
@@ -473,15 +476,14 @@ def load_receipt_bound_layout_source_inputs(
             "layout and Materialization Receipt must have the same producer"
         )
     try:
-        receipt = materialization_receipt_from_json(
-            receipt_artifact.path.read_text(encoding="utf-8")
-        )
+        receipt_text = receipt_artifact.path.read_text(encoding="utf-8")
+        receipt = materialization_receipt_from_json(receipt_text)
     except (OSError, UnicodeError, ValueError, TypeError) as exc:
         raise FlowExecutionError(f"invalid Materialization Receipt: {exc}") from exc
-    receipt_sha256 = canonical_sha256(receipt)
-    if sha256_file(receipt_artifact.path) != receipt_sha256:
+    receipt_identity = materialization_receipt_id(receipt)
+    if canonical_json(receipt) != receipt_text:
         raise FlowExecutionError(
-            "Materialization Receipt file is not its canonical content identity"
+            "Materialization Receipt file is not canonical typed JSON"
         )
     validation = validate_receipt_bound_layout(
         receipt,
@@ -498,10 +500,10 @@ def load_receipt_bound_layout_source_inputs(
         "owner": receipt.target.owner,
         "name": receipt.target.name,
         "format": receipt.target.format.value,
-        "job-sha256": receipt.provenance.job_sha256,
-        "result-sha256": receipt.provenance.result_sha256,
-        "plan-sha256": receipt.provenance.plan_sha256,
-        "receipt-sha256": receipt_sha256,
+        "job-identity": receipt.provenance.job_identity,
+        "result-identity": receipt.provenance.result_identity,
+        "plan-identity": receipt.provenance.plan_identity,
+        "receipt-identity": receipt_identity,
         "status": receipt.status.value,
         "backend": receipt.completion.backend,
     }
@@ -509,16 +511,16 @@ def load_receipt_bound_layout_source_inputs(
     _check_qualifiers(
         context,
         "layout",
-        {**common, "layout-sha256": receipt.layout.content_sha256},
+        {**common, "layout-identity": receipt.layout.content_identity},
     )
     layout = CheckedLayoutIdentity(
-        artifact_sha256=receipt.layout.content_sha256,
-        plan_sha256=receipt.provenance.plan_sha256,
-        result_sha256=receipt.provenance.result_sha256,
+        artifact_identity=receipt.layout.content_identity,
+        plan_identity=receipt.provenance.plan_identity,
+        result_identity=receipt.provenance.result_identity,
         owner=receipt.target.owner,
         name=receipt.target.name,
-        receipt_sha256=receipt_sha256,
-        job_sha256=receipt.provenance.job_sha256,
+        receipt_identity=receipt_identity,
+        job_identity=receipt.provenance.job_identity,
         format=receipt.target.format.value,
     )
 
@@ -526,20 +528,23 @@ def load_receipt_bound_layout_source_inputs(
     source_path = None
     if require_source:
         source_artifact = context.input("source")
-        source_sha256 = sha256_file(source_artifact.path)
+        source_identity = _required_qualifier(
+            context, "source", "source-identity"
+        )
         source_owner = _required_qualifier(context, "source", "owner")
         source_name = _required_qualifier(context, "source", "name")
+        _validate_source_structure(source_artifact.path, source_name)
         _check_qualifiers(
             context,
             "source",
             {
-                "source-sha256": source_sha256,
+                "source-identity": source_identity,
                 "owner": receipt.target.owner,
                 "name": receipt.target.name,
             },
         )
         source = CheckedSourceIdentity(
-            artifact_sha256=source_sha256,
+            artifact_identity=source_identity,
             owner=source_owner,
             name=source_name,
         )
@@ -547,7 +552,7 @@ def load_receipt_bound_layout_source_inputs(
 
     return ReceiptBoundLayoutSourceInputs(
         receipt=receipt,
-        receipt_sha256=receipt_sha256,
+        receipt_identity=receipt_identity,
         layout=layout,
         layout_path=layout_artifact.path,
         source=source,
@@ -570,13 +575,15 @@ def load_receipt_bound_verification_inputs(
     )
 
     policy_artifact = context.input("verification-policy")
-    policy_sha256 = sha256_file(policy_artifact.path)
+    policy_identity = _required_qualifier(
+        context, "verification-policy", "policy-identity"
+    )
     _check_qualifiers(
         context,
         "verification-policy",
         {
             "owner": base.receipt.target.owner,
-            "policy-sha256": policy_sha256,
+            "policy-identity": policy_identity,
         },
     )
     try:
@@ -590,7 +597,7 @@ def load_receipt_bound_verification_inputs(
         ) from exc
     return ReceiptBoundVerificationInputs(
         receipt=base.receipt,
-        receipt_sha256=base.receipt_sha256,
+        receipt_identity=base.receipt_identity,
         layout=base.layout,
         layout_path=base.layout_path,
         source=base.source,
@@ -1264,16 +1271,16 @@ class CalibrePhysicalVerificationAdapter:
         qualifiers = {
             "owner": inputs.layout.owner,
             "name": inputs.layout.name,
-            "layout-sha256": inputs.layout.artifact_sha256,
-            "receipt-sha256": inputs.receipt_sha256,
-            "job-sha256": str(inputs.layout.job_sha256),
-            "result-sha256": str(inputs.layout.result_sha256),
-            "plan-sha256": inputs.layout.plan_sha256,
+            "layout-identity": inputs.layout.artifact_identity,
+            "receipt-identity": inputs.receipt_identity,
+            "job-identity": str(inputs.layout.job_identity),
+            "result-identity": str(inputs.layout.result_identity),
+            "plan-identity": inputs.layout.plan_identity,
             "status": evidence.status.value,
             "backend": evidence.completion.backend,
         }
         if isinstance(evidence, LvsEvidence):
-            qualifiers["source-sha256"] = evidence.source.artifact_sha256
+            qualifiers["source-identity"] = evidence.source.artifact_identity
         reports = context.output_root / "reports"
         report_evidence = tuple(
             path
@@ -1294,7 +1301,11 @@ class CalibrePhysicalVerificationAdapter:
                     path,
                     qualifiers={
                         **qualifiers,
-                        "evidence-sha256": canonical_sha256(evidence),
+                        "evidence-identity": (
+                            drc_evidence_id(evidence)
+                            if isinstance(evidence, DrcEvidence)
+                            else lvs_evidence_id(evidence)
+                        ),
                     },
                 ),
             ),
@@ -1450,9 +1461,9 @@ def verify_layout(
         )
         completed_stages.append(f"calibre-{check}")
         layout_identity = CheckedLayoutIdentity(
-            artifact_sha256=sha256_file(gds),
-            plan_sha256=_sha256_bytes(plan.canonical_json().encode("utf-8")),
-            result_sha256=None,
+            artifact_identity=f"{record.paths.identity}:layout:gdsii",
+            plan_identity=f"{spec.library}:{spec.cell}:layout-plan",
+            result_identity=None,
             owner=spec.library,
             name=spec.cell,
         )
@@ -1470,13 +1481,13 @@ def verify_layout(
                 waiver_layers=spec.physical_verification.drc_waiver_layers,
             )
         else:
-            canonical_source = render_canonical_source_cdl(spec).encode("utf-8")
+            canonical_source = render_canonical_source_cdl(spec)
             typed_evidence = lvs_evidence_from_report(
                 read_nofollow_text(record.paths.role("outputs") / "lvs-report"),
                 primary=spec.cell,
                 layout=layout_identity,
                 source=CheckedSourceIdentity(
-                    artifact_sha256=_sha256_bytes(canonical_source),
+                    artifact_identity=f"{spec.library}:{spec.cell}:source",
                     owner=spec.library,
                     name=spec.cell,
                 ),

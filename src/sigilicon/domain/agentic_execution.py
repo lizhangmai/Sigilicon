@@ -5,19 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import json
 import re
 
 from sigilicon.canonical import (
     canonical_from_exact_json,
     canonical_json,
-    canonical_sha256,
 )
+from sigilicon.identifiers import bounded_identity
 
 
 AGENTIC_EXECUTION_SCHEMA = 1
 AGENTIC_EXECUTION_GRANT_KIND = "agentic.execution-grant.v1"
-_IDENTITY = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_SEMANTIC_NAME = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 
 
 class AgenticExecutionCapability(str, Enum):
@@ -25,14 +25,9 @@ class AgenticExecutionCapability(str, Enum):
     MUTATE_WORKSPACE = "mutate-workspace"
 
 
-def _identity(value: str, label: str) -> None:
-    if not isinstance(value, str) or _IDENTITY.fullmatch(value) is None:
+def _semantic_name(value: str, label: str) -> None:
+    if not isinstance(value, str) or _SEMANTIC_NAME.fullmatch(value) is None:
         raise ValueError(f"invalid {label}: {value!r}")
-
-
-def _sha256(value: str, label: str) -> None:
-    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
-        raise ValueError(f"{label} must be a SHA-256 identity")
 
 
 @dataclass(frozen=True)
@@ -48,13 +43,30 @@ class AgenticExecutionBudget:
 
 
 @dataclass(frozen=True)
+class AgenticPlanApproval:
+    """One semantic plan selector bound to its exact canonical plan record."""
+
+    plan_id: str
+    plan_record_json: str
+
+    def __post_init__(self) -> None:
+        bounded_identity(self.plan_id, "approved plan")
+        try:
+            record = json.loads(self.plan_record_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("approved plan record must be canonical JSON") from exc
+        if not isinstance(record, dict) or canonical_json(record) != self.plan_record_json:
+            raise ValueError("approved plan record must be an exact canonical JSON object")
+
+
+@dataclass(frozen=True)
 class AgenticExecutionGrant:
     """One launcher-bound, time-bounded human approval for exact Flow plans."""
 
     principal: str
     role: str
     capabilities: tuple[AgenticExecutionCapability, ...]
-    approved_plan_sha256: tuple[str, ...]
+    approved_plans: tuple[AgenticPlanApproval, ...]
     approval: str
     expires_at: str
     schema: int = AGENTIC_EXECUTION_SCHEMA
@@ -67,9 +79,9 @@ class AgenticExecutionGrant:
             raise ValueError(
                 f"execution grant kind must be {AGENTIC_EXECUTION_GRANT_KIND!r}"
             )
-        _identity(self.principal, "execution principal")
-        _identity(self.role, "execution role")
-        _identity(self.approval, "approval identity")
+        _semantic_name(self.principal, "execution principal")
+        _semantic_name(self.role, "execution role")
+        _semantic_name(self.approval, "approval identity")
         if not self.capabilities:
             raise ValueError("execution grant must contain at least one capability")
         if any(not isinstance(item, AgenticExecutionCapability) for item in self.capabilities):
@@ -77,12 +89,13 @@ class AgenticExecutionGrant:
         capability_values = tuple(item.value for item in self.capabilities)
         if capability_values != tuple(sorted(set(capability_values))):
             raise ValueError("execution grant capabilities must be unique and sorted")
-        if not self.approved_plan_sha256:
+        if not self.approved_plans:
             raise ValueError("execution grant must approve at least one plan")
-        for identity in self.approved_plan_sha256:
-            _sha256(identity, "approved plan")
-        if self.approved_plan_sha256 != tuple(sorted(set(self.approved_plan_sha256))):
-            raise ValueError("approved plan identities must be unique and sorted")
+        if any(not isinstance(item, AgenticPlanApproval) for item in self.approved_plans):
+            raise ValueError("execution grant approved plans must be typed")
+        plan_ids = tuple(item.plan_id for item in self.approved_plans)
+        if plan_ids != tuple(sorted(set(plan_ids))):
+            raise ValueError("approved plans must have unique sorted semantic IDs")
         try:
             expiry = datetime.fromisoformat(self.expires_at)
         except ValueError as exc:
@@ -94,7 +107,7 @@ class AgenticExecutionGrant:
 
     @property
     def identity(self) -> str:
-        return canonical_sha256(self)
+        return self.approval
 
     def canonical_json(self) -> str:
         return canonical_json(self)
@@ -107,15 +120,22 @@ class AgenticExecutionGrant:
     def authorize(
         self,
         plan_identity: str,
+        plan_record: object,
         required: tuple[AgenticExecutionCapability, ...],
         *,
         instant: datetime,
     ) -> None:
-        _sha256(plan_identity, "Flow Plan")
+        bounded_identity(plan_identity, "Flow Plan")
         if not self.valid_at(instant):
             raise ValueError("execution grant has expired")
-        if plan_identity not in self.approved_plan_sha256:
+        approval = next(
+            (item for item in self.approved_plans if item.plan_id == plan_identity),
+            None,
+        )
+        if approval is None:
             raise ValueError("Flow Plan identity is not approved by the execution grant")
+        if canonical_json(plan_record) != approval.plan_record_json:
+            raise ValueError("Flow Plan record changed after execution approval")
         missing = tuple(item for item in required if item not in self.capabilities)
         if missing:
             raise ValueError(
@@ -134,5 +154,6 @@ __all__ = [
     "AgenticExecutionBudget",
     "AgenticExecutionCapability",
     "AgenticExecutionGrant",
+    "AgenticPlanApproval",
     "agentic_execution_grant_from_json",
 ]

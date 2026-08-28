@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json, read_json_object
+from sigilicon.canonical import canonical_json
 from sigilicon.flow.model import identifier, owner_identity, run_identity
+from sigilicon.identifiers import bounded_identity
 from sigilicon.paths import ArtifactExecutionPaths, ArtifactLayout
 
 
@@ -29,8 +32,10 @@ _STATE_FIELDS = {
     "target",
     "profile",
     "plan_identity",
+    "plan_record_json",
     "run_id",
     "grant_identity",
+    "grant_json",
     "required_capabilities",
     "budget",
     "status",
@@ -54,6 +59,7 @@ _REQUEST_FIELDS = _STATE_FIELDS - {
     "role",
     "approval",
     "environment_identity",
+    "environment_record_json",
 }
 
 
@@ -67,22 +73,23 @@ def _exact(value: Mapping[str, Any], fields: set[str], label: str) -> None:
         )
 
 
-def _sha256(value: object, label: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise ValueError(f"{label} must be a SHA-256 identity")
-    return value
-
-
 def _timestamp(value: object, label: str, *, nullable: bool = False) -> str | None:
     if value is None and nullable:
         return None
     if not isinstance(value, str) or not value or "\n" in value:
         raise ValueError(f"{label} must be timestamp text")
     return value
+
+
+def _canonical_record(value: object, label: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be canonical JSON text")
+    try:
+        record = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} must be canonical JSON text") from exc
+    if not isinstance(record, dict) or canonical_json(record) != value:
+        raise ValueError(f"{label} must be an exact canonical JSON object")
 
 
 def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
@@ -92,14 +99,16 @@ def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
     expected_kind = AGENTIC_RUN_REQUEST_KIND if request else AGENTIC_RUN_STATE_KIND
     if value.get("contract_kind") != expected_kind:
         raise ValueError(f"agentic run record kind must be {expected_kind!r}")
-    _sha256(value.get("project_id"), "agentic project")
+    bounded_identity(value.get("project_id"), "agentic project")
     owner_identity(value.get("owner"), "agentic run owner")
     identifier(value.get("flow"), "agentic run Flow")
     identifier(value.get("target"), "agentic run target")
     identifier(value.get("profile"), "agentic run profile")
-    _sha256(value.get("plan_identity"), "agentic Flow Plan")
+    bounded_identity(value.get("plan_identity"), "agentic Flow Plan")
+    _canonical_record(value.get("plan_record_json"), "agentic Flow Plan record")
     run_identity(value.get("run_id"))
-    _sha256(value.get("grant_identity"), "agentic execution grant")
+    bounded_identity(value.get("grant_identity"), "agentic execution grant")
+    _canonical_record(value.get("grant_json"), "agentic execution grant record")
     capabilities = value.get("required_capabilities")
     if (
         not isinstance(capabilities, list)
@@ -125,6 +134,10 @@ def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
     if request:
         for field in ("principal", "role", "approval", "environment_identity"):
             identifier(value.get(field), f"agentic run {field}")
+        _canonical_record(
+            value.get("environment_record_json"),
+            "agentic execution environment record",
+        )
         return
     status = value.get("status")
     if status not in RUN_STATUSES:
@@ -159,7 +172,7 @@ class AgenticRunStore:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifact_root", Path(self.artifact_root).resolve())
-        _sha256(self.project_id, "agentic project")
+        bounded_identity(self.project_id, "agentic project")
 
     def paths(
         self,

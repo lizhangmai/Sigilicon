@@ -18,7 +18,7 @@ completion marker, both extraction stages report zero xRC errors, the expected
 regular sidecars exist, the top-level ports agree with canonical source, and the
 flattened output contains parasitic elements.  Raw tool outputs remain evidence;
 the published self-contained netlist replaces only its volatile `Created`
-comment so identical electrical output has a stable content identity.  A missing
+comment so repeated output has stable text.  A missing
 or malformed stage emits non-conclusive `execution_failed` or
 `backend_unavailable` evidence and never emits a parasitic netlist.  This adds
 bounded staging cost, but avoids private PDK paths in public contracts, dangling

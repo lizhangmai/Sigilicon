@@ -8,12 +8,12 @@ from sigilicon.layout.pnr.engine import PnrInputError, run
 from sigilicon.layout.pnr.serialization import (
     CanonicalSerializationError,
     canonical_json,
-    canonical_sha256,
+    physical_closure_evidence_id,
     physical_design_job_from_json,
-    physical_design_intent_sha256,
+    physical_design_job_id,
     physical_design_result_from_json,
+    physical_design_result_id,
     placement_routing_closure_evidence_from_json,
-    pnr_execution_sha256,
 )
 from sigilicon.layout.pnr.model import (
     AlignmentAnchor,
@@ -190,11 +190,11 @@ __all__ = [
     "ViaDefinition",
     "ViaStack",
     "canonical_json",
-    "canonical_sha256",
+    "physical_closure_evidence_id",
     "physical_design_job_from_json",
-    "physical_design_intent_sha256",
+    "physical_design_job_id",
     "physical_design_result_from_json",
+    "physical_design_result_id",
     "placement_routing_closure_evidence_from_json",
-    "pnr_execution_sha256",
     "run",
 ]

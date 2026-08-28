@@ -12,6 +12,7 @@ from sigilicon.domain.agentic_execution import (
     AgenticExecutionBudget,
     AgenticExecutionCapability,
     AgenticExecutionGrant,
+    AgenticPlanApproval,
     agentic_execution_grant_from_json,
 )
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
@@ -30,12 +31,25 @@ def _plan_identity(root: Path) -> str:
     )["data"]["plan_identity"]
 
 
-def _grant(plan_identity: str, *, approval: str = "phase3-test-approval") -> AgenticExecutionGrant:
+def _grant(
+    root: Path,
+    plan_identity: str,
+    *,
+    approval: str = "phase3-test-approval",
+) -> AgenticExecutionGrant:
+    record = AgenticReadInterface.from_project_root(root).plan_flow(
+        owner="example",
+        flow="pipeline",
+        target="all",
+        profile="offline",
+    )["data"]["plan"]
     return AgenticExecutionGrant(
         principal="test-operator",
         role="design-operator",
         capabilities=(AgenticExecutionCapability.EXECUTE_DERIVED,),
-        approved_plan_sha256=(plan_identity,),
+        approved_plans=(
+            AgenticPlanApproval(plan_identity, json.dumps(record, indent=2, sort_keys=True) + "\n"),
+        ),
         approval=approval,
         expires_at="2099-01-01T00:00:00+00:00",
     )
@@ -79,7 +93,7 @@ adapter = "fake-wait"
 def test_execution_grant_is_canonical_strict_and_time_bounded(tmp_path: Path) -> None:
     write_read_only_flow_project(tmp_path)
     plan_identity = _plan_identity(tmp_path)
-    grant = _grant(plan_identity)
+    grant = _grant(tmp_path, plan_identity)
 
     assert grant.contract_kind == AGENTIC_EXECUTION_GRANT_KIND
     assert agentic_execution_grant_from_json(grant.canonical_json()) == grant
@@ -98,7 +112,12 @@ def test_execution_grant_is_canonical_strict_and_time_bounded(tmp_path: Path) ->
         principal="test-operator",
         role="design-operator",
         capabilities=(AgenticExecutionCapability.EXECUTE_DERIVED,),
-        approved_plan_sha256=(plan_identity,),
+        approved_plans=(
+            AgenticPlanApproval(
+                plan_identity,
+                _grant(tmp_path, plan_identity).approved_plans[0].plan_record_json,
+            ),
+        ),
         approval="expired-test-approval",
         expires_at="2020-01-01T00:00:00+00:00",
     )
@@ -108,7 +127,7 @@ def test_execution_grant_is_canonical_strict_and_time_bounded(tmp_path: Path) ->
 def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) -> None:
     write_read_only_flow_project(tmp_path)
     plan_identity = _plan_identity(tmp_path)
-    grant = _grant(plan_identity)
+    grant = _grant(tmp_path, plan_identity)
     grant_path = tmp_path / "grant.json"
     grant_path.write_text(grant.canonical_json(), encoding="utf-8")
     budget = AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1)
@@ -128,7 +147,7 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
     assert result["data"]["management"]["status"] == "accepted"
     assert result["data"]["result"]["status"] == "accepted"
     assert result["data"]["management"]["completed_nodes"] == 1
-    assert len(result["data"]["management"]["run_id"]) == 32
+    assert result["data"]["management"]["run_id"].startswith("flow-example-pipeline")
 
     duplicate = interface.run_flow(
         plan_identity=plan_identity,
@@ -168,7 +187,7 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
 
     unauthorized = AgenticExecutionInterface.from_project_root(
         tmp_path,
-        grant=_grant("f" * 64),
+        grant=_grant(tmp_path, "forged-plan"),
     )
     with pytest.raises(ValueError, match="approved"):
         unauthorized.run_flow(
@@ -179,7 +198,7 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
 
     interface = AgenticExecutionInterface.from_project_root(
         tmp_path,
-        grant=_grant(plan_identity),
+        grant=_grant(tmp_path, plan_identity),
     )
     with pytest.raises(ValueError, match="node budget"):
         interface.run_flow(
@@ -190,12 +209,37 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
     assert not (tmp_path / "artifacts").exists()
 
 
+def test_grant_rejects_plan_config_changed_after_approval(tmp_path: Path) -> None:
+    write_read_only_flow_project(tmp_path)
+    plan_identity = _plan_identity(tmp_path)
+    grant = _grant(tmp_path, plan_identity)
+    contract = tmp_path / "ip/example/configs/flows/pipeline.toml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'config = { text = "hello" }',
+            'config = { text = "changed-after-approval" }',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="changed after execution approval"):
+        AgenticExecutionInterface.from_project_root(
+            tmp_path,
+            grant=grant,
+        ).run_flow(
+            plan_identity=plan_identity,
+            budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
+            wait=False,
+        )
+    assert not (tmp_path / "artifacts").exists()
+
+
 def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path: Path) -> None:
     _write_wait_flow(tmp_path)
     plan_identity = _plan_identity(tmp_path)
     interface = AgenticExecutionInterface.from_project_root(
         tmp_path,
-        grant=_grant(plan_identity),
+        grant=_grant(tmp_path, plan_identity),
     )
     submitted = interface.run_flow(
         plan_identity=plan_identity,
@@ -205,8 +249,9 @@ def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path:
     run_id = submitted["data"]["management"]["run_id"]
 
     interface.wait_until_running(run_id, timeout_seconds=5)
+    assert interface.store.locate(run_id).state["current_node"] == "wait"
     original_grant = interface.grant
-    interface.grant = _grant(plan_identity, approval="different-grant")
+    interface.grant = _grant(tmp_path, plan_identity, approval="different-grant")
     with pytest.raises(ValueError, match="grant"):
         interface.cancel_run(run_id=run_id)
     interface.grant = original_grant
@@ -226,7 +271,7 @@ def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path:
             principal="other-operator",
             role="design-operator",
             capabilities=(AgenticExecutionCapability.EXECUTE_DERIVED,),
-            approved_plan_sha256=(plan_identity,),
+            approved_plans=_grant(tmp_path, plan_identity).approved_plans,
             approval="other-approval",
             expires_at="2099-01-01T00:00:00+00:00",
         ),
@@ -242,7 +287,7 @@ def test_run_locator_never_traverses_symlinked_namespace(tmp_path: Path) -> None
     (outside / "control").mkdir(parents=True)
     namespace.mkdir(parents=True)
     (namespace / "example").symlink_to(tmp_path / "outside/example", target_is_directory=True)
-    store = AgenticRunStore(artifact_root, "a" * 64)
+    store = AgenticRunStore(artifact_root, "run-a")
 
     with pytest.raises(ValueError, match="unknown"):
         store.locate("f" * 32)

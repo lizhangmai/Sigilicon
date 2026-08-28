@@ -31,6 +31,8 @@ from sigilicon.workflows.physical_verification import (
     ReceiptBoundVerificationSourceAdapter,
 )
 from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
+from sigilicon.flow.circuit_design import PHYSICAL_DESIGN_OBSERVATION_ADAPTER
+from sigilicon.workflows.design_physical import PhysicalDesignObservationAdapter
 
 
 def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
@@ -50,6 +52,10 @@ def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
     registry.register_adapter(
         RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
         ReceiptBoundVerificationSourceAdapter(),
+    )
+    registry.register_adapter(
+        PHYSICAL_DESIGN_OBSERVATION_ADAPTER,
+        PhysicalDesignObservationAdapter(),
     )
     registry.register_action_adapter(
         PEX_ACTION,

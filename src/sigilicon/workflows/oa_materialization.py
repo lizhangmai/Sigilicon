@@ -41,7 +41,10 @@ from sigilicon.layout.pnr.model import (
     PhysicalDesignResult,
     Rect,
 )
-from sigilicon.layout.pnr.serialization import canonical_sha256
+from sigilicon.layout.pnr.serialization import (
+    physical_design_job_id,
+    physical_design_result_id,
+)
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.bridge import skill_quote
 from sigilicon.virtuoso.client import get_client
@@ -662,9 +665,9 @@ def render_oa_materialization_skill(
                 )
             )
     for name, value in (
-        ("sigiliconJobSha256", canonical_sha256(job)),
-        ("sigiliconResultSha256", canonical_sha256(result)),
-        ("sigiliconPlanSha256", canonical_sha256(plan)),
+        ("sigiliconJobIdentity", physical_design_job_id(job)),
+        ("sigiliconResultIdentity", physical_design_result_id(result)),
+        ("sigiliconPlanIdentity", plan.artifact_id),
         ("sigiliconTargetOwner", plan.target.owner),
         ("sigiliconTargetName", plan.target.name),
     ):
@@ -744,9 +747,9 @@ def render_oa_materialization_validation_skill(
         skill_quote(item) for item in _expected_identities(job, plan)
     ) + ")"
     properties = (
-        ("sigiliconJobSha256", canonical_sha256(job)),
-        ("sigiliconResultSha256", canonical_sha256(result)),
-        ("sigiliconPlanSha256", canonical_sha256(plan)),
+        ("sigiliconJobIdentity", physical_design_job_id(job)),
+        ("sigiliconResultIdentity", physical_design_result_id(result)),
+        ("sigiliconPlanIdentity", plan.artifact_id),
         ("sigiliconTargetOwner", plan.target.owner),
         ("sigiliconTargetName", plan.target.name),
     )

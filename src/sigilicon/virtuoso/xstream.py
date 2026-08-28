@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -96,40 +95,44 @@ def _canonical_generated_structure_names(
         for name in structures
         if (match := _CADENCE_GENERATED_STRUCTURE.fullmatch(name)) is not None
     }
-    digests: dict[bytes, bytes] = {}
+    normalized: dict[bytes, bytes] = {}
     visiting: set[bytes] = set()
 
-    def structure_digest(name: bytes) -> bytes:
-        if name in digests:
-            return digests[name]
+    def normalized_structure(name: bytes) -> bytes:
+        if name in normalized:
+            return normalized[name]
         if name in visiting:
             raise MaterializationExecutionError(
                 "XStream GDSII generated structure hierarchy is cyclic"
             )
         visiting.add(name)
-        digest = hashlib.sha256()
+        chunks: list[bytes] = []
         for record in structures[name]:
-            digest.update(bytes((record.record_type, record.data_type)))
+            chunks.append(bytes((record.record_type, record.data_type)))
             data = record.data
             if record.record_type == 0x06:
                 data = generated[name]
             elif record.record_type == 0x12:
                 reference = _gds_name(data)
                 if reference in generated:
-                    data = generated[reference] + structure_digest(reference)
+                    data = generated[reference] + normalized_structure(reference)
                 elif _CADENCE_GENERATED_STRUCTURE.fullmatch(reference) is not None:
                     raise MaterializationExecutionError(
                         "XStream GDSII references an undefined generated structure"
                     )
-            digest.update(len(data).to_bytes(4, "big"))
-            digest.update(data)
+            chunks.append(len(data).to_bytes(4, "big"))
+            chunks.append(data)
         visiting.remove(name)
-        digests[name] = digest.digest()
-        return digests[name]
+        normalized[name] = b"".join(chunks)
+        return normalized[name]
 
+    ordered = sorted(
+        generated,
+        key=lambda name: (generated[name], normalized_structure(name), name),
+    )
     replacements = {
-        name: prefix + structure_digest(name).hex()[:16].encode("ascii")
-        for name, prefix in generated.items()
+        name: generated[name] + f"{index:016x}".encode("ascii")
+        for index, name in enumerate(ordered)
     }
     if len(set(replacements.values())) != len(replacements):
         raise MaterializationExecutionError(

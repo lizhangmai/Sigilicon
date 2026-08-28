@@ -2,14 +2,13 @@
 
 The physical-design kernel and plan compiler remain free of database writes.  A
 tool Adapter writes one managed layout at the Flow seam, then uses this Module
-to validate the request and issue an immutable, content-bound receipt.
+to validate the request and issue an immutable semantic receipt.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -24,11 +23,15 @@ from sigilicon.layout.materialization import (
     validate_materialization_plan,
 )
 from sigilicon.layout.pnr.model import PhysicalDesignJob, PhysicalDesignResult
-from sigilicon.layout.pnr.serialization import canonical_json, canonical_sha256
+from sigilicon.layout.pnr.serialization import (
+    canonical_json,
+    physical_design_job_id,
+    physical_design_result_id,
+)
+from sigilicon.identifiers import RUN_ID_PATTERN, bounded_identity
 
 
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
+_RUN_ID = re.compile(RUN_ID_PATTERN + r"\Z")
 _LAYOUT_KIND_BY_FORMAT = {"gdsii": "layout.gds"}
 _CANONICAL_GDS_DATE = (2000, 1, 1, 0, 0, 0) * 2
 
@@ -60,10 +63,11 @@ def _text(value: object, label: str) -> str:
     return value
 
 
-def _sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
-        raise MaterializationExecutionError(f"{label} must be a SHA-256 identity")
-    return value
+def _materialization_identity(value: object, label: str) -> str:
+    try:
+        return bounded_identity(value, label)
+    except ValueError as exc:
+        raise MaterializationExecutionError(f"{label} must be storage-safe text") from exc
 
 
 @dataclass(frozen=True)
@@ -129,7 +133,7 @@ class MaterializationCompletion:
 class ManagedLayoutArtifact:
     kind: str
     format: LayoutArtifactFormat
-    content_sha256: str
+    content_identity: str
     size_bytes: int
     run_id: str
     producer: str
@@ -146,14 +150,14 @@ class ManagedLayoutArtifact:
             raise MaterializationExecutionError(
                 f"{self.format.value} layout kind must be {expected_kind!r}"
             )
-        _sha256(self.content_sha256, "managed layout content identity")
+        _materialization_identity(self.content_identity, "managed layout content identity")
         if type(self.size_bytes) is not int or self.size_bytes <= 0:
             raise MaterializationExecutionError(
                 "managed layout size must be a positive integer"
             )
         if not isinstance(self.run_id, str) or _RUN_ID.fullmatch(self.run_id) is None:
             raise MaterializationExecutionError(
-                "managed layout run identity must be 32 lowercase hexadecimal digits"
+                "managed layout run identity must use the semantic Flow Run grammar"
             )
         _text(self.producer, "managed layout producer")
         _text(self.role, "managed layout role")
@@ -171,17 +175,17 @@ class ManagedLayoutArtifact:
 
 @dataclass(frozen=True)
 class MaterializationExecutionProvenance:
-    job_sha256: str
-    result_sha256: str
-    plan_sha256: str
-    layout_sha256: str | None
+    job_identity: str
+    result_identity: str
+    plan_identity: str
+    layout_identity: str | None
 
     def __post_init__(self) -> None:
-        _sha256(self.job_sha256, "materialization job identity")
-        _sha256(self.result_sha256, "materialization result identity")
-        _sha256(self.plan_sha256, "materialization plan identity")
-        if self.layout_sha256 is not None:
-            _sha256(self.layout_sha256, "materialized layout identity")
+        _materialization_identity(self.job_identity, "materialization job identity")
+        _materialization_identity(self.result_identity, "materialization result identity")
+        _materialization_identity(self.plan_identity, "materialization plan identity")
+        if self.layout_identity is not None:
+            _materialization_identity(self.layout_identity, "materialized layout identity")
 
 
 @dataclass(frozen=True)
@@ -266,8 +270,8 @@ class MaterializationReceipt:
                 "only invalid plan/identity status can carry request issues"
             )
 
-        layout_sha256 = None if self.layout is None else self.layout.content_sha256
-        if self.provenance.layout_sha256 != layout_sha256:
+        layout_identity = None if self.layout is None else self.layout.content_identity
+        if self.provenance.layout_identity != layout_identity:
             raise MaterializationExecutionError(
                 "receipt layout identity disagrees with managed artifact"
             )
@@ -282,6 +286,14 @@ class MaterializationReceipt:
 
     def canonical_json(self) -> str:
         return canonical_json(self)
+
+
+def materialization_receipt_id(receipt: MaterializationReceipt) -> str:
+    run = "unexecuted" if receipt.layout is None else receipt.layout.run_id
+    return (
+        f"{receipt.target.owner}:{receipt.target.name}:"
+        f"{receipt.target.format.value}:receipt:{run}"
+    )
 
 
 def materialization_execution_target_from_mapping(
@@ -514,7 +526,7 @@ def identify_managed_layout(
     return ManagedLayoutArtifact(
         kind=_LAYOUT_KIND_BY_FORMAT[target.format.value],
         format=target.format,
-        content_sha256=hashlib.sha256(payload).hexdigest(),
+        content_identity=f"{target.owner}:{target.name}:{target.format.value}",
         size_bytes=len(payload),
         run_id=run_id,
         producer=producer,
@@ -549,10 +561,10 @@ def issue_materialization_receipt(
         status=status,
         target=target,
         provenance=MaterializationExecutionProvenance(
-            job_sha256=canonical_sha256(job),
-            result_sha256=canonical_sha256(result),
-            plan_sha256=canonical_sha256(plan),
-            layout_sha256=None if layout is None else layout.content_sha256,
+            job_identity=physical_design_job_id(job),
+            result_identity=physical_design_result_id(result),
+            plan_identity=plan.artifact_id,
+            layout_identity=None if layout is None else layout.content_identity,
         ),
         completion=completion,
         layout=layout,
@@ -600,14 +612,14 @@ def validate_materialization_receipt(
             )
         )
     expected = (
-        canonical_sha256(job),
-        canonical_sha256(result),
-        canonical_sha256(plan),
+        physical_design_job_id(job),
+        physical_design_result_id(result),
+        plan.artifact_id,
     )
     observed = (
-        receipt.provenance.job_sha256,
-        receipt.provenance.result_sha256,
-        receipt.provenance.plan_sha256,
+        receipt.provenance.job_identity,
+        receipt.provenance.result_identity,
+        receipt.provenance.plan_identity,
     )
     if observed != expected:
         issues.append(
@@ -706,6 +718,7 @@ __all__ = [
     "canonicalize_gdsii_timestamps",
     "identify_managed_layout",
     "issue_materialization_receipt",
+    "materialization_receipt_id",
     "materialization_execution_target_from_mapping",
     "materialization_receipt_from_json",
     "validate_layout_content",

@@ -20,7 +20,8 @@ from sigilicon.layout.pnr import (
     Point,
     Rect,
     RoutingBlockage,
-    canonical_sha256,
+    physical_design_job_id,
+    physical_design_result_id,
     physical_design_job_from_json,
     run,
 )
@@ -84,7 +85,7 @@ def _provenance(job: PhysicalDesignJob):
     return result, ClosureIterationProvenance(
         "round-0",
         "0" * 32,
-        "1" * 64,
+        "source-fixture",
         "repair-flow",
         "closure",
         "contract",
@@ -92,14 +93,14 @@ def _provenance(job: PhysicalDesignJob):
             CampaignArtifactIdentity(
                 "job",
                 "physical-design.job",
-                canonical_sha256(job),
+                physical_design_job_id(job),
                 "inputs",
                 "job",
             ),
             CampaignArtifactIdentity(
                 "result",
                 "physical-design.result",
-                canonical_sha256(result),
+                physical_design_result_id(result),
                 "solve",
                 "result",
             ),
@@ -184,10 +185,10 @@ def test_exact_attributed_policy_compiles_and_applies_immutable_next_job() -> No
     assert job.design.instances[0].fixed_placement is None
     assert next_job.design.instances[0].fixed_placement == Placement(Point(2, 0))
     assert next_job.repair_lineage is not None
-    assert next_job.repair_lineage.parent_job_sha256 == canonical_sha256(job)
-    assert next_job.repair_lineage.parent_result_sha256 == first.parent_result_sha256
-    assert next_job.repair_lineage.feedback_sha256 == first.feedback_sha256
-    assert next_job.repair_lineage.repair_plan_sha256 == canonical_sha256(first)
+    assert next_job.repair_lineage.parent_job_identity == physical_design_job_id(job)
+    assert next_job.repair_lineage.parent_result_identity == first.parent_result_identity
+    assert next_job.repair_lineage.feedback_identity == first.feedback_identity
+    assert next_job.repair_lineage.repair_plan_identity == first.plan_id
     assert physical_design_job_from_json(next_job.canonical_json()) == next_job
 
 
@@ -253,7 +254,7 @@ def test_fixed_owner_and_corrupt_parent_provenance_are_rejected() -> None:
     corrupt = replace(
         provenance,
         artifacts=(
-            replace(provenance.artifacts[0], sha256="f" * 64),
+            replace(provenance.artifacts[0], identity="forged-identity"),
             provenance.artifacts[1],
         ),
     )

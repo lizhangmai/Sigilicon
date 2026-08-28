@@ -275,7 +275,7 @@ class _Client:
 
     def execute_skill(self, source: str, **_kwargs):
         self.sources.append(source)
-        if self.write_error and "sigiliconPlanSha256" in source:
+        if self.write_error and "sigiliconPlanIdentity" in source:
             return SimpleNamespace(output="nil", errors=[self.write_error])
         return SimpleNamespace(output="t", errors=[])
 
@@ -601,15 +601,15 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     assert receipt.layout.run_id == "1" * 32
     write_source = next(source for source in client.sources if "dbCreatePath" in source)
     assert "dbCreateTerm" in write_source
-    assert "sigiliconJobSha256" in write_source
+    assert "sigiliconJobIdentity" in write_source
     assert '"maskLayout" "w"' in write_source
     assert "ddDeleteObj" not in write_source
     assert write_source.count('list("M1" "drawing")') >= 1
     assert write_source.count('list("M1" "pin")') >= 1
     assert "dbCreatePin(net pinFig)" in write_source
-    layout_sha256 = receipt.provenance.layout_sha256
-    assert layout_sha256 is not None
-    assert layout_sha256 == receipt.layout.content_sha256
+    layout_identity = receipt.provenance.layout_identity
+    assert layout_identity is not None
+    assert layout_identity == receipt.layout.content_identity
 
 
 def test_repeated_materialization_canonicalizes_xstream_timestamps(
@@ -637,7 +637,7 @@ def test_repeated_materialization_canonicalizes_xstream_timestamps(
             environment=_environment(tmp_path, asset),
             run_id=str(index) * 32,
         )
-        identities.append(_receipt(flow_result).provenance.layout_sha256)
+        identities.append(_receipt(flow_result).provenance.layout_identity)
 
     assert identities[0] == identities[1]
     assert canonicalize_gdsii_timestamps(_gds(2025)) == canonicalize_gdsii_timestamps(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,12 +12,9 @@ import time
 from typing import Any
 
 from sigilicon.artifacts import (
-    atomic_write_json,
-    read_json_object,
     read_nofollow_text,
-    write_immutable_text,
 )
-from sigilicon.canonical import canonical_sha256
+from sigilicon.canonical import canonical_json
 from sigilicon.domain.agentic_execution import (
     AgenticExecutionBudget,
     AgenticExecutionCapability,
@@ -29,12 +25,21 @@ from sigilicon.external_tools import (
     ManagedBackgroundProcess,
     spawn_agentic_flow_worker,
 )
-from sigilicon.flow import load_execution_environment
-from sigilicon.paths import ArtifactLayout, ProjectContext
+from sigilicon.flow import (
+    ExecutionEnvironment,
+    load_execution_environment_contract,
+)
+from sigilicon.paths import ProjectContext
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_campaign import (
+    DesignCampaignPhase,
+    DesignCampaignResult,
     DesignCampaignRunner,
-    design_campaign_result_from_json,
+)
+from sigilicon.workflows.design_repair import design_repair_proposal_from_json
+from sigilicon.workflows.agentic_campaigns import (
+    CAMPAIGN_REQUEST_KIND,
+    DesignCampaignStore,
 )
 from sigilicon.workflows.agentic_runs import (
     AGENTIC_RUN_AUDIT_KIND,
@@ -47,17 +52,6 @@ from sigilicon.workflows.agentic_runs import (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _environment_identity(path: Path | None) -> tuple[str, str | None]:
-    if path is None:
-        return "empty-environment", None
-    resolved = Path(path).resolve()
-    load_execution_environment(resolved)
-    digest = hashlib.sha256(
-        read_nofollow_text(resolved).encode("utf-8")
-    ).hexdigest()
-    return f"environment-{digest[:24]}", digest
 
 
 def _worker_environment() -> dict[str, str]:
@@ -86,10 +80,27 @@ class AgenticExecutionInterface:
         self.environment_contract = (
             None if environment_contract is None else Path(environment_contract).resolve()
         )
-        self.environment_identity, self.environment_sha256 = _environment_identity(
-            self.environment_contract
-        )
+        if self.environment_contract is None:
+            self.environment_identity = "environment-empty"
+            self.environment_record_json = canonical_json(
+                {
+                    "schema": 1,
+                    "contract_kind": "execution-environment-binding",
+                    "contract_path": None,
+                    "contract": None,
+                }
+            )
+            self.execution_environment = ExecutionEnvironment()
+        else:
+            binding = load_execution_environment_contract(self.environment_contract)
+            self.environment_identity = binding.environment_id
+            self.environment_record_json = binding.record_json
+            self.execution_environment = binding.environment
         self.store = AgenticRunStore(
+            read.repository.project.artifact_root,
+            read.project_id,
+        )
+        self.campaign_store = DesignCampaignStore(
             read.repository.project.artifact_root,
             read.project_id,
         )
@@ -151,19 +162,16 @@ class AgenticExecutionInterface:
             )
         self.grant.authorize(
             plan_identity,
+            resolved.engine.plan_record(resolved.plan),
             required,
             instant=datetime.now(timezone.utc),
         )
-        run_id = canonical_sha256(
-            {
-                "operation": "flow.run",
-                "project_id": self.read.project_id,
-                "grant_identity": self.grant.identity,
-                "plan_identity": plan_identity,
-                "budget": asdict(budget),
-            }
-        )[:32]
         plan = resolved.plan
+        run_id = (
+            f"flow-{plan.spec.owner}-{plan.spec.flow_id}-{plan.target.target_id}-"
+            f"{plan.profile.profile_id}-{self.grant.approval}-"
+            f"{budget.maximum_seconds}-{budget.maximum_nodes}"
+        )
         paths = self.store.paths(
             owner=plan.spec.owner,
             flow=plan.spec.flow_id,
@@ -176,6 +184,10 @@ class AgenticExecutionInterface:
             if (
                 request["grant_identity"] != self.grant.identity
                 or request["plan_identity"] != plan_identity
+                or request["plan_record_json"]
+                != canonical_json(resolved.engine.plan_record(resolved.plan))
+                or request["grant_json"] != self.grant.canonical_json()
+                or request["environment_record_json"] != self.environment_record_json
                 or request["budget"] != asdict(budget)
             ):
                 raise ValueError("idempotent Flow Run identity drift")
@@ -189,8 +201,10 @@ class AgenticExecutionInterface:
                 "target": plan.target.target_id,
                 "profile": plan.profile.profile_id,
                 "plan_identity": plan_identity,
+                "plan_record_json": canonical_json(resolved.engine.plan_record(plan)),
                 "run_id": run_id,
                 "grant_identity": self.grant.identity,
+                "grant_json": self.grant.canonical_json(),
                 "required_capabilities": [item.value for item in required],
                 "budget": asdict(budget),
                 "submitted_at": submitted_at,
@@ -203,6 +217,7 @@ class AgenticExecutionInterface:
                 "role": self.grant.role,
                 "approval": self.grant.approval,
                 "environment_identity": self.environment_identity,
+                "environment_record_json": self.environment_record_json,
             }
             state = {
                 **common,
@@ -229,13 +244,13 @@ class AgenticExecutionInterface:
                     run_id,
                 ]
                 if self.environment_contract is not None:
-                    assert self.environment_sha256 is not None
+                    assert self.environment_identity is not None
                     arguments.extend(
                         (
                             "--environment",
                             str(self.environment_contract),
-                            "--environment-sha256",
-                            self.environment_sha256,
+                            "--environment-identity",
+                            self.environment_identity,
                         )
                     )
                 self._active[run_id] = spawn_agentic_flow_worker(
@@ -257,140 +272,157 @@ class AgenticExecutionInterface:
     def run_campaign(
         self,
         *,
-        campaign_json: str,
-        campaign_identity: str,
+        campaign_json: str | None = None,
+        campaign_identity: str | None = None,
+        run_id: str | None = None,
+        proposal_json: str | None = None,
     ) -> dict[str, Any]:
-        """Run one exact bounded Campaign and persist its immutable typed result."""
+        """Start or resume one durable Campaign through the same deep operation."""
 
-        resolved = self.read.resolve_campaign_plan(campaign_json)
-        if campaign_identity != resolved.campaign_identity:
-            raise ValueError("Design Campaign identity drift")
-        required = tuple(
-            sorted(
-                {
-                    AgenticExecutionCapability(node.execution_capability)
-                    for attempt in resolved.campaign.attempts
-                    for node in attempt.plan.nodes
-                },
-                key=lambda item: item.value,
+        starting = run_id is None and proposal_json is None
+        resuming = (
+            run_id is not None
+            and proposal_json is not None
+            and campaign_json is None
+            and campaign_identity is None
+        )
+        if not (starting or resuming):
+            raise ValueError("campaign.run requires either Campaign input or run/proposal input")
+        if starting:
+            if campaign_json is None or campaign_identity is None:
+                raise ValueError("campaign.run start requires Campaign JSON and identity")
+            resolved = self.read.resolve_campaign_plan(campaign_json)
+            if campaign_identity != resolved.campaign_identity:
+                raise ValueError("Design Campaign identity drift")
+            required = self._campaign_capabilities(resolved.campaign)
+            self.grant.authorize(
+                campaign_identity,
+                resolved.plan_record,
+                required,
+                instant=datetime.now(timezone.utc),
             )
-        )
-        self.grant.authorize(
-            campaign_identity,
-            required,
-            instant=datetime.now(timezone.utc),
-        )
-        run_id = canonical_sha256(
-            {
-                "operation": "campaign.run",
+            selected_run_id = (
+                f"campaign-{resolved.campaign.owner}-{resolved.campaign.campaign_id}-"
+                f"{self.grant.approval}-{self.environment_identity}"
+            )
+            paths = self.campaign_store.paths(
+                owner=resolved.campaign.owner,
+                campaign_id=resolved.campaign.campaign_id,
+                run_id=selected_run_id,
+            )
+            stored_request = (
+                self.campaign_store.read_request_if_present(paths)
+                if paths.root.exists()
+                else None
+            )
+            request = {
+                "schema": 1,
+                "contract_kind": CAMPAIGN_REQUEST_KIND,
                 "project_id": self.read.project_id,
-                "grant_identity": self.grant.identity,
+                "owner": resolved.campaign.owner,
+                "campaign_id": resolved.campaign.campaign_id,
                 "campaign_identity": campaign_identity,
+                "run_id": selected_run_id,
+                "grant_identity": self.grant.identity,
+                "grant_json": self.grant.canonical_json(),
+                "principal": self.grant.principal,
+                "role": self.grant.role,
+                "approval": self.grant.approval,
+                "required_capabilities": [item.value for item in required],
+                "environment_identity": self.environment_identity,
+                "environment_record_json": self.environment_record_json,
+                "campaign_plan_record_json": canonical_json(resolved.plan_record),
+                "submitted_at": (
+                    _now()
+                    if stored_request is None
+                    else stored_request["submitted_at"]
+                ),
             }
-        )[:32]
-        paths = ArtifactLayout(
-            self.read.repository.project.artifact_root
-        ).execution(
-            owner=resolved.campaign.owner,
-            target=resolved.campaign.campaign_id,
-            flow="design-campaign",
-            variant="default",
-            identity=run_id,
-            artifact_kind="design-campaign",
-            identity_kind="run_id",
-        )
-        request_path = paths.role("inputs") / "request.json"
-        source_path = paths.role("inputs") / "campaign.json"
-        result_path = paths.role("outputs") / "campaign_result.json"
-        audit_path = paths.role("logs") / "audit.json"
-        request = {
-            "schema": 1,
-            "contract_kind": "agentic-campaign-run-request",
-            "project_id": self.read.project_id,
-            "owner": resolved.campaign.owner,
-            "campaign_id": resolved.campaign.campaign_id,
-            "campaign_identity": campaign_identity,
-            "run_id": run_id,
-            "grant_identity": self.grant.identity,
-            "principal": self.grant.principal,
-            "role": self.grant.role,
-            "approval": self.grant.approval,
-            "required_capabilities": [item.value for item in required],
-            "environment_identity": self.environment_identity,
-        }
-        if paths.root.exists():
-            recorded = read_json_object(request_path, "Design Campaign request")
-            if recorded != request:
-                raise ValueError("idempotent Design Campaign request identity drift")
-            if not result_path.exists() or not audit_path.exists():
-                raise ValueError("Design Campaign run has no immutable terminal result")
-            result = design_campaign_result_from_json(read_nofollow_text(result_path))
+            self.campaign_store.create(
+                paths,
+                request=request,
+                campaign_json=campaign_json,
+            )
+            located = self.campaign_store.read(paths)
+            if located.request != request or located.campaign_json != campaign_json:
+                raise ValueError("idempotent Design Campaign request record drift")
+            state = located.state
+            if state is None:
+                state = self._start_campaign_transition(paths, resolved)
         else:
-            paths.create()
-            atomic_write_json(request_path, request)
-            atomic_write_json(
-                source_path,
-                json.loads(resolved.source.canonical_json()),
+            assert run_id is not None and proposal_json is not None
+            located = self.campaign_store.locate(run_id)
+            if (
+                located.request["principal"] != self.grant.principal
+                or located.request["grant_identity"] != self.grant.identity
+                or located.request["grant_json"] != self.grant.canonical_json()
+                or located.request["role"] != self.grant.role
+                or located.request["project_id"] != self.read.project_id
+                or located.request["environment_identity"] != self.environment_identity
+                or located.request["environment_record_json"]
+                != self.environment_record_json
+            ):
+                raise ValueError("Design Campaign Run belongs to a different grant")
+            resolved = self.read.resolve_campaign_plan(located.campaign_json)
+            if (
+                located.request["campaign_identity"] != resolved.campaign_identity
+                or located.request["campaign_plan_record_json"]
+                != canonical_json(resolved.plan_record)
+            ):
+                raise ValueError("Design Campaign persisted plan record drift")
+            required = self._campaign_capabilities(resolved.campaign)
+            self.grant.authorize(
+                resolved.campaign_identity,
+                resolved.plan_record,
+                required,
+                instant=datetime.now(timezone.utc),
             )
-            environment = (
-                None
-                if self.environment_contract is None
-                else load_execution_environment(self.environment_contract)
+            if located.state is None:
+                raise ValueError("Design Campaign has no recoverable baseline state")
+            paths = located.paths
+            selected_run_id = run_id
+            state = self._resume_campaign_transition(
+                paths,
+                resolved,
+                proposal_json,
             )
-            started_at = _now()
-            result = DesignCampaignRunner(
-                resolved.engine,
-                artifact_root=self.read.repository.project.artifact_root,
-                environment=environment,
-            ).run(resolved.campaign)
-            write_immutable_text(result_path, result.canonical_json())
-            finished_at = _now()
-            atomic_write_json(
-                audit_path,
-                {
-                    **request,
-                    "contract_kind": "agentic-campaign-run-audit",
-                    "started_at": started_at,
-                    "finished_at": finished_at,
-                    "terminal_status": result.termination.value,
-                    "iteration_count": len(result.iterations),
-                    "result_sha256": hashlib.sha256(
-                        result.canonical_json().encode("utf-8")
-                    ).hexdigest(),
-                },
-            )
-            atomic_write_json(
-                paths.manifest,
-                {
-                    "schema": 1,
-                    "contract_kind": "agentic-campaign-run-manifest",
-                    "owner": resolved.campaign.owner,
-                    "campaign_id": resolved.campaign.campaign_id,
-                    "campaign_identity": campaign_identity,
-                    "run_id": run_id,
-                    "members": [
-                        "inputs/campaign.json",
-                        "inputs/request.json",
-                        "logs/audit.json",
-                        "outputs/campaign_result.json",
-                    ],
-                },
-            )
-        return self.read._response(
+        if state.phase is DesignCampaignPhase.COMPLETED:
+            self.campaign_store.finalize(paths, state)
+        result = DesignCampaignResult(
+            state.owner,
+            state.campaign_id,
+            state.campaign_identity,
+            state.termination,
+            state.iterations,
+            None if not state.iterations else state.iterations[-1].quality,
+            None if not state.iterations else state.iterations[-1].decision,
+            state.message,
+        )
+        return self.read.response(
             operation="campaign.run",
-            authority="recorded-design-campaign-result",
-            conclusion=result.termination.value,
+            authority="recorded-design-campaign-state",
+            conclusion=(
+                state.phase.value
+                if state.phase is DesignCampaignPhase.PROPOSAL_REQUIRED
+                else state.termination.value
+            ),
             summary=(
-                f"Design Campaign {resolved.campaign.campaign_id!r} reached immutable "
-                f"terminal state {result.termination.value!r}; no source was promoted."
+                f"Design Campaign {resolved.campaign.campaign_id!r} reached durable "
+                f"state {state.phase.value!r}/{state.termination.value!r}; "
+                "no source was promoted."
             ),
             data={
                 "management": {
-                    "run_id": run_id,
-                    "campaign_identity": campaign_identity,
+                    "run_id": selected_run_id,
+                    "campaign_identity": resolved.campaign_identity,
                     "grant_identity": self.grant.identity,
-                    "status": result.termination.value,
+                    "status": (
+                        state.phase.value
+                        if state.phase is DesignCampaignPhase.PROPOSAL_REQUIRED
+                        else state.termination.value
+                    ),
                 },
+                "state": json.loads(state.canonical_json()),
                 "result": json.loads(result.canonical_json()),
                 "model_context": {
                     "record_text_trust": "untrusted",
@@ -401,7 +433,101 @@ class AgenticExecutionInterface:
                 self.read.project_resource_uri,
                 self.read.owner_resource_uri(resolved.campaign.owner),
             ],
-            allowed_next_actions=["review-campaign", "candidate.promotion_plan"],
+            allowed_next_actions=(
+                ["campaign.run"]
+                if state.phase is DesignCampaignPhase.PROPOSAL_REQUIRED
+                else ["review-campaign", "candidate.promotion_plan"]
+            ),
+        )
+
+    @staticmethod
+    def _campaign_capabilities(campaign: object) -> tuple[AgenticExecutionCapability, ...]:
+        plans = [campaign.baseline.plan]
+        if campaign.continuation is not None:
+            plans.append(campaign.continuation.plan)
+        return tuple(
+            sorted(
+                {
+                    AgenticExecutionCapability(node.execution_capability)
+                    for plan in plans
+                    for node in plan.nodes
+                },
+                key=lambda item: item.value,
+            )
+        )
+
+    def _campaign_runner(self, resolved: object) -> DesignCampaignRunner:
+        return DesignCampaignRunner(
+            resolved.engine,
+            artifact_root=self.read.repository.project.artifact_root,
+            environment=self.execution_environment,
+            execution_context_identity=(
+                f"{self.grant.approval}-{self.environment_identity}"
+            ),
+        )
+
+    def _start_campaign_transition(self, paths: Any, resolved: Any):
+        with self.campaign_store.exclusive(paths):
+            current = self.campaign_store.read(paths)
+            if current.state is not None:
+                return current.state
+            state = self._campaign_runner(resolved).start(
+                resolved.campaign,
+                elapsed_seconds=self._campaign_elapsed_seconds(current.request),
+            )
+            self.campaign_store.append(
+                paths,
+                state,
+                operation="start",
+                recorded_at=_now(),
+                proposal_identity=None,
+            )
+            return state
+
+    def _resume_campaign_transition(
+        self,
+        paths: Any,
+        resolved: Any,
+        proposal_json: str,
+    ):
+        proposal = design_repair_proposal_from_json(proposal_json)
+        with self.campaign_store.exclusive(paths):
+            current = self.campaign_store.read(paths)
+            if current.state is None:
+                raise ValueError("Design Campaign has no recoverable baseline state")
+            if current.state.last_proposal_identity == proposal.identity:
+                if current.last_proposal_json != proposal_json:
+                    raise ValueError(
+                        "same Design Repair Proposal ID has different typed record"
+                    )
+                return current.state
+            state = self._campaign_runner(resolved).resume(
+                resolved.campaign,
+                current.state,
+                proposal,
+                elapsed_seconds=self._campaign_elapsed_seconds(current.request),
+            )
+            self.campaign_store.append(
+                paths,
+                state,
+                operation="resume",
+                recorded_at=_now(),
+                proposal_identity=proposal.identity,
+                proposal_json=proposal_json,
+            )
+            return state
+
+    @staticmethod
+    def _campaign_elapsed_seconds(request: dict[str, Any]) -> int:
+        try:
+            submitted = datetime.fromisoformat(request["submitted_at"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Design Campaign submission time is invalid") from exc
+        if submitted.tzinfo is None or submitted.utcoffset() is None:
+            raise ValueError("Design Campaign submission time lacks a timezone")
+        return max(
+            0,
+            int((datetime.now(timezone.utc) - submitted).total_seconds()),
         )
 
     def wait_until_running(self, run_id: str, *, timeout_seconds: int) -> None:
@@ -410,7 +536,7 @@ class AgenticExecutionInterface:
             located = self.store.locate(run_id)
             self._reconcile(run_id, located.paths)
             state = self.store.read_state(located.paths)
-            if state["status"] == "running":
+            if state["status"] == "running" and state["current_node"] is not None:
                 return
             if state["status"] not in RUNNING_STATUSES:
                 raise ValueError(
@@ -453,6 +579,7 @@ class AgenticExecutionInterface:
             raise ValueError("managed Flow Run belongs to a different execution grant")
         self.grant.authorize(
             request["plan_identity"],
+            json.loads(request["plan_record_json"]),
             tuple(
                 AgenticExecutionCapability(value)
                 for value in request["required_capabilities"]

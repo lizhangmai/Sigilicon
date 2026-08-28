@@ -81,7 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: cannot bind Sigilicon project: {exc}", file=sys.stderr)
         return 2
-    anyio.run(_serve, create_server(interface, execution=execution))
+    anyio.run(_serve, create_server(execution or interface))
     return 0
 
 

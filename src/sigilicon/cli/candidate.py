@@ -33,7 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         die(f"ERROR: {exc}")
     payload = {
-        "candidate_sha256": result.candidate_sha256,
+        "candidate_identity": result.candidate_identity,
         "resolved_artifacts": list(result.resolved_artifacts),
         "valid": True,
     }
@@ -41,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         emit_json(payload)
     else:
         print(
-            f"Candidate valid: {result.candidate_sha256} "
+            f"Candidate valid: {result.candidate_identity} "
             f"({len(result.resolved_artifacts)} artifacts)"
         )
     return 0

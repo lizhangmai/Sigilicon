@@ -11,8 +11,18 @@ from sigilicon.flow.contracts import (
     load_flow_contract,
 )
 from sigilicon.flow.builtin import builtin_registry
+from sigilicon.flow.circuit_design import (
+    CIRCUIT_DESIGN_SOURCE_ACTION,
+    PHYSICAL_DESIGN_OBSERVATION_ACTION,
+    PHYSICAL_DESIGN_OBSERVATION_ADAPTER,
+    register_circuit_design_actions,
+)
 from sigilicon.flow.engine import FlowEngine
-from sigilicon.flow.environment import load_execution_environment
+from sigilicon.flow.environment import (
+    ExecutionEnvironmentContract,
+    load_execution_environment,
+    load_execution_environment_contract,
+)
 from sigilicon.flow.fake import fake_profile, fake_registry
 from sigilicon.flow.model import (
     ActionArtifact,
@@ -23,6 +33,7 @@ from sigilicon.flow.model import (
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
+    DesignCampaignIterationInput,
     ExecutionEnvironment,
     ExecutionProfile,
     FlowCatalog,
@@ -116,11 +127,14 @@ __all__ = [
     "ArtifactBinding",
     "ArtifactPort",
     "CollectedActionResult",
+    "DesignCampaignIterationInput",
     "CANONICAL_SOURCE_NETLIST_KIND",
     "CALIBRE_PHYSICAL_VERIFICATION_ADAPTER",
+    "CIRCUIT_DESIGN_SOURCE_ACTION",
     "DRC_ACTION",
     "DRC_EVIDENCE_KIND",
     "ExecutionEnvironment",
+    "ExecutionEnvironmentContract",
     "ExecutionProfile",
     "FlowCatalog",
     "FlowCatalogEntry",
@@ -153,6 +167,8 @@ __all__ = [
     "POST_LAYOUT_SPEC_KIND",
     "RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER",
     "PHYSICAL_CLOSURE_EVIDENCE_KIND",
+    "PHYSICAL_DESIGN_OBSERVATION_ACTION",
+    "PHYSICAL_DESIGN_OBSERVATION_ADAPTER",
     "PHYSICAL_DESIGN_ACTION",
     "PHYSICAL_DESIGN_JOB_KIND",
     "PHYSICAL_DESIGN_RESULT_KIND",
@@ -186,10 +202,12 @@ __all__ = [
     "load_flow_catalog",
     "load_catalog_selection",
     "load_execution_environment",
+    "load_execution_environment_contract",
     "fake_registry",
     "fake_profile",
     "register_standard_asic_actions",
     "register_physical_design_actions",
+    "register_circuit_design_actions",
     "register_physical_verification_actions",
     "register_post_layout_actions",
     "SynopsysDCAdapter",

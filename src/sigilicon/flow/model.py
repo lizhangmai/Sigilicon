@@ -10,10 +10,12 @@ import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from sigilicon.identifiers import RUN_ID_PATTERN
+
 
 _IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 _OWNER_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*\Z")
-_RUN_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+_RUN_ID_RE = re.compile(RUN_ID_PATTERN + r"\Z")
 _REQUIREMENTS = frozenset({"accepted", "valid"})
 _RESULT_STATUSES = frozenset({"valid", "failed", "partial", "uncertain"})
 _EXECUTION_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
@@ -155,6 +157,8 @@ class SourceMember:
     """One owner-relative member selected from the current Git checkout."""
 
     path: str
+    record_text: str = field(repr=False)
+    executable: bool
     location: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -168,6 +172,10 @@ class SourceMember:
             raise FlowContractError(
                 f"source member must be owner-relative: {self.path!r}"
             )
+        if not isinstance(self.record_text, str):
+            raise FlowContractError("source member record must be exact UTF-8 text")
+        if not isinstance(self.executable, bool):
+            raise FlowContractError("source member executable flag must be boolean")
         object.__setattr__(self, "location", Path(self.location).resolve())
 
 
@@ -271,6 +279,7 @@ class ActionContract:
     adapter_extensible: bool = False
     resolves_source_assets: bool = False
     execution_capability: str = "execute-derived"
+    accepts_design_campaign_iteration: bool = False
 
     def __post_init__(self) -> None:
         identifier(self.kind, "action kind")
@@ -307,6 +316,10 @@ class ActionContract:
             raise FlowContractError(f"Action {self.kind!r} declares no Adapter")
         if self.resolves_source_assets and self.inputs:
             raise FlowContractError("source assets Action cannot declare inputs")
+        if type(self.accepts_design_campaign_iteration) is not bool:
+            raise FlowContractError(
+                "Action design Campaign iteration declaration must be boolean"
+            )
 
     def input(self, role: str) -> ArtifactPort:
         try:
@@ -467,6 +480,35 @@ class FlowCatalog:
 
 
 @dataclass(frozen=True)
+class DesignCampaignIterationInput:
+    """Exact cross-round input accepted only by declared design Actions."""
+
+    campaign_identity: str
+    iteration: int
+    parent_candidate_identity: str
+    attribution_json: str
+    proposal_json: str
+    repair_plan_json: str
+    schema: int = 1
+    contract_kind: str = "design-campaign-iteration-input"
+
+    def __post_init__(self) -> None:
+        if self.schema != 1 or self.contract_kind != "design-campaign-iteration-input":
+            raise FlowContractError("invalid Design Campaign iteration input contract")
+        _semantic_identity(self.campaign_identity, "Design Campaign identity")
+        _semantic_identity(self.parent_candidate_identity, "parent Candidate identity")
+        if type(self.iteration) is not int or self.iteration < 2:
+            raise FlowContractError("Design Campaign child iteration must be at least two")
+        for value, label in (
+            (self.attribution_json, "attribution record"),
+            (self.proposal_json, "proposal record"),
+            (self.repair_plan_json, "Repair Plan record"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise FlowContractError(f"Design Campaign {label} must be exact JSON text")
+
+
+@dataclass(frozen=True)
 class FlowNode:
     node_id: str
     action_kind: str
@@ -474,6 +516,7 @@ class FlowNode:
     bindings: tuple[ArtifactBinding, ...] = ()
     order_after: tuple[str, ...] = ()
     policy: str | None = None
+    design_campaign_iteration: DesignCampaignIterationInput | None = None
 
     def __post_init__(self) -> None:
         identifier(self.node_id, "Flow node")
@@ -483,6 +526,11 @@ class FlowNode:
         for predecessor in self.order_after:
             identifier(predecessor, "ordering predecessor")
         _unique(self.order_after, "ordering dependencies")
+        if self.design_campaign_iteration is not None and not isinstance(
+            self.design_campaign_iteration,
+            DesignCampaignIterationInput,
+        ):
+            raise FlowContractError("Flow node Design Campaign iteration input must be typed")
         object.__setattr__(
             self,
             "config",
@@ -849,6 +897,7 @@ class ActionContext:
     capabilities: Mapping[str, str]
     platform_assets: Mapping[str, ResolvedPlatformAsset]
     source_assets: SourceAssets | None = None
+    design_campaign_iteration: DesignCampaignIterationInput | None = None
 
     def input(self, role: str) -> InputArtifact:
         try:

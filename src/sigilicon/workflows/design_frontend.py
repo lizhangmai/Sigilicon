@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
     CIRCUIT_TOPOLOGY_KIND,
@@ -40,7 +38,13 @@ def _parameter(token: str, label: str) -> CircuitParameter:
 
 
 class SourceAuthoredTopologyAdapter:
-    """Read one validated DesignSpec and preserve its exact source topology."""
+    """Owner-side topology normalizer from one validated DesignSpec.
+
+    This is the topology-producing Interface used by owners such as the Hardware
+    CDAC. The Flow ``circuit-design.source`` Action only ingests an already-authored
+    typed topology through ``source-assets``; it does not provide a second topology
+    generator.
+    """
 
     def read(
         self,
@@ -111,13 +115,18 @@ class SourceAuthoredTopologyAdapter:
         parameters = tuple(
             _parameter(token, "subckt parameter") for token in parameter_tokens
         )
-        source_sha256 = hashlib.sha256(
-            design.netlist_snapshot.text.encode("utf-8")
-        ).hexdigest()
+        source_member = design.source_netlist.relative_to(design.project_root).as_posix()
+        contract_member = design.path.relative_to(design.project_root).as_posix()
+        source_identity = f"{owner}:source-netlist:{source_member}"
         return CircuitTopologyProposal(
-            ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, owner),
+            ArtifactMetadata(
+                ARTIFACT_SCHEMA,
+                CIRCUIT_TOPOLOGY_KIND,
+                owner,
+                f"{owner}:source-topology:{contract_member}",
+            ),
             design.cell,
-            source_sha256,
+            source_identity,
             TopologyOrigin.SOURCE_AUTHORED,
             tuple(ports),
             parameters,

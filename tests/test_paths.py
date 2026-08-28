@@ -72,7 +72,7 @@ def test_ids_and_role_components_are_validated(tmp_path: Path) -> None:
             target="inv",
             flow="design-sync",
             variant="recursive",
-            identity="short",
+            identity="../unsafe",
             artifact_kind="design_sync",
             identity_kind="attempt_id",
         )

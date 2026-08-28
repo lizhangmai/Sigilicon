@@ -46,6 +46,15 @@ def _parser() -> argparse.ArgumentParser:
         help="compile one strict bounded Design Campaign without execution",
     )
     campaign.add_argument("--campaign", type=Path, required=True)
+    promotion = commands.add_parser(
+        "candidate-promotion-plan",
+        help="compile a non-writing Candidate Promotion Plan",
+    )
+    promotion.add_argument("owner")
+    promotion.add_argument("--candidate", type=Path, required=True)
+    promotion.add_argument("--artifact", type=Path, action="append", required=True)
+    promotion.add_argument("--decision", type=Path, required=True)
+    promotion.add_argument("--request", type=Path, required=True)
     return parser
 
 
@@ -80,6 +89,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.action == "campaign-plan":
             result = interface.plan_campaign(
                 campaign_json=args.campaign.read_text(encoding="utf-8")
+            )
+        elif args.action == "candidate-promotion-plan":
+            result = interface.plan_candidate_promotion(
+                owner=args.owner,
+                candidate_json=args.candidate.read_text(encoding="utf-8"),
+                artifact_json=tuple(
+                    path.read_text(encoding="utf-8") for path in args.artifact
+                ),
+                decision_json=args.decision.read_text(encoding="utf-8"),
+                request_json=args.request.read_text(encoding="utf-8"),
             )
         else:  # pragma: no cover
             raise AssertionError(f"unhandled read action: {args.action}")

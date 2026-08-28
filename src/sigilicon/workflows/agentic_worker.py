@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 from pathlib import Path
 import signal
 from typing import Any, Sequence
 
-from sigilicon.artifacts import read_nofollow_text
-from sigilicon.flow import ExecutionEnvironment, FlowProgress, load_execution_environment
+from sigilicon.canonical import canonical_json
+from sigilicon.flow import (
+    ExecutionEnvironment,
+    FlowProgress,
+    load_execution_environment_contract,
+)
 from sigilicon.paths import ProjectContext
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.agentic_runs import (
@@ -32,7 +35,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--target", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--environment", type=Path)
-    parser.add_argument("--environment-sha256")
+    parser.add_argument("--environment-identity")
     return parser
 
 
@@ -65,23 +68,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         or plan.target.target_id != request["target"]
         or plan.profile.profile_id != request["profile"]
         or len(plan.nodes) != request["total_nodes"]
+        or canonical_json(resolved.engine.plan_record(plan))
+        != request["plan_record_json"]
     ):
         raise ValueError("worker Flow Plan identity drift")
 
     environment: ExecutionEnvironment
     if args.environment is None:
-        if args.environment_sha256 is not None or request["environment_identity"] != "empty-environment":
+        if args.environment_identity is not None or request["environment_identity"] != "environment-empty":
             raise ValueError("worker execution environment identity drift")
         environment = ExecutionEnvironment()
+        expected_record = canonical_json(
+            {
+                "schema": 1,
+                "contract_kind": "execution-environment-binding",
+                "contract_path": None,
+                "contract": None,
+            }
+        )
+        if request["environment_record_json"] != expected_record:
+            raise ValueError("worker execution environment record drift")
     else:
-        if args.environment_sha256 is None:
-            raise ValueError("worker environment hash is missing")
-        text = read_nofollow_text(args.environment.resolve())
-        if hashlib.sha256(text.encode("utf-8")).hexdigest() != args.environment_sha256:
-            raise ValueError("worker execution environment content drift")
-        if request["environment_identity"] != f"environment-{args.environment_sha256[:24]}":
+        if args.environment_identity is None:
+            raise ValueError("worker environment identity is missing")
+        binding = load_execution_environment_contract(args.environment)
+        expected_environment = binding.environment_id
+        if args.environment_identity != expected_environment:
             raise ValueError("worker execution environment identity drift")
-        environment = load_execution_environment(args.environment)
+        if request["environment_identity"] != expected_environment:
+            raise ValueError("worker execution environment identity drift")
+        if request["environment_record_json"] != binding.record_json:
+            raise ValueError("worker execution environment record drift")
+        environment = binding.environment
 
     started_at = _now()
     state = store.read_state(paths)

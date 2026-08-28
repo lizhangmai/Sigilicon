@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
+import stat
 import tomllib
 from typing import Any, Mapping
 
-from sigilicon.artifacts import atomic_write_json
+from sigilicon.artifacts import atomic_write_json, read_nofollow_text
 from sigilicon.external_tools import run_readonly_capture
 from sigilicon.flow.model import (
     ActionContext,
@@ -75,7 +75,7 @@ def _git(root: Path, *args: str) -> bytes:
 
 
 def git_source(root: Path) -> GitSource:
-    """Read owner-scoped Git state without inventing a second source hash."""
+    """Read owner-scoped Git state without inventing parallel source identity."""
 
     owner_root = Path(root).resolve()
     repository_root = Path(
@@ -103,17 +103,40 @@ def source_assets_payload(source: SourceAssets) -> dict[str, Any]:
 
     return {
         "name": source.name,
-        "git": {"commit": source.git.commit, "dirty": source.git.dirty},
+        "git": {
+            "commit": source.git.commit,
+            "changes": list(source.git.changes),
+        },
         "artifacts": {
             artifact.role: {
                 "kind": artifact.kind,
                 "materialization": artifact.materialization,
                 "qualifiers": dict(artifact.qualifiers),
-                "members": [member.path for member in artifact.members],
+                "members": [
+                    {
+                        "path": member.path,
+                        "record_text": member.record_text,
+                        "executable": member.executable,
+                    }
+                    for member in artifact.members
+                ],
             }
             for artifact in source.artifacts
         },
     }
+
+
+def source_member_matches(member: SourceMember) -> bool:
+    """Compare one selected member with its exact persisted source record."""
+
+    return (
+        read_nofollow_text(member.location) == member.record_text
+        and bool(
+            member.location.stat(follow_symlinks=False).st_mode
+            & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
+        == member.executable
+    )
 
 
 def load_source_assets(
@@ -176,7 +199,23 @@ def load_source_assets(
                 raise FlowContractError(
                     f"source member is not a regular file: {relative}"
                 )
-            members.append(SourceMember(relative, location))
+            try:
+                record_text = read_nofollow_text(location)
+            except (OSError, RuntimeError, UnicodeError) as exc:
+                raise FlowContractError(
+                    f"source member must be readable UTF-8 text: {relative}"
+                ) from exc
+            members.append(
+                SourceMember(
+                    path=relative,
+                    record_text=record_text,
+                    executable=bool(
+                        location.stat(follow_symlinks=False).st_mode
+                        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    ),
+                    location=location,
+                )
+            )
         artifacts.append(
             SourceArtifact(
                 role=_text(artifact.get("role"), f"artifacts[{index}].role"),
@@ -256,7 +295,13 @@ class SourceAssetsAdapter:
         for artifact in source.artifacts:
             output = self._output_path(context, artifact)
             if artifact.materialization == "file":
-                shutil.copy2(artifact.members[0].location, output)
+                member = artifact.members[0]
+                if not source_member_matches(member):
+                    raise FlowExecutionError(
+                        f"source member changed after planning: {member.path}"
+                    )
+                output.write_text(member.record_text, encoding="utf-8")
+                output.chmod(0o755 if member.executable else 0o644)
                 continue
             members: list[dict[str, str]] = []
             for member in artifact.members:
@@ -267,7 +312,12 @@ class SourceAssetsAdapter:
                         f"source snapshot escaped its artifact root: {member.path}"
                     )
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(member.location, destination)
+                if not source_member_matches(member):
+                    raise FlowExecutionError(
+                        f"source member changed after planning: {member.path}"
+                    )
+                destination.write_text(member.record_text, encoding="utf-8")
+                destination.chmod(0o755 if member.executable else 0o644)
                 members.append(
                     {"path": member.path, "file": relative_file.as_posix()}
                 )
@@ -283,6 +333,12 @@ class SourceAssetsAdapter:
             )
         if git_source(source.owner_root) != source.git:
             raise FlowExecutionError("Git source changed while creating the run snapshot")
+        if any(
+            not source_member_matches(member)
+            for artifact in source.artifacts
+            for member in artifact.members
+        ):
+            raise FlowExecutionError("source member changed while creating the run snapshot")
         return AdapterExecution.succeeded()
 
     def collect_result(
@@ -321,4 +377,5 @@ __all__ = [
     "load_source_assets",
     "resolve_node_source_assets",
     "source_assets_payload",
+    "source_member_matches",
 ]

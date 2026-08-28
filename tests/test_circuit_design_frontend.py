@@ -58,6 +58,78 @@ from sigilicon.workflows.design_artifacts import DesignArtifactInterface
 from sigilicon.cli.main import main as sigilicon_main
 
 
+def test_design_artifacts_use_explicit_owner_scoped_ids() -> None:
+    first = ArtifactReference(
+        "example",
+        CIRCUIT_TOPOLOGY_KIND,
+        "example.inv.topology.baseline",
+        None,
+    )
+    second = ArtifactReference(
+        "example",
+        CIRCUIT_TOPOLOGY_KIND,
+        "example.inv.topology.repaired",
+        None,
+    )
+
+    assert first != second
+    assert first.identity != second.identity
+    assert ArtifactMetadata(
+        ARTIFACT_SCHEMA,
+        CIRCUIT_TOPOLOGY_KIND,
+        "example",
+        "example.inv.topology.baseline",
+    ).artifact_id == first.identity
+
+
+def test_canonical_serialization_has_no_generic_correctness_identity() -> None:
+    import sigilicon.canonical as canonical
+
+    assert not hasattr(canonical, "canonical_identity")
+
+
+def test_explicit_ids_do_not_substitute_different_typed_records(
+    project_factory,
+) -> None:
+    project_root, design_path = project_factory()
+    design = load_design_spec(design_path, project_root=project_root)
+    topology = SourceAuthoredTopologyAdapter().read(design, owner="example")
+    changed = replace(
+        topology,
+        instances=(replace(topology.instances[0], master="different_master"),),
+    )
+    source = ArtifactReference(
+        "example",
+        SOURCE_NETLIST_KIND,
+        topology.source_snapshot_identity,
+        None,
+    )
+    candidate = DesignCandidate(
+        ArtifactMetadata(
+            ARTIFACT_SCHEMA,
+            DESIGN_CANDIDATE_KIND,
+            "example",
+            "example:candidate:substitution-check",
+        ),
+        topology.design,
+        source,
+        None,
+        (),
+        topology.reference(),
+        None,
+        None,
+        (),
+        None,
+        topology.provenance,
+    )
+
+    assert ArtifactReference("example", "kind.one", "first", None) != ArtifactReference(
+        "example", "kind.one", "second", None
+    )
+    with pytest.raises(ValueError, match="same artifact ID.*different typed records"):
+        validate_design_candidate(candidate, (topology, changed))
+
+
 def test_source_authored_topology_is_immutable_canonical_and_strict(
     project_factory,
 ) -> None:
@@ -88,7 +160,7 @@ def test_source_authored_topology_is_immutable_canonical_and_strict(
         ("MN0", "nch_mac", "pull-down"),
     )
     assert circuit_topology_from_json(topology.canonical_json()) == topology
-    assert len(topology.identity) == 64
+    assert topology.identity == "example:source-topology:ip/example/inv/design.toml"
 
     with pytest.raises(FrozenInstanceError):
         topology.design = "changed"  # type: ignore[misc]
@@ -136,7 +208,7 @@ def test_discrete_sizing_problem_and_result_are_exact_stage_artifacts(
     specification = ArtifactReference(
         "example",
         "spec.sizing",
-        "1" * 64,
+        "source-fixture",
         None,
     )
     widths = (
@@ -144,7 +216,7 @@ def test_discrete_sizing_problem_and_result_are_exact_stage_artifacts(
         exact_quantity("2e-7", "m"),
     )
     problem = CircuitSizingProblem(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, "example", "example:sizing-problem:discrete"),
         "inv",
         topology.reference(),
         specification,
@@ -183,7 +255,7 @@ def test_discrete_sizing_problem_and_result_are_exact_stage_artifacts(
         SizingBudget(2, None),
     )
     result = CircuitSizingResult(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_RESULT_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_RESULT_KIND, "example", "example:sizing-result:discrete"),
         problem.reference(),
         EvidenceRole.DIAGNOSTIC,
         "source-characterization",
@@ -211,7 +283,7 @@ def test_discrete_sizing_problem_and_result_are_exact_stage_artifacts(
     assert widths[0].value == "0.0000001"
     assert circuit_sizing_problem_from_json(problem.canonical_json()) == problem
     assert circuit_sizing_result_from_json(result.canonical_json()) == result
-    assert result.problem.sha256 == problem.identity
+    assert result.problem.identity == problem.identity
 
     with pytest.raises(ValueError, match="outside declared bounds"):
         SizingParameter(
@@ -238,12 +310,12 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
     source = ArtifactReference(
         "example",
         SOURCE_NETLIST_KIND,
-        topology.source_snapshot_sha256,
+        topology.source_snapshot_identity,
         None,
     )
-    specification = ArtifactReference("example", "spec.sizing", "3" * 64, None)
+    specification = ArtifactReference("example", "spec.sizing", "sizing-specification", None)
     problem = CircuitSizingProblem(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, "example", "example:sizing-problem:candidate"),
         "inv",
         topology.reference(),
         specification,
@@ -272,7 +344,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
         SizingBudget(1, None),
     )
     evidence = DesignEvidence(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, "example", "example:evidence:candidate"),
         problem.reference(),
         source,
         specification,
@@ -286,7 +358,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
         "the source-authored diagnostic contract is internally consistent",
     )
     candidate = DesignCandidate(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example", "example:candidate:frontend"),
         "inv",
         source,
         None,
@@ -299,7 +371,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
         topology.provenance,
     )
     decision = DesignDecision(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_DECISION_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_DECISION_KIND, "example", "example:decision:frontend"),
         candidate.reference(),
         specification,
         EvidenceRole.DIAGNOSTIC,
@@ -345,9 +417,9 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
     ) == 0
     cli_payload = json.loads(capsys.readouterr().out)
 
-    assert validated.candidate_sha256 == candidate.identity
+    assert validated.candidate_identity == candidate.identity
     assert via_interface == validated
-    assert cli_payload["candidate_sha256"] == validated.candidate_sha256
+    assert cli_payload["candidate_identity"] == validated.candidate_identity
     assert cli_payload["resolved_artifacts"] == list(validated.resolved_artifacts)
     assert "candidate_identity" not in candidate.canonical_json()
     assert design_evidence_from_json(evidence.canonical_json()) == evidence
@@ -356,7 +428,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 
     drifted = replace(
         candidate,
-        topology=ArtifactReference("example", CIRCUIT_TOPOLOGY_KIND, "f" * 64, None),
+        topology=ArtifactReference("example", CIRCUIT_TOPOLOGY_KIND, "forged-topology", None),
     )
     with pytest.raises(ValueError, match="identity-matched"):
         validate_design_candidate(drifted, (topology, problem, evidence))
@@ -364,7 +436,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
         validate_design_decision(
             replace(
                 decision,
-                policy=ArtifactReference("example", "spec.sizing", "e" * 64, None),
+                policy=ArtifactReference("example", "spec.sizing", "forged-policy", None),
             ),
             candidate,
             (evidence,),
@@ -378,14 +450,14 @@ def test_cross_owner_and_fake_authority_fail_closed(project_factory) -> None:
     source = ArtifactReference(
         "example",
         SOURCE_NETLIST_KIND,
-        topology.source_snapshot_sha256,
+        topology.source_snapshot_identity,
         None,
     )
-    specification = ArtifactReference("example", "spec.qualification", "3" * 64, None)
+    specification = ArtifactReference("example", "spec.qualification", "qualification-specification", None)
 
     with pytest.raises(ValueError, match="cross-owner topology"):
         DesignCandidate(
-            ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example"),
+            ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example", "example:candidate:cross-owner"),
             "inv",
             source,
             None,
@@ -400,7 +472,7 @@ def test_cross_owner_and_fake_authority_fail_closed(project_factory) -> None:
 
     with pytest.raises(ValueError, match="offline/fake"):
         DesignEvidence(
-            ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, "example"),
+            ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, "example", "example:evidence:fake-signoff"),
             topology.reference(),
             source,
             specification,
@@ -415,7 +487,7 @@ def test_cross_owner_and_fake_authority_fail_closed(project_factory) -> None:
         )
 
     non_conclusion = DesignEvidence(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_EVIDENCE_KIND, "example", "example:evidence:fake-diagnostic"),
         topology.reference(),
         source,
         specification,
@@ -431,14 +503,14 @@ def test_cross_owner_and_fake_authority_fail_closed(project_factory) -> None:
     assert non_conclusion.conclusion is EvidenceConclusion.NOT_EVALUATED
 
     with pytest.raises(ValueError, match="invalid artifact reference kind"):
-        ArtifactReference("example", "../../source", "4" * 64, None)
+        ArtifactReference("example", "../../source", "unsafe-kind-fixture", None)
     with pytest.raises(ValueError, match="canonical"):
         design_evidence_from_json(non_conclusion.canonical_json().rstrip())
 
 
 def test_design_brief_keeps_confirmed_and_provisional_statements_distinct() -> None:
     brief = DesignBrief(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_BRIEF_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_BRIEF_KIND, "example", "example:brief:inv"),
         "inv",
         ("preserve the source-authored inverter interface",),
         ("use the existing owner qualification specification",),

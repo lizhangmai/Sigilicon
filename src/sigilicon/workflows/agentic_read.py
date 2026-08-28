@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 from typing import Any
 
-from sigilicon.canonical import canonical_sha256
 from sigilicon.domain.config_contracts import read_toml
+from sigilicon.domain.circuit_design import (
+    design_artifact_from_json,
+    design_candidate_from_json,
+    design_decision_from_json,
+)
 from sigilicon.domain.repository import RepositoryContext, RepositoryOwner
 from sigilicon.flow import (
     FlowContractError,
@@ -24,11 +29,16 @@ from sigilicon.workflows.design_artifacts import DesignArtifactInterface
 from sigilicon.workflows.design_campaign import (
     DesignCampaign,
     DesignCampaignAttempt,
+    DesignCampaignContinuation,
     DesignCampaignRunner,
     DesignCampaignSpec,
     design_campaign_spec_from_json,
 )
 from sigilicon.workflows.design_targets import load_design_target_catalog
+from sigilicon.workflows.design_promotion import (
+    compile_promotion_plan,
+    promotion_request_from_json,
+)
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.source_control import inspect_source_state
 from sigilicon.workflows.agentic_runs import AgenticRunStore, RUNNING_STATUSES
@@ -44,25 +54,11 @@ _SENSITIVE_FIELDS = frozenset(
 
 def _repository_identity(repository: RepositoryContext) -> str:
     root = repository.project_root
-    identity_source = {
-        "project": read_toml(root / "sigilicon.toml"),
-        "catalogs": [
-            {
-                "name": name,
-                "path": path.relative_to(root).as_posix(),
-                "contract": read_toml(path),
-            }
-            for name, path in repository.catalog_paths
-        ],
-        "owners": [
-            {
-                "name": owner.name,
-                "component": read_toml(owner.component.path),
-            }
-            for owner in repository.owners
-        ],
-    }
-    return canonical_sha256(identity_source)
+    project = read_toml(root / "sigilicon.toml")
+    owner = project.get("owner")
+    if not isinstance(owner, str) or not owner:
+        raise ValueError("sigilicon.toml must declare a project owner")
+    return f"{owner}.{root.name}"
 
 
 def _public_value(value: Any, *, field: str | None = None) -> Any:
@@ -176,7 +172,7 @@ class AgenticReadInterface:
         source = inspect_source_state(self.repository.project_root)
         resources = [self.project_resource_uri]
         resources.extend(self.owner_resource_uri(item.name) for item in selected)
-        return self._response(
+        return self.response(
             operation="project.inspect",
             authority="source-contract",
             conclusion="valid",
@@ -224,7 +220,7 @@ class AgenticReadInterface:
         )
         plan = resolved.plan
         record = resolved.engine.plan_record(plan)
-        return self._response(
+        return self.response(
             operation="flow.plan",
             authority="plan",
             conclusion="planned",
@@ -273,18 +269,14 @@ class AgenticReadInterface:
         return ResolvedAgenticFlowPlan(
             engine,
             plan,
-            canonical_sha256(engine.plan_record(plan)),
+            engine.plan_id(plan),
         )
 
     def resolve_plan_identity(self, plan_identity: str) -> ResolvedAgenticFlowPlan:
         """Recompile project catalogs and find one uniquely matching Plan identity."""
 
-        if (
-            not isinstance(plan_identity, str)
-            or len(plan_identity) != 64
-            or any(character not in "0123456789abcdef" for character in plan_identity)
-        ):
-            raise ValueError("Flow Plan identity must be a SHA-256 identity")
+        if not isinstance(plan_identity, str) or not plan_identity:
+            raise ValueError("Flow Plan identity must be non-empty text")
         matches: list[ResolvedAgenticFlowPlan] = []
         combinations = 0
         for owner in self.repository.owners:
@@ -336,34 +328,46 @@ class AgenticReadInterface:
 
         source = design_campaign_spec_from_json(campaign_json)
         self._owner(source.owner)
-        resolved_attempts: list[DesignCampaignAttempt] = []
-        engine: FlowEngine | None = None
-        for attempt in source.attempts:
+        source_baseline = source.baseline
+        resolved = self.resolve_flow_plan(
+            owner=source.owner,
+            flow=source_baseline.flow,
+            target=source_baseline.target,
+            profile=source_baseline.profile,
+        )
+        engine = resolved.engine
+        baseline = DesignCampaignAttempt(
+            source_baseline.iteration_id,
+            resolved.plan,
+            source_baseline.candidate,
+            source_baseline.artifacts,
+            source_baseline.stages,
+            None,
+        )
+        continuation = None
+        if source.continuation is not None:
+            template = source.continuation
             resolved = self.resolve_flow_plan(
                 owner=source.owner,
-                flow=attempt.flow,
-                target=attempt.target,
-                profile=attempt.profile,
+                flow=template.flow,
+                target=template.target,
+                profile=template.profile,
             )
-            if engine is None:
-                engine = resolved.engine
-            resolved_attempts.append(
-                DesignCampaignAttempt(
-                    attempt.iteration_id,
-                    resolved.plan,
-                    attempt.candidate,
-                    attempt.artifacts,
-                    attempt.stages,
-                    attempt.repair_plan,
-                )
+            continuation = DesignCampaignContinuation(
+                resolved.plan,
+                template.candidate,
+                template.artifacts,
+                template.stages,
+                template.proposal_node,
+                template.repair_policy,
             )
-        assert engine is not None
         campaign = DesignCampaign(
             source.owner,
             source.campaign_id,
-            tuple(resolved_attempts),
+            baseline,
             source.budget,
             source.scope,
+            continuation,
         )
         runner = DesignCampaignRunner(
             engine,
@@ -381,14 +385,13 @@ class AgenticReadInterface:
     def plan_campaign(self, *, campaign_json: str) -> dict[str, Any]:
         resolved = self.resolve_campaign_plan(campaign_json)
         campaign = resolved.campaign
-        return self._response(
+        return self.response(
             operation="campaign.plan",
             authority="plan",
             conclusion="planned",
             summary=(
                 f"Compiled bounded Design Campaign {campaign.campaign_id!r} with "
-                f"{len(campaign.attempts)} explicit attempt"
-                f"{'s' if len(campaign.attempts) != 1 else ''}; no backend was executed."
+                "one explicit baseline attempt; no backend was executed."
             ),
             data={
                 "campaign_identity": resolved.campaign_identity,
@@ -461,7 +464,7 @@ class AgenticReadInterface:
                 target=target_name,
                 run_id=identity,
             )
-            return self._response(
+            return self.response(
                 operation="run.inspect",
                 authority=(
                     "managed-run-state"
@@ -505,7 +508,7 @@ class AgenticReadInterface:
             target=target_name,
             run_id=identity,
         )
-        return self._response(
+        return self.response(
             operation="run.inspect",
             authority="recorded-flow-result",
             conclusion="recorded",
@@ -539,7 +542,7 @@ class AgenticReadInterface:
             artifact_json,
             expected_owner=selected_owner.name,
         )
-        return self._response(
+        return self.response(
             operation="candidate.validate",
             authority="plan",
             conclusion="valid",
@@ -549,7 +552,7 @@ class AgenticReadInterface:
                 "no engineering pass or source promotion was performed."
             ),
             data={
-                "candidate_sha256": validation.candidate_sha256,
+                "candidate_identity": validation.candidate_identity,
                 "resolved_artifacts": list(validation.resolved_artifacts),
             },
             resources=[
@@ -557,6 +560,51 @@ class AgenticReadInterface:
                 self.owner_resource_uri(selected_owner.name),
             ],
             allowed_next_actions=["project.inspect", "review-candidate"],
+        )
+
+    def plan_candidate_promotion(
+        self,
+        *,
+        owner: str,
+        candidate_json: str,
+        artifact_json: tuple[str, ...],
+        decision_json: str,
+        request_json: str,
+    ) -> dict[str, Any]:
+        """Compile a human-review plan while exposing no source-write operation."""
+
+        selected_owner = self._owner(owner)
+        candidate = design_candidate_from_json(candidate_json)
+        decision = design_decision_from_json(decision_json)
+        artifacts = tuple(design_artifact_from_json(text) for text in artifact_json)
+        request = promotion_request_from_json(request_json)
+        if candidate.metadata.owner != selected_owner.name:
+            raise ValueError("Promotion Candidate owner drift")
+        plan = compile_promotion_plan(
+            candidate=candidate,
+            artifacts=artifacts,
+            decision=decision,
+            request=request,
+        )
+        return self.response(
+            operation="candidate.promotion_plan",
+            authority="plan",
+            conclusion="ready_for_human_review",
+            summary=(
+                "Compiled an immutable Promotion Plan; human approval and ordinary "
+                "Git review remain required, and no canonical source was written."
+            ),
+            data={
+                "promotion_plan_identity": plan.identity,
+                "promotion_plan": json.loads(plan.canonical_json()),
+                "human_approval_required": True,
+                "writes_canonical_source": False,
+            },
+            resources=[
+                self.project_resource_uri,
+                self.owner_resource_uri(selected_owner.name),
+            ],
+            allowed_next_actions=["review-promotion-plan", "request-human-approval"],
         )
 
     def _owner(self, name: str) -> RepositoryOwner:
@@ -670,7 +718,7 @@ class AgenticReadInterface:
             ],
         }
 
-    def _response(
+    def response(
         self,
         *,
         operation: str,

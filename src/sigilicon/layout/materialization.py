@@ -22,9 +22,8 @@ from sigilicon.layout.pnr.model import (
 )
 from sigilicon.layout.pnr.serialization import (
     canonical_json,
-    canonical_sha256,
-    physical_design_intent_sha256,
-    pnr_execution_sha256,
+    physical_design_job_id,
+    physical_design_result_id,
 )
 
 
@@ -93,10 +92,8 @@ class MaterializationAcceptance:
 
 @dataclass(frozen=True)
 class MaterializationProvenance:
-    job_sha256: str
-    physical_intent_sha256: str
-    execution_sha256: str
-    result_sha256: str
+    job_identity: str
+    result_identity: str
     result_engine: str
 
 
@@ -157,6 +154,7 @@ class MaterializationPlan:
     routing_blockages: tuple[MaterializedRoutingBlockagePlacement, ...]
     route_segments: tuple[MaterializedRouteSegment, ...]
     route_vias: tuple[MaterializedRouteVia, ...]
+    artifact_id: str
 
     @property
     def executable(self) -> bool:
@@ -257,10 +255,8 @@ def _provenance(
     result: PhysicalDesignResult,
 ) -> MaterializationProvenance:
     return MaterializationProvenance(
-        job_sha256=canonical_sha256(job),
-        physical_intent_sha256=physical_design_intent_sha256(job),
-        execution_sha256=pnr_execution_sha256(job.execution_policy),
-        result_sha256=canonical_sha256(result),
+        job_identity=physical_design_job_id(job),
+        result_identity=physical_design_result_id(result),
         result_engine=result.provenance.engine,
     )
 
@@ -346,10 +342,14 @@ def validate_materialization_plan(
 
     if plan.provenance != _provenance(job, result):
         issue("provenance_mismatch", "plan provenance does not identify its job and result")
-    if result.provenance.input_sha256 != physical_design_intent_sha256(job):
-        issue("result_input_mismatch", "result does not identify the supplied physical intent")
-    if result.provenance.execution_sha256 != pnr_execution_sha256(job.execution_policy):
-        issue("result_execution_mismatch", "result does not identify the supplied execution policy")
+    if result.provenance.job != job:
+        issue("result_input_mismatch", "result does not contain the supplied typed job")
+    expected_plan_id = (
+        f"{result.artifact_id}:materialization-plan:"
+        f"{plan.target.owner}:{plan.target.name}"
+    )
+    if plan.artifact_id != expected_plan_id:
+        issue("plan_id_mismatch", "plan artifact ID disagrees with its typed inputs")
     if plan.acceptance != _acceptance(job, result):
         issue("acceptance_mismatch", "plan acceptance disagrees with the typed result")
 
@@ -512,6 +512,10 @@ def compile_materialization_plan(
         routing_blockages=instructions[1],
         route_segments=instructions[2],
         route_vias=instructions[3],
+        artifact_id=(
+            f"{result.artifact_id}:materialization-plan:"
+            f"{target.owner}:{target.name}"
+        ),
     )
     validation = validate_materialization_plan(job, result, plan)
     if not validation.valid:

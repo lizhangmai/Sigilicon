@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from sigilicon.layout.pnr._serialization import (
+from sigilicon.canonical import (
     CanonicalSerializationError,
     canonical_from_json,
     canonical_json,
-    canonical_sha256,
 )
 from sigilicon.layout.pnr.model import (
     PhysicalDesignJob,
     PhysicalDesignResult,
-    PnrExecutionPolicy,
     PlacementRoutingClosureEvidence,
 )
 
@@ -30,29 +28,25 @@ def placement_routing_closure_evidence_from_json(
     return canonical_from_json(text, PlacementRoutingClosureEvidence)
 
 
-def physical_design_intent_sha256(job: PhysicalDesignJob) -> str:
-    return canonical_sha256(
-        {
-            "technology": job.technology,
-            "design": job.design,
-            "constraints": job.constraints,
-            "request": job.request,
-            "routing_constraints": job.routing_constraints,
-        }
-    )
+def physical_design_job_id(job: PhysicalDesignJob) -> str:
+    return f"physical-design-job:{job.technology.name}:{job.design.name}"
 
 
-def pnr_execution_sha256(policy: PnrExecutionPolicy) -> str:
-    return canonical_sha256(policy)
+def physical_design_result_id(result: PhysicalDesignResult) -> str:
+    return result.artifact_id
+
+
+def physical_closure_evidence_id(evidence: PlacementRoutingClosureEvidence) -> str:
+    return evidence.artifact_id
 
 
 __all__ = [
     "CanonicalSerializationError",
     "canonical_json",
-    "canonical_sha256",
+    "physical_closure_evidence_id",
     "physical_design_job_from_json",
-    "physical_design_intent_sha256",
+    "physical_design_job_id",
     "physical_design_result_from_json",
+    "physical_design_result_id",
     "placement_routing_closure_evidence_from_json",
-    "pnr_execution_sha256",
 ]

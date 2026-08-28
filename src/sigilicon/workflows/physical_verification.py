@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 
 from sigilicon.domain.physical_verification import (
     DrcEvidence,
@@ -68,13 +67,14 @@ class ReceiptBoundVerificationSourceAdapter(SourceAssetsAdapter):
                     "canonical source qualifier 'name' is required"
                 )
             identity_name = (
-                "source-sha256"
+                "source-identity"
                 if artifact.role == "source"
-                else "policy-sha256"
+                else "policy-identity"
             )
-            qualifiers[identity_name] = hashlib.sha256(
-                artifact.path.read_bytes()
-            ).hexdigest()
+            semantic_name = qualifiers.get("name", artifact.path.name)
+            qualifiers[identity_name] = (
+                f"{qualifiers['owner']}:{semantic_name}:{artifact.role}"
+            )
             artifacts.append(
                 ProducedArtifact(
                     artifact.role,
@@ -221,13 +221,13 @@ class OfflinePhysicalVerificationAdapter:
                     else LVS_EVIDENCE_KIND,
                     path,
                     qualifiers={
-                        "layout-sha256": evidence.layout.artifact_sha256,
-                        "receipt-sha256": str(evidence.layout.receipt_sha256),
-                        "job-sha256": str(evidence.layout.job_sha256),
-                        "plan-sha256": evidence.layout.plan_sha256,
-                        "result-sha256": str(evidence.layout.result_sha256),
+                        "layout-identity": evidence.layout.artifact_identity,
+                        "receipt-identity": str(evidence.layout.receipt_identity),
+                        "job-identity": str(evidence.layout.job_identity),
+                        "plan-identity": evidence.layout.plan_identity,
+                        "result-identity": str(evidence.layout.result_identity),
                         **(
-                            {"source-sha256": evidence.source.artifact_sha256}
+                            {"source-identity": evidence.source.artifact_identity}
                             if isinstance(evidence, LvsEvidence)
                             else {}
                         ),

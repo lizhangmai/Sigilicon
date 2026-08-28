@@ -111,9 +111,11 @@ class OALibraryRebuildPlan:
             "workspace_template": self.source.workspace_template.relative_to(root).as_posix(),
             "oa_library": self.source.oa_library.relative_to(root).as_posix(),
             "primitive_masters": list(self.source.primitive_masters),
-            "physical_verification": self.source.physical_verification.path.relative_to(
-                root
-            ).as_posix(),
+            "physical_verification": (
+                None
+                if self.source.physical_verification is None
+                else self.source.physical_verification.path.relative_to(root).as_posix()
+            ),
             "source_roots": [
                 {
                     "owner": source.owner,
@@ -507,9 +509,6 @@ def _plan_layouts(
             specs.append(spec)
             spec_by_key[key] = spec
             plans[key] = plan
-    if not specs:
-        raise ValueError("OA library has no canonical layout rebuild entry points")
-
     keys = tuple((spec.cell, spec.view) for spec in specs)
     key_set = set(keys)
     dependencies: dict[tuple[str, str], set[tuple[str, str]]] = {

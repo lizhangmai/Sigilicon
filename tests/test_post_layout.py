@@ -70,19 +70,19 @@ class _NoopAdapter:
 
 def _layout() -> CheckedLayoutIdentity:
     return CheckedLayoutIdentity(
-        "1" * 64,
-        "2" * 64,
-        "3" * 64,
+        "layout-fixture",
+        "plan-fixture",
+        "result-fixture",
         "owner",
         "cell",
-        "4" * 64,
-        "5" * 64,
+        "source-fixture",
+        "policy-fixture",
         "gdsii",
     )
 
 
 def _source() -> CheckedSourceIdentity:
-    return CheckedSourceIdentity("6" * 64, "owner", "cell")
+    return CheckedSourceIdentity("checked-source", "owner", "cell")
 
 
 def _completion(*, proven: bool = True) -> VerificationCompletion:
@@ -95,7 +95,7 @@ def _completion(*, proven: bool = True) -> VerificationCompletion:
 
 
 def test_receipt_bound_downstream_evidence_round_trips_without_metric_dicts() -> None:
-    parasitics = DerivedArtifactIdentity("parasitics", PEX_NETLIST_KIND, "7" * 64)
+    parasitics = DerivedArtifactIdentity("parasitics", PEX_NETLIST_KIND, "parasitics-fixture")
     pex = PexEvidence(
         PexStatus.EXTRACTED,
         _layout(),
@@ -108,9 +108,9 @@ def test_receipt_bound_downstream_evidence_round_trips_without_metric_dicts() ->
         PhysicalAnalysisStatus.PASSED,
         _layout(),
         _source(),
-        "8" * 64,
-        parasitics.sha256,
-        "9" * 64,
+        "post-layout-run",
+        parasitics.identity,
+        "post-layout-policy",
         _completion(),
         (),
         "specification passed",
@@ -119,14 +119,14 @@ def test_receipt_bound_downstream_evidence_round_trips_without_metric_dicts() ->
         PhysicalAnalysisStatus.VIOLATED,
         _layout(),
         _source(),
-        "a" * 64,
-        "b" * 64,
-        "c" * 64,
+        "layout-drift",
+        "source-drift",
+        "parasitics-drift",
         _completion(),
         (PhysicalAnalysisFinding("timing", 1),),
         "one canonical requirement failed",
-        "8" * 64,
-        "d" * 64,
+        "post-layout-run",
+        "evidence-drift",
         123,
         456,
     )
@@ -145,7 +145,7 @@ def test_downstream_success_cannot_be_inferred_from_exit_or_artifact_alone() -> 
             _layout(),
             _source(),
             _completion(proven=False),
-            DerivedArtifactIdentity("parasitics", PEX_NETLIST_KIND, "7" * 64),
+            DerivedArtifactIdentity("parasitics", PEX_NETLIST_KIND, "parasitics-fixture"),
             "unparsed",
         )
     with pytest.raises(ValueError, match="positive findings"):
@@ -153,9 +153,9 @@ def test_downstream_success_cannot_be_inferred_from_exit_or_artifact_alone() -> 
             PhysicalAnalysisStatus.VIOLATED,
             _layout(),
             _source(),
-            "8" * 64,
-            "7" * 64,
-            "9" * 64,
+            "post-layout-run",
+            "parasitics-fixture",
+            "post-layout-policy",
             _completion(),
             (),
             "no authoritative finding",

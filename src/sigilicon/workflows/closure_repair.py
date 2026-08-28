@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sigilicon.canonical import canonical_from_json, canonical_json, canonical_sha256
+from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.layout.pnr import (
     ConstraintMode,
@@ -25,8 +25,8 @@ from sigilicon.layout.pnr import (
     Point,
     Rect,
     ResultStatus,
-    physical_design_intent_sha256,
-    pnr_execution_sha256,
+    physical_design_job_id,
+    physical_design_result_id,
 )
 from sigilicon.layout.pnr._constraints import evaluate_constraint
 from sigilicon.layout.pnr._legality import (
@@ -207,21 +207,26 @@ class PhysicalPlacementRepair:
 
 @dataclass(frozen=True)
 class RepairPlan:
+    plan_id: str
     decision: ClosureRepairDecision
     owner: str
     policy_id: str
-    parent_job_sha256: str
-    parent_result_sha256: str
-    feedback_sha256: str
-    policy_sha256: str
+    parent_job_identity: str
+    parent_result_identity: str
+    parent_job: PhysicalDesignJob
+    parent_result: PhysicalDesignResult
+    feedback_identity: str
+    policy_identity: str
     iteration_run_id: str
-    flow_plan_sha256: str
-    evidence_artifact_sha256: tuple[str, ...]
+    flow_plan_identity: str
+    evidence_artifact_identity: tuple[str, ...]
     source_evidence: tuple[str, ...]
     action: PhysicalPlacementRepair | None
     reason: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.plan_id, str) or not self.plan_id:
+            raise ClosureRepairError("repair plan needs an explicit semantic ID")
         try:
             owner_identity(self.owner, "repair plan owner")
             identifier(self.policy_id, "repair plan policy identity")
@@ -229,20 +234,25 @@ class RepairPlan:
         except ValueError as exc:
             raise ClosureRepairError(str(exc)) from exc
         for label, value in (
-            ("parent job", self.parent_job_sha256),
-            ("parent result", self.parent_result_sha256),
-            ("feedback", self.feedback_sha256),
-            ("policy", self.policy_sha256),
-            ("Flow plan", self.flow_plan_sha256),
-            *(("evidence artifact", value) for value in self.evidence_artifact_sha256),
+            ("parent job", self.parent_job_identity),
+            ("parent result", self.parent_result_identity),
+            ("feedback", self.feedback_identity),
+            ("policy", self.policy_identity),
+            ("Flow plan", self.flow_plan_identity),
+            *(("evidence artifact", value) for value in self.evidence_artifact_identity),
         ):
-            if len(value) != 64 or any(
-                character not in "0123456789abcdef" for character in value
-            ):
-                raise ClosureRepairError(f"repair plan {label} must be a SHA-256")
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise ClosureRepairError(f"repair plan {label} must be non-empty")
+        if (
+            physical_design_job_id(self.parent_job) != self.parent_job_identity
+            or physical_design_result_id(self.parent_result)
+            != self.parent_result_identity
+            or self.parent_result.provenance.job != self.parent_job
+        ):
+            raise ClosureRepairError("repair plan parent typed record drift")
         if not self.reason:
             raise ClosureRepairError("repair plan needs a reason")
-        if not isinstance(self.evidence_artifact_sha256, tuple) or not isinstance(
+        if not isinstance(self.evidence_artifact_identity, tuple) or not isinstance(
             self.source_evidence, tuple
         ):
             raise ClosureRepairError("repair plan evidence must use immutable tuples")
@@ -250,7 +260,7 @@ class RepairPlan:
             if (
                 self.action is None
                 or not self.source_evidence
-                or not self.evidence_artifact_sha256
+                or not self.evidence_artifact_identity
             ):
                 raise ClosureRepairError(
                     "accepted repair plan needs an action and complete evidence"
@@ -277,22 +287,25 @@ def _rejected(
     policy: ClosureRepairPolicy,
     job: PhysicalDesignJob,
     result: PhysicalDesignResult,
-    feedback_sha256: str,
+    feedback_identity: str,
     provenance: "ClosureIterationProvenance",
     source_evidence: tuple[str, ...],
     reason: str,
 ) -> RepairPlan:
     return RepairPlan(
+        f"{owner}:closure-repair:{provenance.run_id}",
         decision,
         owner,
         policy.policy_id,
-        canonical_sha256(job),
-        canonical_sha256(result),
-        feedback_sha256,
-        canonical_sha256(policy),
+        physical_design_job_id(job),
+        physical_design_result_id(result),
+        job,
+        result,
+        feedback_identity,
+        f"{policy.owner}:closure-repair-policy:{policy.policy_id}",
         provenance.run_id,
-        provenance.plan_sha256,
-        tuple(item.sha256 for item in provenance.artifacts),
+        provenance.plan_identity,
+        tuple(item.identity for item in provenance.artifacts),
         source_evidence,
         None,
         reason,
@@ -304,20 +317,16 @@ def _provenance_issue(
     result: PhysicalDesignResult,
     provenance: "ClosureIterationProvenance",
 ) -> str | None:
-    if result.provenance.input_sha256 != physical_design_intent_sha256(job):
-        return "parent result input identity does not match the parent job"
-    if result.provenance.execution_sha256 != pnr_execution_sha256(
-        job.execution_policy
-    ):
-        return "parent result execution identity does not match the parent job"
+    if result.provenance.job != job:
+        return "parent result typed job does not match the parent job"
     by_label = {item.label: item for item in provenance.artifacts}
     if len(by_label) != len(provenance.artifacts):
         return "iteration provenance contains duplicate artifact labels"
     if "job" not in by_label or "result" not in by_label:
         return "iteration provenance omits parent job or result evidence"
-    if by_label["job"].sha256 != canonical_sha256(job):
+    if by_label["job"].identity != physical_design_job_id(job):
         return "iteration provenance job identity does not match the parent job"
-    if by_label["result"].sha256 != canonical_sha256(result):
+    if by_label["result"].identity != physical_design_result_id(result):
         return "iteration provenance result identity does not match the parent result"
     return None
 
@@ -473,7 +482,7 @@ def compile_closure_repair(
         owner_identity(owner, "closure repair owner")
     except ValueError as exc:
         raise ClosureRepairError(str(exc)) from exc
-    feedback_sha256 = canonical_sha256(feedback)
+    feedback_identity = f"{owner}:closure-feedback:{provenance.run_id}"
     source_evidence = tuple(
         sorted({identity for scope in feedback for identity in scope.source_evidence})
     )
@@ -484,7 +493,7 @@ def compile_closure_repair(
             policy=policy,
             job=job,
             result=result,
-            feedback_sha256=feedback_sha256,
+            feedback_identity=feedback_identity,
             provenance=provenance,
             source_evidence=source_evidence,
             reason="repair policy owner does not match the campaign owner",
@@ -497,7 +506,7 @@ def compile_closure_repair(
             policy=policy,
             job=job,
             result=result,
-            feedback_sha256=feedback_sha256,
+            feedback_identity=feedback_identity,
             provenance=provenance,
             source_evidence=source_evidence,
             reason=issue,
@@ -509,7 +518,7 @@ def compile_closure_repair(
             policy=policy,
             job=job,
             result=result,
-            feedback_sha256=feedback_sha256,
+            feedback_identity=feedback_identity,
             provenance=provenance,
             source_evidence=source_evidence,
             reason="parent physical-design result has no repairable geometry",
@@ -528,7 +537,7 @@ def compile_closure_repair(
             policy=policy,
             job=job,
             result=result,
-            feedback_sha256=feedback_sha256,
+            feedback_identity=feedback_identity,
             provenance=provenance,
             source_evidence=source_evidence,
             reason=(
@@ -547,7 +556,7 @@ def compile_closure_repair(
             policy=policy,
             job=job,
             result=result,
-            feedback_sha256=feedback_sha256,
+            feedback_identity=feedback_identity,
             provenance=provenance,
             source_evidence=source_evidence,
             reason=reason,
@@ -563,23 +572,26 @@ def compile_closure_repair(
             policy=policy,
             job=job,
             result=result,
-            feedback_sha256=feedback_sha256,
+            feedback_identity=feedback_identity,
             provenance=provenance,
             source_evidence=source_evidence,
             reason="project-owned target exceeds the owner policy displacement budget",
         )
     action = replace(action, maximum_displacement_dbu=maximum)
     return RepairPlan(
+        f"{owner}:closure-repair:{provenance.run_id}",
         ClosureRepairDecision.ACCEPTED,
         owner,
         policy.policy_id,
-        canonical_sha256(job),
-        canonical_sha256(result),
-        feedback_sha256,
-        canonical_sha256(policy),
+        physical_design_job_id(job),
+        physical_design_result_id(result),
+        job,
+        result,
+        feedback_identity,
+        f"{policy.owner}:closure-repair-policy:{policy.policy_id}",
         provenance.run_id,
-        provenance.plan_sha256,
-        tuple(item.sha256 for item in provenance.artifacts),
+        provenance.plan_identity,
+        tuple(item.identity for item in provenance.artifacts),
         tuple(sorted(set(scope.source_evidence))),
         action,
         reason,
@@ -591,8 +603,11 @@ def apply_repair_plan(job: PhysicalDesignJob, plan: RepairPlan) -> PhysicalDesig
 
     if not plan.accepted or plan.action is None:
         raise ClosureRepairError("only an accepted RepairPlan can produce a next job")
-    if canonical_sha256(job) != plan.parent_job_sha256:
-        raise ClosureRepairError("RepairPlan parent job identity does not match")
+    if (
+        physical_design_job_id(job) != plan.parent_job_identity
+        or job != plan.parent_job
+    ):
+        raise ClosureRepairError("RepairPlan parent job identity or typed record does not match")
     action = plan.action
     grid = job.technology.manufacturing_grid_dbu
     if not _grid_aligned(action.target.origin, grid):
@@ -662,13 +677,17 @@ def apply_repair_plan(job: PhysicalDesignJob, plan: RepairPlan) -> PhysicalDesig
 
     lineage = PhysicalDesignJobLineage(
         plan.owner,
-        plan.parent_job_sha256,
-        plan.parent_result_sha256,
-        plan.feedback_sha256,
-        canonical_sha256(plan),
+        plan.parent_job_identity,
+        plan.parent_result_identity,
+        plan.feedback_identity,
+        plan.plan_id,
         plan.source_evidence,
     )
-    return replace(job, design=design, repair_lineage=lineage)
+    return replace(
+        job,
+        design=design,
+        repair_lineage=lineage,
+    )
 
 
 __all__ = [

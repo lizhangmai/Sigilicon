@@ -48,6 +48,10 @@ from sigilicon.layout.pnr import (
 )
 
 
+def _physical_job(*args, **kwargs) -> PhysicalDesignJob:
+    return PhysicalDesignJob(*args, **kwargs)
+
+
 def _job(*, technology_name: str = "neutral-tech", grid: int = 10) -> PhysicalDesignJob:
     master = PhysicalMaster(
         name="rectangular-master",
@@ -55,7 +59,7 @@ def _job(*, technology_name: str = "neutral-tech", grid: int = 10) -> PhysicalDe
         height_dbu=10,
         allowed_orientations=(Orientation.R0, Orientation.R90),
     )
-    return PhysicalDesignJob(
+    return _physical_job(
         technology=PhysicalTechnology(
             name=technology_name,
             dbu_per_micron=1000,
@@ -84,11 +88,11 @@ def test_reference_engine_places_the_same_model_for_distinct_technologies() -> N
     assert first.status is ResultStatus.SUCCEEDED
     assert second.status is ResultStatus.SUCCEEDED
     assert first.placements == second.placements
-    assert first.provenance.input_sha256 != second.provenance.input_sha256
+    assert first.provenance.job != second.provenance.job
     assert first.provenance.deterministic is True
 
 
-def test_execution_policy_has_an_identity_separate_from_physical_intent() -> None:
+def test_execution_policy_is_part_of_the_exact_job_record() -> None:
     job = _job()
     first = run(job)
     second = run(
@@ -101,8 +105,8 @@ def test_execution_policy_has_an_identity_separate_from_physical_intent() -> Non
         )
     )
 
-    assert first.provenance.input_sha256 == second.provenance.input_sha256
-    assert first.provenance.execution_sha256 != second.provenance.execution_sha256
+    assert first.provenance.job != second.provenance.job
+    assert first.provenance.job.execution_policy != second.provenance.job.execution_policy
 
 
 def _placements(job: PhysicalDesignJob) -> dict[str, Placement]:
@@ -122,7 +126,7 @@ def test_alignment_constraint_uses_explicit_geometric_anchor() -> None:
         height_dbu=10,
         allowed_orientations=(Orientation.R0,),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "alignment",
@@ -155,7 +159,7 @@ def test_ordering_constraint_enforces_direction_and_gap() -> None:
         10,
         allowed_orientations=(Orientation.R0,),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "ordered",
@@ -189,7 +193,7 @@ def test_separation_constraint_is_undirected() -> None:
         10,
         allowed_orientations=(Orientation.R0,),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "separated",
@@ -223,7 +227,7 @@ def test_symmetry_constraint_reflects_bounding_boxes_about_axis() -> None:
         10,
         allowed_orientations=(Orientation.R0,),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "symmetric",
@@ -262,7 +266,7 @@ def test_array_constraint_assigns_row_major_origins() -> None:
         PhysicalInstance("c", master.name),
         PhysicalInstance("d", master.name),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign("array", Rect(0, 0, 30, 30), (master,), instances),
         constraints=(
@@ -288,7 +292,7 @@ def test_array_constraint_assigns_row_major_origins() -> None:
 
 def test_conflicting_fixed_constraints_return_a_violation() -> None:
     master = PhysicalMaster("square", 10, 10)
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "conflict",
@@ -335,7 +339,7 @@ def test_hard_fence_is_solved_and_reported_through_the_public_interface() -> Non
 
 def test_valid_but_infeasible_job_returns_diagnostics_instead_of_raising() -> None:
     master = PhysicalMaster(name="full-die", width_dbu=20, height_dbu=20)
-    job = PhysicalDesignJob(
+    job = _physical_job(
         technology=PhysicalTechnology("technology", 1000, 1),
         design=PhysicalDesign(
             name="infeasible",
@@ -440,7 +444,7 @@ def _net_objective_job(objective: PlacementObjective) -> PhysicalDesignJob:
         pins=(MasterPin("p"),),
         allowed_orientations=(Orientation.R0,),
     )
-    return PhysicalDesignJob(
+    return _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "net-objective",
@@ -484,7 +488,7 @@ def test_estimated_hpwl_uses_transformed_pin_access_geometry() -> None:
         pins=(MasterPin("p", (PinAccess("routing", Rect(0, 0, 2, 2)),)),),
         allowed_orientations=(Orientation.R90,),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 1, layers=(layer,)),
         PhysicalDesign(
             "oriented-pin",
@@ -530,7 +534,7 @@ def test_density_overflow_objective_spreads_occupancy_across_bins() -> None:
         10,
         allowed_orientations=(Orientation.R0,),
     )
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "density",
@@ -590,7 +594,7 @@ def test_bounding_box_area_and_congestion_proxy_are_observable_objectives() -> N
 
 def test_soft_constraint_violation_does_not_change_hard_legality() -> None:
     master = PhysicalMaster("square", 10, 10)
-    job = PhysicalDesignJob(
+    job = _physical_job(
         PhysicalTechnology("neutral", 1000, 10),
         PhysicalDesign(
             "soft-violation",

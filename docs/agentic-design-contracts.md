@@ -1,6 +1,6 @@
 # Agentic circuit-design contract baseline
 
-Status: Phase 0 frozen contract, 2026-08-28.
+Status: Phase 0-5 implemented contract, 2026-08-28.
 
 This document fixes the reusable Sigilicon vocabulary and integration inventory for
 agent-assisted circuit design. It does not define an IP topology, PDK fact, project
@@ -21,19 +21,22 @@ MCP-style conventions, or environment variables.
   specification.
 - **Canonical Qualification Spec** is the project-owner source that alone defines
   pass/fail requirements, coverage, and evidence role.
-- **Design Candidate** is an immutable manifest of content-addressed stage artifact
-  references. Candidate identity is the SHA-256 of its canonical serialization; it
-  is derived and is not a self-referential serialized field.
+- **Design Candidate** is an immutable manifest of owner/kind-bound stage artifact
+  references. Candidate identity is a semantic locator projected from typed domain
+  names and lineage; correctness comes from resolving and comparing the typed values.
 - **Design Evidence** is an immutable observation bound to subject, source, spec,
   producer, and tool identities. Evidence records what ran and what was parsed; it
   does not contain a policy decision.
 - **Design Decision** is an owner-policy evaluation of identity-matched Candidate
   and Design Evidence. It cannot repair missing evidence.
-- **Design Campaign** is a bounded multi-attempt workflow above FlowEngine. Every
-  attempt is one resolved, deterministic FlowPlan.
-- **Promotion Plan** is a non-mutating description of a proposed Git source patch,
-  required regression, evidence bundle, and unresolved risk. Applying it is outside
-  the first MCP interface and always requires human approval.
+- **Design Campaign** is a bounded, durable multi-round workflow above FlowEngine.
+  Every attempt is one resolved, deterministic FlowPlan. A violated attempt stops
+  in `proposal_required`; only an explicit client proposal can let owner policy
+  compile a Repair Plan and derive the child Candidate and next attempt.
+- **Promotion Plan** is a non-mutating description of semantic source roles,
+  required regression, evidence bundle, and unresolved risk. It contains no write
+  path or patch. Applying it is outside the MCP interface and always requires human
+  approval.
 
 These terms are expressed in source, immutable types, tests, and ADRs. Sigilicon's
 `CONTEXT.md` is intentionally unchanged.
@@ -53,11 +56,21 @@ first front-end schema family contains:
 
 Every artifact has an exact schema version, kind, and owner. Canonical JSON uses
 UTF-8, sorted object keys, deterministic indentation, finite values, a trailing
-newline, and SHA-256 content identity. Decoding rejects unknown, duplicate,
+newline. Decoding rejects unknown, duplicate,
 missing, malformed, non-canonical, or unknown-enum fields. Artifact references
-bind kind, owner, and SHA-256. A reference to another owner also requires an
+bind kind, owner, and semantic identity. A reference to another owner also requires an
 explicit release identity; unpublished source-level composition stays within its
 owner component graph and cannot be laundered through an artifact reference.
+
+Topology creation has one explicit ownership seam. An owner-side
+`SourceAuthoredTopologyAdapter` normalizes its validated `DesignSpec` and canonical
+netlist into the typed topology. The `circuit-design.source` Flow Action uses the
+existing `source-assets` Adapter only to select and ingest that already-authored
+typed artifact; it is not a second topology generator or a parallel inventory.
+The resolved Flow plan carries every selected UTF-8 member record and its executable
+bit together with the exact owner-scoped Git commit and change records. Preflight
+and materialization compare those typed values again, so a dirty file changing
+without changing its path cannot reuse an earlier authorization.
 
 No artifact serializes an absolute path, environment mapping, raw command, or EDA
 invocation. Source adapters accept an explicit `ProjectContext` or an already
@@ -86,10 +99,10 @@ rows remain reserved inventory, not alternate project indexes):
 | `sigilicon://owners/{owner}/catalog` | owner-selected targets and contracts | `read-project` | Phase 2 |
 | `sigilicon://runs/{owner}/{flow}/{target}/{run_id}/manifest` | owner-bound durable run result | `read-project` | Phase 2 |
 | `sigilicon://owners/{owner}/targets/{target}` | one owner target projection | `read-project` | reserved |
-| `sigilicon://contracts/{sha256}` | bounded typed contract summary and source identity | `read-project` | reserved |
+| `sigilicon://contracts/{identity}` | bounded typed contract summary and source identity | `read-project` | reserved |
 | `sigilicon://schemas/{artifact_kind}` | the Sigilicon-owned schema | `read-project` | reserved |
-| `sigilicon://artifacts/{sha256}` | one authorized immutable artifact | `read-project` | reserved |
-| `sigilicon://evidence/{sha256}/summary` | bounded parsed evidence, never raw authority | `read-project` | reserved |
+| `sigilicon://artifacts/{identity}` | one authorized immutable artifact | `read-project` | reserved |
+| `sigilicon://evidence/{identity}/summary` | bounded parsed evidence, never raw authority | `read-project` | reserved |
 
 Tool baseline:
 
@@ -101,7 +114,7 @@ Tool baseline:
 | `run.inspect` | Phase 2 | `read-project` | cataloged owner/flow/target plus validated run identity |
 | `run.cancel` | Phase 3 | `execute-derived` | opaque run identity; cooperative managed cancellation |
 | `campaign.plan` | Phase 4 | `plan-flow` | owner policy, explicit scope, budgets, and stop conditions |
-| `campaign.run` | Phase 4 | `execute-derived` or stronger stage capability | immutable campaign plan identity |
+| `campaign.run` | Phase 4 | `execute-derived` or stronger stage capability | start with immutable campaign identity, or resume the same run with one strict proposal |
 | `candidate.validate` | Phase 2 | `plan-flow` | exact canonical Candidate/stage JSON plus cataloged owner; no paths |
 | `candidate.promotion_plan` | Phase 5 | `plan-flow` | validated Candidate and evidence bundle; never writes source |
 
@@ -150,9 +163,27 @@ CALIBRATED_DYNAMIC_COMPARATOR full-loop evidence, and only later the complete MX
 Block. The existing CDAC sizing campaign remains diagnostic and its algorithm,
 candidate set, measurements, and thresholds are not changed by normalization.
 
+`DesignCampaignRunner` owns the cross-round state machine; `FlowEngine` remains a
+single-round typed DAG executor. A campaign source contains exactly one baseline
+attempt plus an optional continuation template and Repair Policy, never a
+pre-enumerated second result. Durable start/resume checkpoints are append-only,
+sequence-checked, recoverable across processes, and bind the grant and execution
+environment identity. Invalid evidence, invalid lineage, backend failure, or an
+exhausted iteration/state/node/time budget reaches an explicit fail-closed terminal
+state. Sigilicon never invokes an LLM: client proposals are untrusted semantic input
+and cannot assert verification success.
+
+`candidate.promotion_plan` shares the read application Interface across Python,
+CLI, and MCP. It accepts only a validated Candidate, exact evidence-bound passing
+Decision, owner requirements, and semantic Candidate stage roles. Its immutable
+result always declares `human_approval_required = true` and
+`writes_canonical_source = false`; no `apply_promotion` operation exists.
+
 Phase acceptance requires strict round-trip and rejection tests, explicit
 identity/owner lineage, fake/offline non-conclusion, path and injection defenses,
 one shared application Interface for Python/CLI/MCP, package tests, wheel build and
 clean-wheel import/CLI smoke, project `check-designs`, and `git diff --check` in
-both repositories. Real Virtuoso, OA writes, real simulation, and product
-qualification remain outside the authorized Phase 0-2 work.
+both repositories. Real Adapter evidence may be consumed only through the existing
+OA/EDA safety and receipt-bound parsers. Such evidence retains its declared role and
+DUT level; a physical regression pilot cannot be upgraded into product
+qualification.

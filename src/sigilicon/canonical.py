@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
 from enum import Enum
-import hashlib
 import json
 from types import UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
@@ -43,10 +42,6 @@ def canonical_json(value: Any) -> str:
         indent=2,
         sort_keys=True,
     ) + "\n"
-
-
-def canonical_sha256(value: Any) -> str:
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -192,5 +187,4 @@ __all__ = [
     "canonical_from_exact_json",
     "canonical_from_json",
     "canonical_json",
-    "canonical_sha256",
 ]

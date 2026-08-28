@@ -60,7 +60,8 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     RoutingTerminationReason,
     RoutingTrackPattern,
-    canonical_sha256,
+    physical_design_result_id,
+    physical_closure_evidence_id,
     physical_design_job_from_json,
     physical_design_result_from_json,
     placement_routing_closure_evidence_from_json,
@@ -407,8 +408,8 @@ def test_reference_pnr_runs_through_public_flow_engine(
     assert evidence.routing_termination is routing_termination
     assert outcome.facts["state-budget-exhausted"] is state_budget
     assert outcome.facts["iteration-budget-exhausted"] is iteration_budget
-    assert result_artifact.qualifiers["result-sha256"] == canonical_sha256(result)
-    assert evidence_artifact.qualifiers["closure-sha256"] == canonical_sha256(evidence)
+    assert result_artifact.qualifiers["result-identity"] == physical_design_result_id(result)
+    assert evidence_artifact.qualifiers["closure-identity"] == physical_closure_evidence_id(evidence)
     assert materialization.execution_status == "succeeded"
     assert materialization.result_status == "valid"
     assert materialization_plan.executable is (status is ResultStatus.SUCCEEDED)

@@ -9,7 +9,6 @@ import re
 from sigilicon.canonical import (
     canonical_from_exact_json,
     canonical_json,
-    canonical_sha256,
 )
 from sigilicon.domain.circuit_design import (
     ArtifactReference,
@@ -18,11 +17,15 @@ from sigilicon.domain.circuit_design import (
     CircuitTopologyProposal,
     DesignCandidate,
     DesignEvidence,
+    DESIGN_CANDIDATE_KIND,
+    DESIGN_EVIDENCE_KIND,
     EvidenceConclusion,
+    ProposalProvenance,
     SizingCandidate,
     TopologyOrigin,
 )
 from sigilicon.flow.model import identifier, owner_identity
+from sigilicon.identifiers import bounded_identity
 
 
 _CIRCUIT_IDENTIFIER = re.compile(
@@ -37,9 +40,115 @@ class RepairCompileDecision(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
 
 
-def _sha256(value: str, label: str) -> None:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValueError(f"{label} must be a SHA-256 identity")
+class DesignRepairKind(str, Enum):
+    TOPOLOGY = "topology"
+    SIZING = "sizing"
+
+
+@dataclass(frozen=True)
+class DesignRepairAttribution:
+    """Typed violated evidence projected into one supported repair scope."""
+
+    attribution_id: str
+    owner: str
+    candidate: ArtifactReference
+    subject: ArtifactReference
+    evidence: tuple[ArtifactReference, ...]
+    repair_kind: DesignRepairKind
+    finding_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        bounded_identity(self.attribution_id, "design repair attribution")
+        owner_identity(self.owner, "design repair attribution owner")
+        if self.candidate.owner != self.owner or self.candidate.kind != DESIGN_CANDIDATE_KIND:
+            raise ValueError("design repair attribution Candidate identity drift")
+        if self.subject.owner != self.owner:
+            raise ValueError("design repair attribution subject owner drift")
+        if not self.evidence or any(
+            item.owner != self.owner or item.kind != DESIGN_EVIDENCE_KIND
+            for item in self.evidence
+        ):
+            raise ValueError("design repair attribution needs owner-bound Design Evidence")
+        evidence_ids = tuple(item.identity for item in self.evidence)
+        if evidence_ids != tuple(sorted(set(evidence_ids))):
+            raise ValueError("design repair attribution evidence must be unique and sorted")
+        if not isinstance(self.repair_kind, DesignRepairKind):
+            raise ValueError("design repair attribution kind must be typed")
+        _identities(self.finding_codes, "design repair attribution findings")
+        if not self.finding_codes:
+            raise ValueError("design repair attribution needs typed findings")
+
+    @property
+    def identity(self) -> str:
+        return self.attribution_id
+
+    def canonical_json(self) -> str:
+        return canonical_json(self)
+
+
+@dataclass(frozen=True)
+class DesignRepairProposal:
+    """A semantic client proposal with no authority to claim verification."""
+
+    proposal_id: str
+    owner: str
+    campaign_identity: str
+    parent_candidate_identity: str
+    attribution_identity: str
+    evidence_identity: tuple[str, ...]
+    proposed_topology: CircuitTopologyProposal | None
+    proposed_sizing: SizingCandidate | None
+    requested_evaluations: int | None
+    required_regressions: tuple[str, ...]
+    provenance: ProposalProvenance
+
+    def __post_init__(self) -> None:
+        bounded_identity(self.proposal_id, "design repair proposal")
+        owner_identity(self.owner, "design repair proposal owner")
+        for value, label in (
+            (self.campaign_identity, "design Campaign"),
+            (self.parent_candidate_identity, "proposal parent Candidate"),
+            (self.attribution_identity, "proposal attribution"),
+        ):
+            bounded_identity(value, label)
+        if self.evidence_identity != tuple(sorted(set(self.evidence_identity))):
+            raise ValueError("design repair proposal evidence must be unique and sorted")
+        for value in self.evidence_identity:
+            bounded_identity(value, "design repair proposal evidence")
+        _identities(self.required_regressions, "design repair proposal regressions")
+        topology = self.proposed_topology is not None
+        sizing = self.proposed_sizing is not None
+        if topology == sizing:
+            raise ValueError("design repair proposal must contain exactly one change kind")
+        if topology:
+            if self.proposed_topology.metadata.owner != self.owner:
+                raise ValueError("design repair topology proposal owner drift")
+            if self.requested_evaluations is not None:
+                raise ValueError("topology proposal cannot request sizing evaluations")
+        elif (
+            type(self.requested_evaluations) is not int
+            or self.requested_evaluations <= 0
+        ):
+            raise ValueError("sizing proposal needs a positive evaluation request")
+
+    @property
+    def repair_kind(self) -> DesignRepairKind:
+        return (
+            DesignRepairKind.TOPOLOGY
+            if self.proposed_topology is not None
+            else DesignRepairKind.SIZING
+        )
+
+    @property
+    def identity(self) -> str:
+        return self.proposal_id
+
+    def canonical_json(self) -> str:
+        return canonical_json(self)
+
+
+def design_repair_proposal_from_json(text: str) -> DesignRepairProposal:
+    return canonical_from_exact_json(text, DesignRepairProposal)
 
 
 def _identities(values: tuple[str, ...], label: str) -> None:
@@ -96,35 +205,37 @@ class SizingRepairPolicy:
 
 @dataclass(frozen=True)
 class TopologyRepairPlan:
+    plan_id: str
     decision: RepairCompileDecision
     owner: str
     policy_id: str
-    parent_candidate_sha256: str
-    parent_topology_sha256: str
-    evidence_sha256: tuple[str, ...]
-    policy_sha256: str
-    proposal_sha256: str
+    parent_candidate_identity: str
+    parent_topology_identity: str
+    evidence_identity: tuple[str, ...]
+    policy_identity: str
+    proposal_identity: str
     required_regressions: tuple[str, ...]
     changed_instances: tuple[str, ...]
     proposed_topology: CircuitTopologyProposal | None
     reason: str
 
     def __post_init__(self) -> None:
+        bounded_identity(self.plan_id, "topology Repair Plan")
         if not isinstance(self.decision, RepairCompileDecision):
             raise ValueError("topology repair decision must be typed")
         owner_identity(self.owner, "topology Repair Plan owner")
         identifier(self.policy_id, "topology Repair Plan policy")
         for value, label in (
-            (self.parent_candidate_sha256, "parent Candidate"),
-            (self.parent_topology_sha256, "parent topology"),
-            (self.policy_sha256, "repair policy"),
-            (self.proposal_sha256, "topology proposal"),
+            (self.parent_candidate_identity, "parent Candidate"),
+            (self.parent_topology_identity, "parent topology"),
+            (self.policy_identity, "repair policy"),
+            (self.proposal_identity, "topology proposal"),
         ):
-            _sha256(value, label)
-        if self.evidence_sha256 != tuple(sorted(set(self.evidence_sha256))):
+            bounded_identity(value, label)
+        if self.evidence_identity != tuple(sorted(set(self.evidence_identity))):
             raise ValueError("topology repair evidence must be unique and sorted")
-        for value in self.evidence_sha256:
-            _sha256(value, "topology repair evidence")
+        for value in self.evidence_identity:
+            bounded_identity(value, "topology repair evidence")
         _identities(self.required_regressions, "topology Repair Plan regressions")
         if self.changed_instances != tuple(sorted(set(self.changed_instances))):
             raise ValueError("changed topology instances must be unique and sorted")
@@ -133,7 +244,7 @@ class TopologyRepairPlan:
             if (
                 self.proposed_topology is None
                 or not self.changed_instances
-                or not self.evidence_sha256
+                or not self.evidence_identity
             ):
                 raise ValueError(
                     "accepted topology Repair Plan needs evidence and a concrete change"
@@ -154,20 +265,21 @@ class TopologyRepairPlan:
 
     @property
     def identity(self) -> str:
-        return canonical_sha256(self)
+        return self.plan_id
 
 
 @dataclass(frozen=True)
 class SizingRepairPlan:
+    plan_id: str
     decision: RepairCompileDecision
     owner: str
     policy_id: str
-    parent_candidate_sha256: str
-    parent_problem_sha256: str
-    parent_result_sha256: str
-    evidence_sha256: tuple[str, ...]
-    policy_sha256: str
-    proposal_sha256: str
+    parent_candidate_identity: str
+    parent_problem_identity: str
+    parent_result_identity: str
+    evidence_identity: tuple[str, ...]
+    policy_identity: str
+    proposal_identity: str
     requested_evaluations: int
     required_regressions: tuple[str, ...]
     changed_parameters: tuple[str, ...]
@@ -175,22 +287,23 @@ class SizingRepairPlan:
     reason: str
 
     def __post_init__(self) -> None:
+        bounded_identity(self.plan_id, "sizing Repair Plan")
         if not isinstance(self.decision, RepairCompileDecision):
             raise ValueError("sizing repair decision must be typed")
         owner_identity(self.owner, "sizing Repair Plan owner")
         identifier(self.policy_id, "sizing Repair Plan policy")
         for value, label in (
-            (self.parent_candidate_sha256, "parent Candidate"),
-            (self.parent_problem_sha256, "parent sizing problem"),
-            (self.parent_result_sha256, "parent sizing result"),
-            (self.policy_sha256, "repair policy"),
-            (self.proposal_sha256, "sizing proposal"),
+            (self.parent_candidate_identity, "parent Candidate"),
+            (self.parent_problem_identity, "parent sizing problem"),
+            (self.parent_result_identity, "parent sizing result"),
+            (self.policy_identity, "repair policy"),
+            (self.proposal_identity, "sizing proposal"),
         ):
-            _sha256(value, label)
-        if self.evidence_sha256 != tuple(sorted(set(self.evidence_sha256))):
+            bounded_identity(value, label)
+        if self.evidence_identity != tuple(sorted(set(self.evidence_identity))):
             raise ValueError("sizing repair evidence must be unique and sorted")
-        for value in self.evidence_sha256:
-            _sha256(value, "sizing repair evidence")
+        for value in self.evidence_identity:
+            bounded_identity(value, "sizing repair evidence")
         if type(self.requested_evaluations) is not int or self.requested_evaluations <= 0:
             raise ValueError("sizing Repair Plan evaluation count must be positive")
         _identities(self.required_regressions, "sizing Repair Plan regressions")
@@ -199,7 +312,7 @@ class SizingRepairPlan:
             if (
                 self.proposed_candidate is None
                 or not self.changed_parameters
-                or not self.evidence_sha256
+                or not self.evidence_identity
             ):
                 raise ValueError(
                     "accepted sizing Repair Plan needs evidence and a concrete change"
@@ -218,7 +331,7 @@ class SizingRepairPlan:
 
     @property
     def identity(self) -> str:
-        return canonical_sha256(self)
+        return self.plan_id
 
 
 def topology_repair_plan_from_json(text: str) -> TopologyRepairPlan:
@@ -230,7 +343,7 @@ def sizing_repair_plan_from_json(text: str) -> SizingRepairPlan:
 
 
 def _reference_key(reference: ArtifactReference) -> tuple[str, str, str]:
-    return reference.owner, reference.kind, reference.sha256
+    return reference.owner, reference.kind, reference.identity
 
 
 def _evidence_issue(
@@ -278,13 +391,14 @@ def _topology_plan(
     changed: tuple[str, ...] = (),
 ) -> TopologyRepairPlan:
     return TopologyRepairPlan(
+        f"{candidate.identity}:topology-repair:{proposed.identity}",
         decision,
         candidate.metadata.owner,
         policy.policy_id,
         candidate.identity,
         parent.identity,
         tuple(sorted(item.identity for item in evidence)),
-        canonical_sha256(policy),
+        f"{policy.owner}:topology-repair-policy:{policy.policy_id}",
         proposed.identity,
         regressions,
         changed if decision is RepairCompileDecision.ACCEPTED else (),
@@ -343,7 +457,7 @@ def compile_topology_repair(
     if (
         proposed.metadata.owner != candidate.metadata.owner
         or proposed.design != parent.design
-        or proposed.source_snapshot_sha256 != parent.source_snapshot_sha256
+        or proposed.source_snapshot_identity != parent.source_snapshot_identity
         or proposed.origin is not TopologyOrigin.PROPOSED
     ):
         return _topology_plan(
@@ -428,6 +542,7 @@ def _sizing_plan(
     changed: tuple[str, ...] = (),
 ) -> SizingRepairPlan:
     return SizingRepairPlan(
+        f"{candidate.identity}:sizing-repair:{proposed.name}",
         decision,
         candidate.metadata.owner,
         policy.policy_id,
@@ -435,8 +550,8 @@ def _sizing_plan(
         problem.identity,
         parent_result.identity,
         tuple(sorted(item.identity for item in evidence)),
-        canonical_sha256(policy),
-        canonical_sha256(proposed),
+        f"{policy.owner}:sizing-repair-policy:{policy.policy_id}",
+        proposed.name,
         requested_evaluations,
         regressions,
         changed if decision is RepairCompileDecision.ACCEPTED else (),
@@ -565,14 +680,117 @@ def compile_sizing_repair(
     )
 
 
+def attribute_design_failure(
+    candidate: DesignCandidate,
+    evidence: tuple[DesignEvidence, ...],
+) -> DesignRepairAttribution:
+    """Attribute exact Candidate-bound violations without interpreting free text."""
+
+    if not evidence:
+        raise ValueError("design repair attribution requires violated evidence")
+    declared = {_reference_key(item) for item in candidate.evidence}
+    subjects = {_reference_key(item.subject) for item in evidence}
+    if len(subjects) != 1:
+        raise ValueError("design repair attribution requires one exact subject")
+    for item in evidence:
+        if item.metadata.owner != candidate.metadata.owner:
+            raise ValueError("design repair attribution evidence owner drift")
+        if _reference_key(item.reference()) not in declared:
+            raise ValueError("design repair attribution evidence is outside the Candidate")
+        if item.source != candidate.source:
+            raise ValueError("design repair attribution source identity drift")
+        if item.conclusion is not EvidenceConclusion.VIOLATED:
+            raise ValueError("design repair attribution requires violated conclusions")
+    subject = evidence[0].subject
+    if subject == candidate.topology:
+        kind = DesignRepairKind.TOPOLOGY
+    elif candidate.sizing_result is not None and subject == candidate.sizing_result:
+        kind = DesignRepairKind.SIZING
+    else:
+        raise ValueError("violated evidence has no supported repair subject")
+    return DesignRepairAttribution(
+        f"{candidate.identity}:repair-attribution:{kind.value}",
+        candidate.metadata.owner,
+        candidate.reference(),
+        subject,
+        tuple(sorted((item.reference() for item in evidence), key=lambda item: item.identity)),
+        kind,
+        tuple(sorted({finding.code for item in evidence for finding in item.findings})),
+    )
+
+
+def compile_design_repair(
+    *,
+    campaign_identity: str,
+    attribution: DesignRepairAttribution,
+    proposal: DesignRepairProposal,
+    candidate: DesignCandidate,
+    parent: CircuitTopologyProposal | CircuitSizingProblem,
+    parent_result: CircuitSizingResult | None,
+    evidence: tuple[DesignEvidence, ...],
+    policy: TopologyRepairPolicy | SizingRepairPolicy,
+) -> TopologyRepairPlan | SizingRepairPlan:
+    """Compile one semantic proposal through its project-owned typed policy."""
+
+    if (
+        proposal.owner != candidate.metadata.owner
+        or proposal.campaign_identity != campaign_identity
+        or proposal.parent_candidate_identity != candidate.identity
+        or proposal.attribution_identity != attribution.identity
+        or proposal.evidence_identity
+        != tuple(reference.identity for reference in attribution.evidence)
+        or proposal.repair_kind is not attribution.repair_kind
+    ):
+        raise ValueError("design repair proposal identity drift")
+    if proposal.repair_kind is DesignRepairKind.TOPOLOGY:
+        if (
+            not isinstance(policy, TopologyRepairPolicy)
+            or not isinstance(parent, CircuitTopologyProposal)
+            or proposal.proposed_topology is None
+        ):
+            raise ValueError("topology repair proposal does not match owner policy")
+        return compile_topology_repair(
+            candidate=candidate,
+            parent=parent,
+            proposed=proposal.proposed_topology,
+            evidence=evidence,
+            policy=policy,
+            required_regressions=proposal.required_regressions,
+        )
+    if (
+        not isinstance(policy, SizingRepairPolicy)
+        or not isinstance(parent, CircuitSizingProblem)
+        or not isinstance(parent_result, CircuitSizingResult)
+        or proposal.proposed_sizing is None
+        or proposal.requested_evaluations is None
+    ):
+        raise ValueError("sizing repair proposal does not match owner policy")
+    return compile_sizing_repair(
+        candidate=candidate,
+        problem=parent,
+        parent_result=parent_result,
+        proposed=proposal.proposed_sizing,
+        requested_evaluations=proposal.requested_evaluations,
+        evidence=evidence,
+        policy=policy,
+        required_regressions=proposal.required_regressions,
+    )
+
+
 __all__ = [
+    "DesignRepairAttribution",
+    "DesignRepairKind",
+    "DesignRepairProposal",
     "RepairCompileDecision",
     "SizingRepairPlan",
     "SizingRepairPolicy",
     "TopologyRepairPlan",
     "TopologyRepairPolicy",
+    "attribute_design_failure",
+    "compile_design_repair",
     "compile_sizing_repair",
     "compile_topology_repair",
+    "design_repair_proposal_from_json",
     "sizing_repair_plan_from_json",
     "topology_repair_plan_from_json",
 ]

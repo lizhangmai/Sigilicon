@@ -8,7 +8,6 @@ and no PEX result is treated as qualification or signoff evidence.
 from __future__ import annotations
 
 from contextlib import ExitStack
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -17,12 +16,12 @@ import stat
 from typing import Mapping
 
 from sigilicon.artifacts import atomic_write_json, read_nofollow_text
-from sigilicon.canonical import canonical_sha256
 from sigilicon.domain.physical_verification import VerificationCompletion
 from sigilicon.domain.post_layout import (
     DerivedArtifactIdentity,
     PexEvidence,
     PexStatus,
+    pex_evidence_id,
     pex_evidence_from_json,
 )
 from sigilicon.external_tools import owned_directory, owned_input_file, run_process_group
@@ -39,7 +38,6 @@ from sigilicon.workflows.layout_verification import (
     calibre_environment,
     copy_regular_backend_output,
     load_receipt_bound_layout_source_inputs,
-    sha256_file,
 )
 
 
@@ -124,22 +122,22 @@ def render_calibre_xrc_deck(
     return rendered
 
 
-def _hash_descriptor(descriptor: int) -> str:
-    digest = hashlib.sha256()
+def _read_descriptor(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
     os.lseek(descriptor, 0, os.SEEK_SET)
     while block := os.read(descriptor, 1024 * 1024):
-        digest.update(block)
+        chunks.append(block)
     os.lseek(descriptor, 0, os.SEEK_SET)
-    return digest.hexdigest()
+    return b"".join(chunks)
 
 
-def _support_manifest(root: Path, *, content: bool) -> Mapping[str, tuple[int, str]]:
+def _support_manifest(root: Path, *, content: bool) -> Mapping[str, tuple[int, bytes]]:
     """Reject aliases/special files and return a bounded support-tree identity."""
 
     root_metadata = root.lstat()
     if not stat.S_ISDIR(root_metadata.st_mode) or root.is_symlink():
         raise FlowExecutionError("PEX support root must be a non-symlink directory")
-    manifest: dict[str, tuple[int, str]] = {}
+    manifest: dict[str, tuple[int, bytes]] = {}
     total_bytes = 0
 
     def visit(directory: Path) -> None:
@@ -168,7 +166,7 @@ def _support_manifest(root: Path, *, content: bool) -> Mapping[str, tuple[int, s
             total_bytes += metadata.st_size
             if total_bytes > _MAX_SUPPORT_BYTES:
                 raise FlowExecutionError("PEX support tree exceeds its byte budget")
-            identity = ""
+            identity = b""
             if content:
                 directory_descriptor = -1
                 try:
@@ -203,7 +201,7 @@ def _support_manifest(root: Path, *, content: bool) -> Mapping[str, tuple[int, s
                         raise FlowExecutionError(
                             f"PEX support file changed during attestation: {relative!r}"
                         )
-                    identity = _hash_descriptor(descriptor)
+                    identity = _read_descriptor(descriptor)
                 finally:
                     os.close(descriptor)
                     os.close(directory_descriptor)
@@ -501,7 +499,9 @@ class CalibreXrcPexAdapter:
         parasitics_path = context.output_path("parasitics", "parasitics.pex")
         parasitics_path.write_text(flattened, encoding="utf-8")
         identity = DerivedArtifactIdentity(
-            "parasitics", PEX_NETLIST_KIND, sha256_file(parasitics_path)
+            "parasitics",
+            PEX_NETLIST_KIND,
+            f"{context.run_root.name}:parasitics",
         )
         assert inputs.source is not None
         return PexEvidence(
@@ -590,30 +590,40 @@ class CalibreXrcPexAdapter:
         common = {
             "owner": inputs.layout.owner,
             "name": inputs.layout.name,
-            "layout-sha256": inputs.layout.artifact_sha256,
-            "source-sha256": evidence.source.artifact_sha256,
-            "receipt-sha256": inputs.receipt_sha256,
-            "job-sha256": str(inputs.layout.job_sha256),
-            "result-sha256": str(inputs.layout.result_sha256),
-            "plan-sha256": inputs.layout.plan_sha256,
+            "layout-identity": inputs.layout.artifact_identity,
+            "source-identity": evidence.source.artifact_identity,
+            "receipt-identity": inputs.receipt_identity,
+            "job-identity": str(inputs.layout.job_identity),
+            "result-identity": str(inputs.layout.result_identity),
+            "plan-identity": inputs.layout.plan_identity,
             "status": evidence.status.value,
             "backend": evidence.completion.backend,
         }
-        evidence_sha256 = canonical_sha256(evidence)
+        evidence_identity = pex_evidence_id(evidence)
         artifacts: list[ProducedArtifact] = [
             ProducedArtifact(
                 "evidence",
                 PEX_EVIDENCE_KIND,
                 path,
-                qualifiers={**common, "evidence-sha256": evidence_sha256},
+                qualifiers={**common, "evidence-identity": evidence_identity},
             )
         ]
         if evidence.status is PexStatus.EXTRACTED:
             if evidence.parasitics is None:
                 raise FlowExecutionError("extracted PEX omitted parasitic identity")
             parasitics = context.output_path("parasitics", "parasitics.pex")
-            if sha256_file(parasitics) != evidence.parasitics.sha256:
+            parasitic_text = read_nofollow_text(parasitics)
+            primary = inputs.layout.name
+            if evidence.parasitics.identity != f"{context.run_root.name}:parasitics":
                 raise FlowExecutionError("PEX parasitic artifact identity drifted")
+            try:
+                _top_ports(parasitic_text, primary, "published PEX artifact")
+            except RuntimeError as exc:
+                raise FlowExecutionError(
+                    f"PEX parasitic artifact structure is invalid: {exc}"
+                ) from exc
+            if _PARASITIC_ELEMENT.search(parasitic_text) is None:
+                raise FlowExecutionError("PEX parasitic artifact contains no parasitics")
             artifacts.append(
                 ProducedArtifact(
                     "parasitics",
@@ -621,8 +631,8 @@ class CalibreXrcPexAdapter:
                     parasitics,
                     qualifiers={
                         **common,
-                        "pex-evidence-sha256": evidence_sha256,
-                        "parasitics-sha256": evidence.parasitics.sha256,
+                        "pex-evidence-identity": evidence_identity,
+                        "parasitics-identity": evidence.parasitics.identity,
                     },
                 )
             )

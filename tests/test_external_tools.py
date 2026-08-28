@@ -92,6 +92,24 @@ def test_nonzero_external_exit_is_reported_without_leaving_a_live_process(
     assert completed.stdout == "failed-output"
 
 
+def test_external_tool_output_with_non_utf8_bytes_is_preserved_safely(
+    tmp_path: Path,
+) -> None:
+    completed = run_process_group(
+        [
+            sys.executable,
+            "-c",
+            "import os; os.write(1, b'begin\\xb4end\\n')",
+        ],
+        cwd=tmp_path,
+        env={},
+        timeout=5,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == "begin\\xb4end\n"
+
+
 def test_confirmed_process_group_can_clean_its_own_lingering_worker(
     tmp_path: Path,
 ) -> None:

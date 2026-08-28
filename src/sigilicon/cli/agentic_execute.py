@@ -33,10 +33,12 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument("run_id")
     campaign = commands.add_parser(
         "campaign-run",
-        help="execute one exact launcher-approved bounded Design Campaign",
+        help="start or resume one launcher-approved bounded Design Campaign",
     )
-    campaign.add_argument("campaign_identity")
-    campaign.add_argument("--campaign", type=Path, required=True)
+    campaign.add_argument("campaign_identity", nargs="?")
+    campaign.add_argument("--campaign", type=Path)
+    campaign.add_argument("--run-id")
+    campaign.add_argument("--proposal", type=Path)
     return parser
 
 
@@ -68,9 +70,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.action == "run-cancel":
             payload = interface.cancel_run(run_id=args.run_id)
         elif args.action == "campaign-run":
-            payload = interface.run_campaign(
-                campaign_json=args.campaign.read_text(encoding="utf-8"),
-                campaign_identity=args.campaign_identity,
+            payload = (
+                interface.run_campaign(
+                    campaign_json=args.campaign.read_text(encoding="utf-8"),
+                    campaign_identity=args.campaign_identity,
+                )
+                if args.campaign is not None
+                else interface.run_campaign(
+                    run_id=args.run_id,
+                    proposal_json=(
+                        None
+                        if args.proposal is None
+                        else args.proposal.read_text(encoding="utf-8")
+                    ),
+                )
             )
         else:
             payload = interface.inspect_run(run_id=args.run_id)
@@ -79,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if status == "accepted":
             return 0
         if args.action == "campaign-run":
-            return 0 if status == "passed" else 1
+            return 0 if status in {"passed", "proposal_required"} else 1
         if status in {"cancelled", "budget-exhausted"}:
             return 130
         return 1 if status in {"failed", "uncertain"} else 0

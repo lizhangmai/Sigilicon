@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import hashlib
 from pathlib import Path
 import struct
 
@@ -17,7 +16,9 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationStatus,
     VerificationCompletion,
     drc_evidence_from_json,
+    drc_evidence_id,
     lvs_evidence_from_json,
+    lvs_evidence_id,
 )
 from sigilicon.domain.post_layout import (
     DerivedArtifactIdentity,
@@ -27,8 +28,11 @@ from sigilicon.domain.post_layout import (
     PostLayoutEvidence,
     QualificationEvidence,
     pex_evidence_from_json,
+    pex_evidence_id,
     post_layout_evidence_from_json,
+    post_layout_evidence_id,
     qualification_evidence_from_json,
+    qualification_evidence_id,
 )
 from sigilicon.flow import (
     ActionContext,
@@ -103,7 +107,7 @@ from sigilicon.layout.pnr import (
     RoutingBlockage,
     RoutingDirection,
     RoutingTrackPattern,
-    canonical_sha256,
+    physical_design_job_id,
 )
 from sigilicon.workflows.builtin import builtin_workflow_registry
 from sigilicon.workflows.closure_campaign import (
@@ -146,12 +150,27 @@ _BENCHMARK_POST_LAYOUT_ADAPTER = "benchmark-post-layout-parser"
 _BENCHMARK_QUALIFICATION_ADAPTER = "benchmark-qualification-parser"
 
 
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
+def _identity_bytes(value: bytes) -> str:
+    return f"fixture-bytes:{len(value)}:{value[:4].hex()}"
 
 
-def _sha256_file(path: Path) -> str:
-    return _sha256_bytes(path.read_bytes())
+def _identity_file(path: Path) -> str:
+    return f"fixture:{path.name}"
+
+
+def _typed_identity(path: Path, parser) -> str:
+    value = parser(path.read_text(encoding="utf-8"))
+    if isinstance(value, DrcEvidence):
+        return drc_evidence_id(value)
+    if isinstance(value, LvsEvidence):
+        return lvs_evidence_id(value)
+    if isinstance(value, PexEvidence):
+        return pex_evidence_id(value)
+    if isinstance(value, PostLayoutEvidence):
+        return post_layout_evidence_id(value)
+    if isinstance(value, QualificationEvidence):
+        return qualification_evidence_id(value)
+    raise AssertionError("unexpected typed evidence")
 
 
 _BENCHMARK_ENVIRONMENT = ExecutionEnvironment(
@@ -401,7 +420,7 @@ waiver_layers = []
                     qualifiers={
                         "owner": "benchmark",
                         "name": "campaign-layout",
-                        "source-sha256": _sha256_file(source),
+                        "source-identity": _identity_file(source),
                     },
                 ),
                 ProducedArtifact(
@@ -410,21 +429,21 @@ waiver_layers = []
                     policy,
                     qualifiers={
                         "owner": "benchmark",
-                        "policy-sha256": _sha256_file(policy),
+                        "policy-identity": _identity_file(policy),
                     },
                 ),
                 ProducedArtifact(
                     "post-layout-specification",
                     POST_LAYOUT_SPEC_KIND,
                     post_layout_spec,
-                    qualifiers={"specification-sha256": _sha256_file(post_layout_spec)},
+                    qualifiers={"specification-identity": _identity_file(post_layout_spec)},
                 ),
                 ProducedArtifact(
                     "qualification-specification",
                     PHYSICAL_QUALIFICATION_SPEC_KIND,
                     qualification_spec,
                     qualifiers={
-                        "specification-sha256": _sha256_file(qualification_spec)
+                        "specification-identity": _identity_file(qualification_spec)
                     },
                 ),
             ),
@@ -556,10 +575,10 @@ class _BenchmarkLayoutAdapter:
                 qualifiers={
                     **artifact.qualifiers,
                     {
-                        "result": "result-sha256",
-                        "receipt": "receipt-sha256",
-                        "layout": "layout-sha256",
-                    }[self._corrupt_identity]: "0" * 64,
+                        "result": "result-identity",
+                        "receipt": "receipt-identity",
+                        "layout": "layout-identity",
+                    }[self._corrupt_identity]: "corrupt-identity",
                 },
             )
             if artifact.role
@@ -669,13 +688,13 @@ class _BenchmarkVerificationAdapter:
                     kind,
                     path,
                     qualifiers={
-                        "layout-sha256": evidence.layout.artifact_sha256,
-                        "receipt-sha256": str(evidence.layout.receipt_sha256),
-                        "job-sha256": str(evidence.layout.job_sha256),
-                        "plan-sha256": evidence.layout.plan_sha256,
-                        "result-sha256": str(evidence.layout.result_sha256),
+                        "layout-identity": evidence.layout.artifact_identity,
+                        "receipt-identity": str(evidence.layout.receipt_identity),
+                        "job-identity": str(evidence.layout.job_identity),
+                        "plan-identity": evidence.layout.plan_identity,
+                        "result-identity": str(evidence.layout.result_identity),
                         **(
-                            {"source-sha256": evidence.source.artifact_sha256}
+                            {"source-identity": evidence.source.artifact_identity}
                             if isinstance(evidence, LvsEvidence)
                             else {}
                         ),
@@ -696,17 +715,17 @@ def _downstream_subject(context: ActionContext):
     source = context.input("source")
     return (
         CheckedLayoutIdentity(
-            str(layout.qualifiers["layout-sha256"]),
-            str(layout.qualifiers["plan-sha256"]),
-            str(layout.qualifiers["result-sha256"]),
+            str(layout.qualifiers["layout-identity"]),
+            str(layout.qualifiers["plan-identity"]),
+            str(layout.qualifiers["result-identity"]),
             str(layout.qualifiers["owner"]),
             str(layout.qualifiers["name"]),
-            str(layout.qualifiers["receipt-sha256"]),
-            str(layout.qualifiers["job-sha256"]),
+            str(layout.qualifiers["receipt-identity"]),
+            str(layout.qualifiers["job-identity"]),
             str(layout.qualifiers["format"]),
         ),
         CheckedSourceIdentity(
-            _sha256_file(source.path),
+            str(source.qualifiers["source-identity"]),
             str(source.qualifiers["owner"]),
             str(source.qualifiers["name"]),
         ),
@@ -746,7 +765,7 @@ class _BenchmarkDownstreamAdapter:
                 parasitics.write_text("* validated fixture parasitics\n", encoding="utf-8")
             return PexEvidence(
                 PexStatus.EXTRACTED,
-                replace(layout, artifact_sha256="0" * 64)
+                replace(layout, artifact_identity="corrupt-identity")
                 if self._corrupt_layout_identity
                 else layout,
                 source,
@@ -754,20 +773,24 @@ class _BenchmarkDownstreamAdapter:
                 DerivedArtifactIdentity(
                     "parasitics",
                     PEX_NETLIST_KIND,
-                    _sha256_file(parasitics),
+                    _identity_file(parasitics),
                 ),
                 "fixture PEX",
             )
-        pex_sha256 = _sha256_file(context.input("pex").path)
+        pex_identity = _typed_identity(
+            context.input("pex").path, pex_evidence_from_json
+        )
         if context.action.kind == POST_LAYOUT_ACTION:
-            parasitics_sha256 = _sha256_file(context.input("parasitics").path)
+            parasitics_identity = str(
+                context.input("parasitics").qualifiers["parasitics-identity"]
+            )
             return PostLayoutEvidence(
                 PhysicalAnalysisStatus.PASSED,
                 layout,
                 source,
-                pex_sha256,
-                parasitics_sha256,
-                _sha256_file(context.input("specification").path),
+                pex_identity,
+                parasitics_identity,
+                str(context.input("specification").qualifiers["specification-identity"]),
                 completion,
                 (),
                 "fixture post-layout",
@@ -776,14 +799,16 @@ class _BenchmarkDownstreamAdapter:
             PhysicalAnalysisStatus.PASSED,
             layout,
             source,
-            _sha256_file(context.input("drc").path),
-            _sha256_file(context.input("lvs").path),
-            _sha256_file(context.input("specification").path),
+            _typed_identity(context.input("drc").path, drc_evidence_from_json),
+            _typed_identity(context.input("lvs").path, lvs_evidence_from_json),
+            str(context.input("specification").qualifiers["specification-identity"]),
             completion,
             (),
             "fixture qualification",
-            pex_sha256,
-            _sha256_file(context.input("post-layout").path),
+            pex_identity,
+            _typed_identity(
+                context.input("post-layout").path, post_layout_evidence_from_json
+            ),
             200,
             300,
         )
@@ -802,11 +827,11 @@ class _BenchmarkDownstreamAdapter:
         execution: AdapterExecution,
     ) -> CollectedActionResult:
         evidence_path = context.output_path("evidence", "downstream-evidence.json")
-        evidence_sha256 = _sha256_file(evidence_path)
         if context.action.kind == PEX_ACTION:
             evidence = pex_evidence_from_json(
                 evidence_path.read_text(encoding="utf-8")
             )
+            evidence_identity = pex_evidence_id(evidence)
             assert evidence.parasitics is not None
             parasitics = context.output_path("parasitics", "extracted.pex")
             return CollectedActionResult(
@@ -816,8 +841,8 @@ class _BenchmarkDownstreamAdapter:
                         PEX_NETLIST_KIND,
                         parasitics,
                         qualifiers={
-                            "pex-evidence-sha256": evidence_sha256,
-                            "parasitics-sha256": evidence.parasitics.sha256,
+                            "pex-evidence-identity": evidence_identity,
+                            "parasitics-identity": evidence.parasitics.identity,
                         },
                     ),
                     ProducedArtifact(
@@ -825,14 +850,14 @@ class _BenchmarkDownstreamAdapter:
                         PEX_EVIDENCE_KIND,
                         evidence_path,
                         qualifiers={
-                            "layout-sha256": evidence.layout.artifact_sha256,
-                            "receipt-sha256": evidence.layout.receipt_sha256,
-                            "job-sha256": evidence.layout.job_sha256,
-                            "result-sha256": evidence.layout.result_sha256,
-                            "plan-sha256": evidence.layout.plan_sha256,
-                            "source-sha256": evidence.source.artifact_sha256,
+                            "layout-identity": evidence.layout.artifact_identity,
+                            "receipt-identity": evidence.layout.receipt_identity,
+                            "job-identity": evidence.layout.job_identity,
+                            "result-identity": evidence.layout.result_identity,
+                            "plan-identity": evidence.layout.plan_identity,
+                            "source-identity": evidence.source.artifact_identity,
                             "status": evidence.status.value,
-                            "evidence-sha256": evidence_sha256,
+                            "evidence-identity": evidence_identity,
                         },
                     ),
                 ),
@@ -842,16 +867,17 @@ class _BenchmarkDownstreamAdapter:
             evidence = post_layout_evidence_from_json(
                 evidence_path.read_text(encoding="utf-8")
             )
+            evidence_identity = post_layout_evidence_id(evidence)
             kind = POST_LAYOUT_EVIDENCE_KIND
             qualifiers = {
-                "layout-sha256": evidence.layout.artifact_sha256,
-                "receipt-sha256": evidence.layout.receipt_sha256,
-                "source-sha256": evidence.source.artifact_sha256,
-                "pex-evidence-sha256": evidence.pex_evidence_sha256,
-                "parasitics-sha256": evidence.parasitics_sha256,
-                "specification-sha256": evidence.specification_sha256,
+                "layout-identity": evidence.layout.artifact_identity,
+                "receipt-identity": evidence.layout.receipt_identity,
+                "source-identity": evidence.source.artifact_identity,
+                "pex-evidence-identity": evidence.pex_evidence_identity,
+                "parasitics-identity": evidence.parasitics_identity,
+                "specification-identity": evidence.specification_identity,
                 "status": evidence.status.value,
-                "evidence-sha256": evidence_sha256,
+                "evidence-identity": evidence_identity,
             }
             facts = {
                 "post-layout-status": evidence.status.value,
@@ -861,20 +887,21 @@ class _BenchmarkDownstreamAdapter:
             evidence = qualification_evidence_from_json(
                 evidence_path.read_text(encoding="utf-8")
             )
+            evidence_identity = qualification_evidence_id(evidence)
             kind = PHYSICAL_QUALIFICATION_EVIDENCE_KIND
             qualifiers = {
-                "layout-sha256": evidence.layout.artifact_sha256,
-                "receipt-sha256": evidence.layout.receipt_sha256,
-                "source-sha256": evidence.source.artifact_sha256,
-                "drc-evidence-sha256": evidence.drc_evidence_sha256,
-                "lvs-evidence-sha256": evidence.lvs_evidence_sha256,
-                "pex-evidence-sha256": evidence.pex_evidence_sha256,
-                "post-layout-evidence-sha256": (
-                    evidence.post_layout_evidence_sha256
+                "layout-identity": evidence.layout.artifact_identity,
+                "receipt-identity": evidence.layout.receipt_identity,
+                "source-identity": evidence.source.artifact_identity,
+                "drc-evidence-identity": evidence.drc_evidence_identity,
+                "lvs-evidence-identity": evidence.lvs_evidence_identity,
+                "pex-evidence-identity": evidence.pex_evidence_identity,
+                "post-layout-evidence-identity": (
+                    evidence.post_layout_evidence_identity
                 ),
-                "specification-sha256": evidence.specification_sha256,
+                "specification-identity": evidence.specification_identity,
                 "status": evidence.status.value,
-                "evidence-sha256": evidence_sha256,
+                "evidence-identity": evidence_identity,
             }
             facts = {
                 "qualification-status": evidence.status.value,
@@ -1217,6 +1244,11 @@ def test_public_dbu_campaign_closes_full_receipt_bound_graph_deterministically(
     ).run(campaign)
 
     assert first.termination is ClosureCampaignTermination.CLOSED
+    assert first.final_quality != replace(
+        first.final_quality,
+        drc=ClosureStageStatus.VIOLATED,
+        drc_findings=1,
+    )
     assert first.closed
     assert first.final_quality.closed
     assert first.iterations[0].flow_status == "accepted"
@@ -1375,7 +1407,7 @@ def test_campaign_budgets_are_independent_and_feedback_is_attributed(
     next_job = apply_repair_plan(job, repair_plan)
     assert next_job.design.routing_blockages[0].placement == Placement(Point(2, 6))
     assert next_job.repair_lineage is not None
-    assert next_job.repair_lineage.parent_job_sha256 == canonical_sha256(job)
+    assert next_job.repair_lineage.parent_job_identity == physical_design_job_id(job)
     assert closure_campaign_result_from_json(repair.canonical_json()) == repair
 
 
@@ -1512,7 +1544,10 @@ def test_campaign_rejects_each_materialization_identity_link(
     ).run(_campaign(plan, bindings))
 
     assert result.termination is ClosureCampaignTermination.EXECUTION_FAILED
-    assert result.final_quality.identity is ClosureStageStatus.INVALID_IDENTITY
+    if corrupt == "layout":
+        assert result.iterations[0].flow_status == "failed"
+    else:
+        assert result.final_quality.identity is ClosureStageStatus.INVALID_IDENTITY
     assert not result.closed
 
 

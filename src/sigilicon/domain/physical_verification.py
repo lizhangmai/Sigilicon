@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-import re
 from typing import Any, Mapping
 
 from sigilicon.canonical import canonical_from_json, canonical_json
+from sigilicon.identifiers import bounded_identity
 from sigilicon.domain.config_contracts import read_toml, require_config_header
 
 
@@ -33,31 +33,26 @@ class PhysicalVerificationStatus(str, Enum):
     EXECUTION_FAILED = "execution_failed"
 
 
-def _sha256(value: str, label: str) -> None:
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise ValueError(f"{label} must be a SHA-256 identity")
-
-
 @dataclass(frozen=True)
 class CheckedLayoutIdentity:
-    artifact_sha256: str
-    plan_sha256: str
-    result_sha256: str | None
+    artifact_identity: str
+    plan_identity: str
+    result_identity: str | None
     owner: str
     name: str
-    receipt_sha256: str | None = None
-    job_sha256: str | None = None
+    receipt_identity: str | None = None
+    job_identity: str | None = None
     format: str | None = None
 
     def __post_init__(self) -> None:
-        _sha256(self.artifact_sha256, "layout artifact identity")
-        _sha256(self.plan_sha256, "layout plan identity")
-        if self.result_sha256 is not None:
-            _sha256(self.result_sha256, "physical-design result identity")
-        if self.receipt_sha256 is not None:
-            _sha256(self.receipt_sha256, "materialization receipt identity")
-        if self.job_sha256 is not None:
-            _sha256(self.job_sha256, "physical-design job identity")
+        bounded_identity(self.artifact_identity, "layout artifact identity")
+        bounded_identity(self.plan_identity, "layout plan identity")
+        if self.result_identity is not None:
+            bounded_identity(self.result_identity, "physical-design result identity")
+        if self.receipt_identity is not None:
+            bounded_identity(self.receipt_identity, "materialization receipt identity")
+        if self.job_identity is not None:
+            bounded_identity(self.job_identity, "physical-design job identity")
         if (
             not isinstance(self.owner, str)
             or not self.owner
@@ -73,12 +68,12 @@ class CheckedLayoutIdentity:
 
 @dataclass(frozen=True)
 class CheckedSourceIdentity:
-    artifact_sha256: str
+    artifact_identity: str
     owner: str
     name: str
 
     def __post_init__(self) -> None:
-        _sha256(self.artifact_sha256, "source artifact identity")
+        bounded_identity(self.artifact_identity, "source artifact identity")
         if (
             not isinstance(self.owner, str)
             or not self.owner
@@ -237,6 +232,20 @@ class LvsEvidence:
 
 
 PhysicalVerificationEvidence = DrcEvidence | LvsEvidence
+
+
+def drc_evidence_id(evidence: DrcEvidence) -> str:
+    return (
+        f"{evidence.layout.owner}:{evidence.layout.name}:"
+        f"drc:{evidence.completion.backend}"
+    )
+
+
+def lvs_evidence_id(evidence: LvsEvidence) -> str:
+    return (
+        f"{evidence.layout.owner}:{evidence.layout.name}:"
+        f"lvs:{evidence.completion.backend}"
+    )
 
 
 def drc_evidence_from_json(text: str) -> DrcEvidence:

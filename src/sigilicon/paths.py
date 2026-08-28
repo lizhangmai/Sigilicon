@@ -12,7 +12,7 @@ from typing import Mapping
 
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_$][A-Za-z0-9_$.-]*\Z")
-_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 def _reject_unknown_fields(
@@ -277,6 +277,35 @@ class ArtifactLayout:
             identity_kind="run_id",
             identity=run_id,
             roles=("control", "audit"),
+        )
+
+    def agentic_campaign(
+        self,
+        *,
+        owner: str,
+        campaign: str,
+        identity: str,
+    ) -> ArtifactExecutionPaths:
+        """Resolve private durable state for one feedback-driven Campaign."""
+
+        owner_name = validate_artifact_component(owner, "owner")
+        campaign_name = validate_artifact_component(campaign, "campaign")
+        run_id = validate_artifact_id(identity, "run id")
+        namespace = (
+            self.root
+            / "system"
+            / "agentic-design-campaigns"
+            / owner_name
+            / campaign_name
+        )
+        return ArtifactExecutionPaths.build(
+            artifact_root=self.root,
+            namespace_root=namespace,
+            root=namespace / run_id,
+            artifact_kind="agentic-design-campaign",
+            identity_kind="run_id",
+            identity=run_id,
+            roles=("control", "audit", "inputs", "outputs"),
         )
 
     def system_operation(self, operation_id: str) -> OperationIncidentPaths:

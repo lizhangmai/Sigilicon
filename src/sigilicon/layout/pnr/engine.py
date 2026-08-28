@@ -17,10 +17,6 @@ from sigilicon.layout.pnr._routing_constraints import (
     evaluate_routing_constraints,
     validate_routing_constraint,
 )
-from sigilicon.layout.pnr.serialization import (
-    physical_design_intent_sha256,
-    pnr_execution_sha256,
-)
 from sigilicon.layout.pnr._technology import (
     technology_capabilities,
     validate_technology,
@@ -47,6 +43,7 @@ from sigilicon.layout.pnr.model import (
     StageReport,
     TechnologyCapability,
 )
+from sigilicon.layout.pnr.serialization import physical_design_job_id
 
 
 ENGINE_NAME = "sigilicon.reference_pnr"
@@ -426,8 +423,7 @@ def _validate_job(job: PhysicalDesignJob) -> None:
 def _provenance(job: PhysicalDesignJob) -> PnrProvenance:
     return PnrProvenance(
         engine=ENGINE_NAME,
-        input_sha256=physical_design_intent_sha256(job),
-        execution_sha256=pnr_execution_sha256(job.execution_policy),
+        job=job,
         deterministic=True,
     )
 
@@ -506,6 +502,7 @@ def _public_pressure_summary(site) -> RoutingPlacementPressureSummary:
 
 def _public_closure_evidence(
     closure: PlacementRoutingClosureResult,
+    artifact_id: str,
 ) -> PlacementRoutingClosureEvidence:
     return PlacementRoutingClosureEvidence(
         termination=closure.termination,
@@ -556,6 +553,7 @@ def _public_closure_evidence(
             )
             for repair in closure.repairs
         ),
+        artifact_id=artifact_id,
     )
 
 
@@ -602,6 +600,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             stage_reports=tuple(reports),
             provenance=_provenance(job),
             routing_blockage_placements=_initial_routing_blockage_placements(job),
+            artifact_id=f"{physical_design_job_id(job)}:result",
         )
 
     placement = solve_placement(job)
@@ -616,6 +615,7 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             stage_reports=(placement.report,),
             provenance=_provenance(job),
             routing_blockage_placements=_initial_routing_blockage_placements(job),
+            artifact_id=f"{physical_design_job_id(job)}:result",
         )
     if PnrStage.ROUTING in job.request.stages:
         closure = close_placement_routing(job, placement)
@@ -668,7 +668,10 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
                     routing_blockage_placements=(
                         closure.routing_blockage_placements
                     ),
-                    closure_evidence=_public_closure_evidence(closure),
+                    closure_evidence=_public_closure_evidence(
+                        closure, f"{physical_design_job_id(job)}:closure-evidence"
+                    ),
+                    artifact_id=f"{physical_design_job_id(job)}:result",
                 )
         return PhysicalDesignResult(
             status=routing.status,
@@ -689,7 +692,10 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
             provenance=_provenance(job),
             routes=routing.routes,
             routing_blockage_placements=closure.routing_blockage_placements,
-            closure_evidence=_public_closure_evidence(closure),
+            closure_evidence=_public_closure_evidence(
+                closure, f"{physical_design_job_id(job)}:closure-evidence"
+            ),
+            artifact_id=f"{physical_design_job_id(job)}:result",
         )
     return PhysicalDesignResult(
         status=placement.status,
@@ -698,4 +704,5 @@ def run(job: PhysicalDesignJob) -> PhysicalDesignResult:
         stage_reports=(placement.report,),
         provenance=_provenance(job),
         routing_blockage_placements=_initial_routing_blockage_placements(job),
+        artifact_id=f"{physical_design_job_id(job)}:result",
     )

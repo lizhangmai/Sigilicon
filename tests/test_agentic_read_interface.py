@@ -98,7 +98,7 @@ def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
     with pytest.raises(ValueError, match="identity drift"):
         AgenticReadInterface(
             RepositoryContext.from_project_root(tmp_path),
-            "0" * 64,
+            "corrupt-identity",
         )
 
     project = interface.inspect_project(owner="example")
@@ -125,7 +125,7 @@ def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
     assert plan["authority"] == "plan"
     assert plan["conclusion"] == "planned"
     assert plan["data"]["plan"]["topology"] == ["source"]
-    assert len(plan["data"]["plan_identity"]) == 64
+    assert plan["data"]["plan_identity"] == "example:pipeline:all:offline"
     assert str(tmp_path) not in json.dumps(project)
     assert str(tmp_path) not in json.dumps(plan)
     assert not (tmp_path / "artifacts").exists()
@@ -247,9 +247,9 @@ def test_candidate_validation_has_python_cli_parity(
     write_read_only_flow_project(tmp_path)
     interface = AgenticReadInterface.from_project_root(tmp_path)
     topology = CircuitTopologyProposal(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, "example", "example:topology:agentic-read"),
         "inv",
-        "1" * 64,
+        "source-fixture",
         TopologyOrigin.PROPOSED,
         (CircuitPort("IN", PortDirection.INPUT, "signal"),),
         (),
@@ -258,9 +258,9 @@ def test_candidate_validation_has_python_cli_parity(
         ProposalProvenance("test-proposal", "1"),
     )
     candidate = DesignCandidate(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example"),
+        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example", "example:candidate:agentic-read"),
         "inv",
-        ArtifactReference("example", SOURCE_NETLIST_KIND, "1" * 64, None),
+        ArtifactReference("example", SOURCE_NETLIST_KIND, "source-fixture", None),
         None,
         (),
         topology.reference(),

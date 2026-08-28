@@ -4,19 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import hashlib
 from pathlib import Path
 from typing import Mapping
 
-from sigilicon.canonical import canonical_from_json, canonical_json, canonical_sha256
+from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.domain.physical_verification import (
     CheckedLayoutIdentity,
     CheckedSourceIdentity,
     DrcEvidence,
     LvsEvidence,
     PhysicalVerificationStatus,
+    drc_evidence_id,
     drc_evidence_from_json,
     lvs_evidence_from_json,
+    lvs_evidence_id,
 )
 from sigilicon.domain.post_layout import (
     PexEvidence,
@@ -25,8 +26,11 @@ from sigilicon.domain.post_layout import (
     PostLayoutEvidence,
     QualificationEvidence,
     pex_evidence_from_json,
+    pex_evidence_id,
     post_layout_evidence_from_json,
+    post_layout_evidence_id,
     qualification_evidence_from_json,
+    qualification_evidence_id,
 )
 from sigilicon.flow.model import (
     ActionArtifact,
@@ -71,6 +75,7 @@ from sigilicon.layout.materialization_execution import (
     MaterializationExecutionStatus,
     MaterializationReceipt,
     materialization_receipt_from_json,
+    materialization_receipt_id,
     validate_materialization_receipt,
 )
 from sigilicon.layout.pnr import (
@@ -84,11 +89,12 @@ from sigilicon.layout.pnr import (
     RoutingTerminationReason,
 )
 from sigilicon.layout.pnr.serialization import (
-    physical_design_intent_sha256,
+    physical_closure_evidence_id,
     physical_design_job_from_json,
+    physical_design_job_id,
     physical_design_result_from_json,
+    physical_design_result_id,
     placement_routing_closure_evidence_from_json,
-    pnr_execution_sha256,
 )
 from sigilicon.workflows.closure_repair import (
     ClosureFeedbackKind,
@@ -408,7 +414,7 @@ def compare_closure_quality(
 class CampaignArtifactIdentity:
     label: str
     kind: str
-    sha256: str
+    identity: str
     producer: str
     role: str
 
@@ -417,17 +423,15 @@ class CampaignArtifactIdentity:
         identifier(self.kind, "campaign artifact kind")
         identifier(self.producer, "campaign artifact producer")
         identifier(self.role, "campaign artifact role")
-        if len(self.sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in self.sha256
-        ):
-            raise ClosureCampaignError("campaign artifact needs a SHA-256 identity")
+        if not isinstance(self.identity, str) or not self.identity:
+            raise ClosureCampaignError("campaign artifact needs a semantic identity")
 
 
 @dataclass(frozen=True)
 class ClosureIterationProvenance:
     iteration_id: str
     run_id: str
-    plan_sha256: str
+    plan_identity: str
     flow_id: str
     target: str
     execution_profile: str
@@ -436,10 +440,8 @@ class ClosureIterationProvenance:
     def __post_init__(self) -> None:
         identifier(self.iteration_id, "closure iteration")
         run_identity(self.run_id)
-        if len(self.plan_sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in self.plan_sha256
-        ):
-            raise ClosureCampaignError("closure iteration needs a plan SHA-256")
+        if not isinstance(self.plan_identity, str) or not self.plan_identity:
+            raise ClosureCampaignError("closure iteration needs a plan semantic identity")
         identifier(self.flow_id, "closure Flow")
         identifier(self.target, "closure Flow target")
         identifier(self.execution_profile, "closure Execution Profile")
@@ -469,7 +471,7 @@ class ClosureIterationResult:
 class ClosureCampaignResult:
     owner: str
     campaign_id: str
-    campaign_sha256: str
+    campaign_identity: str
     termination: ClosureCampaignTermination
     iterations: tuple[ClosureIterationResult, ...]
     final_quality: ClosureQuality
@@ -478,11 +480,8 @@ class ClosureCampaignResult:
     def __post_init__(self) -> None:
         owner_identity(self.owner, "closure campaign result owner")
         identifier(self.campaign_id, "closure campaign result identity")
-        if len(self.campaign_sha256) != 64 or any(
-            character not in "0123456789abcdef"
-            for character in self.campaign_sha256
-        ):
-            raise ClosureCampaignError("closure campaign result needs a SHA-256")
+        if not isinstance(self.campaign_identity, str) or not self.campaign_identity:
+            raise ClosureCampaignError("closure campaign result needs a semantic identity")
         if not self.iterations:
             raise ClosureCampaignError("closure campaign result needs an iteration")
         if self.iterations[-1].quality != self.final_quality:
@@ -530,12 +529,58 @@ class _ObservedClosure:
     provenance: ClosureIterationProvenance
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _artifact_identity(artifact: ActionArtifact) -> str:
+    parsers = {
+        PHYSICAL_DESIGN_JOB_KIND: physical_design_job_from_json,
+        PHYSICAL_DESIGN_RESULT_KIND: physical_design_result_from_json,
+        PHYSICAL_MATERIALIZATION_PLAN_KIND: materialization_plan_from_json,
+        MATERIALIZATION_RECEIPT_KIND: materialization_receipt_from_json,
+        PHYSICAL_CLOSURE_EVIDENCE_KIND: placement_routing_closure_evidence_from_json,
+        DRC_EVIDENCE_KIND: drc_evidence_from_json,
+        LVS_EVIDENCE_KIND: lvs_evidence_from_json,
+        PEX_EVIDENCE_KIND: pex_evidence_from_json,
+        POST_LAYOUT_EVIDENCE_KIND: post_layout_evidence_from_json,
+        PHYSICAL_QUALIFICATION_EVIDENCE_KIND: qualification_evidence_from_json,
+    }
+    parser = parsers.get(artifact.kind)
+    if parser is not None:
+        value = parser(artifact.path.read_text(encoding="utf-8"))
+        if isinstance(value, PhysicalDesignJob):
+            return physical_design_job_id(value)
+        if isinstance(value, PhysicalDesignResult):
+            return physical_design_result_id(value)
+        if isinstance(value, MaterializationPlan):
+            return value.artifact_id
+        if isinstance(value, MaterializationReceipt):
+            return materialization_receipt_id(value)
+        if isinstance(value, PlacementRoutingClosureEvidence):
+            return physical_closure_evidence_id(value)
+        if isinstance(value, DrcEvidence):
+            return drc_evidence_id(value)
+        if isinstance(value, LvsEvidence):
+            return lvs_evidence_id(value)
+        if isinstance(value, PexEvidence):
+            return pex_evidence_id(value)
+        if isinstance(value, PostLayoutEvidence):
+            return post_layout_evidence_id(value)
+        if isinstance(value, QualificationEvidence):
+            return qualification_evidence_id(value)
+    for name in (
+        "artifact-identity",
+        "evidence-identity",
+        "layout-identity",
+        "receipt-identity",
+        "result-identity",
+        "job-identity",
+        "plan-identity",
+        "source-identity",
+        "parasitics-identity",
+        "specification-identity",
+    ):
+        value = artifact.qualifiers.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return f"{artifact.producer}:{artifact.role}:{artifact.path.name}"
 
 
 def _artifact(
@@ -827,7 +872,7 @@ def _feedback(
             ClosureFeedbackScope(
                 ClosureFeedbackKind.DRC_RULE,
                 tuple(item.rule for item in drc.violations),
-                (drc.layout.artifact_sha256,),
+                (drc.layout.artifact_identity,),
                 repairable=True,
             )
         )
@@ -837,8 +882,8 @@ def _feedback(
                 ClosureFeedbackKind.LVS_MISMATCH,
                 tuple(item.category for item in lvs.mismatches),
                 (
-                    lvs.layout.artifact_sha256,
-                    lvs.source.artifact_sha256,
+                    lvs.layout.artifact_identity,
+                    lvs.source.artifact_identity,
                 ),
                 repairable=True,
             )
@@ -860,9 +905,9 @@ def _feedback(
             )
         )
         source_evidence = (
-            plan.provenance.result_sha256,
-            canonical_sha256(plan),
-            *(() if receipt is None else (canonical_sha256(receipt),)),
+            plan.provenance.result_identity,
+            plan.artifact_id,
+            *(() if receipt is None else (materialization_receipt_id(receipt),)),
         )
         scopes.append(
             ClosureFeedbackScope(
@@ -893,38 +938,19 @@ class ClosureCampaignRunner:
         self._environment = environment
 
     def _campaign_identity(self, campaign: ClosureCampaign) -> str:
-        return canonical_sha256(
-            {
-                "owner": campaign.owner,
-                "campaign_id": campaign.campaign_id,
-                "state_budget": campaign.state_budget,
-                "iteration_budget": campaign.iteration_budget,
-                "scope": campaign.scope,
-                "repair_policy": campaign.repair_policy,
-                "iterations": [
-                    {
-                        "iteration_id": iteration.iteration_id,
-                        "plan_sha256": canonical_sha256(
-                            self._engine.plan_record(iteration.plan)
-                        ),
-                        "artifacts": iteration.artifacts,
-                    }
-                    for iteration in campaign.iterations
-                ],
-            }
-        )
+        return f"{campaign.owner}:closure-campaign:{campaign.campaign_id}"
 
     def _provenance(
         self,
         iteration: ClosureIteration,
         result: FlowResult,
-        plan_sha256: str,
+        plan_identity: str,
         artifacts: Mapping[str, ActionArtifact],
     ) -> ClosureIterationProvenance:
         return ClosureIterationProvenance(
             iteration_id=iteration.iteration_id,
             run_id=result.run_id,
-            plan_sha256=plan_sha256,
+            plan_identity=plan_identity,
             flow_id=iteration.plan.spec.flow_id,
             target=iteration.plan.target.target_id,
             execution_profile=iteration.plan.profile.profile_id,
@@ -932,7 +958,7 @@ class ClosureCampaignRunner:
                 CampaignArtifactIdentity(
                     label,
                     artifact.kind,
-                    _file_sha256(artifact.path),
+                    _artifact_identity(artifact),
                     artifact.producer,
                     artifact.role,
                 )
@@ -945,7 +971,7 @@ class ClosureCampaignRunner:
         campaign: ClosureCampaign,
         iteration: ClosureIteration,
         flow_result: FlowResult,
-        plan_sha256: str,
+        plan_identity: str,
     ) -> _ObservedClosure:
         bindings = iteration.artifacts
         artifacts: dict[str, ActionArtifact] = {}
@@ -1070,54 +1096,48 @@ class ClosureCampaignRunner:
             )
         )
 
-        job_sha256 = canonical_sha256(job)
-        result_sha256 = canonical_sha256(result)
-        plan_sha256_value = canonical_sha256(plan)
+        job_identity = physical_design_job_id(job)
+        result_identity = physical_design_result_id(result)
+        plan_identity_value = plan.artifact_id
         issues: list[str] = []
-        if result.provenance.input_sha256 != physical_design_intent_sha256(job):
-            issues.append("Physical Design Result input identity does not match the job")
-        if result.provenance.execution_sha256 != pnr_execution_sha256(
-            job.execution_policy
-        ):
-            issues.append(
-                "Physical Design Result execution identity does not match the job"
-            )
+        if result.provenance.job != job:
+            issues.append("Physical Design Result typed job does not match the input")
         validation = validate_materialization_plan(job, result, plan)
         if not validation.valid:
             issues.extend(item.code for item in validation.issues)
         if result.closure_evidence != closure:
             issues.append("standalone closure evidence does not match the result")
 
-        _expect_qualifier(artifacts["result"], "job-sha256", job_sha256, issues)
+        _expect_qualifier(artifacts["result"], "job-identity", job_identity, issues)
         _expect_qualifier(
-            artifacts["result"], "result-sha256", result_sha256, issues
+            artifacts["result"], "result-identity", result_identity, issues
         )
         _expect_qualifier(
             artifacts["materialization-plan"],
-            "job-sha256",
-            job_sha256,
+            "job-identity",
+            job_identity,
             issues,
         )
         _expect_qualifier(
             artifacts["materialization-plan"],
-            "result-sha256",
-            result_sha256,
+            "result-identity",
+            result_identity,
             issues,
         )
         _expect_qualifier(
             artifacts["materialization-plan"],
-            "plan-sha256",
-            plan_sha256_value,
+            "plan-identity",
+            plan_identity_value,
             issues,
         )
         if "closure-evidence" in artifacts:
             _expect_qualifier(
                 artifacts["closure-evidence"],
-                "closure-sha256",
-                canonical_sha256(closure),
+                "closure-identity",
+                physical_closure_evidence_id(closure),
                 issues,
             )
-        receipt_sha256 = None if receipt is None else canonical_sha256(receipt)
+        receipt_identity = None if receipt is None else materialization_receipt_id(receipt)
         if receipt is not None:
             receipt_artifact = artifacts["materialization-receipt"]
             layout_path = (
@@ -1138,10 +1158,10 @@ class ClosureCampaignRunner:
                 ("owner", receipt.target.owner),
                 ("name", receipt.target.name),
                 ("format", receipt.target.format.value),
-                ("job-sha256", job_sha256),
-                ("result-sha256", result_sha256),
-                ("plan-sha256", plan_sha256_value),
-                ("receipt-sha256", receipt_sha256),
+                ("job-identity", job_identity),
+                ("result-identity", result_identity),
+                ("plan-identity", plan_identity_value),
+                ("receipt-identity", receipt_identity),
                 ("status", receipt.status.value),
                 ("backend", receipt.completion.backend),
             ):
@@ -1156,19 +1176,19 @@ class ClosureCampaignRunner:
             issues.append("checked layout has no Materialization Receipt")
         if "layout" in artifacts:
             layout_artifact = artifacts["layout"]
-            layout_sha = _file_sha256(layout_artifact.path)
+            layout_identity_value = _artifact_identity(layout_artifact)
             expected_layout = {
-                "job-sha256": job_sha256,
-                "result-sha256": result_sha256,
-                "plan-sha256": plan_sha256_value,
+                "job-identity": job_identity,
+                "result-identity": result_identity,
+                "plan-identity": plan_identity_value,
                 "owner": plan.target.owner,
                 "name": plan.target.name,
-                "layout-sha256": layout_sha,
+                "layout-identity": layout_identity_value,
             }
             if receipt is not None:
                 expected_layout.update(
                     {
-                        "receipt-sha256": str(receipt_sha256),
+                        "receipt-identity": str(receipt_identity),
                         "format": receipt.target.format.value,
                         "status": receipt.status.value,
                         "backend": receipt.completion.backend,
@@ -1177,26 +1197,26 @@ class ClosureCampaignRunner:
             for name, expected in expected_layout.items():
                 _expect_qualifier(layout_artifact, name, expected, issues)
 
-        layout_sha256 = (
-            None if "layout" not in artifacts else _file_sha256(artifacts["layout"].path)
+        layout_identity = (
+            None if "layout" not in artifacts else _artifact_identity(artifacts["layout"])
         )
-        source_sha256 = (
-            None if "source" not in artifacts else _file_sha256(artifacts["source"].path)
+        source_identity = (
+            None if "source" not in artifacts else _artifact_identity(artifacts["source"])
         )
         for label, evidence in (("DRC", drc), ("LVS", lvs)):
             if evidence is None:
                 continue
-            if layout_sha256 is None:
+            if layout_identity is None:
                 issues.append(f"{label} evidence has no bound checked layout artifact")
-            elif evidence.layout.artifact_sha256 != layout_sha256:
+            elif evidence.layout.artifact_identity != layout_identity:
                 issues.append(f"{label} checked layout artifact identity mismatch")
-            if evidence.layout.plan_sha256 != plan_sha256_value:
+            if evidence.layout.plan_identity != plan_identity_value:
                 issues.append(f"{label} checked Materialization Plan identity mismatch")
-            if evidence.layout.result_sha256 != result_sha256:
+            if evidence.layout.result_identity != result_identity:
                 issues.append(f"{label} checked Physical Design Result identity mismatch")
-            if evidence.layout.job_sha256 != job_sha256:
+            if evidence.layout.job_identity != job_identity:
                 issues.append(f"{label} checked Physical Design Job identity mismatch")
-            if evidence.layout.receipt_sha256 != receipt_sha256:
+            if evidence.layout.receipt_identity != receipt_identity:
                 issues.append(f"{label} checked Materialization Receipt identity mismatch")
             if receipt is not None:
                 if evidence.layout.format != receipt.target.format.value:
@@ -1208,18 +1228,18 @@ class ClosureCampaignRunner:
                     issues.append(f"{label} checked layout target mismatch")
             evidence_artifact = artifacts[label.lower()]
             for name, expected in (
-                ("layout-sha256", evidence.layout.artifact_sha256),
-                ("receipt-sha256", evidence.layout.receipt_sha256),
-                ("job-sha256", evidence.layout.job_sha256),
-                ("result-sha256", evidence.layout.result_sha256),
-                ("plan-sha256", evidence.layout.plan_sha256),
+                ("layout-identity", evidence.layout.artifact_identity),
+                ("receipt-identity", evidence.layout.receipt_identity),
+                ("job-identity", evidence.layout.job_identity),
+                ("result-identity", evidence.layout.result_identity),
+                ("plan-identity", evidence.layout.plan_identity),
                 ("status", evidence.status.value),
             ):
                 _expect_qualifier(evidence_artifact, name, expected, issues)
         if lvs is not None:
-            if source_sha256 is None:
+            if source_identity is None:
                 issues.append("LVS evidence has no bound checked source artifact")
-            elif lvs.source.artifact_sha256 != source_sha256:
+            elif lvs.source.artifact_identity != source_identity:
                 issues.append("LVS checked source identity mismatch")
             if "source" in artifacts:
                 _expect_qualifier(
@@ -1230,14 +1250,14 @@ class ClosureCampaignRunner:
                 )
                 _expect_qualifier(
                     artifacts["source"],
-                    "source-sha256",
-                    lvs.source.artifact_sha256,
+                    "source-identity",
+                    lvs.source.artifact_identity,
                     issues,
                 )
             _expect_qualifier(
                 artifacts["lvs"],
-                "source-sha256",
-                lvs.source.artifact_sha256,
+                "source-identity",
+                lvs.source.artifact_identity,
                 issues,
             )
         if drc is not None and lvs is not None and drc.layout != lvs.layout:
@@ -1248,17 +1268,17 @@ class ClosureCampaignRunner:
             checked_layout: CheckedLayoutIdentity,
             checked_source: CheckedSourceIdentity,
         ) -> None:
-            if layout_sha256 is None:
+            if layout_identity is None:
                 issues.append(f"{label} evidence has no bound checked layout artifact")
-            elif checked_layout.artifact_sha256 != layout_sha256:
+            elif checked_layout.artifact_identity != layout_identity:
                 issues.append(f"{label} checked layout artifact identity mismatch")
-            if checked_layout.plan_sha256 != plan_sha256_value:
+            if checked_layout.plan_identity != plan_identity_value:
                 issues.append(f"{label} checked Materialization Plan identity mismatch")
-            if checked_layout.result_sha256 != result_sha256:
+            if checked_layout.result_identity != result_identity:
                 issues.append(f"{label} checked Physical Design Result identity mismatch")
-            if checked_layout.job_sha256 != job_sha256:
+            if checked_layout.job_identity != job_identity:
                 issues.append(f"{label} checked Physical Design Job identity mismatch")
-            if checked_layout.receipt_sha256 != receipt_sha256:
+            if checked_layout.receipt_identity != receipt_identity:
                 issues.append(f"{label} checked Materialization Receipt identity mismatch")
             if receipt is not None:
                 if checked_layout.format != receipt.target.format.value:
@@ -1268,9 +1288,9 @@ class ClosureCampaignRunner:
                     receipt.target.name,
                 ):
                     issues.append(f"{label} checked layout target mismatch")
-            if source_sha256 is None:
+            if source_identity is None:
                 issues.append(f"{label} evidence has no bound checked source artifact")
-            elif checked_source.artifact_sha256 != source_sha256:
+            elif checked_source.artifact_identity != source_identity:
                 issues.append(f"{label} checked source artifact identity mismatch")
             if "source" in artifacts:
                 _expect_qualifier(
@@ -1281,26 +1301,26 @@ class ClosureCampaignRunner:
                 )
                 _expect_qualifier(
                     artifacts["source"],
-                    "source-sha256",
-                    checked_source.artifact_sha256,
+                    "source-identity",
+                    checked_source.artifact_identity,
                     issues,
                 )
 
-        pex_sha256 = None
-        parasitics_sha256 = None
+        pex_identity = None
+        parasitics_identity = None
         if pex is not None:
             validate_downstream_subject("PEX", pex.layout, pex.source)
             pex_artifact = artifacts["pex"]
-            pex_sha256 = _file_sha256(pex_artifact.path)
+            pex_identity = _artifact_identity(pex_artifact)
             for name, expected in (
-                ("layout-sha256", pex.layout.artifact_sha256),
-                ("receipt-sha256", pex.layout.receipt_sha256),
-                ("job-sha256", pex.layout.job_sha256),
-                ("result-sha256", pex.layout.result_sha256),
-                ("plan-sha256", pex.layout.plan_sha256),
-                ("source-sha256", pex.source.artifact_sha256),
+                ("layout-identity", pex.layout.artifact_identity),
+                ("receipt-identity", pex.layout.receipt_identity),
+                ("job-identity", pex.layout.job_identity),
+                ("result-identity", pex.layout.result_identity),
+                ("plan-identity", pex.layout.plan_identity),
+                ("source-identity", pex.source.artifact_identity),
                 ("status", pex.status.value),
-                ("evidence-sha256", pex_sha256),
+                ("evidence-identity", pex_identity),
             ):
                 _expect_qualifier(pex_artifact, name, expected, issues)
             if pex.parasitics is not None:
@@ -1308,25 +1328,25 @@ class ClosureCampaignRunner:
                     issues.append("PEX evidence has no bound parasitic artifact")
                 else:
                     parasitics_artifact = artifacts["parasitics"]
-                    parasitics_sha256 = _file_sha256(parasitics_artifact.path)
-                    if pex.parasitics.sha256 != parasitics_sha256:
+                    parasitics_identity = _artifact_identity(parasitics_artifact)
+                    if pex.parasitics.identity != parasitics_identity:
                         issues.append("PEX parasitic artifact identity mismatch")
                     if pex.parasitics.kind != parasitics_artifact.kind:
                         issues.append("PEX parasitic artifact kind mismatch")
                     _expect_qualifier(
                         parasitics_artifact,
-                        "pex-evidence-sha256",
-                        pex_sha256,
+                        "pex-evidence-identity",
+                        pex_identity,
                         issues,
                     )
                     _expect_qualifier(
                         parasitics_artifact,
-                        "parasitics-sha256",
-                        pex.parasitics.sha256,
+                        "parasitics-identity",
+                        pex.parasitics.identity,
                         issues,
                     )
 
-        post_layout_sha256 = None
+        post_layout_identity = None
         if post_layout is not None:
             validate_downstream_subject(
                 "post-layout",
@@ -1334,33 +1354,33 @@ class ClosureCampaignRunner:
                 post_layout.source,
             )
             post_artifact = artifacts["post-layout"]
-            post_layout_sha256 = _file_sha256(post_artifact.path)
-            if post_layout.pex_evidence_sha256 != pex_sha256:
+            post_layout_identity = _artifact_identity(post_artifact)
+            if post_layout.pex_evidence_identity != pex_identity:
                 issues.append("post-layout PEX evidence identity mismatch")
-            if post_layout.parasitics_sha256 != parasitics_sha256:
+            if post_layout.parasitics_identity != parasitics_identity:
                 issues.append("post-layout parasitic identity mismatch")
             if "post-layout-specification" not in artifacts:
                 issues.append("post-layout evidence has no bound specification")
-            elif post_layout.specification_sha256 != _file_sha256(
-                artifacts["post-layout-specification"].path
+            elif post_layout.specification_identity != _artifact_identity(
+                artifacts["post-layout-specification"]
             ):
                 issues.append("post-layout specification identity mismatch")
             else:
                 _expect_qualifier(
                     artifacts["post-layout-specification"],
-                    "specification-sha256",
-                    post_layout.specification_sha256,
+                    "specification-identity",
+                    post_layout.specification_identity,
                     issues,
                 )
             for name, expected in (
-                ("layout-sha256", post_layout.layout.artifact_sha256),
-                ("receipt-sha256", post_layout.layout.receipt_sha256),
-                ("source-sha256", post_layout.source.artifact_sha256),
-                ("pex-evidence-sha256", post_layout.pex_evidence_sha256),
-                ("parasitics-sha256", post_layout.parasitics_sha256),
-                ("specification-sha256", post_layout.specification_sha256),
+                ("layout-identity", post_layout.layout.artifact_identity),
+                ("receipt-identity", post_layout.layout.receipt_identity),
+                ("source-identity", post_layout.source.artifact_identity),
+                ("pex-evidence-identity", post_layout.pex_evidence_identity),
+                ("parasitics-identity", post_layout.parasitics_identity),
+                ("specification-identity", post_layout.specification_identity),
                 ("status", post_layout.status.value),
-                ("evidence-sha256", post_layout_sha256),
+                ("evidence-identity", post_layout_identity),
             ):
                 _expect_qualifier(post_artifact, name, expected, issues)
 
@@ -1371,50 +1391,50 @@ class ClosureCampaignRunner:
                 qualification.source,
             )
             qualification_artifact = artifacts["qualification"]
-            qualification_sha256 = _file_sha256(qualification_artifact.path)
+            qualification_identity = _artifact_identity(qualification_artifact)
             if (
                 "drc" not in artifacts
-                or qualification.drc_evidence_sha256
-                != _file_sha256(artifacts["drc"].path)
+                or qualification.drc_evidence_identity
+                != _artifact_identity(artifacts["drc"])
             ):
                 issues.append("qualification DRC evidence identity mismatch")
             if (
                 "lvs" not in artifacts
-                or qualification.lvs_evidence_sha256
-                != _file_sha256(artifacts["lvs"].path)
+                or qualification.lvs_evidence_identity
+                != _artifact_identity(artifacts["lvs"])
             ):
                 issues.append("qualification LVS evidence identity mismatch")
-            if qualification.pex_evidence_sha256 != pex_sha256:
+            if qualification.pex_evidence_identity != pex_identity:
                 issues.append("qualification PEX evidence identity mismatch")
-            if qualification.post_layout_evidence_sha256 != post_layout_sha256:
+            if qualification.post_layout_evidence_identity != post_layout_identity:
                 issues.append("qualification post-layout evidence identity mismatch")
             if "qualification-specification" not in artifacts:
                 issues.append("qualification evidence has no bound specification")
-            elif qualification.specification_sha256 != _file_sha256(
-                artifacts["qualification-specification"].path
+            elif qualification.specification_identity != _artifact_identity(
+                artifacts["qualification-specification"]
             ):
                 issues.append("qualification specification identity mismatch")
             else:
                 _expect_qualifier(
                     artifacts["qualification-specification"],
-                    "specification-sha256",
-                    qualification.specification_sha256,
+                    "specification-identity",
+                    qualification.specification_identity,
                     issues,
                 )
             for name, expected in (
-                ("layout-sha256", qualification.layout.artifact_sha256),
-                ("receipt-sha256", qualification.layout.receipt_sha256),
-                ("source-sha256", qualification.source.artifact_sha256),
-                ("drc-evidence-sha256", qualification.drc_evidence_sha256),
-                ("lvs-evidence-sha256", qualification.lvs_evidence_sha256),
-                ("pex-evidence-sha256", qualification.pex_evidence_sha256),
+                ("layout-identity", qualification.layout.artifact_identity),
+                ("receipt-identity", qualification.layout.receipt_identity),
+                ("source-identity", qualification.source.artifact_identity),
+                ("drc-evidence-identity", qualification.drc_evidence_identity),
+                ("lvs-evidence-identity", qualification.lvs_evidence_identity),
+                ("pex-evidence-identity", qualification.pex_evidence_identity),
                 (
-                    "post-layout-evidence-sha256",
-                    qualification.post_layout_evidence_sha256,
+                    "post-layout-evidence-identity",
+                    qualification.post_layout_evidence_identity,
                 ),
-                ("specification-sha256", qualification.specification_sha256),
+                ("specification-identity", qualification.specification_identity),
                 ("status", qualification.status.value),
-                ("evidence-sha256", qualification_sha256),
+                ("evidence-identity", qualification_identity),
             ):
                 _expect_qualifier(qualification_artifact, name, expected, issues)
 
@@ -1511,7 +1531,7 @@ class ClosureCampaignRunner:
             qualification,
             quality,
             _feedback(closure, plan, receipt, drc, lvs),
-            self._provenance(iteration, flow_result, plan_sha256, artifacts),
+            self._provenance(iteration, flow_result, plan_identity, artifacts),
         )
 
     @staticmethod
@@ -1565,17 +1585,13 @@ class ClosureCampaignRunner:
         return None
 
     def run(self, campaign: ClosureCampaign) -> ClosureCampaignResult:
-        campaign_sha256 = self._campaign_identity(campaign)
+        campaign_identity = self._campaign_identity(campaign)
         outcomes: list[ClosureIterationResult] = []
-        qualities: set[str] = set()
+        qualities: set[ClosureQuality] = set()
         previous: ClosureQuality | None = None
         for index, iteration in enumerate(campaign.iterations):
-            plan_sha256 = canonical_sha256(self._engine.plan_record(iteration.plan))
-            run_id = hashlib.sha256(
-                f"{campaign_sha256}:{iteration.iteration_id}:{plan_sha256}".encode(
-                    "utf-8"
-                )
-            ).hexdigest()[:32]
+            plan_identity = self._engine.plan_id(iteration.plan)
+            run_id = f"closure-{campaign.campaign_id}-{iteration.iteration_id}"
             try:
                 flow_result = self._engine.run(
                     iteration.plan,
@@ -1587,14 +1603,14 @@ class ClosureCampaignRunner:
                     campaign,
                     iteration,
                     flow_result,
-                    plan_sha256,
+                    plan_identity,
                 )
             except (FlowExecutionError, ClosureCampaignError) as exc:
                 quality = _invalid_quality(campaign.scope)
                 provenance = ClosureIterationProvenance(
                     iteration.iteration_id,
                     run_id,
-                    plan_sha256,
+                    plan_identity,
                     iteration.plan.spec.flow_id,
                     iteration.plan.target.target_id,
                     iteration.plan.profile.profile_id,
@@ -1609,7 +1625,7 @@ class ClosureCampaignRunner:
                         ClosureFeedbackScope(
                             ClosureFeedbackKind.IDENTITY,
                             ("invalid-campaign-evidence",),
-                            (plan_sha256,),
+                            (plan_identity,),
                             repairable=False,
                         ),
                     ),
@@ -1621,7 +1637,7 @@ class ClosureCampaignRunner:
                 return ClosureCampaignResult(
                     campaign.owner,
                     campaign.campaign_id,
-                    campaign_sha256,
+                    campaign_identity,
                     outcome.decision,
                     tuple(outcomes),
                     quality,
@@ -1629,8 +1645,7 @@ class ClosureCampaignRunner:
                 )
 
             quality = observed.quality
-            quality_identity = canonical_sha256(quality)
-            qualities.add(quality_identity)
+            qualities.add(quality)
             quality_decision = (
                 None
                 if previous is None
@@ -1708,7 +1723,7 @@ class ClosureCampaignRunner:
                 return ClosureCampaignResult(
                     campaign.owner,
                     campaign.campaign_id,
-                    campaign_sha256,
+                    campaign_identity,
                     decision,
                     tuple(outcomes),
                     quality,
@@ -1718,7 +1733,7 @@ class ClosureCampaignRunner:
                 return ClosureCampaignResult(
                     campaign.owner,
                     campaign.campaign_id,
-                    campaign_sha256,
+                    campaign_identity,
                     decision,
                     tuple(outcomes),
                     quality,

@@ -1069,6 +1069,8 @@ def _spawn_process_supervisor(
                 cwd=cwd,
                 env=dict(os.environ),
                 text=True,
+                encoding="utf-8",
+                errors="backslashreplace",
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=True,

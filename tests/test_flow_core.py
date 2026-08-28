@@ -357,6 +357,49 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     for record in result.run_root.rglob("*.json"):
         assert encoded_root not in record.read_bytes()
 
+    restored = engine.restore_result(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        run_id="a" * 32,
+    )
+    assert restored == result
+
+
+def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path) -> None:
+    registered, *_ = registry()
+    engine = FlowEngine(registered)
+    first = engine.plan(flow_spec(), "qualification", fake_profile())
+    changed_spec = FlowSpec(
+        first.spec.owner,
+        first.spec.flow_id,
+        tuple(
+            FlowNode(
+                node.node_id,
+                node.action_kind,
+                {**node.config, "text": "changed-after-run"},
+                node.bindings,
+                node.order_after,
+                node.policy,
+            )
+            if node.node_id == "source"
+            else node
+            for node in first.spec.nodes
+        ),
+        first.spec.targets,
+        first.spec.policies,
+    )
+    changed = engine.plan(changed_spec, "qualification", fake_profile())
+    assert engine.plan_id(first) == engine.plan_id(changed)
+    assert engine.plan_record(first) != engine.plan_record(changed)
+    engine.run(first, artifact_root=tmp_path / "artifacts", run_id="record-restore")
+
+    with pytest.raises(FlowExecutionError, match="Plan record drift"):
+        engine.restore_result(
+            changed,
+            artifact_root=tmp_path / "artifacts",
+            run_id="record-restore",
+        )
+
 def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
     tmp_path: Path,
 ) -> None:

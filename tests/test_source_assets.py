@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import stat
 import subprocess
 
 import pytest
@@ -112,6 +113,7 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
     owner_root = tmp_path / "owner"
     (owner_root / "rtl").mkdir(parents=True)
     (owner_root / "rtl/a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    (owner_root / "rtl/a.sv").chmod(0o755)
     (owner_root / "rtl/b.sv").write_text("module b; endmodule\n", encoding="utf-8")
     (owner_root / "constraints.sdc").write_text("set_max_area 0\n", encoding="utf-8")
     _write_assets(owner_root)
@@ -122,10 +124,18 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
     old_plan = engine.plan(spec, "all", profile)
     old_record = engine.plan_record(old_plan)
     source_record = old_record["nodes"][0]["source_assets"]
-    assert source_record["git"] == {"commit": commit, "dirty": False}
+    assert source_record["git"] == {"commit": commit, "changes": []}
     assert source_record["artifacts"]["rtl-sources"]["members"] == [
-        "rtl/a.sv",
-        "rtl/b.sv",
+        {
+            "path": "rtl/a.sv",
+            "record_text": "module a; endmodule\n",
+            "executable": True,
+        },
+        {
+            "path": "rtl/b.sv",
+            "record_text": "module b; endmodule\n",
+            "executable": False,
+        },
     ]
     (owner_root / "rtl/a.sv").write_text(
         "module a; logic changed; endmodule\n",
@@ -145,8 +155,16 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
 
     new_plan = engine.plan(spec, "all", profile)
     assert new_plan.planned_node("assets").source_assets.git.dirty is True
+    dirty_record = engine.plan_record(new_plan)
+    (owner_root / "rtl/a.sv").write_text(
+        "module a; logic changed_again; endmodule\n",
+        encoding="utf-8",
+    )
+    assert engine.preflight(new_plan, ExecutionEnvironment()).status == "blocked"
+    replanned = engine.plan(spec, "all", profile)
+    assert engine.plan_record(replanned) != dirty_record
     result = engine.run(
-        new_plan,
+        replanned,
         artifact_root=tmp_path / "artifacts",
         run_id="b" * 32,
     )
@@ -159,7 +177,8 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
         "file": "files/rtl/a.sv",
     }
     snapshot = source.artifacts["rtl-sources"].path.parent / "files/rtl/a.sv"
-    assert "logic changed" in snapshot.read_text(encoding="utf-8")
+    assert "logic changed_again" in snapshot.read_text(encoding="utf-8")
+    assert snapshot.stat().st_mode & stat.S_IXUSR
     assert source.artifacts["constraints"].path.read_text() == "set_max_area 0\n"
     for record in result.run_root.rglob("*.json"):
         assert str(tmp_path) not in record.read_text(encoding="utf-8")

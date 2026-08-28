@@ -139,7 +139,7 @@ class OALibrarySource:
     workspace_template: Path
     oa_library: Path
     primitive_masters: tuple[str, ...]
-    physical_verification: PhysicalVerificationPolicy
+    physical_verification: PhysicalVerificationPolicy | None
     source_roots: tuple[OASourceRoot, ...]
     cells: tuple[OACellSource, ...]
 
@@ -457,15 +457,19 @@ def load_oa_library_source(
             raw.get("primitive_masters"), "primitive_masters", allow_empty=True
         )
     )
-    physical_verification_path = _project_path(
-        root,
-        raw.get("physical_verification"),
-        "physical_verification",
-        file=True,
-    )
-    physical_verification = load_physical_verification_policy(
-        physical_verification_path,
-        owner=assembly_owner,
+    physical_verification_value = raw.get("physical_verification")
+    physical_verification = (
+        None
+        if physical_verification_value is None
+        else load_physical_verification_policy(
+            _project_path(
+                root,
+                physical_verification_value,
+                "physical_verification",
+                file=True,
+            ),
+            owner=assembly_owner,
+        )
     )
     additional_manifest_values = _strings(
         raw.get("additional_source_manifests", []),

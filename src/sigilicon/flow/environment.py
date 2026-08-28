@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 from typing import Any, Mapping
@@ -16,6 +17,7 @@ from sigilicon.flow.model import (
     identifier,
     owner_identity,
 )
+from sigilicon.canonical import canonical_json
 
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
@@ -127,8 +129,17 @@ def _load_platform_assets(value: object) -> tuple[ResolvedPlatformAsset, ...]:
     return tuple(assets)
 
 
-def load_execution_environment(path: Path) -> ExecutionEnvironment:
-    """Load and verify one explicitly selected, non-discovered site contract."""
+@dataclass(frozen=True)
+class ExecutionEnvironmentContract:
+    """One owner-declared environment ID bound to its exact typed source record."""
+
+    environment_id: str
+    record_json: str
+    environment: ExecutionEnvironment
+
+
+def load_execution_environment_contract(path: Path) -> ExecutionEnvironmentContract:
+    """Load an environment and retain its exact path-bound typed contract record."""
 
     contract = Path(path).resolve()
     try:
@@ -151,12 +162,36 @@ def load_execution_environment(path: Path) -> ExecutionEnvironment:
         )
     if raw.get("path_scope") != "site":
         raise FlowContractError("Execution Environment path_scope must be 'site'")
-    owner_identity(_text(raw.get("owner"), "Execution Environment owner"), "site owner")
-    identifier(_text(raw.get("name"), "Execution Environment name"), "environment identity")
-    return ExecutionEnvironment(
+    owner = owner_identity(
+        _text(raw.get("owner"), "Execution Environment owner"),
+        "site owner",
+    )
+    name = identifier(
+        _text(raw.get("name"), "Execution Environment name"),
+        "environment identity",
+    )
+    environment = ExecutionEnvironment(
         capabilities=_load_capabilities(raw.get("capabilities", {})),
         platform_assets=_load_platform_assets(raw.get("platform_assets", [])),
     )
+    return ExecutionEnvironmentContract(
+        f"environment-{owner}-{name}",
+        canonical_json(
+            {
+                "schema": 1,
+                "contract_kind": "execution-environment-binding",
+                "contract_path": str(contract),
+                "contract": raw,
+            }
+        ),
+        environment,
+    )
+
+
+def load_execution_environment(path: Path) -> ExecutionEnvironment:
+    """Load and verify one explicitly selected, non-discovered site contract."""
+
+    return load_execution_environment_contract(path).environment
 
 
 def capability_available(capability: ResolvedCapability) -> bool:
@@ -170,5 +205,7 @@ def capability_available(capability: ResolvedCapability) -> bool:
 
 __all__ = [
     "capability_available",
+    "ExecutionEnvironmentContract",
     "load_execution_environment",
+    "load_execution_environment_contract",
 ]

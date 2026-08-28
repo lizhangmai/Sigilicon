@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 import uuid
 
-from sigilicon.artifacts import atomic_write_json, read_json_object
+from sigilicon.artifacts import atomic_write_json, read_json_object, read_nofollow_text
 from sigilicon.flow.environment import capability_available
 from sigilicon.flow.model import (
     ActionArtifact,
@@ -43,6 +43,7 @@ from sigilicon.flow.source_assets import (
     git_source,
     resolve_node_source_assets,
     source_assets_payload,
+    source_member_matches,
 )
 from sigilicon.paths import ArtifactLayout
 
@@ -75,6 +76,11 @@ def _plan_payload(
                 "action": item.node.action_kind,
                 "adapter": item.adapter,
                 "action_config": json_value(item.node.config),
+                "design_campaign_iteration": (
+                    None
+                    if item.node.design_campaign_iteration is None
+                    else json_value(item.node.design_campaign_iteration)
+                ),
                 "adapter_config": json_value(item.adapter_config),
                 "required_capabilities": list(item.required_capabilities),
                 "execution_capability": item.execution_capability,
@@ -108,6 +114,19 @@ class FlowEngine:
         planned = plan.planned_node(node_id)
         return self._registry.action(planned.node.action_kind).output(role)
 
+    @staticmethod
+    def plan_id(plan: FlowPlan) -> str:
+        """Return the owner-declared semantic selector for one resolved plan.
+
+        The selector is not a correctness projection. Authorization and replay
+        compare :meth:`plan_record` in full whenever this selector is resolved.
+        """
+
+        return (
+            f"{plan.spec.owner}:{plan.spec.flow_id}:"
+            f"{plan.target.target_id}:{plan.profile.profile_id}"
+        )
+
     def plan(
         self,
         spec: FlowSpec,
@@ -131,6 +150,16 @@ class FlowEngine:
                     f"Adapter {selection.adapter!r} cannot implement "
                     f"Action {contract.kind!r}"
                 )
+            if node.design_campaign_iteration is not None:
+                if not contract.accepts_design_campaign_iteration:
+                    raise FlowContractError(
+                        f"Action {contract.kind!r} does not accept a Design Campaign iteration"
+                    )
+                adapter = self._registry.adapter(selection.adapter)
+                if getattr(adapter, "accepts_design_campaign_iteration", False) is not True:
+                    raise FlowContractError(
+                        f"Adapter {selection.adapter!r} does not consume Design Campaign iterations"
+                    )
             source_assets[node.node_id] = resolve_node_source_assets(
                 spec,
                 node,
@@ -267,6 +296,25 @@ class FlowEngine:
             plan.topology,
         )
 
+    def validate_design_campaign_continuation(
+        self,
+        plan: FlowPlan,
+        node_id: str,
+    ) -> None:
+        """Verify at planning time that one Action and Adapter consume continuation input."""
+
+        planned = plan.planned_node(node_id)
+        contract = self._registry.action(planned.node.action_kind)
+        adapter = self._registry.adapter(planned.adapter)
+        if not contract.accepts_design_campaign_iteration or getattr(
+            adapter,
+            "accepts_design_campaign_iteration",
+            False,
+        ) is not True:
+            raise FlowContractError(
+                f"Adapter {planned.adapter!r} does not implement the typed Design Campaign continuation seam"
+            )
+
     def preflight(
         self,
         plan: FlowPlan,
@@ -291,6 +339,14 @@ class FlowEngine:
                 )
             if planned.source_assets is not None:
                 current_source = git_source(planned.source_assets.owner_root)
+                try:
+                    exact_members = all(
+                        source_member_matches(member)
+                        for artifact in planned.source_assets.artifacts
+                        for member in artifact.members
+                    )
+                except (OSError, RuntimeError, UnicodeError):
+                    exact_members = False
                 checks.append(
                     PreflightCheck(
                         requirement=planned.source_assets.name,
@@ -298,6 +354,7 @@ class FlowEngine:
                         status=(
                             "available"
                             if current_source == planned.source_assets.git
+                            and exact_members
                             else "changed"
                         ),
                         expected=planned.source_assets.git.commit,
@@ -523,6 +580,7 @@ class FlowEngine:
                     self._resolved_platform_assets(planned, current_environment)
                 ),
                 source_assets=planned.source_assets,
+                design_campaign_iteration=node.design_campaign_iteration,
             )
             request = {
                 "schema": 1,
@@ -531,6 +589,11 @@ class FlowEngine:
                 "action": node.action_kind,
                 "adapter": planned.adapter,
                 "action_config": json_value(node.config),
+                "design_campaign_iteration": (
+                    None
+                    if node.design_campaign_iteration is None
+                    else json_value(node.design_campaign_iteration)
+                ),
                 "adapter_config": json_value(planned.adapter_config),
                 "execution_environment": environment_payload,
                 "inputs": {
@@ -863,6 +926,164 @@ class FlowEngine:
         ):
             raise FlowExecutionError("Flow Result identity does not match selected run")
         return result
+
+    def restore_result(
+        self,
+        plan: FlowPlan,
+        *,
+        artifact_root: Path,
+        run_id: str,
+    ) -> FlowResult:
+        """Restore one complete persisted result against its exact typed plan.
+
+        A run identity only selects the directory.  Correctness comes from the
+        exact resolved-plan record, the closed run inventory, and strict typed
+        reconstruction of every node and artifact field.
+        """
+
+        identity = run_identity(run_id)
+        store_root = Path(artifact_root).resolve()
+        if store_root == Path(store_root.anchor):
+            raise FlowExecutionError("artifact root cannot be a filesystem root")
+        run_paths = ArtifactLayout(store_root).execution(
+            owner=plan.spec.owner,
+            target=plan.target.target_id,
+            flow=plan.spec.flow_id,
+            variant="default",
+            identity=identity,
+            artifact_kind="flow",
+            identity_kind="run_id",
+        )
+        run_root = run_paths.root
+        if (
+            not run_root.is_dir()
+            or run_root.is_symlink()
+            or not run_root.resolve().is_relative_to(store_root)
+        ):
+            raise FlowExecutionError(f"missing or unsafe persisted Flow Run: {identity}")
+        try:
+            manifest = read_json_object(run_root / "run_manifest.json", "Flow Run Manifest")
+            resolved_plan = read_json_object(
+                run_paths.role("inputs") / "resolved_plan.json",
+                "Resolved Flow Plan",
+            )
+            record = read_json_object(
+                run_paths.role("outputs") / "flow_result.json",
+                "Flow Result",
+            )
+        except (OSError, RuntimeError) as exc:
+            raise FlowExecutionError(str(exc)) from exc
+        if set(manifest) != {
+            "schema", "contract_kind", "owner", "flow", "target", "run_id",
+            "managed_paths",
+        } or (
+            manifest["schema"] != 1
+            or manifest["contract_kind"] != "flow-run-manifest"
+            or manifest["owner"] != plan.spec.owner
+            or manifest["flow"] != plan.spec.flow_id
+            or manifest["target"] != plan.target.target_id
+            or manifest["run_id"] != identity
+        ):
+            raise FlowExecutionError("Flow Run Manifest identity or fields drift")
+        self._validate_run_inventory(run_root, manifest)
+        if resolved_plan != self.plan_record(plan):
+            raise FlowExecutionError("persisted resolved Flow Plan record drift")
+        if set(record) != {
+            "schema", "contract_kind", "owner", "flow", "target", "run_id",
+            "status", "interrupted", "topology", "nodes",
+        } or (
+            record["schema"] != 1
+            or record["contract_kind"] != "flow-result"
+            or record["owner"] != plan.spec.owner
+            or record["flow"] != plan.spec.flow_id
+            or record["target"] != plan.target.target_id
+            or record["run_id"] != identity
+            or record["status"] not in {"accepted", "failed"}
+            or type(record["interrupted"]) is not bool
+            or record["topology"] != list(plan.topology)
+            or not isinstance(record["nodes"], dict)
+            or set(record["nodes"]) != set(plan.topology)
+        ):
+            raise FlowExecutionError("persisted Flow Result identity or fields drift")
+
+        outcomes: dict[str, NodeOutcome] = {}
+        for node_id in plan.topology:
+            raw = record["nodes"][node_id]
+            if not isinstance(raw, dict) or set(raw) != {
+                "status", "execution_status", "result_status", "policy_status",
+                "reason", "artifacts", "facts",
+            }:
+                raise FlowExecutionError("persisted Flow node fields drift")
+            if (
+                raw["status"] not in {"accepted", "rejected", "failed", "blocked"}
+                or raw["execution_status"] not in {None, "succeeded", "failed", "cancelled"}
+                or raw["result_status"] not in {None, "valid", "failed", "partial", "uncertain"}
+                or raw["policy_status"] not in {None, "accepted", "rejected", "not-evaluated"}
+                or (raw["reason"] is not None and not isinstance(raw["reason"], str))
+                or not isinstance(raw["artifacts"], dict)
+                or not isinstance(raw["facts"], dict)
+            ):
+                raise FlowExecutionError("persisted Flow node value drift")
+            artifacts: dict[str, ActionArtifact] = {}
+            contract = self._registry.action(plan.spec.node(node_id).action_kind)
+            for role, payload in raw["artifacts"].items():
+                if not isinstance(payload, dict) or set(payload) != {
+                    "kind", "path", "producer", "qualifiers",
+                }:
+                    raise FlowExecutionError("persisted Flow artifact fields drift")
+                try:
+                    port = contract.output(role)
+                except FlowContractError as exc:
+                    raise FlowExecutionError(str(exc)) from exc
+                relative_text = payload["path"]
+                if not isinstance(relative_text, str):
+                    raise FlowExecutionError("persisted Flow artifact path is invalid")
+                relative = Path(relative_text)
+                if (
+                    not relative_text
+                    or relative.is_absolute()
+                    or "\\" in relative_text
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                ):
+                    raise FlowExecutionError("persisted Flow artifact path is unsafe")
+                path = run_root / relative
+                expected_root = run_paths.role("outputs") / node_id
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or not path.resolve().is_relative_to(expected_root.resolve())
+                    or payload["producer"] != node_id
+                    or payload["kind"] != port.kind
+                ):
+                    raise FlowExecutionError("persisted Flow artifact lineage drift")
+                artifacts[role] = ActionArtifact(
+                    role,
+                    payload["kind"],
+                    path,
+                    relative.as_posix(),
+                    payload["producer"],
+                    payload["qualifiers"],
+                )
+            outcomes[node_id] = NodeOutcome(
+                node_id,
+                raw["status"],
+                raw["execution_status"],
+                raw["result_status"],
+                raw["policy_status"],
+                MappingProxyType(artifacts),
+                MappingProxyType(dict(raw["facts"])),
+                raw["reason"],
+            )
+        return FlowResult(
+            plan.spec.owner,
+            plan.spec.flow_id,
+            plan.target.target_id,
+            identity,
+            run_root,
+            record["status"],
+            record["interrupted"],
+            MappingProxyType(outcomes),
+        )
 
     def _validate_run_inventory(
         self,

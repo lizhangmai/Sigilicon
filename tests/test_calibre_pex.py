@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 import struct
 import subprocess
 
 import pytest
 
-from sigilicon.canonical import canonical_sha256
 from sigilicon.domain.post_layout import PexStatus, pex_evidence_from_json
 from sigilicon.flow import (
     ActionContract,
@@ -44,6 +42,7 @@ from sigilicon.layout.materialization_execution import (
     identify_managed_layout,
     issue_materialization_receipt,
     materialization_receipt_from_json,
+    materialization_receipt_id,
 )
 from sigilicon.layout.pnr import (
     GridlessRoutingResource,
@@ -80,8 +79,8 @@ _TARGET = MaterializationExecutionTarget(
 )
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _identity(path: Path) -> str:
+    return f"fixture:{path.name}"
 
 
 def _job() -> PhysicalDesignJob:
@@ -201,7 +200,12 @@ class _PexInputsAdapter:
             receipt.canonical_json(), encoding="utf-8"
         )
         context.output_path("source", "source.cdl").write_text(
-            ".SUBCKT pex_top a b\n.ENDS pex_top\n", encoding="utf-8"
+            (
+                ".SUBCKT wrong_top a b\n.ENDS wrong_top\n"
+                if self.corrupt_source
+                else ".SUBCKT pex_top a b\n.ENDS pex_top\n"
+            ),
+            encoding="utf-8",
         )
         return AdapterExecution.succeeded()
 
@@ -212,15 +216,15 @@ class _PexInputsAdapter:
         receipt = materialization_receipt_from_json(
             receipt_path.read_text(encoding="utf-8")
         )
-        receipt_sha256 = canonical_sha256(receipt)
+        receipt_identity = materialization_receipt_id(receipt)
         common = {
             "owner": _TARGET.owner,
             "name": _TARGET.name,
             "format": _TARGET.format.value,
-            "job-sha256": receipt.provenance.job_sha256,
-            "result-sha256": receipt.provenance.result_sha256,
-            "plan-sha256": receipt.provenance.plan_sha256,
-            "receipt-sha256": receipt_sha256,
+            "job-identity": receipt.provenance.job_identity,
+            "result-identity": receipt.provenance.result_identity,
+            "plan-identity": receipt.provenance.plan_identity,
+            "receipt-identity": receipt_identity,
             "status": receipt.status.value,
             "backend": receipt.completion.backend,
         }
@@ -232,7 +236,7 @@ class _PexInputsAdapter:
                     layout_path,
                     qualifiers={
                         **common,
-                        "layout-sha256": receipt.provenance.layout_sha256,
+                        "layout-identity": receipt.provenance.layout_identity,
                     },
                 ),
                 ProducedArtifact(
@@ -248,8 +252,8 @@ class _PexInputsAdapter:
                     qualifiers={
                         "owner": _TARGET.owner,
                         "name": _TARGET.name,
-                        "source-sha256": (
-                            "0" * 64 if self.corrupt_source else _sha256(source_path)
+                        "source-identity": (
+                            _identity(source_path)
                         ),
                     },
                 ),
@@ -323,6 +327,9 @@ class _FakeXrc:
             (work / "extracted.pex").write_text(
                 '* Design: pex_top\n* Created: "volatile fixture time"\n'
                 '.include "extracted.pex.pex"\n'
+                ".subckt PM_pex_top%a 0 n1 a\n"
+                "c_helper n1 0 0.1f\n"
+                ".ends PM_pex_top%a\n"
                 ".subckt pex_top a b\n"
                 "xM0 n1 a 0 0 nch_mac L=30n W=100n\n"
                 '.include "extracted.pex.pex_top.pxi"\n.ends\n',
@@ -424,7 +431,7 @@ def test_calibre_xrc_adapter_projects_receipt_bound_parasitics(
     assert evidence.status is PexStatus.EXTRACTED
     assert evidence.completion.proven
     assert evidence.parasitics is not None
-    assert evidence.parasitics.sha256 == _sha256(node.artifacts["parasitics"].path)
+    assert evidence.parasitics.identity.endswith(":parasitics")
     assert '.include "extracted.pex' not in parasitics
     assert "volatile fixture time" not in parasitics
     assert "* Created: normalized by Sigilicon" in parasitics

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-import hashlib
 import json
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import (
     canonical_from_exact_json,
     canonical_json,
-    canonical_sha256,
 )
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
@@ -27,6 +25,8 @@ from sigilicon.domain.circuit_design import (
     ArtifactReference,
     CanonicalDesignArtifact,
     CircuitSizingProblem,
+    CircuitSizingResult,
+    CircuitTopologyProposal,
     DesignCandidate,
     DesignDecision,
     DesignDecisionConclusion,
@@ -38,9 +38,26 @@ from sigilicon.domain.circuit_design import (
     validate_design_candidate,
     validate_design_decision,
 )
-from sigilicon.flow import ExecutionEnvironment, FlowEngine, FlowPlan
+from sigilicon.flow import (
+    DesignCampaignIterationInput,
+    ExecutionEnvironment,
+    FlowEngine,
+    FlowPlan,
+)
+from sigilicon.identifiers import bounded_identity
 from sigilicon.flow.model import identifier, owner_identity, run_identity
-from sigilicon.workflows.design_repair import SizingRepairPlan, TopologyRepairPlan
+from sigilicon.paths import ArtifactLayout
+from sigilicon.workflows.design_repair import (
+    DesignRepairAttribution,
+    DesignRepairProposal,
+    RepairCompileDecision,
+    SizingRepairPlan,
+    SizingRepairPolicy,
+    TopologyRepairPlan,
+    TopologyRepairPolicy,
+    attribute_design_failure,
+    compile_design_repair,
+)
 
 
 class DesignStage(str, Enum):
@@ -84,11 +101,12 @@ class DesignCampaignTermination(str, Enum):
     STATE_BUDGET = "state_budget"
     ITERATION_BUDGET = "iteration_budget"
     COST_BUDGET = "cost_budget"
+    TIME_BUDGET = "time_budget"
 
 
-def _sha256(value: str, label: str) -> None:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValueError(f"{label} must be a SHA-256 identity")
+class DesignCampaignPhase(str, Enum):
+    PROPOSAL_REQUIRED = "proposal_required"
+    COMPLETED = "completed"
 
 
 @dataclass(frozen=True)
@@ -119,7 +137,7 @@ DesignRepairPlan = TopologyRepairPlan | SizingRepairPlan
 
 @dataclass(frozen=True)
 class DesignCampaignAttemptSpec:
-    """Portable selectors and output bindings for one cataloged Flow attempt."""
+    """Portable selectors and output bindings for the baseline Flow attempt."""
 
     iteration_id: str
     flow: str
@@ -128,7 +146,6 @@ class DesignCampaignAttemptSpec:
     candidate: DesignArtifactBinding
     artifacts: tuple[DesignArtifactBinding, ...]
     stages: tuple[DesignStageBinding, ...]
-    repair_plan: DesignRepairPlan | None
 
     def __post_init__(self) -> None:
         identifier(self.iteration_id, "Design Campaign iteration")
@@ -139,29 +156,45 @@ class DesignCampaignAttemptSpec:
 
 
 @dataclass(frozen=True)
+class DesignCampaignContinuationSpec:
+    """Portable selector for repeated attempts derived after proposal validation."""
+
+    flow: str
+    target: str
+    profile: str | None
+    candidate: DesignArtifactBinding
+    artifacts: tuple[DesignArtifactBinding, ...]
+    stages: tuple[DesignStageBinding, ...]
+    proposal_node: str
+    repair_policy: DesignRepairPolicy
+
+    def __post_init__(self) -> None:
+        identifier(self.flow, "Design Campaign continuation Flow")
+        identifier(self.target, "Design Campaign continuation target")
+        if self.profile is not None:
+            identifier(self.profile, "Design Campaign continuation profile")
+        identifier(self.proposal_node, "Design Campaign continuation proposal node")
+
+
+@dataclass(frozen=True)
 class DesignCampaignSpec:
     """Strict client-neutral Campaign input with no paths or backend commands."""
 
     owner: str
     campaign_id: str
-    attempts: tuple[DesignCampaignAttemptSpec, ...]
+    baseline: DesignCampaignAttemptSpec
     budget: DesignCampaignBudget
     scope: DesignCampaignScope
+    continuation: DesignCampaignContinuationSpec | None = None
 
     def __post_init__(self) -> None:
         owner_identity(self.owner, "Design Campaign owner")
         identifier(self.campaign_id, "Design Campaign identity")
-        if not self.attempts:
-            raise ValueError("Design Campaign specification needs at least one attempt")
-        identities = tuple(item.iteration_id for item in self.attempts)
-        if len(identities) != len(set(identities)):
-            raise ValueError("Design Campaign specification iterations must be unique")
         if self.scope.decision_policy.owner != self.owner:
             raise ValueError("Design Campaign specification policy owner drift")
-        if self.attempts[0].repair_plan is not None:
-            raise ValueError("Design Campaign baseline cannot have a Repair Plan")
-        if any(item.repair_plan is None for item in self.attempts[1:]):
-            raise ValueError("Design Campaign continuation requires a Repair Plan")
+        if self.continuation is not None:
+            if self.continuation.repair_policy.owner != self.owner:
+                raise ValueError("Design Campaign continuation policy owner drift")
 
     def canonical_json(self) -> str:
         return canonical_json(self)
@@ -199,11 +232,44 @@ class DesignCampaignAttempt:
             raise ValueError("Design Campaign continuation requires an accepted Repair Plan")
 
 
+DesignRepairPolicy = TopologyRepairPolicy | SizingRepairPolicy
+
+
+@dataclass(frozen=True)
+class DesignCampaignContinuation:
+    """Reusable project-owned attempt template; no future result is enumerated."""
+
+    plan: FlowPlan
+    candidate: DesignArtifactBinding
+    artifacts: tuple[DesignArtifactBinding, ...]
+    stages: tuple[DesignStageBinding, ...]
+    proposal_node: str
+    repair_policy: DesignRepairPolicy
+
+    def __post_init__(self) -> None:
+        identifier(self.proposal_node, "Design Campaign proposal input node")
+        if self.proposal_node not in self.plan.topology:
+            raise ValueError("Design Campaign proposal input node is outside the plan")
+        if self.plan.spec.node(self.proposal_node).design_campaign_iteration is not None:
+            raise ValueError("Design Campaign continuation reserves its iteration input")
+        if self.repair_policy.owner != self.plan.spec.owner:
+            raise ValueError("Design Campaign continuation repair policy owner drift")
+        DesignCampaignAttempt(
+            "continuation-template",
+            self.plan,
+            self.candidate,
+            self.artifacts,
+            self.stages,
+            None,
+        )
+
+
 @dataclass(frozen=True)
 class DesignCampaignBudget:
     state_budget: int
     iteration_budget: int
     maximum_flow_nodes: int
+    maximum_seconds: int = 86_400
 
     def __post_init__(self) -> None:
         if type(self.state_budget) is not int or self.state_budget <= 0:
@@ -212,6 +278,11 @@ class DesignCampaignBudget:
             raise ValueError("Design Campaign iteration budget must be positive")
         if type(self.maximum_flow_nodes) is not int or self.maximum_flow_nodes < 0:
             raise ValueError("Design Campaign Flow-node cost budget must be non-negative")
+        if (
+            type(self.maximum_seconds) is not int
+            or not 1 <= self.maximum_seconds <= 86_400
+        ):
+            raise ValueError("Design Campaign time budget must be between 1 and 86400 seconds")
 
 
 @dataclass(frozen=True)
@@ -246,26 +317,23 @@ class DesignCampaignScope:
 class DesignCampaign:
     owner: str
     campaign_id: str
-    attempts: tuple[DesignCampaignAttempt, ...]
+    baseline: DesignCampaignAttempt
     budget: DesignCampaignBudget
     scope: DesignCampaignScope
+    continuation: DesignCampaignContinuation | None = None
 
     def __post_init__(self) -> None:
         owner_identity(self.owner, "Design Campaign owner")
         identifier(self.campaign_id, "Design Campaign identity")
-        if not self.attempts:
-            raise ValueError("Design Campaign needs at least one attempt")
-        identities = tuple(item.iteration_id for item in self.attempts)
-        if len(identities) != len(set(identities)):
-            raise ValueError("Design Campaign iteration identities must be unique")
-        if any(item.plan.spec.owner != self.owner for item in self.attempts):
+        if self.baseline.plan.spec.owner != self.owner:
             raise ValueError("Design Campaign attempt owner drift")
         if self.scope.decision_policy.owner != self.owner:
             raise ValueError("Design Campaign decision policy owner drift")
-        if self.attempts[0].repair_plan is not None:
+        if self.baseline.repair_plan is not None:
             raise ValueError("Design Campaign baseline attempt cannot have a Repair Plan")
-        if any(item.repair_plan is None for item in self.attempts[1:]):
-            raise ValueError("Design Campaign continuation attempts require Repair Plans")
+        if self.continuation is not None:
+            if self.continuation.plan.spec.owner != self.owner:
+                raise ValueError("Design Campaign continuation owner drift")
 
 
 @dataclass(frozen=True)
@@ -306,23 +374,31 @@ class DesignQuality:
 class DesignCampaignArtifactIdentity:
     label: str
     kind: str
-    sha256: str
+    identity: str
     producer: str
     role: str
+    record_json: str
 
     def __post_init__(self) -> None:
         identifier(self.label, "Design Campaign artifact identity label")
         identifier(self.kind, "Design Campaign artifact kind")
-        _sha256(self.sha256, "Design Campaign artifact")
+        bounded_identity(self.identity, "Design Campaign artifact")
         identifier(self.producer, "Design Campaign artifact producer")
         identifier(self.role, "Design Campaign artifact role")
+        parsed = design_artifact_from_json(self.record_json)
+        if (
+            parsed.canonical_json() != self.record_json
+            or parsed.metadata.kind != self.kind
+            or parsed.identity != self.identity
+        ):
+            raise ValueError("Design Campaign artifact typed record drift")
 
 
 @dataclass(frozen=True)
 class DesignAttemptProvenance:
     iteration_id: str
     run_id: str
-    plan_sha256: str
+    plan_identity: str
     flow_id: str
     target: str
     execution_profile: str
@@ -331,7 +407,7 @@ class DesignAttemptProvenance:
     def __post_init__(self) -> None:
         identifier(self.iteration_id, "Design Campaign provenance iteration")
         run_identity(self.run_id)
-        _sha256(self.plan_sha256, "Design Campaign Flow Plan")
+        bounded_identity(self.plan_identity, "Design Campaign Flow Plan")
         identifier(self.flow_id, "Design Campaign Flow")
         identifier(self.target, "Design Campaign Flow target")
         identifier(self.execution_profile, "Design Campaign Execution Profile")
@@ -359,7 +435,7 @@ class DesignCampaignIterationResult:
 class DesignCampaignResult:
     owner: str
     campaign_id: str
-    campaign_sha256: str
+    campaign_identity: str
     termination: DesignCampaignTermination
     iterations: tuple[DesignCampaignIterationResult, ...]
     final_quality: DesignQuality | None
@@ -369,7 +445,7 @@ class DesignCampaignResult:
     def __post_init__(self) -> None:
         owner_identity(self.owner, "Design Campaign result owner")
         identifier(self.campaign_id, "Design Campaign result identity")
-        _sha256(self.campaign_sha256, "Design Campaign")
+        bounded_identity(self.campaign_identity, "Design Campaign")
         if not isinstance(self.termination, DesignCampaignTermination):
             raise ValueError("Design Campaign termination must be typed")
         if self.iterations:
@@ -388,6 +464,75 @@ class DesignCampaignResult:
 
 def design_campaign_result_from_json(text: str) -> DesignCampaignResult:
     return canonical_from_exact_json(text, DesignCampaignResult)
+
+
+@dataclass(frozen=True)
+class DesignCampaignState:
+    """One resumable immutable Campaign checkpoint."""
+
+    owner: str
+    campaign_id: str
+    campaign_identity: str
+    phase: DesignCampaignPhase
+    termination: DesignCampaignTermination
+    iterations: tuple[DesignCampaignIterationResult, ...]
+    attribution: DesignRepairAttribution | None
+    repair_plan: DesignRepairPlan | None
+    last_proposal_identity: str | None
+    message: str
+
+    def __post_init__(self) -> None:
+        owner_identity(self.owner, "Design Campaign state owner")
+        identifier(self.campaign_id, "Design Campaign state identity")
+        bounded_identity(self.campaign_identity, "Design Campaign state")
+        if not isinstance(self.phase, DesignCampaignPhase):
+            raise ValueError("Design Campaign phase must be typed")
+        if not isinstance(self.termination, DesignCampaignTermination):
+            raise ValueError("Design Campaign state termination must be typed")
+        if not self.iterations:
+            if (
+                self.phase is not DesignCampaignPhase.COMPLETED
+                or self.termination
+                in {
+                    DesignCampaignTermination.PASSED,
+                    DesignCampaignTermination.FAILED,
+                    DesignCampaignTermination.REPAIR_REQUIRED,
+                }
+                or self.attribution is not None
+                or self.repair_plan is not None
+                or self.last_proposal_identity is not None
+            ):
+                raise ValueError(
+                    "unobserved Design Campaign state must be a terminal fail-closed result"
+                )
+        if self.phase is DesignCampaignPhase.PROPOSAL_REQUIRED:
+            if (
+                self.termination is not DesignCampaignTermination.REPAIR_REQUIRED
+                or self.attribution is None
+            ):
+                raise ValueError("proposal-required Campaign needs typed attribution")
+        elif self.termination is DesignCampaignTermination.REPAIR_REQUIRED:
+            raise ValueError("completed Campaign cannot require a proposal")
+        if self.attribution is not None:
+            if (
+                self.attribution.owner != self.owner
+                or self.attribution.candidate
+                != self.iterations[-1].candidate.reference()
+            ):
+                raise ValueError("Design Campaign attribution identity drift")
+        if self.repair_plan is not None and self.repair_plan.owner != self.owner:
+            raise ValueError("Design Campaign Repair Plan owner drift")
+        if self.last_proposal_identity is not None:
+            bounded_identity(self.last_proposal_identity, "Design Campaign proposal")
+        if not isinstance(self.message, str) or not self.message.strip():
+            raise ValueError("Design Campaign state needs a message")
+
+    def canonical_json(self) -> str:
+        return canonical_json(self)
+
+
+def design_campaign_state_from_json(text: str) -> DesignCampaignState:
+    return canonical_from_exact_json(text, DesignCampaignState)
 
 
 _CONCLUSION_STATUS = {
@@ -410,6 +555,7 @@ class DesignCampaignRunner:
         *,
         artifact_root: Path,
         environment: ExecutionEnvironment | None = None,
+        execution_context_identity: str = "default-execution-context",
     ) -> None:
         root = Path(artifact_root).resolve()
         if root == Path(root.anchor):
@@ -417,9 +563,17 @@ class DesignCampaignRunner:
         self._engine = engine
         self._artifact_root = root
         self._environment = environment
+        if (
+            not isinstance(execution_context_identity, str)
+            or not execution_context_identity
+            or len(execution_context_identity) > 128
+            or any(ord(character) < 0x20 for character in execution_context_identity)
+        ):
+            raise ValueError("Design Campaign execution context identity is invalid")
+        self._execution_context_identity = execution_context_identity
 
     def plan_record(self, campaign: DesignCampaign) -> dict[str, object]:
-        """Return the canonical portable record whose hash authorizes execution."""
+        """Return the canonical portable record authorized by owner policy."""
 
         self._validate_bindings(campaign)
         value = {
@@ -427,17 +581,25 @@ class DesignCampaignRunner:
             "campaign_id": campaign.campaign_id,
             "budget": campaign.budget,
             "scope": campaign.scope,
-            "attempts": [
-                {
-                    "iteration_id": attempt.iteration_id,
-                    "plan": self._engine.plan_record(attempt.plan),
-                    "candidate": attempt.candidate,
-                    "artifacts": attempt.artifacts,
-                    "stages": attempt.stages,
-                    "repair_plan": attempt.repair_plan,
+            "baseline": {
+                "iteration_id": campaign.baseline.iteration_id,
+                "plan": self._engine.plan_record(campaign.baseline.plan),
+                "candidate": campaign.baseline.candidate,
+                "artifacts": campaign.baseline.artifacts,
+                "stages": campaign.baseline.stages,
+            },
+            "continuation": (
+                None
+                if campaign.continuation is None
+                else {
+                    "plan": self._engine.plan_record(campaign.continuation.plan),
+                    "candidate": campaign.continuation.candidate,
+                    "artifacts": campaign.continuation.artifacts,
+                    "stages": campaign.continuation.stages,
+                    "proposal_node": campaign.continuation.proposal_node,
+                    "repair_policy": campaign.continuation.repair_policy,
                 }
-                for attempt in campaign.attempts
-            ],
+            ),
         }
         return json.loads(canonical_json(value))
 
@@ -450,7 +612,7 @@ class DesignCampaignRunner:
             CIRCUIT_SIZING_RESULT_KIND,
             DESIGN_EVIDENCE_KIND,
         }
-        for attempt in campaign.attempts:
+        for attempt in (campaign.baseline,):
             candidate = self._engine.planned_output(
                 attempt.plan,
                 attempt.candidate.node,
@@ -477,9 +639,31 @@ class DesignCampaignRunner:
                     raise ValueError(
                         "Design Campaign stage binding must produce Design Evidence"
                     )
+        if campaign.continuation is not None:
+            self._engine.validate_design_campaign_continuation(
+                campaign.continuation.plan,
+                campaign.continuation.proposal_node,
+            )
+            template = DesignCampaignAttempt(
+                "continuation-template",
+                campaign.continuation.plan,
+                campaign.continuation.candidate,
+                campaign.continuation.artifacts,
+                campaign.continuation.stages,
+                None,
+            )
+            self._validate_bindings(
+                DesignCampaign(
+                    campaign.owner,
+                    "continuation-validation",
+                    template,
+                    campaign.budget,
+                    campaign.scope,
+                )
+            )
 
     def campaign_identity(self, campaign: DesignCampaign) -> str:
-        return canonical_sha256(self.plan_record(campaign))
+        return f"{campaign.owner}:design-campaign:{campaign.campaign_id}"
 
     @staticmethod
     def _artifact(flow_result: object, binding: DesignArtifactBinding) -> object:
@@ -504,7 +688,7 @@ class DesignCampaignRunner:
         campaign: DesignCampaign,
         attempt: DesignCampaignAttempt,
         flow_result: object,
-        plan_sha256: str,
+        plan_identity: str,
         lineage: tuple[DesignCandidate, ...],
     ) -> DesignCampaignIterationResult:
         candidate_artifact = self._artifact(flow_result, attempt.candidate)
@@ -535,9 +719,37 @@ class DesignCampaignRunner:
                 repaired_problem is None
                 or attempt.repair_plan.proposed_candidate
                 not in repaired_problem.candidates
+                or candidate_value.sizing_problem != repaired_problem.reference()
             ):
                 raise ValueError(
                     "Design Campaign sizing repair proposal is not bound by the child Candidate"
+                )
+            repaired_result = next(
+                (
+                    item
+                    for item in artifacts.values()
+                    if isinstance(item, CircuitSizingResult)
+                    and item.reference() == candidate_value.sizing_result
+                ),
+                None,
+            )
+            if (
+                repaired_result is None
+                or repaired_result.problem != repaired_problem.reference()
+                or repaired_result.selected_candidate
+                != attempt.repair_plan.proposed_candidate.name
+            ):
+                raise ValueError(
+                    "Design Campaign sizing child did not select the proposed Candidate"
+                )
+            if not any(
+                isinstance(item, DesignEvidence)
+                and item.subject == repaired_result.reference()
+                and item.reference() in candidate_value.evidence
+                for item in artifacts.values()
+            ):
+                raise ValueError(
+                    "Design Campaign sizing child lacks result-bound verification evidence"
                 )
 
         stage_bindings = {item.stage: item.artifact for item in attempt.stages}
@@ -559,6 +771,16 @@ class DesignCampaignRunner:
             artifact = artifacts.get(label)
             if not isinstance(artifact, DesignEvidence):
                 raise ValueError("Design Campaign stage binding must resolve Design Evidence")
+            if stage in campaign.scope.required_stages and (
+                artifact.role is not campaign.scope.decision_role
+                or artifact.level is not campaign.scope.decision_level
+                or artifact.specification != campaign.scope.decision_policy
+                or not set(campaign.scope.decision_scope).issubset(artifact.scope)
+            ):
+                raise ValueError(
+                    "Design Campaign required-stage evidence role, level, scope, "
+                    "or specification drift"
+                )
             evidence_by_stage[stage] = artifact
             assessments.append(
                 DesignStageAssessment(
@@ -599,7 +821,12 @@ class DesignCampaignRunner:
             conclusion = DesignDecisionConclusion.NON_CONCLUSION
             rationale = "required policy-bound evidence is incomplete or non-conclusive"
         decision = DesignDecision(
-            ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_DECISION_KIND, campaign.owner),
+            ArtifactMetadata(
+                ARTIFACT_SCHEMA,
+                DESIGN_DECISION_KIND,
+                campaign.owner,
+                f"{campaign.owner}:design-decision:{campaign.campaign_id}:{attempt.iteration_id}",
+            ),
             candidate_value.reference(),
             campaign.scope.decision_policy,
             campaign.scope.decision_role,
@@ -617,6 +844,7 @@ class DesignCampaignRunner:
                 parsed.identity,
                 artifact.producer,
                 artifact.role,
+                parsed.canonical_json(),
             )
             for label, artifact in sorted(produced.items())
             for parsed in (
@@ -626,7 +854,7 @@ class DesignCampaignRunner:
         provenance = DesignAttemptProvenance(
             attempt.iteration_id,
             flow_result.run_id,
-            plan_sha256,
+            plan_identity,
             attempt.plan.spec.flow_id,
             attempt.plan.target.target_id,
             attempt.plan.profile.profile_id,
@@ -660,14 +888,14 @@ class DesignCampaignRunner:
     def _empty_result(
         self,
         campaign: DesignCampaign,
-        campaign_sha256: str,
+        campaign_identity: str,
         termination: DesignCampaignTermination,
         message: str,
     ) -> DesignCampaignResult:
         return DesignCampaignResult(
             campaign.owner,
             campaign.campaign_id,
-            campaign_sha256,
+            campaign_identity,
             termination,
             (),
             None,
@@ -682,21 +910,21 @@ class DesignCampaignRunner:
     ) -> bool:
         if repair.owner != previous.candidate.metadata.owner:
             return False
-        if repair.parent_candidate_sha256 != previous.candidate.identity:
+        if repair.parent_candidate_identity != previous.candidate.identity:
             return False
-        if not repair.evidence_sha256 or not set(repair.evidence_sha256).issubset(
-            reference.sha256 for reference in previous.candidate.evidence
+        if not repair.evidence_identity or not set(repair.evidence_identity).issubset(
+            reference.identity for reference in previous.candidate.evidence
         ):
             return False
         if isinstance(repair, TopologyRepairPlan):
-            return repair.parent_topology_sha256 == previous.candidate.topology.sha256
+            return repair.parent_topology_identity == previous.candidate.topology.identity
         return (
             previous.candidate.sizing_problem is not None
             and previous.candidate.sizing_result is not None
-            and repair.parent_problem_sha256
-            == previous.candidate.sizing_problem.sha256
-            and repair.parent_result_sha256
-            == previous.candidate.sizing_result.sha256
+            and repair.parent_problem_identity
+            == previous.candidate.sizing_problem.identity
+            and repair.parent_result_identity
+            == previous.candidate.sizing_result.identity
         )
 
     @staticmethod
@@ -710,119 +938,520 @@ class DesignCampaignRunner:
         if isinstance(repair, TopologyRepairPlan):
             assert repair.proposed_topology is not None
             return current.candidate.topology == repair.proposed_topology.reference()
-        return True
+        return (
+            current.candidate.topology == previous.candidate.topology
+            and current.candidate.sizing_problem is not None
+            and current.candidate.sizing_result is not None
+            and current.candidate.sizing_problem != previous.candidate.sizing_problem
+            and current.candidate.sizing_result != previous.candidate.sizing_result
+        )
 
-    def run(self, campaign: DesignCampaign) -> DesignCampaignResult:
-        campaign_sha256 = self.campaign_identity(campaign)
-        iterations: list[DesignCampaignIterationResult] = []
-        consumed_nodes = 0
-        for index, attempt in enumerate(campaign.attempts):
-            if index >= campaign.budget.iteration_budget:
-                termination = DesignCampaignTermination.ITERATION_BUDGET
-                break
-            if index >= campaign.budget.state_budget:
-                termination = DesignCampaignTermination.STATE_BUDGET
-                break
-            node_cost = len(attempt.plan.nodes)
-            if consumed_nodes + node_cost > campaign.budget.maximum_flow_nodes:
-                termination = DesignCampaignTermination.COST_BUDGET
-                break
-            if index:
-                assert iterations
-                assert attempt.repair_plan is not None
-                if not self._repair_parent_matches(
-                    iterations[-1], attempt.repair_plan
-                ):
-                    termination = DesignCampaignTermination.INVALID_IDENTITY
-                    break
-            consumed_nodes += node_cost
-            plan_sha256 = canonical_sha256(self._engine.plan_record(attempt.plan))
-            run_id = hashlib.sha256(
-                f"{campaign_sha256}:{attempt.iteration_id}:{plan_sha256}".encode("utf-8")
-            ).hexdigest()[:32]
-            try:
-                flow_result = self._engine.run(
-                    attempt.plan,
-                    artifact_root=self._artifact_root,
-                    environment=self._environment,
-                    run_id=run_id,
-                )
-            except (OSError, RuntimeError) as exc:
-                if not iterations:
-                    return self._empty_result(
-                        campaign,
-                        campaign_sha256,
-                        DesignCampaignTermination.EXECUTION_FAILED,
-                        f"Design Campaign execution failed closed: {exc}",
-                    )
-                termination = DesignCampaignTermination.EXECUTION_FAILED
-                break
-            if flow_result.status != "accepted":
-                if not iterations:
-                    return self._empty_result(
-                        campaign,
-                        campaign_sha256,
-                        DesignCampaignTermination.EXECUTION_FAILED,
-                        "Design Campaign Flow attempt did not reach accepted state",
-                    )
-                termination = DesignCampaignTermination.EXECUTION_FAILED
-                break
-            try:
-                observed = self._observe(
-                    campaign,
-                    attempt,
-                    flow_result,
-                    plan_sha256,
-                    tuple(item.candidate for item in iterations),
-                )
-            except ValueError as exc:
-                if not iterations:
-                    return self._empty_result(
-                        campaign,
-                        campaign_sha256,
-                        DesignCampaignTermination.INVALID_IDENTITY,
-                        f"Design Campaign artifact identity failed closed: {exc}",
-                    )
-                termination = DesignCampaignTermination.INVALID_IDENTITY
-                break
-            if index:
-                assert attempt.repair_plan is not None
-                if not self._repair_child_matches(
-                    iterations[-1], observed, attempt.repair_plan
-                ):
-                    termination = DesignCampaignTermination.INVALID_IDENTITY
-                    break
-            iterations.append(observed)
-            termination = self._termination(observed)
-            if termination is DesignCampaignTermination.PASSED:
-                break
-            if termination is DesignCampaignTermination.FAILED:
-                if index + 1 < len(campaign.attempts):
-                    next_attempt = campaign.attempts[index + 1]
-                    if next_attempt.repair_plan is not None:
-                        continue
-                break
-            break
-        else:
-            termination = self._termination(iterations[-1])
-        if not iterations:
-            return self._empty_result(
-                campaign,
-                campaign_sha256,
-                termination,
-                f"Design Campaign stopped before execution: {termination.value}",
+    def _execute_attempt(
+        self,
+        campaign: DesignCampaign,
+        attempt: DesignCampaignAttempt,
+        lineage: tuple[DesignCandidate, ...],
+    ) -> DesignCampaignIterationResult:
+        plan_identity = self._engine.plan_id(attempt.plan)
+        run_id = (
+            f"design-{campaign.campaign_id}-{attempt.iteration_id}-"
+            f"{self._execution_context_identity}"
+        )
+        run_paths = ArtifactLayout(self._artifact_root).execution(
+            owner=attempt.plan.spec.owner,
+            target=attempt.plan.target.target_id,
+            flow=attempt.plan.spec.flow_id,
+            variant="default",
+            identity=run_id,
+            artifact_kind="flow",
+            identity_kind="run_id",
+        )
+        flow_result = (
+            self._engine.restore_result(
+                attempt.plan,
+                artifact_root=self._artifact_root,
+                run_id=run_id,
             )
-        return DesignCampaignResult(
+            if run_paths.root.exists()
+            else self._engine.run(
+                attempt.plan,
+                artifact_root=self._artifact_root,
+                environment=self._environment,
+                run_id=run_id,
+            )
+        )
+        if flow_result.status != "accepted":
+            raise RuntimeError("Design Campaign Flow attempt did not reach accepted state")
+        return self._observe(
+            campaign,
+            attempt,
+            flow_result,
+            plan_identity,
+            lineage,
+        )
+
+    def _reload_iteration_values(
+        self,
+        attempt: DesignCampaignAttempt,
+        iteration: DesignCampaignIterationResult,
+    ) -> tuple[CanonicalDesignArtifact, ...]:
+        restored = self._engine.restore_result(
+            attempt.plan,
+            artifact_root=self._artifact_root,
+            run_id=iteration.provenance.run_id,
+        )
+        expected = {item.label: item for item in iteration.provenance.artifacts}
+        values: list[CanonicalDesignArtifact] = []
+        for binding in (attempt.candidate, *attempt.artifacts):
+            try:
+                artifact = restored.nodes[binding.node].artifacts[binding.role]
+            except KeyError as exc:
+                raise ValueError("Design Campaign persisted artifact binding drift") from exc
+            value = self._load_artifact(artifact)
+            identity = expected.get(binding.label)
+            if (
+                identity is None
+                or identity.kind != artifact.kind
+                or identity.identity != value.identity
+                or identity.producer != artifact.producer
+                or identity.role != artifact.role
+                or identity.record_json != value.canonical_json()
+            ):
+                raise ValueError("Design Campaign persisted artifact typed record drift")
+            values.append(value)
+        return tuple(values)
+
+    @staticmethod
+    def _failure_inputs(
+        candidate: DesignCandidate,
+        values: tuple[CanonicalDesignArtifact, ...],
+    ) -> tuple[
+        tuple[DesignEvidence, ...],
+        CircuitTopologyProposal | CircuitSizingProblem,
+        object | None,
+    ]:
+        declared = {item.identity for item in candidate.evidence}
+        evidence = tuple(
+            item
+            for item in values
+            if isinstance(item, DesignEvidence)
+            and item.identity in declared
+            and item.conclusion is EvidenceConclusion.VIOLATED
+        )
+        if not evidence:
+            raise ValueError("Design Campaign has no Candidate-bound violated evidence")
+        subjects = {item.subject for item in evidence}
+        if len(subjects) != 1:
+            raise ValueError("Design Campaign violated evidence has multiple subjects")
+        subject = next(iter(subjects))
+        parent = next(
+            (
+                item
+                for item in values
+                if isinstance(item, (CircuitTopologyProposal, CircuitSizingProblem))
+                and item.reference() == subject
+            ),
+            None,
+        )
+        parent_result = next(
+            (
+                item
+                for item in values
+                if isinstance(item, CircuitSizingResult) and item.reference() == subject
+            ),
+            None,
+        )
+        if parent is None and parent_result is not None:
+            parent = next(
+                (
+                    item
+                    for item in values
+                    if isinstance(item, CircuitSizingProblem)
+                    and item.reference() == parent_result.problem
+                ),
+                None,
+            )
+        if parent is None:
+            raise ValueError("Design Campaign violated evidence subject is unavailable")
+        return evidence, parent, parent_result
+
+    def _proposal_required_state(
+        self,
+        campaign: DesignCampaign,
+        iterations: tuple[DesignCampaignIterationResult, ...],
+        *,
+        repair_plan: DesignRepairPlan | None = None,
+        last_proposal_identity: str | None = None,
+        elapsed_seconds: int = 0,
+    ) -> DesignCampaignState:
+        continuation = campaign.continuation
+        if continuation is None:
+            raise ValueError("Design Campaign has no continuation template")
+        budget_stop = self._budget_stop(
+            campaign,
+            iterations,
+            next_node_cost=len(continuation.plan.nodes),
+            elapsed_seconds=elapsed_seconds,
+        )
+        if budget_stop is not None:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                self.campaign_identity(campaign),
+                DesignCampaignPhase.COMPLETED,
+                budget_stop,
+                iterations,
+                None,
+                repair_plan,
+                last_proposal_identity,
+                f"Design Campaign stopped with {budget_stop.value}",
+            )
+        attempt = (
+            campaign.baseline
+            if len(iterations) == 1
+            else DesignCampaignAttempt(
+                iterations[-1].provenance.iteration_id,
+                continuation.plan,
+                continuation.candidate,
+                continuation.artifacts,
+                continuation.stages,
+                repair_plan,
+            )
+        )
+        values = self._reload_iteration_values(attempt, iterations[-1])
+        evidence, _parent, _parent_result = self._failure_inputs(
+            iterations[-1].candidate,
+            values,
+        )
+        attribution = attribute_design_failure(iterations[-1].candidate, evidence)
+        return DesignCampaignState(
             campaign.owner,
             campaign.campaign_id,
-            campaign_sha256,
+            self.campaign_identity(campaign),
+            DesignCampaignPhase.PROPOSAL_REQUIRED,
+            DesignCampaignTermination.REPAIR_REQUIRED,
+            iterations,
+            attribution,
+            repair_plan,
+            last_proposal_identity,
+            "typed violated evidence requires a semantic repair proposal",
+        )
+
+    @staticmethod
+    def _budget_stop(
+        campaign: DesignCampaign,
+        iterations: tuple[DesignCampaignIterationResult, ...],
+        *,
+        next_node_cost: int,
+        elapsed_seconds: int,
+    ) -> DesignCampaignTermination | None:
+        if type(elapsed_seconds) is not int or elapsed_seconds < 0:
+            raise ValueError("Design Campaign elapsed time must be non-negative seconds")
+        if elapsed_seconds >= campaign.budget.maximum_seconds:
+            return DesignCampaignTermination.TIME_BUDGET
+        if len(iterations) >= campaign.budget.iteration_budget:
+            return DesignCampaignTermination.ITERATION_BUDGET
+        quality_states = {item.quality for item in iterations}
+        if len(quality_states) >= campaign.budget.state_budget:
+            return DesignCampaignTermination.STATE_BUDGET
+        if (
+            sum(item.quality.flow_nodes for item in iterations) + next_node_cost
+            > campaign.budget.maximum_flow_nodes
+        ):
+            return DesignCampaignTermination.COST_BUDGET
+        return None
+
+    def _derived_attempt(
+        self,
+        campaign: DesignCampaign,
+        state: DesignCampaignState,
+        proposal: DesignRepairProposal,
+        repair_plan: DesignRepairPlan,
+    ) -> DesignCampaignAttempt:
+        continuation = campaign.continuation
+        assert continuation is not None
+        payload = DesignCampaignIterationInput(
+            state.campaign_identity,
+            len(state.iterations) + 1,
+            state.iterations[-1].candidate.identity,
+            state.attribution.canonical_json(),
+            proposal.canonical_json(),
+            repair_plan.canonical_json(),
+        )
+        nodes = tuple(
+            replace(
+                node,
+                design_campaign_iteration=payload,
+            )
+            if node.node_id == continuation.proposal_node
+            else node
+            for node in continuation.plan.spec.nodes
+        )
+        spec = replace(continuation.plan.spec, nodes=nodes)
+        plan = self._engine.plan(
+            spec,
+            continuation.plan.target.target_id,
+            continuation.plan.profile,
+        )
+        return DesignCampaignAttempt(
+            f"iteration-{len(state.iterations) + 1}",
+            plan,
+            continuation.candidate,
+            continuation.artifacts,
+            continuation.stages,
+            repair_plan,
+        )
+
+    def start(
+        self,
+        campaign: DesignCampaign,
+        *,
+        elapsed_seconds: int = 0,
+    ) -> DesignCampaignState:
+        """Execute only the baseline and stop when semantic input is required."""
+
+        self._validate_bindings(campaign)
+        attempt = campaign.baseline
+        budget_stop = self._budget_stop(
+            campaign,
+            (),
+            next_node_cost=len(attempt.plan.nodes),
+            elapsed_seconds=elapsed_seconds,
+        )
+        if budget_stop is not None:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                self.campaign_identity(campaign),
+                DesignCampaignPhase.COMPLETED,
+                budget_stop,
+                (),
+                None,
+                None,
+                None,
+                f"Design Campaign stopped before baseline with {budget_stop.value}",
+            )
+        try:
+            observed = self._execute_attempt(campaign, attempt, ())
+        except RuntimeError as exc:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                self.campaign_identity(campaign),
+                DesignCampaignPhase.COMPLETED,
+                DesignCampaignTermination.EXECUTION_FAILED,
+                (),
+                None,
+                None,
+                None,
+                f"Design Campaign execution failed closed: {exc}",
+            )
+        except (OSError, ValueError) as exc:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                self.campaign_identity(campaign),
+                DesignCampaignPhase.COMPLETED,
+                DesignCampaignTermination.INVALID_IDENTITY,
+                (),
+                None,
+                None,
+                None,
+                f"Design Campaign identity failed closed: {exc}",
+            )
+        termination = self._termination(observed)
+        if (
+            termination is DesignCampaignTermination.FAILED
+            and campaign.continuation is not None
+        ):
+            try:
+                return self._proposal_required_state(
+                    campaign,
+                    (observed,),
+                    elapsed_seconds=elapsed_seconds,
+                )
+            except (OSError, ValueError) as exc:
+                return DesignCampaignState(
+                    campaign.owner,
+                    campaign.campaign_id,
+                    self.campaign_identity(campaign),
+                    DesignCampaignPhase.COMPLETED,
+                    DesignCampaignTermination.INVALID_IDENTITY,
+                    (observed,),
+                    None,
+                    None,
+                    None,
+                    f"Design Campaign attribution failed closed: {exc}",
+                )
+        return DesignCampaignState(
+            campaign.owner,
+            campaign.campaign_id,
+            self.campaign_identity(campaign),
+            DesignCampaignPhase.COMPLETED,
             termination,
-            tuple(iterations),
-            iterations[-1].quality,
-            iterations[-1].decision,
+            (observed,),
+            None,
+            None,
+            None,
             f"Design Campaign stopped with {termination.value}",
         )
 
+    def resume(
+        self,
+        campaign: DesignCampaign,
+        state: DesignCampaignState,
+        proposal: DesignRepairProposal,
+        *,
+        elapsed_seconds: int = 0,
+    ) -> DesignCampaignState:
+        """Compile one proposal, derive one child attempt, and stop or ask again."""
+
+        campaign_identity = self.campaign_identity(campaign)
+        if (
+            state.campaign_identity != campaign_identity
+            or state.owner != campaign.owner
+            or state.campaign_id != campaign.campaign_id
+        ):
+            raise ValueError("Design Campaign resume identity drift")
+        if state.phase is not DesignCampaignPhase.PROPOSAL_REQUIRED or state.attribution is None:
+            raise ValueError("Design Campaign is not awaiting a proposal")
+        continuation = campaign.continuation
+        if continuation is None:
+            raise ValueError("Design Campaign has no continuation template")
+        budget_stop = self._budget_stop(
+            campaign,
+            state.iterations,
+            next_node_cost=len(continuation.plan.nodes),
+            elapsed_seconds=elapsed_seconds,
+        )
+        if budget_stop is not None:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                campaign_identity,
+                DesignCampaignPhase.COMPLETED,
+                budget_stop,
+                state.iterations,
+                None,
+                state.repair_plan,
+                proposal.identity,
+                f"Design Campaign stopped with {budget_stop.value}",
+            )
+        previous_attempt = (
+            campaign.baseline
+            if len(state.iterations) == 1
+            else DesignCampaignAttempt(
+                state.iterations[-1].provenance.iteration_id,
+                continuation.plan,
+                continuation.candidate,
+                continuation.artifacts,
+                continuation.stages,
+                state.repair_plan,
+            )
+        )
+        values = self._reload_iteration_values(previous_attempt, state.iterations[-1])
+        evidence, parent, parent_result = self._failure_inputs(
+            state.iterations[-1].candidate,
+            values,
+        )
+        repair_plan = compile_design_repair(
+            campaign_identity=campaign_identity,
+            attribution=state.attribution,
+            proposal=proposal,
+            candidate=state.iterations[-1].candidate,
+            parent=parent,
+            parent_result=parent_result,
+            evidence=evidence,
+            policy=continuation.repair_policy,
+        )
+        if repair_plan.decision is not RepairCompileDecision.ACCEPTED:
+            raise ValueError(f"Design Repair Proposal rejected: {repair_plan.reason}")
+        attempt = self._derived_attempt(campaign, state, proposal, repair_plan)
+        try:
+            observed = self._execute_attempt(
+                campaign,
+                attempt,
+                tuple(item.candidate for item in state.iterations),
+            )
+        except RuntimeError as exc:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                campaign_identity,
+                DesignCampaignPhase.COMPLETED,
+                DesignCampaignTermination.EXECUTION_FAILED,
+                state.iterations,
+                None,
+                repair_plan,
+                proposal.identity,
+                f"Design Campaign continuation execution failed closed: {exc}",
+            )
+        except (OSError, ValueError) as exc:
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                campaign_identity,
+                DesignCampaignPhase.COMPLETED,
+                DesignCampaignTermination.INVALID_IDENTITY,
+                state.iterations,
+                None,
+                repair_plan,
+                proposal.identity,
+                f"Design Campaign continuation identity failed closed: {exc}",
+            )
+        if not self._repair_parent_matches(
+            state.iterations[-1], repair_plan
+        ) or not self._repair_child_matches(
+            state.iterations[-1], observed, repair_plan
+        ):
+            return DesignCampaignState(
+                campaign.owner,
+                campaign.campaign_id,
+                campaign_identity,
+                DesignCampaignPhase.COMPLETED,
+                DesignCampaignTermination.INVALID_IDENTITY,
+                (*state.iterations, observed),
+                None,
+                repair_plan,
+                proposal.identity,
+                "Design Campaign child Candidate lineage drift",
+            )
+        iterations = (*state.iterations, observed)
+        termination = self._termination(observed)
+        if termination is DesignCampaignTermination.FAILED:
+            try:
+                return self._proposal_required_state(
+                    campaign,
+                    iterations,
+                    repair_plan=repair_plan,
+                    last_proposal_identity=proposal.identity,
+                    elapsed_seconds=elapsed_seconds,
+                )
+            except (OSError, ValueError) as exc:
+                return DesignCampaignState(
+                    campaign.owner,
+                    campaign.campaign_id,
+                    campaign_identity,
+                    DesignCampaignPhase.COMPLETED,
+                    DesignCampaignTermination.INVALID_IDENTITY,
+                    iterations,
+                    None,
+                    repair_plan,
+                    proposal.identity,
+                    f"Design Campaign attribution failed closed: {exc}",
+                )
+        return DesignCampaignState(
+            campaign.owner,
+            campaign.campaign_id,
+            campaign_identity,
+            DesignCampaignPhase.COMPLETED,
+            termination,
+            iterations,
+            None,
+            repair_plan,
+            proposal.identity,
+            f"Design Campaign stopped with {termination.value}",
+        )
 
 __all__ = [
     "DesignArtifactBinding",
@@ -830,10 +1459,14 @@ __all__ = [
     "DesignCampaignAttempt",
     "DesignCampaignAttemptSpec",
     "DesignCampaignBudget",
+    "DesignCampaignContinuation",
+    "DesignCampaignContinuationSpec",
+    "DesignCampaignPhase",
     "DesignCampaignResult",
     "DesignCampaignRunner",
     "DesignCampaignScope",
     "DesignCampaignSpec",
+    "DesignCampaignState",
     "DesignCampaignTermination",
     "DesignQuality",
     "DesignStage",
@@ -842,4 +1475,5 @@ __all__ = [
     "DesignStageStatus",
     "design_campaign_result_from_json",
     "design_campaign_spec_from_json",
+    "design_campaign_state_from_json",
 ]

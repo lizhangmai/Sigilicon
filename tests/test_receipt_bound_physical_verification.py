@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 import struct
 import subprocess
 
 import pytest
 
-from sigilicon.canonical import canonical_sha256
 from sigilicon.domain.physical_verification import (
     PhysicalVerificationStatus,
     drc_evidence_from_json,
@@ -54,6 +52,7 @@ from sigilicon.layout.materialization_execution import (
     identify_managed_layout,
     issue_materialization_receipt,
     materialization_receipt_from_json,
+    materialization_receipt_id,
 )
 from sigilicon.layout.pnr import (
     GridlessRoutingResource,
@@ -89,8 +88,8 @@ _TARGET = MaterializationExecutionTarget(
 )
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _identity(path: Path) -> str:
+    return f"fixture:{path.name}"
 
 
 def _job() -> PhysicalDesignJob:
@@ -228,7 +227,11 @@ class _ReceiptBoundInputsAdapter:
             receipt.canonical_json(), encoding="utf-8"
         )
         context.output_path("source", "source.cdl").write_text(
-            ".SUBCKT receipt_bound_top a b\n.ENDS receipt_bound_top\n",
+            (
+                ".SUBCKT wrong_top a b\n.ENDS wrong_top\n"
+                if self.corrupt == "source-content"
+                else ".SUBCKT receipt_bound_top a b\n.ENDS receipt_bound_top\n"
+            ),
             encoding="utf-8",
         )
         context.output_path("verification-policy", "policy.toml").write_text(
@@ -243,32 +246,30 @@ class _ReceiptBoundInputsAdapter:
         receipt = materialization_receipt_from_json(
             receipt_path.read_text(encoding="utf-8")
         )
-        receipt_sha256 = canonical_sha256(receipt)
+        receipt_identity = materialization_receipt_id(receipt)
         common = {
             "owner": _TARGET.owner,
             "name": _TARGET.name,
             "format": _TARGET.format.value,
-            "job-sha256": receipt.provenance.job_sha256,
-            "result-sha256": receipt.provenance.result_sha256,
-            "plan-sha256": receipt.provenance.plan_sha256,
-            "receipt-sha256": receipt_sha256,
+            "job-identity": receipt.provenance.job_identity,
+            "result-identity": receipt.provenance.result_identity,
+            "plan-identity": receipt.provenance.plan_identity,
+            "receipt-identity": receipt_identity,
             "status": receipt.status.value,
             "backend": receipt.completion.backend,
         }
         if self.corrupt == "receipt-qualifier":
-            common["receipt-sha256"] = "0" * 64
+            common["receipt-identity"] = "corrupt-receipt"
         if self.corrupt == "result-qualifier":
-            common["result-sha256"] = "0" * 64
+            common["result-identity"] = "corrupt-result"
         layout_path = context.output_path("layout", "layout.gds")
         source_path = context.output_path("source", "source.cdl")
         policy_path = context.output_path("verification-policy", "policy.toml")
         source_qualifiers = {
             "owner": _TARGET.owner,
             "name": _TARGET.name,
-            "source-sha256": _sha256(source_path),
+            "source-identity": _identity(source_path),
         }
-        if self.corrupt == "source-qualifier":
-            source_qualifiers["source-sha256"] = "0" * 64
         return CollectedActionResult(
             artifacts=(
                 ProducedArtifact(
@@ -277,7 +278,7 @@ class _ReceiptBoundInputsAdapter:
                     layout_path,
                     qualifiers={
                         **common,
-                        "layout-sha256": receipt.provenance.layout_sha256,
+                        "layout-identity": receipt.provenance.layout_identity,
                     },
                 ),
                 ProducedArtifact(
@@ -298,7 +299,7 @@ class _ReceiptBoundInputsAdapter:
                     policy_path,
                     qualifiers={
                         "owner": _TARGET.owner,
-                        "policy-sha256": _sha256(policy_path),
+                        "policy-identity": _identity(policy_path),
                     },
                 ),
             )
@@ -511,12 +512,12 @@ def test_calibre_adapter_projects_clean_receipt_bound_evidence(
     assert lvs.status is PhysicalVerificationStatus.CLEAN
     assert drc.completion.proven and lvs.completion.proven
     assert drc.layout == lvs.layout
-    assert drc.layout.receipt_sha256 is not None
-    assert drc.layout.job_sha256 is not None
-    assert drc.layout.result_sha256 is not None
-    assert drc.layout.plan_sha256
+    assert drc.layout.receipt_identity is not None
+    assert drc.layout.job_identity is not None
+    assert drc.layout.result_identity is not None
+    assert drc.layout.plan_identity
     assert drc.layout.format == "gdsii"
-    assert lvs.source.artifact_sha256
+    assert lvs.source.artifact_identity
     assert result.nodes["drc"].facts["drc-clean"] is True
     assert result.nodes["lvs"].facts["lvs-clean"] is True
 
@@ -575,7 +576,7 @@ def test_exit_or_report_failure_is_not_a_verification_conclusion(
     (
         "receipt-qualifier",
         "result-qualifier",
-        "source-qualifier",
+        "source-content",
         "layout-content",
     ),
 )
@@ -605,7 +606,7 @@ def test_receipt_or_layout_identity_corruption_fails_before_calibre(
         run_id={
             "receipt-qualifier": "b",
             "result-qualifier": "c",
-            "source-qualifier": "d",
+            "source-content": "d",
             "layout-content": "e",
         }[corrupt]
         * 32,
@@ -613,10 +614,10 @@ def test_receipt_or_layout_identity_corruption_fails_before_calibre(
 
     assert result.status == "failed"
     assert result.nodes["drc"].execution_status == (
-        "succeeded" if corrupt == "source-qualifier" else "failed"
+        "succeeded" if corrupt == "source-content" else "failed"
     )
     assert result.nodes["lvs"].execution_status == "failed"
-    assert calls == (1 if corrupt == "source-qualifier" else 0)
+    assert calls == (1 if corrupt == "source-content" else 0)
 
 
 def test_preflight_requires_real_calibre_and_deck_assets(tmp_path: Path) -> None:

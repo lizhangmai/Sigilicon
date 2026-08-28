@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
 
-from sigilicon.layout.pnr._serialization import canonical_json
+from sigilicon.canonical import canonical_json
 
 
 class CanonicalValue:
@@ -580,32 +580,28 @@ class PnrExecutionPolicy(CanonicalValue):
 class PhysicalDesignJobLineage(CanonicalValue):
     """Immediate attributed-repair parentage carried by a derived job.
 
-    This is execution provenance, not physical intent.  The complete job SHA
-    includes it while :func:`physical_design_intent_sha256` deliberately does
-    not, so identical normalized intent remains distinguishable from the
-    repair path that produced it without changing solver semantics.
+    This is execution provenance, not physical intent.  Semantic lineage stays
+    separate from normalized intent without changing solver semantics.
     """
 
     owner: str
-    parent_job_sha256: str
-    parent_result_sha256: str
-    feedback_sha256: str
-    repair_plan_sha256: str
+    parent_job_identity: str
+    parent_result_identity: str
+    feedback_identity: str
+    repair_plan_identity: str
     source_evidence: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.owner:
             raise ValueError("repair lineage owner must not be empty")
         for label, value in (
-            ("parent job", self.parent_job_sha256),
-            ("parent result", self.parent_result_sha256),
-            ("feedback", self.feedback_sha256),
-            ("repair plan", self.repair_plan_sha256),
+            ("parent job", self.parent_job_identity),
+            ("parent result", self.parent_result_identity),
+            ("feedback", self.feedback_identity),
+            ("repair plan", self.repair_plan_identity),
         ):
-            if len(value) != 64 or any(
-                character not in "0123456789abcdef" for character in value
-            ):
-                raise ValueError(f"repair lineage {label} must be a SHA-256")
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise ValueError(f"repair lineage {label} must be non-empty")
         if not self.source_evidence or any(
             not isinstance(value, str) or not value for value in self.source_evidence
         ):
@@ -692,8 +688,7 @@ class NetRoute(CanonicalValue):
 @dataclass(frozen=True)
 class PnrProvenance(CanonicalValue):
     engine: str
-    input_sha256: str
-    execution_sha256: str
+    job: PhysicalDesignJob
     deterministic: bool
 
 
@@ -793,6 +788,11 @@ class PlacementRoutingClosureEvidence(CanonicalValue):
     conflicts: tuple[RoutingConflictSummary, ...]
     placement_pressure: tuple[RoutingPlacementPressureSummary, ...]
     repairs: tuple[PlacementRoutingRepairSummary, ...]
+    artifact_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact_id, str) or not self.artifact_id:
+            raise ValueError("physical closure evidence needs an explicit artifact ID")
 
 
 @dataclass(frozen=True)
@@ -805,3 +805,8 @@ class PhysicalDesignResult(CanonicalValue):
     routes: tuple[NetRoute, ...] = ()
     routing_blockage_placements: tuple[RoutingBlockagePlacement, ...] = ()
     closure_evidence: PlacementRoutingClosureEvidence | None = None
+    artifact_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact_id, str) or not self.artifact_id:
+            raise ValueError("physical-design result needs an explicit artifact ID")

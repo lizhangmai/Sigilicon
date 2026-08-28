@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import re
 
 from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.domain.physical_verification import (
@@ -12,11 +11,7 @@ from sigilicon.domain.physical_verification import (
     CheckedSourceIdentity,
     VerificationCompletion,
 )
-
-
-def _sha256(value: str, label: str) -> None:
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise ValueError(f"{label} must be a SHA-256 identity")
+from sigilicon.identifiers import bounded_identity
 
 
 class PexStatus(str, Enum):
@@ -38,14 +33,14 @@ class PhysicalAnalysisStatus(str, Enum):
 class DerivedArtifactIdentity:
     role: str
     kind: str
-    sha256: str
+    identity: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, str) or not self.role:
             raise ValueError("derived artifact role must be non-empty")
         if not isinstance(self.kind, str) or not self.kind:
             raise ValueError("derived artifact kind must be non-empty")
-        _sha256(self.sha256, "derived artifact identity")
+        bounded_identity(self.identity, "derived artifact identity")
 
 
 @dataclass(frozen=True)
@@ -152,9 +147,9 @@ class PostLayoutEvidence:
     status: PhysicalAnalysisStatus
     layout: CheckedLayoutIdentity
     source: CheckedSourceIdentity
-    pex_evidence_sha256: str
-    parasitics_sha256: str
-    specification_sha256: str
+    pex_evidence_identity: str
+    parasitics_identity: str
+    specification_identity: str
     completion: VerificationCompletion
     findings: tuple[PhysicalAnalysisFinding, ...]
     message: str
@@ -164,9 +159,9 @@ class PostLayoutEvidence:
             raise ValueError("post-layout evidence needs a checked layout identity")
         if not isinstance(self.source, CheckedSourceIdentity):
             raise ValueError("post-layout evidence needs a checked source identity")
-        _sha256(self.pex_evidence_sha256, "PEX evidence identity")
-        _sha256(self.parasitics_sha256, "parasitics identity")
-        _sha256(self.specification_sha256, "post-layout specification identity")
+        bounded_identity(self.pex_evidence_identity, "PEX evidence identity")
+        bounded_identity(self.parasitics_identity, "parasitics identity")
+        bounded_identity(self.specification_identity, "post-layout specification identity")
         if not isinstance(self.completion, VerificationCompletion):
             raise ValueError("post-layout evidence needs verification completion")
         if not isinstance(self.message, str):
@@ -187,14 +182,14 @@ class QualificationEvidence:
     status: PhysicalAnalysisStatus
     layout: CheckedLayoutIdentity
     source: CheckedSourceIdentity
-    drc_evidence_sha256: str
-    lvs_evidence_sha256: str
-    specification_sha256: str
+    drc_evidence_identity: str
+    lvs_evidence_identity: str
+    specification_identity: str
     completion: VerificationCompletion
     findings: tuple[PhysicalAnalysisFinding, ...]
     message: str
-    pex_evidence_sha256: str | None = None
-    post_layout_evidence_sha256: str | None = None
+    pex_evidence_identity: str | None = None
+    post_layout_evidence_identity: str | None = None
     area_dbu2: int | None = None
     power_femtowatts: int | None = None
 
@@ -203,14 +198,14 @@ class QualificationEvidence:
             raise ValueError("qualification evidence needs a checked layout identity")
         if not isinstance(self.source, CheckedSourceIdentity):
             raise ValueError("qualification evidence needs a checked source identity")
-        _sha256(self.drc_evidence_sha256, "DRC evidence identity")
-        _sha256(self.lvs_evidence_sha256, "LVS evidence identity")
-        _sha256(self.specification_sha256, "qualification specification identity")
-        if self.pex_evidence_sha256 is not None:
-            _sha256(self.pex_evidence_sha256, "PEX evidence identity")
-        if self.post_layout_evidence_sha256 is not None:
-            _sha256(
-                self.post_layout_evidence_sha256,
+        bounded_identity(self.drc_evidence_identity, "DRC evidence identity")
+        bounded_identity(self.lvs_evidence_identity, "LVS evidence identity")
+        bounded_identity(self.specification_identity, "qualification specification identity")
+        if self.pex_evidence_identity is not None:
+            bounded_identity(self.pex_evidence_identity, "PEX evidence identity")
+        if self.post_layout_evidence_identity is not None:
+            bounded_identity(
+                self.post_layout_evidence_identity,
                 "post-layout evidence identity",
             )
         for label, value in (
@@ -236,6 +231,27 @@ class QualificationEvidence:
         return canonical_json(self)
 
 
+def pex_evidence_id(evidence: PexEvidence) -> str:
+    return (
+        f"{evidence.layout.owner}:{evidence.layout.name}:"
+        f"pex:{evidence.completion.backend}"
+    )
+
+
+def post_layout_evidence_id(evidence: PostLayoutEvidence) -> str:
+    return (
+        f"{evidence.layout.owner}:{evidence.layout.name}:"
+        f"post-layout:{evidence.specification_identity}"
+    )
+
+
+def qualification_evidence_id(evidence: QualificationEvidence) -> str:
+    return (
+        f"{evidence.layout.owner}:{evidence.layout.name}:"
+        f"qualification:{evidence.specification_identity}"
+    )
+
+
 def pex_evidence_from_json(text: str) -> PexEvidence:
     return canonical_from_json(text, PexEvidence)
 
@@ -256,7 +272,10 @@ __all__ = [
     "PhysicalAnalysisStatus",
     "PostLayoutEvidence",
     "QualificationEvidence",
+    "pex_evidence_id",
     "pex_evidence_from_json",
+    "post_layout_evidence_id",
     "post_layout_evidence_from_json",
+    "qualification_evidence_id",
     "qualification_evidence_from_json",
 ]

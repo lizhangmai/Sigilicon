@@ -50,7 +50,7 @@ def test_rendered_native_worker_reads_official_rdb_without_result_path_fallbacks
 
 @pytest.mark.parametrize(
     ("library", "cell", "nonce"),
-    (("../lib", "tb", NONCE), ("lib", "/tb", NONCE), ("lib", "tb", "bad")),
+    (("../lib", "tb", NONCE), ("lib", "/tb", NONCE), ("lib", "tb", "../bad")),
 )
 def test_rendered_worker_rejects_unsafe_identity(
     tmp_path: Path, library: str, cell: str, nonce: str
