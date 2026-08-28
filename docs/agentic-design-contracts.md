@@ -1,0 +1,158 @@
+# Agentic circuit-design contract baseline
+
+Status: Phase 0 frozen contract, 2026-08-28.
+
+This document fixes the reusable Sigilicon vocabulary and integration inventory for
+agent-assisted circuit design. It does not define an IP topology, PDK fact, project
+layout, qualification threshold, or site execution environment. Project assembly
+continues to enter through `sigilicon.toml` and its selected owner catalogs; there is
+no agent-specific project inventory.
+
+The architecture follows a clean-room boundary. Public PANDA papers may inform the
+method of structured stage artifacts, separation of semantic planning from
+deterministic execution, and post-layout feedback. Sigilicon does not consume or
+reproduce PANDA source, prompts, request/result JSON, `analog.*` handlers, binaries,
+MCP-style conventions, or environment variables.
+
+## Frozen language
+
+- **Design Brief** records user intent, application context, preferences, confirmed
+  requirements, and explicitly provisional assumptions. It is not a qualification
+  specification.
+- **Canonical Qualification Spec** is the project-owner source that alone defines
+  pass/fail requirements, coverage, and evidence role.
+- **Design Candidate** is an immutable manifest of content-addressed stage artifact
+  references. Candidate identity is the SHA-256 of its canonical serialization; it
+  is derived and is not a self-referential serialized field.
+- **Design Evidence** is an immutable observation bound to subject, source, spec,
+  producer, and tool identities. Evidence records what ran and what was parsed; it
+  does not contain a policy decision.
+- **Design Decision** is an owner-policy evaluation of identity-matched Candidate
+  and Design Evidence. It cannot repair missing evidence.
+- **Design Campaign** is a bounded multi-attempt workflow above FlowEngine. Every
+  attempt is one resolved, deterministic FlowPlan.
+- **Promotion Plan** is a non-mutating description of a proposed Git source patch,
+  required regression, evidence bundle, and unresolved risk. Applying it is outside
+  the first MCP interface and always requires human approval.
+
+These terms are expressed in source, immutable types, tests, and ADRs. Sigilicon's
+`CONTEXT.md` is intentionally unchanged.
+
+## Schema invariants
+
+Stage artifacts keep separate schemas; there is no universal `design.json`. The
+first front-end schema family contains:
+
+- `design.brief.v1`;
+- `circuit.topology-proposal.v1`;
+- `circuit.sizing-problem.v1`;
+- `circuit.sizing-result.v1`;
+- `design.candidate.v1`;
+- `design.evidence.v1`;
+- `design.decision.v1`.
+
+Every artifact has an exact schema version, kind, and owner. Canonical JSON uses
+UTF-8, sorted object keys, deterministic indentation, finite values, a trailing
+newline, and SHA-256 content identity. Decoding rejects unknown, duplicate,
+missing, malformed, non-canonical, or unknown-enum fields. Artifact references
+bind kind, owner, and SHA-256. A reference to another owner also requires an
+explicit release identity; unpublished source-level composition stays within its
+owner component graph and cannot be laundered through an artifact reference.
+
+No artifact serializes an absolute path, environment mapping, raw command, or EDA
+invocation. Source adapters accept an explicit `ProjectContext` or an already
+validated owner source value. Candidate outputs stay under project-managed ignored
+artifact storage. Source promotion is not part of this schema family.
+
+Evidence role (`diagnostic`, `regression`, `qualification`, or `signoff`), DUT
+level (`l0` through `l4`), and coverage scope remain independent. Offline and fake
+producers can record non-conclusions and violations for contract testing, but can
+never produce a passing qualification or signoff decision. A normal exit, an
+output file, a model statement, or an unparsed report is not passing evidence.
+
+## Native MCP inventory
+
+The protocol target is the official MCP 2026-07-28 specification. Resources and
+tools are projections of existing Sigilicon Interfaces, not owners of domain logic.
+MCP Tasks are an optional negotiated extension; Sigilicon durable run identity is
+the base application contract even when the extension is unavailable.
+
+Read-only resource inventory (Phase 2 exposes the minimal implemented subset; later
+rows remain reserved inventory, not alternate project indexes):
+
+| Resource template | Projection | Capability | State |
+| --- | --- | --- | --- |
+| `sigilicon://project/{project_id}` | validated ProjectContext and catalog links | `read-project` | Phase 2 |
+| `sigilicon://owners/{owner}/catalog` | owner-selected targets and contracts | `read-project` | Phase 2 |
+| `sigilicon://runs/{owner}/{flow}/{target}/{run_id}/manifest` | owner-bound durable run result | `read-project` | Phase 2 |
+| `sigilicon://owners/{owner}/targets/{target}` | one owner target projection | `read-project` | reserved |
+| `sigilicon://contracts/{sha256}` | bounded typed contract summary and source identity | `read-project` | reserved |
+| `sigilicon://schemas/{artifact_kind}` | the Sigilicon-owned schema | `read-project` | reserved |
+| `sigilicon://artifacts/{sha256}` | one authorized immutable artifact | `read-project` | reserved |
+| `sigilicon://evidence/{sha256}/summary` | bounded parsed evidence, never raw authority | `read-project` | reserved |
+
+Tool baseline:
+
+| Tool | First phase | Capability | Input rule |
+| --- | --- | --- | --- |
+| `project.inspect` | Phase 2 | `read-project` | explicit server ProjectContext and semantic owner selector |
+| `flow.plan` | Phase 2 | `plan-flow` | cataloged flow, target, profile, and bounded options |
+| `flow.run` | Phase 3 | `execute-derived` | immutable `plan_identity` and confirmed budget only |
+| `run.inspect` | Phase 2 | `read-project` | cataloged owner/flow/target plus validated run identity |
+| `run.cancel` | Phase 3 | `execute-derived` | opaque run identity; cooperative managed cancellation |
+| `campaign.plan` | Phase 4 | `plan-flow` | owner policy, explicit scope, budgets, and stop conditions |
+| `campaign.run` | Phase 4 | `execute-derived` or stronger stage capability | immutable campaign plan identity |
+| `candidate.validate` | Phase 2 | `plan-flow` | exact canonical Candidate/stage JSON plus cataloged owner; no paths |
+| `candidate.promotion_plan` | Phase 5 | `plan-flow` | validated Candidate and evidence bundle; never writes source |
+
+There is no generic shell, arbitrary file reader, arbitrary absolute path,
+environment editor, raw EDA command, OA mutation shortcut, PANDA compatibility
+tool, or `apply_promotion` tool. Tool lists are deterministic; a future
+authenticated transport must additionally filter them by per-request
+authorization. Every tool has strict input and output schemas, structured results,
+a short bounded summary, semantic resource links, explicit
+conclusion/non-conclusion, and allowed next operations.
+
+Capability levels are cumulative only when explicitly granted:
+
+1. `read-project` reads authorized Git contracts and existing artifacts;
+2. `plan-flow` performs pure validation and deterministic planning;
+3. `execute-derived` may invoke approved adapters and write ignored artifacts;
+4. `mutate-workspace` additionally requires the existing exact OA lease,
+   confirmation, mutation scope, and receipt checks;
+5. `promote-source` is not exposed by the first MCP server.
+
+### Phase 2 binding
+
+`AgenticReadInterface` is the shared application seam for `project.inspect`,
+`flow.plan`, `run.inspect`, and owner-bound `candidate.validate`. The read CLI and
+native MCP handlers call this Interface; the Candidate operation delegates to the
+same `DesignArtifactInterface` as the existing Candidate CLI. MCP accepts semantic
+identities or bounded canonical JSON only. Its tool list has no path, shell,
+environment, executor, cancellation, OA, or promotion input.
+
+The local entry point is `sigilicon-mcp --project-root <root>`. Project selection is
+launcher configuration rather than a model-call argument, and cwd discovery is not
+used. The official Python MCP SDK is an optional `sigilicon[mcp]` dependency, so
+top-level package import and the ordinary CLI remain usable without it. Phase 2
+implements stdio only; authenticated Streamable HTTP and principal authorization
+remain deployment work and must not be inferred from the local server.
+
+The first Skills are `inspect-design-status` and `plan-circuit-candidate`. They own
+workflow order, stop conditions, missing-result handling, and reporting shape. They
+contain no IP topology, PDK fact, product threshold, or EDA command.
+
+## Pilot and acceptance baseline
+
+Pilot order is fixed as INV/TG physical parity, CDAC_BOTTOM_SWITCH sizing and
+pre-layout diagnostic normalization (SAR_ASYNC_CLOCK_GATE may follow), then
+CALIBRATED_DYNAMIC_COMPARATOR full-loop evidence, and only later the complete MX
+Block. The existing CDAC sizing campaign remains diagnostic and its algorithm,
+candidate set, measurements, and thresholds are not changed by normalization.
+
+Phase acceptance requires strict round-trip and rejection tests, explicit
+identity/owner lineage, fake/offline non-conclusion, path and injection defenses,
+one shared application Interface for Python/CLI/MCP, package tests, wheel build and
+clean-wheel import/CLI smoke, project `check-designs`, and `git diff --check` in
+both repositories. Real Virtuoso, OA writes, real simulation, and product
+qualification remain outside the authorized Phase 0-2 work.

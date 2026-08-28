@@ -22,6 +22,11 @@ from sigilicon.workflows.physical_design import (
 from sigilicon.workflows.layout_verification import (
     CalibrePhysicalVerificationAdapter,
 )
+from sigilicon.workflows.calibre_pex import (
+    CALIBRE_XRC_PEX_ADAPTER,
+    CalibreXrcPexAdapter,
+)
+from sigilicon.flow.post_layout import PEX_ACTION
 from sigilicon.workflows.physical_verification import (
     ReceiptBoundVerificationSourceAdapter,
 )
@@ -45,6 +50,11 @@ def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
     registry.register_adapter(
         RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
         ReceiptBoundVerificationSourceAdapter(),
+    )
+    registry.register_action_adapter(
+        PEX_ACTION,
+        CALIBRE_XRC_PEX_ADAPTER,
+        CalibreXrcPexAdapter(),
     )
     if owner_root is not None:
         registry.register_adapter(

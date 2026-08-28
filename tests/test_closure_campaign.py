@@ -183,7 +183,9 @@ _BENCHMARK_ENVIRONMENT = ExecutionEnvironment(
             "benchmark.pex-assets",
             (
                 ResolvedPlatformAssetMember("pex-deck", Path("/contract/pex-deck")),
-                ResolvedPlatformAssetMember("qrc-tech", Path("/contract/qrc-tech")),
+                ResolvedPlatformAssetMember(
+                    "pex-support-root", Path("/contract/pex-support")
+                ),
             ),
         ),
         ResolvedPlatformAsset(

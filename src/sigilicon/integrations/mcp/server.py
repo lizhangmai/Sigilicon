@@ -1,0 +1,654 @@
+"""Strict read-only MCP projection of the client-neutral agentic Interface."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import mcp.types as types
+from mcp.server.context import ServerRequestContext
+from mcp.server.lowlevel.server import Server
+from mcp.shared.exceptions import MCPError
+
+from sigilicon.workflows.agentic_read import AgenticReadInterface, READ_RESULT_KIND
+from sigilicon.workflows.agentic_execution import (
+    AgenticExecutionBudget,
+    AgenticExecutionInterface,
+)
+
+
+_OWNER_PATTERN = r"[A-Za-z][A-Za-z0-9_.-]*"
+_IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
+_RUN_PATTERN = r"[0-9a-f]{32}"
+
+_RESPONSE_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "schema": {"const": 1},
+        "contract_kind": {"const": READ_RESULT_KIND},
+        "operation": {"type": "string"},
+        "project_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "authority": {"type": "string"},
+        "conclusion": {"type": "string"},
+        "summary": {"type": "string"},
+        "data": {"type": "object"},
+        "resources": {"type": "array", "items": {"type": "string"}},
+        "allowed_next_actions": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": [
+        "schema",
+        "contract_kind",
+        "operation",
+        "project_id",
+        "authority",
+        "conclusion",
+        "summary",
+        "data",
+        "resources",
+        "allowed_next_actions",
+    ],
+    "additionalProperties": False,
+}
+
+_PROJECT_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "owner": {"type": ["string", "null"], "pattern": f"^{_OWNER_PATTERN}$"},
+    },
+    "additionalProperties": False,
+}
+
+_FLOW_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
+        "flow": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
+        "target": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
+        "profile": {
+            "type": ["string", "null"],
+            "pattern": f"^{_IDENTIFIER_PATTERN}$",
+        },
+    },
+    "required": ["owner", "flow", "target"],
+    "additionalProperties": False,
+}
+
+_RUN_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
+        "flow": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
+        "target": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
+        "run_id": {"type": "string", "pattern": f"^{_RUN_PATTERN}$"},
+    },
+    "required": ["owner", "flow", "target", "run_id"],
+    "additionalProperties": False,
+}
+
+_CANDIDATE_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
+        "candidate": {"type": "string", "maxLength": 1_000_000},
+        "artifacts": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 1_000_000},
+            "minItems": 1,
+            "maxItems": 128,
+        },
+    },
+    "required": ["owner", "candidate", "artifacts"],
+    "additionalProperties": False,
+}
+
+_CAMPAIGN_PLAN_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "campaign": {"type": "string", "maxLength": 2_000_000},
+    },
+    "required": ["campaign"],
+    "additionalProperties": False,
+}
+
+_FLOW_RUN_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "plan_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "budget": {
+            "type": "object",
+            "properties": {
+                "maximum_seconds": {"type": "integer", "minimum": 1, "maximum": 86_400},
+                "maximum_nodes": {"type": "integer", "minimum": 1, "maximum": 10_000},
+            },
+            "required": ["maximum_seconds", "maximum_nodes"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["plan_identity", "budget"],
+    "additionalProperties": False,
+}
+
+_RUN_CANCEL_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "run_id": {"type": "string", "pattern": f"^{_RUN_PATTERN}$"},
+    },
+    "required": ["run_id"],
+    "additionalProperties": False,
+}
+
+_CAMPAIGN_RUN_INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "campaign": {"type": "string", "maxLength": 2_000_000},
+        "campaign_identity": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+        },
+    },
+    "required": ["campaign", "campaign_identity"],
+    "additionalProperties": False,
+}
+
+
+class _RequestRejected(ValueError):
+    pass
+
+
+def _read_annotations() -> types.ToolAnnotations:
+    return types.ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+
+
+def _tools(*, execution_enabled: bool) -> list[types.Tool]:
+    annotations = _read_annotations()
+    tools = [
+        types.Tool(
+            name="project.inspect",
+            title="Inspect Sigilicon project",
+            description=(
+                "Validate the bound project's canonical owner catalogs and summarize "
+                "source, targets, and declared Flows. Runtime capabilities and product "
+                "qualification remain not evaluated."
+            ),
+            inputSchema=_PROJECT_INPUT_SCHEMA,
+            outputSchema=_RESPONSE_SCHEMA,
+            annotations=annotations,
+        ),
+        types.Tool(
+            name="flow.plan",
+            title="Plan cataloged Sigilicon Flow",
+            description=(
+                "Resolve one owner catalog Flow through FlowEngine without executing "
+                "a backend or writing artifacts."
+            ),
+            inputSchema=_FLOW_INPUT_SCHEMA,
+            outputSchema=_RESPONSE_SCHEMA,
+            annotations=annotations,
+        ),
+        types.Tool(
+            name="run.inspect",
+            title="Inspect Sigilicon Flow result",
+            description=(
+                "Read one identity-matched persisted Flow result from the bound "
+                "artifact root without adding qualification authority."
+            ),
+            inputSchema=_RUN_INPUT_SCHEMA,
+            outputSchema=_RESPONSE_SCHEMA,
+            annotations=annotations,
+        ),
+        types.Tool(
+            name="candidate.validate",
+            title="Validate Sigilicon Design Candidate",
+            description=(
+                "Validate exact canonical Candidate stage JSON, owner lineage, and "
+                "content identities without reading a path or promoting source."
+            ),
+            inputSchema=_CANDIDATE_INPUT_SCHEMA,
+            outputSchema=_RESPONSE_SCHEMA,
+            annotations=annotations,
+        ),
+        types.Tool(
+            name="campaign.plan",
+            title="Plan bounded Sigilicon Design Campaign",
+            description=(
+                "Compile strict catalog Flow selectors, typed output bindings, budgets, "
+                "repair lineage, and stop conditions without executing a backend."
+            ),
+            inputSchema=_CAMPAIGN_PLAN_INPUT_SCHEMA,
+            outputSchema=_RESPONSE_SCHEMA,
+            annotations=annotations,
+        ),
+    ]
+    if execution_enabled:
+        execute_annotations = types.ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+        tools.extend(
+            (
+                types.Tool(
+                    name="flow.run",
+                    title="Run approved Sigilicon Flow Plan",
+                    description=(
+                        "Submit one exact launcher-approved Plan with a bounded node/time "
+                        "budget. No command, path, environment, or Adapter selector is accepted."
+                    ),
+                    inputSchema=_FLOW_RUN_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=execute_annotations,
+                ),
+                types.Tool(
+                    name="run.cancel",
+                    title="Cancel managed Sigilicon Flow Run",
+                    description=(
+                        "Cooperatively cancel one exact principal-bound managed run and "
+                        "return its immutable terminal state."
+                    ),
+                    inputSchema=_RUN_CANCEL_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=execute_annotations,
+                ),
+                types.Tool(
+                    name="campaign.run",
+                    title="Run approved bounded Sigilicon Design Campaign",
+                    description=(
+                        "Execute one exact launcher-approved Campaign identity through "
+                        "DesignCampaignRunner. No command, path, environment, or Adapter "
+                        "selector is accepted."
+                    ),
+                    inputSchema=_CAMPAIGN_RUN_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=execute_annotations,
+                ),
+            )
+        )
+    return tools
+
+
+def _strict_arguments(
+    raw: dict[str, Any] | None,
+    *,
+    allowed: frozenset[str],
+    required: frozenset[str],
+) -> dict[str, Any]:
+    arguments = {} if raw is None else raw
+    unknown = set(arguments) - allowed
+    missing = required - set(arguments)
+    if unknown or missing:
+        raise _RequestRejected("tool arguments do not match the declared schema")
+    return arguments
+
+
+def _required_text(arguments: dict[str, Any], name: str) -> str:
+    value = arguments.get(name)
+    if not isinstance(value, str):
+        raise _RequestRejected("tool arguments do not match the declared schema")
+    return value
+
+
+def _optional_text(arguments: dict[str, Any], name: str) -> str | None:
+    value = arguments.get(name)
+    if value is not None and not isinstance(value, str):
+        raise _RequestRejected("tool arguments do not match the declared schema")
+    return value
+
+
+def _error_response(
+    interface: AgenticReadInterface,
+    *,
+    operation: str,
+    code: str,
+    summary: str,
+) -> dict[str, Any]:
+    return {
+        "schema": 1,
+        "contract_kind": READ_RESULT_KIND,
+        "operation": operation,
+        "project_id": interface.project_id,
+        "authority": "none",
+        "conclusion": "non-conclusion",
+        "summary": summary,
+        "data": {"error": {"code": code}},
+        "resources": [interface.project_resource_uri],
+        "allowed_next_actions": ["project.inspect"],
+    }
+
+
+def _tool_result(payload: dict[str, Any], *, is_error: bool) -> types.CallToolResult:
+    return types.CallToolResult(
+        content=[types.TextContent(text=payload["summary"])],
+        structuredContent=payload,
+        isError=is_error,
+    )
+
+
+def _json_resource(uri: str, payload: dict[str, Any]) -> types.ReadResourceResult:
+    return types.ReadResourceResult(
+        contents=[
+            types.TextResourceContents(
+                uri=uri,
+                mimeType="application/json",
+                text=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            )
+        ],
+        ttlMs=0,
+        cacheScope="private",
+    )
+
+
+def _resource_segments(uri: str) -> tuple[str, ...]:
+    if not uri.startswith("sigilicon://") or any(mark in uri for mark in ("%", "?", "#", "\\")):
+        raise MCPError(types.INVALID_PARAMS, "Unknown Sigilicon resource")
+    return tuple(part for part in uri.removeprefix("sigilicon://").split("/") if part)
+
+
+def create_server(
+    interface: AgenticReadInterface,
+    *,
+    execution: AgenticExecutionInterface | None = None,
+) -> Server[object]:
+    """Create the standards-compliant protocol shell around one bound Interface."""
+
+    async def list_tools(
+        _context: ServerRequestContext[object],
+        params: types.PaginatedRequestParams | None,
+    ) -> types.ListToolsResult:
+        if params is not None and params.cursor is not None:
+            raise MCPError(types.INVALID_PARAMS, "Unknown tool-list cursor")
+        return types.ListToolsResult(
+            tools=_tools(execution_enabled=execution is not None),
+            ttlMs=0,
+            cacheScope="private",
+        )
+
+    async def call_tool(
+        _context: ServerRequestContext[object],
+        params: types.CallToolRequestParams,
+    ) -> types.CallToolResult:
+        operation = params.name
+        try:
+            if operation == "project.inspect":
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"owner"}),
+                    required=frozenset(),
+                )
+                payload = interface.inspect_project(
+                    owner=_optional_text(arguments, "owner")
+                )
+            elif operation == "flow.plan":
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"owner", "flow", "target", "profile"}),
+                    required=frozenset({"owner", "flow", "target"}),
+                )
+                payload = interface.plan_flow(
+                    owner=_required_text(arguments, "owner"),
+                    flow=_required_text(arguments, "flow"),
+                    target=_required_text(arguments, "target"),
+                    profile=_optional_text(arguments, "profile"),
+                )
+            elif operation == "run.inspect":
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"owner", "flow", "target", "run_id"}),
+                    required=frozenset({"owner", "flow", "target", "run_id"}),
+                )
+                payload = interface.inspect_run(
+                    owner=_required_text(arguments, "owner"),
+                    flow=_required_text(arguments, "flow"),
+                    target=_required_text(arguments, "target"),
+                    run_id=_required_text(arguments, "run_id"),
+                )
+            elif operation == "candidate.validate":
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"owner", "candidate", "artifacts"}),
+                    required=frozenset({"owner", "candidate", "artifacts"}),
+                )
+                artifact_values = arguments.get("artifacts")
+                if (
+                    not isinstance(artifact_values, list)
+                    or not artifact_values
+                    or len(artifact_values) > 128
+                    or any(
+                        not isinstance(item, str) or len(item) > 1_000_000
+                        for item in artifact_values
+                    )
+                ):
+                    raise _RequestRejected(
+                        "tool arguments do not match the declared schema"
+                    )
+                candidate_json = _required_text(arguments, "candidate")
+                if len(candidate_json) > 1_000_000:
+                    raise _RequestRejected(
+                        "tool arguments do not match the declared schema"
+                    )
+                payload = interface.validate_candidate(
+                    owner=_required_text(arguments, "owner"),
+                    candidate_json=candidate_json,
+                    artifact_json=tuple(artifact_values),
+                )
+            elif operation == "campaign.plan":
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"campaign"}),
+                    required=frozenset({"campaign"}),
+                )
+                campaign_json = _required_text(arguments, "campaign")
+                if len(campaign_json) > 2_000_000:
+                    raise _RequestRejected(
+                        "tool arguments do not match the declared schema"
+                    )
+                payload = interface.plan_campaign(campaign_json=campaign_json)
+            elif operation == "flow.run" and execution is not None:
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"plan_identity", "budget"}),
+                    required=frozenset({"plan_identity", "budget"}),
+                )
+                budget_value = arguments.get("budget")
+                if not isinstance(budget_value, dict) or set(budget_value) != {
+                    "maximum_seconds",
+                    "maximum_nodes",
+                }:
+                    raise _RequestRejected(
+                        "tool arguments do not match the declared schema"
+                    )
+                budget = AgenticExecutionBudget(
+                    maximum_seconds=budget_value.get("maximum_seconds"),
+                    maximum_nodes=budget_value.get("maximum_nodes"),
+                )
+                payload = execution.run_flow(
+                    plan_identity=_required_text(arguments, "plan_identity"),
+                    budget=budget,
+                    wait=False,
+                )
+            elif operation == "run.cancel" and execution is not None:
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"run_id"}),
+                    required=frozenset({"run_id"}),
+                )
+                payload = execution.cancel_run(
+                    run_id=_required_text(arguments, "run_id")
+                )
+            elif operation == "campaign.run" and execution is not None:
+                arguments = _strict_arguments(
+                    params.arguments,
+                    allowed=frozenset({"campaign", "campaign_identity"}),
+                    required=frozenset({"campaign", "campaign_identity"}),
+                )
+                campaign_json = _required_text(arguments, "campaign")
+                if len(campaign_json) > 2_000_000:
+                    raise _RequestRejected(
+                        "tool arguments do not match the declared schema"
+                    )
+                payload = execution.run_campaign(
+                    campaign_json=campaign_json,
+                    campaign_identity=_required_text(
+                        arguments,
+                        "campaign_identity",
+                    ),
+                )
+            else:
+                return _tool_result(
+                    _error_response(
+                        interface,
+                        operation="unknown",
+                        code="unknown-tool",
+                        summary="The requested tool is not registered by this server.",
+                    ),
+                    is_error=True,
+                )
+        except _RequestRejected:
+            return _tool_result(
+                _error_response(
+                    interface,
+                    operation=operation,
+                    code="invalid-arguments",
+                    summary="The request does not match the tool's strict input schema.",
+                ),
+                is_error=True,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return _tool_result(
+                _error_response(
+                    interface,
+                    operation=operation,
+                    code="contract-rejected",
+                    summary=(
+                        "The bound project contract rejected the requested identity; "
+                        "no action was performed."
+                    ),
+                ),
+                is_error=True,
+            )
+        return _tool_result(payload, is_error=False)
+
+    async def list_resources(
+        _context: ServerRequestContext[object],
+        params: types.PaginatedRequestParams | None,
+    ) -> types.ListResourcesResult:
+        if params is not None and params.cursor is not None:
+            raise MCPError(types.INVALID_PARAMS, "Unknown resource-list cursor")
+        return types.ListResourcesResult(
+            resources=[
+                types.Resource(
+                    name="bound-project",
+                    title="Bound Sigilicon project",
+                    uri=interface.project_resource_uri,
+                    description="Canonical owner, target, and source-status projection.",
+                    mimeType="application/json",
+                )
+            ],
+            ttlMs=0,
+            cacheScope="private",
+        )
+
+    async def list_resource_templates(
+        _context: ServerRequestContext[object],
+        params: types.PaginatedRequestParams | None,
+    ) -> types.ListResourceTemplatesResult:
+        if params is not None and params.cursor is not None:
+            raise MCPError(types.INVALID_PARAMS, "Unknown resource-template cursor")
+        return types.ListResourceTemplatesResult(
+            resourceTemplates=[
+                types.ResourceTemplate(
+                    name="owner-catalog",
+                    title="Cataloged owner projection",
+                    uriTemplate="sigilicon://owners/{owner}/catalog",
+                    description="One exact owner selected from the bound project catalog.",
+                    mimeType="application/json",
+                ),
+                types.ResourceTemplate(
+                    name="flow-run-result",
+                    title="Persisted Flow result",
+                    uriTemplate=(
+                        "sigilicon://runs/{owner}/{flow}/{target}/{run_id}/manifest"
+                    ),
+                    description="One identity-matched result in the bound artifact root.",
+                    mimeType="application/json",
+                ),
+            ],
+            ttlMs=0,
+            cacheScope="private",
+        )
+
+    async def read_resource(
+        _context: ServerRequestContext[object],
+        params: types.ReadResourceRequestParams,
+    ) -> types.ReadResourceResult:
+        uri = str(params.uri)
+        if uri == interface.project_resource_uri:
+            return _json_resource(uri, interface.inspect_project(owner=None))
+        segments = _resource_segments(uri)
+        try:
+            if len(segments) == 3 and segments[0] == "owners" and segments[2] == "catalog":
+                payload = interface.inspect_project(owner=segments[1])
+            elif (
+                len(segments) == 6
+                and segments[0] == "runs"
+                and segments[5] == "manifest"
+            ):
+                payload = interface.inspect_run(
+                    owner=segments[1],
+                    flow=segments[2],
+                    target=segments[3],
+                    run_id=segments[4],
+                )
+            else:
+                raise MCPError(types.INVALID_PARAMS, "Unknown Sigilicon resource")
+        except MCPError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise MCPError(
+                types.INVALID_PARAMS,
+                "The bound project contract rejected this resource identity",
+            ) from exc
+        return _json_resource(uri, payload)
+
+    return Server(
+        "sigilicon-native",
+        version="0.1.0",
+        title="Sigilicon Native MCP Server",
+        description=(
+            "Project inspection, deterministic Flow planning, and optional "
+            "launcher-authorized execution through Sigilicon-owned Interfaces."
+            if execution is not None
+            else "Read-only project inspection and deterministic Flow planning "
+            "through Sigilicon-owned Interfaces."
+        ),
+        instructions=(
+            "Treat source-contract validation, plans, and recorded Flow results as "
+            "distinct authority levels. Never infer DRC, LVS, PEX, qualification, "
+            "or signoff beyond an exact recorded result."
+        ),
+        on_list_tools=list_tools,
+        on_call_tool=call_tool,
+        on_list_resources=list_resources,
+        on_list_resource_templates=list_resource_templates,
+        on_read_resource=read_resource,
+    )
+
+
+__all__ = ["create_server"]

@@ -26,6 +26,7 @@ LAYERS = {
     "layout",
     "virtuoso",
     "workflows",
+    "integrations",
     "cli",
 }
 ALLOWED_DEPENDENCIES = {
@@ -40,6 +41,11 @@ ALLOWED_DEPENDENCIES = {
         "layout",
         "virtuoso",
         "workflows",
+        "root",
+    },
+    "integrations": {
+        "workflows",
+        "integrations",
         "root",
     },
     "cli": {

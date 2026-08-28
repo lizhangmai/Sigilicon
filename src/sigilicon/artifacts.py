@@ -267,6 +267,14 @@ def read_nofollow_text(path: Path, *, errors: str = "strict") -> str:
     return _read_nofollow_bytes(path).decode("utf-8", errors=errors)
 
 
+def write_immutable_text(path: Path, value: str) -> None:
+    """Create one nofollow regular text artifact without replacement semantics."""
+
+    if not isinstance(value, str):
+        raise ValueError("immutable text artifact must be text")
+    _write_exclusive_bytes(Path(path), value.encode("utf-8"))
+
+
 def _safe_manifest_relative(value: object, label: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ArtifactManifestError(f"manifest {label} must be a non-empty string")

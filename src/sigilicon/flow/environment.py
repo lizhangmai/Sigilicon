@@ -101,7 +101,9 @@ def _load_platform_assets(value: object) -> tuple[ResolvedPlatformAsset, ...]:
             member = _table(member_value, member_label)
             _reject_unknown(member, {"role", "path"}, member_label)
             location = _site_path(member.get("path"), f"{member_label}.path")
-            if not location.is_file():
+            if not location.exists() or not (
+                location.is_file() or location.is_dir()
+            ):
                 raise FlowContractError(
                     f"platform asset member is unavailable: {member_label}"
                 )

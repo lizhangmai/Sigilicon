@@ -138,6 +138,40 @@ def test_explicit_environment_resolves_private_files_and_public_identity(
     assert str(tmp_path) not in json.dumps(record)
 
 
+def test_execution_environment_accepts_bounded_directory_member(
+    tmp_path: Path,
+) -> None:
+    support = tmp_path / "pex-support"
+    support.mkdir()
+    (support / "rules").write_text("private rules\n", encoding="utf-8")
+    contract = tmp_path / "environment.toml"
+    contract.write_text(
+        f'''schema = 1
+contract_kind = "execution-environment"
+path_scope = "site"
+owner = "fixture-site"
+name = "pex-fixture"
+
+[[platform_assets]]
+role = "physical-pex"
+kind = "platform.pex"
+identity = "fixture:pex"
+
+[[platform_assets.members]]
+role = "pex-support-root"
+path = "{support}"
+''',
+        encoding="utf-8",
+    )
+
+    environment = load_execution_environment(contract)
+
+    asset = environment.platform_asset("physical-pex")
+    assert asset is not None
+    member = asset.member("pex-support-root")
+    assert member is not None and member.location == support
+
+
 def test_execution_environment_preserves_multicall_launcher_symlink(
     tmp_path: Path,
 ) -> None:

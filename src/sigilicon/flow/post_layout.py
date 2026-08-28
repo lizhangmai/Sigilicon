@@ -37,7 +37,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
             kind=PEX_ACTION,
             inputs=receipt_bound,
             outputs=(
-                ArtifactPort("parasitics", PEX_NETLIST_KIND),
+                ArtifactPort("parasitics", PEX_NETLIST_KIND, required=False),
                 ArtifactPort("evidence", PEX_EVIDENCE_KIND),
             ),
             facts=("pex-status", "pex-completed"),
@@ -46,7 +46,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
                 PlatformAssetRequirement(
                     "physical-pex",
                     "platform.pex",
-                    members=("pex-deck", "qrc-tech"),
+                    members=("pex-deck", "pex-support-root"),
                 ),
             ),
             adapter_extensible=True,

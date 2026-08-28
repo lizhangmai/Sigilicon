@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from sigilicon.flow.model import (
     ActionContext,
     ActionContract,
@@ -125,6 +127,32 @@ class _VerifyAdapter:
         )
 
 
+class _WaitAdapter:
+    """Bounded cancellation fixture; it has no engineering authority."""
+
+    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+        seconds = context.action_config.get("seconds")
+        return (
+            ()
+            if type(seconds) is int and 1 <= seconds <= 30
+            else ("seconds must be an integer between 1 and 30",)
+        )
+
+    def prepare(self, context: ActionContext) -> None:
+        pass
+
+    def execute(self, context: ActionContext) -> AdapterExecution:
+        time.sleep(int(context.action_config["seconds"]))
+        return AdapterExecution.succeeded()
+
+    def collect_result(
+        self,
+        context: ActionContext,
+        execution: AdapterExecution,
+    ) -> CollectedActionResult:
+        return CollectedActionResult()
+
+
 def fake_registry() -> FlowRegistry:
     """Build a fresh registry containing only the M1 fake Action seams."""
 
@@ -154,9 +182,16 @@ def fake_registry() -> FlowRegistry:
             adapters=("fake-verify",),
         )
     )
+    registry.register_action(
+        ActionContract(
+            kind="fake.wait",
+            adapters=("fake-wait",),
+        )
+    )
     registry.register_adapter("fake-source", _SourceAdapter())
     registry.register_adapter("fake-transform", _TransformAdapter())
     registry.register_adapter("fake-verify", _VerifyAdapter())
+    registry.register_adapter("fake-wait", _WaitAdapter())
     return registry
 
 

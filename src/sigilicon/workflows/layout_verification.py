@@ -90,8 +90,8 @@ class LayoutVerificationResult:
 
 
 @dataclass(frozen=True)
-class ReceiptBoundVerificationInputs:
-    """Validated content identities consumed by a verification Adapter."""
+class ReceiptBoundLayoutSourceInputs:
+    """Validated materialization identities shared by downstream physical Actions."""
 
     receipt: MaterializationReceipt
     receipt_sha256: str
@@ -99,6 +99,12 @@ class ReceiptBoundVerificationInputs:
     layout_path: Path
     source: CheckedSourceIdentity | None
     source_path: Path | None
+
+
+@dataclass(frozen=True)
+class ReceiptBoundVerificationInputs(ReceiptBoundLayoutSourceInputs):
+    """Receipt-bound layout/source identities plus an owner verification policy."""
+
     policy: PhysicalVerificationPolicy
 
 
@@ -418,7 +424,9 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> str:
+    """Hash one already-resolved regular artifact without following aliases."""
+
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -451,15 +459,13 @@ def _check_qualifiers(
             )
 
 
-def load_receipt_bound_verification_inputs(
+def load_receipt_bound_layout_source_inputs(
     context: ActionContext,
-) -> ReceiptBoundVerificationInputs:
-    """Close receipt, GDSII, source, plan, result, job, and policy identity."""
+    *,
+    require_source: bool,
+) -> ReceiptBoundLayoutSourceInputs:
+    """Close receipt, GDSII, source, plan, result, and job identity."""
 
-    if context.action.kind not in {DRC_ACTION, LVS_ACTION}:
-        raise FlowExecutionError(
-            "receipt-bound verification requires a DRC or LVS Action"
-        )
     receipt_artifact = context.input("receipt")
     layout_artifact = context.input("layout")
     if receipt_artifact.producer != layout_artifact.producer:
@@ -473,7 +479,7 @@ def load_receipt_bound_verification_inputs(
     except (OSError, UnicodeError, ValueError, TypeError) as exc:
         raise FlowExecutionError(f"invalid Materialization Receipt: {exc}") from exc
     receipt_sha256 = canonical_sha256(receipt)
-    if _sha256_file(receipt_artifact.path) != receipt_sha256:
+    if sha256_file(receipt_artifact.path) != receipt_sha256:
         raise FlowExecutionError(
             "Materialization Receipt file is not its canonical content identity"
         )
@@ -518,9 +524,9 @@ def load_receipt_bound_verification_inputs(
 
     source = None
     source_path = None
-    if context.action.kind == LVS_ACTION:
+    if require_source:
         source_artifact = context.input("source")
-        source_sha256 = _sha256_file(source_artifact.path)
+        source_sha256 = sha256_file(source_artifact.path)
         source_owner = _required_qualifier(context, "source", "owner")
         source_name = _required_qualifier(context, "source", "name")
         _check_qualifiers(
@@ -539,32 +545,56 @@ def load_receipt_bound_verification_inputs(
         )
         source_path = source_artifact.path
 
-    policy_artifact = context.input("verification-policy")
-    policy_sha256 = _sha256_file(policy_artifact.path)
-    _check_qualifiers(
-        context,
-        "verification-policy",
-        {
-            "owner": receipt.target.owner,
-            "policy-sha256": policy_sha256,
-        },
-    )
-    try:
-        policy = load_physical_verification_policy(
-            policy_artifact.path,
-            owner=receipt.target.owner,
-        )
-    except (OSError, ValueError, TypeError) as exc:
-        raise FlowExecutionError(
-            f"invalid physical-verification policy: {exc}"
-        ) from exc
-    return ReceiptBoundVerificationInputs(
+    return ReceiptBoundLayoutSourceInputs(
         receipt=receipt,
         receipt_sha256=receipt_sha256,
         layout=layout,
         layout_path=layout_artifact.path,
         source=source,
         source_path=source_path,
+    )
+
+
+def load_receipt_bound_verification_inputs(
+    context: ActionContext,
+) -> ReceiptBoundVerificationInputs:
+    """Close receipt-bound physical identity and the owner verification policy."""
+
+    if context.action.kind not in {DRC_ACTION, LVS_ACTION}:
+        raise FlowExecutionError(
+            "receipt-bound verification requires a DRC or LVS Action"
+        )
+    base = load_receipt_bound_layout_source_inputs(
+        context,
+        require_source=context.action.kind == LVS_ACTION,
+    )
+
+    policy_artifact = context.input("verification-policy")
+    policy_sha256 = sha256_file(policy_artifact.path)
+    _check_qualifiers(
+        context,
+        "verification-policy",
+        {
+            "owner": base.receipt.target.owner,
+            "policy-sha256": policy_sha256,
+        },
+    )
+    try:
+        policy = load_physical_verification_policy(
+            policy_artifact.path,
+            owner=base.receipt.target.owner,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        raise FlowExecutionError(
+            f"invalid physical-verification policy: {exc}"
+        ) from exc
+    return ReceiptBoundVerificationInputs(
+        receipt=base.receipt,
+        receipt_sha256=base.receipt_sha256,
+        layout=base.layout,
+        layout_path=base.layout_path,
+        source=base.source,
+        source_path=base.source_path,
         policy=policy,
     )
 
@@ -603,7 +633,9 @@ def _prepend(environment: dict[str, str], name: str, value: Path) -> None:
     environment[name] = str(value) + (os.pathsep + existing if existing else "")
 
 
-def _calibre_environment(executable: Path) -> dict[str, str]:
+def calibre_environment(executable: Path) -> dict[str, str]:
+    """Construct the bounded Calibre runtime environment for a resolved binary."""
+
     environment = dict(os.environ)
     home = executable.parent.parent
     environment["CALIBRE_HOME"] = str(home)
@@ -805,7 +837,7 @@ def _run_calibre(
         completed = run_process_group(
             command,
             cwd=work,
-            env=_calibre_environment(calibre),
+            env=calibre_environment(calibre),
             timeout=timeout,
             before_spawn=validate_spawn,
             pass_fds=tuple(dict.fromkeys(pass_fds)),
@@ -903,7 +935,9 @@ def _nonconclusive_verification_evidence(
     )
 
 
-def _copy_regular_backend_output(source: Path, destination: Path, label: str) -> Path:
+def copy_regular_backend_output(source: Path, destination: Path, label: str) -> Path:
+    """Copy one tool output only when it is a non-symlink regular file."""
+
     try:
         metadata = source.lstat()
     except OSError as exc:
@@ -1052,7 +1086,7 @@ class CalibrePhysicalVerificationAdapter:
             return run_process_group(
                 command,
                 cwd=work,
-                env=_calibre_environment(executable),
+                env=calibre_environment(executable),
                 timeout=timeout,
                 before_spawn=validate_spawn,
                 pass_fds=tuple(dict.fromkeys(pass_fds)),
@@ -1069,12 +1103,12 @@ class CalibrePhysicalVerificationAdapter:
         reports = context.output_root / "reports"
         work = context.work_root
         if context.action.kind == DRC_ACTION:
-            _copy_regular_backend_output(
+            copy_regular_backend_output(
                 work / "drc-results.db",
                 reports / "drc-results.db",
                 "DRC results database",
             )
-            summary = _copy_regular_backend_output(
+            summary = copy_regular_backend_output(
                 work / "drc-summary.rep",
                 reports / "drc-summary.rep",
                 "DRC summary report",
@@ -1095,7 +1129,7 @@ class CalibrePhysicalVerificationAdapter:
             ("calibre_erc.sum", "calibre-erc-summary"),
         )
         copied = {
-            source_name: _copy_regular_backend_output(
+            source_name: copy_regular_backend_output(
                 work / source_name,
                 reports / output_name,
                 output_name,
@@ -1103,7 +1137,7 @@ class CalibrePhysicalVerificationAdapter:
             for source_name, output_name in names
         }
         extracted = work / "svdb" / f"{inputs.receipt.target.name}.sp"
-        _copy_regular_backend_output(
+        copy_regular_backend_output(
             extracted,
             reports / "extracted.sp",
             "extracted layout netlist",
@@ -1416,7 +1450,7 @@ def verify_layout(
         )
         completed_stages.append(f"calibre-{check}")
         layout_identity = CheckedLayoutIdentity(
-            artifact_sha256=_sha256_file(gds),
+            artifact_sha256=sha256_file(gds),
             plan_sha256=_sha256_bytes(plan.canonical_json().encode("utf-8")),
             result_sha256=None,
             owner=spec.library,

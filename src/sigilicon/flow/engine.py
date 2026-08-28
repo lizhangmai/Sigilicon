@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 import uuid
 
 from sigilicon.artifacts import atomic_write_json, read_json_object
@@ -15,12 +15,14 @@ from sigilicon.flow.model import (
     ActionArtifact,
     ActionContext,
     AdapterExecution,
+    ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
     ExecutionProfile,
     FlowContractError,
     FlowExecutionError,
     FlowPlan,
+    FlowProgress,
     FlowResult,
     FlowSpec,
     InputArtifact,
@@ -75,6 +77,7 @@ def _plan_payload(
                 "action_config": json_value(item.node.config),
                 "adapter_config": json_value(item.adapter_config),
                 "required_capabilities": list(item.required_capabilities),
+                "execution_capability": item.execution_capability,
                 "platform_assets": [
                     json_value(requirement) for requirement in item.platform_assets
                 ],
@@ -98,6 +101,12 @@ class FlowEngine:
 
     def __init__(self, registry: FlowRegistry) -> None:
         self._registry = registry
+
+    def planned_output(self, plan: FlowPlan, node_id: str, role: str) -> ArtifactPort:
+        """Resolve one output through the exact Action registry used by this engine."""
+
+        planned = plan.planned_node(node_id)
+        return self._registry.action(planned.node.action_kind).output(role)
 
     def plan(
         self,
@@ -233,6 +242,7 @@ class FlowEngine:
                         for requirement in contract.platform_assets
                     ),
                     dependencies=dependencies[node_id],
+                    execution_capability=contract.execution_capability,
                     source_assets=source_assets[node_id],
                 )
             )
@@ -394,6 +404,7 @@ class FlowEngine:
         artifact_root: Path,
         environment: ExecutionEnvironment | None = None,
         run_id: str | None = None,
+        progress: Callable[[FlowProgress], None] | None = None,
     ) -> FlowResult:
         current_environment = environment or ExecutionEnvironment()
         preflight = self.preflight(plan, current_environment)
@@ -426,6 +437,18 @@ class FlowEngine:
             raise FlowExecutionError(f"Flow Run already exists: {identity}")
         run_paths.create()
 
+        def notify(status: str, completed: int, current: str | None) -> None:
+            if progress is not None:
+                progress(
+                    FlowProgress(
+                        identity,
+                        status,
+                        completed,
+                        len(plan.nodes),
+                        current,
+                    )
+                )
+
         atomic_write_json(run_paths.role("inputs") / "resolved_plan.json", self.plan_record(plan))
         atomic_write_json(
             run_paths.role("inputs") / "preflight.json",
@@ -434,8 +457,10 @@ class FlowEngine:
 
         outcomes: dict[str, NodeOutcome] = {}
         interrupted = False
+        notify("running", 0, None)
         for planned in plan.nodes:
             node = planned.node
+            notify("running", len(outcomes), node.node_id)
             if interrupted:
                 outcomes[node.node_id] = NodeOutcome(
                     node_id=node.node_id,
@@ -447,6 +472,7 @@ class FlowEngine:
                     facts=MappingProxyType({}),
                     reason="Flow execution was interrupted",
                 )
+                notify("running", len(outcomes), None)
                 continue
             block_reason = self._block_reason(node, outcomes)
             if block_reason is not None:
@@ -460,6 +486,7 @@ class FlowEngine:
                     facts=MappingProxyType({}),
                     reason=block_reason,
                 )
+                notify("running", len(outcomes), None)
                 continue
             inputs = self._materialize_inputs(node, outcomes)
             action = self._registry.action(node.action_kind)
@@ -629,6 +656,7 @@ class FlowEngine:
                 reason=error,
             )
             outcomes[node.node_id] = outcome
+            notify("running", len(outcomes), None)
         flow_status = (
             "accepted"
             if all(outcomes[goal].status == "accepted" for goal in plan.target.goals)
@@ -665,6 +693,11 @@ class FlowEngine:
                     if path != run_root / "run_manifest.json"
                 ],
             },
+        )
+        notify(
+            "cancelled" if interrupted else flow_status,
+            len(outcomes),
+            None,
         )
         return FlowResult(
             owner=plan.spec.owner,

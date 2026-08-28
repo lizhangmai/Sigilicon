@@ -65,6 +65,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
             ),
             adapters=(OA_XSTREAM_MATERIALIZATION_ADAPTER,),
             adapter_extensible=True,
+            execution_capability="mutate-workspace",
         )
     )
     registry.register_action(

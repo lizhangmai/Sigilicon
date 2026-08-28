@@ -363,6 +363,43 @@ class _OwnedProcessSupervisor:
 
 
 @dataclass(frozen=True)
+class ManagedBackgroundStatus:
+    """Terminal proof returned by the existing exact process supervisor."""
+
+    returncode: int
+    cleanup_requested: bool
+    residual_cleanup: bool
+
+
+@dataclass
+class ManagedBackgroundProcess:
+    """In-memory cancellation authority for one supervised agentic worker."""
+
+    _supervisor: _OwnedProcessSupervisor = field(repr=False)
+    _terminal: ManagedBackgroundStatus | None = field(default=None, init=False)
+
+    def _public_status(self, status: _SupervisorStatus) -> ManagedBackgroundStatus:
+        return ManagedBackgroundStatus(
+            status.actual_returncode,
+            status.cleanup_requested,
+            status.residual_cleanup,
+        )
+
+    def poll(self) -> ManagedBackgroundStatus | None:
+        if self._terminal is not None:
+            return self._terminal
+        if not _leader_exited_unreaped(self._supervisor.process):
+            return None
+        self._terminal = self._public_status(self._supervisor.finish())
+        return self._terminal
+
+    def cancel(self) -> ManagedBackgroundStatus:
+        if self._terminal is None:
+            self._terminal = self._public_status(self._supervisor.terminate())
+        return self._terminal
+
+
+@dataclass(frozen=True)
 class OwnedFileDescriptor:
     """One nofollow regular file held open for an external invocation."""
 
@@ -1092,6 +1129,35 @@ def _spawn_process_supervisor(
     finally:
         os.close(ready_read)
     return supervisor
+
+
+def spawn_agentic_flow_worker(
+    arguments: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> ManagedBackgroundProcess:
+    """Start the sole package-owned Flow worker under the audited supervisor."""
+
+    if any(not isinstance(item, str) or not item for item in arguments):
+        raise ValueError("agentic worker arguments must be non-empty strings")
+    worker_root = Path(cwd).resolve()
+    if not worker_root.is_dir():
+        raise ValueError("agentic worker cwd must be an existing directory")
+    supervisor = _spawn_process_supervisor(
+        (
+            sys.executable,
+            "-m",
+            "sigilicon.workflows.agentic_worker",
+            *tuple(arguments),
+        ),
+        cwd=worker_root,
+        env=dict(env),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        pass_fds=(),
+    )
+    return ManagedBackgroundProcess(supervisor)
 
 
 def _drain_process_stream(

@@ -176,8 +176,20 @@ def canonical_from_json(text: str, expected: type[_T]) -> _T:
     return _decode(raw, expected, expected.__name__)
 
 
+def canonical_from_exact_json(text: str, expected: type[_T]) -> _T:
+    """Decode one typed value and require its exact canonical representation."""
+
+    value = canonical_from_json(text, expected)
+    if canonical_json(value) != text:
+        raise CanonicalSerializationError(
+            f"{expected.__name__} JSON is valid but not canonical"
+        )
+    return value
+
+
 __all__ = [
     "CanonicalSerializationError",
+    "canonical_from_exact_json",
     "canonical_from_json",
     "canonical_json",
     "canonical_sha256",

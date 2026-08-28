@@ -103,10 +103,12 @@ states, while iteration budget counts Flow attempts.
 Feedback is restricted to typed physical owners, fixed blockers, DRC rules, LVS
 mismatch categories, or another explicit evidence identity. A campaign does not
 perform unattributed global search. PEX, post-layout analysis, and project
-qualification cross strict receipt-bound evidence contracts. Their Actions are
-owner-extension seams with no built-in backend; requesting a stage without an
-explicit Adapter, canonical specification, and identity-matched artifacts yields
-typed `unsupported` state and prevents `closed` rather than manufacturing success.
+qualification cross strict receipt-bound evidence contracts. Their Actions remain
+owner-extension seams. The public workflow assembly now provides a production
+Calibre xRC PEX Adapter selected by an explicit profile and complete attested
+platform view; post-layout and qualification still require owner Adapters and
+canonical specifications. Requesting any unavailable stage yields typed
+non-conclusion and prevents `closed` rather than manufacturing success.
 
 Attributed continuation crosses the independent
 `compile_closure_repair(...) -> RepairPlan` seam. A project-owned typed policy maps
@@ -281,7 +283,10 @@ and unrelated design styles using the same kernel without source edits.
 - explicit lexicographic Closure Quality and attributed feedback with independent
   state and iteration budgets;
 - PEX, post-layout, and qualification have typed artifact contracts and Campaign
-  consumers; real backend Adapters and owner specifications remain required before
-  they can move from `unsupported` to satisfied evidence. Area and power cost are
+  consumers. Calibre xRC PEX is implemented with receipt/source/layout identity,
+  fixed three-stage completion proof, and a bounded foundry support view;
+  post-layout and qualification still require real owner Adapters and canonical
+  specifications before they can move from `unsupported` to satisfied evidence.
+  Area and power cost are
   consumed only from specification-bound qualification evidence, never recovered
   from generic report metrics.

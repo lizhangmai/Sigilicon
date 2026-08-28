@@ -17,6 +17,8 @@ _RUN_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
 _REQUIREMENTS = frozenset({"accepted", "valid"})
 _RESULT_STATUSES = frozenset({"valid", "failed", "partial", "uncertain"})
 _EXECUTION_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+_FLOW_PROGRESS_STATUSES = frozenset({"running", "accepted", "failed", "cancelled"})
+EXECUTION_CAPABILITIES = frozenset({"execute-derived", "mutate-workspace"})
 
 
 class FlowContractError(ValueError):
@@ -268,6 +270,7 @@ class ActionContract:
     adapters: tuple[str, ...] = ()
     adapter_extensible: bool = False
     resolves_source_assets: bool = False
+    execution_capability: str = "execute-derived"
 
     def __post_init__(self) -> None:
         identifier(self.kind, "action kind")
@@ -279,6 +282,11 @@ class ActionContract:
             identifier(value, "Adapter name")
         for value in self.required_capabilities:
             identifier(value, "required capability")
+        if self.execution_capability not in EXECUTION_CAPABILITIES:
+            raise FlowContractError(
+                "Action execution capability must be one of "
+                f"{sorted(EXECUTION_CAPABILITIES)}"
+            )
         _unique(tuple(port.role for port in self.inputs), "Action input roles")
         _unique(tuple(port.role for port in self.outputs), "Action output roles")
         _unique(self.facts, "Action facts")
@@ -547,7 +555,12 @@ class PlannedNode:
     required_capabilities: tuple[str, ...]
     platform_assets: tuple[PlatformAssetRequirement, ...]
     dependencies: tuple[str, ...]
+    execution_capability: str
     source_assets: SourceAssets | None = None
+
+    def __post_init__(self) -> None:
+        if self.execution_capability not in EXECUTION_CAPABILITIES:
+            raise FlowContractError("planned node has an invalid execution capability")
 
 
 @dataclass(frozen=True)
@@ -624,7 +637,7 @@ class ResolvedCapability:
 
 @dataclass(frozen=True)
 class ResolvedPlatformAssetMember:
-    """One private site file selected for a resolved platform asset."""
+    """One private site file or bounded directory selected for a platform asset."""
 
     role: str
     location: Path = field(repr=False, compare=False)
@@ -887,3 +900,27 @@ class FlowResult:
     status: str
     interrupted: bool
     nodes: Mapping[str, NodeOutcome]
+
+
+@dataclass(frozen=True)
+class FlowProgress:
+    run_id: str
+    status: str
+    completed_nodes: int
+    total_nodes: int
+    current_node: str | None
+
+    def __post_init__(self) -> None:
+        run_identity(self.run_id)
+        if self.status not in _FLOW_PROGRESS_STATUSES:
+            raise FlowExecutionError(f"invalid Flow progress status: {self.status!r}")
+        if (
+            type(self.completed_nodes) is not int
+            or type(self.total_nodes) is not int
+            or self.completed_nodes < 0
+            or self.total_nodes < 0
+            or self.completed_nodes > self.total_nodes
+        ):
+            raise FlowExecutionError("invalid Flow progress node counts")
+        if self.current_node is not None:
+            identifier(self.current_node, "Flow progress current node")

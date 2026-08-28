@@ -186,7 +186,10 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
     assert pex_contract.adapters == ()
     assert pex_contract.adapter_extensible
     assert pex_contract.required_capabilities == ("tool.pex",)
-    assert pex_contract.platform_assets[0].members == ("pex-deck", "qrc-tech")
+    assert pex_contract.platform_assets[0].members == (
+        "pex-deck",
+        "pex-support-root",
+    )
     assert registry.action(POST_LAYOUT_ACTION).adapters == ()
     assert registry.action(PHYSICAL_QUALIFICATION_ACTION).adapters == ()
 
@@ -240,7 +243,9 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
         "fixture.pex",
         (
             ResolvedPlatformAssetMember("pex-deck", Path("/fixture/pex.deck")),
-            ResolvedPlatformAssetMember("qrc-tech", Path("/fixture/qrc.tech")),
+            ResolvedPlatformAssetMember(
+                "pex-support-root", Path("/fixture/pex-support")
+            ),
         ),
     )
     ready = engine.preflight(
@@ -257,7 +262,7 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
         "fixture.pex",
         (ResolvedPlatformAssetMember("pex-deck", Path("/fixture/pex.deck")),),
     )
-    missing_qrc = engine.preflight(
+    missing_support = engine.preflight(
         plan,
         ExecutionEnvironment(
             {"tool.pex": ResolvedCapability("fixture-pex")},
@@ -270,9 +275,9 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
     assert ("tool.pex", "missing") in {
         (check.requirement, check.status) for check in blocked.checks
     }
-    assert missing_qrc.status == "blocked"
+    assert missing_support.status == "blocked"
     assert any(
         check.requirement == "physical-pex"
         and check.status == "incomplete"
-        for check in missing_qrc.checks
+        for check in missing_support.checks
     )
