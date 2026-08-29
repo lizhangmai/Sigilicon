@@ -18,6 +18,11 @@ Each export therefore contains one tagged interface payload:
   collateral role carrying that module. This form cannot declare an OA identity
   or `source.oa_assembly`.
 
+An RTL export may additionally select a named `variant` from the interface
+contract's `variant_modules` table. The shared `[module].ports` remains the
+public boundary, while the selected entry supplies the exact module and source;
+both source planning and offline package audit bind to that same selection.
+
 The selected interface kind owns development boundary validation, capability
 availability, qualified-view semantics, and offline packaged-interface audit.
 Only contracts containing an OA export extend their source closure through an

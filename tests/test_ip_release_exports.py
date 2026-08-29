@@ -413,6 +413,58 @@ layout_view = "layout"
         load_ip_contract(oa_path, project_root=tmp_path / "oa-without-assembly")
 
 
+def test_rtl_release_variant_selects_its_declared_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    interface_path = tmp_path / "ip/rtl_fixture/configs/interface.toml"
+    interface_path.write_text(
+        interface_path.read_text(encoding="utf-8")
+        + '''
+[variant_modules.alternate]
+name = "rtl_alternate"
+source = "ip/rtl_fixture/rtl/top.sv"
+''',
+        encoding="utf-8",
+    )
+    rtl_path = tmp_path / "ip/rtl_fixture/rtl/top.sv"
+    rtl_path.write_text(
+        rtl_path.read_text(encoding="utf-8").replace(
+            "rtl_top", "rtl_alternate"
+        ),
+        encoding="utf-8",
+    )
+    source = contract_path.read_text(encoding="utf-8")
+    source = source.replace(
+        'module = "rtl_top"\nsource_role = "rtl_source"',
+        'module = "rtl_alternate"\n'
+        'source_role = "rtl_source"\n'
+        'variant = "alternate"',
+        1,
+    ).replace('module = "rtl_top"', 'module = "rtl_alternate"', 1)
+    contract_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(
+        ip_packaging, "_source_control", lambda _root: ("b" * 40, False)
+    )
+
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    exported = contract.get_export("rtl-top")
+    assert isinstance(exported.interface, RtlIpInterface)
+    assert exported.interface.variant == "alternate"
+
+    plan = ip_packaging.plan_ip_release_contract(contract)
+    assert plan["exports"][0]["interface"]["variant"] == "alternate"
+    built = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    manifest = contract.project.artifact_root / built["manifest"]
+    assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
+        plan["exports"]
+    )
+
+
 def test_ip_contract_reuses_explicit_project(tmp_path: Path) -> None:
     contract_path = _contract_fixture(tmp_path)
     project = Project.from_project_root(tmp_path)

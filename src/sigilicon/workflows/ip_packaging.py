@@ -171,6 +171,25 @@ def _interface_ports(value: object, label: str) -> dict[str, ModulePort]:
     return ports
 
 
+def _rtl_module_contract(
+    raw: Mapping[str, Any],
+    *,
+    module_name: str,
+    variant: str | None,
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    public_module = _table(raw.get("module"), "RTL interface module")
+    if variant is None:
+        selected = public_module
+    else:
+        variants = _table(raw.get("variant_modules"), "RTL interface variants")
+        selected = _table(
+            variants.get(variant), f"RTL interface variant {variant}"
+        )
+    if selected.get("name") != module_name:
+        raise ValueError("RTL module identity disagrees with the interface contract")
+    return selected, public_module
+
+
 def _oa_port_contract(raw: Mapping[str, Any]) -> dict[str, ModulePort]:
     ports = _table(raw.get("ports"), "OA port contract ports")
     order = ports.get("order")
@@ -398,9 +417,11 @@ def _rtl_development_interface_check(
             raise ValueError("IP release interface snapshot is incomplete")
         with interface_path.open("rb") as stream:
             raw = tomllib.load(stream)
-    module = _table(raw.get("module"), "RTL interface module")
-    if module.get("name") != interface.module:
-        raise ValueError("RTL module identity disagrees with the interface contract")
+    module, public_module = _rtl_module_contract(
+        raw,
+        module_name=interface.module,
+        variant=interface.variant,
+    )
     source_value = module.get("source")
     if not isinstance(source_value, str) or not source_value:
         raise ValueError("RTL interface module.source must be a project-relative path")
@@ -421,13 +442,15 @@ def _rtl_development_interface_check(
     rtl_source = _project_path(root, Path(source_value), "RTL interface source")
     if not rtl_source.is_relative_to(producer):
         raise ValueError("RTL interface source must stay inside the release producer")
-    expected_ports = _interface_ports(module.get("ports"), "module.ports")
+    expected_ports = _interface_ports(
+        public_module.get("ports"), "module.ports"
+    )
     actual_ports = module_port_signatures(
         rtl_source.read_text(encoding="utf-8"), interface.module
     )
     if actual_ports != expected_ports:
         raise ValueError("RTL module signature disagrees with the interface contract")
-    return {
+    result = {
         "name": f"development_interface_consistency:{exported.name}",
         "export": exported.name,
         "passed": True,
@@ -435,6 +458,9 @@ def _rtl_development_interface_check(
         "module": interface.module,
         "port_count": len(actual_ports),
     }
+    if interface.variant is not None:
+        result["variant"] = interface.variant
+    return result
 
 
 def _source_inputs(
@@ -1027,16 +1053,17 @@ def _export_interface_manifest(
                 "interfaces_are_distinct": interface.physical != interface.logical,
             },
         }
-    return {
-        "interface": {
-            "kind": interface.kind,
-            "contract": (
-                contract.producer / interface.contract
-            ).as_posix(),
-            "module": interface.module,
-            "source_role": interface.source_role,
-        }
+    row = {
+        "kind": interface.kind,
+        "contract": (
+            contract.producer / interface.contract
+        ).as_posix(),
+        "module": interface.module,
+        "source_role": interface.source_role,
     }
+    if interface.variant is not None:
+        row["variant"] = interface.variant
+    return {"interface": row}
 
 
 def _plan_loaded_ip_release(
@@ -1432,13 +1459,16 @@ def _packaged_rtl_interface_check(
     export_name: str,
     interface: Mapping[str, Any],
 ) -> None:
-    if set(interface) != {"kind", "contract", "module", "source_role"}:
+    required_fields = {"kind", "contract", "module", "source_role"}
+    fields = set(interface)
+    if fields != required_fields and fields != required_fields | {"variant"}:
         raise RuntimeError(
             f"packaged {export_name} RTL interface fields are invalid"
         )
     module_name = interface.get("module")
     source_role = interface.get("source_role")
     contract_source = interface.get("contract")
+    variant = interface.get("variant")
     if (
         not isinstance(module_name, str)
         or not module_name
@@ -1446,6 +1476,7 @@ def _packaged_rtl_interface_check(
         or not source_role
         or not isinstance(contract_source, str)
         or not contract_source
+        or (variant is not None and (not isinstance(variant, str) or not variant))
     ):
         raise RuntimeError(
             f"packaged {export_name} RTL interface identity is invalid"
@@ -1476,10 +1507,19 @@ def _packaged_rtl_interface_check(
     try:
         with contract_path.open("rb") as stream:
             raw: dict[str, Any] = tomllib.load(stream)
-        module = _table(raw.get("module"), "RTL interface module")
-        if module.get("name") != module_name:
-            raise ValueError("RTL interface module identity drifted")
-        expected_ports = _interface_ports(module.get("ports"), "module.ports")
+        module, public_module = _rtl_module_contract(
+            raw,
+            module_name=module_name,
+            variant=variant,
+        )
+        source_view = release_role_view(
+            manifest, source_role, export=export_name
+        )
+        if source_view.get("source") != module.get("source"):
+            raise ValueError("RTL interface source provenance drifted")
+        expected_ports = _interface_ports(
+            public_module.get("ports"), "module.ports"
+        )
         actual_ports = module_port_signatures(
             rtl_source.read_text(encoding="utf-8"), module_name
         )

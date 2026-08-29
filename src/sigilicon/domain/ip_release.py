@@ -82,6 +82,7 @@ class RtlIpInterface:
     contract: PurePosixPath
     module: str
     source_role: str
+    variant: str | None = None
 
 
 IpInterface = OaMixedSignalIpInterface | RtlIpInterface
@@ -261,6 +262,14 @@ def _parse_ip_contract(
                 source_role=_string(
                     interface.get("source_role"),
                     f"exports[{index}].interface.source_role",
+                ),
+                variant=(
+                    None
+                    if interface.get("variant") is None
+                    else _string(
+                        interface.get("variant"),
+                        f"exports[{index}].interface.variant",
+                    )
                 ),
             )
         else:
