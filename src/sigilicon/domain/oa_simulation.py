@@ -1,12 +1,14 @@
 """Declarative OA config/Maestro source shared by manual and automated runs."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import tomllib
+from types import MappingProxyType
 from typing import Any, Mapping
 
+from sigilicon.domain.config_contracts import freeze_toml_document
 from sigilicon.domain.platform import PdkConfig, resolve_platform
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
@@ -31,6 +33,9 @@ class OANativeRdbContract:
     setup_model_identities: tuple[tuple[str, str], ...] = ()
     diagnostic_equivalence: NativeDiagnosticContract | None = None
     diagnostic_processor: NativeDiagnosticProcessor | None = None
+    source_document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def scalar_names(self) -> tuple[str, ...]:
@@ -96,6 +101,9 @@ class OASimulationSpec:
     simulator: str
     native_setup: OANativeSetup
     contract_schema: int = 3
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def project_root(self) -> Path:
@@ -344,6 +352,7 @@ def _load_native_rdb_contract(
         setup_model_identities=setup_model_identities,
         diagnostic_equivalence=diagnostic_equivalence,
         diagnostic_processor=diagnostic_processor,
+        source_document=freeze_toml_document(raw),
     )
 
 
@@ -502,6 +511,9 @@ def _load_native_oa_simulation_spec(
     if rdb_contract is not None:
         _validate_native_rdb_contract_source(rdb_contract, setup_source)
         _validate_native_rdb_platform_models(rdb_contract, pdk)
+    source_documents = {spec_path: freeze_toml_document(raw)}
+    if rdb_contract is not None:
+        source_documents[rdb_contract.path] = rdb_contract.source_document
     return OASimulationSpec(
         path=spec_path,
         project=context,
@@ -517,6 +529,7 @@ def _load_native_oa_simulation_spec(
             maestro_procedure=maestro_procedure,
             rdb_contract=rdb_contract,
         ),
+        source_documents=MappingProxyType(source_documents),
     )
 
 
@@ -565,3 +578,90 @@ def load_oa_simulation_spec(
         ),
         platform_snapshot=platform,
     )
+
+
+def resolve_oa_simulation_spec(
+    path: Path,
+    *,
+    project: Project,
+    snapshot: OASimulationSpec | None = None,
+) -> OASimulationSpec:
+    """Load a simulation spec or validate one operation-owned snapshot."""
+
+    if snapshot is None:
+        return load_oa_simulation_spec(path, project=project)
+    spec_path = path.resolve()
+    root = project.project_root
+    rdb_contract = snapshot.native_setup.rdb_contract
+    expected_documents = {
+        spec_path,
+        *(() if rdb_contract is None else (rdb_contract.path,)),
+    }
+    if (
+        snapshot.project is not project
+        or snapshot.path != spec_path
+        or not spec_path.is_relative_to(root)
+        or not spec_path.is_file()
+    ):
+        raise ValueError("OA simulation snapshot identity drift")
+    owner = project.require_owner(spec_path)
+    setup_source_path = snapshot.native_setup.source
+    if (
+        setup_source_path != setup_source_path.resolve()
+        or not setup_source_path.is_file()
+        or not setup_source_path.is_relative_to(spec_path.parent)
+        or not setup_source_path.is_relative_to(owner.root)
+    ):
+        raise ValueError("OA simulation snapshot setup source identity drift")
+    native_rdb_path = (spec_path.parent / "native_rdb.toml").resolve()
+    if (rdb_contract is None and native_rdb_path.is_file()) or (
+        rdb_contract is not None and rdb_contract.path != native_rdb_path
+    ):
+        raise ValueError("OA simulation snapshot native RDB path identity drift")
+    if any(
+        not isinstance(source, Path) or not isinstance(document, Mapping)
+        for source, document in snapshot.source_documents.items()
+    ) or set(snapshot.source_documents) != expected_documents:
+        raise ValueError("OA simulation snapshot source document identity drift")
+    if any(
+        source != source.resolve()
+        or not source.is_relative_to(root)
+        or not source.is_file()
+        for source in snapshot.source_documents
+    ):
+        raise ValueError("OA simulation snapshot source document identity drift")
+    simulation_document = snapshot.source_documents[spec_path]
+    testbench = simulation_document.get("testbench")
+    platform = simulation_document.get("platform")
+    setup = simulation_document.get("setup")
+    setup_source = None if not isinstance(setup, Mapping) else setup.get("source")
+    if (
+        set(simulation_document) != {"schema", "testbench", "platform", "setup"}
+        or simulation_document.get("schema") != snapshot.contract_schema
+        or testbench
+        != {
+            "library": snapshot.library,
+            "cell": snapshot.cell,
+            "dut": snapshot.dut,
+            "source_view": snapshot.top_view,
+            "simulator": snapshot.simulator,
+        }
+        or platform != {"pdk": snapshot.native_setup.pdk.key}
+        or not isinstance(setup_source, str)
+        or (spec_path.parent / setup_source).resolve()
+        != setup_source_path
+        or setup
+        != {
+            "source": setup_source,
+            "config_procedure": snapshot.native_setup.config_procedure,
+            "maestro_procedure": snapshot.native_setup.maestro_procedure,
+        }
+    ):
+        raise ValueError("OA simulation snapshot source document drift")
+    if rdb_contract is not None and (
+        snapshot.source_documents[rdb_contract.path]
+        != rdb_contract.source_document
+        or rdb_contract.source_document.get("schema") != 2
+    ):
+        raise ValueError("OA simulation snapshot native RDB document drift")
+    return snapshot

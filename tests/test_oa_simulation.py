@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from sigilicon.domain.oa_simulation import load_oa_simulation_spec
+from sigilicon.domain.oa_simulation import (
+    load_oa_simulation_spec,
+    resolve_oa_simulation_spec,
+)
 from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.ade import _native_setup_entry_point
 from sigilicon.workflows.oa_simulation import _elaborated_netlist
@@ -125,6 +129,104 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
     assert spec.native_setup.rdb_contract is None
     assert spec.simulator == "spectre"
     assert not hasattr(spec, "measurement_program")
+    assert tuple(spec.source_documents) == (spec_path.resolve(),)
+    assert (
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=spec,
+        )
+        is spec
+    )
+    with pytest.raises(TypeError):
+        spec.source_documents[spec_path.resolve()]["schema"] = 2
+    with pytest.raises(ValueError, match="snapshot identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=Project.from_project_root(root),
+            snapshot=spec,
+        )
+    with pytest.raises(ValueError, match="source document identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=replace(spec, source_documents={}),
+        )
+    extra_document = spec_path.with_name("extra.toml")
+    extra_document.write_text("schema = 3\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="source document identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=replace(
+                spec,
+                source_documents={
+                    **spec.source_documents,
+                    extra_document.resolve(): {"schema": 3},
+                },
+            ),
+        )
+    drifted_document = dict(spec.source_documents[spec_path.resolve()])
+    drifted_document["testbench"] = {
+        **drifted_document["testbench"],
+        "library": "drift",
+    }
+    with pytest.raises(ValueError, match="source document drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=replace(
+                spec,
+                source_documents={spec_path.resolve(): drifted_document},
+            ),
+        )
+    unowned = root / "unowned/simulation.toml"
+    unowned.parent.mkdir()
+    unowned.write_text(spec_path.read_text(encoding="utf-8"), encoding="utf-8")
+    with pytest.raises(ValueError, match="no cataloged owner"):
+        resolve_oa_simulation_spec(
+            unowned,
+            project=project,
+            snapshot=replace(
+                spec,
+                path=unowned.resolve(),
+                source_documents={
+                    unowned.resolve(): spec.source_documents[spec_path.resolve()]
+                },
+            ),
+        )
+    with pytest.raises(ValueError, match="setup source identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=replace(
+                spec,
+                native_setup=replace(
+                    spec.native_setup,
+                    source=spec_path.parent,
+                ),
+            ),
+        )
+    setup_source = spec.native_setup.source
+    setup_text = setup_source.read_text(encoding="utf-8")
+    setup_source.unlink()
+    with pytest.raises(ValueError, match="setup source identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=spec,
+        )
+    setup_source.write_text(setup_text, encoding="utf-8")
+    spec_path.with_name("native_rdb.toml").write_text(
+        "schema = 2\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="native RDB path identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=spec,
+        )
 
 
 def test_native_simulation_contract_rejects_maestro_schema_duplication(
@@ -191,6 +293,50 @@ expression = "value(VT(\\"/OUT\\") 1u)"
     assert contract is not None
     assert contract.scalar_names == ("out_scalar",)
     assert contract.expected_expression_count == 1
+    assert set(spec.source_documents) == {
+        spec_path.resolve(),
+        contract.path,
+    }
+    assert spec.source_documents[contract.path] is contract.source_document
+    with pytest.raises(TypeError):
+        contract.source_document["schema"] = 1
+    with pytest.raises(ValueError, match="native RDB document drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=spec.project,
+            snapshot=replace(
+                spec,
+                native_setup=replace(
+                    spec.native_setup,
+                    rdb_contract=replace(
+                        contract,
+                        source_document={"schema": 1},
+                    ),
+                ),
+            ),
+        )
+    alternate_rdb = contract.path.with_name("alternate_rdb.toml")
+    alternate_rdb.write_text(
+        contract.path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    alternate_contract = replace(contract, path=alternate_rdb.resolve())
+    with pytest.raises(ValueError, match="native RDB path identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=spec.project,
+            snapshot=replace(
+                spec,
+                native_setup=replace(
+                    spec.native_setup,
+                    rdb_contract=alternate_contract,
+                ),
+                source_documents={
+                    spec_path.resolve(): spec.source_documents[spec_path.resolve()],
+                    alternate_rdb.resolve(): contract.source_document,
+                },
+            ),
+        )
 
 
 def _write_local_diagnostic_processor(path: Path) -> None:

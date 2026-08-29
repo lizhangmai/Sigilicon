@@ -148,6 +148,15 @@ def inspect_repository_designs(
         )
         for assembly in oa_source_inventory
     }
+    oa_simulation_inventory = {}
+    for plan in oa_plan_inventory.values():
+        for step in plan.testbenches:
+            path = step.simulation.path.resolve()
+            if path in oa_simulation_inventory:
+                raise ValueError(
+                    f"OA simulation path belongs to multiple plans: {path}"
+                )
+            oa_simulation_inventory[path] = step.simulation
 
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
@@ -224,6 +233,7 @@ def inspect_repository_designs(
         platform_inventory=platform_inventory,
         release_inventory=release_inventory,
         oa_source_inventory=oa_source_inventory,
+        oa_simulation_inventory=oa_simulation_inventory,
     )
 
     design_catalog = load_design_target_catalog(

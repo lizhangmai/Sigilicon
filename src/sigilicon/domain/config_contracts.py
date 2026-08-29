@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 if TYPE_CHECKING:
     from sigilicon.domain.ip_release import IpContract
     from sigilicon.domain.oa_library import OALibrarySource
+    from sigilicon.domain.oa_simulation import OASimulationSpec
     from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
     from sigilicon.domain.platform import PdkConfig, PlatformCatalogSnapshot
 
@@ -102,6 +103,20 @@ def read_toml(path: Path) -> dict[str, Any]:
     return value
 
 
+def _merge_source_documents(
+    target: dict[Path, Mapping[str, Any]],
+    source_documents: Mapping[Path, Mapping[str, Any]],
+    *,
+    label: str,
+) -> None:
+    for path, document in source_documents.items():
+        resolved = path.resolve()
+        previous = target.get(resolved)
+        if previous is not None and previous != document:
+            raise ValueError(f"{label} disagrees with another source: {path}")
+        target[resolved] = document
+
+
 def inspect_project_configurations(
     context: Project,
     *,
@@ -111,6 +126,7 @@ def inspect_project_configurations(
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
+    oa_simulation_inventory: Mapping[Path, OASimulationSpec] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -184,14 +200,25 @@ def inspect_project_configurations(
                 project=context,
                 snapshot=snapshot,
             )
-            for path, document in source.source_documents.items():
-                resolved = path.resolve()
-                previous = catalog_documents.get(resolved)
-                if previous is not None and previous != document:
-                    raise ValueError(
-                        f"OA source snapshot disagrees with another source: {path}"
-                    )
-                catalog_documents[resolved] = document
+            _merge_source_documents(
+                catalog_documents,
+                source.source_documents,
+                label="OA source snapshot",
+            )
+    if oa_simulation_inventory is not None:
+        from sigilicon.domain.oa_simulation import resolve_oa_simulation_spec
+
+        for path, snapshot in oa_simulation_inventory.items():
+            simulation = resolve_oa_simulation_spec(
+                path,
+                project=context,
+                snapshot=snapshot,
+            )
+            _merge_source_documents(
+                catalog_documents,
+                simulation.source_documents,
+                label="OA simulation snapshot",
+            )
     resolved_platform_catalog = None
     if platform_inventory is not None and platform_catalog is None:
         raise ValueError("platform inventory requires its platform catalog snapshot")
@@ -219,14 +246,11 @@ def inspect_project_configurations(
                 raise ValueError(
                     "platform snapshot manifest disagrees with its catalog"
                 )
-            for path, document in platform.source_documents.items():
-                resolved = path.resolve()
-                previous = catalog_documents.get(resolved)
-                if previous is not None and previous != document:
-                    raise ValueError(
-                        f"platform source snapshot disagrees with another source: {path}"
-                    )
-                catalog_documents[resolved] = document
+            _merge_source_documents(
+                catalog_documents,
+                platform.source_documents,
+                label="platform source snapshot",
+            )
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),

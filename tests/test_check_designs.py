@@ -195,7 +195,10 @@ def test_check_designs_reads_each_ip_release_contract_once(
     monkeypatch.setattr(
         repository_checks,
         "plan_oa_library_rebuild",
-        lambda *_args, **_kwargs: SimpleNamespace(as_dict=lambda: {}),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            as_dict=lambda: {},
+            testbenches=(),
+        ),
     )
     monkeypatch.setattr(
         repository_checks,
@@ -341,6 +344,9 @@ def test_repository_workflows_share_one_platform_inventory(
         + "\n[variants.fixture]\ncontract = 'unused.toml'\n",
         encoding="utf-8",
     )
+    planned_simulation_path = tmp_path / "ip/fixture/planned_simulation.toml"
+    planned_simulation_path.write_text("schema = 3\n", encoding="utf-8")
+    planned_simulation = SimpleNamespace(path=planned_simulation_path.resolve())
     platform_sources = {
         (tmp_path / "configs/platform/catalog.toml").resolve(),
         *(
@@ -354,6 +360,7 @@ def test_repository_workflows_share_one_platform_inventory(
     observed_release_inventories: list[object] = []
     observed_oa_inventories: list[object] = []
     observed_oa_plan_inventories: list[object] = []
+    observed_oa_simulation_inventories: list[object] = []
     oa_source_reads: list[Path] = []
     oa_document_reads = 0
 
@@ -392,7 +399,10 @@ def test_repository_workflows_share_one_platform_inventory(
         assert project.project_root == tmp_path.resolve()
         observed_platform_inventories.append(platform_inventory)
         observed_oa_inventories.append(oa_source_inventory)
-        return SimpleNamespace(as_dict=lambda: {})
+        return SimpleNamespace(
+            as_dict=lambda: {},
+            testbenches=(SimpleNamespace(simulation=planned_simulation),),
+        )
 
     def load_oa_source(path, *, project):
         resolved = path.resolve()
@@ -423,10 +433,15 @@ def test_repository_workflows_share_one_platform_inventory(
         observed_platform_inventories.append(platform_inventory)
         observed_release_inventories.append(kwargs["release_inventory"])
         observed_oa_inventories.append(kwargs["oa_source_inventory"])
+        observed_oa_simulation_inventories.append(
+            kwargs["oa_simulation_inventory"]
+        )
+        forwarded = dict(kwargs)
+        forwarded["oa_simulation_inventory"] = {}
         return original_inspect_configurations(
             *args,
             platform_inventory=platform_inventory,
-            **kwargs,
+            **forwarded,
         )
 
     monkeypatch.setattr(tomllib, "load", counted_load)
@@ -470,5 +485,9 @@ def test_repository_workflows_share_one_platform_inventory(
     assert set(observed_oa_inventories[0]) == set(oa_source_reads)
     assert len(observed_oa_plan_inventories) == 1
     assert set(observed_oa_plan_inventories[0]) == set(oa_source_reads)
+    assert len(observed_oa_simulation_inventories) == 1
+    assert observed_oa_simulation_inventories[0] == {
+        planned_simulation_path.resolve(): planned_simulation
+    }
     assert oa_document_reads == 0
     assert set(reads.values()) == {1}

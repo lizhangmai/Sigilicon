@@ -1,12 +1,14 @@
 from dataclasses import replace
 from pathlib import Path
 import tomllib
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 import sigilicon.domain.config_contracts as config_contracts
 from conftest import write_project_context, write_test_platform
 from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
     inspect_project_configurations,
     require_config_header,
 )
@@ -200,6 +202,152 @@ def test_project_configuration_reuses_validated_platform_source_documents(
             platform_inventory={
                 "testpdk": replace(platform, path=platform.simulation.path)
             },
+        )
+
+
+def test_project_configuration_reuses_oa_simulation_source_documents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_selected_catalogs(tmp_path)
+    simulation_path = (
+        tmp_path / "ip/alpha/verification/tb_fixture/simulation.toml"
+    )
+    rdb_path = simulation_path.with_name("native_rdb.toml")
+    setup_path = simulation_path.with_name("setup.il")
+    non_oa_simulation = (
+        tmp_path / "ip/beta/verification/hspice/simulation.toml"
+    )
+    _write(
+        tmp_path,
+        simulation_path.relative_to(tmp_path).as_posix(),
+        "schema = 3\n",
+    )
+    _write(
+        tmp_path,
+        rdb_path.relative_to(tmp_path).as_posix(),
+        "schema = 2\n",
+    )
+    _write(
+        tmp_path,
+        setup_path.relative_to(tmp_path).as_posix(),
+        "procedure(fixtureConfig() t)\nprocedure(fixtureMaestro() t)\n",
+    )
+    _write(
+        tmp_path,
+        non_oa_simulation.relative_to(tmp_path).as_posix(),
+        "schema = 3\n",
+    )
+    context = RepositoryContext.from_project_root(tmp_path)
+    simulation_document = freeze_toml_document(
+        {
+            "schema": 3,
+            "testbench": {
+                "library": "fixture",
+                "cell": "tb_fixture",
+                "dut": "dut",
+                "source_view": "schematic",
+                "simulator": "spectre",
+            },
+            "platform": {"pdk": "testpdk"},
+            "setup": {
+                "source": "setup.il",
+                "config_procedure": "fixtureConfig",
+                "maestro_procedure": "fixtureMaestro",
+            },
+        }
+    )
+    rdb_document = MappingProxyType({"schema": 2})
+    rdb_contract = SimpleNamespace(
+        path=rdb_path.resolve(),
+        source_document=rdb_document,
+    )
+    simulation = SimpleNamespace(
+        path=simulation_path.resolve(),
+        project=context,
+        library="fixture",
+        cell="tb_fixture",
+        dut="dut",
+        top_view="schematic",
+        simulator="spectre",
+        contract_schema=3,
+        native_setup=SimpleNamespace(
+            pdk=SimpleNamespace(key="testpdk"),
+            source=setup_path.resolve(),
+            config_procedure="fixtureConfig",
+            maestro_procedure="fixtureMaestro",
+            rdb_contract=rdb_contract,
+        ),
+        source_documents=MappingProxyType(
+            {
+                simulation_path.resolve(): simulation_document,
+                rdb_path.resolve(): rdb_document,
+            }
+        ),
+    )
+    reads: list[Path] = []
+    non_oa_reads = 0
+    original_read_toml = config_contracts.read_toml
+
+    def counted_read_toml(path: Path):
+        nonlocal non_oa_reads
+        if path.resolve() in simulation.source_documents:
+            reads.append(path.resolve())
+        if path.resolve() == non_oa_simulation.resolve():
+            non_oa_reads += 1
+        return original_read_toml(path)
+
+    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
+
+    report = inspect_project_configurations(
+        context,
+        owner_roots=_owner_roots(tmp_path),
+        oa_simulation_inventory={simulation_path.resolve(): simulation},
+    )
+
+    assert report["passed"] is True
+    assert report["native_documents"] == 3
+    assert reads == []
+    assert non_oa_reads == 1
+
+    with pytest.raises(ValueError, match="snapshot identity drift"):
+        inspect_project_configurations(
+            context,
+            owner_roots=_owner_roots(tmp_path),
+            oa_simulation_inventory={rdb_path.resolve(): simulation},
+        )
+
+    component_path = (tmp_path / "ip/alpha/component.toml").resolve()
+    conflicting_document = freeze_toml_document(
+        {
+            **simulation_document,
+            "setup": {
+                **simulation_document["setup"],
+                "source": "verification/tb_fixture/setup.il",
+            },
+        }
+    )
+    conflicting_simulation = SimpleNamespace(
+        **{
+            **simulation.__dict__,
+            "path": component_path,
+            "native_setup": SimpleNamespace(
+                **{
+                    **simulation.native_setup.__dict__,
+                    "rdb_contract": None,
+                }
+            ),
+            "source_documents": {component_path: conflicting_document},
+        }
+    )
+    with pytest.raises(
+        ValueError,
+        match="OA simulation snapshot disagrees with another source",
+    ):
+        inspect_project_configurations(
+            context,
+            owner_roots=_owner_roots(tmp_path),
+            oa_simulation_inventory={component_path: conflicting_simulation},
         )
 
 
