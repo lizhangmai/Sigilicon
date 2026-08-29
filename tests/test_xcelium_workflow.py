@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from sigilicon.artifacts import load_manifest
+from sigilicon.cli.xcelium import _display_path
 from sigilicon.domain.repository import Project
 import sigilicon.domain.repository as repository_module
 from sigilicon.workflows import xcelium
@@ -22,6 +23,17 @@ def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def test_xcelium_cli_paths_support_external_artifact_roots(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    local = project_root / "build/run/manifest.json"
+    external = tmp_path / "external/run/manifest.json"
+
+    assert _display_path(local, project_root=project_root) == (
+        "build/run/manifest.json"
+    )
+    assert _display_path(external, project_root=project_root) == str(external)
 
 
 def _verification_project(root: Path) -> Path:
@@ -163,7 +175,11 @@ def test_xcelium_run_reuses_project_and_writes_managed_artifact(
     assert result.returncode == 0
     assert result.passed
     assert result.plan.spec.project is project
-    manifest = load_manifest(result.manifest)
+    assert result.run_id == "3" * 32
+    assert result.run_dir == result.manifest_path.parent
+    assert result.run_summary == result.run_dir / "outputs/summary.json"
+    assert result.manifest == result.manifest_path
+    manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
     assert manifest["entities"]["library"] == "demo"
     assert manifest["completion_evidence"] == ["outputs/summary.json"]
@@ -189,7 +205,7 @@ def test_xcelium_run_fails_artifact_when_success_marker_is_absent(
 
     assert result.returncode == 0
     assert not result.passed
-    manifest = load_manifest(result.manifest)
+    manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "failed"
     assert manifest["details"]["summary"]["success_marker_seen"] is False
 
@@ -218,8 +234,7 @@ def test_xcelium_run_accepts_success_marker_from_native_log(
 
     assert result.passed
     assert "TB_DEMO_SUMMARY failures=0" in result.evidence_output
-    manifest = load_manifest(result.manifest)
+    manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
-    summary_path = result.manifest.parent / "outputs/summary.json"
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
     assert summary["success_marker_evidence"] == ["native_log"]

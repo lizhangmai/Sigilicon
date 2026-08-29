@@ -59,12 +59,21 @@ class XceliumCellRun:
     """Completed managed Xcelium invocation."""
 
     plan: XceliumCellPlan
-    manifest: Path
+    run_id: str
+    run_dir: Path
+    manifest_path: Path
+    run_summary: Path
     returncode: int
     passed: bool
     stdout: str
     stderr: str
     native_log: str
+
+    @property
+    def manifest(self) -> Path:
+        """Compatibility alias for the canonical artifact manifest path."""
+
+        return self.manifest_path
 
     @property
     def evidence_output(self) -> str:
@@ -284,7 +293,10 @@ def run_xcelium_cell(
             )
         return XceliumCellRun(
             plan=plan,
-            manifest=attempt.paths.manifest,
+            run_id=attempt.paths.identity,
+            run_dir=attempt.paths.root,
+            manifest_path=attempt.paths.manifest,
+            run_summary=summary_path,
             returncode=completed.returncode,
             passed=passed,
             stdout=completed.stdout,

@@ -11,6 +11,16 @@ from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.xcelium import ProjectXceliumWorkflow
 
 
+def _display_path(path: Path, *, project_root: Path) -> str:
+    """Keep project-local output stable while supporting external artifact roots."""
+
+    return (
+        path.relative_to(project_root).as_posix()
+        if path.is_relative_to(project_root)
+        else str(path)
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cell", type=Path, required=True, help="verification cell cell.toml")
@@ -41,7 +51,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "executed": True,
                 "returncode": result.returncode,
                 "passed": result.passed,
-                "manifest": result.manifest.relative_to(root).as_posix(),
+                "run_id": result.run_id,
+                "run_dir": _display_path(result.run_dir, project_root=root),
+                "manifest": _display_path(
+                    result.manifest_path, project_root=root
+                ),
+                "run_summary": _display_path(
+                    result.run_summary, project_root=root
+                ),
                 "product_qualification_conclusion": False,
             }
     except (OSError, RuntimeError, ValueError) as error:
