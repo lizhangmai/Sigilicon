@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from sigilicon.domain.design import DesignSpec, load_design_spec
+from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.netlist import select_subckt_snapshot
 from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.oa import (
@@ -88,6 +89,7 @@ def inspect_design(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
+    platform: PdkConfig | None = None,
 ) -> DesignInspection:
     """Load one canonical spec and prove its source hierarchy is coherent."""
 
@@ -95,6 +97,7 @@ def inspect_design(
         spec_path,
         project=project,
         project_root=project_root,
+        platform=platform,
     )
     if spec.sync_mode == "target-only" and spec.netlist_snapshot.subckts != (spec.cell,):
         spec = replace(

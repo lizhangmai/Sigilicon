@@ -121,6 +121,31 @@ class PdkConfig:
     installation_root_environment: str | None = None
 
 
+def resolve_platform(
+    context: Project,
+    key: str,
+    *,
+    snapshot: PdkConfig | None = None,
+) -> PdkConfig:
+    """Load a platform or validate one caller-owned plan snapshot."""
+
+    if snapshot is None:
+        return load_platform(context, key)
+    if snapshot.key != key:
+        raise ValueError(
+            f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
+        )
+    root = context.project_root
+    catalog = context.catalog("platform")
+    if not snapshot.source_paths or snapshot.source_paths[0] != catalog:
+        raise ValueError("platform snapshot belongs to a different project catalog")
+    if snapshot.path not in snapshot.source_paths:
+        raise ValueError("platform snapshot manifest is absent from its source identity")
+    if any(not path.is_relative_to(root) for path in snapshot.source_paths):
+        raise ValueError("platform snapshot source identity escapes the project root")
+    return snapshot
+
+
 def _identifier(value: object, field: str) -> str:
     if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
         raise ValueError(f"{field} must be an identifier")

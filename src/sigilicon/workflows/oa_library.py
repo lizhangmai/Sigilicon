@@ -22,6 +22,7 @@ from sigilicon.domain.oa_library import (
     OAViewReference,
     load_oa_library_source,
 )
+from sigilicon.domain.platform import PdkConfig, load_platform
 from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
@@ -286,12 +287,17 @@ def _plan_designs(
     source: OALibrarySource,
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
+    platform: PdkConfig,
 ) -> tuple[DesignRebuildStep, ...]:
     inspections: list[DesignInspection] = []
     for cell in source.cells:
         if cell.design_spec is None:
             continue
-        inspection = inspect_design(cell.design_spec, project=source.project)
+        inspection = inspect_design(
+            cell.design_spec,
+            project=source.project,
+            platform=platform,
+        )
         if inspection.spec.library != source.name:
             raise ValueError(
                 f"design spec library differs from {source.name}: {cell.design_spec}"
@@ -423,6 +429,7 @@ def _instance_parameter_expectations(
 def _plan_testbenches(
     source: OALibrarySource,
     definitions: Mapping[str, NetlistSubcircuit],
+    platform: PdkConfig,
 ) -> tuple[TestbenchRebuildStep, ...]:
     declared_cells = {cell.cell for cell in source.cells}
     result: list[TestbenchRebuildStep] = []
@@ -442,6 +449,7 @@ def _plan_testbenches(
         simulation = load_oa_simulation_spec(
             next(iter(setup_sources)),
             project=source.project,
+            platform=platform,
         )
         if simulation.library != source.name or simulation.cell != cell.cell:
             raise ValueError(f"testbench setup identity differs from {cell.cell}")
@@ -486,6 +494,7 @@ def _plan_layouts(
     source: OALibrarySource,
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
+    platform: PdkConfig,
 ) -> tuple[LayoutRebuildStep, ...]:
     specs: list[LayoutSpec] = []
     plans: dict[tuple[str, str], LayoutPlan] = {}
@@ -496,6 +505,7 @@ def _plan_layouts(
                 spec_path,
                 project=source.project,
                 oa_source=source,
+                platform=platform,
             )
             if spec.library != source.name:
                 raise ValueError(
@@ -594,9 +604,10 @@ def plan_oa_library_rebuild(
             f"OA assembly may materialize only its unique library {source.name}"
         )
     definitions = _load_definitions(source)
-    designs = _plan_designs(source, target_library, definitions)
-    layouts = _plan_layouts(source, target_library, definitions)
-    testbenches = _plan_testbenches(source, definitions)
+    platform = load_platform(source.project, source.pdk)
+    designs = _plan_designs(source, target_library, definitions, platform)
+    layouts = _plan_layouts(source, target_library, definitions, platform)
+    testbenches = _plan_testbenches(source, definitions, platform)
     views = _plan_views(source)
     expected_views = {
         cell.cell: tuple(view.name for view in cell.views)

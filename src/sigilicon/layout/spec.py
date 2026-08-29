@@ -22,7 +22,7 @@ from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import (
     LayoutPdkConfig,
     PdkConfig,
-    load_platform,
+    resolve_platform,
 )
 from sigilicon.domain.repository import Project, RepositoryOwner
 
@@ -240,6 +240,7 @@ def load_layout_spec(
     project: Project | None = None,
     project_root: Path | None = None,
     oa_source: OALibrarySource | None = None,
+    platform: PdkConfig | None = None,
 ) -> LayoutSpec:
     spec_path = path.resolve()
     if project is None:
@@ -427,7 +428,7 @@ def load_layout_spec(
             raise ValueError(f"unsupported direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = load_platform(repository, pdk_key)
+    pdk = resolve_platform(repository, pdk_key, snapshot=platform)
     if pdk.layout is None:
         raise ValueError(
             f"platform {pdk_key!r} does not declare layout and verification contracts"

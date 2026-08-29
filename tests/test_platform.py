@@ -9,7 +9,7 @@ from conftest import (
     write_test_layout_platform,
     write_test_platform,
 )
-from sigilicon.domain.platform import load_platform
+from sigilicon.domain.platform import load_platform, resolve_platform
 from sigilicon.domain.repository import RepositoryContext
 
 
@@ -33,6 +33,46 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
         tmp_path / "configs/platform/testpdk/simulation.toml",
         tmp_path / "configs/platform/testpdk/oa.toml",
     )
+
+
+def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = RepositoryContext.from_project_root(tmp_path)
+    snapshot = load_platform(project, "testpdk")
+
+    resolved = resolve_platform(project, "testpdk", snapshot=snapshot)
+
+    assert resolved is snapshot
+
+
+def test_resolve_platform_rejects_another_project_catalog(tmp_path: Path) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (left, right):
+        write_project_context(root)
+        write_test_platform(root)
+    snapshot = load_platform(
+        RepositoryContext.from_project_root(left),
+        "testpdk",
+    )
+
+    with pytest.raises(ValueError, match="different project catalog"):
+        resolve_platform(
+            RepositoryContext.from_project_root(right),
+            "testpdk",
+            snapshot=snapshot,
+        )
+
+
+def test_resolve_platform_rejects_a_different_key(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = RepositoryContext.from_project_root(tmp_path)
+    snapshot = load_platform(project, "testpdk")
+
+    with pytest.raises(ValueError, match="disagrees with requested key"):
+        resolve_platform(project, "other", snapshot=snapshot)
 
 
 def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:

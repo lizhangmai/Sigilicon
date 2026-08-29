@@ -14,6 +14,7 @@ from sigilicon.workflows.oa_library import (
     _instance_parameter_expectations,
     _plan_layouts,
     check_oa_parity,
+    plan_oa_library_rebuild,
     rebuild_oa_library,
 )
 
@@ -204,7 +205,10 @@ def test_oa_layout_plan_reuses_loaded_assembly_source(
     )
     calls: list[tuple[Path, object, object]] = []
 
-    def load_layout(path: Path, *, project, oa_source):
+    platform_snapshot = object()
+
+    def load_layout(path: Path, *, project, oa_source, platform):
+        assert platform is platform_snapshot
         calls.append((path, project, oa_source))
         return spec
 
@@ -222,10 +226,83 @@ def test_oa_layout_plan_reuses_loaded_assembly_source(
         ),
     )
 
-    steps = _plan_layouts(source, "assembled", {})
+    steps = _plan_layouts(source, "assembled", {}, platform_snapshot)
 
     assert len(steps) == 1
     assert calls == [(layout_path, project, source)]
+
+
+def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = object()
+    source = SimpleNamespace(
+        project=project,
+        name="assembled",
+        pdk="testpdk",
+        cells=(),
+    )
+    platform = object()
+    received: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.load_oa_library_source",
+        lambda *_args, **_kwargs: source,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library._load_definitions",
+        lambda _source: {},
+    )
+
+    def load_project_platform(selected_project, key):
+        assert selected_project is project
+        assert key == "testpdk"
+        received.append(("load", platform))
+        return platform
+
+    def plan_designs(_source, _library, _definitions, snapshot):
+        received.append(("design", snapshot))
+        return ()
+
+    def plan_layouts(_source, _library, _definitions, snapshot):
+        received.append(("layout", snapshot))
+        return ()
+
+    def plan_testbenches(_source, _definitions, snapshot):
+        received.append(("simulation", snapshot))
+        return ()
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.load_platform",
+        load_project_platform,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library._plan_designs",
+        plan_designs,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library._plan_layouts",
+        plan_layouts,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library._plan_testbenches",
+        plan_testbenches,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library._plan_views",
+        lambda _source: (),
+    )
+
+    plan = plan_oa_library_rebuild(tmp_path / "oa.toml")
+
+    assert plan.source is source
+    assert received == [
+        ("load", platform),
+        ("design", platform),
+        ("layout", platform),
+        ("simulation", platform),
+    ]
 
 
 def test_pre_layout_oa_assembly_can_omit_physical_verification(

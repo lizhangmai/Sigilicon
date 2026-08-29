@@ -7,7 +7,7 @@ import re
 import tomllib
 from typing import Any, Mapping
 
-from sigilicon.domain.platform import PdkConfig, load_platform
+from sigilicon.domain.platform import PdkConfig, resolve_platform
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
@@ -422,6 +422,7 @@ def _load_native_oa_simulation_spec(
     owner_root: Path,
     raw: Mapping[str, Any],
     default_diagnostic_processor: NativeDiagnosticProcessor | None,
+    platform_snapshot: PdkConfig | None,
 ) -> OASimulationSpec:
     """Load the thin contract used by native ADE/Maestro pilot cells.
 
@@ -460,9 +461,10 @@ def _load_native_oa_simulation_spec(
     simulator = _identifier(testbench.get("simulator"), "testbench.simulator")
     if simulator not in {"spectre", "ams"}:
         raise ValueError("testbench.simulator must be spectre or ams")
-    pdk = load_platform(
+    pdk = resolve_platform(
         context,
         _identifier(platform.get("pdk"), "platform.pdk"),
+        snapshot=platform_snapshot,
     )
     setup_value = setup.get("source")
     if not isinstance(setup_value, str) or not setup_value:
@@ -523,6 +525,7 @@ def load_oa_simulation_spec(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
+    platform: PdkConfig | None = None,
 ) -> OASimulationSpec:
     """Load only the source-owned schema-3 thin native simulation contract."""
 
@@ -560,4 +563,5 @@ def load_oa_simulation_spec(
             context,
             owner_path=spec_path,
         ),
+        platform_snapshot=platform,
     )
