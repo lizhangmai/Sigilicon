@@ -227,42 +227,36 @@ def inspect_repository_designs(
         owner_roots=owner_roots,
     )
 
-    designs: dict[str, Any] = {}
-    design_catalog_paths = context.flow_catalogs("design_targets")
-    if design_catalog_paths:
-        design_catalog = load_design_target_catalog(project=context)
-        designs = {
-            target.name: {
-                "owner": target.owner,
-                "entrypoint": target.entrypoint,
-                "modes": [mode.name for mode in target.modes],
-            }
-            for target in design_catalog.targets
+    design_catalog = load_design_target_catalog(project=context)
+    designs = {
+        target.name: {
+            "owner": target.owner,
+            "entrypoint": target.entrypoint,
+            "modes": [mode.name for mode in target.modes],
         }
+        for target in design_catalog.targets
+    }
 
-    layout_targets: dict[str, Any] = {}
-    layout_catalog_paths = context.flow_catalogs("layout_targets")
-    if layout_catalog_paths:
-        layout_catalog = load_layout_target_catalog(project=context)
-        layout_targets = {
-            target.name: {
-                "owner": target.owner,
-                "spec": target.spec_relative.as_posix(),
-                "actions": list(target.actions),
-            }
-            for target in layout_catalog.targets
+    layout_catalog = load_layout_target_catalog(project=context)
+    layout_targets = {
+        target.name: {
+            "owner": target.owner,
+            "spec": target.spec_relative.as_posix(),
+            "actions": list(target.actions),
         }
+        for target in layout_catalog.targets
+    }
 
     catalogs = {
         "ip": ip_catalog_path.relative_to(root).as_posix(),
         "platform": platform_catalog_path.relative_to(root).as_posix(),
         "design_targets": [
             path.relative_to(root).as_posix()
-            for _, path in design_catalog_paths
+            for path in design_catalog.paths
         ],
         "layout_targets": [
             path.relative_to(root).as_posix()
-            for _, path in layout_catalog_paths
+            for path in layout_catalog.paths
         ],
     }
     return {

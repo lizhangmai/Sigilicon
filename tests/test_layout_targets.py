@@ -62,7 +62,28 @@ def test_layout_target_catalog_can_start_empty(tmp_path: Path) -> None:
         },
     )
 
-    assert load_layout_target_catalog(tmp_path).targets == ()
+    catalog = load_layout_target_catalog(tmp_path)
+
+    assert catalog.paths == ((flows / "layout_targets.toml").resolve(),)
+    assert catalog.targets == ()
+
+
+def test_layout_target_catalog_is_an_optional_project_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = Project.from_project_root(tmp_path)
+
+    catalog = load_layout_target_catalog(project=project)
+
+    assert catalog.project is project
+    assert catalog.paths == ()
+    assert catalog.targets == ()
+
+    monkeypatch.chdir(tmp_path)
+    assert flow_cli.main(["layout", "list", "--json"], client_factory=object) == 0
+    assert capsys.readouterr().out == "[]\n"
 
 
 def test_layout_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:

@@ -86,11 +86,11 @@ def load_layout_target_catalog(
     *,
     project: Project | None = None,
 ) -> LayoutTargetCatalog:
+    """Load every selected layout target catalog, or an empty optional domain."""
+
     repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
     catalogs = repository.flow_catalogs("layout_targets")
-    if not catalogs:
-        raise ValueError("project context declares no layout target catalogs")
     targets: list[LayoutTarget] = []
     names: set[str] = set()
     for owner, catalog_path in catalogs:

@@ -166,11 +166,11 @@ def load_design_target_catalog(
     *,
     project: Project | None = None,
 ) -> DesignTargetCatalog:
+    """Load every selected design target catalog, or an empty optional domain."""
+
     repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
     catalogs = repository.flow_catalogs("design_targets")
-    if not catalogs:
-        raise ValueError("project context declares no design target catalogs")
     targets: list[DesignTarget] = []
     names: set[str] = set()
     for owner, catalog_path in catalogs:

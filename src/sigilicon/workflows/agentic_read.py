@@ -668,13 +668,9 @@ class AgenticReadInterface:
         return self.project.owner_flow_catalogs(owner)
 
     def _design_targets(self) -> tuple[Any, ...]:
-        if not self.project.flow_catalogs("design_targets"):
-            return ()
         return load_design_target_catalog(project=self.project).targets
 
     def _layout_targets(self) -> tuple[Any, ...]:
-        if not self.project.flow_catalogs("layout_targets"):
-            return ()
         return load_layout_target_catalog(project=self.project).targets
 
     def _owner_payload(
