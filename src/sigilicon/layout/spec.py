@@ -449,6 +449,7 @@ def load_layout_spec(
         component_graph = load_component_graph(
             owner.component.path,
             project_root=root,
+            root_contract=owner.component,
         )
         _validate_generator_ownership(
             repository,

@@ -319,7 +319,12 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
     component_path = _project_path(
         root, Path(contract.producer) / contract.component_contract, "component contract"
     )
-    graph = load_component_graph(component_path, project_root=root)
+    owner = contract.project.require_owner(component_path)
+    graph = load_component_graph(
+        component_path,
+        project_root=root,
+        root_contract=(owner.component if owner.component.path == component_path else None),
+    )
     paths: set[Path] = {contract.path}
 
     def add_source(source: Path) -> None:
@@ -678,8 +683,15 @@ def _plan_loaded_ip_release(
         Path(contract.producer) / contract.component_contract,
         "component contract",
     )
+    component_owner = contract.project.require_owner(component_path)
     component_graph = load_component_graph(
-        component_path, project_root=contract.project_root
+        component_path,
+        project_root=contract.project_root,
+        root_contract=(
+            component_owner.component
+            if component_owner.component.path == component_path
+            else None
+        ),
     )
     component = next(
         item for item in component_graph.values() if item.path == component_path

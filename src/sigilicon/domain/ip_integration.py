@@ -450,15 +450,24 @@ def load_ip_integration_contract(
 
     repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
-    component = load_component_contract(path, project_root=root)
-    cataloged_owner = repository.require_owner(component.path)
+    contract_path = path.resolve()
+    cataloged_owner = repository.require_owner(contract_path)
+    component = (
+        cataloged_owner.component
+        if cataloged_owner.component.path == contract_path
+        else load_component_contract(contract_path, project_root=root)
+    )
     if component.owner != cataloged_owner.name:
         raise ValueError("IP integration owner disagrees with the project catalog")
     if component.kind != "composite-ip":
         raise ValueError("IP integration requires a composite-ip component")
     with component.path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
-    graph = load_component_graph(component.path, project_root=root)
+    graph = load_component_graph(
+        component.path,
+        project_root=root,
+        root_contract=component,
+    )
 
     dependency_rows = raw.get("component", [])
     assert isinstance(dependency_rows, list)

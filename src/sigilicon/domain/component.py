@@ -124,11 +124,24 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
 
 
 def load_component_graph(
-    path: Path, *, project_root: Path
+    path: Path,
+    *,
+    project_root: Path,
+    root_contract: ComponentContract | None = None,
 ) -> Mapping[str, ComponentContract]:
     """Load and validate the complete component ownership graph rooted at *path*."""
 
     root = project_root.resolve()
+    graph_root = path.resolve()
+    if root_contract is not None and (
+        root_contract.path != graph_root
+        or root_contract.project_root != root
+    ):
+        raise ValueError("component graph root snapshot disagrees with its path or project")
+    if not graph_root.is_relative_to(root):
+        raise FileNotFoundError(
+            "component contract is missing or outside the project root"
+        )
     contracts: dict[str, ComponentContract] = {}
     owners: dict[str, Path] = {}
     visiting: set[Path] = set()
@@ -139,7 +152,11 @@ def load_component_graph(
             raise ValueError(f"component dependency cycle includes {resolved}")
         visiting.add(resolved)
         try:
-            contract = load_component_contract(resolved, project_root=root)
+            contract = (
+                root_contract
+                if root_contract is not None and resolved == graph_root
+                else load_component_contract(resolved, project_root=root)
+            )
             previous = owners.get(contract.name)
             if previous is not None and previous != contract.path:
                 raise ValueError(
@@ -159,7 +176,7 @@ def load_component_graph(
         finally:
             visiting.remove(resolved)
 
-    visit(path)
+    visit(graph_root)
     return contracts
 
 

@@ -147,7 +147,12 @@ def inspect_repository_designs(
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
     for name, path in component_paths.items():
-        graph = load_component_graph(path, project_root=root)
+        owner = context.require_owner(path)
+        graph = load_component_graph(
+            path,
+            project_root=root,
+            root_contract=(owner.component if owner.component.path == path else None),
+        )
         component = graph.get(name)
         if component is None or component.path != path:
             raise ValueError(f"IP component catalog identity mismatch: {name}")

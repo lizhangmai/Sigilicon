@@ -147,7 +147,15 @@ def load_ip_contract(
         raise FileNotFoundError("IP component contract is missing or outside its owner")
     from sigilicon.domain.component import load_component_graph, resolve_component_fileset
 
-    component_graph = load_component_graph(component_path, project_root=root)
+    component_graph = load_component_graph(
+        component_path,
+        project_root=root,
+        root_contract=(
+            cataloged_owner.component
+            if cataloged_owner.component.path == component_path
+            else None
+        ),
+    )
     ip_name = _string(raw.get("name"), "name")
     component = component_graph.get(ip_name)
     if component is None or component.path != component_path:

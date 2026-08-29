@@ -140,7 +140,11 @@ def _allowed_files(
         for values in contract.component.filesets.values()
         for relative in values
     }
-    graph = load_component_graph(contract.path, project_root=root)
+    graph = load_component_graph(
+        contract.path,
+        project_root=root,
+        root_contract=contract.component,
+    )
     fileset = variant.get_fileset(fileset_name)
     for dependency_name, source_fileset in fileset.source_filesets.items():
         allowed.update(
