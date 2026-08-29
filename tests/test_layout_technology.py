@@ -53,6 +53,15 @@ source_alias_prefix = "S_"
 drain_alias_prefix = "D_"
 cdf_callback_parameter = "routePolydir"
 cdf_callback_bypass_parameters = ["polyContacts"]
+
+[contacted_mos]
+pitch_dbu = [1000, 1000]
+wire_half_width_dbu = 25
+diffusion_contact_extension_dbu = 50
+bottom_gate_contact_y_offset_dbu = -115
+supported_gate_length_dbu = 30
+gate_contact_parameters = [["polyContacts", "boolean", "True"]]
+pmos_contact_parameters = []
 ''',
         encoding="utf-8",
     )

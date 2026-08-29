@@ -1,0 +1,98 @@
+from sigilicon.layout.ir import LayoutInstance, LayoutPlan
+from sigilicon.layout.pcell import apply_pcell_semantics
+from sigilicon.layout.technology import (
+    ContactedMosRecipe,
+    LayoutTechnology,
+    MosPcellInterface,
+)
+
+
+def _technology() -> LayoutTechnology:
+    return LayoutTechnology(
+        owner="test-owner",
+        model_polarities={"nch": "nmos"},
+        layers={},
+        vias={},
+        via_landings={},
+        mos_pcell=MosPcellInterface(
+            finger_count_parameter="fingers",
+            source_terminal="S",
+            drain_terminal="D",
+            source_alias_prefix="S_",
+            drain_alias_prefix="D_",
+            cdf_callback_parameter="routePolydir",
+            cdf_callback_bypass_parameters=("polyContacts",),
+        ),
+        contacted_mos=ContactedMosRecipe(
+            pitch_dbu=(1000, 1000),
+            wire_half_width_dbu=25,
+            diffusion_contact_extension_dbu=50,
+            bottom_gate_contact_y_offset_dbu=-115,
+            supported_gate_length_dbu=30,
+            gate_contact_parameters=(),
+            pmos_contact_parameters=(),
+        ),
+    )
+
+
+def _plan(instance: LayoutInstance) -> LayoutPlan:
+    return LayoutPlan(
+        library="test",
+        cell="CELL",
+        view="layout",
+        stage="routed",
+        generator="test",
+        dbu_per_micron=1000,
+        instances=(instance,),
+    )
+
+
+def test_pcell_semantics_expand_multifinger_terminal_aliases() -> None:
+    instance = LayoutInstance(
+        name="M0",
+        library="pdk",
+        cell="nch",
+        view="layout",
+        origin_dbu=(0, 0),
+        transform="R0",
+        parameters=(("fingers", "string", "4"),),
+        terminals=(
+            ("B", "VSS"),
+            ("D", "Y"),
+            ("G", "A"),
+            ("S", "VSS"),
+        ),
+    )
+
+    lowered = apply_pcell_semantics(_plan(instance), _technology())
+
+    assert lowered.instances[0].expected_master_terminals == (
+        "B",
+        "D",
+        "D_1",
+        "G",
+        "S",
+        "S_1",
+        "S_2",
+    )
+    assert lowered.instances[0].callback_parameters == ()
+
+
+def test_pcell_semantics_preserve_callback_only_without_bypass_parameter() -> None:
+    instance = LayoutInstance(
+        name="M0",
+        library="pdk",
+        cell="nch",
+        view="layout",
+        origin_dbu=(0, 0),
+        transform="R0",
+        parameters=(
+            ("fingers", "string", "1"),
+            ("routePolydir", "string", "Bottom"),
+        ),
+        terminals=(("D", "Y"), ("G", "A"), ("S", "VSS")),
+    )
+
+    lowered = apply_pcell_semantics(_plan(instance), _technology())
+
+    assert lowered.instances[0].callback_parameters == ("routePolydir",)
