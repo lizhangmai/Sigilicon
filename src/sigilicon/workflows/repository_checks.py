@@ -15,7 +15,6 @@ from sigilicon.domain.config_contracts import (
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.platform import load_platform
 from sigilicon.domain.repository import Project
-from sigilicon.workflows.design_catalog import inspect_design_catalog
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
@@ -120,16 +119,11 @@ def _register_owner_root(
 
 def check_project_designs(
     project_contract: Path,
-    *,
-    catalog: Path | None = None,
 ) -> dict[str, Any]:
     """Inspect one explicit project while parsing its manifest exactly once."""
 
     project = Project.from_file(project_contract)
-    if catalog is None:
-        return inspect_repository_designs(project)
-    _, report = inspect_design_catalog(catalog, project=project)
-    return report
+    return inspect_repository_designs(project)
 
 
 def inspect_repository_designs(
