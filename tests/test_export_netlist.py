@@ -159,8 +159,12 @@ def test_export_workflow_uses_the_canonical_execution_layout(
         / ("1" * 32)
     )
     assert destinations == [expected / "work"]
+    assert result.run_id == "1" * 32
+    assert result.run_dir == expected
     assert result.input_scs == expected / "outputs/input.scs"
     assert result.manifest_path == expected / "manifest.json"
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["run_id"] == result.run_id
     request = json.loads((expected / "inputs/oa-view.json").read_text())
     assert request == {
         "cell": "inv",

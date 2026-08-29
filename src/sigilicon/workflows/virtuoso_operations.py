@@ -58,6 +58,8 @@ class ParameterUpdateResult:
 class ProjectNetlistExport:
     """Exact artifact references produced by one OA netlist export."""
 
+    run_id: str
+    run_dir: Path
     input_scs: Path
     support_files: tuple[Path, ...]
     manifest_path: Path
@@ -220,6 +222,8 @@ def export_project_netlist(
     if stable_result is None:
         raise RuntimeError("netlist export completed without a stable input.scs result")
     return ProjectNetlistExport(
+        run_id=record.paths.identity,
+        run_dir=record.paths.root,
         input_scs=stable_result,
         support_files=support_files,
         manifest_path=record.paths.manifest,
