@@ -164,6 +164,7 @@ def load_ip_contract(
             if cataloged_owner.component.path == component_path
             else None
         ),
+        contract_inventory=repository.component_inventory,
     )
     ip_name = _string(raw.get("name"), "name")
     component = component_graph.get(ip_name)

@@ -114,6 +114,14 @@ class Project:
         compare=False,
     )
 
+    @property
+    def component_inventory(self) -> Mapping[Path, ComponentContract]:
+        """Return canonical owner component snapshots keyed by source path."""
+
+        return MappingProxyType(
+            {owner.component.path: owner.component for owner in self.owners}
+        )
+
     @classmethod
     def from_file(cls, path: Path | str) -> "Project":
         contract = Path(path).resolve()

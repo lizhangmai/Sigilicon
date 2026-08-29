@@ -464,6 +464,7 @@ def load_layout_spec(
             owner.component.path,
             project_root=root,
             root_contract=owner.component,
+            contract_inventory=repository.component_inventory,
         )
         _validate_generator_ownership(
             repository,
@@ -666,6 +667,7 @@ def resolve_layout_spec(
             owner.component.path,
             project_root=root,
             root_contract=owner.component,
+            contract_inventory=project.component_inventory,
         )
         _validate_generator_ownership(
             project,

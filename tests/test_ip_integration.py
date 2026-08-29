@@ -707,8 +707,9 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
     assert contract.component_graph["composite"] is project.owner(
         "composite"
     ).component
+    assert contract.component_graph["leaf"] is project.owner("leaf").component
     assert root_reads == 1
-    assert reads == [(project_root / "ip/leaf/configs/ip.toml").resolve()]
+    assert reads == []
 
     reads.clear()
     allowed = _allowed_files(

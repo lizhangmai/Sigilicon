@@ -193,6 +193,7 @@ def inspect_repository_designs(
             path,
             project_root=root,
             root_contract=(owner.component if owner.component.path == path else None),
+            contract_inventory=context.component_inventory,
         )
         component = graph.get(name)
         if component is None or component.path != path:

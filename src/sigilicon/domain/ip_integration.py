@@ -12,6 +12,7 @@ from sigilicon.domain.component import (
     ComponentContract,
     load_component_contract,
     load_component_graph,
+    parse_component_contract,
 )
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
@@ -468,10 +469,16 @@ def load_ip_integration_contract(
     else:
         with component.path.open("rb") as stream:
             raw = tomllib.load(stream)
+        component = parse_component_contract(
+            component.path,
+            project_root=root,
+            document=raw,
+        )
     graph = load_component_graph(
         component.path,
         project_root=root,
         root_contract=component,
+        contract_inventory=repository.component_inventory,
     )
 
     dependency_rows = raw.get("component", [])

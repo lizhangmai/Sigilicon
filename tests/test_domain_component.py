@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from sigilicon.domain.component import (
     ComponentContract,
     load_component_contract,
     load_component_graph,
+    resolve_component_contract,
 )
 
 
@@ -99,6 +101,16 @@ python = ["ip/shared/library.py"]
     assert graph == {"shared": root_contract}
     assert reads == []
 
+    legacy_root = replace(root_contract, document={})
+    graph = load_component_graph(
+        contract,
+        project_root=tmp_path,
+        root_contract=legacy_root,
+    )
+
+    assert graph["shared"] == root_contract
+    assert reads == [contract.resolve()]
+
 
 def test_component_graph_rejects_a_snapshot_from_another_root(
     tmp_path: Path,
@@ -171,6 +183,7 @@ contract = "ip/child/ip.toml"
         root_contract_path,
         project_root=tmp_path,
     )
+    child_contract = load_component_contract(child, project_root=tmp_path)
     reads: list[Path] = []
     original_loader = component_domain.load_component_contract
 
@@ -188,3 +201,24 @@ contract = "ip/child/ip.toml"
 
     assert sorted(graph) == ["child", "top"]
     assert reads == [child.resolve()]
+
+    reads.clear()
+    graph = load_component_graph(
+        root_contract_path,
+        project_root=tmp_path,
+        root_contract=root_contract,
+        contract_inventory={
+            root_contract.path: root_contract,
+            child_contract.path: child_contract,
+        },
+    )
+
+    assert graph == {"top": root_contract, "child": child_contract}
+    assert reads == []
+
+    with pytest.raises(ValueError, match="source document drift"):
+        resolve_component_contract(
+            root_contract_path,
+            project_root=tmp_path,
+            snapshot=replace(root_contract, kind="rtl-ip"),
+        )
