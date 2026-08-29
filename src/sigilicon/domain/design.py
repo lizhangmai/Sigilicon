@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
+    is_frozen_toml_document,
     read_toml,
     require_config_header,
 )
@@ -20,6 +21,7 @@ from sigilicon.domain.repository import Project
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_.+\-]+\Z")
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 @dataclass(frozen=True)
@@ -269,6 +271,11 @@ def resolve_design_spec(
     ):
         raise ValueError("design snapshot source document identity drift")
     raw = snapshot.source_documents[spec_path]
+    if (
+        not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE)
+        or not is_frozen_toml_document(raw)
+    ):
+        raise ValueError("design snapshot source document drift: mutable snapshot")
     if owner is not None:
         require_config_header(
             raw,

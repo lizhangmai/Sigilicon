@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -105,6 +106,18 @@ def test_design_spec_preserves_and_resolves_its_source_document(
     assert resolve_design_spec(path, project=project, snapshot=spec) is spec
     with pytest.raises(TypeError):
         spec.source_documents[resolved_path]["schema"] = 2
+    for mutable_documents in (
+        {resolved_path: spec.source_documents[resolved_path]},
+        MappingProxyType(
+            {resolved_path: dict(spec.source_documents[resolved_path])}
+        ),
+    ):
+        with pytest.raises(ValueError, match="mutable snapshot"):
+            resolve_design_spec(
+                path,
+                project=project,
+                snapshot=replace(spec, source_documents=mutable_documents),
+            )
 
     drifted_document = dict(spec.source_documents[resolved_path])
     drifted_document["design"] = {

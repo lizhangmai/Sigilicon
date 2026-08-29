@@ -8,11 +8,15 @@ import pytest
 
 import sigilicon.domain.component as component_domain
 import sigilicon.domain.config_contracts as config_contracts
+import sigilicon.domain.design as design_domain
 import sigilicon.domain.oa_library as oa_library_domain
 import sigilicon.domain.oa_simulation as oa_simulation_domain
 import sigilicon.domain.platform as platform_domain
 import sigilicon.workflows.ip_packaging as ip_packaging
-from sigilicon.domain.config_contracts import inspect_project_configurations
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    inspect_project_configurations,
+)
 from sigilicon.domain.ip_release import load_ip_contract, resolve_ip_contract
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import release_role_view
@@ -311,6 +315,102 @@ def test_project_configuration_reuses_ip_release_interface_documents(
 
     assert report["passed"] is True
     assert snapshot_reads == []
+
+
+def test_oa_port_contract_reuses_release_owned_design_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    source = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
+    document = freeze_toml_document(
+        {
+            "ports": {
+                "order": ["A"],
+                "directions": {"A": "input"},
+            }
+        }
+    )
+    snapshot = SimpleNamespace(
+        project=contract.project,
+        path=source,
+        source_documents=MappingProxyType({source: document}),
+    )
+
+    def resolve(path, *, project, snapshot):
+        assert path == source
+        assert project is contract.project
+        return snapshot
+
+    monkeypatch.setattr(design_domain, "resolve_design_spec", resolve)
+    monkeypatch.setattr(
+        ip_packaging.tomllib,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail("OA port contract was reloaded"),
+    )
+
+    reused = ip_packaging._oa_port_contract_document(
+        contract,
+        source,
+        design_inventory={source: snapshot},
+    )
+
+    assert reused is document
+    assert ip_packaging._oa_port_contract(reused)["A"].direction == "input"
+    with pytest.raises(ValueError, match="inventory has no"):
+        ip_packaging._oa_port_contract_document(
+            contract,
+            source,
+            design_inventory={},
+        )
+    outside = (tmp_path / "outside.toml").resolve()
+    outside.write_text("name = 'outside'\n", encoding="utf-8")
+    outside_snapshot = SimpleNamespace(
+        source_documents=MappingProxyType({outside: document}),
+    )
+    monkeypatch.setattr(
+        design_domain,
+        "resolve_design_spec",
+        lambda *_args, **_kwargs: outside_snapshot,
+    )
+    with pytest.raises(ValueError, match="inside the release producer"):
+        ip_packaging._oa_port_contract_document(
+            contract,
+            outside,
+            design_inventory={outside: outside_snapshot},
+        )
+
+
+def test_release_design_inventory_rejects_forged_oa_plan(
+    tmp_path: Path,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    oa_manifest = (tmp_path / "ip/fixture/configs/oa.toml").resolve()
+    declared = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
+    forged = (tmp_path / "ip/fixture/configs/right_interface.toml").resolve()
+    source = SimpleNamespace(
+        project=contract.project,
+        name="fixture-lib",
+        pdk="testpdk",
+        cells=(SimpleNamespace(cell="LEFT", design_spec=declared),),
+    )
+    forged_spec = SimpleNamespace(
+        path=forged,
+        project=contract.project,
+        library="fixture-lib",
+        cell="LEFT",
+        pdk=SimpleNamespace(key="testpdk"),
+    )
+    plan = SimpleNamespace(
+        source=source,
+        designs=(SimpleNamespace(inspection=SimpleNamespace(spec=forged_spec)),),
+    )
+
+    with pytest.raises(ValueError, match="undeclared design spec"):
+        ip_packaging._release_design_inventory(
+            contract,
+            {oa_manifest: plan},
+        )
 
 
 def test_release_consumers_reuse_the_contract_component_graph(

@@ -43,6 +43,7 @@ from sigilicon.flow.model import (
 from sigilicon.paths import ArtifactLayout
 
 if TYPE_CHECKING:
+    from sigilicon.domain.design import DesignSpec
     from sigilicon.workflows.oa_library import OALibraryRebuildPlan
 
 
@@ -171,7 +172,7 @@ def _oa_port_contract(raw: Mapping[str, Any]) -> dict[str, ModulePort]:
     ports = _table(raw.get("ports"), "OA port contract ports")
     order = ports.get("order")
     directions = _table(ports.get("directions"), "OA port directions")
-    if not isinstance(order, list) or any(
+    if not isinstance(order, (list, tuple)) or any(
         not isinstance(name, str) or not name for name in order
     ):
         raise ValueError("OA ports.order must be a string array")
@@ -201,8 +202,51 @@ def _oa_port_contract_source(
     return _project_path(root, contract_relative, "OA port contract")
 
 
+def _oa_port_contract_document(
+    contract: IpContract,
+    path: Path,
+    *,
+    design_inventory: Mapping[Path, DesignSpec] | None,
+) -> Mapping[str, Any]:
+    if design_inventory is None:
+        with path.open("rb") as stream:
+            return tomllib.load(stream)
+    try:
+        design_snapshot = design_inventory[path]
+    except KeyError as exc:
+        raise ValueError(f"OA design inventory has no {path} entry") from exc
+    from sigilicon.domain.design import resolve_design_spec
+
+    design = resolve_design_spec(
+        path,
+        project=contract.project,
+        snapshot=design_snapshot,
+    )
+    producer_root = _project_path(
+        contract.project_root,
+        Path(contract.producer),
+        "IP producer",
+    )
+    if not path.is_relative_to(producer_root):
+        raise ValueError("OA port contract must stay inside the release producer")
+    return design.source_documents[path]
+
+
 def _development_interface_check(
     contract: IpContract, exported: IpExport
+) -> dict[str, Any]:
+    return _development_interface_check_with_design_inventory(
+        contract,
+        exported,
+        design_inventory=None,
+    )
+
+
+def _development_interface_check_with_design_inventory(
+    contract: IpContract,
+    exported: IpExport,
+    *,
+    design_inventory: Mapping[Path, DesignSpec] | None,
 ) -> dict[str, Any]:
     """Validate the machine-readable boundary against shipped SV collateral."""
 
@@ -276,8 +320,12 @@ def _development_interface_check(
     circuit_source = _project_path(
         root, Path(str(expected_sources["circuit_netlist"])), "canonical circuit netlist"
     )
-    with oa_source.open("rb") as stream:
-        oa_ports = _oa_port_contract(tomllib.load(stream))
+    oa_document = _oa_port_contract_document(
+        contract,
+        oa_source,
+        design_inventory=design_inventory,
+    )
+    oa_ports = _oa_port_contract(oa_document)
     physical_ports = module_port_signatures(
         physical_source.read_text(encoding="utf-8"), str(physical_module)
     )
@@ -795,6 +843,57 @@ def _release_project(
     )
 
 
+def _release_design_inventory(
+    contract: IpContract,
+    oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None,
+) -> Mapping[Path, DesignSpec] | None:
+    if oa_plan_inventory is None:
+        return None
+    root = contract.project_root
+    oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
+    try:
+        oa_plan = oa_plan_inventory[oa_manifest]
+    except KeyError as exc:
+        raise ValueError(f"OA plan inventory has no {oa_manifest} entry") from exc
+    producer_root = _project_path(root, Path(contract.producer), "IP producer")
+    declared: dict[Path, Any] = {}
+    for cell in oa_plan.source.cells:
+        if cell.design_spec is None:
+            continue
+        path = cell.design_spec.resolve()
+        if path in declared:
+            raise ValueError(f"OA source declares duplicate design spec: {path}")
+        declared[path] = cell
+    result: dict[Path, DesignSpec] = {}
+    for step in oa_plan.designs:
+        spec = step.inspection.spec
+        path = spec.path.resolve()
+        try:
+            cell = declared[path]
+        except KeyError as exc:
+            raise ValueError(
+                f"OA rebuild plan contains undeclared design spec: {path}"
+            ) from exc
+        if (
+            path in result
+            or spec.path != path
+            or spec.project is not oa_plan.source.project
+            or spec.cell != cell.cell
+            or spec.library != oa_plan.source.name
+            or spec.pdk.key != oa_plan.source.pdk
+        ):
+            raise ValueError(f"OA rebuild design plan identity drift: {path}")
+        result[path] = spec
+    if set(result) != set(declared):
+        missing = sorted(str(path) for path in set(declared) - set(result))
+        raise ValueError(f"OA rebuild plan omits design specs: {missing}")
+    return {
+        path: spec
+        for path, spec in result.items()
+        if path.is_relative_to(producer_root)
+    }
+
+
 def _plan_loaded_ip_release(
     contract: IpContract,
     *,
@@ -830,10 +929,22 @@ def _plan_loaded_ip_release(
     component = next(
         item for item in component_graph.values() if item.path == component_path
     )
-    interface_checks = [
-        _development_interface_check(contract, exported)
-        for exported in contract.exports
-    ]
+    design_inventory = _release_design_inventory(contract, oa_plan_inventory)
+    interface_checks = (
+        [
+            _development_interface_check(contract, exported)
+            for exported in contract.exports
+        ]
+        if design_inventory is None
+        else [
+            _development_interface_check_with_design_inventory(
+                contract,
+                exported,
+                design_inventory=design_inventory,
+            )
+            for exported in contract.exports
+        ]
+    )
     semantic_check, semantic_missing = _qualification_semantics(
         contract,
         level,
