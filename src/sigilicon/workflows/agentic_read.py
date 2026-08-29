@@ -20,6 +20,7 @@ from sigilicon.flow import (
     FlowPlan,
     load_catalog_selection,
     load_flow_catalog,
+    resolve_catalog_selection,
 )
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.paths import ProjectContext
@@ -302,12 +303,15 @@ class AgenticReadInterface:
                 )
             catalog_path = catalogs[0]
             catalog = load_flow_catalog(catalog_path, owner_root=owner.root)
+            engine = FlowEngine(
+                project_workflow_registry(self.project, owner.root),
+                project_scope=self.project.scope(owner),
+            )
             for entry in catalog.entries:
                 profiles = tuple(sorted({entry.default_profile, *entry.profiles}))
                 for profile in profiles:
-                    selection = load_catalog_selection(
-                        catalog_path,
-                        owner_root=owner.root,
+                    selection = resolve_catalog_selection(
+                        catalog,
                         flow_id=entry.flow_id,
                         profile_id=profile,
                     )
@@ -316,17 +320,21 @@ class AgenticReadInterface:
                         if combinations > 10_000:
                             raise ValueError("project exposes too many executable Flow plans")
                         try:
-                            resolved = self.resolve_flow_plan(
-                                owner=owner.name,
-                                flow=entry.flow_id,
-                                target=target.target_id,
-                                profile=profile,
+                            plan = engine.plan(
+                                selection.spec,
+                                target.target_id,
+                                selection.profile,
                             )
                         except FlowContractError:
                             # Project-owned Adapter extensions are not globally
                             # available. They cannot match a plan compiled by
                             # this server's current owner registry.
                             continue
+                        resolved = ResolvedAgenticFlowPlan(
+                            engine,
+                            plan,
+                            engine.plan_id(plan),
+                        )
                         if resolved.plan_identity == plan_identity:
                             matches.append(resolved)
         if len(matches) != 1:
@@ -640,9 +648,8 @@ class AgenticReadInterface:
         catalog = load_flow_catalog(catalog_path, owner_root=owner.root)
         flows: list[dict[str, Any]] = []
         for entry in catalog.entries:
-            selection = load_catalog_selection(
-                catalog_path,
-                owner_root=owner.root,
+            selection = resolve_catalog_selection(
+                catalog,
                 flow_id=entry.flow_id,
             )
             flows.append(

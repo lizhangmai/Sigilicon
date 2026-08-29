@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from conftest import write_component_owner
+import sigilicon.flow.contracts as flow_contracts_module
+import sigilicon.workflows.agentic_read as agentic_read_module
 from sigilicon.cli.agentic_read import main as agentic_read_cli_main
 from sigilicon.domain.repository import RepositoryContext
 from sigilicon.domain.circuit_design import (
@@ -130,6 +132,35 @@ def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
     assert str(tmp_path) not in json.dumps(project)
     assert str(tmp_path) not in json.dumps(plan)
     assert not (tmp_path / "artifacts").exists()
+
+
+def test_project_inspection_reads_each_flow_catalog_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = write_read_only_flow_project(tmp_path)
+    interface = AgenticReadInterface.from_project_root(tmp_path)
+    original = flow_contracts_module.load_flow_catalog
+    reads = 0
+
+    def counted(path: Path, *, owner_root: Path):
+        nonlocal reads
+        if path.resolve() == catalog.resolve():
+            reads += 1
+        return original(path, owner_root=owner_root)
+
+    monkeypatch.setattr(agentic_read_module, "load_flow_catalog", counted)
+    monkeypatch.setattr(flow_contracts_module, "load_flow_catalog", counted)
+
+    interface.inspect_project(owner="example")
+
+    assert reads == 1
+
+    reads = 0
+    resolved = interface.resolve_plan_identity("example:pipeline:all:offline")
+
+    assert resolved.plan_identity == "example:pipeline:all:offline"
+    assert reads == 1
 
 
 def test_cli_python_and_run_inspection_share_the_exact_interface(

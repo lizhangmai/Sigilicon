@@ -342,22 +342,26 @@ def load_flow_catalog(path: Path, *, owner_root: Path) -> FlowCatalog:
     )
 
 
-def load_catalog_selection(
-    path: Path,
+def resolve_catalog_selection(
+    catalog: FlowCatalog,
     *,
-    owner_root: Path,
     flow_id: str,
     profile_id: str | None = None,
 ) -> CatalogSelection:
-    catalog = load_flow_catalog(path, owner_root=owner_root)
+    """Resolve one Flow and profile from an already validated catalog snapshot."""
+
     entry = catalog.entry(flow_id)
     selected_profile = profile_id or entry.default_profile
     try:
-        profile_path = entry.profiles[selected_profile]
+        profile_path = entry.profiles[selected_profile].resolve()
     except KeyError as exc:
         raise FlowContractError(
             f"Flow {flow_id!r} has no cataloged profile {selected_profile!r}"
         ) from exc
+    if not profile_path.is_relative_to(catalog.owner_root):
+        raise FlowContractError(
+            "Execution Profile must be inside the catalog owner root"
+        )
     spec = load_flow_contract(entry.contract, owner_root=catalog.owner_root)
     profile = load_execution_profile(profile_path)
     if spec.owner != catalog.owner or profile.owner != catalog.owner:
@@ -373,3 +377,19 @@ def load_catalog_selection(
             f"catalog profile {selected_profile!r} resolved {profile.profile_id!r}"
         )
     return CatalogSelection(spec=spec, profile=profile)
+
+
+def load_catalog_selection(
+    path: Path,
+    *,
+    owner_root: Path,
+    flow_id: str,
+    profile_id: str | None = None,
+) -> CatalogSelection:
+    """Load one Flow catalog and resolve its selected Flow and profile."""
+
+    return resolve_catalog_selection(
+        load_flow_catalog(path, owner_root=owner_root),
+        flow_id=flow_id,
+        profile_id=profile_id,
+    )

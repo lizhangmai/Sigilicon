@@ -26,6 +26,8 @@ from sigilicon.flow import (
     ResolvedPlatformAssetMember,
     load_catalog_selection,
     load_execution_profile,
+    load_flow_catalog,
+    resolve_catalog_selection,
 )
 
 
@@ -125,7 +127,12 @@ def test_catalog_resolves_owner_scoped_flow_and_default_profile(
         owner_root=tmp_path,
         flow_id="pipeline",
     )
+    snapshot_selection = resolve_catalog_selection(
+        load_flow_catalog(catalog, owner_root=tmp_path),
+        flow_id="pipeline",
+    )
 
+    assert snapshot_selection == selection
     assert selection.spec.flow_id == "pipeline"
     assert selection.profile.profile_id == "local"
     assert selection.profile.selection("fake.requirements").adapter == "fake-requirements"
