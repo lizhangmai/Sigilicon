@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.domain.component import (
     ComponentContract,
@@ -57,11 +57,28 @@ def _project_relative(
 
 
 @dataclass(frozen=True)
+class OaReleaseInterfaceReference:
+    kind: Literal["oa-mixed-signal"]
+    logical_interface: str
+    physical_interface: str
+
+
+@dataclass(frozen=True)
+class RtlReleaseInterfaceReference:
+    kind: Literal["rtl"]
+    module: str
+
+
+ReleaseInterfaceReference = (
+    OaReleaseInterfaceReference | RtlReleaseInterfaceReference
+)
+
+
+@dataclass(frozen=True)
 class IpReleaseDependency:
     export: str
     required_maturity: str
-    logical_interface: str
-    physical_interface: str
+    interface: ReleaseInterfaceReference
     roles: tuple[str, ...]
     role_modules: Mapping[str, str]
     role_exports: Mapping[str, str]
@@ -207,15 +224,65 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
         if role not in roles:
             raise ValueError(f"{label}.role_exports names undeclared role: {role}")
         role_exports[role] = _string(role_export, f"{label}.role_exports.{role}")
+    interface_raw = item.get("interface")
+    legacy_fields = {"logical_interface", "physical_interface"} & item.keys()
+    if interface_raw is None:
+        if legacy_fields != {"logical_interface", "physical_interface"}:
+            raise ValueError(
+                f"{label} must declare an interface reference"
+            )
+        interface: ReleaseInterfaceReference = OaReleaseInterfaceReference(
+            kind="oa-mixed-signal",
+            logical_interface=_string(
+                item.get("logical_interface"), f"{label}.logical_interface"
+            ),
+            physical_interface=_string(
+                item.get("physical_interface"), f"{label}.physical_interface"
+            ),
+        )
+    else:
+        if legacy_fields:
+            raise ValueError(
+                f"{label} cannot mix tagged and legacy interface references"
+            )
+        interface_table = _table(interface_raw, f"{label}.interface")
+        interface_kind = interface_table.get("kind")
+        if interface_kind == "oa-mixed-signal":
+            if set(interface_table) != {"kind", "logical", "physical"}:
+                raise ValueError(
+                    f"{label}.interface OA fields are invalid"
+                )
+            interface = OaReleaseInterfaceReference(
+                kind="oa-mixed-signal",
+                logical_interface=_string(
+                    interface_table.get("logical"),
+                    f"{label}.interface.logical",
+                ),
+                physical_interface=_string(
+                    interface_table.get("physical"),
+                    f"{label}.interface.physical",
+                ),
+            )
+        elif interface_kind == "rtl":
+            if set(interface_table) != {"kind", "module"}:
+                raise ValueError(
+                    f"{label}.interface RTL fields are invalid"
+                )
+            interface = RtlReleaseInterfaceReference(
+                kind="rtl",
+                module=_string(
+                    interface_table.get("module"),
+                    f"{label}.interface.module",
+                ),
+            )
+        else:
+            raise ValueError(
+                f"{label}.interface.kind is unsupported: {interface_kind!r}"
+            )
     return IpReleaseDependency(
         export=export,
         required_maturity=maturity,
-        logical_interface=_string(
-            item.get("logical_interface"), f"{label}.logical_interface"
-        ),
-        physical_interface=_string(
-            item.get("physical_interface"), f"{label}.physical_interface"
-        ),
+        interface=interface,
         roles=roles,
         role_modules=MappingProxyType(role_modules),
         role_exports=MappingProxyType(role_exports),

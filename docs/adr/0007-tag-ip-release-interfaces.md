@@ -29,3 +29,18 @@ tagged union instead of reading OA fields directly from every `IpExport`.
 Release manifests remain schema 1; newly planned exports include
 `interface.kind`, while the offline auditor continues to accept older OA
 manifests that predate the tag.
+
+Composite-IP release dependencies use the same tagged reference rather than
+requiring every dependency to name physical and logical OA identities. Existing
+component contracts with flat `logical_interface` and `physical_interface`
+fields infer an `oa-mixed-signal` reference. New contracts declare one exact
+`[component.release.interface]` table: OA references carry `logical` and
+`physical`, while RTL references carry only `kind = "rtl"` and `module`.
+Planning and locked-release consumption compare that typed intent with the
+selected export before resolving any collateral role.
+
+This also removes the typed `IpReleaseDependency.logical_interface` and
+`physical_interface` attributes and the corresponding flat fields from new
+integration-plan records. Callers narrow `IpReleaseDependency.interface` and
+read the plan's tagged `release.interface` mapping instead. Existing source
+TOML remains valid; persisted plan comparisons must regenerate the plan.

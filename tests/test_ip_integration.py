@@ -15,6 +15,8 @@ import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
+    OaReleaseInterfaceReference,
+    RtlReleaseInterfaceReference,
     load_ip_integration_contract,
     resolve_ip_integration_contract,
 )
@@ -143,6 +145,134 @@ endmodule
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     return release_id, (relative_root / "manifest.json").as_posix()
+
+
+def _write_rtl_release_fixture(artifact_root: Path) -> tuple[str, str]:
+    release_id = "development-rtl-fixture"
+    relative_root = Path("exports/fixture-ip/package") / release_id
+    release_root = artifact_root / relative_root
+    release_root.mkdir(parents=True)
+    interface = release_root / "interfaces/interface.toml"
+    source = release_root / "rtl/fixture_rtl.sv"
+    interface.parent.mkdir()
+    source.parent.mkdir()
+    interface.write_text(
+        '''[module]
+name = "fixture_rtl"
+source = "ip/fixture/rtl/fixture_rtl.sv"
+ports = [{ name = "clk", direction = "input", width = 1 }]
+''',
+        encoding="utf-8",
+    )
+    source.write_text(
+        "module fixture_rtl(input logic clk);\nendmodule\n",
+        encoding="utf-8",
+    )
+    views = [
+        {
+            "export": "rtl",
+            "role": "interface_contract",
+            "path": "interfaces/interface.toml",
+            "source": "ip/fixture/configs/interface.toml",
+            "format": "toml",
+            "size": interface.stat().st_size,
+        },
+        {
+            "export": "rtl",
+            "role": "rtl_source",
+            "path": "rtl/fixture_rtl.sv",
+            "source": "ip/fixture/rtl/fixture_rtl.sv",
+            "format": "systemverilog",
+            "module": "fixture_rtl",
+            "size": source.stat().st_size,
+        },
+    ]
+    manifest = {
+        "schema": 1,
+        "contract_kind": "ip-release-manifest",
+        "release_kind": "source-package",
+        "ip_name": "fixture-ip",
+        "release_id": release_id,
+        "source_commit": "a" * 40,
+        "exports": [
+            {
+                "name": "rtl",
+                "interface": {
+                    "kind": "rtl",
+                    "contract": "ip/fixture/configs/interface.toml",
+                    "module": "fixture_rtl",
+                    "source_role": "rtl_source",
+                },
+                "maturity": {
+                    "required_roles": ["interface_contract", "rtl_source"]
+                },
+                "availability": {
+                    "simulation": True,
+                    "synthesis": False,
+                    "physical_implementation": False,
+                },
+            }
+        ],
+        "views": views,
+        "maturity": {
+            "level": "development",
+            "checks": [{"name": "rtl-interface", "passed": True}],
+            "missing_items": [],
+        },
+        "provenance": {
+            "producer": "ip/fixture",
+            "working_tree_dirty": False,
+        },
+    }
+    (release_root / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    return release_id, (relative_root / "manifest.json").as_posix()
+
+
+def _select_rtl_dependency(contract: Path) -> None:
+    source = contract.read_text(encoding="utf-8")
+    source = source.replace(
+        '''[component.release]
+export = "macro"
+required_maturity = "development"
+logical_interface = "fixture_model:transaction-1-port"
+physical_interface = "fixture_macro:oa-1-pin"
+roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+
+[component.release.role_modules]
+transaction_model = "fixture_model"
+integration_adapter = "fixture_shell"
+physical_blackbox = "fixture_macro"
+''',
+        '''[component.release]
+export = "rtl"
+required_maturity = "development"
+roles = ["rtl_source"]
+
+[component.release.interface]
+kind = "rtl"
+module = "fixture_rtl"
+
+[component.release.role_modules]
+rtl_source = "fixture_rtl"
+''',
+    )
+    contract.write_text(source, encoding="utf-8")
+    variant = contract.parent / "variants/default.toml"
+    variant_source = variant.read_text(encoding="utf-8")
+    variant_source = variant_source.replace(
+        '''[architecture_validation]
+validator = "test_ip_integration:_fixture_architecture_validator"
+
+''',
+        "",
+    ).replace(
+        'fixture-ip = ["transaction_model"]',
+        'fixture-ip = ["rtl_source"]',
+    )
+    physical = variant_source.index("[physical_binding]")
+    variant.write_text(variant_source[:physical], encoding="utf-8")
 
 
 def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Path:
@@ -634,6 +764,171 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
     ]
 
 
+def test_rtl_release_dependency_is_consumed_without_physical_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_rtl_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    _select_rtl_dependency(contract_path)
+
+    project = Project.from_project_root(project_root).with_artifact_root(
+        artifact_root
+    )
+    contract = load_ip_integration_contract(
+        contract_path,
+        project=project,
+    )
+    release = contract.release_dependencies[0].release
+    assert release is not None
+    assert isinstance(release.interface, RtlReleaseInterfaceReference)
+    assert release.interface.module == "fixture_rtl"
+
+    producer_path = project_root / "ip/fixture/configs/release.toml"
+    producer = SimpleNamespace(
+        name="fixture-ip",
+        path=producer_path,
+        project=project,
+    )
+    monkeypatch.setattr(
+        ip_integration,
+        "ip_catalog_contract_path",
+        lambda *_args, **_kwargs: producer_path,
+    )
+    monkeypatch.setattr(
+        ip_integration,
+        "plan_ip_release_contract",
+        lambda *_args, **_kwargs: {
+            "contract": "ip/fixture/configs/release.toml",
+            "release_id": release_id,
+            "exports": [
+                {
+                    "name": "rtl",
+                    "interface": {"kind": "rtl", "module": "fixture_rtl"},
+                }
+            ],
+            "collateral": [
+                {
+                    "export": "rtl",
+                    "role": "rtl_source",
+                    "module": "fixture_rtl",
+                }
+            ],
+        },
+    )
+    plan = plan_ip_integration(
+        contract_path,
+        project=project,
+        release_inventory={"fixture-ip": producer},
+    )
+    assert plan["dependencies"][0]["release"]["interface"] == {
+        "kind": "rtl",
+        "module": "fixture_rtl",
+    }
+
+    result = check_ip_integration(
+        contract_path,
+        project=project,
+        variant_name="default",
+    )
+
+    assert result["passed"] is True
+    assert result["dependency_releases"][0]["roles"] == {
+        "rtl_source": (
+            "exports/fixture-ip/package/development-rtl-fixture/"
+            "rtl/fixture_rtl.sv"
+        )
+    }
+    assert result["release_sources"] == [
+        "exports/fixture-ip/package/development-rtl-fixture/rtl/fixture_rtl.sv"
+    ]
+
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            'module = "fixture_rtl"', 'module = "wrong_rtl"', 1
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="interface does not match"):
+        check_ip_integration(
+            contract_path,
+            project=Project.from_project_root(project_root).with_artifact_root(
+                artifact_root
+            ),
+            variant_name="default",
+        )
+
+
+def test_tagged_release_dependency_rejects_mixed_or_unknown_fields(
+    tmp_path: Path,
+) -> None:
+    for name, replacement, error in (
+        (
+            "mixed",
+            'roles = ["rtl_source"]\nlogical_interface = "forged"',
+            "cannot mix tagged and legacy",
+        ),
+        (
+            "unknown",
+            'module = "fixture_rtl"\nphysical = "forged"',
+            "RTL fields are invalid",
+        ),
+    ):
+        root = tmp_path / name
+        release_id, manifest = _write_rtl_release_fixture(root / "artifacts")
+        contract_path = _write_ip_fixture(root / "project", release_id, manifest)
+        _select_rtl_dependency(contract_path)
+        marker = (
+            'roles = ["rtl_source"]'
+            if name == "mixed"
+            else 'module = "fixture_rtl"'
+        )
+        contract_path.write_text(
+            contract_path.read_text(encoding="utf-8").replace(
+                marker, replacement, 1
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=error):
+            load_ip_integration_contract(
+                contract_path,
+                project_root=root / "project",
+            )
+
+
+def test_tagged_oa_release_dependency_matches_legacy_identity(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(tmp_path / "project", release_id, manifest)
+    source = contract_path.read_text(encoding="utf-8")
+    source = source.replace(
+        'logical_interface = "fixture_model:transaction-1-port"\n'
+        'physical_interface = "fixture_macro:oa-1-pin"\n'
+        'roles = ["transaction_model", "integration_adapter", "physical_blackbox"]',
+        'roles = ["transaction_model", "integration_adapter", "physical_blackbox"]\n\n'
+        '[component.release.interface]\n'
+        'kind = "oa-mixed-signal"\n'
+        'logical = "fixture_model:transaction-1-port"\n'
+        'physical = "fixture_macro:oa-1-pin"',
+    )
+    contract_path.write_text(source, encoding="utf-8")
+
+    contract = load_ip_integration_contract(
+        contract_path,
+        project_root=tmp_path / "project",
+    )
+    release = contract.release_dependencies[0].release
+    assert release is not None
+    assert isinstance(release.interface, OaReleaseInterfaceReference)
+    assert release.interface.logical_interface == (
+        "fixture_model:transaction-1-port"
+    )
+
+
 def test_ip_integration_reuses_the_validated_producer_release_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -730,6 +1025,12 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
     assert plan["dependencies"][0]["release"]["provider"] == (
         "ip/fixture/configs/release.toml"
     )
+    assert plan["dependencies"][0]["release"]["interface"] == {
+        "kind": "oa-mixed-signal",
+        "logical": "fixture_model:transaction-1-port",
+        "physical": "fixture_macro:oa-1-pin",
+    }
+    assert "logical_interface" not in plan["dependencies"][0]["release"]
 
     producer_reads.clear()
     planned_contracts.clear()

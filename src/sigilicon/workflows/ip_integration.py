@@ -14,6 +14,8 @@ from sigilicon.domain.ip_integration import (
     IpOperatingVariant,
     IpReleaseDependency,
     LockedIpRelease,
+    OaReleaseInterfaceReference,
+    RtlReleaseInterfaceReference,
     load_ip_dependency_lock,
     load_ip_integration_contract,
     resolve_ip_integration_contract,
@@ -113,6 +115,33 @@ def _producer_contract(
 
 def _role_export(release: IpReleaseDependency, role: str) -> str:
     return release.role_exports.get(role, release.export)
+
+
+def _interface_reference_row(release: IpReleaseDependency) -> dict[str, str]:
+    interface = release.interface
+    if isinstance(interface, OaReleaseInterfaceReference):
+        return {
+            "kind": interface.kind,
+            "logical": interface.logical_interface,
+            "physical": interface.physical_interface,
+        }
+    return {"kind": interface.kind, "module": interface.module}
+
+
+def _interface_reference_matches(
+    exported: Mapping[str, Any], release: IpReleaseDependency
+) -> bool:
+    interface = exported.get("interface")
+    if not isinstance(interface, Mapping):
+        return False
+    expected = _interface_reference_row(release)
+    if isinstance(release.interface, OaReleaseInterfaceReference):
+        return interface.get("kind") in {None, "oa-mixed-signal"} and all(
+            interface.get(field) == value
+            for field, value in expected.items()
+            if field != "kind"
+        )
+    return all(interface.get(field) == value for field, value in expected.items())
 
 
 def _release_export(
@@ -365,11 +394,7 @@ def plan_ip_integration_contract(
                 oa_plan_inventory=oa_plan_inventory,
             )
             exported = _release_export(expected, release.export)
-            interface = exported.get("interface")
-            if not isinstance(interface, Mapping) or (
-                interface.get("logical") != release.logical_interface
-                or interface.get("physical") != release.physical_interface
-            ):
+            if not _interface_reference_matches(exported, release):
                 raise ValueError(
                     f"IP dependency {dependency.name}/{release.export} interface "
                     "does not match its release contract"
@@ -392,8 +417,7 @@ def plan_ip_integration_contract(
                 "export": release.export,
                 "provider": expected["contract"],
                 "required_maturity": release.required_maturity,
-                "logical_interface": release.logical_interface,
-                "physical_interface": release.physical_interface,
+                "interface": _interface_reference_row(release),
                 "roles": list(release.roles),
                 "role_modules": dict(release.role_modules),
                 "role_exports": dict(release.role_exports),
@@ -506,11 +530,7 @@ def _locked_release_manifest(
     ):
         raise RuntimeError("IP dependency release does not match its provider owner")
     exported = _release_export(manifest, release.export)
-    interface = exported.get("interface")
-    if not isinstance(interface, Mapping) or (
-        interface.get("logical") != release.logical_interface
-        or interface.get("physical") != release.physical_interface
-    ):
+    if not _interface_reference_matches(exported, release):
         raise RuntimeError(
             "IP dependency release export interface does not match integration intent"
         )
