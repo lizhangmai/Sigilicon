@@ -10,6 +10,7 @@ from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import (
     inspect_project_configurations,
 )
+from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platform, load_platform_catalog
@@ -18,7 +19,7 @@ from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
-from sigilicon.workflows.ip_integration import plan_ip_integration
+from sigilicon.workflows.ip_integration import plan_ip_integration_contract
 
 
 def _contract_entries(
@@ -187,6 +188,7 @@ def inspect_repository_designs(
 
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
+    integration_inventory = {}
     for name, path in component_paths.items():
         owner = context.require_owner(path)
         graph = load_component_graph(
@@ -209,9 +211,12 @@ def inspect_repository_designs(
             "graph": sorted(graph),
         }
         if "variants" in component.document:
-            integration = plan_ip_integration(
+            integration_contract = load_ip_integration_contract(
                 path,
                 project=context,
+            )
+            integration = plan_ip_integration_contract(
+                integration_contract,
                 platform_inventory=platform_inventory,
                 release_inventory=release_inventory,
                 oa_source_inventory=oa_source_inventory,
@@ -220,6 +225,7 @@ def inspect_repository_designs(
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
             component_result["integration"] = integration
+            integration_inventory[name] = integration_contract
         components[name] = component_result
 
     ip_releases: dict[str, Any] = {}
@@ -260,6 +266,7 @@ def inspect_repository_designs(
         platform_catalog=platform_catalog,
         platform_inventory=platform_inventory,
         release_inventory=release_inventory,
+        integration_inventory=integration_inventory,
         oa_source_inventory=oa_source_inventory,
         oa_simulation_inventory=oa_simulation_inventory,
         oa_design_inventory=oa_design_inventory,

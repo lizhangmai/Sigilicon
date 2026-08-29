@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
@@ -13,8 +13,14 @@ from sigilicon.domain.component import (
     load_component_contract,
     load_component_graph,
     parse_component_contract,
+    resolve_component_contract,
+    resolve_component_graph,
 )
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    is_frozen_toml_document,
+    require_config_header,
+)
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
 
 if TYPE_CHECKING:
@@ -22,6 +28,7 @@ if TYPE_CHECKING:
 
 
 _CAPABILITIES = frozenset({"simulation", "synthesis", "physical_implementation"})
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 def _table(value: object, label: str) -> Mapping[str, Any]:
@@ -95,6 +102,10 @@ class IpOperatingVariant:
     filesets: Mapping[str, IpIntegrationFileset]
     physical_binding: IpPhysicalBinding | None
     architecture_validator: str | None
+    source_document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+    )
 
     def get_fileset(self, name: str | None = None) -> IpIntegrationFileset:
         selected = name or self.default_fileset
@@ -115,6 +126,10 @@ class IpIntegrationContract:
     dependencies: tuple[IpIntegrationDependency, ...]
     implementation_profiles: Mapping[str, PurePosixPath]
     variants: tuple[IpOperatingVariant, ...]
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+    )
 
     @property
     def path(self) -> Path:
@@ -202,8 +217,8 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
             item.get("physical_interface"), f"{label}.physical_interface"
         ),
         roles=roles,
-        role_modules=role_modules,
-        role_exports=role_exports,
+        role_modules=MappingProxyType(role_modules),
+        role_exports=MappingProxyType(role_exports),
     )
 
 
@@ -211,10 +226,13 @@ def _implementation_profiles(
     raw: Mapping[str, Any],
     *,
     project_root: Path,
+    owner_root: Path,
     owner: str,
-) -> Mapping[str, PurePosixPath]:
+    source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
+) -> tuple[Mapping[str, PurePosixPath], Mapping[Path, Mapping[str, Any]]]:
     values = _table(raw.get("implementation", {}), "implementation")
     result: dict[str, PurePosixPath] = {}
+    documents: dict[Path, Mapping[str, Any]] = {}
     for name, value in values.items():
         name = _string(name, "implementation profile name")
         relative, path = _project_relative(
@@ -224,8 +242,15 @@ def _implementation_profiles(
         )
         if not path.is_file():
             raise FileNotFoundError(f"IP implementation profile is missing: {relative}")
-        with path.open("rb") as stream:
-            profile: dict[str, Any] = tomllib.load(stream)
+        if not path.is_relative_to(owner_root):
+            raise ValueError("IP implementation profile must stay inside its owner")
+        if source_documents is None:
+            with path.open("rb") as stream:
+                profile: Mapping[str, Any] = tomllib.load(stream)
+        else:
+            profile = source_documents.get(path)
+            if not isinstance(profile, Mapping):
+                raise ValueError("IP integration source snapshot is incomplete")
         require_config_header(
             profile,
             path,
@@ -237,7 +262,12 @@ def _implementation_profiles(
             owner=owner,
         )
         result[name] = relative
-    return result
+        documents[path] = (
+            freeze_toml_document(profile)
+            if source_documents is None
+            else profile
+        )
+    return MappingProxyType(result), MappingProxyType(documents)
 
 
 def _operating_variant(
@@ -247,9 +277,13 @@ def _operating_variant(
     contract: ComponentContract,
     graph: Mapping[str, ComponentContract],
     dependencies: Mapping[str, IpIntegrationDependency],
+    source_document: Mapping[str, Any] | None = None,
 ) -> IpOperatingVariant:
-    with path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
+    if source_document is None:
+        with path.open("rb") as stream:
+            raw: Mapping[str, Any] = tomllib.load(stream)
+    else:
+        raw = source_document
     require_config_header(
         raw,
         path,
@@ -287,7 +321,7 @@ def _operating_variant(
                     f"dependency {dependency_name}"
                 )
             if (
-                not isinstance(roles_value, list)
+                not isinstance(roles_value, (list, tuple))
                 or not roles_value
                 or any(not isinstance(role, str) or not role for role in roles_value)
                 or len(set(roles_value)) != len(roles_value)
@@ -341,8 +375,8 @@ def _operating_variant(
                 fileset.get("filelist"),
                 f"variant {name}.filesets.{fileset_name}.filelist",
             ),
-            dependency_roles=dependency_roles,
-            source_filesets=source_filesets,
+            dependency_roles=MappingProxyType(dependency_roles),
+            source_filesets=MappingProxyType(source_filesets),
             required_capability=capability,
         )
 
@@ -387,7 +421,7 @@ def _operating_variant(
         if status not in {"blocked", "ready"}:
             raise ValueError(f"variant {name} physical binding status is unsupported")
         blockers_raw = binding.get("blockers", [])
-        if not isinstance(blockers_raw, list) or any(
+        if not isinstance(blockers_raw, (list, tuple)) or any(
             not isinstance(item, str) or not item for item in blockers_raw
         ):
             raise ValueError(f"variant {name} physical binding blockers must be strings")
@@ -435,10 +469,40 @@ def _operating_variant(
         name=name,
         path=path,
         default_fileset=default_fileset,
-        filesets=filesets,
+        filesets=MappingProxyType(filesets),
         physical_binding=physical_binding,
         architecture_validator=validator,
+        source_document=freeze_toml_document(raw),
     )
+
+
+def _integration_dependencies(
+    component: ComponentContract,
+) -> tuple[IpIntegrationDependency, ...]:
+    dependency_rows = component.document.get("component", ())
+    if not isinstance(dependency_rows, (list, tuple)):
+        raise ValueError("IP integration component dependencies must be an array")
+    dependencies: list[IpIntegrationDependency] = []
+    for index, (base, value) in enumerate(
+        zip(component.components, dependency_rows, strict=True)
+    ):
+        row = _table(value, f"component[{index}]")
+        release_value = row.get("release")
+        dependencies.append(
+            IpIntegrationDependency(
+                name=base.name,
+                component_contract=base.contract,
+                release=(
+                    None
+                    if release_value is None
+                    else _release_dependency(
+                        release_value,
+                        f"component[{index}].release",
+                    )
+                ),
+            )
+        )
+    return tuple(dependencies)
 
 
 def load_ip_integration_contract(
@@ -481,27 +545,7 @@ def load_ip_integration_contract(
         contract_inventory=repository.component_inventory,
     )
 
-    dependency_rows = raw.get("component", [])
-    assert isinstance(dependency_rows, (list, tuple))
-    dependencies: list[IpIntegrationDependency] = []
-    for index, (base, value) in enumerate(
-        zip(component.components, dependency_rows, strict=True)
-    ):
-        row = _table(value, f"component[{index}]")
-        release_value = row.get("release")
-        dependencies.append(
-            IpIntegrationDependency(
-                name=base.name,
-                component_contract=base.contract,
-                release=(
-                    None
-                    if release_value is None
-                    else _release_dependency(
-                        release_value, f"component[{index}].release"
-                    )
-                ),
-            )
-        )
+    dependencies = _integration_dependencies(component)
     by_name = {item.name: item for item in dependencies}
 
     lock_value = raw.get("dependency_lock")
@@ -515,6 +559,7 @@ def load_ip_integration_contract(
 
     variants_raw = _table(raw.get("variants"), "variants")
     variants: list[IpOperatingVariant] = []
+    source_documents: dict[Path, Mapping[str, Any]] = {}
     for name, value in variants_raw.items():
         name = _string(name, "variant name")
         _, variant_path = _project_relative(
@@ -524,6 +569,135 @@ def load_ip_integration_contract(
         )
         if not variant_path.is_file():
             raise FileNotFoundError(f"IP operating variant is missing: {variant_path}")
+        if not variant_path.is_relative_to(cataloged_owner.root):
+            raise ValueError("IP operating variant must stay inside its owner")
+        variant = _operating_variant(
+            name,
+            variant_path,
+            contract=component,
+            graph=graph,
+            dependencies=by_name,
+        )
+        variants.append(variant)
+        source_documents[variant.path] = variant.source_document
+    if not variants:
+        raise ValueError("IP integration must declare at least one operating variant")
+
+    implementation_profiles, implementation_documents = _implementation_profiles(
+        raw,
+        project_root=root,
+        owner_root=cataloged_owner.root,
+        owner=component.owner,
+    )
+    source_documents.update(implementation_documents)
+    return IpIntegrationContract(
+        project=repository,
+        component=component,
+        component_graph=MappingProxyType(dict(graph)),
+        dependency_lock=dependency_lock,
+        dependencies=tuple(dependencies),
+        implementation_profiles=implementation_profiles,
+        variants=tuple(variants),
+        source_documents=MappingProxyType(source_documents),
+    )
+
+
+def resolve_ip_integration_contract(
+    path: Path,
+    *,
+    project: Project,
+    snapshot: IpIntegrationContract | None = None,
+) -> IpIntegrationContract:
+    """Load an integration contract or validate one operation-owned snapshot."""
+
+    if snapshot is None:
+        return load_ip_integration_contract(path, project=project)
+    contract_path = path.resolve()
+    root = project.project_root
+    if (
+        snapshot.path != contract_path
+        or snapshot.project is not project
+        or not contract_path.is_relative_to(root)
+        or not contract_path.is_file()
+    ):
+        raise ValueError("IP integration snapshot identity drift")
+    owner = project.require_owner(contract_path)
+    component = resolve_component_contract(
+        contract_path,
+        project_root=root,
+        snapshot=snapshot.component,
+    )
+    if component.owner != owner.name or component.kind != "composite-ip":
+        raise ValueError("IP integration snapshot owner drift")
+    graph = resolve_component_graph(
+        contract_path,
+        project_root=root,
+        snapshot=snapshot.component_graph,
+    )
+    if (
+        not isinstance(snapshot.implementation_profiles, _MAPPING_PROXY_TYPE)
+        or not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE)
+    ):
+        raise ValueError("IP integration snapshot mappings are mutable")
+    for dependency in snapshot.dependencies:
+        release = dependency.release
+        if release is not None and (
+            not isinstance(release.role_modules, _MAPPING_PROXY_TYPE)
+            or not isinstance(release.role_exports, _MAPPING_PROXY_TYPE)
+        ):
+            raise ValueError("IP integration dependency snapshot is mutable")
+    for variant in snapshot.variants:
+        if (
+            not isinstance(variant.filesets, _MAPPING_PROXY_TYPE)
+            or not isinstance(variant.source_document, Mapping)
+            or not is_frozen_toml_document(variant.source_document)
+            or any(
+                not isinstance(fileset.dependency_roles, _MAPPING_PROXY_TYPE)
+                or not isinstance(fileset.source_filesets, _MAPPING_PROXY_TYPE)
+                for fileset in variant.filesets.values()
+            )
+        ):
+            raise ValueError("IP operating variant snapshot is mutable")
+    if any(
+        not isinstance(source, Path)
+        or source != source.resolve()
+        or not source.is_relative_to(owner.root)
+        or not source.is_file()
+        or not isinstance(document, Mapping)
+        or not is_frozen_toml_document(document)
+        for source, document in snapshot.source_documents.items()
+    ):
+        raise ValueError("IP integration source snapshot identity drift")
+
+    dependencies = _integration_dependencies(component)
+    by_name = {item.name: item for item in dependencies}
+    raw = component.document
+    lock_value = raw.get("dependency_lock")
+    dependency_lock = (
+        None
+        if lock_value is None
+        else _project_relative(
+            lock_value,
+            "dependency_lock",
+            project_root=root,
+        )[0]
+    )
+    variants_raw = _table(raw.get("variants"), "variants")
+    variants: list[IpOperatingVariant] = []
+    expected_paths: set[Path] = set()
+    for name, value in variants_raw.items():
+        name = _string(name, "variant name")
+        _, variant_path = _project_relative(
+            value,
+            f"variants.{name}",
+            project_root=root,
+        )
+        if not variant_path.is_relative_to(owner.root):
+            raise ValueError("IP operating variant must stay inside its owner")
+        expected_paths.add(variant_path)
+        document = snapshot.source_documents.get(variant_path)
+        if not isinstance(document, Mapping):
+            raise ValueError("IP integration source snapshot is incomplete")
         variants.append(
             _operating_variant(
                 name,
@@ -531,24 +705,36 @@ def load_ip_integration_contract(
                 contract=component,
                 graph=graph,
                 dependencies=by_name,
+                source_document=document,
             )
         )
-    if not variants:
-        raise ValueError("IP integration must declare at least one operating variant")
-
-    return IpIntegrationContract(
-        project=repository,
+    implementation_profiles, implementation_documents = _implementation_profiles(
+        raw,
+        project_root=root,
+        owner_root=owner.root,
+        owner=component.owner,
+        source_documents=snapshot.source_documents,
+    )
+    expected_paths.update(implementation_documents)
+    if set(snapshot.source_documents) != expected_paths:
+        raise ValueError("IP integration source snapshot identity drift")
+    expected_documents = {
+        variant.path: variant.source_document for variant in variants
+    }
+    expected_documents.update(implementation_documents)
+    parsed = IpIntegrationContract(
+        project=project,
         component=component,
         component_graph=MappingProxyType(dict(graph)),
         dependency_lock=dependency_lock,
-        dependencies=tuple(dependencies),
-        implementation_profiles=_implementation_profiles(
-            raw,
-            project_root=root,
-            owner=component.owner,
-        ),
+        dependencies=dependencies,
+        implementation_profiles=implementation_profiles,
         variants=tuple(variants),
+        source_documents=MappingProxyType(expected_documents),
     )
+    if parsed != snapshot:
+        raise ValueError("IP integration snapshot typed contract drift")
+    return snapshot
 
 
 def load_ip_dependency_lock(

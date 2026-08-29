@@ -75,6 +75,11 @@ def test_integration_plan_passes_same_project_to_domain_loader(
 
     monkeypatch.setattr(ip_integration, "load_ip_integration_contract", load_contract)
     monkeypatch.setattr(
+        ip_integration,
+        "plan_ip_integration_contract",
+        lambda contract, **_kwargs: {"ip": contract.name},
+    )
+    monkeypatch.setattr(
         Project,
         "from_project_root",
         classmethod(

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
+    from sigilicon.domain.ip_integration import IpIntegrationContract
     from sigilicon.domain.ip_release import IpContract
     from sigilicon.domain.oa_library import OALibrarySource
     from sigilicon.domain.oa_simulation import OASimulationSpec
@@ -53,6 +54,16 @@ def is_frozen_toml_document(value: object) -> bool:
     if isinstance(value, tuple):
         return all(is_frozen_toml_document(item) for item in value)
     return isinstance(value, (str, int, float, bool, datetime, date, time))
+
+
+def thaw_toml_document(value: Any) -> Any:
+    """Copy a frozen TOML value back to the parser's dict/list shape."""
+
+    if isinstance(value, Mapping):
+        return {key: thaw_toml_document(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [thaw_toml_document(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -141,6 +152,7 @@ def inspect_project_configurations(
     platform_catalog: PlatformCatalogSnapshot | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
+    integration_inventory: Mapping[str, IpIntegrationContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_simulation_inventory: Mapping[Path, OASimulationSpec] | None = None,
     oa_design_inventory: Mapping[Path, DesignSpec] | None = None,
@@ -223,6 +235,42 @@ def inspect_project_configurations(
                 catalog_documents,
                 contract.interface_documents,
                 label="IP release interface snapshot",
+            )
+    if integration_inventory is not None:
+        from sigilicon.domain.ip_integration import resolve_ip_integration_contract
+
+        component_rows = ip_catalog.document.get("components", {})
+        if not isinstance(component_rows, Mapping):
+            raise ValueError("IP catalog components must be a table")
+        for name, contract in integration_inventory.items():
+            row = component_rows.get(name)
+            if (
+                not isinstance(row, Mapping)
+                or set(row) != {"contract", "root"}
+                or not isinstance(row.get("contract"), str)
+            ):
+                raise ValueError(
+                    f"IP integration snapshot has no matching component: {name}"
+                )
+            relative = Path(row["contract"])
+            expected = (root / relative).resolve()
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or contract.project is not context
+                or contract.name != name
+                or contract.path != expected
+            ):
+                raise ValueError(f"IP integration snapshot identity drift: {name}")
+            contract = resolve_ip_integration_contract(
+                contract.path,
+                project=context,
+                snapshot=contract,
+            )
+            _merge_source_documents(
+                catalog_documents,
+                contract.source_documents,
+                label="IP integration source snapshot",
             )
     if oa_source_inventory is not None:
         from sigilicon.domain.oa_library import resolve_oa_library_source

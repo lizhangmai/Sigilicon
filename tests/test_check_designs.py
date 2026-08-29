@@ -528,6 +528,7 @@ def test_repository_workflows_share_one_platform_inventory(
     original_load = tomllib.load
     observed_platform_inventories: list[object] = []
     observed_release_inventories: list[object] = []
+    observed_integration_inventories: list[object] = []
     observed_oa_inventories: list[object] = []
     observed_oa_plan_inventories: list[object] = []
     observed_oa_simulation_inventories: list[object] = []
@@ -545,16 +546,21 @@ def test_repository_workflows_share_one_platform_inventory(
             oa_document_reads += 1
         return original_load(stream)
 
+    integration_contract = SimpleNamespace(name="fixture")
+
+    def load_integration(_path, *, project):
+        assert project.project_root == tmp_path.resolve()
+        return integration_contract
+
     def plan_integration(
-        _path,
+        contract,
         *,
-        project,
         platform_inventory,
         release_inventory,
         oa_source_inventory,
         oa_plan_inventory,
     ):
-        assert project.project_root == tmp_path.resolve()
+        assert contract is integration_contract
         observed_platform_inventories.append(platform_inventory)
         observed_release_inventories.append(release_inventory)
         observed_oa_inventories.append(oa_source_inventory)
@@ -610,6 +616,7 @@ def test_repository_workflows_share_one_platform_inventory(
     def inspect_configurations(*args, platform_inventory, **kwargs):
         observed_platform_inventories.append(platform_inventory)
         observed_release_inventories.append(kwargs["release_inventory"])
+        observed_integration_inventories.append(kwargs["integration_inventory"])
         observed_oa_inventories.append(kwargs["oa_source_inventory"])
         observed_oa_simulation_inventories.append(
             kwargs["oa_simulation_inventory"]
@@ -620,6 +627,7 @@ def test_repository_workflows_share_one_platform_inventory(
         forwarded["oa_simulation_inventory"] = {}
         forwarded["oa_design_inventory"] = {}
         forwarded["layout_source_documents"] = {}
+        forwarded["integration_inventory"] = {}
         return original_inspect_configurations(
             *args,
             platform_inventory=platform_inventory,
@@ -627,7 +635,16 @@ def test_repository_workflows_share_one_platform_inventory(
         )
 
     monkeypatch.setattr(tomllib, "load", counted_load)
-    monkeypatch.setattr(repository_checks, "plan_ip_integration", plan_integration)
+    monkeypatch.setattr(
+        repository_checks,
+        "load_ip_integration_contract",
+        load_integration,
+    )
+    monkeypatch.setattr(
+        repository_checks,
+        "plan_ip_integration_contract",
+        plan_integration,
+    )
     monkeypatch.setattr(repository_checks, "plan_oa_library_rebuild", plan_oa)
     monkeypatch.setattr(
         repository_checks,
@@ -663,6 +680,9 @@ def test_repository_workflows_share_one_platform_inventory(
     assert len(observed_release_inventories) == 2
     assert observed_release_inventories[0] is observed_release_inventories[1]
     assert set(observed_release_inventories[0]) == {"fixture"}
+    assert observed_integration_inventories == [
+        {"fixture": integration_contract}
+    ]
     assert len(oa_source_reads) == 1
     assert len(observed_oa_inventories) == 3
     assert all(

@@ -7,7 +7,7 @@ from pathlib import Path
 import tomllib
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import require_config_header, thaw_toml_document
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
     IpIntegrationDependency,
@@ -16,6 +16,7 @@ from sigilicon.domain.ip_integration import (
     LockedIpRelease,
     load_ip_dependency_lock,
     load_ip_integration_contract,
+    resolve_ip_integration_contract,
 )
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
@@ -276,9 +277,11 @@ def _validate_variant_architecture(
     validator = getattr(module, function_name, None)
     if not callable(validator):
         raise RuntimeError(f"IP architecture validator is not callable: {reference}")
-    with variant.path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
-    result = validator(raw)
+    raw = variant.source_document
+    if not raw:
+        with variant.path.open("rb") as stream:
+            raw = tomllib.load(stream)
+    result = validator(thaw_toml_document(raw))
     if not isinstance(result, Mapping):
         raise RuntimeError(f"IP architecture validator returned no mapping: {reference}")
     return dict(result)
@@ -317,6 +320,30 @@ def plan_ip_integration(
         artifact_root=artifact_root,
     )
     contract = load_ip_integration_contract(contract_path, project=repository)
+    return plan_ip_integration_contract(
+        contract,
+        platform_inventory=platform_inventory,
+        release_inventory=release_inventory,
+        oa_source_inventory=oa_source_inventory,
+        oa_plan_inventory=oa_plan_inventory,
+    )
+
+
+def plan_ip_integration_contract(
+    contract: IpIntegrationContract,
+    *,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    release_inventory: Mapping[str, IpContract] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
+    oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
+) -> dict[str, Any]:
+    """Plan one already validated composite-IP integration contract."""
+
+    contract = resolve_ip_integration_contract(
+        contract.path,
+        project=contract.project,
+        snapshot=contract,
+    )
     dependencies: list[dict[str, Any]] = []
     for dependency in contract.dependencies:
         row: dict[str, Any] = {

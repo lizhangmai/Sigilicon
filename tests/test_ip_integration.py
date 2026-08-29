@@ -4,18 +4,21 @@ from dataclasses import replace
 import json
 from pathlib import Path, PurePosixPath
 import tomllib
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
 
 import sigilicon.domain.component as component_domain
+import sigilicon.domain.config_contracts as config_contracts
 import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
     load_ip_integration_contract,
+    resolve_ip_integration_contract,
 )
+from sigilicon.domain.config_contracts import inspect_project_configurations
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_integration import (
     _allowed_files,
@@ -30,6 +33,7 @@ from conftest import write_project_context
 
 
 def _fixture_architecture_validator(raw: dict[str, Any]) -> dict[str, Any]:
+    assert isinstance(raw["physical_binding"]["blockers"], list)
     return {"variant": raw["integration"]["variant"], "validated": True}
 
 
@@ -364,6 +368,14 @@ leaf = "rtl"
 ''',
         encoding="utf-8",
     )
+    (owner / "configs/tool.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-toolchain-contract"
+path_scope = "owner"
+owner = "composite"
+''',
+        encoding="utf-8",
+    )
     contract = owner / "configs/ip.toml"
     contract.write_text(
         '''schema = 1
@@ -373,6 +385,9 @@ owner = "composite"
 
 name = "composite"
 kind = "composite-ip"
+
+[implementation]
+fixture = "ip/composite/configs/tool.toml"
 
 [variants]
 default = "ip/composite/configs/variants/default.toml"
@@ -464,6 +479,31 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
         (artifact_root / result["release_sources"][0]).resolve(),
     )
     assert all(path.is_absolute() and path.is_file() for path in resolved)
+
+
+def test_architecture_validator_reuses_variant_source_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    contract_path = _write_ip_fixture(
+        project_root,
+        "development-fixture",
+        "exports/fixture/manifest.json",
+    )
+    contract = load_ip_integration_contract(
+        contract_path,
+        project_root=project_root,
+    )
+    monkeypatch.setattr(
+        ip_integration.tomllib,
+        "load",
+        lambda *_args, **_kwargs: pytest.fail("variant TOML was reloaded"),
+    )
+
+    assert ip_integration._validate_variant_architecture(
+        contract.get_variant("default")
+    ) == {"variant": "default", "validated": True}
 
 
 def test_ip_integration_is_exposed_only_under_the_ip_cli(
@@ -708,8 +748,56 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
         "composite"
     ).component
     assert contract.component_graph["leaf"] is project.owner("leaf").component
+    variant_path = (project_root / "ip/composite/configs/variants/default.toml").resolve()
+    tool_path = (project_root / "ip/composite/configs/tool.toml").resolve()
+    assert set(contract.source_documents) == {variant_path, tool_path}
+    assert contract.get_variant("default").source_document is contract.source_documents[
+        variant_path
+    ]
+    with pytest.raises(TypeError):
+        contract.source_documents[variant_path]["owner"] = "other"
+    with pytest.raises(TypeError):
+        contract.implementation_profiles["other"] = PurePosixPath("other.toml")
     assert root_reads == 1
     assert reads == []
+
+    with monkeypatch.context() as snapshot_patch:
+        snapshot_patch.setattr(
+            tomllib,
+            "load",
+            lambda *_args, **_kwargs: pytest.fail(
+                "integration snapshot reloaded TOML"
+            ),
+        )
+        assert resolve_ip_integration_contract(
+            contract.path,
+            project=project,
+            snapshot=contract,
+        ) is contract
+
+    incomplete = replace(
+        contract,
+        source_documents=MappingProxyType(
+            {variant_path: contract.source_documents[variant_path]}
+        ),
+    )
+    with pytest.raises(ValueError, match="source snapshot is incomplete"):
+        resolve_ip_integration_contract(
+            contract.path,
+            project=project,
+            snapshot=incomplete,
+        )
+
+    mutable_variant = replace(
+        contract.get_variant("default"),
+        filesets=dict(contract.get_variant("default").filesets),
+    )
+    with pytest.raises(ValueError, match="variant snapshot is mutable"):
+        resolve_ip_integration_contract(
+            contract.path,
+            project=project,
+            snapshot=replace(contract, variants=(mutable_variant,)),
+        )
 
     reads.clear()
     allowed = _allowed_files(
@@ -740,6 +828,37 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
 
     assert legacy_contract.get_variant("default").name == "default"
     assert root_reads == 2
+
+
+def test_configuration_scanner_reuses_ip_integration_source_documents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    contract_path = _write_source_component_fixture(project_root)
+    project = Project.from_project_root(project_root)
+    contract = load_ip_integration_contract(contract_path, project=project)
+    reads: list[Path] = []
+    original_read_toml = config_contracts.read_toml
+
+    def counted_read_toml(path: Path):
+        if path.resolve() in contract.source_documents:
+            reads.append(path.resolve())
+        return original_read_toml(path)
+
+    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
+
+    report = inspect_project_configurations(
+        project,
+        owner_roots={
+            owner.name: owner.root
+            for owner in project.owners
+        },
+        integration_inventory={"composite": contract},
+    )
+
+    assert report["passed"] is True
+    assert reads == []
 
 
 def test_component_catalog_lookup_ignores_an_unselected_malformed_section(
