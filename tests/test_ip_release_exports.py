@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
+import json
+from pathlib import Path, PurePosixPath
+import shutil
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -17,7 +19,12 @@ from sigilicon.domain.config_contracts import (
     freeze_toml_document,
     inspect_project_configurations,
 )
-from sigilicon.domain.ip_release import load_ip_contract, resolve_ip_contract
+from sigilicon.domain.ip_release import (
+    OaMixedSignalIpInterface,
+    RtlIpInterface,
+    load_ip_contract,
+    resolve_ip_contract,
+)
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import release_role_view
 
@@ -140,18 +147,270 @@ contract = "ip/fixture/configs/release.toml"
     return contract
 
 
+def _rtl_contract_fixture(root: Path) -> Path:
+    write_project_context(root)
+    owner = root / "ip/rtl_fixture"
+    configs = owner / "configs"
+    rtl = owner / "rtl"
+    configs.mkdir(parents=True)
+    rtl.mkdir()
+    (rtl / "top.sv").write_text(
+        "module rtl_top(input logic clk, output logic ready);\n"
+        "  assign ready = clk;\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    (configs / "interface.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "rtl-fixture"
+
+[module]
+name = "rtl_top"
+source = "ip/rtl_fixture/rtl/top.sv"
+
+ports = [
+  { name = "clk", direction = "input", width = 1 },
+  { name = "ready", direction = "output", width = 1 },
+]
+''',
+        encoding="utf-8",
+    )
+    (configs / "ip.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "rtl-fixture"
+
+name = "rtl-fixture"
+kind = "rtl-ip"
+public_interface = "ip/rtl_fixture/configs/interface.toml"
+
+[filesets]
+interface = ["ip/rtl_fixture/configs/interface.toml"]
+rtl = ["ip/rtl_fixture/rtl/top.sv"]
+''',
+        encoding="utf-8",
+    )
+    contract = configs / "release.toml"
+    contract.write_text(
+        '''schema = 1
+contract_kind = "ip-release"
+path_scope = "owner"
+owner = "rtl-fixture"
+
+name = "rtl-fixture"
+producer = "ip/rtl_fixture"
+component = "configs/ip.toml"
+default_maturity = "development"
+
+[[exports]]
+name = "rtl-top"
+[exports.interface]
+kind = "rtl"
+contract = "configs/interface.toml"
+module = "rtl_top"
+source_role = "rtl_source"
+[exports.maturity.development]
+required_roles = ["interface_contract", "rtl_source"]
+[exports.maturity.implementation]
+required_roles = ["interface_contract", "rtl_source", "synthesis_receipt"]
+[exports.maturity.signoff]
+required_roles = [
+  "interface_contract",
+  "rtl_source",
+  "synthesis_receipt",
+  "physical_implementation_receipt",
+]
+
+[[collateral]]
+export = "rtl-top"
+role = "interface_contract"
+component = "rtl-fixture"
+fileset = "interface"
+package_path = "exports/rtl-top/interface.toml"
+format = "toml"
+
+[[collateral]]
+export = "rtl-top"
+role = "rtl_source"
+component = "rtl-fixture"
+fileset = "rtl"
+package_path = "exports/rtl-top/rtl_top.sv"
+format = "systemverilog"
+module = "rtl_top"
+capabilities = ["simulation", "synthesis", "physical_implementation"]
+
+[source]
+files = []
+''',
+        encoding="utf-8",
+    )
+    catalog = root / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8")
+        + '''
+[components.rtl-fixture]
+contract = "ip/rtl_fixture/configs/ip.toml"
+root = "ip/rtl_fixture"
+
+[targets.rtl-fixture]
+contract = "ip/rtl_fixture/configs/release.toml"
+''',
+        encoding="utf-8",
+    )
+    return contract
+
+
 def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> None:
     contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
 
     assert contract.name == "fixture-ip"
     assert contract.owner == "fixture"
     assert [item.name for item in contract.exports] == ["left", "right"]
-    assert contract.get_export("left").oa_cell == "LEFT"
-    assert contract.get_export("right").oa_cell == "RIGHT"
+    left = contract.get_export("left").interface
+    right = contract.get_export("right").interface
+    assert isinstance(left, OaMixedSignalIpInterface)
+    assert isinstance(right, OaMixedSignalIpInterface)
+    assert left.cell == "LEFT"
+    assert right.cell == "RIGHT"
     assert [item.role for item in contract.collateral] == [
         "interface_contract",
         "interface_contract",
     ]
+
+
+def test_rtl_release_plans_and_audits_without_oa_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    exported = contract.get_export("rtl-top")
+    assert isinstance(exported.interface, RtlIpInterface)
+    assert contract.oa_assembly is None
+
+    def reject_oa_load(*_args, **_kwargs):
+        raise AssertionError("RTL release consulted an OA source")
+
+    monkeypatch.setattr(
+        oa_library_domain, "load_oa_library_source", reject_oa_load
+    )
+    monkeypatch.setattr(
+        oa_library_domain, "resolve_oa_library_source", reject_oa_load
+    )
+    monkeypatch.setattr(
+        ip_packaging, "_source_control", lambda _root: ("a" * 40, False)
+    )
+
+    plan = ip_packaging.plan_ip_release_contract(contract)
+
+    assert plan["exports"] == [
+        {
+            "name": "rtl-top",
+            "interface": {
+                "kind": "rtl",
+                "contract": "ip/rtl_fixture/configs/interface.toml",
+                "module": "rtl_top",
+                "source_role": "rtl_source",
+            },
+            "maturity": {
+                "required_roles": ["interface_contract", "rtl_source"],
+                "missing_items": [],
+            },
+            "availability": {
+                "simulation": True,
+                "synthesis": False,
+                "physical_implementation": False,
+            },
+        }
+    ]
+    implementation = ip_packaging.plan_ip_release_contract(
+        contract, maturity="implementation"
+    )
+    assert implementation["missing_items"] == [
+        "rtl-top:synthesis_receipt"
+    ]
+    built = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    manifest = contract.project.artifact_root / built["manifest"]
+    audited = ip_packaging.audit_ip_release_manifest(manifest)
+    assert audited["exports"] == plan["exports"]
+
+    def copy_manifest(name: str) -> tuple[Path, dict]:
+        tampered_root = tmp_path / "tampered" / name
+        shutil.copytree(manifest.parent, tampered_root)
+        tampered_manifest = tampered_root / "manifest.json"
+        tampered_manifest.chmod(0o600)
+        payload = json.loads(tampered_manifest.read_text(encoding="utf-8"))
+        return tampered_manifest, payload
+
+    oa_manifest, oa_payload = copy_manifest("oa-injection")
+    oa_payload["exports"][0]["oa"] = {
+        "library": "forged",
+        "cell": "FORGED",
+    }
+    oa_manifest.write_text(
+        json.dumps(oa_payload, indent=2) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(RuntimeError, match="cannot declare OA"):
+        ip_packaging.audit_ip_release_manifest(oa_manifest)
+
+    drifted_manifest, drifted_payload = copy_manifest("contract-drift")
+    drifted_payload["exports"][0]["interface"]["contract"] = (
+        "ip/rtl_fixture/configs/other.toml"
+    )
+    drifted_manifest.write_text(
+        json.dumps(drifted_payload, indent=2) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(RuntimeError, match="contract provenance drifted"):
+        ip_packaging.audit_ip_release_manifest(drifted_manifest)
+
+
+def test_release_interface_kind_controls_oa_source_contract(
+    tmp_path: Path,
+) -> None:
+    rtl_path = _rtl_contract_fixture(tmp_path / "rtl-with-oa")
+    rtl_path.write_text(
+        rtl_path.read_text(encoding="utf-8").replace(
+            "[exports.interface]\n",
+            '''[exports.oa]
+library = "forged"
+cell = "FORGED"
+schematic_view = "schematic"
+layout_view = "layout"
+[exports.interface]
+''',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="cannot declare an OA identity"):
+        load_ip_contract(rtl_path, project_root=tmp_path / "rtl-with-oa")
+
+    rtl_assembly_path = _rtl_contract_fixture(tmp_path / "rtl-assembly")
+    rtl_assembly_path.write_text(
+        rtl_assembly_path.read_text(encoding="utf-8").replace(
+            "[source]\nfiles = []",
+            '[source]\noa_assembly = "ip/rtl_fixture/configs/oa.toml"\nfiles = []',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="cannot declare source.oa_assembly"):
+        load_ip_contract(rtl_assembly_path, project_root=tmp_path / "rtl-assembly")
+
+    oa_path = _contract_fixture(tmp_path / "oa-without-assembly")
+    oa_path.write_text(
+        oa_path.read_text(encoding="utf-8").replace(
+            'oa_assembly = "ip/fixture/configs/oa.toml"\n', ""
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="source.oa_assembly"):
+        load_ip_contract(oa_path, project_root=tmp_path / "oa-without-assembly")
 
 
 def test_ip_contract_reuses_explicit_project(tmp_path: Path) -> None:
@@ -226,7 +485,11 @@ def test_ip_contract_rejects_partial_or_mutable_interface_snapshots(
             snapshot=mutable,
         )
 
-    forged_export = replace(contract.exports[0], oa_cell="FORGED")
+    interface = contract.exports[0].interface
+    assert isinstance(interface, OaMixedSignalIpInterface)
+    forged_export = replace(
+        contract.exports[0], interface=replace(interface, cell="FORGED")
+    )
     forged = replace(
         contract,
         exports=(forged_export, *contract.exports[1:]),
@@ -574,7 +837,21 @@ dependency_netlists = ["dependency.scs"]
         component_graph={},
         source_files=(),
         oa_assembly=Path("oa.toml"),
-        exports=(SimpleNamespace(oa_library="fixture", oa_cell="TOP"),),
+        exports=(
+            SimpleNamespace(
+                name="top",
+                interface=OaMixedSignalIpInterface(
+                    kind="oa-mixed-signal",
+                    contract=PurePosixPath("interface.toml"),
+                    library="fixture",
+                    cell="TOP",
+                    schematic_view="schematic",
+                    layout_view="layout",
+                    physical="TOP:physical",
+                    logical="top_model:logical",
+                ),
+            ),
+        ),
     )
     platform = object()
     platform_reads: list[tuple[object, str]] = []

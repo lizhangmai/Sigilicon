@@ -17,8 +17,11 @@ from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
     IpExport,
+    OaMixedSignalIpInterface,
+    RtlIpInterface,
     load_ip_contract,
     resolve_ip_contract,
+    safe_relative,
 )
 from sigilicon.domain.netlist import (
     load_netlist_snapshot,
@@ -26,8 +29,6 @@ from sigilicon.domain.netlist import (
     parse_subcircuit_instances,
     subckt_ports,
 )
-from sigilicon.domain.oa_library import OALibrarySource
-from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.repository import Project
 from sigilicon.domain.systemverilog import (
     ModulePort,
@@ -44,6 +45,8 @@ from sigilicon.paths import ArtifactLayout
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
+    from sigilicon.domain.oa_library import OALibrarySource
+    from sigilicon.domain.platform import PdkConfig
     from sigilicon.workflows.oa_library import OALibraryRebuildPlan
 
 
@@ -250,10 +253,14 @@ def _development_interface_check_with_design_inventory(
 ) -> dict[str, Any]:
     """Validate the machine-readable boundary against shipped SV collateral."""
 
+    if isinstance(exported.interface, RtlIpInterface):
+        return _rtl_development_interface_check(contract, exported)
+
+    interface = exported.interface
     root = contract.project_root
     producer = _project_path(root, Path(contract.producer), "IP producer")
     interface_path = _project_path(
-        producer, Path(exported.interface_contract), "interface contract"
+        producer, Path(interface.contract), "interface contract"
     )
     documents = contract.interface_documents
     raw = documents.get(interface_path)
@@ -277,10 +284,10 @@ def _development_interface_check_with_design_inventory(
         raise ValueError("development interface roles are incomplete")
 
     expected_physical = _identity_module(
-        exported.physical_interface, "interface.physical"
+        interface.physical, "interface.physical"
     )
     expected_logical = _identity_module(
-        exported.logical_interface, "interface.logical"
+        interface.logical, "interface.logical"
     )
     physical_module = physical.get("module")
     logical_module = transaction.get("module")
@@ -372,6 +379,64 @@ def _development_interface_check_with_design_inventory(
     }
 
 
+def _rtl_development_interface_check(
+    contract: IpContract, exported: IpExport
+) -> dict[str, Any]:
+    """Validate one synthesizable top directly against its public RTL contract."""
+
+    interface = exported.interface
+    if not isinstance(interface, RtlIpInterface):
+        raise TypeError("RTL interface validation requires an RTL export")
+    root = contract.project_root
+    producer = _project_path(root, Path(contract.producer), "IP producer")
+    interface_path = _project_path(
+        producer, Path(interface.contract), "interface contract"
+    )
+    raw = contract.interface_documents.get(interface_path)
+    if raw is None:
+        if contract.interface_documents:
+            raise ValueError("IP release interface snapshot is incomplete")
+        with interface_path.open("rb") as stream:
+            raw = tomllib.load(stream)
+    module = _table(raw.get("module"), "RTL interface module")
+    if module.get("name") != interface.module:
+        raise ValueError("RTL module identity disagrees with the interface contract")
+    source_value = module.get("source")
+    if not isinstance(source_value, str) or not source_value:
+        raise ValueError("RTL interface module.source must be a project-relative path")
+
+    by_role = {item.role: item for item in exported.collateral}
+    required_roles = {"interface_contract", interface.source_role}
+    if not required_roles.issubset(by_role):
+        raise ValueError("RTL development interface roles are incomplete")
+    expected_contract = interface_path.relative_to(root).as_posix()
+    if by_role["interface_contract"].source.as_posix() != expected_contract:
+        raise ValueError("interface_contract source disagrees with the RTL interface")
+    rtl_view = by_role[interface.source_role]
+    if (
+        rtl_view.module != interface.module
+        or rtl_view.source.as_posix() != source_value
+    ):
+        raise ValueError("RTL source role disagrees with the interface contract")
+    rtl_source = _project_path(root, Path(source_value), "RTL interface source")
+    if not rtl_source.is_relative_to(producer):
+        raise ValueError("RTL interface source must stay inside the release producer")
+    expected_ports = _interface_ports(module.get("ports"), "module.ports")
+    actual_ports = module_port_signatures(
+        rtl_source.read_text(encoding="utf-8"), interface.module
+    )
+    if actual_ports != expected_ports:
+        raise ValueError("RTL module signature disagrees with the interface contract")
+    return {
+        "name": f"development_interface_consistency:{exported.name}",
+        "export": exported.name,
+        "passed": True,
+        "interface_kind": interface.kind,
+        "module": interface.module,
+        "port_count": len(actual_ports),
+    }
+
+
 def _source_inputs(
     contract: IpContract,
     *,
@@ -411,6 +476,19 @@ def _source_inputs(
             raise FileNotFoundError(f"IP source file is missing: {relative}")
         add_source(path)
 
+    oa_exports = [
+        exported
+        for exported in contract.exports
+        if isinstance(exported.interface, OaMixedSignalIpInterface)
+    ]
+    if not oa_exports:
+        _python_import_closure(root, paths)
+        return tuple(
+            path.relative_to(root).as_posix() for path in sorted(paths)
+        )
+
+    if contract.oa_assembly is None:
+        raise ValueError("OA release exports require source.oa_assembly")
     oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
     from sigilicon.domain.oa_library import (
         load_oa_library_source,
@@ -457,17 +535,18 @@ def _source_inputs(
         load_netlist_snapshot(cell.canonical_source) for cell in netlist_cells
     ]
     definitions = parse_subcircuit_definitions(snapshots)
-    top_cells = {exported.oa_cell for exported in contract.exports}
-    for exported in contract.exports:
-        if exported.oa_library != library.name:
+    top_cells = {exported.interface.cell for exported in oa_exports}
+    for exported in oa_exports:
+        interface = exported.interface
+        if interface.library != library.name:
             raise ValueError(
                 f"release export {exported.name} names OA library "
-                f"{exported.oa_library}, expected {library.name}"
+                f"{interface.library}, expected {library.name}"
             )
-        if exported.oa_cell not in cell_by_name or exported.oa_cell not in definitions:
+        if interface.cell not in cell_by_name or interface.cell not in definitions:
             raise ValueError(
                 "release OA top is absent from the canonical library: "
-                f"{exported.name}/{exported.oa_cell}"
+                f"{exported.name}/{interface.cell}"
             )
     reachable = set(top_cells)
     pending = list(top_cells)
@@ -695,6 +774,9 @@ def _receipt_problems(
     source_commit: str,
     by_role: Mapping[str, Any],
 ) -> list[str]:
+    interface = exported.interface
+    if not isinstance(interface, OaMixedSignalIpInterface):
+        raise TypeError("OA signoff receipts require an OA mixed-signal export")
     item = by_role[role]
     source = _project_path(
         contract.project_root, Path(item.source), f"{role} source"
@@ -710,10 +792,10 @@ def _receipt_problems(
     if receipt.get("source_commit") != source_commit:
         problems.append(f"{prefix}:source-commit")
     expected_oa = {
-        "library": exported.oa_library,
-        "cell": exported.oa_cell,
-        "schematic_view": exported.schematic_view,
-        "layout_view": exported.layout_view,
+        "library": interface.library,
+        "cell": interface.cell,
+        "schematic_view": interface.schematic_view,
+        "layout_view": interface.layout_view,
     }
     if receipt.get("oa") != expected_oa:
         problems.append(f"{prefix}:oa-identity")
@@ -755,6 +837,9 @@ def _qualification_semantics(
 ) -> tuple[dict[str, Any], list[str]]:
     problems: list[str] = []
     for exported in contract.exports:
+        interface = exported.interface
+        if not isinstance(interface, OaMixedSignalIpInterface):
+            continue
         by_role = {item.role: item for item in exported.collateral}
         if level in {"implementation", "signoff"}:
             for role, formats in _IMPLEMENTATION_ROLE_FORMATS.items():
@@ -765,8 +850,8 @@ def _qualification_semantics(
                 if item.format not in formats:
                     problems.append(f"{prefix}:format")
                 if (
-                    item.library != exported.oa_library
-                    or item.cell != exported.oa_cell
+                    item.library != interface.library
+                    or item.cell != interface.cell
                 ):
                     problems.append(f"{prefix}:oa-identity")
                 if not item.view:
@@ -779,8 +864,8 @@ def _qualification_semantics(
                 if pex.format not in {"dspf", "spice", "spectre"}:
                     problems.append(f"{exported.name}:pex_netlist:format")
                 if (
-                    pex.library != exported.oa_library
-                    or pex.cell != exported.oa_cell
+                    pex.library != interface.library
+                    or pex.cell != interface.cell
                     or not pex.view
                     or not pex.corner
                 ):
@@ -809,8 +894,34 @@ def _qualification_semantics(
 
 
 def _availability(
-    level: str, roles: set[str], *, collateral_passed: bool
+    exported: IpExport,
+    level: str,
+    roles: set[str],
+    *,
+    collateral_passed: bool,
 ) -> dict[str, bool]:
+    if isinstance(exported.interface, RtlIpInterface):
+        sources = [
+            item
+            for item in exported.collateral
+            if item.role == exported.interface.source_role
+        ]
+        capabilities = set(sources[0].capabilities) if len(sources) == 1 else set()
+        return {
+            capability: (
+                collateral_passed
+                and capability in capabilities
+                and (
+                    capability == "simulation"
+                    or level in {"implementation", "signoff"}
+                )
+            )
+            for capability in (
+                "simulation",
+                "synthesis",
+                "physical_implementation",
+            )
+        }
     return {
         "simulation": "transaction_model" in roles,
         "synthesis": collateral_passed
@@ -848,6 +959,8 @@ def _release_design_inventory(
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None,
 ) -> Mapping[Path, DesignSpec] | None:
     if oa_plan_inventory is None:
+        return None
+    if contract.oa_assembly is None:
         return None
     root = contract.project_root
     oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
@@ -891,6 +1004,38 @@ def _release_design_inventory(
         path: spec
         for path, spec in result.items()
         if path.is_relative_to(producer_root)
+    }
+
+
+def _export_interface_manifest(
+    contract: IpContract, exported: IpExport
+) -> dict[str, Any]:
+    interface = exported.interface
+    if isinstance(interface, OaMixedSignalIpInterface):
+        return {
+            "oa": {
+                "library": interface.library,
+                "cell": interface.cell,
+                "schematic_view": interface.schematic_view,
+                "layout_view": interface.layout_view,
+            },
+            "interface": {
+                "kind": interface.kind,
+                "contract": interface.contract.as_posix(),
+                "physical": interface.physical,
+                "logical": interface.logical,
+                "interfaces_are_distinct": interface.physical != interface.logical,
+            },
+        }
+    return {
+        "interface": {
+            "kind": interface.kind,
+            "contract": (
+                contract.producer / interface.contract
+            ).as_posix(),
+            "module": interface.module,
+            "source_role": interface.source_role,
+        }
     }
 
 
@@ -959,7 +1104,10 @@ def _plan_loaded_ip_release(
             item for item in missing if item.startswith(f"{exported.name}:")
         ]
         availability = _availability(
-            level, roles, collateral_passed=not export_missing
+            exported,
+            level,
+            roles,
+            collateral_passed=not export_missing,
         )
         role_checks.append(
             {
@@ -975,20 +1123,7 @@ def _plan_loaded_ip_release(
         export_rows.append(
             {
                 "name": exported.name,
-                "oa": {
-                    "library": exported.oa_library,
-                    "cell": exported.oa_cell,
-                    "schematic_view": exported.schematic_view,
-                    "layout_view": exported.layout_view,
-                },
-                "interface": {
-                    "contract": exported.interface_contract.as_posix(),
-                    "physical": exported.physical_interface,
-                    "logical": exported.logical_interface,
-                    "interfaces_are_distinct": (
-                        exported.physical_interface != exported.logical_interface
-                    ),
-                },
+                **_export_interface_manifest(contract, exported),
                 "maturity": {
                     "required_roles": list(exported.required_roles[level]),
                     "missing_items": export_missing,
@@ -1186,6 +1321,7 @@ def build_ip_release(
                         "export": item.export,
                         "role": item.role,
                         "path": item.package_path.as_posix(),
+                        "source": item.source.as_posix(),
                         "size": destination.stat().st_size,
                         "format": item.format,
                         "module": item.module,
@@ -1289,6 +1425,74 @@ def release_role_view(
     return matches[0]
 
 
+def _packaged_rtl_interface_check(
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    *,
+    export_name: str,
+    interface: Mapping[str, Any],
+) -> None:
+    if set(interface) != {"kind", "contract", "module", "source_role"}:
+        raise RuntimeError(
+            f"packaged {export_name} RTL interface fields are invalid"
+        )
+    module_name = interface.get("module")
+    source_role = interface.get("source_role")
+    contract_source = interface.get("contract")
+    if (
+        not isinstance(module_name, str)
+        or not module_name
+        or not isinstance(source_role, str)
+        or not source_role
+        or not isinstance(contract_source, str)
+        or not contract_source
+    ):
+        raise RuntimeError(
+            f"packaged {export_name} RTL interface identity is invalid"
+        )
+    try:
+        safe_relative(contract_source, f"exports.{export_name}.interface.contract")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    contract_path = resolve_release_role(
+        manifest, manifest_path, "interface_contract", export=export_name
+    )
+    contract_view = release_role_view(
+        manifest, "interface_contract", export=export_name
+    )
+    if contract_view.get("source") != contract_source:
+        raise RuntimeError(
+            f"packaged {export_name} interface contract provenance drifted"
+        )
+    rtl_source = resolve_release_role(
+        manifest, manifest_path, source_role, export=export_name
+    )
+    if release_role_view(
+        manifest, source_role, export=export_name
+    ).get("module") != module_name:
+        raise RuntimeError(
+            f"packaged {export_name}/{source_role} module disagrees with its interface"
+        )
+    try:
+        with contract_path.open("rb") as stream:
+            raw: dict[str, Any] = tomllib.load(stream)
+        module = _table(raw.get("module"), "RTL interface module")
+        if module.get("name") != module_name:
+            raise ValueError("RTL interface module identity drifted")
+        expected_ports = _interface_ports(module.get("ports"), "module.ports")
+        actual_ports = module_port_signatures(
+            rtl_source.read_text(encoding="utf-8"), module_name
+        )
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(
+            f"packaged {export_name} RTL interface is invalid: {exc}"
+        ) from exc
+    if actual_ports != expected_ports:
+        raise RuntimeError(
+            f"packaged {export_name} RTL signature disagrees with its interface"
+        )
+
+
 def _packaged_interface_check(
     manifest: Mapping[str, Any], manifest_path: Path
 ) -> None:
@@ -1296,6 +1500,23 @@ def _packaged_interface_check(
         interface = exported.get("interface")
         if not isinstance(interface, Mapping):
             raise RuntimeError(f"IP release export {export_name} has no interface")
+        interface_kind = interface.get("kind")
+        if interface_kind == "rtl":
+            if "oa" in exported:
+                raise RuntimeError(
+                    f"IP release export {export_name} RTL interface cannot declare OA"
+                )
+            _packaged_rtl_interface_check(
+                manifest,
+                manifest_path,
+                export_name=export_name,
+                interface=interface,
+            )
+            continue
+        if interface_kind not in {None, "oa-mixed-signal"}:
+            raise RuntimeError(
+                f"IP release export {export_name} interface kind is unsupported"
+            )
         physical_identity = interface.get("physical")
         logical_identity = interface.get("logical")
         if not isinstance(physical_identity, str) or not isinstance(
@@ -1433,9 +1654,9 @@ def _packaged_maturity_check(
     if not isinstance(views, list):
         raise RuntimeError("IP release views must be a list")
     for export_name, exported in _manifest_exports(manifest).items():
-        oa = exported.get("oa")
+        interface = exported.get("interface")
         export_maturity = exported.get("maturity")
-        if not isinstance(oa, Mapping) or not isinstance(
+        if not isinstance(interface, Mapping) or not isinstance(
             export_maturity, Mapping
         ):
             problems.append(f"{export_name}:maturity-identity")
@@ -1456,6 +1677,18 @@ def _packaged_maturity_check(
         for role in required:
             if role not in by_role:
                 problems.append(f"{export_name}:{role}:missing")
+        interface_kind = interface.get("kind")
+        if interface_kind == "rtl":
+            if "oa" in exported:
+                problems.append(f"{export_name}:unexpected-oa-identity")
+            continue
+        if interface_kind not in {None, "oa-mixed-signal"}:
+            problems.append(f"{export_name}:interface-kind")
+            continue
+        oa = exported.get("oa")
+        if not isinstance(oa, Mapping):
+            problems.append(f"{export_name}:oa-identity")
+            continue
         if level in {"implementation", "signoff"}:
             for role, formats in _IMPLEMENTATION_ROLE_FORMATS.items():
                 view = by_role.get(role)
@@ -1684,7 +1917,13 @@ def _audit_loaded_ip_release(
             or view.get("path") != expected_view["package_path"]
             or any(
                 view.get(field) != expected_view[field]
-                for field in ("format", "module", "corner", "capabilities")
+                for field in (
+                    "source",
+                    "format",
+                    "module",
+                    "corner",
+                    "capabilities",
+                )
             )
         ):
             raise RuntimeError(

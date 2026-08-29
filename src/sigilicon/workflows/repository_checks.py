@@ -207,6 +207,8 @@ def inspect_repository_designs(
 
     oa_source_inventory = {}
     for contract in release_inventory.values():
+        if contract.oa_assembly is None:
+            continue
         assembly = (root / contract.oa_assembly).resolve()
         if assembly not in oa_source_inventory:
             oa_source_inventory[assembly] = load_oa_library_source(
@@ -317,14 +319,19 @@ def inspect_repository_designs(
             owner=contract.owner,
             root=_component_owner_root(context, path),
         )
-        assembly = (root / contract.oa_assembly).resolve()
-        ip_releases[name] = {
+        release_row = {
             "contract": path.relative_to(root).as_posix(),
             "default_maturity": contract.default_maturity,
             "exports": [item.name for item in contract.exports],
-            "oa_assembly": contract.oa_assembly.as_posix(),
+            "interface_kinds": sorted(
+                {item.interface.kind for item in contract.exports}
+            ),
         }
-        oa_assemblies[name] = oa_plan_inventory[assembly].as_dict()
+        if contract.oa_assembly is not None:
+            assembly = (root / contract.oa_assembly).resolve()
+            release_row["oa_assembly"] = contract.oa_assembly.as_posix()
+            oa_assemblies[name] = oa_plan_inventory[assembly].as_dict()
+        ip_releases[name] = release_row
 
     platforms: dict[str, Any] = {}
     for name, platform in platform_inventory.items():

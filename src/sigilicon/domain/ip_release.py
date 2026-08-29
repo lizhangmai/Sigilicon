@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
@@ -65,15 +65,32 @@ class IpCollateral:
 
 
 @dataclass(frozen=True)
-class IpExport:
-    name: str
-    oa_library: str
-    oa_cell: str
+class OaMixedSignalIpInterface:
+    kind: Literal["oa-mixed-signal"]
+    contract: PurePosixPath
+    library: str
+    cell: str
     schematic_view: str
     layout_view: str
-    interface_contract: PurePosixPath
-    physical_interface: str
-    logical_interface: str
+    physical: str
+    logical: str
+
+
+@dataclass(frozen=True)
+class RtlIpInterface:
+    kind: Literal["rtl"]
+    contract: PurePosixPath
+    module: str
+    source_role: str
+
+
+IpInterface = OaMixedSignalIpInterface | RtlIpInterface
+
+
+@dataclass(frozen=True)
+class IpExport:
+    name: str
+    interface: IpInterface
     collateral: tuple[IpCollateral, ...]
     required_roles: Mapping[str, tuple[str, ...]]
 
@@ -89,7 +106,7 @@ class IpContract:
     default_maturity: str
     exports: tuple[IpExport, ...]
     source_files: tuple[PurePosixPath, ...]
-    oa_assembly: PurePosixPath
+    oa_assembly: PurePosixPath | None
     component_graph: Mapping[str, ComponentContract]
     document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
@@ -192,10 +209,65 @@ def _parse_ip_contract(
         name = _string(entry.get("name"), f"exports[{index}].name")
         if name in export_specs:
             raise ValueError(f"duplicate IP export: {name}")
-        oa = _table(entry.get("oa"), f"exports[{index}].oa")
         interface = _table(
             entry.get("interface"), f"exports[{index}].interface"
         )
+        interface_kind = interface.get("kind")
+        if interface_kind is None and "oa" in entry:
+            # Schema-1 OA release contracts predate the explicit interface tag.
+            interface_kind = "oa-mixed-signal"
+        interface_contract = safe_relative(
+            interface.get("contract"),
+            f"exports[{index}].interface.contract",
+        )
+        if interface_kind == "oa-mixed-signal":
+            oa = _table(entry.get("oa"), f"exports[{index}].oa")
+            parsed_interface: IpInterface = OaMixedSignalIpInterface(
+                kind="oa-mixed-signal",
+                contract=interface_contract,
+                library=_string(
+                    oa.get("library"), f"exports[{index}].oa.library"
+                ),
+                cell=_string(oa.get("cell"), f"exports[{index}].oa.cell"),
+                schematic_view=_string(
+                    oa.get("schematic_view"),
+                    f"exports[{index}].oa.schematic_view",
+                ),
+                layout_view=_string(
+                    oa.get("layout_view"),
+                    f"exports[{index}].oa.layout_view",
+                ),
+                physical=_string(
+                    interface.get("physical"),
+                    f"exports[{index}].interface.physical",
+                ),
+                logical=_string(
+                    interface.get("logical"),
+                    f"exports[{index}].interface.logical",
+                ),
+            )
+        elif interface_kind == "rtl":
+            if "oa" in entry:
+                raise ValueError(
+                    f"exports[{index}] RTL interface cannot declare an OA identity"
+                )
+            parsed_interface = RtlIpInterface(
+                kind="rtl",
+                contract=interface_contract,
+                module=_string(
+                    interface.get("module"),
+                    f"exports[{index}].interface.module",
+                ),
+                source_role=_string(
+                    interface.get("source_role"),
+                    f"exports[{index}].interface.source_role",
+                ),
+            )
+        else:
+            raise ValueError(
+                f"exports[{index}].interface.kind is unsupported: "
+                f"{interface_kind!r}"
+            )
         maturity = _table(
             entry.get("maturity"), f"exports[{index}].maturity"
         )
@@ -228,29 +300,7 @@ def _parse_ip_contract(
             required_roles[level] = tuple(values)
             previous = current
         export_specs[name] = {
-            "oa_library": _string(
-                oa.get("library"), f"exports[{index}].oa.library"
-            ),
-            "oa_cell": _string(oa.get("cell"), f"exports[{index}].oa.cell"),
-            "schematic_view": _string(
-                oa.get("schematic_view"),
-                f"exports[{index}].oa.schematic_view",
-            ),
-            "layout_view": _string(
-                oa.get("layout_view"), f"exports[{index}].oa.layout_view"
-            ),
-            "interface_contract": safe_relative(
-                interface.get("contract"),
-                f"exports[{index}].interface.contract",
-            ),
-            "physical_interface": _string(
-                interface.get("physical"),
-                f"exports[{index}].interface.physical",
-            ),
-            "logical_interface": _string(
-                interface.get("logical"),
-                f"exports[{index}].interface.logical",
-            ),
+            "interface": parsed_interface,
             "required_roles": required_roles,
         }
 
@@ -338,23 +388,18 @@ def _parse_ip_contract(
     for name, values in export_specs.items():
         exported = IpExport(
             name=name,
-            oa_library=str(values["oa_library"]),
-            oa_cell=str(values["oa_cell"]),
-            schematic_view=str(values["schematic_view"]),
-            layout_view=str(values["layout_view"]),
-            interface_contract=values["interface_contract"],
-            physical_interface=str(values["physical_interface"]),
-            logical_interface=str(values["logical_interface"]),
+            interface=values["interface"],
             collateral=tuple(collateral_by_export[name]),
             required_roles=MappingProxyType(dict(values["required_roles"])),
         )
-        oa_identity = (exported.oa_library, exported.oa_cell)
-        if oa_identity in oa_identities:
-            raise ValueError(
-                f"duplicate IP export OA identity: {exported.oa_library}/"
-                f"{exported.oa_cell}"
-            )
-        oa_identities.add(oa_identity)
+        if isinstance(exported.interface, OaMixedSignalIpInterface):
+            oa_identity = (exported.interface.library, exported.interface.cell)
+            if oa_identity in oa_identities:
+                raise ValueError(
+                    "duplicate IP export OA identity: "
+                    f"{exported.interface.library}/{exported.interface.cell}"
+                )
+            oa_identities.add(oa_identity)
         present = {item.role for item in exported.collateral}
         development = set(exported.required_roles["development"])
         if not development.issubset(present):
@@ -362,7 +407,7 @@ def _parse_ip_contract(
             raise ValueError(
                 f"IP export {name} is missing development collateral: {missing}"
             )
-        interface_path = (producer_path / exported.interface_contract).resolve()
+        interface_path = (producer_path / exported.interface.contract).resolve()
         expected_interface_paths.add(interface_path)
         if not interface_path.is_file() or not interface_path.is_relative_to(
             producer_path
@@ -385,15 +430,26 @@ def _parse_ip_contract(
     source_files = source.get("files", [])
     if not isinstance(source_files, (list, tuple)):
         raise ValueError("source.files must be an array")
-    oa_assembly = safe_relative(source.get("oa_assembly"), "source.oa_assembly")
-    oa_assembly_path = (root / oa_assembly).resolve()
-    if (
-        not oa_assembly_path.is_file()
-        or not oa_assembly_path.is_relative_to(producer_path)
-    ):
-        raise FileNotFoundError(
-            "source.oa_assembly must name a manifest inside the producer root"
-        )
+    oa_exports = [
+        exported
+        for exported in exports
+        if isinstance(exported.interface, OaMixedSignalIpInterface)
+    ]
+    oa_assembly_value = source.get("oa_assembly")
+    if oa_exports:
+        oa_assembly = safe_relative(oa_assembly_value, "source.oa_assembly")
+        oa_assembly_path = (root / oa_assembly).resolve()
+        if (
+            not oa_assembly_path.is_file()
+            or not oa_assembly_path.is_relative_to(producer_path)
+        ):
+            raise FileNotFoundError(
+                "source.oa_assembly must name a manifest inside the producer root"
+            )
+    else:
+        if oa_assembly_value is not None:
+            raise ValueError("RTL-only IP releases cannot declare source.oa_assembly")
+        oa_assembly = None
 
     default = _string(raw.get("default_maturity"), "default_maturity")
     if default not in RELEASE_MATURITY_LEVELS:
