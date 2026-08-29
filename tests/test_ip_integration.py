@@ -4,11 +4,13 @@ from dataclasses import replace
 import json
 from pathlib import Path, PurePosixPath
 import tomllib
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import sigilicon.domain.component as component_domain
+import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
@@ -545,6 +547,81 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
         "ip/leaf/rtl/leaf.sv",
         "ip/composite/rtl/top.sv",
     ]
+
+
+def test_ip_integration_reuses_the_validated_producer_release_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    producer = SimpleNamespace(name="fixture-ip")
+    producer_path = project_root / "ip/fixture/configs/release.toml"
+    producer_reads: list[Path] = []
+    planned_contracts: list[object] = []
+
+    monkeypatch.setattr(
+        ip_integration,
+        "ip_catalog_contract_path",
+        lambda *_args, **_kwargs: producer_path,
+    )
+
+    def load_producer(path, *, project):
+        assert project.project_root == project_root
+        producer_reads.append(path)
+        return producer
+
+    monkeypatch.setattr(ip_integration, "load_ip_contract", load_producer)
+
+    def plan_contract(contract, *, maturity):
+        planned_contracts.append(contract)
+        assert maturity == "development"
+        return {
+            "contract": "ip/fixture/configs/release.toml",
+            "release_id": "development-fixture",
+            "exports": [
+                {
+                    "name": "macro",
+                    "interface": {
+                        "logical": "fixture_model:transaction-1-port",
+                        "physical": "fixture_macro:oa-1-pin",
+                    },
+                }
+            ],
+            "collateral": [
+                {
+                    "export": "macro",
+                    "role": role,
+                    "module": module,
+                }
+                for role, module in (
+                    ("transaction_model", "fixture_model"),
+                    ("integration_adapter", "fixture_shell"),
+                    ("physical_blackbox", "fixture_macro"),
+                )
+            ],
+        }
+
+    monkeypatch.setattr(
+        ip_integration,
+        "plan_ip_release_contract",
+        plan_contract,
+    )
+
+    plan = plan_ip_integration(
+        contract_path,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+
+    assert producer_reads == [producer_path]
+    assert len(planned_contracts) == 1
+    assert planned_contracts[0] is producer
+    assert plan["dependencies"][0]["release"]["provider"] == (
+        "ip/fixture/configs/release.toml"
+    )
 
 
 def test_ip_integration_contract_preserves_its_validated_component_graph(

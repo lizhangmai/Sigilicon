@@ -216,9 +216,13 @@ def test_release_consumers_reuse_the_contract_component_graph(
         "_qualification_semantics",
         lambda *_args, **_kwargs: ({"name": "qualification", "passed": True}, []),
     )
+    def reject_contract_reload(*_args, **_kwargs):
+        raise AssertionError("typed release planner reloaded its contract")
+
+    monkeypatch.setattr(ip_packaging, "load_ip_contract", reject_contract_reload)
 
     sources = ip_packaging._source_inputs(contract)
-    plan = ip_packaging._plan_loaded_ip_release(contract)
+    plan = ip_packaging.plan_ip_release_contract(contract)
 
     assert "ip/fixture/configs/ip.toml" in sources
     assert plan["component"]["name"] == "fixture-ip"

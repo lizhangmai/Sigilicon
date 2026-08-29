@@ -17,11 +17,15 @@ from sigilicon.domain.ip_integration import (
     load_ip_dependency_lock,
     load_ip_integration_contract,
 )
-from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, load_ip_contract
+from sigilicon.domain.ip_release import (
+    RELEASE_MATURITY_LEVELS,
+    IpContract,
+    load_ip_contract,
+)
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
-    plan_ip_release,
+    plan_ip_release_contract,
     release_role_view,
     resolve_release_role,
 )
@@ -71,7 +75,10 @@ def ip_catalog_contract_path(
     return path
 
 
-def _producer_contract(contract: IpIntegrationContract, dependency_name: str) -> Path:
+def _producer_contract(
+    contract: IpIntegrationContract,
+    dependency_name: str,
+) -> IpContract:
     path = ip_catalog_contract_path(
         None,
         dependency_name,
@@ -81,7 +88,7 @@ def _producer_contract(contract: IpIntegrationContract, dependency_name: str) ->
     producer = load_ip_contract(path, project=contract.project)
     if producer.name != dependency_name:
         raise ValueError(f"IP catalog identity mismatch: {dependency_name}")
-    return path
+    return producer
 
 
 def _role_export(release: IpReleaseDependency, role: str) -> str:
@@ -295,10 +302,9 @@ def plan_ip_integration(
         }
         release = dependency.release
         if release is not None:
-            producer_path = _producer_contract(contract, dependency.name)
-            expected = plan_ip_release(
-                producer_path,
-                project=contract.project,
+            producer = _producer_contract(contract, dependency.name)
+            expected = plan_ip_release_contract(
+                producer,
                 maturity=release.required_maturity,
             )
             exported = _release_export(expected, release.export)

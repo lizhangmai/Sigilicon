@@ -805,6 +805,16 @@ def plan_ip_release(
         artifact_root=artifact_root,
     )
     contract = load_ip_contract(contract_path, project=repository)
+    return plan_ip_release_contract(contract, maturity=maturity)
+
+
+def plan_ip_release_contract(
+    contract: IpContract,
+    *,
+    maturity: str | None = None,
+) -> dict[str, Any]:
+    """Plan one already validated IP release contract."""
+
     return _plan_loaded_ip_release(contract, maturity=maturity)
 
 
