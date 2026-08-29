@@ -40,6 +40,22 @@ class RepositoryOwner:
             for path in self.component.filesets.get(fileset, ())
         )
 
+    def flow_implementation_files(self) -> tuple[Path, ...]:
+        """Return manifest-declared owner code that may implement a Flow."""
+
+        implementation: set[Path] = {
+            path
+            for fileset in self.component.filesets
+            for path in self.files(fileset)
+            if path.suffix == ".py"
+        }
+        implementation.update(
+            path
+            for path in self.files("flow")
+            if path.suffix not in {".toml", ".json", ".yaml", ".yml"}
+        )
+        return tuple(sorted(implementation))
+
 
 @dataclass(frozen=True)
 class RepositoryFlowExtension:

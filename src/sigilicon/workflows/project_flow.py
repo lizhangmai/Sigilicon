@@ -94,8 +94,7 @@ def project_workflow_registry(
                 candidate,
                 project_root=repository.project_root,
             )
-            for candidate in owner.files("flow")
-            if candidate.suffix == ".py"
+            for candidate in owner.flow_implementation_files()
         )
     except (OSError, RuntimeError, UnicodeError) as exc:
         raise ValueError(
@@ -150,15 +149,33 @@ def project_workflow_registry_for_owner_root(owner_root: Path | str) -> FlowRegi
     cwd, so a neighboring project cannot silently select the wrong assembly.
     """
 
+    binding = project_owner_binding_for_root(owner_root)
+    if binding is not None:
+        repository, owner = binding
+        return project_workflow_registry(repository, owner.root)
+    selected_root = Path(owner_root).resolve()
+    return builtin_workflow_registry(selected_root)
+
+
+def project_owner_binding_for_root(
+    owner_root: Path | str,
+) -> tuple[RepositoryContext, RepositoryOwner] | None:
+    """Resolve an explicit owner root without consulting the current directory."""
+
     selected_root = Path(owner_root).resolve()
     for candidate in (selected_root, *selected_root.parents):
         if not (candidate / "sigilicon.toml").is_file():
             continue
         repository = RepositoryContext.from_project_root(candidate)
-        if candidate == selected_root and repository.owner_for(selected_root) is None:
-            return builtin_workflow_registry(selected_root)
-        return project_workflow_registry(repository, selected_root)
-    return builtin_workflow_registry(selected_root)
+        owner = repository.owner_for(selected_root)
+        if candidate == selected_root and owner is None:
+            return None
+        if owner is None or owner.root != selected_root:
+            raise ValueError(
+                f"owner root must equal a cataloged component root: {selected_root}"
+            )
+        return repository, owner
+    return None
 
 
 @dataclass(frozen=True)
@@ -169,6 +186,7 @@ class ProjectFlowPlan:
     plan: FlowPlan
     project_root: Path | None = field(default=None, repr=False)
     owner_root: Path | None = field(default=None, repr=False)
+    _binding: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def plan_identity(self) -> str:
@@ -194,6 +212,7 @@ class ProjectFlow:
     registry_factory: Callable[
         [RepositoryContext | Path | str, Path | str | None], FlowRegistry
     ] = field(default=project_workflow_registry, repr=False, compare=False)
+    _binding: object = field(default_factory=object, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         owner = self.repository.owner(self.owner_name)
@@ -242,6 +261,7 @@ class ProjectFlow:
             engine.plan(selection.spec, target, selection.profile),
             self.repository.project_root,
             self.owner.root,
+            self._binding,
         )
 
     def preflight(
@@ -274,6 +294,7 @@ class ProjectFlow:
             planned.plan.spec.owner != self.owner.name
             or planned.project_root != self.repository.project_root
             or planned.owner_root != self.owner.root
+            or planned._binding is not self._binding
         ):
             raise ValueError(
                 "Flow plan does not belong to this exact project owner binding"
@@ -285,4 +306,5 @@ __all__ = [
     "ProjectFlowPlan",
     "project_workflow_registry",
     "project_workflow_registry_for_owner_root",
+    "project_owner_binding_for_root",
 ]

@@ -25,6 +25,7 @@ from sigilicon.workflows.builtin import builtin_workflow_registry
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
     ProjectFlowPlan,
+    project_owner_binding_for_root,
     project_workflow_registry,
     project_workflow_registry_for_owner_root,
 )
@@ -186,11 +187,17 @@ def _selection_value(
     *,
     project: bool,
 ) -> str:
-    value = getattr(
-        args,
-        f"{name}_option" if project else f"{name}_positional",
-        None,
-    )
+    option = getattr(args, f"{name}_option", None)
+    positional = getattr(args, f"{name}_positional", None)
+    if project and positional is not None:
+        raise FlowContractError(
+            f"semantic --owner selection requires --{name}, not positional {name}"
+        )
+    if not project and option is not None:
+        raise FlowContractError(
+            f"path-based Flow selection requires positional {name}, not --{name}"
+        )
+    value = option if project else positional
     if not isinstance(value, str) or not value:
         form = f"--{name}" if project else name
         raise FlowContractError(f"Flow {form} selection is required")
@@ -203,18 +210,31 @@ def _resolved_plan(
 ) -> tuple[ProjectFlowPlan, ProjectFlow | None]:
     project = _project_flow(args)
     if project is not None:
-        return (
-            project.plan(
+        try:
+            planned = project.plan(
                 flow=_selection_value(args, "flow", project=True),
                 target=_selection_value(args, "target", project=True),
                 profile=args.profile,
-            ),
-            project,
-        )
+            )
+        except ValueError as exc:
+            raise FlowContractError(str(exc)) from exc
+        return planned, project
     if args.catalog is None or args.owner_root is None:
         raise FlowContractError(
             "path-based Flow selection requires catalog and --owner-root"
         )
+    try:
+        binding = project_owner_binding_for_root(args.owner_root)
+    except ValueError as exc:
+        raise FlowContractError(str(exc)) from exc
+    if binding is not None:
+        repository, owner = binding
+        canonical_catalog = repository.owner_flow_catalog(owner)
+        if args.catalog.resolve() != canonical_catalog:
+            raise FlowContractError(
+                "project Flow path selection must use the selected owner's "
+                f"canonical catalog: {canonical_catalog}"
+            )
     flow = _selection_value(args, "flow", project=False)
     target = _selection_value(args, "target", project=False)
     engine = FlowEngine(_flow_registry(args, registry_factory))
