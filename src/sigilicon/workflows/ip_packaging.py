@@ -13,7 +13,6 @@ import uuid
 from typing import Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json, read_json_object, utc_now
-from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
@@ -316,15 +315,7 @@ def _development_interface_check(
 
 def _source_inputs(contract: IpContract) -> tuple[str, ...]:
     root = contract.project_root
-    component_path = _project_path(
-        root, Path(contract.producer) / contract.component_contract, "component contract"
-    )
-    owner = contract.project.require_owner(component_path)
-    graph = load_component_graph(
-        component_path,
-        project_root=root,
-        root_contract=(owner.component if owner.component.path == component_path else None),
-    )
+    graph = contract.component_graph
     paths: set[Path] = {contract.path}
 
     def add_source(source: Path) -> None:
@@ -683,16 +674,7 @@ def _plan_loaded_ip_release(
         Path(contract.producer) / contract.component_contract,
         "component contract",
     )
-    component_owner = contract.project.require_owner(component_path)
-    component_graph = load_component_graph(
-        component_path,
-        project_root=contract.project_root,
-        root_contract=(
-            component_owner.component
-            if component_owner.component.path == component_path
-            else None
-        ),
-    )
+    component_graph = contract.component_graph
     component = next(
         item for item in component_graph.values() if item.path == component_path
     )

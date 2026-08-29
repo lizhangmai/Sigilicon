@@ -6,9 +6,15 @@ from typing import Any
 
 import pytest
 
+import sigilicon.domain.component as component_domain
 from sigilicon.cli.main import main as sigilicon_cli_main
-from sigilicon.domain.ip_integration import LockedIpRelease
+from sigilicon.domain.ip_integration import (
+    LockedIpRelease,
+    load_ip_integration_contract,
+)
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_integration import (
+    _allowed_files,
     check_ip_integration,
     plan_ip_integration,
     resolve_locked_ip_release,
@@ -523,6 +529,41 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
         "ip/leaf/rtl/leaf.sv",
         "ip/composite/rtl/top.sv",
     ]
+
+
+def test_ip_integration_contract_preserves_its_validated_component_graph(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    contract_path = _write_source_component_fixture(project_root)
+    project = Project.from_project_root(project_root)
+    reads: list[Path] = []
+    original_loader = component_domain.load_component_contract
+
+    def tracked_loader(path: Path, *, project_root: Path):
+        reads.append(path.resolve())
+        return original_loader(path, project_root=project_root)
+
+    monkeypatch.setattr(component_domain, "load_component_contract", tracked_loader)
+
+    contract = load_ip_integration_contract(contract_path, project=project)
+
+    assert sorted(contract.component_graph) == ["composite", "leaf"]
+    assert contract.component_graph["composite"] is project.owner(
+        "composite"
+    ).component
+    assert reads == [(project_root / "ip/leaf/configs/ip.toml").resolve()]
+
+    reads.clear()
+    allowed = _allowed_files(
+        contract,
+        contract.get_variant("default"),
+        "simulation",
+    )
+
+    assert project_root / "ip/leaf/rtl/leaf.sv" in allowed
+    assert reads == []
 
 
 def test_declaring_release_capability_does_not_implicitly_consume_it(

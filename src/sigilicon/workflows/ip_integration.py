@@ -7,7 +7,6 @@ from pathlib import Path
 import tomllib
 from typing import Any, Mapping
 
-from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
@@ -140,11 +139,7 @@ def _allowed_files(
         for values in contract.component.filesets.values()
         for relative in values
     }
-    graph = load_component_graph(
-        contract.path,
-        project_root=root,
-        root_contract=contract.component,
-    )
+    graph = contract.component_graph
     fileset = variant.get_fileset(fileset_name)
     for dependency_name, source_fileset in fileset.source_filesets.items():
         allowed.update(

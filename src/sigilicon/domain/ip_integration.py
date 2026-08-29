@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import tomllib
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.component import (
@@ -108,6 +109,7 @@ class IpOperatingVariant:
 class IpIntegrationContract:
     project: Project
     component: ComponentContract
+    component_graph: Mapping[str, ComponentContract]
     dependency_lock: PurePosixPath | None
     dependencies: tuple[IpIntegrationDependency, ...]
     implementation_profiles: Mapping[str, PurePosixPath]
@@ -527,6 +529,7 @@ def load_ip_integration_contract(
     return IpIntegrationContract(
         project=repository,
         component=component,
+        component_graph=MappingProxyType(dict(graph)),
         dependency_lock=dependency_lock,
         dependencies=tuple(dependencies),
         implementation_profiles=_implementation_profiles(

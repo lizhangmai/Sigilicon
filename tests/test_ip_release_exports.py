@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import sigilicon.domain.component as component_domain
+import sigilicon.domain.oa_library as oa_library_domain
+import sigilicon.workflows.ip_packaging as ip_packaging
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import release_role_view
@@ -146,6 +150,78 @@ def test_ip_contract_reuses_explicit_project(tmp_path: Path) -> None:
 
     assert contract.project is project
     assert contract.project_root == tmp_path
+    assert contract.component_graph == {"fixture-ip": project.owner("fixture").component}
+    assert contract.component_graph["fixture-ip"] is project.owner("fixture").component
+
+
+def test_release_consumers_reuse_the_contract_component_graph(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+
+    def reject_graph_reload(*_args, **_kwargs):
+        raise AssertionError("release consumer reloaded the component graph")
+
+    monkeypatch.setattr(component_domain, "load_component_graph", reject_graph_reload)
+    cells = []
+    for name in ("LEFT", "RIGHT"):
+        source = tmp_path / f"{name}.scs"
+        source.write_text(f"subckt {name} A\nends {name}\n", encoding="utf-8")
+        cells.append(
+            SimpleNamespace(
+                cell=name,
+                owner="fixture",
+                role="design",
+                canonical_source=source,
+                source_manifest_path=contract.path,
+                manifest_path=contract.path,
+                design_spec=None,
+                layout_specs=(),
+                views=(
+                    SimpleNamespace(
+                        kind="spectre_netlist",
+                        source=source,
+                        dependencies=(),
+                    ),
+                ),
+            )
+        )
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            name="fixture-lib",
+            cells=tuple(cells),
+            manifest_path=tmp_path / "ip/fixture/configs/oa.toml",
+            project=contract.project,
+        ),
+    )
+    monkeypatch.setattr(
+        ip_packaging,
+        "_source_control",
+        lambda _root: ("a" * 40, False),
+    )
+    monkeypatch.setattr(
+        ip_packaging,
+        "_development_interface_check",
+        lambda _contract, exported: {
+            "name": f"development_interface_consistency:{exported.name}",
+            "export": exported.name,
+            "passed": True,
+        },
+    )
+    monkeypatch.setattr(
+        ip_packaging,
+        "_qualification_semantics",
+        lambda *_args, **_kwargs: ({"name": "qualification", "passed": True}, []),
+    )
+
+    sources = ip_packaging._source_inputs(contract)
+    plan = ip_packaging._plan_loaded_ip_release(contract)
+
+    assert "ip/fixture/configs/ip.toml" in sources
+    assert plan["component"]["name"] == "fixture-ip"
 
 
 def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:

@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import tomllib
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
 
 if TYPE_CHECKING:
+    from sigilicon.domain.component import ComponentContract
     from sigilicon.domain.repository import Project
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
@@ -83,6 +85,7 @@ class IpContract:
     exports: tuple[IpExport, ...]
     source_files: tuple[PurePosixPath, ...]
     oa_assembly: PurePosixPath
+    component_graph: Mapping[str, ComponentContract]
 
     @property
     def project_root(self) -> Path:
@@ -378,5 +381,6 @@ def load_ip_contract(
             safe_relative(value, "source.files entry") for value in source_files
         ),
         oa_assembly=oa_assembly,
+        component_graph=MappingProxyType(dict(component_graph)),
     )
     return result
