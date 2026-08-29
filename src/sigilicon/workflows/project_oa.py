@@ -25,7 +25,7 @@ from sigilicon.workflows.oa_simulation import (
 class ProjectOaWorkflow:
     """Own native OA planning, checking, rebuilding, and testbench execution."""
 
-    _project: Project
+    project: Project
 
     @classmethod
     def from_file(cls, project_contract: Path | str) -> "ProjectOaWorkflow":
@@ -36,7 +36,7 @@ class ProjectOaWorkflow:
         return (
             candidate.resolve()
             if candidate.is_absolute()
-            else (self._project.project_root / candidate).resolve()
+            else (self.project.project_root / candidate).resolve()
         )
 
     @staticmethod
@@ -57,7 +57,7 @@ class ProjectOaWorkflow:
     ) -> OALibraryRebuildPlan:
         return plan_oa_library_rebuild(
             self._manifest(manifest),
-            project=self._project,
+            project=self.project,
             library=library,
         )
 
@@ -71,7 +71,7 @@ class ProjectOaWorkflow:
     ) -> dict[str, Any]:
         return check_oa_library(
             self._manifest(manifest),
-            project=self._project,
+            project=self.project,
             library=library,
             client=client,
             timeout=timeout,

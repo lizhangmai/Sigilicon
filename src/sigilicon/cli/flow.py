@@ -250,7 +250,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_ip(args: argparse.Namespace, workflow: ProjectIpWorkflow) -> int:
-    root = workflow.project_root
+    root = workflow.project.project_root
     if args.action == "integration":
         try:
             contract = workflow.contract(args.target, section="components")

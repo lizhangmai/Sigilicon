@@ -24,7 +24,7 @@ from sigilicon.workflows.ip_packaging import (
 class ProjectIpWorkflow:
     """Own IP catalog selection, release operations, and composite integration."""
 
-    _project: Project
+    project: Project
 
     @classmethod
     def from_file(cls, project_contract: Path | str) -> "ProjectIpWorkflow":
@@ -32,17 +32,21 @@ class ProjectIpWorkflow:
 
     @property
     def project_root(self) -> Path:
-        return self._project.project_root
+        """Compatibility alias; new composition should use ``project``."""
+
+        return self.project.project_root
 
     @property
     def artifact_root(self) -> Path:
-        return self._project.artifact_root
+        """Compatibility alias; new composition should use ``project``."""
+
+        return self.project.artifact_root
 
     def contract(self, target: str, *, section: str = "targets") -> Path:
         return ip_catalog_contract_path(
             None,
             target,
-            project=self._project,
+            project=self.project,
             section=section,
         )
 
@@ -51,7 +55,7 @@ class ProjectIpWorkflow:
     ) -> dict[str, Any]:
         return plan_ip_release(
             contract_path,
-            project=self._project,
+            project=self.project,
             maturity=maturity,
         )
 
@@ -60,7 +64,7 @@ class ProjectIpWorkflow:
     ) -> dict[str, Any]:
         return build_ip_release(
             contract_path,
-            project=self._project,
+            project=self.project,
             maturity=maturity,
         )
 
@@ -73,7 +77,7 @@ class ProjectIpWorkflow:
     ) -> dict[str, Any]:
         return audit_ip_release(
             contract_path,
-            project=self._project,
+            project=self.project,
             artifact_root=artifact_root,
             maturity=maturity,
         )
@@ -83,12 +87,12 @@ class ProjectIpWorkflow:
     ) -> dict[str, Any]:
         return publish_ip_release(
             contract_path,
-            project=self._project,
+            project=self.project,
             maturity=maturity,
         )
 
     def plan_integration(self, contract_path: Path) -> dict[str, Any]:
-        return plan_ip_integration(contract_path, project=self._project)
+        return plan_ip_integration(contract_path, project=self.project)
 
     def check_integration(
         self,
@@ -99,7 +103,7 @@ class ProjectIpWorkflow:
     ) -> dict[str, Any]:
         return check_ip_integration(
             contract_path,
-            project=self._project,
+            project=self.project,
             variant_name=variant_name,
             fileset_name=fileset_name,
         )

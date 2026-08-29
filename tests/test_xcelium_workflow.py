@@ -85,10 +85,12 @@ def test_project_xcelium_plan_parses_one_project(
 
     monkeypatch.setattr(repository_module, "read_toml", counted)
 
-    plan = ProjectXceliumWorkflow.from_file(project_contract).plan(contract)
+    workflow = ProjectXceliumWorkflow.from_file(project_contract)
+    plan = workflow.plan(contract)
     payload = plan.as_dict()
 
     assert plan.spec.project_root == tmp_path
+    assert plan.spec.project is workflow.project
     assert plan.spec.owner == "demo"
     assert payload["contract"] == "ip/demo/verification/tb_demo/cell.toml"
     assert payload["owner"] == "demo"
