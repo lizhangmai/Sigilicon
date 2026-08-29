@@ -121,6 +121,23 @@ class PdkConfig:
     installation_root_environment: str | None = None
 
 
+@dataclass(frozen=True)
+class PlatformCatalogSnapshot:
+    """One validated project platform catalog read for an operation."""
+
+    path: Path
+    project_root: Path
+    owner: str
+    manifests: Mapping[str, Path]
+    document: Mapping[str, Any]
+
+    def manifest(self, key: str) -> Path:
+        try:
+            return self.manifests[key]
+        except KeyError as exc:
+            raise ValueError(f"platform catalog has no {key!r} entry") from exc
+
+
 def resolve_platform(
     context: Project,
     key: str,
@@ -143,6 +160,26 @@ def resolve_platform(
         raise ValueError("platform snapshot manifest is absent from its source identity")
     if any(not path.is_relative_to(root) for path in snapshot.source_paths):
         raise ValueError("platform snapshot source identity escapes the project root")
+    return snapshot
+
+
+def resolve_platform_catalog(
+    context: Project,
+    *,
+    snapshot: PlatformCatalogSnapshot | None = None,
+) -> PlatformCatalogSnapshot:
+    """Load a platform catalog or validate one operation-owned snapshot."""
+
+    if snapshot is None:
+        return load_platform_catalog(context)
+    validated = parse_platform_catalog(context, snapshot.document)
+    if (
+        snapshot.project_root != validated.project_root
+        or snapshot.path != validated.path
+    ):
+        raise ValueError("platform catalog snapshot belongs to a different project")
+    if snapshot.owner != validated.owner or snapshot.manifests != validated.manifests:
+        raise ValueError("platform catalog snapshot identity drift")
     return snapshot
 
 
@@ -485,38 +522,96 @@ def _load_layout(
     )
 
 
-def load_platform(context: Project, key: str) -> PdkConfig:
-    """Resolve and validate one platform without leaking repository layout."""
-
-    if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
-        raise ValueError("platform key contains unsupported characters")
+def _platform_catalog_document(
+    context: Project,
+    document: Mapping[str, Any],
+) -> tuple[Path, Path, str, Mapping[str, Any]]:
     root = context.project_root
     catalog_path = context.catalog("platform")
     if not catalog_path.is_file() or not catalog_path.is_relative_to(root):
         raise ValueError("platform catalog must be a project-owned file")
-    catalog = read_toml(catalog_path)
-    require_config_header(
-        catalog,
+    header = require_config_header(
+        document,
         catalog_path,
         contract_kind="platform-catalog",
         path_scope="repository",
     )
     _reject_unknown(
-        catalog,
+        document,
         _HEADER_FIELDS | {"platforms"},
         "platform catalog",
     )
-    platforms = _table(catalog.get("platforms"), "platform catalog platforms")
-    try:
-        manifest_value = platforms[key]
-    except KeyError as exc:
-        raise ValueError(f"platform catalog has no {key!r} entry") from exc
-    manifest = _safe_relative(
-        catalog_path.parent,
-        manifest_value,
-        f"platforms.{key}",
-        root=root,
+    platforms = _table(document.get("platforms"), "platform catalog platforms")
+    return root, catalog_path, header.owner, platforms
+
+
+def parse_platform_catalog(
+    context: Project,
+    document: Mapping[str, Any],
+) -> PlatformCatalogSnapshot:
+    """Validate an already read canonical platform catalog document."""
+
+    root, catalog_path, owner, platforms = _platform_catalog_document(
+        context,
+        document,
     )
+    manifests: dict[str, Path] = {}
+    for key, value in platforms.items():
+        if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
+            raise ValueError("platform catalog keys contain unsupported characters")
+        manifests[key] = _safe_relative(
+            catalog_path.parent,
+            value,
+            f"platforms.{key}",
+            root=root,
+        )
+    return PlatformCatalogSnapshot(
+        path=catalog_path,
+        project_root=root,
+        owner=owner,
+        manifests=MappingProxyType(manifests),
+        document=MappingProxyType(dict(document)),
+    )
+
+
+def load_platform_catalog(context: Project) -> PlatformCatalogSnapshot:
+    """Read and validate the project's canonical platform catalog once."""
+
+    catalog_path = context.catalog("platform")
+    return parse_platform_catalog(context, read_toml(catalog_path))
+
+
+def load_platform(
+    context: Project,
+    key: str,
+    *,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PdkConfig:
+    """Resolve and validate one platform without leaking repository layout."""
+
+    if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
+        raise ValueError("platform key contains unsupported characters")
+    if catalog is None:
+        catalog_path = context.catalog("platform")
+        root, catalog_path, _owner, platforms = _platform_catalog_document(
+            context,
+            read_toml(catalog_path),
+        )
+        try:
+            manifest_value = platforms[key]
+        except KeyError as exc:
+            raise ValueError(f"platform catalog has no {key!r} entry") from exc
+        manifest = _safe_relative(
+            catalog_path.parent,
+            manifest_value,
+            f"platforms.{key}",
+            root=root,
+        )
+    else:
+        catalog_snapshot = resolve_platform_catalog(context, snapshot=catalog)
+        root = catalog_snapshot.project_root
+        catalog_path = catalog_snapshot.path
+        manifest = catalog_snapshot.manifest(key)
     raw = read_toml(manifest)
     header = require_config_header(
         raw,
@@ -581,7 +676,12 @@ def load_platform(context: Project, key: str) -> PdkConfig:
         simulation_path, simulation_raw, asset_root=asset_root
     )
     oa = _load_oa(oa_path, oa_raw)
-    source_paths: list[Path] = [catalog_path, manifest, simulation_path, oa_path]
+    source_paths: list[Path] = [
+        catalog_path,
+        manifest,
+        simulation_path,
+        oa_path,
+    ]
     layout: LayoutPdkConfig | None = None
     if "layout" in contracts:
         layout_contract = _contract(

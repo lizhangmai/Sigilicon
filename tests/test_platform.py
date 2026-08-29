@@ -9,7 +9,11 @@ from conftest import (
     write_test_layout_platform,
     write_test_platform,
 )
-from sigilicon.domain.platform import load_platform, resolve_platform
+from sigilicon.domain.platform import (
+    load_platform,
+    load_platform_catalog,
+    resolve_platform,
+)
 from sigilicon.domain.repository import RepositoryContext
 
 
@@ -44,6 +48,35 @@ def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> N
     resolved = resolve_platform(project, "testpdk", snapshot=snapshot)
 
     assert resolved is snapshot
+
+
+def test_load_platform_reuses_one_project_owned_catalog_snapshot(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = RepositoryContext.from_project_root(tmp_path)
+    catalog = load_platform_catalog(project)
+
+    platform = load_platform(project, "testpdk", catalog=catalog)
+
+    assert platform.source_paths[0] == catalog.path
+
+
+def test_load_platform_rejects_another_project_catalog_snapshot(
+    tmp_path: Path,
+) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (left, right):
+        write_project_context(root)
+        write_test_platform(root)
+    left_project = RepositoryContext.from_project_root(left)
+    right_project = RepositoryContext.from_project_root(right)
+    catalog = load_platform_catalog(left_project)
+
+    with pytest.raises(ValueError, match="different project"):
+        load_platform(right_project, "testpdk", catalog=catalog)
 
 
 def test_resolve_platform_rejects_another_project_catalog(tmp_path: Path) -> None:
@@ -195,6 +228,26 @@ def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> Non
     platform = load_platform(RepositoryContext.from_project_root(tmp_path), "custom")
 
     assert platform.path.name == "platform-contract.toml"
+
+
+def test_standalone_platform_lookup_ignores_invalid_unselected_entries(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    catalog_path = tmp_path / "configs/platform/catalog.toml"
+    catalog_path.write_text(
+        catalog_path.read_text(encoding="utf-8")
+        + 'other = "../outside.toml"\n',
+        encoding="utf-8",
+    )
+    project = RepositoryContext.from_project_root(tmp_path)
+
+    platform = load_platform(project, "testpdk")
+
+    assert platform.key == "testpdk"
+    with pytest.raises(ValueError, match="safe relative path"):
+        load_platform_catalog(project)
 
 
 def test_platform_contract_owners_must_match_the_manifest(tmp_path: Path) -> None:

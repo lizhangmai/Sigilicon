@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from sigilicon.domain.config_contracts import (
     inspect_project_configurations,
     require_config_header,
 )
+from sigilicon.domain.platform import load_platform_catalog
 from sigilicon.domain.repository import RepositoryContext
 
 
@@ -132,6 +134,21 @@ owner = "alpha"
     assert report["native_documents"] == 1
     assert "test-contract" in report["contract_kinds"]
     assert "ip/alpha" in report["roots"]
+
+
+def test_project_configuration_rejects_platform_catalog_snapshot_drift(
+    tmp_path: Path,
+) -> None:
+    _write_selected_catalogs(tmp_path)
+    context = RepositoryContext.from_project_root(tmp_path)
+    catalog = load_platform_catalog(context)
+
+    with pytest.raises(ValueError, match="snapshot identity drift"):
+        inspect_project_configurations(
+            context,
+            owner_roots=_owner_roots(tmp_path),
+            platform_catalog=replace(catalog, owner="drift"),
+        )
 
 
 def test_project_configuration_rejects_partial_common_header(tmp_path: Path) -> None:

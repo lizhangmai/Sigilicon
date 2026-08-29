@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
+    from sigilicon.domain.platform import PlatformCatalogSnapshot
 
 
 CONFIG_SCHEMA = 1
@@ -91,6 +92,7 @@ def inspect_project_configurations(
     *,
     owner_roots: Mapping[str, Path],
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
+    platform_catalog: PlatformCatalogSnapshot | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -119,6 +121,14 @@ def inspect_project_configurations(
         snapshot.path.resolve(): snapshot.document
         for snapshot in flow_catalog_inventory
     }
+    if platform_catalog is not None:
+        from sigilicon.domain.platform import resolve_platform_catalog
+
+        platform_catalog = resolve_platform_catalog(
+            context,
+            snapshot=platform_catalog,
+        )
+        catalog_documents[platform_catalog.path] = platform_catalog.document
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),

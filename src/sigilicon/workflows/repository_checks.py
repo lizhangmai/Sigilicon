@@ -13,7 +13,7 @@ from sigilicon.domain.config_contracts import (
     require_config_header,
 )
 from sigilicon.domain.ip_release import load_ip_contract
-from sigilicon.domain.platform import load_platform
+from sigilicon.domain.platform import load_platform, load_platform_catalog
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
@@ -199,17 +199,11 @@ def inspect_repository_designs(
             project=context,
         ).as_dict()
 
-    platform_catalog_path, platform_catalog = _catalog(
-        context,
-        "platform",
-        "platform-catalog",
-        ("platforms",),
-    )
+    platform_catalog = load_platform_catalog(context)
+    platform_catalog_path = platform_catalog.path
     platforms: dict[str, Any] = {}
-    for name, manifest in platform_catalog["platforms"].items():
-        if not isinstance(name, str) or not isinstance(manifest, str):
-            raise ValueError("platform catalog must map names to manifest paths")
-        platform = load_platform(context, name)
+    for name in platform_catalog.manifests:
+        platform = load_platform(context, name, catalog=platform_catalog)
         _register_owner_root(
             owner_roots,
             owner=platform.owner,
@@ -225,6 +219,7 @@ def inspect_repository_designs(
         context,
         owner_roots=owner_roots,
         catalog_inventory=flow_catalog_inventory,
+        platform_catalog=platform_catalog,
     )
 
     design_catalog = load_design_target_catalog(
