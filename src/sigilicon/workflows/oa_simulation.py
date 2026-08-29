@@ -10,6 +10,7 @@ from typing import Any
 import uuid
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
+from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import (
@@ -414,7 +415,8 @@ def run_oa_maestro_testbench(
 def run_named_oa_maestro_testbench(
     manifest: Path,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
     library: str,
     testbench: str,
     client: Any,
@@ -422,9 +424,10 @@ def run_named_oa_maestro_testbench(
 ) -> OAMaestroRunResult:
     """Resolve and run one testbench through its source assembly contract."""
 
+    repository = Project.bind(project=project, project_root=project_root)
     plan = plan_oa_library_rebuild(
         manifest,
-        project_root=project_root,
+        project=repository,
         library=library,
     )
     matches = [step for step in plan.testbenches if step.cell == testbench]
