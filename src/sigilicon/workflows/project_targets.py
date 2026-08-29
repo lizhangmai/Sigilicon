@@ -14,6 +14,7 @@ from sigilicon.workflows.layout_targets import (
     LayoutTargetCatalog,
     load_layout_target_catalog,
 )
+from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
 
 
 @dataclass(frozen=True)
@@ -31,3 +32,6 @@ class ProjectTargets:
 
     def layout(self) -> LayoutTargetCatalog:
         return load_layout_target_catalog(project=self.project)
+
+    def layout_workflow(self) -> ProjectLayoutWorkflow:
+        return ProjectLayoutWorkflow(self.project)

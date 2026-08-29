@@ -18,11 +18,6 @@ from sigilicon.artifacts import (
     read_nofollow_text,
 )
 from sigilicon.canonical import canonical_json
-from sigilicon.external_tools import (
-    owned_directory,
-    owned_input_file,
-    run_process_group,
-)
 from sigilicon.domain.netlist import render_canonical_cdl, resolve_netlist_hierarchy
 from sigilicon.domain.physical_verification import (
     CheckedLayoutIdentity,
@@ -40,6 +35,12 @@ from sigilicon.domain.physical_verification import (
     drc_evidence_from_json,
     load_physical_verification_policy,
     lvs_evidence_from_json,
+)
+from sigilicon.domain.repository import Project
+from sigilicon.external_tools import (
+    owned_directory,
+    owned_input_file,
+    run_process_group,
 )
 from sigilicon.flow.model import (
     ActionContext,
@@ -1551,14 +1552,18 @@ def verify_layout(
 
 def execute_layout_verification_spec(
     spec_path: Path,
-    project_root: Path,
-    client: Any,
+    project_root: Path | None = None,
+    client: Any = None,
     *,
+    project: Project | None = None,
     check: str,
     xstream_timeout: int = 120,
     calibre_timeout: int = 600,
 ) -> tuple[LayoutSpec, LayoutVerificationResult]:
-    spec = load_layout_spec(spec_path, project_root=project_root)
+    if client is None:
+        raise ValueError("layout verification requires an OA client")
+    repository = Project.bind(project=project, project_root=project_root)
+    spec = load_layout_spec(spec_path, project=repository)
     return spec, verify_layout(
         spec,
         client,

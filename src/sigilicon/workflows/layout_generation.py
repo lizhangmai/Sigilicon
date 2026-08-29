@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
+from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
@@ -34,19 +35,29 @@ class LayoutPlanningResult:
     plan: LayoutPlan
 
 
-def plan_layout_spec(spec_path: Path, project_root: Path) -> LayoutPlanningResult:
-    spec = load_layout_spec(spec_path, project_root=project_root)
+def plan_layout_spec(
+    spec_path: Path,
+    project_root: Path | None = None,
+    *,
+    project: Project | None = None,
+) -> LayoutPlanningResult:
+    repository = Project.bind(project=project, project_root=project_root)
+    spec = load_layout_spec(spec_path, project=repository)
     return LayoutPlanningResult(spec=spec, plan=build_layout_plan(spec))
 
 
 def execute_layout_generation_spec(
     spec_path: Path,
-    project_root: Path,
-    client: Any,
+    project_root: Path | None = None,
+    client: Any = None,
     *,
+    project: Project | None = None,
     timeout: int = 120,
 ) -> tuple[LayoutSpec, LayoutGenerationResult]:
-    spec = load_layout_spec(spec_path, project_root=project_root)
+    if client is None:
+        raise ValueError("layout generation requires an OA client")
+    repository = Project.bind(project=project, project_root=project_root)
+    spec = load_layout_spec(spec_path, project=repository)
     return spec, generate_layout(spec, client, timeout=timeout)
 
 

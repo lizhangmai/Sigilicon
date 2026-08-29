@@ -7,6 +7,7 @@ import pytest
 from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
+from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
 from sigilicon.workflows.project_targets import ProjectTargets
 
 from conftest import write_component_owner
@@ -167,32 +168,95 @@ def test_layout_cli_lists_targets_without_opening_a_tool_client(
     assert capsys.readouterr().out == "leaf\tcheck,generate,verify\tip/example/leaf.toml\n"
 
 
-def test_layout_cli_delegates_to_existing_generation_and_verification_clis(
+def test_layout_cli_runs_the_project_bound_layout_workflow(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     spec = _catalog_project(tmp_path).resolve()
+    canonical_project = Project.from_project_root(tmp_path)
     monkeypatch.chdir(tmp_path)
-    events: list[tuple[str, list[str], object]] = []
+    monkeypatch.setattr(
+        Project,
+        "from_file",
+        classmethod(lambda cls, path: canonical_project),
+    )
+    events: list[tuple[str, ProjectLayoutWorkflow, object | None]] = []
+    plan = type("Plan", (), {"canonical_json": lambda self: '{"plan":true}\n'})()
+    layout_spec = type(
+        "LayoutSpec",
+        (),
+        {"library": "example", "cell": "leaf", "view": "layout"},
+    )()
+    generation = type(
+        "Generation",
+        (),
+        {"instance_count": 3, "manifest_path": tmp_path / "generation.json"},
+    )()
+    verification = type(
+        "Verification",
+        (),
+        {
+            "check": "lvs",
+            "passed": True,
+            "details": {},
+            "manifest_path": tmp_path / "lvs.json",
+        },
+    )()
+    client = object()
 
-    def generate(argv, *, client_factory):
-        events.append(("generate", list(argv), client_factory))
-        return 17
+    def preview(workflow: ProjectLayoutWorkflow, path: Path) -> object:
+        assert path == spec
+        events.append(("check", workflow, None))
+        return type("Preview", (), {"plan": plan})()
 
-    def verify(argv, *, client_factory):
-        events.append(("verify", list(argv), client_factory))
-        return 23
+    def generate(
+        workflow: ProjectLayoutWorkflow,
+        path: Path,
+        oa_client: object,
+        *,
+        timeout: int,
+    ) -> tuple[object, object]:
+        assert path == spec
+        assert oa_client is client
+        assert timeout == 91
+        events.append(("generate", workflow, oa_client))
+        return layout_spec, generation
 
-    monkeypatch.setattr(flow_cli, "generate_layout_main", generate)
-    monkeypatch.setattr(flow_cli, "verify_layout_main", verify)
+    def verify(
+        workflow: ProjectLayoutWorkflow,
+        path: Path,
+        oa_client: object,
+        *,
+        checks: tuple[str, ...],
+        xstream_timeout: int,
+        calibre_timeout: int,
+    ) -> tuple[tuple[object, object], ...]:
+        assert path == spec
+        assert oa_client is client
+        assert checks == ("lvs",)
+        assert xstream_timeout == 92
+        assert calibre_timeout == 93
+        events.append(("verify", workflow, oa_client))
+        return ((layout_spec, verification),)
 
-    assert flow_cli.main(["layout", "check", "leaf"], client_factory=object) == 17
+    monkeypatch.setattr(ProjectLayoutWorkflow, "plan", preview)
+    monkeypatch.setattr(ProjectLayoutWorkflow, "generate", generate)
+    monkeypatch.setattr(ProjectLayoutWorkflow, "verify", verify)
+
+    assert (
+        flow_cli.main(
+            ["layout", "check", "leaf"],
+            client_factory=lambda: pytest.fail("layout check must not open a client"),
+        )
+        == 0
+    )
     assert (
         flow_cli.main(
             ["layout", "generate", "leaf", "--timeout", "91"],
-            client_factory=object,
+            client_factory=lambda: client,
         )
-        == 17
+        == 0
     )
     assert (
         flow_cli.main(
@@ -207,29 +271,23 @@ def test_layout_cli_delegates_to_existing_generation_and_verification_clis(
                 "--calibre-timeout",
                 "93",
             ],
-            client_factory=object,
+            client_factory=lambda: client,
         )
-        == 23
+        == 0
     )
 
-    assert events == [
-        ("generate", ["--spec", str(spec), "--preview"], object),
-        ("generate", ["--spec", str(spec), "--timeout", "91"], object),
-        (
-            "verify",
-            [
-                "--spec",
-                str(spec),
-                "--check",
-                "lvs",
-                "--xstream-timeout",
-                "92",
-                "--calibre-timeout",
-                "93",
-            ],
-            object,
-        ),
+    assert [kind for kind, _workflow, _client in events] == [
+        "check",
+        "generate",
+        "verify",
     ]
+    assert all(
+        workflow.project is canonical_project for _kind, workflow, _client in events
+    )
+    output = capsys.readouterr().out
+    assert '{"plan":true}\n' in output
+    assert "[generated] example/leaf/layout instances=3" in output
+    assert "[lvs] PASS example/leaf/layout" in output
 
 
 def test_layout_cli_refuses_an_action_not_enabled_for_the_target(

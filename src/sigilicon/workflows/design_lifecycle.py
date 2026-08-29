@@ -52,6 +52,37 @@ class DesignInspection:
         }
 
 
+@dataclass(frozen=True)
+class ProjectDesignWorkflow:
+    """Inspect and attest canonical designs through one Project."""
+
+    project: Project
+
+    @classmethod
+    def from_file(cls, project_contract: Path | str) -> "ProjectDesignWorkflow":
+        return cls(Project.from_file(project_contract))
+
+    def inspect(self, spec_path: Path) -> DesignInspection:
+        return inspect_design(spec_path, project=self.project)
+
+    def attest_set(
+        self,
+        spec_paths: Sequence[Path],
+        client: Any,
+        *,
+        timeout: int = 60,
+    ) -> dict[str, object]:
+        reports = tuple(
+            attest_oa_design(
+                self.inspect(path),
+                client,
+                timeout=timeout,
+            )
+            for path in spec_paths
+        )
+        return {"passed": True, "designs": reports}
+
+
 def inspect_design(
     spec_path: Path,
     *,
@@ -166,7 +197,8 @@ def attest_design_set(
     spec_paths: Sequence[Path],
     client: Any,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
     timeout: int = 60,
 ) -> dict[str, object]:
     """Attest an explicit dependency set before a design-owned simulation.
@@ -176,12 +208,9 @@ def attest_design_set(
     weaker OA-view checks.
     """
 
-    reports = tuple(
-        attest_oa_design(
-            inspect_design(path, project_root=project_root),
-            client,
-            timeout=timeout,
-        )
-        for path in spec_paths
+    repository = Project.bind(project=project, project_root=project_root)
+    return ProjectDesignWorkflow(repository).attest_set(
+        spec_paths,
+        client,
+        timeout=timeout,
     )
-    return {"passed": True, "designs": reports}

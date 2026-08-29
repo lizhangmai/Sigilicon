@@ -7,8 +7,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from sigilicon.cli.common import die, emit_json
-from sigilicon.paths import ProjectContext, discover_project_context
-from sigilicon.workflows.design_lifecycle import inspect_design
+from sigilicon.paths import discover_project_contract
+from sigilicon.workflows.design_lifecycle import ProjectDesignWorkflow
 
 
 def main(
@@ -22,9 +22,9 @@ def main(
         default="topology",
     )
     args = parser.parse_args(argv)
-    root = discover_project_context(__file__).project_root
+    workflow = ProjectDesignWorkflow.from_file(discover_project_contract(__file__))
     try:
-        inspection = inspect_design(args.design, project_root=root)
+        inspection = workflow.inspect(args.design)
         emit_json(inspection.as_dict())
         return 0
     except (OSError, RuntimeError, ValueError) as exc:

@@ -9,8 +9,6 @@ import sys
 from typing import Any
 
 from sigilicon.cli.common import add_json_arg, die, emit_json
-from sigilicon.cli.generate_layout import main as generate_layout_main
-from sigilicon.cli.verify_layout import main as verify_layout_main
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.design_targets import (
@@ -348,28 +346,41 @@ def _run_layout(
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"ERROR: {exc}")
 
-    spec_args = ["--spec", str(target.spec)]
-    if args.action == "check":
-        return generate_layout_main(
-            [*spec_args, "--preview"], client_factory=client_factory
+    workflow = project.layout_workflow()
+    try:
+        if args.action == "check":
+            preview = workflow.plan(target.spec)
+            print(preview.plan.canonical_json(), end="")
+            return 0
+        client = client_factory()
+        if args.action == "generate":
+            spec, result = workflow.generate(
+                target.spec,
+                client,
+                timeout=args.timeout,
+            )
+            print(
+                f"[generated] {spec.library}/{spec.cell}/{spec.view} "
+                f"instances={result.instance_count}"
+            )
+            print(f"[artifact] {result.manifest_path}")
+            return 0
+        checks = ("drc", "lvs") if args.check == "all" else (args.check,)
+        results = workflow.verify(
+            target.spec,
+            client,
+            checks=checks,
+            xstream_timeout=args.xstream_timeout,
+            calibre_timeout=args.calibre_timeout,
         )
-    if args.action == "generate":
-        return generate_layout_main(
-            [*spec_args, "--timeout", str(args.timeout)],
-            client_factory=client_factory,
-        )
-    return verify_layout_main(
-        [
-            *spec_args,
-            "--check",
-            args.check,
-            "--xstream-timeout",
-            str(args.xstream_timeout),
-            "--calibre-timeout",
-            str(args.calibre_timeout),
-        ],
-        client_factory=client_factory,
-    )
+    except (OSError, RuntimeError, ValueError) as exc:
+        die(f"ERROR: {exc}")
+    for spec, result in results:
+        status = "PASS" if result.passed else "FAIL"
+        print(f"[{result.check}] {status} {spec.library}/{spec.cell}/{spec.view}")
+        print(f"[details] {dict(result.details)}")
+        print(f"[artifact] {result.manifest_path}")
+    return 0 if all(result.passed for _spec, result in results) else 2
 
 
 def _run_design(
