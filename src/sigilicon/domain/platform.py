@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    read_toml,
+    require_config_header,
+)
 from sigilicon.domain.repository import Project
 
 
@@ -107,7 +111,7 @@ class LayoutPdkConfig:
 
 @dataclass(frozen=True)
 class PdkConfig:
-    """Fully resolved platform consumed by reusable flow code."""
+    """Fully resolved platform and its validated operation source snapshot."""
 
     key: str
     path: Path
@@ -119,6 +123,9 @@ class PdkConfig:
     source_paths: tuple[Path, ...]
     asset_root: Path | None = None
     installation_root_environment: str | None = None
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 @dataclass(frozen=True)
@@ -153,13 +160,20 @@ def resolve_platform(
             f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
         )
     root = context.project_root
-    catalog = context.catalog("platform")
-    if not snapshot.source_paths or snapshot.source_paths[0] != catalog:
+    catalog_path = context.catalog("platform")
+    if not snapshot.source_paths or snapshot.source_paths[0] != catalog_path:
         raise ValueError("platform snapshot belongs to a different project catalog")
     if snapshot.path not in snapshot.source_paths:
         raise ValueError("platform snapshot manifest is absent from its source identity")
     if any(not path.is_relative_to(root) for path in snapshot.source_paths):
         raise ValueError("platform snapshot source identity escapes the project root")
+    document_paths = set(snapshot.source_documents)
+    if document_paths:
+        if document_paths != set(snapshot.source_paths[1:]) or any(
+            path != path.resolve() or not path.is_relative_to(root)
+            for path in document_paths
+        ):
+            raise ValueError("platform snapshot source document identity drift")
     return snapshot
 
 
@@ -702,6 +716,14 @@ def load_platform(
         )
         source_paths.extend((layout_path, verification_path))
     sources = tuple(source_paths)
+    source_documents = {
+        manifest: raw,
+        simulation_path: simulation_raw,
+        oa_path: oa_raw,
+    }
+    if layout is not None:
+        source_documents[layout.layout_path] = layout_raw
+        source_documents[layout.verification_path] = verification_raw
     return PdkConfig(
         key=key,
         path=manifest,
@@ -711,6 +733,12 @@ def load_platform(
         oa=oa,
         layout=layout,
         source_paths=sources,
+        source_documents=MappingProxyType(
+            {
+                path: freeze_toml_document(document)
+                for path, document in source_documents.items()
+            }
+        ),
         asset_root=asset_root,
         installation_root_environment=root_environment,
     )

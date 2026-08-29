@@ -170,8 +170,10 @@ def inspect_repository_designs(
     platform_catalog = load_platform_catalog(context)
     platform_catalog_path = platform_catalog.path
     platforms: dict[str, Any] = {}
+    platform_inventory = {}
     for name in platform_catalog.manifests:
         platform = load_platform(context, name, catalog=platform_catalog)
+        platform_inventory[name] = platform
         _register_owner_root(
             owner_roots,
             owner=platform.owner,
@@ -188,6 +190,7 @@ def inspect_repository_designs(
         owner_roots=owner_roots,
         catalog_inventory=flow_catalog_inventory,
         platform_catalog=platform_catalog,
+        platform_inventory=platform_inventory,
     )
 
     design_catalog = load_design_target_catalog(

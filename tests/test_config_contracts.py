@@ -3,11 +3,13 @@ from pathlib import Path
 
 import pytest
 
+import sigilicon.domain.config_contracts as config_contracts
+from conftest import write_project_context, write_test_platform
 from sigilicon.domain.config_contracts import (
     inspect_project_configurations,
     require_config_header,
 )
-from sigilicon.domain.platform import load_platform_catalog
+from sigilicon.domain.platform import load_platform, load_platform_catalog
 from sigilicon.domain.repository import RepositoryContext
 
 
@@ -148,6 +150,55 @@ def test_project_configuration_rejects_platform_catalog_snapshot_drift(
             context,
             owner_roots=_owner_roots(tmp_path),
             platform_catalog=replace(catalog, owner="drift"),
+        )
+
+
+def test_project_configuration_reuses_validated_platform_source_documents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    context = RepositoryContext.from_project_root(tmp_path)
+    catalog = load_platform_catalog(context)
+    platform = load_platform(context, "testpdk", catalog=catalog)
+    _write(tmp_path, "configs/platform/testpdk/native.toml", "schema = 3\n")
+    platform_reads: list[Path] = []
+    original_read_toml = config_contracts.read_toml
+
+    def counted_read_toml(path: Path):
+        if path.resolve() in platform.source_documents:
+            platform_reads.append(path.resolve())
+        return original_read_toml(path)
+
+    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
+
+    report = inspect_project_configurations(
+        context,
+        owner_roots={"test-platform": platform.path.parent},
+        platform_catalog=catalog,
+        platform_inventory={"testpdk": platform},
+    )
+
+    assert report["passed"] is True
+    assert report["native_documents"] == 1
+    assert platform_reads == []
+
+    with pytest.raises(ValueError, match="requires its platform catalog"):
+        inspect_project_configurations(
+            context,
+            owner_roots={"test-platform": platform.path.parent},
+            platform_inventory={"testpdk": platform},
+        )
+
+    with pytest.raises(ValueError, match="manifest disagrees with its catalog"):
+        inspect_project_configurations(
+            context,
+            owner_roots={"test-platform": platform.path.parent},
+            platform_catalog=catalog,
+            platform_inventory={
+                "testpdk": replace(platform, path=platform.simulation.path)
+            },
         )
 
 

@@ -5,7 +5,11 @@ import tomllib
 
 import pytest
 
-from conftest import write_component_owner, write_test_platform
+from conftest import (
+    write_component_owner,
+    write_test_layout_platform,
+    write_test_platform,
+)
 import sigilicon.domain.repository as repository_module
 from sigilicon.cli.check_designs import main as check_designs_main
 
@@ -144,11 +148,11 @@ owner = "example"
     assert set(reads.values()) == {1}
 
 
-def test_check_designs_reads_platform_catalog_once(
+def test_check_designs_reads_each_platform_source_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write_test_platform(tmp_path, key="first")
+    write_test_layout_platform(tmp_path, key="first")
     write_test_platform(tmp_path, key="second")
     catalog = (tmp_path / "configs/platform/catalog.toml").resolve()
     catalog.write_text(
@@ -172,17 +176,25 @@ second = "second/platform.toml"
             ),
             encoding="utf-8",
         )
-    reads = 0
+    platform_sources = {
+        catalog,
+        *(
+            path.resolve()
+            for key in ("first", "second")
+            for path in (tmp_path / "configs/platform" / key).glob("*.toml")
+        ),
+    }
+    reads = {path: 0 for path in platform_sources}
     original_load = tomllib.load
 
     def counted_load(stream):
-        nonlocal reads
-        if Path(stream.name).resolve() == catalog:
-            reads += 1
+        path = Path(stream.name).resolve()
+        if path in reads:
+            reads[path] += 1
         return original_load(stream)
 
     monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.chdir(tmp_path)
 
     assert check_designs_main([]) == 0
-    assert reads == 1
+    assert set(reads.values()) == {1}

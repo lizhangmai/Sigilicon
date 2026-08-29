@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
-    from sigilicon.domain.platform import PlatformCatalogSnapshot
+    from sigilicon.domain.platform import PdkConfig, PlatformCatalogSnapshot
 
 
 CONFIG_SCHEMA = 1
@@ -106,6 +106,7 @@ def inspect_project_configurations(
     owner_roots: Mapping[str, Path],
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
     platform_catalog: PlatformCatalogSnapshot | None = None,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -142,14 +143,41 @@ def inspect_project_configurations(
     )
     ip_catalog = context.ip_catalog_snapshot()
     catalog_documents[ip_catalog.path] = ip_catalog.document
+    resolved_platform_catalog = None
+    if platform_inventory is not None and platform_catalog is None:
+        raise ValueError("platform inventory requires its platform catalog snapshot")
     if platform_catalog is not None:
         from sigilicon.domain.platform import resolve_platform_catalog
 
-        platform_catalog = resolve_platform_catalog(
+        resolved_platform_catalog = resolve_platform_catalog(
             context,
             snapshot=platform_catalog,
         )
-        catalog_documents[platform_catalog.path] = platform_catalog.document
+        catalog_documents[resolved_platform_catalog.path] = (
+            resolved_platform_catalog.document
+        )
+    if platform_inventory is not None:
+        from sigilicon.domain.platform import resolve_platform
+
+        for key, snapshot in platform_inventory.items():
+            platform = resolve_platform(
+                context,
+                key,
+                snapshot=snapshot,
+            )
+            assert resolved_platform_catalog is not None
+            if resolved_platform_catalog.manifest(key) != platform.path:
+                raise ValueError(
+                    "platform snapshot manifest disagrees with its catalog"
+                )
+            for path, document in platform.source_documents.items():
+                resolved = path.resolve()
+                previous = catalog_documents.get(resolved)
+                if previous is not None and previous != document:
+                    raise ValueError(
+                        f"platform source snapshot disagrees with another source: {path}"
+                    )
+                catalog_documents[resolved] = document
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),

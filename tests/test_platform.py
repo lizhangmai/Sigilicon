@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,11 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
         tmp_path / "configs/platform/testpdk/simulation.toml",
         tmp_path / "configs/platform/testpdk/oa.toml",
     )
+    assert tuple(platform.source_documents) == platform.source_paths[1:]
+    with pytest.raises(TypeError):
+        platform.source_documents[platform.simulation.path][
+            "default_model_set"
+        ] = "other"
 
 
 def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> None:
@@ -48,6 +54,20 @@ def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> N
     resolved = resolve_platform(project, "testpdk", snapshot=snapshot)
 
     assert resolved is snapshot
+
+    legacy_snapshot = replace(snapshot, source_documents={})
+    assert resolve_platform(
+        project,
+        "testpdk",
+        snapshot=legacy_snapshot,
+    ) is legacy_snapshot
+
+    incomplete_snapshot = replace(
+        snapshot,
+        source_documents={snapshot.path: snapshot.source_documents[snapshot.path]},
+    )
+    with pytest.raises(ValueError, match="source document identity drift"):
+        resolve_platform(project, "testpdk", snapshot=incomplete_snapshot)
 
 
 def test_load_platform_reuses_one_project_owned_catalog_snapshot(
@@ -248,6 +268,42 @@ def test_standalone_platform_lookup_ignores_invalid_unselected_entries(
     assert platform.key == "testpdk"
     with pytest.raises(ValueError, match="safe relative path"):
         load_platform_catalog(project)
+
+
+def test_external_platform_assets_do_not_expand_the_source_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    installation = tmp_path / "installed"
+    package = installation / "testpdk"
+    package.mkdir(parents=True)
+    model = package / "model.scs"
+    model.write_text("// installed model\n", encoding="utf-8")
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '''
+[installation]
+root_environment = "TEST_PDK_ROOT"
+package_root = "testpdk"
+
+[contracts]
+''',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_PDK_ROOT", str(installation))
+
+    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+
+    assert platform.asset_root == package
+    assert platform.simulation.default.file == model
+    assert all(
+        path.is_relative_to(tmp_path) for path in platform.source_documents
+    )
 
 
 def test_platform_contract_owners_must_match_the_manifest(tmp_path: Path) -> None:
