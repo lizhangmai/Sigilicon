@@ -7,7 +7,6 @@ import pytest
 
 from conftest import write_component_owner, write_test_platform
 import sigilicon.domain.repository as repository_module
-import sigilicon.workflows.repository_checks as repository_checks_module
 from sigilicon.cli.check_designs import main as check_designs_main
 
 
@@ -39,16 +38,16 @@ def test_check_designs_reuses_the_loaded_component_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     component = write_component_owner(tmp_path, "example", filesets={}).resolve()
-    original = repository_checks_module.read_toml
+    original_load = tomllib.load
     component_reads = 0
 
-    def counted(path: Path):
+    def counted_load(stream):
         nonlocal component_reads
-        if path.resolve() == component:
+        if Path(stream.name).resolve() == component:
             component_reads += 1
-        return original(path)
+        return original_load(stream)
 
-    monkeypatch.setattr(repository_checks_module, "read_toml", counted)
+    monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.chdir(tmp_path)
 
     assert check_designs_main([]) == 0

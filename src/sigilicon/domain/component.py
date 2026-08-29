@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 import tomllib
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
@@ -18,6 +19,16 @@ COMPONENT_KINDS = {
     "rtl-ip",
     "source-library",
 }
+
+
+def _freeze_document(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_document(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_document(item) for item in value)
+    return value
 
 
 def _string(value: object, label: str) -> str:
@@ -42,6 +53,11 @@ class ComponentContract:
     public_interface: PurePosixPath | None
     filesets: Mapping[str, tuple[PurePosixPath, ...]]
     components: tuple[ComponentDependency, ...]
+    document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
 
 
 def load_component_contract(path: Path, *, project_root: Path) -> ComponentContract:
@@ -111,6 +127,7 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
         public_interface=public_interface,
         filesets=filesets,
         components=tuple(dependencies),
+        document=_freeze_document(raw),
     )
     referenced = [path for values in result.filesets.values() for path in values]
     if result.public_interface is not None:

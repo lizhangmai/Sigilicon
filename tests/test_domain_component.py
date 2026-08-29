@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 import sigilicon.domain.component as component_domain
-from sigilicon.domain.component import load_component_contract, load_component_graph
+from sigilicon.domain.component import (
+    ComponentContract,
+    load_component_contract,
+    load_component_graph,
+)
 
 
 def test_source_library_is_a_first_class_component_kind(tmp_path: Path) -> None:
@@ -29,6 +33,30 @@ python = ["ip/shared/library.py"]
 
     assert loaded.kind == "source-library"
     assert loaded.filesets["python"][0].as_posix() == "ip/shared/library.py"
+    with pytest.raises(TypeError):
+        loaded.document["kind"] = "rtl-ip"
+    assert loaded.document["filesets"]["python"] == (
+        "ip/shared/library.py",
+    )
+    with pytest.raises(TypeError):
+        loaded.document["filesets"]["python"][0] = "changed.py"
+
+
+def test_component_contract_preserves_direct_construction_compatibility(
+    tmp_path: Path,
+) -> None:
+    contract = ComponentContract(
+        path=tmp_path / "ip/example/ip.toml",
+        project_root=tmp_path,
+        owner="example",
+        name="example",
+        kind="rtl-ip",
+        public_interface=None,
+        filesets={},
+        components=(),
+    )
+
+    assert contract.document == {}
 
 
 def test_component_graph_reuses_an_explicit_root_snapshot(

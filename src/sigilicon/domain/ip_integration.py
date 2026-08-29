@@ -164,7 +164,7 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
         raise ValueError(f"{label}.required_maturity is unsupported: {maturity}")
     roles_raw = item.get("roles")
     if (
-        not isinstance(roles_raw, list)
+        not isinstance(roles_raw, (list, tuple))
         or not roles_raw
         or any(not isinstance(role, str) or not role for role in roles_raw)
         or len(set(roles_raw)) != len(roles_raw)
@@ -463,8 +463,11 @@ def load_ip_integration_contract(
         raise ValueError("IP integration owner disagrees with the project catalog")
     if component.kind != "composite-ip":
         raise ValueError("IP integration requires a composite-ip component")
-    with component.path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
+    if component.document:
+        raw = component.document
+    else:
+        with component.path.open("rb") as stream:
+            raw = tomllib.load(stream)
     graph = load_component_graph(
         component.path,
         project_root=root,
@@ -472,7 +475,7 @@ def load_ip_integration_contract(
     )
 
     dependency_rows = raw.get("component", [])
-    assert isinstance(dependency_rows, list)
+    assert isinstance(dependency_rows, (list, tuple))
     dependencies: list[IpIntegrationDependency] = []
     for index, (base, value) in enumerate(
         zip(component.components, dependency_rows, strict=True)

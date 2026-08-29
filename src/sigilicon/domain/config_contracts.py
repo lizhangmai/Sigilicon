@@ -121,6 +121,12 @@ def inspect_project_configurations(
         snapshot.path.resolve(): snapshot.document
         for snapshot in flow_catalog_inventory
     }
+    catalog_documents.update(
+        {
+            owner.component.path: owner.component.document
+            for owner in context.owners
+        }
+    )
     if platform_catalog is not None:
         from sigilicon.domain.platform import resolve_platform_catalog
 

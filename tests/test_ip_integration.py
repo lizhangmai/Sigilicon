@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path, PurePosixPath
+import tomllib
 from typing import Any
 
 import pytest
@@ -537,6 +539,16 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
 ) -> None:
     project_root = tmp_path / "project"
     contract_path = _write_source_component_fixture(project_root)
+    original_toml_load = tomllib.load
+    root_reads = 0
+
+    def counted_load(stream):
+        nonlocal root_reads
+        if Path(stream.name).resolve() == contract_path.resolve():
+            root_reads += 1
+        return original_toml_load(stream)
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
     project = Project.from_project_root(project_root)
     reads: list[Path] = []
     original_loader = component_domain.load_component_contract
@@ -553,6 +565,7 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
     assert contract.component_graph["composite"] is project.owner(
         "composite"
     ).component
+    assert root_reads == 1
     assert reads == [(project_root / "ip/leaf/configs/ip.toml").resolve()]
 
     reads.clear()
@@ -564,6 +577,26 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
 
     assert project_root / "ip/leaf/rtl/leaf.sv" in allowed
     assert reads == []
+
+    owner = project.owner("composite")
+    legacy_component = replace(owner.component, document={})
+    legacy_project = replace(
+        project,
+        owners=tuple(
+            replace(item, component=legacy_component)
+            if item is owner
+            else item
+            for item in project.owners
+        ),
+    )
+
+    legacy_contract = load_ip_integration_contract(
+        contract_path,
+        project=legacy_project,
+    )
+
+    assert legacy_contract.get_variant("default").name == "default"
+    assert root_reads == 2
 
 
 def test_declaring_release_capability_does_not_implicitly_consume_it(

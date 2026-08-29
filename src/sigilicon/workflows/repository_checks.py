@@ -166,7 +166,7 @@ def inspect_repository_designs(
             "kind": component.kind,
             "graph": sorted(graph),
         }
-        if "variants" in read_toml(path):
+        if "variants" in component.document:
             integration = plan_ip_integration(
                 path,
                 project=context,
