@@ -134,6 +134,28 @@ def test_layout_technology_requires_landing_policy_for_every_via(
         )
 
 
+def test_layout_technology_rejects_profile_layers_not_used_by_via(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "technology.toml"
+    _write_contract(contract)
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            "\n[mos_pcell]\n",
+            "\n[via_landing_profiles.stacked.routing1_routing2]\n"
+            "routing3 = [85, 130]\n\n[mos_pcell]\n",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="non-landing layers"):
+        load_layout_technology(
+            contract,
+            contract_kind="test-layout-technology",
+            owner="test-owner",
+        )
+
+
 def test_layout_technology_reads_common_roles_from_platform_domain_payload(
     tmp_path: Path,
 ) -> None:

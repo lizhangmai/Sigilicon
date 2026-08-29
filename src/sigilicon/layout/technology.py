@@ -231,6 +231,11 @@ def load_layout_technology(
             layer_landings = _table(
                 value, f"via_landing_profiles.{profile}.{via_role}"
             )
+            if unknown_layers := set(layer_landings) - set(via_landings[via_role]):
+                raise ValueError(
+                    f"via_landing_profiles.{profile}.{via_role} overrides "
+                    f"non-landing layers: {sorted(unknown_layers)}"
+                )
             parsed_layers: dict[str, tuple[int, int]] = {}
             for layer_role, half_size in layer_landings.items():
                 layer = _identifier(
