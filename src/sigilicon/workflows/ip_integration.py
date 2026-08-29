@@ -79,6 +79,8 @@ def ip_catalog_contract_path(
 def _producer_contract(
     contract: IpIntegrationContract,
     dependency_name: str,
+    *,
+    release_inventory: Mapping[str, IpContract] | None = None,
 ) -> IpContract:
     path = ip_catalog_contract_path(
         None,
@@ -86,8 +88,20 @@ def _producer_contract(
         project=contract.project,
         section="targets",
     )
-    producer = load_ip_contract(path, project=contract.project)
-    if producer.name != dependency_name:
+    if release_inventory is None:
+        producer = load_ip_contract(path, project=contract.project)
+    else:
+        try:
+            producer = release_inventory[dependency_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"release inventory has no {dependency_name!r} entry"
+            ) from exc
+    if (
+        producer.name != dependency_name
+        or producer.path != path
+        or producer.project is not contract.project
+    ):
         raise ValueError(f"IP catalog identity mismatch: {dependency_name}")
     return producer
 
@@ -287,6 +301,7 @@ def plan_ip_integration(
     project_root: Path | None = None,
     artifact_root: Path | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    release_inventory: Mapping[str, IpContract] | None = None,
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
@@ -304,7 +319,11 @@ def plan_ip_integration(
         }
         release = dependency.release
         if release is not None:
-            producer = _producer_contract(contract, dependency.name)
+            producer = _producer_contract(
+                contract,
+                dependency.name,
+                release_inventory=release_inventory,
+            )
             expected = plan_ip_release_contract(
                 producer,
                 maturity=release.required_maturity,

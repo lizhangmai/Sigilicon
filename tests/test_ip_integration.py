@@ -557,11 +557,16 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
     contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    producer = SimpleNamespace(name="fixture-ip")
     producer_path = project_root / "ip/fixture/configs/release.toml"
     producer_reads: list[Path] = []
     planned_contracts: list[object] = []
     platform_inventory = {"testpdk": object()}
+    project = Project.from_project_root(project_root).with_artifact_root(artifact_root)
+    producer = SimpleNamespace(
+        name="fixture-ip",
+        path=producer_path,
+        project=project,
+    )
 
     monkeypatch.setattr(
         ip_integration,
@@ -615,8 +620,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
 
     plan = plan_ip_integration(
         contract_path,
-        project_root=project_root,
-        artifact_root=artifact_root,
+        project=project,
         platform_inventory=platform_inventory,
     )
 
@@ -626,6 +630,30 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
     assert plan["dependencies"][0]["release"]["provider"] == (
         "ip/fixture/configs/release.toml"
     )
+
+    producer_reads.clear()
+    planned_contracts.clear()
+
+    plan_ip_integration(
+        contract_path,
+        project=project,
+        platform_inventory=platform_inventory,
+        release_inventory={"fixture-ip": producer},
+    )
+
+    assert producer_reads == []
+    assert planned_contracts == [producer]
+
+    with pytest.raises(
+        ValueError,
+        match="release inventory has no 'fixture-ip' entry",
+    ):
+        plan_ip_integration(
+            contract_path,
+            project=project,
+            platform_inventory=platform_inventory,
+            release_inventory={},
+        )
 
 
 def test_ip_integration_contract_preserves_its_validated_component_graph(

@@ -122,6 +122,13 @@ def inspect_repository_designs(
             catalog=platform_catalog,
         )
 
+    release_inventory = {}
+    for name, path in release_paths.items():
+        contract = load_ip_contract(path, project=context)
+        if contract.name != name:
+            raise ValueError(f"IP release catalog identity mismatch: {name}")
+        release_inventory[name] = contract
+
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
     for name, path in component_paths.items():
@@ -149,6 +156,7 @@ def inspect_repository_designs(
                 path,
                 project=context,
                 platform_inventory=platform_inventory,
+                release_inventory=release_inventory,
             )
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
@@ -156,18 +164,14 @@ def inspect_repository_designs(
         components[name] = component_result
 
     ip_releases: dict[str, Any] = {}
-    release_inventory = {}
     oa_assemblies: dict[str, Any] = {}
-    for name, path in release_paths.items():
-        contract = load_ip_contract(path, project=context)
-        if contract.name != name:
-            raise ValueError(f"IP release catalog identity mismatch: {name}")
+    for name, contract in release_inventory.items():
+        path = contract.path
         _register_owner_root(
             owner_roots,
             owner=contract.owner,
             root=_component_owner_root(context, path),
         )
-        release_inventory[name] = contract
         assembly = (root / contract.oa_assembly).resolve()
         ip_releases[name] = {
             "contract": path.relative_to(root).as_posix(),

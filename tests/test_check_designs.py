@@ -323,7 +323,8 @@ def test_repository_workflows_share_one_platform_inventory(
     }
     reads = {path: 0 for path in platform_sources}
     original_load = tomllib.load
-    observed_inventories: list[object] = []
+    observed_platform_inventories: list[object] = []
+    observed_release_inventories: list[object] = []
 
     def counted_load(stream):
         path = Path(stream.name).resolve()
@@ -331,20 +332,28 @@ def test_repository_workflows_share_one_platform_inventory(
             reads[path] += 1
         return original_load(stream)
 
-    def plan_integration(_path, *, project, platform_inventory):
+    def plan_integration(
+        _path,
+        *,
+        project,
+        platform_inventory,
+        release_inventory,
+    ):
         assert project.project_root == tmp_path.resolve()
-        observed_inventories.append(platform_inventory)
+        observed_platform_inventories.append(platform_inventory)
+        observed_release_inventories.append(release_inventory)
         return {"ip": "fixture"}
 
     def plan_oa(_path, *, project, platform_inventory):
         assert project.project_root == tmp_path.resolve()
-        observed_inventories.append(platform_inventory)
+        observed_platform_inventories.append(platform_inventory)
         return SimpleNamespace(as_dict=lambda: {})
 
     original_inspect_configurations = repository_checks.inspect_project_configurations
 
     def inspect_configurations(*args, platform_inventory, **kwargs):
-        observed_inventories.append(platform_inventory)
+        observed_platform_inventories.append(platform_inventory)
+        observed_release_inventories.append(kwargs["release_inventory"])
         return original_inspect_configurations(
             *args,
             platform_inventory=platform_inventory,
@@ -365,10 +374,13 @@ def test_repository_workflows_share_one_platform_inventory(
     )
 
     assert report["passed"] is True
-    assert len(observed_inventories) == 3
+    assert len(observed_platform_inventories) == 3
     assert all(
-        inventory is observed_inventories[0]
-        for inventory in observed_inventories[1:]
+        inventory is observed_platform_inventories[0]
+        for inventory in observed_platform_inventories[1:]
     )
-    assert set(observed_inventories[0]) == {"testpdk"}
+    assert set(observed_platform_inventories[0]) == {"testpdk"}
+    assert len(observed_release_inventories) == 2
+    assert observed_release_inventories[0] is observed_release_inventories[1]
+    assert set(observed_release_inventories[0]) == {"fixture"}
     assert set(reads.values()) == {1}
