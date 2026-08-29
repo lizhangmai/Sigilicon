@@ -309,9 +309,9 @@ def inspect_project_configurations(
             owner=expected_owner,
         )
         if header.contract_kind == "verification-cell":
-            from sigilicon.domain.verification_cell import load_verification_cell
+            from sigilicon.domain.verification_cell import parse_verification_cell
 
-            load_verification_cell(resolved, project=context)
+            parse_verification_cell(resolved, raw, project=context)
         contract_kinds.add(header.contract_kind)
         owners.add(header.owner)
 

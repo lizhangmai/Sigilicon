@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -232,7 +233,7 @@ owner = "beta"
         )
 
 
-def test_project_configuration_dispatches_verification_cells(
+def test_project_configuration_reuses_scanned_verification_cell_document(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,18 +241,34 @@ def test_project_configuration_dispatches_verification_cells(
     cell = tmp_path / "ip/alpha/verification/example/cell.toml"
     _write(
         tmp_path,
+        "ip/alpha/verification/example/testbench.sv",
+        "module tb; endmodule\n",
+    )
+    _write(
+        tmp_path,
         "ip/alpha/verification/example/cell.toml",
         """schema = 1
 contract_kind = "verification-cell"
 path_scope = "cell"
 owner = "alpha"
+
+cell = "example"
+role = "rtl-testbench"
+canonical_source = "testbench.sv"
+dut = "dut"
+simulator = "xcelium"
 """,
     )
-    loaded: list[tuple[Path, RepositoryContext]] = []
-    monkeypatch.setattr(
-        "sigilicon.domain.verification_cell.load_verification_cell",
-        lambda path, *, project: loaded.append((path, project)),
-    )
+    original_load = tomllib.load
+    reads = 0
+
+    def counted_load(stream):
+        nonlocal reads
+        if Path(stream.name).resolve() == cell.resolve():
+            reads += 1
+        return original_load(stream)
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
 
     context = RepositoryContext.from_project_root(tmp_path)
     inspect_project_configurations(
@@ -259,7 +276,7 @@ owner = "alpha"
         owner_roots=_owner_roots(tmp_path),
     )
 
-    assert loaded == [(cell, context)]
+    assert reads == 1
 
 
 def test_common_header_rejects_wrong_scope() -> None:

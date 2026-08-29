@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import read_toml, require_config_header
 from sigilicon.domain.repository import Project
@@ -136,21 +136,24 @@ class VerificationCellSpec:
         }
 
 
-def load_verification_cell(
-    path: Path,
-    *,
-    project: Project | None = None,
-    project_root: Path | None = None,
-) -> VerificationCellSpec:
-    """Load and validate one ``contract_kind = verification-cell`` document."""
-
-    repository = Project.bind(project=project, project_root=project_root)
+def _verification_cell_path(path: Path, repository: Project) -> Path:
     contract = path.resolve()
-    root = repository.project_root
-    if not contract.is_relative_to(root) or not contract.is_file():
+    if (
+        not contract.is_relative_to(repository.project_root)
+        or not contract.is_file()
+    ):
         raise ValueError("verification cell contract must be project-owned")
+    return contract
+
+
+def _parse_verification_cell(
+    contract: Path,
+    raw: Mapping[str, Any],
+    *,
+    repository: Project,
+) -> VerificationCellSpec:
+    root = repository.project_root
     cell_root = contract.parent
-    raw = read_toml(contract)
     require_config_header(
         raw,
         contract,
@@ -261,4 +264,39 @@ def load_verification_cell(
         contracts=contracts,
         runner=runner,
         success_marker=success_marker,
+    )
+
+
+def parse_verification_cell(
+    path: Path,
+    document: Mapping[str, Any],
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+) -> VerificationCellSpec:
+    """Validate one already read ``verification-cell`` document."""
+
+    repository = Project.bind(project=project, project_root=project_root)
+    contract = _verification_cell_path(path, repository)
+    return _parse_verification_cell(
+        contract,
+        document,
+        repository=repository,
+    )
+
+
+def load_verification_cell(
+    path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+) -> VerificationCellSpec:
+    """Load and validate one ``contract_kind = verification-cell`` document."""
+
+    repository = Project.bind(project=project, project_root=project_root)
+    contract = _verification_cell_path(path, repository)
+    return _parse_verification_cell(
+        contract,
+        read_toml(contract),
+        repository=repository,
     )

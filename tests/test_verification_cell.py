@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.domain.verification_cell import load_verification_cell
+import sigilicon.domain.verification_cell as verification_cell
+from sigilicon.domain.config_contracts import read_toml
+from sigilicon.domain.verification_cell import (
+    load_verification_cell,
+    parse_verification_cell,
+)
 from sigilicon.domain.repository import Project
 
 from conftest import write_component_owner
@@ -72,6 +77,25 @@ def test_verification_cell_reuses_one_explicit_project(tmp_path: Path) -> None:
 
     assert spec.project is project
     assert spec.owner == "demo"
+
+
+def test_verification_cell_parses_an_already_read_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _contract(tmp_path)
+    project = Project.from_project_root(tmp_path)
+    document = read_toml(contract)
+
+    def reject_reload(_path: Path):
+        raise AssertionError("verification cell document was reloaded")
+
+    monkeypatch.setattr(verification_cell, "read_toml", reject_reload)
+
+    spec = parse_verification_cell(contract, document, project=project)
+
+    assert spec.project is project
+    assert spec.cell == "tb_demo"
 
 
 def test_verification_cell_rejects_owner_outside_catalog_identity(
