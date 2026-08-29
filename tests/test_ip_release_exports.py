@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 import sigilicon.domain.component as component_domain
+import sigilicon.domain.config_contracts as config_contracts
 import sigilicon.domain.oa_library as oa_library_domain
 import sigilicon.domain.oa_simulation as oa_simulation_domain
 import sigilicon.domain.platform as platform_domain
 import sigilicon.workflows.ip_packaging as ip_packaging
-from sigilicon.domain.ip_release import load_ip_contract
+from sigilicon.domain.config_contracts import inspect_project_configurations
+from sigilicon.domain.ip_release import load_ip_contract, resolve_ip_contract
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import release_role_view
 
@@ -124,6 +127,9 @@ files = []
 [components.fixture-ip]
 contract = "ip/fixture/configs/ip.toml"
 root = "ip/fixture"
+
+[targets.fixture-ip]
+contract = "ip/fixture/configs/release.toml"
 ''',
         encoding="utf-8",
     )
@@ -155,8 +161,156 @@ def test_ip_contract_reuses_explicit_project(tmp_path: Path) -> None:
     assert contract.component_graph == {"fixture-ip": project.owner("fixture").component}
     assert contract.component_graph["fixture-ip"] is project.owner("fixture").component
     assert contract.document["name"] == "fixture-ip"
+    interface_path = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
+    assert contract.interface_documents[interface_path]["name"] == "left"
     with pytest.raises(TypeError):
         contract.document["exports"][0]["name"] = "other"
+    with pytest.raises(TypeError):
+        contract.interface_documents[interface_path]["name"] = "other"
+
+
+def test_development_interface_check_reuses_contract_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+
+    def reject_reload(*_args, **_kwargs):
+        raise AssertionError("interface contract was reloaded")
+
+    monkeypatch.setattr(ip_packaging.tomllib, "load", reject_reload)
+
+    with pytest.raises(ValueError, match="physical_macro must be a table"):
+        ip_packaging._development_interface_check(
+            contract,
+            contract.get_export("left"),
+        )
+
+
+def test_ip_contract_rejects_partial_or_mutable_interface_snapshots(
+    tmp_path: Path,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    left_path = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
+    incomplete = replace(
+        contract,
+        interface_documents=MappingProxyType(
+            {left_path: contract.interface_documents[left_path]}
+        ),
+    )
+
+    with pytest.raises(ValueError, match="interface document identity drift"):
+        resolve_ip_contract(
+            contract.path,
+            project=contract.project,
+            snapshot=incomplete,
+        )
+
+    mutable = replace(
+        contract,
+        interface_documents=MappingProxyType(
+            {
+                path: dict(document)
+                for path, document in contract.interface_documents.items()
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="interface document is mutable"):
+        resolve_ip_contract(
+            contract.path,
+            project=contract.project,
+            snapshot=mutable,
+        )
+
+    forged_export = replace(contract.exports[0], oa_cell="FORGED")
+    forged = replace(
+        contract,
+        exports=(forged_export, *contract.exports[1:]),
+    )
+    with pytest.raises(ValueError, match="typed contract drift"):
+        resolve_ip_contract(
+            contract.path,
+            project=contract.project,
+            snapshot=forged,
+        )
+
+    mutable_roles = replace(
+        contract.exports[0],
+        required_roles=dict(contract.exports[0].required_roles),
+    )
+    mutable_release = replace(
+        contract,
+        exports=(mutable_roles, *contract.exports[1:]),
+    )
+    with pytest.raises(ValueError, match="typed contract is mutable"):
+        resolve_ip_contract(
+            contract.path,
+            project=contract.project,
+            snapshot=mutable_release,
+        )
+
+    with pytest.raises(ValueError, match="source document is missing"):
+        resolve_ip_contract(
+            contract.path,
+            project=contract.project,
+            snapshot=replace(contract, document="forged"),
+        )
+
+
+def test_ip_contract_empty_interface_snapshot_uses_legacy_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    legacy = replace(contract, interface_documents=MappingProxyType({}))
+    assert resolve_ip_contract(
+        legacy.path,
+        project=legacy.project,
+        snapshot=legacy,
+    ) is legacy
+    reads = 0
+    original_load = ip_packaging.tomllib.load
+
+    def counted_load(stream):
+        nonlocal reads
+        reads += 1
+        return original_load(stream)
+
+    monkeypatch.setattr(ip_packaging.tomllib, "load", counted_load)
+
+    with pytest.raises(ValueError, match="physical_macro must be a table"):
+        ip_packaging._development_interface_check(
+            legacy,
+            legacy.get_export("left"),
+        )
+
+    assert reads == 1
+
+
+def test_project_configuration_reuses_ip_release_interface_documents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    snapshot_paths = set(contract.interface_documents) | {contract.path}
+    snapshot_reads: list[Path] = []
+    original_read_toml = config_contracts.read_toml
+
+    def counted_read_toml(path: Path):
+        if path.resolve() in snapshot_paths:
+            snapshot_reads.append(path.resolve())
+        return original_read_toml(path)
+
+    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
+
+    report = inspect_project_configurations(
+        contract.project,
+        owner_roots={"fixture": tmp_path / "ip/fixture"},
+        release_inventory={"fixture-ip": contract},
+    )
+
+    assert report["passed"] is True
+    assert snapshot_reads == []
 
 
 def test_release_consumers_reuse_the_contract_component_graph(

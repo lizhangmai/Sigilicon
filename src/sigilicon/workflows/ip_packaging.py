@@ -18,6 +18,7 @@ from sigilicon.domain.ip_release import (
     IpContract,
     IpExport,
     load_ip_contract,
+    resolve_ip_contract,
 )
 from sigilicon.domain.netlist import (
     load_netlist_snapshot,
@@ -146,7 +147,7 @@ def _table(value: object, label: str) -> Mapping[str, Any]:
 
 
 def _interface_ports(value: object, label: str) -> dict[str, ModulePort]:
-    if not isinstance(value, list) or not value:
+    if not isinstance(value, (list, tuple)) or not value:
         raise ValueError(f"{label} must be a non-empty array of port tables")
     ports: dict[str, ModulePort] = {}
     for index, raw in enumerate(value):
@@ -210,8 +211,13 @@ def _development_interface_check(
     interface_path = _project_path(
         producer, Path(exported.interface_contract), "interface contract"
     )
-    with interface_path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
+    documents = contract.interface_documents
+    raw = documents.get(interface_path)
+    if raw is None and documents:
+        raise ValueError("IP release interface snapshot is incomplete")
+    if raw is None:
+        with interface_path.open("rb") as stream:
+            raw = tomllib.load(stream)
     physical = _table(raw.get("physical_macro"), "physical_macro")
     transaction = _table(raw.get("transaction_boundary"), "transaction_boundary")
     by_role = {item.role: item for item in exported.collateral}
@@ -798,6 +804,11 @@ def _plan_loaded_ip_release(
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
     repository = contract.project
+    contract = resolve_ip_contract(
+        contract.path,
+        project=repository,
+        snapshot=contract,
+    )
     level = contract.require_level(maturity or contract.default_maturity)
     source_paths = _source_inputs(
         contract,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, cast
@@ -11,6 +10,7 @@ from typing import Any, Mapping, cast
 from sigilicon.domain.component import ComponentContract, load_component_contract
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
+    is_frozen_toml_document,
     read_toml,
     require_config_header,
 )
@@ -26,20 +26,6 @@ _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _FLOW_CATALOG_KINDS = frozenset(
     {"flow-catalog", "flow-design-registry", "flow-layout-registry"}
 )
-_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
-
-
-def _is_frozen_toml(value: object) -> bool:
-    if isinstance(value, _MAPPING_PROXY_TYPE):
-        return all(
-            isinstance(key, str) and _is_frozen_toml(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, tuple):
-        return all(_is_frozen_toml(item) for item in value)
-    return isinstance(value, (str, int, float, bool, datetime, date, time))
-
-
 def _project_file(root: Path, value: object, field: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} must be a non-empty project-relative path")
@@ -337,7 +323,7 @@ class Project:
         raw = self.manifest_document
         if not raw:
             return raw
-        if not _is_frozen_toml(raw):
+        if not is_frozen_toml_document(raw):
             raise ValueError("project manifest snapshot source document drift")
         contract = self.manifest_path
         source_paths = ProjectContext.from_contract(contract, raw)
@@ -641,7 +627,7 @@ class Project:
                     f"{snapshot.contract_kind!r}"
                 )
             if (
-                not _is_frozen_toml(snapshot.document)
+                not is_frozen_toml_document(snapshot.document)
                 or snapshot.document.get("contract_kind") != snapshot.contract_kind
             ):
                 raise ValueError(

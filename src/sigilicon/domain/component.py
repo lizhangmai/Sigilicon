@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
+    is_frozen_toml_document,
     require_config_header,
 )
 from sigilicon.domain.ip_release import safe_relative
@@ -22,6 +23,7 @@ COMPONENT_KINDS = {
     "rtl-ip",
     "source-library",
 }
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 def _string(value: object, label: str) -> str:
@@ -123,7 +125,7 @@ def parse_component_contract(
         name=_string(document.get("name"), "name"),
         kind=kind,
         public_interface=public_interface,
-        filesets=filesets,
+        filesets=MappingProxyType(filesets),
         components=tuple(dependencies),
         document=freeze_toml_document(document),
     )
@@ -167,7 +169,9 @@ def resolve_component_contract(
     if (
         snapshot.path != contract_path
         or snapshot.project_root != root
+        or not isinstance(snapshot.filesets, _MAPPING_PROXY_TYPE)
         or not isinstance(snapshot.document, Mapping)
+        or not is_frozen_toml_document(snapshot.document)
         or not snapshot.document
     ):
         raise ValueError("component snapshot identity drift")
@@ -259,6 +263,66 @@ def load_component_graph(
 
     visit(graph_root)
     return contracts
+
+
+def resolve_component_graph(
+    path: Path,
+    *,
+    project_root: Path,
+    snapshot: Mapping[str, ComponentContract] | None = None,
+) -> Mapping[str, ComponentContract]:
+    """Load a component graph or validate one caller-owned graph snapshot."""
+
+    if snapshot is None:
+        return load_component_graph(path, project_root=project_root)
+    root = project_root.resolve()
+    graph_root = path.resolve()
+    if (
+        not isinstance(snapshot, _MAPPING_PROXY_TYPE)
+        or not snapshot
+        or not graph_root.is_relative_to(root)
+    ):
+        raise ValueError("component graph snapshot identity drift")
+    by_path: dict[Path, ComponentContract] = {}
+    for name, contract in snapshot.items():
+        if not isinstance(name, str) or name != contract.name:
+            raise ValueError("component graph snapshot identity drift")
+        resolved = resolve_component_contract(
+            contract.path,
+            project_root=root,
+            snapshot=contract,
+        )
+        if resolved.path in by_path:
+            raise ValueError("component graph snapshot has duplicate source paths")
+        by_path[resolved.path] = resolved
+    graph_root_contract = by_path.get(graph_root)
+    if graph_root_contract is None:
+        raise ValueError("component graph snapshot lacks its root contract")
+
+    visited: set[Path] = set()
+    visiting: set[Path] = set()
+
+    def visit(contract: ComponentContract) -> None:
+        if contract.path in visited:
+            return
+        if contract.path in visiting:
+            raise ValueError("component graph snapshot contains a dependency cycle")
+        visiting.add(contract.path)
+        try:
+            for dependency in contract.components:
+                child_path = (root / Path(dependency.contract)).resolve()
+                child = by_path.get(child_path)
+                if child is None or child.name != dependency.name:
+                    raise ValueError("component graph snapshot dependency drift")
+                visit(child)
+            visited.add(contract.path)
+        finally:
+            visiting.remove(contract.path)
+
+    visit(graph_root_contract)
+    if visited != set(by_path):
+        raise ValueError("component graph snapshot contains unreachable contracts")
+    return snapshot
 
 
 def resolve_component_fileset(

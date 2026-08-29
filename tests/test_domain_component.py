@@ -36,6 +36,8 @@ python = ["ip/shared/library.py"]
     assert loaded.kind == "source-library"
     assert loaded.filesets["python"][0].as_posix() == "ip/shared/library.py"
     with pytest.raises(TypeError):
+        loaded.filesets["python"] = ()
+    with pytest.raises(TypeError):
         loaded.document["kind"] = "rtl-ip"
     assert loaded.document["filesets"]["python"] == (
         "ip/shared/library.py",
@@ -221,4 +223,18 @@ contract = "ip/child/ip.toml"
             root_contract_path,
             project_root=tmp_path,
             snapshot=replace(root_contract, kind="rtl-ip"),
+        )
+
+    with pytest.raises(ValueError, match="snapshot identity drift"):
+        resolve_component_contract(
+            root_contract_path,
+            project_root=tmp_path,
+            snapshot=replace(root_contract, filesets=dict(root_contract.filesets)),
+        )
+
+    with pytest.raises(ValueError, match="snapshot identity drift"):
+        resolve_component_contract(
+            root_contract_path,
+            project_root=tmp_path,
+            snapshot=replace(root_contract, document="forged"),
         )

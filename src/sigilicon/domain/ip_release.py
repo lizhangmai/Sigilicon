@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
+    is_frozen_toml_document,
     require_config_header,
 )
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from sigilicon.domain.repository import Project
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 def _table(value: object, label: str) -> Mapping[str, Any]:
@@ -92,6 +94,9 @@ class IpContract:
     document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    interface_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def project_root(self) -> Path:
@@ -116,21 +121,15 @@ class IpContract:
         return level
 
 
-def load_ip_contract(
-    path: Path,
+def _parse_ip_contract(
+    contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    repository: Project,
+    raw: Mapping[str, Any],
+    source_component_graph: Mapping[str, ComponentContract] | None,
+    source_interface_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> IpContract:
-    from sigilicon.domain.repository import Project
-
-    repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
-    contract_path = path.resolve()
-    if not contract_path.is_relative_to(root):
-        raise ValueError("IP contract must be inside the project root")
-    with contract_path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
     producer = safe_relative(raw.get("producer"), "producer")
     cataloged_owner = repository.require_owner(contract_path)
     header = require_config_header(
@@ -154,18 +153,29 @@ def load_ip_contract(
     component_path = (producer_path / component_contract).resolve()
     if not component_path.is_file() or not component_path.is_relative_to(producer_path):
         raise FileNotFoundError("IP component contract is missing or outside its owner")
-    from sigilicon.domain.component import load_component_graph, resolve_component_fileset
-
-    component_graph = load_component_graph(
-        component_path,
-        project_root=root,
-        root_contract=(
-            cataloged_owner.component
-            if cataloged_owner.component.path == component_path
-            else None
-        ),
-        contract_inventory=repository.component_inventory,
+    from sigilicon.domain.component import (
+        load_component_graph,
+        resolve_component_fileset,
+        resolve_component_graph,
     )
+
+    if source_component_graph is None:
+        component_graph = load_component_graph(
+            component_path,
+            project_root=root,
+            root_contract=(
+                cataloged_owner.component
+                if cataloged_owner.component.path == component_path
+                else None
+            ),
+            contract_inventory=repository.component_inventory,
+        )
+    else:
+        component_graph = resolve_component_graph(
+            component_path,
+            project_root=root,
+            snapshot=source_component_graph,
+        )
     ip_name = _string(raw.get("name"), "name")
     component = component_graph.get(ip_name)
     if component is None or component.path != component_path:
@@ -174,7 +184,7 @@ def load_ip_contract(
         )
 
     exports_raw = raw.get("exports")
-    if not isinstance(exports_raw, list) or not exports_raw:
+    if not isinstance(exports_raw, (list, tuple)) or not exports_raw:
         raise ValueError("IP contract must declare at least one exports entry")
     export_specs: dict[str, dict[str, object]] = {}
     for index, value in enumerate(exports_raw):
@@ -197,7 +207,7 @@ def load_ip_contract(
                 f"exports[{index}].maturity.{level}",
             )
             values = level_table.get("required_roles")
-            if not isinstance(values, list) or any(
+            if not isinstance(values, (list, tuple)) or any(
                 not isinstance(item, str) or not item for item in values
             ):
                 raise ValueError(
@@ -245,7 +255,7 @@ def load_ip_contract(
         }
 
     collateral_raw = raw.get("collateral")
-    if not isinstance(collateral_raw, list) or not collateral_raw:
+    if not isinstance(collateral_raw, (list, tuple)) or not collateral_raw:
         raise ValueError("IP contract must declare at least one collateral entry")
     roles: set[tuple[str, str]] = set()
     package_paths: set[PurePosixPath] = set()
@@ -278,7 +288,7 @@ def load_ip_contract(
                 f"exports/{export}/"
             )
         capabilities = entry.get("capabilities", [])
-        if not isinstance(capabilities, list) or any(
+        if not isinstance(capabilities, (list, tuple)) or any(
             not isinstance(value, str) or not value for value in capabilities
         ):
             raise ValueError(f"collateral[{index}].capabilities must be strings")
@@ -322,6 +332,8 @@ def load_ip_contract(
         collateral_by_export[export].append(parsed)
 
     exports: list[IpExport] = []
+    interface_documents = dict(source_interface_documents or {})
+    expected_interface_paths: set[Path] = set()
     oa_identities: set[tuple[str, str]] = set()
     for name, values in export_specs.items():
         exported = IpExport(
@@ -334,7 +346,7 @@ def load_ip_contract(
             physical_interface=str(values["physical_interface"]),
             logical_interface=str(values["logical_interface"]),
             collateral=tuple(collateral_by_export[name]),
-            required_roles=values["required_roles"],
+            required_roles=MappingProxyType(dict(values["required_roles"])),
         )
         oa_identity = (exported.oa_library, exported.oa_cell)
         if oa_identity in oa_identities:
@@ -351,16 +363,27 @@ def load_ip_contract(
                 f"IP export {name} is missing development collateral: {missing}"
             )
         interface_path = (producer_path / exported.interface_contract).resolve()
+        expected_interface_paths.add(interface_path)
         if not interface_path.is_file() or not interface_path.is_relative_to(
             producer_path
         ):
             raise FileNotFoundError(
                 f"IP export interface contract is missing or outside its owner: {name}"
             )
+        if (
+            source_interface_documents is None
+            and interface_path not in interface_documents
+        ):
+            with interface_path.open("rb") as stream:
+                interface_raw: dict[str, Any] = tomllib.load(stream)
+            interface_documents[interface_path] = freeze_toml_document(interface_raw)
         exports.append(exported)
 
+    if interface_documents and set(interface_documents) != expected_interface_paths:
+        raise ValueError("IP release snapshot interface document identity drift")
+
     source_files = source.get("files", [])
-    if not isinstance(source_files, list):
+    if not isinstance(source_files, (list, tuple)):
         raise ValueError("source.files must be an array")
     oa_assembly = safe_relative(source.get("oa_assembly"), "source.oa_assembly")
     oa_assembly_path = (root / oa_assembly).resolve()
@@ -390,5 +413,91 @@ def load_ip_contract(
         oa_assembly=oa_assembly,
         component_graph=MappingProxyType(dict(component_graph)),
         document=freeze_toml_document(raw),
+        interface_documents=MappingProxyType(interface_documents),
     )
     return result
+
+
+def load_ip_contract(
+    path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+) -> IpContract:
+    from sigilicon.domain.repository import Project
+
+    repository = Project.bind(project=project, project_root=project_root)
+    contract_path = path.resolve()
+    if not contract_path.is_relative_to(repository.project_root):
+        raise ValueError("IP contract must be inside the project root")
+    with contract_path.open("rb") as stream:
+        raw: dict[str, Any] = tomllib.load(stream)
+    return _parse_ip_contract(
+        contract_path,
+        repository=repository,
+        raw=raw,
+        source_component_graph=None,
+        source_interface_documents=None,
+    )
+
+
+def resolve_ip_contract(
+    path: Path,
+    *,
+    project: Project,
+    snapshot: IpContract | None = None,
+) -> IpContract:
+    """Load an IP contract or validate one operation-owned snapshot."""
+
+    if snapshot is None:
+        return load_ip_contract(path, project=project)
+    contract_path = path.resolve()
+    root = project.project_root
+    if (
+        snapshot.path != contract_path
+        or snapshot.project is not project
+        or not contract_path.is_relative_to(root)
+        or not contract_path.is_file()
+    ):
+        raise ValueError("IP release snapshot identity drift")
+    if not isinstance(snapshot.document, Mapping) or not snapshot.document:
+        raise ValueError("IP release snapshot source document is missing")
+    if not is_frozen_toml_document(snapshot.document):
+        raise ValueError("IP release snapshot document is mutable")
+    documents = snapshot.interface_documents
+    if not isinstance(documents, _MAPPING_PROXY_TYPE):
+        raise ValueError("IP release snapshot interface document identity drift")
+    if any(
+        not isinstance(exported.required_roles, _MAPPING_PROXY_TYPE)
+        for exported in snapshot.exports
+    ):
+        raise ValueError("IP release snapshot typed contract is mutable")
+    envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
+    for interface_path, document in documents.items():
+        if (
+            not isinstance(interface_path, Path)
+            or not isinstance(document, Mapping)
+            or not is_frozen_toml_document(document)
+        ):
+            raise ValueError("IP release snapshot interface document is mutable")
+        present = envelope_fields & document.keys()
+        if present:
+            if present != envelope_fields:
+                raise ValueError("IP release snapshot interface header is incomplete")
+            require_config_header(
+                document,
+                interface_path,
+                contract_kind="ip-interface",
+                path_scope="owner",
+                owner=snapshot.owner,
+            )
+    parsed = _parse_ip_contract(
+        contract_path,
+        repository=project,
+        raw=snapshot.document,
+        source_component_graph=snapshot.component_graph,
+        source_interface_documents=documents,
+    )
+    if parsed != snapshot:
+        raise ValueError("IP release snapshot typed contract drift")
+    return snapshot

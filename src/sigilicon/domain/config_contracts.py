@@ -8,6 +8,7 @@ that makes ownership, scope, and migration boundaries explicit.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from pathlib import Path
 import tomllib
 from types import MappingProxyType
@@ -26,6 +27,7 @@ CONFIG_SCHEMA = 1
 PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
 )
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 def freeze_toml_document(value: Any) -> Any:
@@ -38,6 +40,19 @@ def freeze_toml_document(value: Any) -> Any:
     if isinstance(value, list):
         return tuple(freeze_toml_document(item) for item in value)
     return value
+
+
+def is_frozen_toml_document(value: object) -> bool:
+    """Return whether one parsed TOML value is recursively immutable."""
+
+    if isinstance(value, _MAPPING_PROXY_TYPE):
+        return all(
+            isinstance(key, str) and is_frozen_toml_document(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, tuple):
+        return all(is_frozen_toml_document(item) for item in value)
+    return isinstance(value, (str, int, float, bool, datetime, date, time))
 
 
 @dataclass(frozen=True)
@@ -170,6 +185,8 @@ def inspect_project_configurations(
     ip_catalog = context.ip_catalog_snapshot()
     catalog_documents[ip_catalog.path] = ip_catalog.document
     if release_inventory is not None:
+        from sigilicon.domain.ip_release import resolve_ip_contract
+
         release_rows = ip_catalog.document.get("targets", {})
         if not isinstance(release_rows, Mapping):
             raise ValueError("IP catalog targets must be a table")
@@ -197,6 +214,16 @@ def inspect_project_configurations(
                 raise ValueError(f"IP release snapshot identity drift: {name}")
             if contract.document:
                 catalog_documents[contract.path] = contract.document
+            contract = resolve_ip_contract(
+                contract.path,
+                project=context,
+                snapshot=contract,
+            )
+            _merge_source_documents(
+                catalog_documents,
+                contract.interface_documents,
+                label="IP release interface snapshot",
+            )
     if oa_source_inventory is not None:
         from sigilicon.domain.oa_library import resolve_oa_library_source
 
