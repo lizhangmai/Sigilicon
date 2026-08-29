@@ -6,6 +6,28 @@ from sigilicon.layout.technology import (
 )
 
 
+def test_layout_technology_value_objects_preserve_legacy_constructor_order() -> None:
+    mos = MosPcellInterface(
+        "fingers",
+        "S",
+        "D",
+        "S_",
+        "D_",
+        "routePolydir",
+        ("polyContacts",),
+    )
+    technology = LayoutTechnology(
+        "test-owner",
+        {"nch": "nmos"},
+        {},
+        {},
+        {},
+        mos,
+    )
+
+    assert technology.mos_pcell.length_parameter == "l"
+
+
 def _technology() -> LayoutTechnology:
     return LayoutTechnology(
         owner="test-owner",
@@ -13,7 +35,6 @@ def _technology() -> LayoutTechnology:
         layers={},
         vias={},
         via_landings={},
-        via_landing_profiles={},
         mom_pcell=None,
         resistor_pcell=None,
         mos_pcell=MosPcellInterface(

@@ -6,11 +6,13 @@ import pytest
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.layout.mos import (
     MosDevice,
+    create_mos_pcell_instance,
     nanometers,
     parse_hierarchical_devices,
     parse_mos_devices,
     validate_static_logic,
 )
+from sigilicon.layout.technology import LayoutTechnology, MosPcellInterface
 
 
 def _spec(text: str, cell: str = "CELL") -> SimpleNamespace:
@@ -77,6 +79,51 @@ def test_mos_contract_rejects_unsupported_finger_count() -> None:
             {"M0": (("Y", "A", "VSS", "VSS"), "nch")},
             label="logic",
         )
+
+
+def test_mos_pcell_instance_uses_only_the_declared_technology_interface() -> None:
+    device = MosDevice(
+        "M0",
+        ("Y", "A", "VSS", "VSS"),
+        "nch",
+        {"l": "30n", "w": "120n", "nf": "1", "multi": "1"},
+    )
+    technology = LayoutTechnology(
+        owner="test-owner",
+        model_polarities={"nch": "nmos"},
+        layers={},
+        vias={},
+        via_landings={},
+        mos_pcell=MosPcellInterface(
+            "fingers",
+            "S",
+            "D",
+            "S_",
+            "D_",
+            "routePolydir",
+            ("polyContacts",),
+            gate_contact_parameters=(("polyContacts", "boolean", "True"),),
+        ),
+    )
+    spec = SimpleNamespace(
+        pdk=SimpleNamespace(oa=SimpleNamespace(technology_library="test_pdk"))
+    )
+
+    instance = create_mos_pcell_instance(
+        spec,  # type: ignore[arg-type]
+        device,
+        technology=technology,
+        origin_dbu=(1000, 2000),
+    )
+
+    assert tuple(instance.xy) == (1000, 2000)
+    assert instance.libname == "test_pdk"
+    assert instance.params["pcell_params"][:4] == [
+        ["l", "string", "30n"],
+        ["Wfg", "string", "120n"],
+        ["fingers", "string", "1"],
+        ["routePolydir", "string", "Bottom"],
+    ]
 
 
 @pytest.mark.parametrize("value", ["120", "0n", "1.5n"])

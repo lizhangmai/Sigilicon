@@ -83,34 +83,7 @@ def test_layout_technology_keeps_owner_schema_and_resolves_routing_roles(
         "routing2_routing3",
         "routing2",
     ) == (85, 130)
-
-
-def test_layout_technology_applies_partial_via_landing_profile_overrides(
-    tmp_path: Path,
-) -> None:
-    contract = tmp_path / "technology.toml"
-    _write_contract(contract)
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            "\n[mos_pcell]\n",
-            "\n[via_landing_profiles.stacked.routing1_routing2]\n"
-            "routing2 = [85, 130]\n\n[mos_pcell]\n",
-        ),
-        encoding="utf-8",
-    )
-
-    technology = load_layout_technology(
-        contract,
-        contract_kind="test-layout-technology",
-        owner="test-owner",
-    )
-
-    assert technology.via_landing_half_size(
-        "routing1_routing2", "routing2", profile="stacked"
-    ) == (85, 130)
-    assert technology.via_landing_half_size(
-        "routing1_routing2", "routing1", profile="stacked"
-    ) == (55, 55)
+    assert technology.mos_pcell.gate_contact_parameters == ()
 
 
 def test_layout_technology_requires_landing_policy_for_every_via(
@@ -127,28 +100,6 @@ def test_layout_technology_requires_landing_policy_for_every_via(
     )
 
     with pytest.raises(ValueError, match="every and only"):
-        load_layout_technology(
-            contract,
-            contract_kind="test-layout-technology",
-            owner="test-owner",
-        )
-
-
-def test_layout_technology_rejects_profile_layers_not_used_by_via(
-    tmp_path: Path,
-) -> None:
-    contract = tmp_path / "technology.toml"
-    _write_contract(contract)
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            "\n[mos_pcell]\n",
-            "\n[via_landing_profiles.stacked.routing1_routing2]\n"
-            "routing3 = [85, 130]\n\n[mos_pcell]\n",
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="non-landing layers"):
         load_layout_technology(
             contract,
             contract_kind="test-layout-technology",

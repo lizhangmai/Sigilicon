@@ -12,6 +12,7 @@ from sigilicon.domain.netlist import (
     lower_subckt_default_parameters,
 )
 from sigilicon.layout.spec import LayoutSpec
+from sigilicon.layout.technology import LayoutTechnology
 
 
 _MOS = re.compile(
@@ -173,9 +174,51 @@ def validate_static_logic(
             raise ValueError(f"{name} routed generator supports only nf=1 and multi=1")
 
 
+def create_mos_pcell_instance(
+    spec: LayoutSpec,
+    device: MosDevice,
+    *,
+    technology: LayoutTechnology,
+    origin_dbu: tuple[int, int],
+):
+    """Create one MOS PCell instance from a technology-declared interface."""
+
+    import laygo2
+
+    interface = technology.mos_pcell
+    parameters = [
+        [interface.length_parameter, "string", device.parameters["l"]],
+        [interface.width_parameter, "string", device.parameters["w"]],
+        [interface.finger_count_parameter, "string", device.parameters["nf"]],
+        [
+            interface.cdf_callback_parameter,
+            "string",
+            interface.gate_contact_value,
+        ],
+        *[list(parameter) for parameter in interface.gate_contact_parameters],
+        [
+            interface.gate_contact_enhancement_parameter,
+            "string",
+            interface.gate_contact_enhancement_value,
+        ],
+    ]
+    if technology.polarity(device.model) == "pmos":
+        parameters.extend(
+            list(parameter) for parameter in interface.pmos_contact_parameters
+        )
+    return laygo2.object.physical.Instance(
+        xy=list(origin_dbu),
+        libname=spec.pdk.oa.technology_library,
+        cellname=device.model,
+        name=device.name,
+        params={"pcell_params": parameters},
+    )
+
+
 __all__ = [
     "HierarchicalDevice",
     "MosDevice",
+    "create_mos_pcell_instance",
     "nanometers",
     "parse_hierarchical_devices",
     "parse_mos_devices",

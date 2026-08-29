@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from sigilicon.layout.technology import LayoutTechnology
@@ -104,4 +105,112 @@ class RoutingCanvas:
         )
 
 
-__all__ = ["RoutingCanvas"]
+@dataclass(frozen=True)
+class RoutingStack:
+    """Resolve a contiguous technology routing stack without PDK layer names."""
+
+    technology: LayoutTechnology
+    landing_overrides: Mapping[
+        str, Mapping[str, tuple[int, int]]
+    ] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for via_role, layer_overrides in self.landing_overrides.items():
+            if via_role not in self.technology.vias:
+                raise ValueError(f"unknown routing via role {via_role!r}")
+            allowed_layers = self.technology.via_landings[via_role]
+            for layer_role, half_size in layer_overrides.items():
+                if layer_role not in allowed_layers:
+                    raise ValueError(
+                        f"{via_role!r} has no landing on {layer_role!r}"
+                    )
+                if (
+                    len(half_size) != 2
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or value <= 0
+                        for value in half_size
+                    )
+                ):
+                    raise ValueError(
+                        f"{via_role}.{layer_role} override must be two positive integers"
+                    )
+
+    @property
+    def layer_roles(self) -> tuple[str, ...]:
+        roles: list[str] = []
+        index = 1
+        while f"routing{index}" in self.technology.layers:
+            roles.append(f"routing{index}")
+            index += 1
+        if len(roles) < 3:
+            raise ValueError(
+                f"{self.technology.owner} must declare at least three routing layers"
+            )
+        return tuple(roles)
+
+    @property
+    def via_roles(self) -> tuple[str, ...]:
+        roles = tuple(
+            f"routing{index}_routing{index + 1}"
+            for index in range(1, len(self.layer_roles))
+        )
+        missing = tuple(role for role in roles if role not in self.technology.vias)
+        if missing:
+            raise ValueError(
+                f"{self.technology.owner} routing stack is missing vias {missing}"
+            )
+        return roles
+
+    @property
+    def layers(self) -> tuple[str, ...]:
+        return tuple(self.technology.layer(role) for role in self.layer_roles)
+
+    @property
+    def vias(self) -> tuple[str, ...]:
+        return tuple(self.technology.via(role) for role in self.via_roles)
+
+    def layer(self, role: str) -> str:
+        return self.technology.layer(role)
+
+    def via(self, role: str) -> str:
+        return self.technology.via(role)
+
+    def landing_shapes(
+        self, via_definition: str
+    ) -> tuple[tuple[str, int, int], ...]:
+        matching_roles = tuple(
+            role
+            for role, definition in self.technology.vias.items()
+            if definition == via_definition
+        )
+        if len(matching_roles) != 1:
+            raise ValueError(f"unknown routing via definition {via_definition!r}")
+        via_role = matching_roles[0]
+        return tuple(
+            (
+                self.technology.layer(layer_role),
+                *self.landing_overrides.get(via_role, {}).get(
+                    layer_role,
+                    self.technology.via_landing_half_size(via_role, layer_role),
+                ),
+            )
+            for layer_role in self.technology.via_landings[via_role]
+        )
+
+    def vias_between(self, start_layer: str, stop_layer: str) -> tuple[str, ...]:
+        layers = self.layers
+        try:
+            start = layers.index(start_layer)
+            stop = layers.index(stop_layer)
+        except ValueError as exc:
+            raise ValueError(
+                f"routing stack does not contain {start_layer!r} or {stop_layer!r}"
+            ) from exc
+        if start >= stop:
+            raise ValueError(f"invalid via stack {start_layer}->{stop_layer}")
+        return self.vias[start:stop]
+
+
+__all__ = ["RoutingCanvas", "RoutingStack"]

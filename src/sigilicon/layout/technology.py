@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import tomllib
@@ -53,10 +53,38 @@ def _reject_unknown(
         raise ValueError(f"{field} contains unsupported fields: {sorted(unknown)}")
 
 
+def _pcell_parameters(
+    value: object, field_name: str
+) -> tuple[tuple[str, str, str], ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a PCell parameter array")
+    result: list[tuple[str, str, str]] = []
+    for index, item in enumerate(value):
+        if (
+            not isinstance(item, list)
+            or len(item) != 3
+            or not all(isinstance(part, str) and part for part in item)
+        ):
+            raise ValueError(
+                f"{field_name}[{index}] must contain name, kind, value"
+            )
+        name, value_kind, parameter_value = item
+        if value_kind not in {"string", "int", "float", "boolean"}:
+            raise ValueError(f"{field_name}[{index}] has unsupported value kind")
+        result.append(
+            (
+                _identifier(name, f"{field_name}[{index}] name"),
+                value_kind,
+                parameter_value,
+            )
+        )
+    if len({item[0] for item in result}) != len(result):
+        raise ValueError(f"{field_name} contains duplicate parameters")
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class MosPcellInterface:
-    length_parameter: str
-    width_parameter: str
     finger_count_parameter: str
     source_terminal: str
     drain_terminal: str
@@ -64,9 +92,19 @@ class MosPcellInterface:
     drain_alias_prefix: str
     cdf_callback_parameter: str
     cdf_callback_bypass_parameters: tuple[str, ...]
-    gate_contact_value: str
-    gate_contact_enhancement_parameter: str
-    gate_contact_enhancement_value: str
+    length_parameter: str = field(default="l", kw_only=True)
+    width_parameter: str = field(default="Wfg", kw_only=True)
+    gate_contact_value: str = field(default="Bottom", kw_only=True)
+    gate_contact_enhancement_parameter: str = field(
+        default="polyContactsEnh", kw_only=True
+    )
+    gate_contact_enhancement_value: str = field(default="Bottom", kw_only=True)
+    gate_contact_parameters: tuple[tuple[str, str, str], ...] = field(
+        default=(), kw_only=True
+    )
+    pmos_contact_parameters: tuple[tuple[str, str, str], ...] = field(
+        default=(), kw_only=True
+    )
 
 
 @dataclass(frozen=True)
@@ -104,12 +142,9 @@ class LayoutTechnology:
     layers: Mapping[str, str]
     vias: Mapping[str, str]
     via_landings: Mapping[str, Mapping[str, tuple[int, int]]]
-    via_landing_profiles: Mapping[
-        str, Mapping[str, Mapping[str, tuple[int, int]]]
-    ]
-    mom_pcell: MomPcellInterface | None
-    resistor_pcell: ResistorPcellInterface | None
     mos_pcell: MosPcellInterface
+    mom_pcell: MomPcellInterface | None = field(default=None, kw_only=True)
+    resistor_pcell: ResistorPcellInterface | None = field(default=None, kw_only=True)
 
     def layer(self, role: str) -> str:
         try:
@@ -133,17 +168,7 @@ class LayoutTechnology:
         self,
         via_role: str,
         layer_role: str,
-        *,
-        profile: str | None = None,
     ) -> tuple[int, int]:
-        if profile is not None:
-            try:
-                return self.via_landing_profiles[profile][via_role][layer_role]
-            except KeyError:
-                if profile not in self.via_landing_profiles:
-                    raise ValueError(
-                        f"{self.owner} has no via landing profile {profile!r}"
-                    ) from None
         try:
             return self.via_landings[via_role][layer_role]
         except KeyError as exc:
@@ -160,7 +185,6 @@ class LayoutTechnology:
         if self.resistor_pcell is None:
             raise ValueError(f"{self.owner} does not declare a resistor PCell interface")
         return self.resistor_pcell
-
 
 def load_layout_technology(
     path: Path,
@@ -194,7 +218,6 @@ def load_layout_technology(
             "layers",
             "vias",
             "via_landings",
-            "via_landing_profiles",
             "mom_pcell",
             "resistor_pcell",
             "mos_pcell",
@@ -251,59 +274,6 @@ def load_layout_technology(
                 )
             parsed[layer] = (half_size[0], half_size[1])
         via_landings[role] = parsed
-    profiles_raw = technology_raw.get("via_landing_profiles", {})
-    profiles_table = _table(profiles_raw, "via_landing_profiles")
-    via_landing_profiles: dict[
-        str, dict[str, dict[str, tuple[int, int]]]
-    ] = {}
-    for profile_name, profile_value in profiles_table.items():
-        profile = _identifier(profile_name, "via landing profile")
-        profile_vias = _table(profile_value, f"via_landing_profiles.{profile}")
-        if not profile_vias:
-            raise ValueError(f"via_landing_profiles.{profile} must not be empty")
-        if unknown_vias := set(profile_vias) - set(vias):
-            raise ValueError(
-                f"via_landing_profiles.{profile} uses unknown via roles: "
-                f"{sorted(unknown_vias)}"
-            )
-        parsed_profile: dict[str, dict[str, tuple[int, int]]] = {}
-        for via_role, value in profile_vias.items():
-            layer_landings = _table(
-                value, f"via_landing_profiles.{profile}.{via_role}"
-            )
-            if unknown_layers := set(layer_landings) - set(via_landings[via_role]):
-                raise ValueError(
-                    f"via_landing_profiles.{profile}.{via_role} overrides "
-                    f"non-landing layers: {sorted(unknown_layers)}"
-                )
-            parsed_layers: dict[str, tuple[int, int]] = {}
-            for layer_role, half_size in layer_landings.items():
-                layer = _identifier(
-                    layer_role,
-                    f"via_landing_profiles.{profile}.{via_role} layer",
-                )
-                if layer not in layers:
-                    raise ValueError(
-                        f"via_landing_profiles.{profile}.{via_role} uses unknown "
-                        f"layer role {layer!r}"
-                    )
-                if (
-                    not isinstance(half_size, list)
-                    or len(half_size) != 2
-                    or any(
-                        isinstance(item, bool)
-                        or not isinstance(item, int)
-                        or item <= 0
-                        for item in half_size
-                    )
-                ):
-                    raise ValueError(
-                        f"via_landing_profiles.{profile}.{via_role}.{layer} "
-                        "must be two positive DBU integers"
-                    )
-                parsed_layers[layer] = (half_size[0], half_size[1])
-            parsed_profile[via_role] = parsed_layers
-        via_landing_profiles[profile] = parsed_profile
     mom_pcell: MomPcellInterface | None = None
     if "mom_pcell" in technology_raw:
         mom_raw = _table(technology_raw.get("mom_pcell"), "mom_pcell")
@@ -389,6 +359,8 @@ def load_layout_technology(
         "gate_contact_value",
         "gate_contact_enhancement_parameter",
         "gate_contact_enhancement_value",
+        "gate_contact_parameters",
+        "pmos_contact_parameters",
     }
     _reject_unknown(pcell_raw, pcell_fields, "mos_pcell")
     bypass = pcell_raw.get("cdf_callback_bypass_parameters")
@@ -405,7 +377,6 @@ def load_layout_technology(
         layers=layers,
         vias=vias,
         via_landings=via_landings,
-        via_landing_profiles=via_landing_profiles,
         mom_pcell=mom_pcell,
         resistor_pcell=resistor_pcell,
         mos_pcell=MosPcellInterface(
@@ -449,6 +420,14 @@ def load_layout_technology(
             gate_contact_enhancement_value=_identifier(
                 pcell_raw.get("gate_contact_enhancement_value"),
                 "mos_pcell.gate_contact_enhancement_value",
+            ),
+            gate_contact_parameters=_pcell_parameters(
+                pcell_raw.get("gate_contact_parameters", []),
+                "mos_pcell.gate_contact_parameters",
+            ),
+            pmos_contact_parameters=_pcell_parameters(
+                pcell_raw.get("pmos_contact_parameters", []),
+                "mos_pcell.pmos_contact_parameters",
             ),
         ),
     )
