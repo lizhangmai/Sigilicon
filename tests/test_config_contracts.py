@@ -244,6 +244,20 @@ def test_project_configuration_reuses_scanned_verification_cell_document(
         "ip/alpha/verification/example/testbench.sv",
         "module tb; endmodule\n",
     )
+    declared_contracts = (
+        tmp_path / "ip/alpha/qualification.toml",
+        tmp_path / "ip/alpha/verification/z_contract.toml",
+    )
+    for declared in declared_contracts:
+        _write(
+            tmp_path,
+            declared.relative_to(tmp_path).as_posix(),
+            '''schema = 1
+contract_kind = "test-contract"
+path_scope = "owner"
+owner = "alpha"
+''',
+        )
     _write(
         tmp_path,
         "ip/alpha/verification/example/cell.toml",
@@ -257,15 +271,16 @@ role = "rtl-testbench"
 canonical_source = "testbench.sv"
 dut = "dut"
 simulator = "xcelium"
+contracts = ["../../qualification.toml", "../z_contract.toml"]
 """,
     )
     original_load = tomllib.load
-    reads = 0
+    reads = {path.resolve(): 0 for path in (cell, *declared_contracts)}
 
     def counted_load(stream):
-        nonlocal reads
-        if Path(stream.name).resolve() == cell.resolve():
-            reads += 1
+        path = Path(stream.name).resolve()
+        if path in reads:
+            reads[path] += 1
         return original_load(stream)
 
     monkeypatch.setattr(tomllib, "load", counted_load)
@@ -276,7 +291,7 @@ simulator = "xcelium"
         owner_roots=_owner_roots(tmp_path),
     )
 
-    assert reads == 1
+    assert set(reads.values()) == {1}
 
 
 def test_common_header_rejects_wrong_scope() -> None:

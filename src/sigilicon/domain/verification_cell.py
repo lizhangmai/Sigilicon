@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    read_toml,
+    require_config_header,
+)
 from sigilicon.domain.repository import Project
 
 
@@ -65,7 +70,9 @@ def _files(
 ) -> tuple[Path, ...]:
     if raw is None:
         return ()
-    if not isinstance(raw, list) or any(not isinstance(value, str) for value in raw):
+    if not isinstance(raw, (list, tuple)) or any(
+        not isinstance(value, str) for value in raw
+    ):
         raise ValueError(f"{field} must be a string array")
     result = tuple(
         _file(
@@ -99,6 +106,9 @@ class VerificationCellSpec:
     contracts: tuple[Path, ...]
     runner: Path | None
     success_marker: str | None
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def project_root(self) -> Path:
@@ -151,6 +161,7 @@ def _parse_verification_cell(
     raw: Mapping[str, Any],
     *,
     repository: Project,
+    contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     root = repository.project_root
     cell_root = contract.parent
@@ -204,6 +215,7 @@ def _parse_verification_cell(
         project_root=root,
         field=f"{contract}: contracts",
     )
+    source_documents = {contract: freeze_toml_document(raw)}
     for declared_contract in contracts:
         declared_owner = repository.require_owner(declared_contract).name
         if declared_owner != owner:
@@ -211,7 +223,13 @@ def _parse_verification_cell(
                 f"{contract}: declared contract owner must be {owner!r}, "
                 f"got {declared_owner!r} for {declared_contract}"
             )
-        declared_raw = read_toml(declared_contract)
+        declared_raw = (
+            None
+            if contract_documents is None
+            else contract_documents.get(declared_contract)
+        )
+        if declared_raw is None:
+            declared_raw = read_toml(declared_contract)
         declared_kind = _text(
             declared_raw.get("contract_kind"),
             f"{declared_contract}: contract_kind",
@@ -227,6 +245,7 @@ def _parse_verification_cell(
             path_scope=declared_scope,
             owner=owner,
         )
+        source_documents[declared_contract] = freeze_toml_document(declared_raw)
     runner_raw = raw.get("runner")
     runner = (
         None
@@ -264,6 +283,7 @@ def _parse_verification_cell(
         contracts=contracts,
         runner=runner,
         success_marker=success_marker,
+        source_documents=MappingProxyType(source_documents),
     )
 
 
@@ -273,6 +293,7 @@ def parse_verification_cell(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
+    contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     """Validate one already read ``verification-cell`` document."""
 
@@ -282,6 +303,7 @@ def parse_verification_cell(
         contract,
         document,
         repository=repository,
+        contract_documents=contract_documents,
     )
 
 

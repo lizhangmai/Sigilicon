@@ -98,6 +98,32 @@ def test_verification_cell_parses_an_already_read_document(
     assert spec.cell == "tb_demo"
 
 
+def test_verification_cell_preserves_declared_contract_documents(
+    tmp_path: Path,
+) -> None:
+    contract = _contract(tmp_path)
+    declared = _write(
+        tmp_path,
+        "ip/demo/configs/qualification.toml",
+        '''schema = 1
+contract_kind = "ip-qualification"
+path_scope = "owner"
+owner = "demo"
+''',
+    )
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + 'contracts = ["../../../configs/qualification.toml"]\n',
+        encoding="utf-8",
+    )
+
+    spec = load_verification_cell(contract, project_root=tmp_path)
+
+    assert set(spec.source_documents) == {contract.resolve(), declared.resolve()}
+    with pytest.raises(TypeError):
+        spec.source_documents[declared.resolve()]["owner"] = "other"
+
+
 def test_verification_cell_rejects_owner_outside_catalog_identity(
     tmp_path: Path,
 ) -> None:

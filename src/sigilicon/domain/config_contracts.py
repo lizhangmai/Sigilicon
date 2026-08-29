@@ -263,13 +263,15 @@ def inspect_project_configurations(
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
     repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
     platform_root = context.catalog("platform").parent
+    operation_documents = dict(catalog_documents)
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"configuration source escapes the project root: {path}")
-        raw = catalog_documents.get(resolved)
+        raw = operation_documents.get(resolved)
         if raw is None:
             raw = read_toml(resolved)
+            operation_documents[resolved] = raw
         present = envelope_fields & raw.keys()
         if not present:
             native_documents += 1
@@ -311,7 +313,14 @@ def inspect_project_configurations(
         if header.contract_kind == "verification-cell":
             from sigilicon.domain.verification_cell import parse_verification_cell
 
-            parse_verification_cell(resolved, raw, project=context)
+            spec = parse_verification_cell(
+                resolved,
+                raw,
+                project=context,
+                contract_documents=operation_documents,
+            )
+            for source_path, document in spec.source_documents.items():
+                operation_documents.setdefault(source_path, document)
         contract_kinds.add(header.contract_kind)
         owners.add(header.owner)
 
