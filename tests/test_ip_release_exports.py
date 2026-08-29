@@ -152,6 +152,9 @@ def test_ip_contract_reuses_explicit_project(tmp_path: Path) -> None:
     assert contract.project_root == tmp_path
     assert contract.component_graph == {"fixture-ip": project.owner("fixture").component}
     assert contract.component_graph["fixture-ip"] is project.owner("fixture").component
+    assert contract.document["name"] == "fixture-ip"
+    with pytest.raises(TypeError):
+        contract.document["exports"][0]["name"] = "other"
 
 
 def test_release_consumers_reuse_the_contract_component_graph(

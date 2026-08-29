@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    require_config_header,
+)
 
 if TYPE_CHECKING:
     from sigilicon.domain.component import ComponentContract
@@ -86,6 +89,9 @@ class IpContract:
     source_files: tuple[PurePosixPath, ...]
     oa_assembly: PurePosixPath
     component_graph: Mapping[str, ComponentContract]
+    document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def project_root(self) -> Path:
@@ -382,5 +388,6 @@ def load_ip_contract(
         ),
         oa_assembly=oa_assembly,
         component_graph=MappingProxyType(dict(component_graph)),
+        document=freeze_toml_document(raw),
     )
     return result

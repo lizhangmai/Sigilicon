@@ -145,6 +145,7 @@ def inspect_repository_designs(
         components[name] = component_result
 
     ip_releases: dict[str, Any] = {}
+    release_inventory = {}
     oa_assemblies: dict[str, Any] = {}
     for name, path in release_paths.items():
         contract = load_ip_contract(path, project=context)
@@ -155,6 +156,7 @@ def inspect_repository_designs(
             owner=contract.owner,
             root=_component_owner_root(context, path),
         )
+        release_inventory[name] = contract
         assembly = (root / contract.oa_assembly).resolve()
         ip_releases[name] = {
             "contract": path.relative_to(root).as_posix(),
@@ -191,6 +193,7 @@ def inspect_repository_designs(
         catalog_inventory=flow_catalog_inventory,
         platform_catalog=platform_catalog,
         platform_inventory=platform_inventory,
+        release_inventory=release_inventory,
     )
 
     design_catalog = load_design_target_catalog(

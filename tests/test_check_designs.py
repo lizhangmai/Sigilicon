@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tomllib
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,80 @@ from conftest import (
 )
 import sigilicon.domain.repository as repository_module
 from sigilicon.cli.check_designs import main as check_designs_main
+import sigilicon.workflows.repository_checks as repository_checks
+
+
+def _write_release_target(root: Path) -> Path:
+    owner = root / "ip/fixture"
+    interface = owner / "interface.toml"
+    write_component_owner(
+        root,
+        "fixture",
+        filesets={"interface": ("ip/fixture/interface.toml",)},
+    )
+    interface.write_text(
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "fixture"
+''',
+        encoding="utf-8",
+    )
+    (owner / "oa.toml").write_text("name = 'fixture'\n", encoding="utf-8")
+    release = owner / "release.toml"
+    release.write_text(
+        '''schema = 1
+contract_kind = "ip-release"
+path_scope = "owner"
+owner = "fixture"
+
+name = "fixture"
+producer = "ip/fixture"
+component = "component.toml"
+default_maturity = "development"
+
+[[exports]]
+name = "macro"
+[exports.oa]
+library = "fixture"
+cell = "FIXTURE"
+schematic_view = "schematic"
+layout_view = "layout"
+[exports.interface]
+contract = "interface.toml"
+physical = "FIXTURE:physical"
+logical = "fixture_model:logical"
+[exports.maturity.development]
+required_roles = ["interface_contract"]
+[exports.maturity.implementation]
+required_roles = ["interface_contract"]
+[exports.maturity.signoff]
+required_roles = ["interface_contract"]
+
+[[collateral]]
+export = "macro"
+role = "interface_contract"
+component = "fixture"
+fileset = "interface"
+package_path = "exports/macro/interface.toml"
+format = "toml"
+
+[source]
+oa_assembly = "ip/fixture/oa.toml"
+files = []
+''',
+        encoding="utf-8",
+    )
+    catalog = root / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8")
+        + '''
+[targets.fixture]
+contract = "ip/fixture/release.toml"
+''',
+        encoding="utf-8",
+    )
+    return release
 
 
 def test_check_designs_parses_the_project_manifest_once(
@@ -91,6 +166,32 @@ def test_check_designs_reuses_the_loaded_component_owner(
 
     assert check_designs_main([]) == 0
     assert component_reads == 1
+
+
+def test_check_designs_reads_each_ip_release_contract_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _write_release_target(tmp_path).resolve()
+    reads = 0
+    original_load = tomllib.load
+
+    def counted_load(stream):
+        nonlocal reads
+        if Path(stream.name).resolve() == release:
+            reads += 1
+        return original_load(stream)
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.setattr(
+        repository_checks,
+        "plan_oa_library_rebuild",
+        lambda *_args, **_kwargs: SimpleNamespace(as_dict=lambda: {}),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert check_designs_main([]) == 0
+    assert reads == 1
 
 
 def test_check_designs_reads_shared_flow_catalog_inventory_once(

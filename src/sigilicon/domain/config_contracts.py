@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
+    from sigilicon.domain.ip_release import IpContract
     from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
     from sigilicon.domain.platform import PdkConfig, PlatformCatalogSnapshot
 
@@ -107,6 +108,7 @@ def inspect_project_configurations(
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
     platform_catalog: PlatformCatalogSnapshot | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    release_inventory: Mapping[str, IpContract] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -143,6 +145,34 @@ def inspect_project_configurations(
     )
     ip_catalog = context.ip_catalog_snapshot()
     catalog_documents[ip_catalog.path] = ip_catalog.document
+    if release_inventory is not None:
+        release_rows = ip_catalog.document.get("targets", {})
+        if not isinstance(release_rows, Mapping):
+            raise ValueError("IP catalog targets must be a table")
+        for name, contract in release_inventory.items():
+            row = release_rows.get(name)
+            if (
+                not isinstance(row, Mapping)
+                or set(row) != {"contract"}
+                or not isinstance(row.get("contract"), str)
+            ):
+                raise ValueError(
+                    f"IP release snapshot has no matching catalog target: {name}"
+                )
+            relative = Path(row["contract"])
+            expected = (root / relative).resolve()
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not expected.is_relative_to(root)
+                or not expected.is_file()
+                or contract.project is not context
+                or contract.name != name
+                or contract.path != expected
+            ):
+                raise ValueError(f"IP release snapshot identity drift: {name}")
+            if contract.document:
+                catalog_documents[contract.path] = contract.document
     resolved_platform_catalog = None
     if platform_inventory is not None and platform_catalog is None:
         raise ValueError("platform inventory requires its platform catalog snapshot")
