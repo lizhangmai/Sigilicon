@@ -25,6 +25,7 @@ from sigilicon.domain.netlist import (
     parse_subcircuit_instances,
     subckt_ports,
 )
+from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.repository import Project
 from sigilicon.domain.systemverilog import (
     ModulePort,
@@ -313,7 +314,11 @@ def _development_interface_check(
     }
 
 
-def _source_inputs(contract: IpContract) -> tuple[str, ...]:
+def _source_inputs(
+    contract: IpContract,
+    *,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
+) -> tuple[str, ...]:
     root = contract.project_root
     graph = contract.component_graph
     paths: set[Path] = {contract.path}
@@ -413,7 +418,7 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
             paths.add(cell.design_spec)
         if cell.role == "testbench":
             from sigilicon.domain.oa_simulation import load_oa_simulation_spec
-            from sigilicon.domain.platform import load_platform
+            from sigilicon.domain.platform import load_platform, resolve_platform
 
             setup_sources = {
                 view.source for view in cell.views if view.kind in {"config", "maestro"}
@@ -423,7 +428,20 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
                     f"release testbench config and Maestro sources disagree: {cell.cell}"
                 )
             if release_platform is None:
-                release_platform = load_platform(library.project, library.pdk)
+                if platform_inventory is None:
+                    release_platform = load_platform(library.project, library.pdk)
+                else:
+                    try:
+                        platform_snapshot = platform_inventory[library.pdk]
+                    except KeyError as exc:
+                        raise ValueError(
+                            f"platform inventory has no {library.pdk!r} entry"
+                        ) from exc
+                    release_platform = resolve_platform(
+                        library.project,
+                        library.pdk,
+                        snapshot=platform_snapshot,
+                    )
             simulation = load_oa_simulation_spec(
                 next(iter(setup_sources)),
                 project=library.project,
@@ -665,10 +683,14 @@ def _plan_loaded_ip_release(
     contract: IpContract,
     *,
     maturity: str | None = None,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
 ) -> dict[str, Any]:
     repository = contract.project
     level = contract.require_level(maturity or contract.default_maturity)
-    source_paths = _source_inputs(contract)
+    source_paths = _source_inputs(
+        contract,
+        platform_inventory=platform_inventory,
+    )
     commit, dirty = _source_control(contract.project_root)
     release_id = f"{level}-{commit[:12]}"
     if dirty:
@@ -803,6 +825,7 @@ def plan_ip_release(
     project_root: Path | None = None,
     artifact_root: Path | None = None,
     maturity: str | None = None,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
 ) -> dict[str, Any]:
     repository = _release_project(
         project=project,
@@ -810,17 +833,26 @@ def plan_ip_release(
         artifact_root=artifact_root,
     )
     contract = load_ip_contract(contract_path, project=repository)
-    return plan_ip_release_contract(contract, maturity=maturity)
+    return plan_ip_release_contract(
+        contract,
+        maturity=maturity,
+        platform_inventory=platform_inventory,
+    )
 
 
 def plan_ip_release_contract(
     contract: IpContract,
     *,
     maturity: str | None = None,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
 ) -> dict[str, Any]:
     """Plan one already validated IP release contract."""
 
-    return _plan_loaded_ip_release(contract, maturity=maturity)
+    return _plan_loaded_ip_release(
+        contract,
+        maturity=maturity,
+        platform_inventory=platform_inventory,
+    )
 
 
 def _readonly_tree(root: Path) -> None:

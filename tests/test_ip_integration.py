@@ -561,6 +561,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
     producer_path = project_root / "ip/fixture/configs/release.toml"
     producer_reads: list[Path] = []
     planned_contracts: list[object] = []
+    platform_inventory = {"testpdk": object()}
 
     monkeypatch.setattr(
         ip_integration,
@@ -575,9 +576,11 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
 
     monkeypatch.setattr(ip_integration, "load_ip_contract", load_producer)
 
-    def plan_contract(contract, *, maturity):
+    def plan_contract(contract, *, maturity, platform_inventory):
         planned_contracts.append(contract)
         assert maturity == "development"
+        assert platform_inventory is not None
+        assert set(platform_inventory) == {"testpdk"}
         return {
             "contract": "ip/fixture/configs/release.toml",
             "release_id": "development-fixture",
@@ -614,6 +617,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
         contract_path,
         project_root=project_root,
         artifact_root=artifact_root,
+        platform_inventory=platform_inventory,
     )
 
     assert producer_reads == [producer_path]

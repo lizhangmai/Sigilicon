@@ -22,6 +22,7 @@ from sigilicon.domain.ip_release import (
     IpContract,
     load_ip_contract,
 )
+from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
@@ -285,6 +286,7 @@ def plan_ip_integration(
     project: Project | None = None,
     project_root: Path | None = None,
     artifact_root: Path | None = None,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
@@ -306,6 +308,7 @@ def plan_ip_integration(
             expected = plan_ip_release_contract(
                 producer,
                 maturity=release.required_maturity,
+                platform_inventory=platform_inventory,
             )
             exported = _release_export(expected, release.export)
             interface = exported.get("interface")

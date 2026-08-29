@@ -13,6 +13,7 @@ from conftest import (
 )
 import sigilicon.domain.repository as repository_module
 from sigilicon.cli.check_designs import main as check_designs_main
+from sigilicon.domain.repository import Project
 import sigilicon.workflows.repository_checks as repository_checks
 
 
@@ -298,4 +299,76 @@ second = "second/platform.toml"
     monkeypatch.chdir(tmp_path)
 
     assert check_designs_main([]) == 0
+    assert set(reads.values()) == {1}
+
+
+def test_repository_workflows_share_one_platform_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_test_platform(tmp_path)
+    _write_release_target(tmp_path)
+    component = tmp_path / "ip/fixture/component.toml"
+    component.write_text(
+        component.read_text(encoding="utf-8")
+        + "\n[variants.fixture]\ncontract = 'unused.toml'\n",
+        encoding="utf-8",
+    )
+    platform_sources = {
+        (tmp_path / "configs/platform/catalog.toml").resolve(),
+        *(
+            path.resolve()
+            for path in (tmp_path / "configs/platform/testpdk").glob("*.toml")
+        ),
+    }
+    reads = {path: 0 for path in platform_sources}
+    original_load = tomllib.load
+    observed_inventories: list[object] = []
+
+    def counted_load(stream):
+        path = Path(stream.name).resolve()
+        if path in reads:
+            reads[path] += 1
+        return original_load(stream)
+
+    def plan_integration(_path, *, project, platform_inventory):
+        assert project.project_root == tmp_path.resolve()
+        observed_inventories.append(platform_inventory)
+        return {"ip": "fixture"}
+
+    def plan_oa(_path, *, project, platform_inventory):
+        assert project.project_root == tmp_path.resolve()
+        observed_inventories.append(platform_inventory)
+        return SimpleNamespace(as_dict=lambda: {})
+
+    original_inspect_configurations = repository_checks.inspect_project_configurations
+
+    def inspect_configurations(*args, platform_inventory, **kwargs):
+        observed_inventories.append(platform_inventory)
+        return original_inspect_configurations(
+            *args,
+            platform_inventory=platform_inventory,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.setattr(repository_checks, "plan_ip_integration", plan_integration)
+    monkeypatch.setattr(repository_checks, "plan_oa_library_rebuild", plan_oa)
+    monkeypatch.setattr(
+        repository_checks,
+        "inspect_project_configurations",
+        inspect_configurations,
+    )
+
+    report = repository_checks.inspect_repository_designs(
+        Project.from_project_root(tmp_path)
+    )
+
+    assert report["passed"] is True
+    assert len(observed_inventories) == 3
+    assert all(
+        inventory is observed_inventories[0]
+        for inventory in observed_inventories[1:]
+    )
+    assert set(observed_inventories[0]) == {"testpdk"}
     assert set(reads.values()) == {1}

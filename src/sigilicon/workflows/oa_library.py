@@ -22,7 +22,7 @@ from sigilicon.domain.oa_library import (
     OAViewReference,
     load_oa_library_source,
 )
-from sigilicon.domain.platform import PdkConfig, load_platform
+from sigilicon.domain.platform import PdkConfig, load_platform, resolve_platform
 from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
@@ -588,6 +588,7 @@ def plan_oa_library_rebuild(
     project: Project | None = None,
     project_root: Path | None = None,
     library: str | None = None,
+    platform_inventory: Mapping[str, PdkConfig] | None = None,
 ) -> OALibraryRebuildPlan:
     """Prove that source alone describes every cell and canonical OA view."""
 
@@ -604,7 +605,20 @@ def plan_oa_library_rebuild(
             f"OA assembly may materialize only its unique library {source.name}"
         )
     definitions = _load_definitions(source)
-    platform = load_platform(source.project, source.pdk)
+    if platform_inventory is None:
+        platform = load_platform(source.project, source.pdk)
+    else:
+        try:
+            platform_snapshot = platform_inventory[source.pdk]
+        except KeyError as exc:
+            raise ValueError(
+                f"platform inventory has no {source.pdk!r} entry"
+            ) from exc
+        platform = resolve_platform(
+            source.project,
+            source.pdk,
+            snapshot=platform_snapshot,
+        )
     designs = _plan_designs(source, target_library, definitions, platform)
     layouts = _plan_layouts(source, target_library, definitions, platform)
     testbenches = _plan_testbenches(source, definitions, platform)

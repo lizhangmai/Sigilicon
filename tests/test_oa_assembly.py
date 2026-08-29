@@ -312,6 +312,48 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
         ("simulation", platform),
     ]
 
+    received.clear()
+
+    def reject_platform_load(*_args, **_kwargs):
+        raise AssertionError("explicit inventory must replace platform I/O")
+
+    def resolve_project_platform(selected_project, key, *, snapshot):
+        assert selected_project is project
+        assert key == "testpdk"
+        received.append(("resolve", snapshot))
+        return snapshot
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.load_platform",
+        reject_platform_load,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.resolve_platform",
+        resolve_project_platform,
+    )
+
+    plan = plan_oa_library_rebuild(
+        tmp_path / "oa.toml",
+        platform_inventory={"testpdk": platform},
+    )
+
+    assert plan.source is source
+    assert received == [
+        ("resolve", platform),
+        ("design", platform),
+        ("layout", platform),
+        ("simulation", platform),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="platform inventory has no 'testpdk' entry",
+    ):
+        plan_oa_library_rebuild(
+            tmp_path / "oa.toml",
+            platform_inventory={},
+        )
+
 
 def test_pre_layout_oa_assembly_can_omit_physical_verification(
     tmp_path: Path,

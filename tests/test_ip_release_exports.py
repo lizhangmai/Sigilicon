@@ -334,6 +334,35 @@ def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
     assert platform_reads == [(project, "testpdk")]
     assert simulation_platforms == [platform, platform]
 
+    platform_reads.clear()
+    simulation_platforms.clear()
+    resolved_platforms: list[tuple[object, str, object]] = []
+
+    def resolve_release_platform(repository, key, *, snapshot):
+        resolved_platforms.append((repository, key, snapshot))
+        return snapshot
+
+    monkeypatch.setattr(
+        platform_domain,
+        "resolve_platform",
+        resolve_release_platform,
+    )
+
+    ip_packaging._source_inputs(
+        contract,
+        platform_inventory={"testpdk": platform},
+    )
+
+    assert platform_reads == []
+    assert resolved_platforms == [(project, "testpdk", platform)]
+    assert simulation_platforms == [platform, platform]
+
+    with pytest.raises(
+        ValueError,
+        match="platform inventory has no 'testpdk' entry",
+    ):
+        ip_packaging._source_inputs(contract, platform_inventory={})
+
 
 def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:
     contract_path = _contract_fixture(tmp_path)
