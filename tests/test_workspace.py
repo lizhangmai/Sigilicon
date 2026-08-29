@@ -53,7 +53,7 @@ def test_incident_rollback_refuses_replaced_symlink_parent(tmp_path) -> None:
     operation_id = "f" * 32
     incident = write_operation_incident(
         workspace_root=workspace,
-        artifact_root=None,
+        artifact_root=project / "artifacts",
         operation_id=operation_id,
         name="test",
         policy="read-only",
@@ -81,6 +81,34 @@ def test_incident_rollback_refuses_replaced_symlink_parent(tmp_path) -> None:
 
     assert external_incident.read_text(encoding="utf-8") == "do not delete\n"
     assert (moved_parent / "incident.json").is_file()
+
+
+def test_incident_uses_explicit_artifact_root_for_external_workspace(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "external-workspace"
+    artifacts = tmp_path / "project-artifacts"
+    workspace.mkdir()
+    operation_id = "e" * 32
+
+    incident = write_operation_incident(
+        workspace_root=workspace,
+        artifact_root=artifacts,
+        operation_id=operation_id,
+        name="external-workspace-test",
+        policy="read-only",
+        status="failed",
+        error=RuntimeError("failure"),
+        uncertain_reason=None,
+        view_snapshots=(),
+        ownership_scopes=(),
+    )
+
+    assert incident == (
+        artifacts / "system/operations" / operation_id / "incident.json"
+    )
+    payload = json.loads(incident.read_text(encoding="utf-8"))
+    assert payload["workspace_root"] == str(workspace)
 
 
 def test_workspace_rejects_remote_mutation(tmp_path) -> None:

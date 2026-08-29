@@ -14,13 +14,13 @@ import stat
 from typing import Any, Mapping, Sequence
 
 from sigilicon.artifacts import atomic_write_json
-from sigilicon.paths import ArtifactLayout, ProjectContext
+from sigilicon.paths import ArtifactLayout
 
 
 def write_operation_incident(
     *,
     workspace_root: Path,
-    artifact_root: Path | None,
+    artifact_root: Path,
     operation_id: str,
     name: str,
     policy: str,
@@ -32,11 +32,9 @@ def write_operation_incident(
 ) -> Path:
     """Create one UUID-scoped incident without replacing prior evidence."""
 
-    paths = ProjectContext.from_project_root(
-        workspace_root.parent,
-        artifact_root=artifact_root,
+    incident_paths = ArtifactLayout(artifact_root.resolve()).system_operation(
+        operation_id
     )
-    incident_paths = paths.artifacts.system_operation(operation_id)
     incident_paths.create()
     incident_path = incident_paths.incident
     payload = {
