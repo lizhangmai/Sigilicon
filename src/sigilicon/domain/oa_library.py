@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import tomllib
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    require_config_header,
+)
 from sigilicon.domain.physical_verification import (
     PhysicalVerificationPolicy,
-    load_physical_verification_policy,
+    parse_physical_verification_policy,
 )
 from sigilicon.domain.repository import Project
 
@@ -126,6 +130,11 @@ class OASourceRoot:
     directory: Path
     cell_roots: tuple[Path, ...]
     cells: tuple[OACellSource, ...]
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,11 @@ class OALibrarySource:
     physical_verification: PhysicalVerificationPolicy | None
     source_roots: tuple[OASourceRoot, ...]
     cells: tuple[OACellSource, ...]
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
 
     @property
     def project_root(self) -> Path:
@@ -174,7 +188,7 @@ def _token(value: object, field: str) -> str:
 
 
 def _strings(value: object, field: str, *, allow_empty: bool = False) -> tuple[str, ...]:
-    if not isinstance(value, list) or (not value and not allow_empty):
+    if not isinstance(value, (list, tuple)) or (not value and not allow_empty):
         qualifier = "" if allow_empty else " non-empty"
         raise ValueError(f"{field} must be a{qualifier} string array")
     result = tuple(value)
@@ -238,7 +252,7 @@ def _load_cell(
     owner: str,
     source_manifest: Path,
     directory: Path,
-    raw: dict[str, Any],
+    raw: Mapping[str, Any],
 ) -> OACellSource:
     cell_manifest = directory / "cell.toml"
     unknown = set(raw) - {
@@ -276,8 +290,8 @@ def _load_cell(
         f"{cell_manifest}: canonical_source",
     )
     rows = raw.get("views")
-    if not isinstance(rows, list) or not rows or not all(
-        isinstance(row, dict) for row in rows
+    if not isinstance(rows, (list, tuple)) or not rows or not all(
+        isinstance(row, Mapping) for row in rows
     ):
         raise ValueError(f"{cell_manifest}: views must be a non-empty array of tables")
     views: list[OACellViewSource] = []
@@ -385,6 +399,17 @@ def _load_source_root(
             and not item.name.startswith(".")
             and item.name != "__pycache__"
         )
+        escaping = [
+            item.relative_to(directory).as_posix()
+            for item in all_children
+            if not item.resolve().is_relative_to(cell_root)
+            or not (item / "cell.toml").resolve().is_relative_to(cell_root)
+        ]
+        if escaping:
+            raise ValueError(
+                "OA cell directory or manifest escapes its declared cell root: "
+                f"{escaping}"
+            )
         undeclared = [
             item.relative_to(directory).as_posix()
             for item in all_children
@@ -414,12 +439,20 @@ def _load_source_root(
     )
     if not cells:
         raise ValueError(f"OA source manifest declares no cells: {path}")
+    source_documents = {path.resolve(): freeze_toml_document(raw)}
+    source_documents.update(
+        {
+            (directory / "cell.toml").resolve(): freeze_toml_document(document)
+            for directory, document in cell_documents.items()
+        }
+    )
     return OASourceRoot(
         owner=owner,
         manifest_path=path,
         directory=directory,
         cell_roots=tuple(cell_roots),
         cells=cells,
+        source_documents=MappingProxyType(source_documents),
     )
 
 
@@ -479,19 +512,24 @@ def load_oa_library_source(
         )
     )
     physical_verification_value = raw.get("physical_verification")
-    physical_verification = (
-        None
-        if physical_verification_value is None
-        else load_physical_verification_policy(
-            _project_path(
-                root,
-                physical_verification_value,
-                "physical_verification",
-                file=True,
-            ),
+    physical_verification = None
+    if physical_verification_value is not None:
+        physical_verification_path = _project_path(
+            root,
+            physical_verification_value,
+            "physical_verification",
+            file=True,
+        )
+        if not physical_verification_path.is_relative_to(repository_owner.root):
+            raise ValueError(
+                "physical_verification must stay inside the assembly owner"
+            )
+        physical_verification_raw = _read_toml(physical_verification_path)
+        physical_verification = parse_physical_verification_policy(
+            physical_verification_path,
+            physical_verification_raw,
             owner=assembly_owner,
         )
-    )
     additional_manifest_values = _strings(
         raw.get("additional_source_manifests", []),
         "additional_source_manifests",
@@ -545,6 +583,17 @@ def load_oa_library_source(
     if unresolved:
         rendered = [f"{item.cell}/{item.view}" for item in unresolved]
         raise ValueError(f"OA assembly has unresolved view dependencies: {rendered}")
+    source_documents: dict[Path, Mapping[str, Any]] = {}
+    for source in source_roots:
+        for source_path, document in source.source_documents.items():
+            previous = source_documents.get(source_path)
+            if previous is not None and previous != document:
+                raise ValueError(
+                    f"OA source documents disagree for {source_path}"
+                )
+            source_documents[source_path] = document
+    if physical_verification is not None:
+        source_documents[physical_verification.path] = physical_verification.document
     return OALibrarySource(
         manifest_path=manifest_path,
         project=context,
@@ -556,6 +605,7 @@ def load_oa_library_source(
         physical_verification=physical_verification,
         source_roots=source_roots,
         cells=cells,
+        source_documents=MappingProxyType(source_documents),
     )
 
 
@@ -587,4 +637,244 @@ def resolve_oa_library_source(
         or snapshot.source_roots[0].owner != owner.name
     ):
         raise ValueError("OA source snapshot identity drift")
+    expected_documents: dict[Path, Mapping[str, Any]] = {}
+    expected_cells: list[OACellSource] = []
+    for index, source_root in enumerate(snapshot.source_roots):
+        root_owner = context.require_owner(source_root.manifest_path)
+        if (
+            source_root.manifest_path != source_root.manifest_path.resolve()
+            or not source_root.manifest_path.is_relative_to(context.project_root)
+            or source_root.owner != root_owner.name
+            or source_root.directory != root_owner.root
+        ):
+            raise ValueError("OA source snapshot source-root identity drift")
+        expected_paths = {source_root.manifest_path}
+        for cell_root in source_root.cell_roots:
+            if (
+                cell_root != cell_root.resolve()
+                or not cell_root.is_relative_to(source_root.directory)
+                or not cell_root.is_dir()
+            ):
+                raise ValueError("OA source snapshot cell-root identity drift")
+            for child in cell_root.iterdir():
+                if (
+                    not child.is_dir()
+                    or child.name.startswith(".")
+                    or child.name == "__pycache__"
+                ):
+                    continue
+                if not child.resolve().is_relative_to(cell_root):
+                    raise ValueError(
+                        "OA source snapshot cell directory escapes its cell root"
+                    )
+                cell_manifest = (child / "cell.toml").resolve()
+                if not cell_manifest.is_relative_to(cell_root):
+                    raise ValueError(
+                        "OA source snapshot cell manifest escapes its cell root"
+                    )
+                if not cell_manifest.is_file():
+                    raise ValueError(
+                        "OA source snapshot cell directory lacks cell.toml"
+                    )
+                expected_paths.add(cell_manifest)
+        if set(source_root.source_documents) != expected_paths:
+            raise ValueError("OA source snapshot document set drift")
+        manifest_document = source_root.source_documents[source_root.manifest_path]
+        allow_assembly_fields = index == 0
+        allowed = _SOURCE_MANIFEST_FIELDS | (
+            _ASSEMBLY_FIELDS if allow_assembly_fields else set()
+        )
+        if set(manifest_document) - allowed:
+            raise ValueError("OA source snapshot manifest document drift")
+        require_config_header(
+            manifest_document,
+            source_root.manifest_path,
+            contract_kind=(
+                "oa-assembly" if allow_assembly_fields else "oa-source-root"
+            ),
+            path_scope="owner",
+            owner=source_root.owner,
+        )
+        declared_roots_list: list[Path] = []
+        for value in _strings(
+            manifest_document.get("cell_roots"),
+            f"{source_root.manifest_path}: cell_roots",
+        ):
+            relative = Path(value)
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or relative == Path(".")
+            ):
+                raise ValueError(
+                    "OA source snapshot cell-root declaration is unsafe"
+                )
+            declared_root = (source_root.directory / relative).resolve()
+            if (
+                not declared_root.is_relative_to(source_root.directory)
+                or not declared_root.is_dir()
+            ):
+                raise ValueError(
+                    "OA source snapshot cell-root declaration drift"
+                )
+            declared_roots_list.append(declared_root)
+        declared_roots = tuple(declared_roots_list)
+        if len(set(declared_roots)) != len(declared_roots):
+            raise ValueError("OA source snapshot contains duplicate cell roots")
+        if declared_roots != source_root.cell_roots:
+            raise ValueError("OA source snapshot cell-root declaration drift")
+        if allow_assembly_fields:
+            declared_name = _identifier(
+                manifest_document.get("name"),
+                f"{source_root.manifest_path}: name",
+            )
+            declared_pdk = _identifier(
+                manifest_document.get("pdk"),
+                f"{source_root.manifest_path}: pdk",
+            )
+            declared_workspace = _project_path(
+                context.project_root,
+                manifest_document.get("workspace_template"),
+                "workspace_template",
+                file=False,
+            )
+            declared_library = _project_path(
+                context.project_root,
+                manifest_document.get("oa_library"),
+                "oa_library",
+                file=False,
+            )
+            declared_primitives = tuple(
+                _identifier(value, "primitive_masters[]")
+                for value in _strings(
+                    manifest_document.get("primitive_masters"),
+                    "primitive_masters",
+                    allow_empty=True,
+                )
+            )
+            declared_additional = tuple(
+                _project_path(
+                    context.project_root,
+                    value,
+                    "additional_source_manifests[]",
+                    file=True,
+                )
+                for value in _strings(
+                    manifest_document.get("additional_source_manifests", ()),
+                    "additional_source_manifests",
+                    allow_empty=True,
+                )
+            )
+            policy_value = manifest_document.get("physical_verification")
+            declared_policy = (
+                None
+                if policy_value is None
+                else _project_path(
+                    context.project_root,
+                    policy_value,
+                    "physical_verification",
+                    file=True,
+                )
+            )
+            if (
+                declared_name != snapshot.name
+                or declared_pdk != snapshot.pdk
+                or declared_workspace != snapshot.workspace_template
+                or declared_workspace != context.workspace_root
+                or not declared_workspace.is_dir()
+                or declared_library != snapshot.oa_library
+                or declared_library != declared_workspace / declared_name
+                or declared_primitives != snapshot.primitive_masters
+                or declared_additional
+                != tuple(
+                    item.manifest_path for item in snapshot.source_roots[1:]
+                )
+                or declared_policy
+                != (
+                    None
+                    if snapshot.physical_verification is None
+                    else snapshot.physical_verification.path
+                )
+            ):
+                raise ValueError("OA source snapshot assembly document drift")
+        parsed_cells: list[OACellSource] = []
+        for source_path, document in source_root.source_documents.items():
+            if (
+                source_path != source_path.resolve()
+                or not source_path.is_relative_to(source_root.directory)
+                or not isinstance(document, Mapping)
+            ):
+                raise ValueError("OA source snapshot document identity drift")
+            if source_path != source_root.manifest_path:
+                if document.get("contract_kind") == "verification-cell":
+                    require_config_header(
+                        document,
+                        source_path,
+                        contract_kind="verification-cell",
+                        path_scope="cell",
+                        owner=source_root.owner,
+                    )
+                else:
+                    parsed_cells.append(
+                        _load_cell(
+                            source_root.owner,
+                            source_root.manifest_path,
+                            source_path.parent,
+                            document,
+                        )
+                    )
+            previous = expected_documents.get(source_path)
+            if previous is not None and previous != document:
+                raise ValueError("OA source snapshot document content drift")
+            expected_documents[source_path] = document
+        if tuple(parsed_cells) != source_root.cells:
+            raise ValueError("OA source snapshot cell document drift")
+        if not parsed_cells or any(
+            not any(cell.directory.parent == cell_root for cell in parsed_cells)
+            for cell_root in source_root.cell_roots
+        ):
+            raise ValueError("OA source snapshot source root declares no OA cells")
+        expected_cells.extend(source_root.cells)
+    if tuple(expected_cells) != snapshot.cells:
+        raise ValueError("OA source snapshot cell inventory drift")
+    source_owners = tuple(item.owner for item in snapshot.source_roots)
+    if len(set(source_owners)) != len(source_owners):
+        raise ValueError("OA source snapshot contains duplicate source owners")
+    cell_names = tuple(cell.cell for cell in snapshot.cells)
+    if len(set(cell_names)) != len(cell_names):
+        raise ValueError("OA source snapshot contains duplicate cell names")
+    available_views = {
+        OAViewReference(cell.cell, view.name)
+        for cell in snapshot.cells
+        for view in cell.views
+    }
+    unresolved = {
+        dependency
+        for cell in snapshot.cells
+        for view in cell.views
+        for dependency in view.dependencies
+        if dependency not in available_views
+    }
+    if unresolved:
+        raise ValueError("OA source snapshot has unresolved view dependencies")
+    if snapshot.physical_verification is not None:
+        policy = snapshot.physical_verification
+        if (
+            policy.path != policy.path.resolve()
+            or not policy.path.is_relative_to(owner.root)
+            or not policy.document
+            or parse_physical_verification_policy(
+                policy.path,
+                policy.document,
+                owner=owner.name,
+            )
+            != policy
+        ):
+            raise ValueError("OA source snapshot physical policy drift")
+        previous = expected_documents.get(policy.path)
+        if previous is not None and previous != policy.document:
+            raise ValueError("OA source snapshot document content drift")
+        expected_documents[policy.path] = policy.document
+    if dict(snapshot.source_documents) != expected_documents:
+        raise ValueError("OA source snapshot document content drift")
     return snapshot

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.identifiers import bounded_identity
-from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    read_toml,
+    require_config_header,
+)
 
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
@@ -23,6 +28,11 @@ class PhysicalVerificationPolicy:
     drc_disabled_defines: Mapping[str, int]
     drc_configuration_warnings: tuple[str, ...]
     drc_waiver_layers: tuple[str, ...]
+    document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
 
 
 class PhysicalVerificationStatus(str, Enum):
@@ -263,7 +273,7 @@ def _table(value: object, field: str) -> Mapping[str, Any]:
 
 
 def _strings(value: object, field: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(
+    if not isinstance(value, (list, tuple)) or any(
         not isinstance(item, str) or not item for item in value
     ):
         raise ValueError(f"{field} must be a string array")
@@ -297,6 +307,18 @@ def load_physical_verification_policy(
 
     resolved = path.resolve()
     raw = read_toml(resolved)
+    return parse_physical_verification_policy(resolved, raw, owner=owner)
+
+
+def parse_physical_verification_policy(
+    path: Path,
+    raw: Mapping[str, Any],
+    *,
+    owner: str,
+) -> PhysicalVerificationPolicy:
+    """Parse one already read physical-verification policy document."""
+
+    resolved = path.resolve()
     require_config_header(
         raw,
         resolved,
@@ -331,4 +353,5 @@ def load_physical_verification_policy(
         drc_waiver_layers=_strings(
             drc.get("waiver_layers", []), "drc.waiver_layers"
         ),
+        document=freeze_toml_document(raw),
     )

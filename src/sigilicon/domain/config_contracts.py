@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from sigilicon.domain.ip_release import IpContract
+    from sigilicon.domain.oa_library import OALibrarySource
     from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
     from sigilicon.domain.platform import PdkConfig, PlatformCatalogSnapshot
 
@@ -109,6 +110,7 @@ def inspect_project_configurations(
     platform_catalog: PlatformCatalogSnapshot | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -173,6 +175,23 @@ def inspect_project_configurations(
                 raise ValueError(f"IP release snapshot identity drift: {name}")
             if contract.document:
                 catalog_documents[contract.path] = contract.document
+    if oa_source_inventory is not None:
+        from sigilicon.domain.oa_library import resolve_oa_library_source
+
+        for manifest, snapshot in oa_source_inventory.items():
+            source = resolve_oa_library_source(
+                manifest,
+                project=context,
+                snapshot=snapshot,
+            )
+            for path, document in source.source_documents.items():
+                resolved = path.resolve()
+                previous = catalog_documents.get(resolved)
+                if previous is not None and previous != document:
+                    raise ValueError(
+                        f"OA source snapshot disagrees with another source: {path}"
+                    )
+                catalog_documents[resolved] = document
     resolved_platform_catalog = None
     if platform_inventory is not None and platform_catalog is None:
         raise ValueError("platform inventory requires its platform catalog snapshot")

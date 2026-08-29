@@ -33,7 +33,15 @@ owner = "fixture"
 ''',
         encoding="utf-8",
     )
-    (owner / "oa.toml").write_text("name = 'fixture'\n", encoding="utf-8")
+    (owner / "oa.toml").write_text(
+        '''schema = 1
+contract_kind = "oa-assembly"
+path_scope = "owner"
+owner = "fixture"
+name = "fixture"
+''',
+        encoding="utf-8",
+    )
     release = owner / "release.toml"
     release.write_text(
         '''schema = 1
@@ -195,7 +203,18 @@ def test_check_designs_reads_each_ip_release_contract_once(
         lambda path, *, project: SimpleNamespace(
             manifest_path=path.resolve(),
             project=project,
+            source_roots=(
+                SimpleNamespace(
+                    manifest_path=path.resolve(),
+                    owner="fixture",
+                ),
+            ),
+            source_documents={},
         ),
+    )
+    monkeypatch.setattr(
+        "sigilicon.domain.oa_library.resolve_oa_library_source",
+        lambda _path, *, project, snapshot: snapshot,
     )
     monkeypatch.chdir(tmp_path)
 
@@ -335,11 +354,15 @@ def test_repository_workflows_share_one_platform_inventory(
     observed_release_inventories: list[object] = []
     observed_oa_inventories: list[object] = []
     oa_source_reads: list[Path] = []
+    oa_document_reads = 0
 
     def counted_load(stream):
+        nonlocal oa_document_reads
         path = Path(stream.name).resolve()
         if path in reads:
             reads[path] += 1
+        if path == (tmp_path / "ip/fixture/oa.toml").resolve():
+            oa_document_reads += 1
         return original_load(stream)
 
     def plan_integration(
@@ -374,6 +397,21 @@ def test_repository_workflows_share_one_platform_inventory(
         return SimpleNamespace(
             manifest_path=resolved,
             project=project,
+            source_roots=(
+                SimpleNamespace(
+                    manifest_path=resolved,
+                    owner="fixture",
+                ),
+            ),
+            source_documents={
+                resolved: {
+                    "schema": 1,
+                    "contract_kind": "oa-assembly",
+                    "path_scope": "owner",
+                    "owner": "fixture",
+                    "name": "fixture",
+                }
+            },
         )
 
     original_inspect_configurations = repository_checks.inspect_project_configurations
@@ -381,6 +419,7 @@ def test_repository_workflows_share_one_platform_inventory(
     def inspect_configurations(*args, platform_inventory, **kwargs):
         observed_platform_inventories.append(platform_inventory)
         observed_release_inventories.append(kwargs["release_inventory"])
+        observed_oa_inventories.append(kwargs["oa_source_inventory"])
         return original_inspect_configurations(
             *args,
             platform_inventory=platform_inventory,
@@ -394,6 +433,10 @@ def test_repository_workflows_share_one_platform_inventory(
         repository_checks,
         "load_oa_library_source",
         load_oa_source,
+    )
+    monkeypatch.setattr(
+        "sigilicon.domain.oa_library.resolve_oa_library_source",
+        lambda _path, *, project, snapshot: snapshot,
     )
     monkeypatch.setattr(
         repository_checks,
@@ -416,7 +459,11 @@ def test_repository_workflows_share_one_platform_inventory(
     assert observed_release_inventories[0] is observed_release_inventories[1]
     assert set(observed_release_inventories[0]) == {"fixture"}
     assert len(oa_source_reads) == 1
-    assert len(observed_oa_inventories) == 2
-    assert observed_oa_inventories[0] is observed_oa_inventories[1]
+    assert len(observed_oa_inventories) == 3
+    assert all(
+        inventory is observed_oa_inventories[0]
+        for inventory in observed_oa_inventories[1:]
+    )
     assert set(observed_oa_inventories[0]) == set(oa_source_reads)
+    assert oa_document_reads == 0
     assert set(reads.values()) == {1}

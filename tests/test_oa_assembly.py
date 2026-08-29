@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -152,6 +153,86 @@ def test_oa_assembly_reuses_one_explicit_project(tmp_path: Path) -> None:
             project=Project.from_project_root(root),
             snapshot=assembly,
         )
+    source_root = assembly.source_roots[0]
+    unexpected = source_root.directory / "unexpected.toml"
+    tampered_documents = dict(source_root.source_documents)
+    tampered_documents[unexpected] = source_root.source_documents[
+        source_root.manifest_path
+    ]
+    tampered_root = replace(
+        source_root,
+        source_documents=tampered_documents,
+    )
+    tampered_source = replace(
+        assembly,
+        source_roots=(tampered_root, *assembly.source_roots[1:]),
+        source_documents={
+            **assembly.source_documents,
+            unexpected: tampered_documents[unexpected],
+        },
+    )
+    with pytest.raises(ValueError, match="OA source snapshot document set drift"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=tampered_source,
+        )
+
+    drifted_manifest = dict(
+        source_root.source_documents[source_root.manifest_path]
+    )
+    drifted_manifest["name"] = "different_library"
+    drifted_root_documents = dict(source_root.source_documents)
+    drifted_root_documents[source_root.manifest_path] = drifted_manifest
+    drifted_root = replace(
+        source_root,
+        source_documents=drifted_root_documents,
+    )
+    drifted_source_documents = dict(assembly.source_documents)
+    drifted_source_documents[source_root.manifest_path] = drifted_manifest
+    drifted_source = replace(
+        assembly,
+        source_roots=(drifted_root, *assembly.source_roots[1:]),
+        source_documents=drifted_source_documents,
+    )
+    with pytest.raises(ValueError, match="OA source snapshot assembly document drift"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=drifted_source,
+        )
+
+    unsafe_manifest = dict(
+        source_root.source_documents[source_root.manifest_path]
+    )
+    unsafe_manifest["cell_roots"] = (str(source_root.cell_roots[0]),)
+    unsafe_root_documents = dict(source_root.source_documents)
+    unsafe_root_documents[source_root.manifest_path] = unsafe_manifest
+    unsafe_root = replace(
+        source_root,
+        source_documents=unsafe_root_documents,
+    )
+    unsafe_source_documents = dict(assembly.source_documents)
+    unsafe_source_documents[source_root.manifest_path] = unsafe_manifest
+    unsafe_source = replace(
+        assembly,
+        source_roots=(unsafe_root, *assembly.source_roots[1:]),
+        source_documents=unsafe_source_documents,
+    )
+    with pytest.raises(ValueError, match="cell-root declaration is unsafe"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=unsafe_source,
+        )
+
+    (source_root.cell_roots[0] / "MISSING_CONTRACT").mkdir()
+    with pytest.raises(ValueError, match="cell directory lacks cell.toml"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=assembly,
+        )
 
 
 def test_oa_assembly_reads_each_source_manifest_once(
@@ -193,6 +274,8 @@ cell_roots = ["design/cells"]
     assert [source.owner for source in assembly.source_roots] == ["alpha", "beta"]
     assert reads.count(manifest.resolve()) == 1
     assert reads.count(additional_manifest.resolve()) == 1
+    assert set(assembly.source_documents) == set(reads)
+    assert all(reads.count(path) == 1 for path in assembly.source_documents)
     cell_manifests = {
         path.resolve()
         for owner in ("alpha", "beta")
@@ -203,6 +286,116 @@ cell_roots = ["design/cells"]
     }
 
 
+def test_oa_assembly_rejects_cell_directory_symlink_escape(
+    tmp_path: Path,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    external = root / "external/CELL_ESCAPE"
+    external.mkdir(parents=True)
+    (root / "ip/alpha/design/cells/CELL_ESCAPE").symlink_to(
+        external,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(ValueError, match="escapes its declared cell root"):
+        load_oa_library_source(manifest, project_root=root)
+
+
+def test_oa_assembly_rejects_cell_manifest_symlink_escape(
+    tmp_path: Path,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    external_manifest = _write(
+        root / "external/cell.toml",
+        "schema = 1\n",
+    )
+    cell_directory = root / "ip/alpha/design/cells/LINKED_MANIFEST"
+    cell_directory.mkdir()
+    (cell_directory / "cell.toml").symlink_to(external_manifest)
+
+    with pytest.raises(ValueError, match="manifest escapes"):
+        load_oa_library_source(manifest, project_root=root)
+
+
+def test_oa_snapshot_rejects_forged_source_root_membership(
+    tmp_path: Path,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    project = Project.from_project_root(root)
+    assembly = load_oa_library_source(manifest, project=project)
+    source_root = assembly.source_roots[0]
+    manifest_document = dict(
+        source_root.source_documents[source_root.manifest_path]
+    )
+    manifest_document["cell_roots"] = (
+        "design/cells",
+        "design/cells/",
+        "design/blocks",
+    )
+    duplicate_documents = dict(source_root.source_documents)
+    duplicate_documents[source_root.manifest_path] = manifest_document
+    duplicate_root = replace(
+        source_root,
+        cell_roots=(
+            source_root.cell_roots[0],
+            source_root.cell_roots[0],
+            *source_root.cell_roots[1:],
+        ),
+        source_documents=duplicate_documents,
+    )
+    duplicate_library_documents = dict(assembly.source_documents)
+    duplicate_library_documents[source_root.manifest_path] = manifest_document
+    duplicate_source = replace(
+        assembly,
+        source_roots=(duplicate_root,),
+        source_documents=duplicate_library_documents,
+    )
+
+    with pytest.raises(ValueError, match="duplicate cell roots"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=duplicate_source,
+        )
+
+    verification_documents = dict(source_root.source_documents)
+    for source_path in tuple(verification_documents):
+        if source_path == source_root.manifest_path:
+            continue
+        document = dict(verification_documents[source_path])
+        document["contract_kind"] = "verification-cell"
+        verification_documents[source_path] = document
+    empty_root = replace(
+        source_root,
+        cells=(),
+        source_documents=verification_documents,
+    )
+    empty_library_documents = dict(assembly.source_documents)
+    empty_library_documents.update(verification_documents)
+    empty_source = replace(
+        assembly,
+        source_roots=(empty_root,),
+        cells=(),
+        source_documents=empty_library_documents,
+    )
+
+    with pytest.raises(ValueError, match="source root declares no OA cells"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=empty_source,
+        )
+
+    (root / "ip/alpha/design/cells/CELL_B_ALIAS").symlink_to(
+        root / "ip/alpha/design/blocks/CELL_B",
+        target_is_directory=True,
+    )
+    with pytest.raises(ValueError, match="cell directory escapes its cell root"):
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=assembly,
+        )
 def test_oa_layout_plan_reuses_loaded_assembly_source(
     tmp_path: Path,
     monkeypatch,
@@ -450,6 +643,35 @@ def test_oa_assembly_rejects_unknown_physical_verification_policy_fields(
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*accepted_violations"):
+        load_oa_library_source(manifest, project_root=root)
+
+
+def test_oa_assembly_rejects_cross_owner_physical_policy(
+    tmp_path: Path,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    _write(
+        root / "ip/beta/configs/physical_verification.toml",
+        '''schema = 1
+contract_kind = "physical-verification-policy"
+path_scope = "owner"
+owner = "alpha"
+
+[drc]
+configuration_warnings = []
+waiver_layers = []
+[drc.disabled_defines]
+''',
+    )
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "ip/alpha/configs/physical_verification.toml",
+            "ip/beta/configs/physical_verification.toml",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="inside the assembly owner"):
         load_oa_library_source(manifest, project_root=root)
 
 

@@ -217,6 +217,7 @@ def inspect_repository_designs(
         platform_catalog=platform_catalog,
         platform_inventory=platform_inventory,
         release_inventory=release_inventory,
+        oa_source_inventory=oa_source_inventory,
     )
 
     design_catalog = load_design_target_catalog(
