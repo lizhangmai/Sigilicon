@@ -121,6 +121,9 @@ class PdkConfig:
     oa: OaPlatformConfig
     layout: LayoutPdkConfig | None
     source_paths: tuple[Path, ...]
+    catalog_document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     asset_root: Path | None = None
     installation_root_environment: str | None = None
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
@@ -161,19 +164,188 @@ def resolve_platform(
         )
     root = context.project_root
     catalog_path = context.catalog("platform")
-    if not snapshot.source_paths or snapshot.source_paths[0] != catalog_path:
+    if (
+        not isinstance(snapshot.catalog_document, Mapping)
+        or not snapshot.catalog_document
+    ):
+        raise ValueError("platform snapshot omits its platform catalog")
+    catalog_root, selected_catalog_path, _catalog_owner, platforms = (
+        _platform_catalog_document(
+            context,
+            snapshot.catalog_document,
+        )
+    )
+    try:
+        manifest_value = platforms[key]
+    except KeyError as exc:
+        raise ValueError(f"platform catalog has no {key!r} entry") from exc
+    selected_manifest = _safe_relative(
+        selected_catalog_path.parent,
+        manifest_value,
+        f"platforms.{key}",
+        root=catalog_root,
+    )
+    if (
+        selected_catalog_path != catalog_path
+        or selected_manifest != snapshot.path
+        or not snapshot.source_paths
+        or snapshot.source_paths[0] != catalog_path
+    ):
         raise ValueError("platform snapshot belongs to a different project catalog")
     if snapshot.path not in snapshot.source_paths:
         raise ValueError("platform snapshot manifest is absent from its source identity")
-    if any(not path.is_relative_to(root) for path in snapshot.source_paths):
-        raise ValueError("platform snapshot source identity escapes the project root")
+    if any(
+        not isinstance(path, Path)
+        or path != path.resolve()
+        or not path.is_relative_to(root)
+        or not path.is_file()
+        for path in snapshot.source_paths
+    ):
+        raise ValueError("platform snapshot source identity drift")
     document_paths = set(snapshot.source_documents)
+    if not document_paths:
+        raise ValueError("platform snapshot source document identity drift")
     if document_paths:
         if document_paths != set(snapshot.source_paths[1:]) or any(
             path != path.resolve() or not path.is_relative_to(root)
             for path in document_paths
         ):
             raise ValueError("platform snapshot source document identity drift")
+        manifest_document = snapshot.source_documents.get(snapshot.path)
+        if not isinstance(manifest_document, Mapping):
+            raise ValueError("platform snapshot source document drift")
+        require_config_header(
+            manifest_document,
+            snapshot.path,
+            contract_kind="platform-definition",
+            path_scope="platform",
+            owner=snapshot.owner,
+        )
+        _reject_unknown(
+            manifest_document,
+            _HEADER_FIELDS | {"key", "name", "installation", "contracts"},
+            "platform definition",
+        )
+        asset_root, root_environment = _platform_asset_root(
+            snapshot.path,
+            manifest_document,
+        )
+        if (
+            manifest_document.get("key") != key
+            or _text(manifest_document.get("name", key), "platform.name")
+            != snapshot.name
+            or snapshot.asset_root != asset_root
+            or snapshot.installation_root_environment != root_environment
+        ):
+            raise ValueError("platform identity drift")
+        contracts = manifest_document.get("contracts")
+        if not isinstance(contracts, Mapping):
+            raise ValueError("platform snapshot source document drift")
+        allowed_contracts = {"simulation", "oa", "layout", "verification"}
+        if set(contracts) - allowed_contracts or not {
+            "simulation",
+            "oa",
+        }.issubset(contracts):
+            raise ValueError("platform snapshot source document drift")
+        if ("layout" in contracts) != ("verification" in contracts):
+            raise ValueError("platform snapshot source document drift")
+        simulation_path = _safe_relative(
+            snapshot.path.parent,
+            contracts.get("simulation"),
+            "platform.contracts.simulation",
+            root=root,
+        )
+        oa_path = _safe_relative(
+            snapshot.path.parent,
+            contracts.get("oa"),
+            "platform.contracts.oa",
+            root=root,
+        )
+        simulation_document = snapshot.source_documents.get(simulation_path)
+        oa_document = snapshot.source_documents.get(oa_path)
+        if not isinstance(simulation_document, Mapping) or not isinstance(
+            oa_document,
+            Mapping,
+        ):
+            raise ValueError("platform identity drift")
+        require_config_header(
+            simulation_document,
+            simulation_path,
+            contract_kind="platform-simulation",
+            path_scope="platform",
+            owner=snapshot.owner,
+        )
+        require_config_header(
+            oa_document,
+            oa_path,
+            contract_kind="platform-oa",
+            path_scope="platform",
+            owner=snapshot.owner,
+        )
+        parsed_simulation = _load_simulation(
+            simulation_path,
+            simulation_document,
+            asset_root=asset_root,
+        )
+        parsed_oa = _load_oa(oa_path, oa_document)
+        if parsed_simulation != snapshot.simulation or parsed_oa != snapshot.oa:
+            raise ValueError("platform identity drift")
+        has_layout_contracts = "layout" in contracts
+        if (snapshot.layout is None) != (not has_layout_contracts):
+            raise ValueError("platform identity drift")
+        contract_paths = [simulation_path, oa_path]
+        if snapshot.layout is not None:
+            layout_path = _safe_relative(
+                snapshot.path.parent,
+                contracts.get("layout"),
+                "platform.contracts.layout",
+                root=root,
+            )
+            verification_path = _safe_relative(
+                snapshot.path.parent,
+                contracts.get("verification"),
+                "platform.contracts.verification",
+                root=root,
+            )
+            layout_document = snapshot.source_documents.get(layout_path)
+            verification_document = snapshot.source_documents.get(verification_path)
+            if (
+                snapshot.layout.layout_path != layout_path
+                or snapshot.layout.verification_path != verification_path
+                or not isinstance(layout_document, Mapping)
+                or not isinstance(verification_document, Mapping)
+            ):
+                raise ValueError("platform identity drift")
+            require_config_header(
+                layout_document,
+                layout_path,
+                contract_kind="platform-layout",
+                path_scope="platform",
+                owner=snapshot.owner,
+            )
+            require_config_header(
+                verification_document,
+                verification_path,
+                contract_kind="platform-verification",
+                path_scope="platform",
+                owner=snapshot.owner,
+            )
+            parsed_layout = _load_layout(
+                layout_path,
+                layout_document,
+                verification_path,
+                verification_document,
+                asset_root=asset_root,
+            )
+            if parsed_layout != snapshot.layout:
+                raise ValueError("platform identity drift")
+            contract_paths.extend((layout_path, verification_path))
+        if snapshot.source_paths != (
+            catalog_path,
+            snapshot.path,
+            *contract_paths,
+        ):
+            raise ValueError("platform snapshot source identity drift")
     return snapshot
 
 
@@ -224,7 +396,7 @@ def _reject_unknown(
 
 
 def _names(value: object, field: str, *, empty: bool = False) -> tuple[str, ...]:
-    if not isinstance(value, list) or (not value and not empty):
+    if not isinstance(value, (list, tuple)) or (not value and not empty):
         raise ValueError(f"{field} must be a string array")
     result = tuple(_identifier(item, f"{field}[]") for item in value)
     if len(set(result)) != len(result):
@@ -233,7 +405,7 @@ def _names(value: object, field: str, *, empty: bool = False) -> tuple[str, ...]
 
 
 def _strings(value: object, field: str, *, empty: bool = True) -> tuple[str, ...]:
-    if not isinstance(value, list) or (not value and not empty) or any(
+    if not isinstance(value, (list, tuple)) or (not value and not empty) or any(
         not isinstance(item, str) or not item for item in value
     ):
         raise ValueError(f"{field} must be a string array")
@@ -260,6 +432,39 @@ def _asset_path(base: Path, value: object, field: str) -> Path:
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"{field} must be a safe asset-relative path")
     return (base / relative).resolve()
+
+
+def _platform_asset_root(
+    manifest: Path,
+    raw: Mapping[str, Any],
+) -> tuple[Path, str | None]:
+    installation = _table(raw.get("installation", {}), "platform.installation")
+    _reject_unknown(
+        installation,
+        {"root_environment", "package_root"},
+        "platform.installation",
+    )
+    root_environment = installation.get("root_environment")
+    package_root_value = installation.get("package_root")
+    if (root_environment is None) != (package_root_value is None):
+        raise ValueError(
+            "platform installation root_environment and package_root must be paired"
+        )
+    if root_environment is None:
+        return manifest.parent, None
+    if (
+        not isinstance(root_environment, str)
+        or re.fullmatch(r"[A-Z][A-Z0-9_]*", root_environment) is None
+    ):
+        raise ValueError("platform root_environment must be an environment name")
+    package_root = Path(_text(package_root_value, "platform package_root"))
+    if package_root.is_absolute() or ".." in package_root.parts:
+        raise ValueError("platform package_root must be a safe relative path")
+    installation_root = os.environ.get(root_environment)
+    if not installation_root:
+        raise ValueError(f"platform installation root is unset: {root_environment}")
+    asset_root = (Path(installation_root).expanduser() / package_root).resolve()
+    return asset_root, root_environment
 
 
 def _required_file(base: Path, value: object, field: str) -> Path:
@@ -584,7 +789,7 @@ def parse_platform_catalog(
         project_root=root,
         owner=owner,
         manifests=MappingProxyType(manifests),
-        document=MappingProxyType(dict(document)),
+        document=freeze_toml_document(document),
     )
 
 
@@ -606,10 +811,10 @@ def load_platform(
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
         raise ValueError("platform key contains unsupported characters")
     if catalog is None:
-        catalog_path = context.catalog("platform")
+        catalog_document = read_toml(context.catalog("platform"))
         root, catalog_path, _owner, platforms = _platform_catalog_document(
             context,
-            read_toml(catalog_path),
+            catalog_document,
         )
         try:
             manifest_value = platforms[key]
@@ -623,6 +828,7 @@ def load_platform(
         )
     else:
         catalog_snapshot = resolve_platform_catalog(context, snapshot=catalog)
+        catalog_document = catalog_snapshot.document
         root = catalog_snapshot.project_root
         catalog_path = catalog_snapshot.path
         manifest = catalog_snapshot.manifest(key)
@@ -640,36 +846,7 @@ def load_platform(
     )
     if raw.get("key") != key:
         raise ValueError(f"platform manifest key must be {key!r}")
-    installation = _table(raw.get("installation", {}), "platform.installation")
-    _reject_unknown(
-        installation,
-        {"root_environment", "package_root"},
-        "platform.installation",
-    )
-    root_environment = installation.get("root_environment")
-    package_root_value = installation.get("package_root")
-    if (root_environment is None) != (package_root_value is None):
-        raise ValueError(
-            "platform installation root_environment and package_root must be paired"
-        )
-    asset_root: Path
-    if root_environment is None:
-        asset_root = manifest.parent
-    else:
-        if (
-            not isinstance(root_environment, str)
-            or re.fullmatch(r"[A-Z][A-Z0-9_]*", root_environment) is None
-        ):
-            raise ValueError("platform root_environment must be an environment name")
-        package_root = Path(_text(package_root_value, "platform package_root"))
-        if package_root.is_absolute() or ".." in package_root.parts:
-            raise ValueError("platform package_root must be a safe relative path")
-        installation_root = os.environ.get(root_environment)
-        if not installation_root:
-            raise ValueError(f"platform installation root is unset: {root_environment}")
-        asset_root = (
-            Path(installation_root).expanduser() / package_root
-        ).resolve()
+    asset_root, root_environment = _platform_asset_root(manifest, raw)
     contracts = _table(raw.get("contracts"), "platform.contracts")
     allowed = {"simulation", "oa", "layout", "verification"}
     if set(contracts) - allowed or not {"simulation", "oa"}.issubset(contracts):
@@ -733,6 +910,7 @@ def load_platform(
         oa=oa,
         layout=layout,
         source_paths=sources,
+        catalog_document=freeze_toml_document(catalog_document),
         source_documents=MappingProxyType(
             {
                 path: freeze_toml_document(document)

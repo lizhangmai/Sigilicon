@@ -14,6 +14,7 @@ from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platform, load_platform_catalog
 from sigilicon.domain.repository import Project
+from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
@@ -150,12 +151,19 @@ def inspect_repository_designs(
     }
     oa_simulation_inventory = {}
     oa_design_inventory = {}
+    oa_layout_inventory = {}
+    layout_source_documents = {}
     for plan in oa_plan_inventory.values():
         for step in plan.designs:
             path = step.inspection.spec.path.resolve()
             if path in oa_design_inventory:
                 raise ValueError(f"design path belongs to multiple OA plans: {path}")
             oa_design_inventory[path] = step.inspection.spec
+        for step in plan.layouts:
+            path = step.spec.path.resolve()
+            if path in oa_layout_inventory:
+                raise ValueError(f"layout path belongs to multiple OA plans: {path}")
+            oa_layout_inventory[path] = step.spec
         for step in plan.testbenches:
             path = step.simulation.path.resolve()
             if path in oa_simulation_inventory:
@@ -163,6 +171,19 @@ def inspect_repository_designs(
                     f"OA simulation path belongs to multiple plans: {path}"
                 )
             oa_simulation_inventory[path] = step.simulation
+    for path, snapshot in oa_layout_inventory.items():
+        layout = resolve_layout_spec(
+            path,
+            project=context,
+            snapshot=snapshot,
+        )
+        for source_path, document in layout.source_documents.items():
+            previous = layout_source_documents.get(source_path)
+            if previous is not None and previous != document:
+                raise ValueError(
+                    f"layout snapshots disagree for source: {source_path}"
+                )
+            layout_source_documents[source_path] = document
 
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
@@ -241,6 +262,7 @@ def inspect_repository_designs(
         oa_source_inventory=oa_source_inventory,
         oa_simulation_inventory=oa_simulation_inventory,
         oa_design_inventory=oa_design_inventory,
+        layout_source_documents=layout_source_documents,
     )
 
     design_catalog = load_design_target_catalog(

@@ -43,6 +43,8 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
         platform.source_documents[platform.simulation.path][
             "default_model_set"
         ] = "other"
+    with pytest.raises(TypeError):
+        platform.catalog_document["platforms"]["testpdk"] = "other/platform.toml"
 
 
 def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> None:
@@ -56,11 +58,12 @@ def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> N
     assert resolved is snapshot
 
     legacy_snapshot = replace(snapshot, source_documents={})
-    assert resolve_platform(
-        project,
-        "testpdk",
-        snapshot=legacy_snapshot,
-    ) is legacy_snapshot
+    with pytest.raises(ValueError, match="source document identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=legacy_snapshot,
+        )
 
     incomplete_snapshot = replace(
         snapshot,
@@ -68,6 +71,49 @@ def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> N
     )
     with pytest.raises(ValueError, match="source document identity drift"):
         resolve_platform(project, "testpdk", snapshot=incomplete_snapshot)
+
+    with pytest.raises(ValueError, match="different project catalog"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(snapshot, path=snapshot.simulation.path),
+        )
+
+
+def test_resolve_platform_rejects_layout_content_and_file_drift(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    project = RepositoryContext.from_project_root(tmp_path)
+    snapshot = load_platform(project, "testpdk")
+    assert snapshot.layout is not None
+
+    forged_layout = replace(
+        snapshot.layout,
+        dbu_per_micron=snapshot.layout.dbu_per_micron + 1,
+    )
+    with pytest.raises(ValueError, match="platform identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(snapshot, layout=forged_layout),
+        )
+
+    forged_simulation = replace(
+        snapshot.simulation,
+        default_model_set="forged",
+    )
+    with pytest.raises(ValueError, match="platform identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(snapshot, simulation=forged_simulation),
+        )
+
+    snapshot.layout.layout_path.unlink()
+    with pytest.raises(ValueError, match="source identity drift"):
+        resolve_platform(project, "testpdk", snapshot=snapshot)
 
 
 def test_load_platform_reuses_one_project_owned_catalog_snapshot(

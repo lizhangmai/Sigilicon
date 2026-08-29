@@ -198,6 +198,7 @@ def test_check_designs_reads_each_ip_release_contract_once(
         lambda *_args, **_kwargs: SimpleNamespace(
             as_dict=lambda: {},
             designs=(),
+            layouts=(),
             testbenches=(),
         ),
     )
@@ -351,6 +352,14 @@ def test_repository_workflows_share_one_platform_inventory(
     planned_design_path = tmp_path / "ip/fixture/planned_design.toml"
     planned_design_path.write_text("schema = 1\n", encoding="utf-8")
     planned_design = SimpleNamespace(path=planned_design_path.resolve())
+    planned_layout_path = tmp_path / "ip/fixture/planned_layout.toml"
+    planned_layout_path.write_text("schema = 1\n", encoding="utf-8")
+    planned_layout = SimpleNamespace(
+        path=planned_layout_path.resolve(),
+        source_documents={
+            planned_layout_path.resolve(): {"schema": 1},
+        },
+    )
     platform_sources = {
         (tmp_path / "configs/platform/catalog.toml").resolve(),
         *(
@@ -366,6 +375,7 @@ def test_repository_workflows_share_one_platform_inventory(
     observed_oa_plan_inventories: list[object] = []
     observed_oa_simulation_inventories: list[object] = []
     observed_oa_design_inventories: list[object] = []
+    observed_oa_layout_inventories: list[object] = []
     oa_source_reads: list[Path] = []
     oa_document_reads = 0
 
@@ -411,6 +421,7 @@ def test_repository_workflows_share_one_platform_inventory(
                     inspection=SimpleNamespace(spec=planned_design),
                 ),
             ),
+            layouts=(SimpleNamespace(spec=planned_layout),),
             testbenches=(SimpleNamespace(simulation=planned_simulation),),
         )
 
@@ -447,9 +458,11 @@ def test_repository_workflows_share_one_platform_inventory(
             kwargs["oa_simulation_inventory"]
         )
         observed_oa_design_inventories.append(kwargs["oa_design_inventory"])
+        observed_oa_layout_inventories.append(kwargs["layout_source_documents"])
         forwarded = dict(kwargs)
         forwarded["oa_simulation_inventory"] = {}
         forwarded["oa_design_inventory"] = {}
+        forwarded["layout_source_documents"] = {}
         return original_inspect_configurations(
             *args,
             platform_inventory=platform_inventory,
@@ -459,6 +472,11 @@ def test_repository_workflows_share_one_platform_inventory(
     monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.setattr(repository_checks, "plan_ip_integration", plan_integration)
     monkeypatch.setattr(repository_checks, "plan_oa_library_rebuild", plan_oa)
+    monkeypatch.setattr(
+        repository_checks,
+        "resolve_layout_spec",
+        lambda path, *, project, snapshot: snapshot,
+    )
     monkeypatch.setattr(
         repository_checks,
         "load_oa_library_source",
@@ -505,5 +523,7 @@ def test_repository_workflows_share_one_platform_inventory(
     assert observed_oa_design_inventories[0] == {
         planned_design_path.resolve(): planned_design
     }
+    assert len(observed_oa_layout_inventories) == 1
+    assert observed_oa_layout_inventories[0] == planned_layout.source_documents
     assert oa_document_reads == 0
     assert set(reads.values()) == {1}

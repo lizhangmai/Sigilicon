@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib.util
 from pathlib import Path
 import tomllib
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.domain.component import ComponentContract, load_component_graph
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import freeze_toml_document, require_config_header
 from sigilicon.domain.design import IDENTIFIER_RE
 from sigilicon.domain.netlist import (
     NetlistSnapshot,
@@ -54,6 +55,9 @@ class LayoutSpec:
     physical_verification: PhysicalVerificationPolicy | None
     pdk: PdkConfig
     layout_pdk: LayoutPdkConfig
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def project_root(self) -> Path:
@@ -152,6 +156,8 @@ def _validate_generator_ownership(
     generator_dependencies: tuple[Path, ...],
     generator_modules: tuple[str, ...],
     generator_module_sources: tuple[Path, ...],
+    source_netlist: Path,
+    dependency_netlists: tuple[Path, ...],
     selected_platform_layout: Path,
 ) -> None:
     """Enforce the project source boundary for one cataloged layout owner.
@@ -232,6 +238,14 @@ def _validate_generator_ownership(
         # remain valid.  Only project-owned module sources need this check.
         if source.is_relative_to(repository.project_root):
             validate_project_source(source, f"layout.generator_modules[{module!r}]")
+
+    if not source_netlist.is_relative_to(owner_root):
+        raise ValueError(
+            "layout.source_netlist must belong to cataloged owner "
+            f"{owner_name!r}: {source_netlist}"
+        )
+    for dependency in dependency_netlists:
+        validate_project_source(dependency, "layout.dependency_netlists[]")
 
 
 def load_layout_spec(
@@ -459,6 +473,8 @@ def load_layout_spec(
             generator_dependencies=generator_dependencies,
             generator_modules=generator_modules,
             generator_module_sources=generator_module_sources,
+            source_netlist=source_netlist,
+            dependency_netlists=dependency_netlists,
             selected_platform_layout=layout_pdk.layout_path,
         )
     return LayoutSpec(
@@ -486,4 +502,181 @@ def load_layout_spec(
         ),
         pdk=pdk,
         layout_pdk=layout_pdk,
+        source_documents=MappingProxyType(
+            {spec_path: freeze_toml_document(raw)}
+        ),
     )
+
+
+def resolve_layout_spec(
+    path: Path,
+    *,
+    project: Project,
+    snapshot: LayoutSpec | None = None,
+) -> LayoutSpec:
+    """Load a layout spec or validate one operation-owned snapshot."""
+
+    if snapshot is None:
+        return load_layout_spec(path, project=project)
+    spec_path = path.resolve()
+    root = project.project_root
+    if (
+        snapshot.path != spec_path
+        or snapshot.project is not project
+        or not spec_path.is_relative_to(root)
+        or not spec_path.is_file()
+    ):
+        raise ValueError("layout snapshot identity drift")
+    owner = project.owner_for(spec_path)
+    resolved_pdk = resolve_platform(
+        project,
+        snapshot.pdk.key,
+        snapshot=snapshot.pdk,
+    )
+    if not resolved_pdk.source_documents:
+        raise ValueError("layout snapshot platform source document drift")
+    if resolved_pdk.layout is None or snapshot.layout_pdk is not resolved_pdk.layout:
+        raise ValueError("layout snapshot platform identity drift")
+    if (
+        not isinstance(snapshot.source_documents, Mapping)
+        or set(snapshot.source_documents) != {spec_path}
+        or any(
+            not isinstance(source, Path)
+            or source != source.resolve()
+            or not source.is_relative_to(root)
+            or not source.is_file()
+            or not isinstance(document, Mapping)
+            for source, document in snapshot.source_documents.items()
+        )
+    ):
+        raise ValueError("layout snapshot source document identity drift")
+    raw = snapshot.source_documents[spec_path]
+    if owner is not None:
+        require_config_header(
+            raw,
+            spec_path,
+            contract_kind="cell-layout",
+            path_scope="cell",
+            owner=owner.name,
+        )
+    layout = raw.get("layout")
+    ports = raw.get("ports")
+    if not isinstance(layout, Mapping) or not isinstance(ports, Mapping):
+        raise ValueError("layout snapshot source document drift")
+
+    def declared_paths(field_name: str) -> tuple[Path, ...] | None:
+        values = layout.get(field_name, ())
+        if not isinstance(values, (list, tuple)) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            return None
+        return tuple((spec_path.parent / value).resolve() for value in values)
+
+    generator_source_value = layout.get("generator_source")
+    if generator_source_value is None:
+        generator_source = next(
+            (
+                parent / "layout_generator.py"
+                for parent in (spec_path.parent, *spec_path.parents)
+                if parent.is_relative_to(root)
+                and (parent / "layout_generator.py").is_file()
+            ),
+            None,
+        )
+        if generator_source is not None:
+            generator_source = generator_source.resolve()
+    elif isinstance(generator_source_value, str) and generator_source_value:
+        generator_source = (spec_path.parent / generator_source_value).resolve()
+    else:
+        generator_source = None
+    source_netlist_value = layout.get("source_netlist")
+    source_netlist = (
+        None
+        if not isinstance(source_netlist_value, str) or not source_netlist_value
+        else (spec_path.parent / source_netlist_value).resolve()
+    )
+    generator_dependencies = declared_paths("generator_dependencies")
+    dependency_netlists = declared_paths("dependency_netlists")
+    module_names = layout.get("generator_modules", ())
+    resolved_module_sources: list[Path] = []
+    if isinstance(module_names, (list, tuple)):
+        for module in module_names:
+            if not isinstance(module, str) or not module:
+                break
+            project_module = root.joinpath(*module.split(".")).with_suffix(".py")
+            project_package = root.joinpath(*module.split("."), "__init__.py")
+            if project_module.is_file():
+                module_source = project_module.resolve()
+            elif project_package.is_file():
+                module_source = project_package.resolve()
+            else:
+                module_spec = importlib.util.find_spec(module)
+                origin = None if module_spec is None else module_spec.origin
+                if origin is None or origin in {"built-in", "frozen"}:
+                    break
+                module_source = Path(origin).resolve()
+            if not module_source.is_file() or module_source.suffix != ".py":
+                break
+            resolved_module_sources.append(module_source)
+    project_sources = (
+        snapshot.generator_source,
+        *snapshot.generator_dependencies,
+        snapshot.source_netlist,
+        *snapshot.dependency_netlists,
+    )
+    if (
+        layout.get("library") != snapshot.library
+        or layout.get("cell") != snapshot.cell
+        or layout.get("view", "layout") != snapshot.view
+        or layout.get("generator") != snapshot.generator
+        or layout.get("stage", "placement_probe") != snapshot.stage
+        or layout.get("pdk") != snapshot.pdk.key
+        or generator_source != snapshot.generator_source
+        or generator_dependencies != snapshot.generator_dependencies
+        or source_netlist != snapshot.source_netlist
+        or dependency_netlists != snapshot.dependency_netlists
+        or not isinstance(module_names, (list, tuple))
+        or tuple(module_names) != snapshot.generator_modules
+        or tuple(resolved_module_sources) != snapshot.generator_module_sources
+        or any(
+            source != source.resolve()
+            or not source.is_file()
+            or not source.is_relative_to(root)
+            for source in project_sources
+        )
+        or tuple(
+            load_netlist_snapshot(source)
+            for source in (snapshot.source_netlist, *snapshot.dependency_netlists)
+        )
+        != snapshot.source_snapshots
+        or snapshot.source_snapshot.source_path != snapshot.source_netlist
+        or select_subckt_snapshot(
+            snapshot.source_snapshots[0],
+            snapshot.cell,
+        )
+        != snapshot.source_snapshot
+        or tuple(item.source_path for item in snapshot.source_snapshots)
+        != (snapshot.source_netlist, *snapshot.dependency_netlists)
+        or tuple(ports.get("order") or ()) != snapshot.ports
+        or ports.get("directions") != snapshot.directions
+    ):
+        raise ValueError("layout snapshot source document drift")
+    if owner is not None:
+        component_graph = load_component_graph(
+            owner.component.path,
+            project_root=root,
+            root_contract=owner.component,
+        )
+        _validate_generator_ownership(
+            project,
+            owner=owner,
+            component_graph=component_graph,
+            generator_source=snapshot.generator_source,
+            generator_dependencies=snapshot.generator_dependencies,
+            generator_modules=snapshot.generator_modules,
+            generator_module_sources=snapshot.generator_module_sources,
+            source_netlist=snapshot.source_netlist,
+            dependency_netlists=snapshot.dependency_netlists,
+            selected_platform_layout=resolved_pdk.layout.layout_path,
+        )
+    return snapshot
