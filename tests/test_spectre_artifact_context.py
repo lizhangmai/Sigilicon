@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import write_project_context
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.spectre import SpectreArtifactContext
 
@@ -46,6 +47,17 @@ def test_spectre_artifact_context_preserves_an_explicit_project(
     assert replaced.project is project
     assert replaced.project_root == context.project_root
     assert replaced.library == "other"
+
+    other_root = tmp_path / "other-project"
+    other_project = Project.from_file(write_project_context(other_root))
+    other_context = SpectreArtifactContext(
+        project=other_project,
+        library="fixture",
+        cell="leaf",
+        testbench="tb_leaf",
+    )
+    assert other_context != context
+    assert len({context, other_context}) == 2
 
     with pytest.raises(ValueError, match="root disagrees with explicit Project"):
         SpectreArtifactContext(

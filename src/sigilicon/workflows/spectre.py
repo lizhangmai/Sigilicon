@@ -46,7 +46,7 @@ class SpectreExecution:
     raw_outputs: Mapping[str, Path]
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True, init=False, eq=False)
 class SpectreArtifactContext:
     """Repository and design coordinates for a direct-Spectre run."""
 
@@ -54,7 +54,6 @@ class SpectreArtifactContext:
     library: str
     cell: str
     testbench: str
-    _project_root: Path = field(init=False, repr=False)
 
     def __init__(
         self,
@@ -74,13 +73,24 @@ class SpectreArtifactContext:
         object.__setattr__(self, "library", library)
         object.__setattr__(self, "cell", cell)
         object.__setattr__(self, "testbench", testbench)
-        object.__setattr__(self, "_project_root", repository.project_root)
 
     @property
     def project_root(self) -> Path:
         """Compatibility path view of the canonical Project."""
 
-        return self._project_root
+        return self.project.project_root
+
+    def _comparison_key(self) -> tuple[Path, str, str, str]:
+        return (self.project_root, self.library, self.cell, self.testbench)
+
+    def __eq__(self, other: object) -> bool:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        assert isinstance(other, SpectreArtifactContext)
+        return self._comparison_key() == other._comparison_key()
+
+    def __hash__(self) -> int:
+        return hash(self._comparison_key())
 
 
 @dataclass(frozen=True)
