@@ -11,6 +11,7 @@ from sigilicon.domain.config_contracts import (
     inspect_project_configurations,
 )
 from sigilicon.domain.ip_release import load_ip_contract
+from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platform, load_platform_catalog
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.design_targets import load_design_target_catalog
@@ -129,6 +130,15 @@ def inspect_repository_designs(
             raise ValueError(f"IP release catalog identity mismatch: {name}")
         release_inventory[name] = contract
 
+    oa_source_inventory = {}
+    for contract in release_inventory.values():
+        assembly = (root / contract.oa_assembly).resolve()
+        if assembly not in oa_source_inventory:
+            oa_source_inventory[assembly] = load_oa_library_source(
+                assembly,
+                project=context,
+            )
+
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
     for name, path in component_paths.items():
@@ -157,6 +167,7 @@ def inspect_repository_designs(
                 project=context,
                 platform_inventory=platform_inventory,
                 release_inventory=release_inventory,
+                oa_source_inventory=oa_source_inventory,
             )
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
@@ -183,6 +194,7 @@ def inspect_repository_designs(
             assembly,
             project=context,
             platform_inventory=platform_inventory,
+            oa_source_inventory=oa_source_inventory,
         ).as_dict()
 
     platforms: dict[str, Any] = {}

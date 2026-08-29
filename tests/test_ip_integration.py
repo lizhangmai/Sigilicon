@@ -561,6 +561,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
     producer_reads: list[Path] = []
     planned_contracts: list[object] = []
     platform_inventory = {"testpdk": object()}
+    oa_source_inventory = {producer_path.parent / "oa.toml": object()}
     project = Project.from_project_root(project_root).with_artifact_root(artifact_root)
     producer = SimpleNamespace(
         name="fixture-ip",
@@ -581,11 +582,19 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
 
     monkeypatch.setattr(ip_integration, "load_ip_contract", load_producer)
 
-    def plan_contract(contract, *, maturity, platform_inventory):
+    def plan_contract(
+        contract,
+        *,
+        maturity,
+        platform_inventory,
+        oa_source_inventory,
+    ):
         planned_contracts.append(contract)
         assert maturity == "development"
         assert platform_inventory is not None
         assert set(platform_inventory) == {"testpdk"}
+        assert oa_source_inventory is not None
+        assert len(oa_source_inventory) == 1
         return {
             "contract": "ip/fixture/configs/release.toml",
             "release_id": "development-fixture",
@@ -622,6 +631,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
         contract_path,
         project=project,
         platform_inventory=platform_inventory,
+        oa_source_inventory=oa_source_inventory,
     )
 
     assert producer_reads == [producer_path]
@@ -639,6 +649,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
         project=project,
         platform_inventory=platform_inventory,
         release_inventory={"fixture-ip": producer},
+        oa_source_inventory=oa_source_inventory,
     )
 
     assert producer_reads == []
@@ -653,6 +664,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
             project=project,
             platform_inventory=platform_inventory,
             release_inventory={},
+            oa_source_inventory=oa_source_inventory,
         )
 
 

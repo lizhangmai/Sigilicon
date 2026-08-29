@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 import sigilicon.domain.oa_library as oa_library_domain
-from sigilicon.domain.oa_library import load_oa_library_source
+from sigilicon.domain.oa_library import (
+    load_oa_library_source,
+    resolve_oa_library_source,
+)
 from sigilicon.domain.netlist import NetlistSubcircuit
 from sigilicon.domain.repository import Project
 from sigilicon.layout.ir import LayoutPlan
@@ -135,6 +138,20 @@ def test_oa_assembly_reuses_one_explicit_project(tmp_path: Path) -> None:
 
     assert assembly.project is project
     assert assembly.project_root == project.project_root
+    assert (
+        resolve_oa_library_source(
+            manifest,
+            project=project,
+            snapshot=assembly,
+        )
+        is assembly
+    )
+    with pytest.raises(ValueError, match="OA source snapshot identity drift"):
+        resolve_oa_library_source(
+            manifest,
+            project=Project.from_project_root(root),
+            snapshot=assembly,
+        )
 
 
 def test_oa_assembly_reads_each_source_manifest_once(
@@ -345,13 +362,61 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
         ("simulation", platform),
     ]
 
+    received.clear()
+    manifest = (tmp_path / "oa.toml").resolve()
+
+    def reject_oa_source_load(*_args, **_kwargs):
+        raise AssertionError("explicit inventory must replace OA source I/O")
+
+    def resolve_oa_source(path, *, project, project_root, snapshot):
+        assert path == manifest
+        assert project is source.project
+        assert project_root is None
+        received.append(("oa", snapshot))
+        return snapshot
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.load_oa_library_source",
+        reject_oa_source_load,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.resolve_oa_library_source",
+        resolve_oa_source,
+    )
+
+    plan = plan_oa_library_rebuild(
+        manifest,
+        project=source.project,
+        platform_inventory={"testpdk": platform},
+        oa_source_inventory={manifest: source},
+    )
+
+    assert plan.source is source
+    assert received == [
+        ("oa", source),
+        ("resolve", platform),
+        ("design", platform),
+        ("layout", platform),
+        ("simulation", platform),
+    ]
+
+    with pytest.raises(ValueError, match="OA source inventory has no"):
+        plan_oa_library_rebuild(
+            manifest,
+            project=source.project,
+            platform_inventory={"testpdk": platform},
+            oa_source_inventory={},
+        )
+
     with pytest.raises(
         ValueError,
         match="platform inventory has no 'testpdk' entry",
     ):
         plan_oa_library_rebuild(
-            tmp_path / "oa.toml",
+            manifest,
+            project=source.project,
             platform_inventory={},
+            oa_source_inventory={manifest: source},
         )
 
 

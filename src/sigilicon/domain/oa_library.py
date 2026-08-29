@@ -557,3 +557,34 @@ def load_oa_library_source(
         source_roots=source_roots,
         cells=cells,
     )
+
+
+def resolve_oa_library_source(
+    path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    snapshot: OALibrarySource | None = None,
+) -> OALibrarySource:
+    """Load an OA source or validate one caller-owned operation snapshot."""
+
+    if snapshot is None:
+        return load_oa_library_source(
+            path,
+            project=project,
+            project_root=project_root,
+        )
+    context = Project.bind(project=project, project_root=project_root)
+    manifest_path = path.resolve()
+    if not manifest_path.is_relative_to(context.project_root):
+        raise ValueError("OA source snapshot manifest escapes the project root")
+    owner = context.require_owner(manifest_path)
+    if (
+        snapshot.project is not context
+        or snapshot.manifest_path != manifest_path
+        or not snapshot.source_roots
+        or snapshot.source_roots[0].manifest_path != manifest_path
+        or snapshot.source_roots[0].owner != owner.name
+    ):
+        raise ValueError("OA source snapshot identity drift")
+    return snapshot

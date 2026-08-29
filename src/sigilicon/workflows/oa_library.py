@@ -21,6 +21,7 @@ from sigilicon.domain.oa_library import (
     OALibrarySource,
     OAViewReference,
     load_oa_library_source,
+    resolve_oa_library_source,
 )
 from sigilicon.domain.platform import PdkConfig, load_platform, resolve_platform
 from sigilicon.domain.repository import Project
@@ -589,14 +590,30 @@ def plan_oa_library_rebuild(
     project_root: Path | None = None,
     library: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> OALibraryRebuildPlan:
     """Prove that source alone describes every cell and canonical OA view."""
 
-    source = load_oa_library_source(
-        manifest_path,
-        project=project,
-        project_root=project_root,
-    )
+    resolved_manifest = manifest_path.resolve()
+    if oa_source_inventory is None:
+        source = load_oa_library_source(
+            resolved_manifest,
+            project=project,
+            project_root=project_root,
+        )
+    else:
+        try:
+            source_snapshot = oa_source_inventory[resolved_manifest]
+        except KeyError as exc:
+            raise ValueError(
+                f"OA source inventory has no {resolved_manifest} entry"
+            ) from exc
+        source = resolve_oa_library_source(
+            resolved_manifest,
+            project=project,
+            project_root=project_root,
+            snapshot=source_snapshot,
+        )
     target_library = library or source.name
     if _IDENTIFIER.fullmatch(target_library) is None:
         raise ValueError("target OA library must be an identifier")

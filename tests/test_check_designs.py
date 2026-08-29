@@ -189,6 +189,14 @@ def test_check_designs_reads_each_ip_release_contract_once(
         "plan_oa_library_rebuild",
         lambda *_args, **_kwargs: SimpleNamespace(as_dict=lambda: {}),
     )
+    monkeypatch.setattr(
+        repository_checks,
+        "load_oa_library_source",
+        lambda path, *, project: SimpleNamespace(
+            manifest_path=path.resolve(),
+            project=project,
+        ),
+    )
     monkeypatch.chdir(tmp_path)
 
     assert check_designs_main([]) == 0
@@ -325,6 +333,8 @@ def test_repository_workflows_share_one_platform_inventory(
     original_load = tomllib.load
     observed_platform_inventories: list[object] = []
     observed_release_inventories: list[object] = []
+    observed_oa_inventories: list[object] = []
+    oa_source_reads: list[Path] = []
 
     def counted_load(stream):
         path = Path(stream.name).resolve()
@@ -338,16 +348,33 @@ def test_repository_workflows_share_one_platform_inventory(
         project,
         platform_inventory,
         release_inventory,
+        oa_source_inventory,
     ):
         assert project.project_root == tmp_path.resolve()
         observed_platform_inventories.append(platform_inventory)
         observed_release_inventories.append(release_inventory)
+        observed_oa_inventories.append(oa_source_inventory)
         return {"ip": "fixture"}
 
-    def plan_oa(_path, *, project, platform_inventory):
+    def plan_oa(
+        _path,
+        *,
+        project,
+        platform_inventory,
+        oa_source_inventory,
+    ):
         assert project.project_root == tmp_path.resolve()
         observed_platform_inventories.append(platform_inventory)
+        observed_oa_inventories.append(oa_source_inventory)
         return SimpleNamespace(as_dict=lambda: {})
+
+    def load_oa_source(path, *, project):
+        resolved = path.resolve()
+        oa_source_reads.append(resolved)
+        return SimpleNamespace(
+            manifest_path=resolved,
+            project=project,
+        )
 
     original_inspect_configurations = repository_checks.inspect_project_configurations
 
@@ -363,6 +390,11 @@ def test_repository_workflows_share_one_platform_inventory(
     monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.setattr(repository_checks, "plan_ip_integration", plan_integration)
     monkeypatch.setattr(repository_checks, "plan_oa_library_rebuild", plan_oa)
+    monkeypatch.setattr(
+        repository_checks,
+        "load_oa_library_source",
+        load_oa_source,
+    )
     monkeypatch.setattr(
         repository_checks,
         "inspect_project_configurations",
@@ -383,4 +415,8 @@ def test_repository_workflows_share_one_platform_inventory(
     assert len(observed_release_inventories) == 2
     assert observed_release_inventories[0] is observed_release_inventories[1]
     assert set(observed_release_inventories[0]) == {"fixture"}
+    assert len(oa_source_reads) == 1
+    assert len(observed_oa_inventories) == 2
+    assert observed_oa_inventories[0] is observed_oa_inventories[1]
+    assert set(observed_oa_inventories[0]) == set(oa_source_reads)
     assert set(reads.values()) == {1}

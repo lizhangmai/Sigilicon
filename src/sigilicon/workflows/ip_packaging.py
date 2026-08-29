@@ -25,6 +25,7 @@ from sigilicon.domain.netlist import (
     parse_subcircuit_instances,
     subckt_ports,
 )
+from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.repository import Project
 from sigilicon.domain.systemverilog import (
@@ -318,6 +319,7 @@ def _source_inputs(
     contract: IpContract,
     *,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> tuple[str, ...]:
     root = contract.project_root
     graph = contract.component_graph
@@ -352,9 +354,25 @@ def _source_inputs(
         add_source(path)
 
     oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
-    from sigilicon.domain.oa_library import load_oa_library_source
+    from sigilicon.domain.oa_library import (
+        load_oa_library_source,
+        resolve_oa_library_source,
+    )
 
-    library = load_oa_library_source(oa_manifest, project=contract.project)
+    if oa_source_inventory is None:
+        library = load_oa_library_source(oa_manifest, project=contract.project)
+    else:
+        try:
+            source_snapshot = oa_source_inventory[oa_manifest]
+        except KeyError as exc:
+            raise ValueError(
+                f"OA source inventory has no {oa_manifest} entry"
+            ) from exc
+        library = resolve_oa_library_source(
+            oa_manifest,
+            project=contract.project,
+            snapshot=source_snapshot,
+        )
     cell_by_name = {cell.cell: cell for cell in library.cells}
     netlist_cells = [
         cell
@@ -684,12 +702,14 @@ def _plan_loaded_ip_release(
     *,
     maturity: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> dict[str, Any]:
     repository = contract.project
     level = contract.require_level(maturity or contract.default_maturity)
     source_paths = _source_inputs(
         contract,
         platform_inventory=platform_inventory,
+        oa_source_inventory=oa_source_inventory,
     )
     commit, dirty = _source_control(contract.project_root)
     release_id = f"{level}-{commit[:12]}"
@@ -826,6 +846,7 @@ def plan_ip_release(
     artifact_root: Path | None = None,
     maturity: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> dict[str, Any]:
     repository = _release_project(
         project=project,
@@ -837,6 +858,7 @@ def plan_ip_release(
         contract,
         maturity=maturity,
         platform_inventory=platform_inventory,
+        oa_source_inventory=oa_source_inventory,
     )
 
 
@@ -845,6 +867,7 @@ def plan_ip_release_contract(
     *,
     maturity: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> dict[str, Any]:
     """Plan one already validated IP release contract."""
 
@@ -852,6 +875,7 @@ def plan_ip_release_contract(
         contract,
         maturity=maturity,
         platform_inventory=platform_inventory,
+        oa_source_inventory=oa_source_inventory,
     )
 
 

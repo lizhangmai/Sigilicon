@@ -357,11 +357,53 @@ def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
     assert resolved_platforms == [(project, "testpdk", platform)]
     assert simulation_platforms == [platform, platform]
 
+    simulation_platforms.clear()
+    resolved_platforms.clear()
+    resolved_oa_sources: list[tuple[Path, object, object]] = []
+
+    def reject_oa_source_load(*_args, **_kwargs):
+        raise AssertionError("explicit inventory must replace OA source I/O")
+
+    def resolve_release_oa_source(path, *, project, snapshot):
+        resolved_oa_sources.append((path, project, snapshot))
+        return snapshot
+
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        reject_oa_source_load,
+    )
+    monkeypatch.setattr(
+        oa_library_domain,
+        "resolve_oa_library_source",
+        resolve_release_oa_source,
+    )
+
+    ip_packaging._source_inputs(
+        contract,
+        platform_inventory={"testpdk": platform},
+        oa_source_inventory={assembly: library},
+    )
+
+    assert resolved_oa_sources == [(assembly, project, library)]
+    assert simulation_platforms == [platform, platform]
+
+    with pytest.raises(ValueError, match="OA source inventory has no"):
+        ip_packaging._source_inputs(
+            contract,
+            platform_inventory={"testpdk": platform},
+            oa_source_inventory={},
+        )
+
     with pytest.raises(
         ValueError,
         match="platform inventory has no 'testpdk' entry",
     ):
-        ip_packaging._source_inputs(contract, platform_inventory={})
+        ip_packaging._source_inputs(
+            contract,
+            platform_inventory={},
+            oa_source_inventory={assembly: library},
+        )
 
 
 def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:

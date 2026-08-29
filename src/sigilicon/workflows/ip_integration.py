@@ -22,6 +22,7 @@ from sigilicon.domain.ip_release import (
     IpContract,
     load_ip_contract,
 )
+from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import (
@@ -302,6 +303,7 @@ def plan_ip_integration(
     artifact_root: Path | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
@@ -328,6 +330,7 @@ def plan_ip_integration(
                 producer,
                 maturity=release.required_maturity,
                 platform_inventory=platform_inventory,
+                oa_source_inventory=oa_source_inventory,
             )
             exported = _release_export(expected, release.export)
             interface = exported.get("interface")
