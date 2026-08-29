@@ -393,6 +393,7 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
         )
     }
     selected_cells = reachable | validation_cells
+    release_platform = None
     paths.add(library.manifest_path)
     for cell in library.cells:
         if cell.cell not in selected_cells:
@@ -412,6 +413,7 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
             paths.add(cell.design_spec)
         if cell.role == "testbench":
             from sigilicon.domain.oa_simulation import load_oa_simulation_spec
+            from sigilicon.domain.platform import load_platform
 
             setup_sources = {
                 view.source for view in cell.views if view.kind in {"config", "maestro"}
@@ -420,9 +422,12 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
                 raise ValueError(
                     f"release testbench config and Maestro sources disagree: {cell.cell}"
                 )
+            if release_platform is None:
+                release_platform = load_platform(library.project, library.pdk)
             simulation = load_oa_simulation_spec(
                 next(iter(setup_sources)),
                 project=library.project,
+                platform=release_platform,
             )
             rdb_contract = simulation.native_setup.rdb_contract
             if rdb_contract is not None:

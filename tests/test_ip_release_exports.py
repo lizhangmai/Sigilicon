@@ -7,6 +7,8 @@ import pytest
 
 import sigilicon.domain.component as component_domain
 import sigilicon.domain.oa_library as oa_library_domain
+import sigilicon.domain.oa_simulation as oa_simulation_domain
+import sigilicon.domain.platform as platform_domain
 import sigilicon.workflows.ip_packaging as ip_packaging
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.repository import Project
@@ -229,6 +231,108 @@ def test_release_consumers_reuse_the_contract_component_graph(
 
     assert "ip/fixture/configs/ip.toml" in sources
     assert plan["component"]["name"] == "fixture-ip"
+
+
+def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = Project.from_file(write_project_context(tmp_path))
+    release = tmp_path / "release.toml"
+    assembly = tmp_path / "oa.toml"
+    cell_manifest = tmp_path / "cell.toml"
+    netlist = tmp_path / "top.scs"
+    setup = tmp_path / "simulation.toml"
+    for path in (release, assembly, cell_manifest, setup):
+        path.write_text("name = 'fixture'\n", encoding="utf-8")
+    netlist.write_text("subckt TOP A\nends TOP\n", encoding="utf-8")
+    top = SimpleNamespace(
+        cell="TOP",
+        owner="fixture",
+        role="design",
+        canonical_source=netlist,
+        source_manifest_path=assembly,
+        manifest_path=cell_manifest,
+        design_spec=None,
+        layout_specs=(),
+        views=(
+            SimpleNamespace(
+                kind="spectre_netlist",
+                source=netlist,
+                dependencies=(),
+            ),
+        ),
+    )
+    testbenches = tuple(
+        SimpleNamespace(
+            cell=f"TB_{index}",
+            owner="fixture",
+            role="testbench",
+            canonical_source=setup,
+            source_manifest_path=assembly,
+            manifest_path=cell_manifest,
+            design_spec=None,
+            layout_specs=(),
+            views=tuple(
+                SimpleNamespace(
+                    kind=kind,
+                    source=setup,
+                    dependencies=(SimpleNamespace(cell="TOP"),),
+                )
+                for kind in ("config", "maestro")
+            ),
+        )
+        for index in range(2)
+    )
+    library = SimpleNamespace(
+        name="fixture",
+        pdk="testpdk",
+        project=project,
+        manifest_path=assembly,
+        cells=(top, *testbenches),
+    )
+    contract = SimpleNamespace(
+        project=project,
+        project_root=tmp_path,
+        path=release,
+        component_graph={},
+        source_files=(),
+        oa_assembly=Path("oa.toml"),
+        exports=(SimpleNamespace(oa_library="fixture", oa_cell="TOP"),),
+    )
+    platform = object()
+    platform_reads: list[tuple[object, str]] = []
+    simulation_platforms: list[object] = []
+
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        lambda *_args, **_kwargs: library,
+    )
+
+    def load_release_platform(repository, key):
+        platform_reads.append((repository, key))
+        return platform
+
+    monkeypatch.setattr(platform_domain, "load_platform", load_release_platform)
+
+    def load_simulation(_path, *, project, platform):
+        assert project is library.project
+        simulation_platforms.append(platform)
+        return SimpleNamespace(
+            native_setup=SimpleNamespace(rdb_contract=None),
+        )
+
+    monkeypatch.setattr(
+        oa_simulation_domain,
+        "load_oa_simulation_spec",
+        load_simulation,
+    )
+
+    ip_packaging._source_inputs(contract)
+
+    assert platform_reads == [(project, "testpdk")]
+    assert simulation_platforms == [platform, platform]
 
 
 def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:
