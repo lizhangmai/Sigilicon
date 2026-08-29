@@ -9,8 +9,10 @@ import sigilicon.domain.oa_library as oa_library_domain
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.netlist import NetlistSubcircuit
 from sigilicon.domain.repository import Project
+from sigilicon.layout.ir import LayoutPlan
 from sigilicon.workflows.oa_library import (
     _instance_parameter_expectations,
+    _plan_layouts,
     check_oa_parity,
     rebuild_oa_library,
 )
@@ -173,6 +175,57 @@ cell_roots = ["design/cells"]
     assert [source.owner for source in assembly.source_roots] == ["alpha", "beta"]
     assert reads.count(manifest.resolve()) == 1
     assert reads.count(additional_manifest.resolve()) == 1
+
+
+def test_oa_layout_plan_reuses_loaded_assembly_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = object()
+    layout_path = tmp_path / "layout.toml"
+    layout_path.touch()
+    cell = SimpleNamespace(
+        cell="CELL_A",
+        role="model",
+        layout_specs=(layout_path,),
+    )
+    source = SimpleNamespace(
+        project=project,
+        name="assembled",
+        pdk="testpdk",
+        primitive_masters=(),
+        cells=(cell,),
+    )
+    spec = SimpleNamespace(
+        library="assembled",
+        cell="CELL_A",
+        view="layout",
+        pdk=SimpleNamespace(key="testpdk"),
+    )
+    calls: list[tuple[Path, object, object]] = []
+
+    def load_layout(path: Path, *, project, oa_source):
+        calls.append((path, project, oa_source))
+        return spec
+
+    monkeypatch.setattr("sigilicon.workflows.oa_library.load_layout_spec", load_layout)
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.build_layout_plan",
+        lambda _spec: LayoutPlan(
+            library="assembled",
+            cell="CELL_A",
+            view="layout",
+            stage="placement_probe",
+            generator="test",
+            dbu_per_micron=1000,
+            instances=(),
+        ),
+    )
+
+    steps = _plan_layouts(source, "assembled", {})
+
+    assert len(steps) == 1
+    assert calls == [(layout_path, project, source)]
 
 
 def test_pre_layout_oa_assembly_can_omit_physical_verification(

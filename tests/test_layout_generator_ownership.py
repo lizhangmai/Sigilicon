@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import write_project_context, write_test_layout_platform
-from sigilicon.layout.spec import load_layout_spec
+from sigilicon.domain.repository import Project
+from sigilicon.layout.spec import _owner_oa_assembly, load_layout_spec
 
 
 def _write_component(
@@ -169,6 +171,61 @@ def test_layout_generators_allow_owned_source_library_and_exact_platform_contrac
     assert spec.generator_source == root / "ip/example/cell/layout_generator.py"
     assert root / "ip/shared/shared_dependency.py" in spec.generator_dependencies
     assert root / "configs/platform/testpdk/layout.toml" in spec.generator_dependencies
+
+
+def test_layout_without_snapshot_discovers_the_owner_assembly(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root, layout = _write_fixture(tmp_path)
+    project = Project.from_project_root(root)
+    manifest = root / "ip/example/oa.toml"
+    source = SimpleNamespace(
+        project=project,
+        manifest_path=manifest,
+        pdk="testpdk",
+        primitive_masters=(),
+        physical_verification=None,
+        cells=(SimpleNamespace(layout_specs=(layout,)),),
+    )
+    loaded: list[tuple[Path, Project]] = []
+
+    monkeypatch.setattr(
+        Project,
+        "oa_assembly_for",
+        lambda _project, _path: manifest,
+    )
+
+    def load_assembly(path: Path, *, project: Project):
+        loaded.append((path, project))
+        return source
+
+    monkeypatch.setattr(
+        "sigilicon.layout.spec.load_oa_library_source",
+        load_assembly,
+    )
+
+    spec = load_layout_spec(layout, project=project)
+
+    assert spec.oa_assembly_manifest == manifest
+    assert loaded == [(manifest, project)]
+
+
+def test_layout_snapshot_must_share_the_explicit_project() -> None:
+    project = object()
+    source = SimpleNamespace(project=object(), cells=())
+
+    with pytest.raises(ValueError, match="different Project"):
+        _owner_oa_assembly(project, Path("layout.toml"), oa_source=source)
+
+
+def test_layout_snapshot_must_declare_the_layout_spec(tmp_path: Path) -> None:
+    project = object()
+    source = SimpleNamespace(project=project, cells=())
+    spec_path = tmp_path / "layout.toml"
+
+    with pytest.raises(ValueError, match="is not declared"):
+        _owner_oa_assembly(project, spec_path, oa_source=source)
 
 
 def test_layout_generator_source_must_belong_to_spec_owner(tmp_path: Path) -> None:

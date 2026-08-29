@@ -90,15 +90,22 @@ def _required_file(value: Any, field: str, *, base: Path) -> Path:
 def _owner_oa_assembly(
     repository: Project,
     spec_path: Path,
+    *,
+    oa_source: OALibrarySource | None = None,
 ) -> OALibrarySource | None:
     """Resolve the canonical owner assembly when the spec belongs to one."""
 
-    if repository.owner_for(spec_path) is None:
-        return None
-    manifest = repository.oa_assembly_for(spec_path)
-    if manifest is None:
-        return None
-    source = load_oa_library_source(manifest, project=repository)
+    if oa_source is None:
+        if repository.owner_for(spec_path) is None:
+            return None
+        manifest = repository.oa_assembly_for(spec_path)
+        if manifest is None:
+            return None
+        source = load_oa_library_source(manifest, project=repository)
+    else:
+        if oa_source.project is not repository:
+            raise ValueError("OA assembly source belongs to a different Project")
+        source = oa_source
     declared_specs = {
         layout_spec
         for cell in source.cells
@@ -232,6 +239,7 @@ def load_layout_spec(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
+    oa_source: OALibrarySource | None = None,
 ) -> LayoutSpec:
     spec_path = path.resolve()
     if project is None:
@@ -425,7 +433,11 @@ def load_layout_spec(
             f"platform {pdk_key!r} does not declare layout and verification contracts"
         )
     layout_pdk = pdk.layout
-    assembly = _owner_oa_assembly(repository, spec_path)
+    assembly = _owner_oa_assembly(
+        repository,
+        spec_path,
+        oa_source=oa_source,
+    )
     if assembly is not None and assembly.pdk != pdk_key:
         raise ValueError(
             f"layout spec platform {pdk_key!r} disagrees with OA assembly "

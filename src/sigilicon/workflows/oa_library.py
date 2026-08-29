@@ -492,7 +492,11 @@ def _plan_layouts(
     spec_by_key: dict[tuple[str, str], LayoutSpec] = {}
     for cell in source.cells:
         for spec_path in cell.layout_specs:
-            spec = load_layout_spec(spec_path, project=source.project)
+            spec = load_layout_spec(
+                spec_path,
+                project=source.project,
+                oa_source=source,
+            )
             if spec.library != source.name:
                 raise ValueError(
                     f"layout spec library differs from {source.name}: {spec_path}"
