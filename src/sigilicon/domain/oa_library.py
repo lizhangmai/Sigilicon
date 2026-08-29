@@ -345,8 +345,9 @@ def _load_source_root(
     *,
     context: Project,
     allow_assembly_fields: bool = False,
+    raw: dict[str, Any] | None = None,
 ) -> OASourceRoot:
-    raw = _read_toml(path)
+    raw = _read_toml(path) if raw is None else raw
     allowed = _SOURCE_MANIFEST_FIELDS | (
         _ASSEMBLY_FIELDS if allow_assembly_fields else set()
     )
@@ -505,6 +506,7 @@ def load_oa_library_source(
             manifest_path,
             context=context,
             allow_assembly_fields=True,
+            raw=raw,
         ),
         *(
             _load_source_root(source, context=context)

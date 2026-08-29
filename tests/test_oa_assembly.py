@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import sigilicon.domain.oa_library as oa_library_domain
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.netlist import NetlistSubcircuit
 from sigilicon.domain.repository import Project
@@ -131,6 +132,47 @@ def test_oa_assembly_reuses_one_explicit_project(tmp_path: Path) -> None:
 
     assert assembly.project is project
     assert assembly.project_root == project.project_root
+
+
+def test_oa_assembly_reads_each_source_manifest_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root, manifest = _assembly(tmp_path)
+    _cell(root, "beta", "CELL_C", dependency="CELL_A/symbol")
+    additional_manifest = _write(
+        root / "ip" / "beta" / "configs" / "oa.toml",
+        '''schema = 1
+contract_kind = "oa-source-root"
+path_scope = "owner"
+owner = "beta"
+cell_roots = ["design/cells"]
+        ''',
+    )
+    write_component_owner(
+        root,
+        "beta",
+        filesets={"oa_source": ("ip/beta/configs/oa.toml",)},
+    )
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + 'additional_source_manifests = ["ip/beta/configs/oa.toml"]\n',
+        encoding="utf-8",
+    )
+    reads: list[Path] = []
+    original_read_toml = oa_library_domain._read_toml
+
+    def tracked_read_toml(path: Path) -> dict:
+        reads.append(path.resolve())
+        return original_read_toml(path)
+
+    monkeypatch.setattr(oa_library_domain, "_read_toml", tracked_read_toml)
+
+    assembly = load_oa_library_source(manifest, project_root=root)
+
+    assert [source.owner for source in assembly.source_roots] == ["alpha", "beta"]
+    assert reads.count(manifest.resolve()) == 1
+    assert reads.count(additional_manifest.resolve()) == 1
 
 
 def test_pre_layout_oa_assembly_can_omit_physical_verification(
