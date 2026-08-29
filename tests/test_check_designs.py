@@ -33,6 +33,41 @@ def test_check_designs_parses_the_project_manifest_once(
     assert '"passed": true' in capsys.readouterr().out
 
 
+def test_check_designs_reads_the_ip_catalog_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = (tmp_path / "catalogs/ip.toml").resolve()
+    original_load = tomllib.load
+    reads = 0
+
+    def counted_load(stream):
+        nonlocal reads
+        if Path(stream.name).resolve() == catalog:
+            reads += 1
+        return original_load(stream)
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.chdir(tmp_path)
+
+    assert check_designs_main([]) == 0
+    assert reads == 1
+
+
+def test_check_designs_accepts_an_omitted_empty_ip_targets_section(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = tmp_path / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace("[targets]\n", ""),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert check_designs_main([]) == 0
+
+
 def test_check_designs_reuses_the_loaded_component_owner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

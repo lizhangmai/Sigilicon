@@ -8,7 +8,10 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    require_config_header,
+)
 from sigilicon.domain.ip_release import safe_relative
 
 
@@ -19,16 +22,6 @@ COMPONENT_KINDS = {
     "rtl-ip",
     "source-library",
 }
-
-
-def _freeze_document(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _freeze_document(item) for key, item in value.items()}
-        )
-    if isinstance(value, list):
-        return tuple(_freeze_document(item) for item in value)
-    return value
 
 
 def _string(value: object, label: str) -> str:
@@ -127,7 +120,7 @@ def load_component_contract(path: Path, *, project_root: Path) -> ComponentContr
         public_interface=public_interface,
         filesets=filesets,
         components=tuple(dependencies),
-        document=_freeze_document(raw),
+        document=freeze_toml_document(raw),
     )
     referenced = [path for values in result.filesets.values() for path in values]
     if result.public_interface is not None:

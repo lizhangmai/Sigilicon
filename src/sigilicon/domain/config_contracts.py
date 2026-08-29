@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import tomllib
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
@@ -21,6 +22,18 @@ CONFIG_SCHEMA = 1
 PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
 )
+
+
+def freeze_toml_document(value: Any) -> Any:
+    """Recursively freeze one parsed TOML value for operation snapshots."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: freeze_toml_document(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(freeze_toml_document(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -127,6 +140,8 @@ def inspect_project_configurations(
             for owner in context.owners
         }
     )
+    ip_catalog = context.ip_catalog_snapshot()
+    catalog_documents[ip_catalog.path] = ip_catalog.document
     if platform_catalog is not None:
         from sigilicon.domain.platform import resolve_platform_catalog
 

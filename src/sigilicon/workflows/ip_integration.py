@@ -28,17 +28,15 @@ from sigilicon.workflows.ip_packaging import (
 
 
 def _ip_catalog(project: Project) -> tuple[Path, Mapping[str, Any]]:
-    path = project.catalog("ip")
-    with path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
+    snapshot = project.ip_catalog_snapshot()
     require_config_header(
-        raw,
-        path,
+        snapshot.document,
+        snapshot.path,
         contract_kind="ip-catalog",
         path_scope="repository",
         owner=project.manifest_owner,
     )
-    return path, raw
+    return snapshot.path, snapshot.document
 
 
 def ip_catalog_contract_path(

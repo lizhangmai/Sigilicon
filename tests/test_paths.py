@@ -199,6 +199,32 @@ def test_project_is_the_single_manifest_parser_and_repository_compatibility_name
     assert manifest_reads == 1
 
 
+def test_project_ip_catalog_snapshot_rejects_owner_drift(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            'owner = "test"',
+            'owner = "other"',
+        ),
+        encoding="utf-8",
+    )
+    project = Project.from_project_root(tmp_path)
+
+    with pytest.raises(ValueError, match="owner must be 'test'"):
+        project.ip_catalog_snapshot()
+
+
+def test_project_ip_catalog_snapshot_rejects_internal_identity_drift(
+    tmp_path: Path,
+) -> None:
+    project = Project.from_project_root(tmp_path)
+    forged = replace(project.ip_catalog_snapshot(), owner="drift")
+    project = replace(project, _ip_catalog=forged)
+
+    with pytest.raises(ValueError, match="different Project"):
+        project.ip_catalog_snapshot()
+
+
 def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
     write_component_owner(tmp_path, "example", filesets={})
     project = Project.from_project_root(tmp_path)

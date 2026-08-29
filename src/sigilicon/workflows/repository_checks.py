@@ -9,8 +9,6 @@ from typing import Any
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import (
     inspect_project_configurations,
-    read_toml,
-    require_config_header,
 )
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.platform import load_platform, load_platform_catalog
@@ -19,38 +17,6 @@ from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
 from sigilicon.workflows.ip_integration import plan_ip_integration
-
-
-_HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
-
-
-def _catalog(
-    context: Project,
-    name: str,
-    contract_kind: str,
-    sections: tuple[str, ...],
-) -> tuple[Path, dict[str, Mapping[str, Any]]]:
-    path = context.catalog(name)
-    root = context.project_root
-    if not path.is_file() or not path.is_relative_to(root):
-        raise ValueError(f"{name} catalog must be a project-owned file")
-    raw = read_toml(path)
-    require_config_header(
-        raw,
-        path,
-        contract_kind=contract_kind,
-        path_scope="repository",
-    )
-    unknown = set(raw) - _HEADER_FIELDS - set(sections)
-    if unknown:
-        raise ValueError(f"{name} catalog contains unknown fields: {sorted(unknown)}")
-    parsed: dict[str, Mapping[str, Any]] = {}
-    for section in sections:
-        value = raw.get(section, {})
-        if not isinstance(value, Mapping):
-            raise ValueError(f"{name} catalog {section} must be a table")
-        parsed[section] = value
-    return path, parsed
 
 
 def _contract_entries(
@@ -130,17 +96,19 @@ def inspect_repository_designs(
         else Project.from_project_root(project)
     )
     root = context.project_root
-    ip_catalog_path, ip_catalog = _catalog(
-        context,
-        "ip",
-        "ip-catalog",
-        ("targets", "components"),
-    )
-    release_paths = _contract_entries(context, "ip.targets", ip_catalog["targets"])
+    ip_catalog = context.ip_catalog_snapshot()
+    ip_catalog_path = ip_catalog.path
+    release_rows = ip_catalog.document.get("targets", {})
+    component_rows = ip_catalog.document.get("components", {})
+    if not isinstance(release_rows, Mapping):
+        raise ValueError("ip catalog targets must be a table")
+    if not isinstance(component_rows, Mapping):
+        raise ValueError("ip catalog components must be a table")
+    release_paths = _contract_entries(context, "ip.targets", release_rows)
     component_paths = _contract_entries(
         context,
         "ip.components",
-        ip_catalog["components"],
+        component_rows,
         owner_roots=True,
     )
 

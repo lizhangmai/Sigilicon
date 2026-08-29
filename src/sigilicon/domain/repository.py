@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, cast
 
 from sigilicon.domain.component import ComponentContract, load_component_contract
-from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    read_toml,
+    require_config_header,
+)
 from sigilicon.paths import (
     ArtifactLayout,
     ProjectContext,
@@ -85,6 +89,17 @@ class OwnerCatalogSnapshot:
 
 
 @dataclass(frozen=True)
+class RepositoryCatalogSnapshot:
+    """One validated repository-level catalog source snapshot."""
+
+    role: str
+    path: Path
+    contract_kind: str
+    owner: str
+    document: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class Project:
     """Canonical project paths, catalogs, owners and Flow extensions."""
 
@@ -93,6 +108,11 @@ class Project:
     catalog_paths: tuple[tuple[str, Path], ...]
     owners: tuple[RepositoryOwner, ...]
     flow_registry_extensions: tuple[RepositoryFlowExtension, ...]
+    _ip_catalog: RepositoryCatalogSnapshot | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def from_file(cls, path: Path | str) -> "Project":
@@ -259,6 +279,13 @@ class Project:
             flow_registry_extensions=tuple(
                 sorted(flow_registry_extensions, key=lambda item: item.owner)
             ),
+            _ip_catalog=RepositoryCatalogSnapshot(
+                role="ip",
+                path=ip_catalog,
+                contract_kind="ip-catalog",
+                owner=cast(str, ip_raw["owner"]),
+                document=freeze_toml_document(ip_raw),
+            ),
         )
 
     @classmethod
@@ -325,6 +352,47 @@ class Project:
             key = validate_artifact_component(name, "catalog name")
             raise ValueError(f"repository has no {key!r} catalog")
         return path
+
+    def ip_catalog_snapshot(self) -> RepositoryCatalogSnapshot:
+        """Return the canonical IP catalog parsed with this Project."""
+
+        snapshot = self._ip_catalog
+        if snapshot is None:
+            path = self.catalog("ip")
+            raw = read_toml(path)
+            snapshot = RepositoryCatalogSnapshot(
+                role="ip",
+                path=path,
+                contract_kind="ip-catalog",
+                owner=cast(str, raw.get("owner")),
+                document=freeze_toml_document(raw),
+            )
+        header = require_config_header(
+            snapshot.document,
+            snapshot.path,
+            contract_kind="ip-catalog",
+            path_scope="repository",
+            owner=self.manifest_owner,
+        )
+        if (
+            snapshot.path != self.catalog("ip")
+            or not snapshot.path.is_relative_to(self.project_root)
+            or not snapshot.path.is_file()
+            or snapshot.role != "ip"
+            or snapshot.contract_kind != header.contract_kind
+            or snapshot.owner != header.owner
+        ):
+            raise ValueError("IP catalog snapshot belongs to a different Project")
+        unknown = set(snapshot.document) - _HEADER_FIELDS - {
+            "targets",
+            "components",
+        }
+        if unknown:
+            raise ValueError(
+                f"{snapshot.path}: IP catalog contains unknown fields: "
+                f"{sorted(unknown)}"
+            )
+        return snapshot
 
     def owner_for(self, path: Path | str) -> RepositoryOwner | None:
         resolved = Path(path).resolve()

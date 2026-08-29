@@ -18,6 +18,7 @@ from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_integration import (
     _allowed_files,
     check_ip_integration,
+    ip_catalog_contract_path,
     plan_ip_integration,
     resolve_locked_ip_release,
     resolve_ip_integration_fileset,
@@ -410,11 +411,23 @@ root = "ip/composite"
 
 def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
     contract = _write_ip_fixture(project_root, release_id, manifest)
+    catalog = (project_root / "ip/catalog.toml").resolve()
+    original_toml_load = tomllib.load
+    catalog_reads = 0
+
+    def counted_load(stream):
+        nonlocal catalog_reads
+        if Path(stream.name).resolve() == catalog:
+            catalog_reads += 1
+        return original_toml_load(stream)
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
 
     result = check_ip_integration(
         contract,
@@ -427,6 +440,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert result["contract_kind"] == "ip-integration-check"
     assert result["owner"] == "demo"
     assert result["passed"] is True
+    assert catalog_reads == 1
     assert result["architecture"] == {"variant": "default", "validated": True}
     assert _absolute_strings(result) == []
     assert "sources" not in result
@@ -597,6 +611,31 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
 
     assert legacy_contract.get_variant("default").name == "default"
     assert root_reads == 2
+
+
+def test_component_catalog_lookup_ignores_an_unselected_malformed_section(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_source_component_fixture(project_root)
+    catalog = project_root / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            "[targets]\n\n[components.leaf]",
+            "targets = []\n\n[components.leaf]",
+        ),
+        encoding="utf-8",
+    )
+    project = Project.from_project_root(project_root)
+
+    selected = ip_catalog_contract_path(
+        None,
+        "leaf",
+        project=project,
+        section="components",
+    )
+
+    assert selected == project_root / "ip/leaf/configs/ip.toml"
 
 
 def test_declaring_release_capability_does_not_implicitly_consume_it(
