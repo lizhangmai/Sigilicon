@@ -373,7 +373,7 @@ def load_oa_materialization_mapping(
     )
     _reject_unknown(
         raw,
-        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization"},
+        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization", "custom_layout"},
         "platform layout contract",
     )
     dbu = raw.get("dbu_per_micron")
@@ -395,7 +395,7 @@ def _load_layout(
 ) -> LayoutPdkConfig:
     _reject_unknown(
         layout_raw,
-        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization"},
+        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization", "custom_layout"},
         "platform layout contract",
     )
     _reject_unknown(

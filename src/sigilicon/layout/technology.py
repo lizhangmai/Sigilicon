@@ -1,4 +1,4 @@
-"""Typed technology contract for custom MOS placement and routing."""
+"""Typed, project-neutral technology roles for custom layout."""
 
 from __future__ import annotations
 
@@ -65,19 +65,8 @@ class MosPcellInterface:
 
 
 @dataclass(frozen=True)
-class ContactedMosRecipe:
-    pitch_dbu: tuple[int, int]
-    wire_half_width_dbu: int
-    diffusion_contact_extension_dbu: int
-    bottom_gate_contact_y_offset_dbu: int
-    supported_gate_length_dbu: int
-    gate_contact_parameters: tuple[tuple[str, str, str], ...]
-    pmos_contact_parameters: tuple[tuple[str, str, str], ...]
-
-
-@dataclass(frozen=True)
 class LayoutTechnology:
-    """Owner-validated technology roles consumed by custom layout recipes."""
+    """Validated technology roles consumed by project-owned layout recipes."""
 
     owner: str
     model_polarities: Mapping[str, str]
@@ -85,7 +74,6 @@ class LayoutTechnology:
     vias: Mapping[str, str]
     via_landings: Mapping[str, Mapping[str, tuple[int, int]]]
     mos_pcell: MosPcellInterface
-    contacted_mos: ContactedMosRecipe
 
     def layer(self, role: str) -> str:
         try:
@@ -119,8 +107,11 @@ def load_layout_technology(
     *,
     contract_kind: str,
     owner: str,
+    path_scope: str = "owner",
+    payload_key: str | None = None,
+    extension_fields: frozenset[str] = frozenset(),
 ) -> LayoutTechnology:
-    """Load one owner-native contract into the shared technology Interface."""
+    """Load common roles from a native contract or a named domain payload."""
 
     contract = path.resolve()
     payload = contract.read_bytes()
@@ -129,44 +120,50 @@ def load_layout_technology(
         raw,
         contract,
         contract_kind=contract_kind,
-        path_scope="owner",
+        path_scope=path_scope,
         owner=owner,
     )
+    if payload_key is None:
+        technology_raw = raw
+    else:
+        technology_raw = _table(raw.get(payload_key), payload_key)
     _reject_unknown(
-        raw,
-        _HEADER_FIELDS
+        technology_raw,
+        (_HEADER_FIELDS if payload_key is None else frozenset())
         | {
             "model_polarities",
             "layers",
             "vias",
             "via_landings",
             "mos_pcell",
-            "contacted_mos",
-        },
+        }
+        | extension_fields,
         f"{owner} layout technology",
     )
-    model_raw = _table(raw.get("model_polarities"), "model_polarities")
+    model_raw = _table(
+        technology_raw.get("model_polarities"), "model_polarities"
+    )
     model_polarities = {
         _identifier(name, "model name"): _identifier(value, f"model_polarities.{name}")
         for name, value in model_raw.items()
     }
     if not model_polarities or set(model_polarities.values()) - {"nmos", "pmos"}:
         raise ValueError("model polarities must be nmos or pmos")
-    layers_raw = _table(raw.get("layers"), "layers")
+    layers_raw = _table(technology_raw.get("layers"), "layers")
     layers = {
         _identifier(role, "layer role"): _identifier(value, f"layers.{role}")
         for role, value in layers_raw.items()
     }
     if missing := _REQUIRED_LAYERS - set(layers):
         raise ValueError(f"layout layer roles are missing: {sorted(missing)}")
-    vias_raw = _table(raw.get("vias"), "vias")
+    vias_raw = _table(technology_raw.get("vias"), "vias")
     vias = {
         _identifier(role, "via role"): _identifier(value, f"vias.{role}")
         for role, value in vias_raw.items()
     }
     if missing := _REQUIRED_VIAS - set(vias):
         raise ValueError(f"layout via roles are missing: {sorted(missing)}")
-    landing_raw = _table(raw.get("via_landings"), "via_landings")
+    landing_raw = _table(technology_raw.get("via_landings"), "via_landings")
     if set(landing_raw) != set(vias):
         raise ValueError("via_landings must define every and only the declared via roles")
     via_landings: dict[str, dict[str, tuple[int, int]]] = {}
@@ -193,7 +190,7 @@ def load_layout_technology(
                 )
             parsed[layer] = (half_size[0], half_size[1])
         via_landings[role] = parsed
-    pcell_raw = _table(raw.get("mos_pcell"), "mos_pcell")
+    pcell_raw = _table(technology_raw.get("mos_pcell"), "mos_pcell")
     pcell_fields = {
         "finger_count_parameter",
         "source_terminal",
@@ -212,64 +209,6 @@ def load_layout_technology(
     )
     if len(set(bypass_parameters)) != len(bypass_parameters):
         raise ValueError("cdf_callback_bypass_parameters contains duplicates")
-    contacted_raw = _table(raw.get("contacted_mos"), "contacted_mos")
-    contacted_fields = {
-        "pitch_dbu",
-        "wire_half_width_dbu",
-        "diffusion_contact_extension_dbu",
-        "bottom_gate_contact_y_offset_dbu",
-        "supported_gate_length_dbu",
-        "gate_contact_parameters",
-        "pmos_contact_parameters",
-    }
-    _reject_unknown(contacted_raw, contacted_fields, "contacted_mos")
-
-    def positive_integer(field: str) -> int:
-        value = contacted_raw.get(field)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"contacted_mos.{field} must be a positive integer")
-        return value
-
-    pitch = contacted_raw.get("pitch_dbu")
-    if (
-        not isinstance(pitch, list)
-        or len(pitch) != 2
-        or any(
-            isinstance(value, bool) or not isinstance(value, int) or value <= 0
-            for value in pitch
-        )
-    ):
-        raise ValueError("contacted_mos.pitch_dbu must be two positive integers")
-    gate_y_offset = contacted_raw.get("bottom_gate_contact_y_offset_dbu")
-    if isinstance(gate_y_offset, bool) or not isinstance(gate_y_offset, int):
-        raise ValueError(
-            "contacted_mos.bottom_gate_contact_y_offset_dbu must be an integer"
-        )
-
-    def pcell_parameters(field: str) -> tuple[tuple[str, str, str], ...]:
-        value = contacted_raw.get(field)
-        if not isinstance(value, list):
-            raise ValueError(f"contacted_mos.{field} must be an array")
-        result: list[tuple[str, str, str]] = []
-        for index, item in enumerate(value):
-            if (
-                not isinstance(item, list)
-                or len(item) != 3
-                or not all(isinstance(part, str) and part for part in item)
-            ):
-                raise ValueError(
-                    f"contacted_mos.{field}[{index}] must contain name, kind, value"
-                )
-            name = _identifier(item[0], f"contacted_mos.{field}[{index}] name")
-            if item[1] not in {"string", "int", "float", "boolean"}:
-                raise ValueError(
-                    f"contacted_mos.{field}[{index}] has unsupported value kind"
-                )
-            result.append((name, item[1], item[2]))
-        if len({item[0] for item in result}) != len(result):
-            raise ValueError(f"contacted_mos.{field} contains duplicate parameters")
-        return tuple(result)
-
     return LayoutTechnology(
         owner=owner,
         model_polarities=model_polarities,
@@ -299,22 +238,10 @@ def load_layout_technology(
             ),
             cdf_callback_bypass_parameters=bypass_parameters,
         ),
-        contacted_mos=ContactedMosRecipe(
-            pitch_dbu=(pitch[0], pitch[1]),
-            wire_half_width_dbu=positive_integer("wire_half_width_dbu"),
-            diffusion_contact_extension_dbu=positive_integer(
-                "diffusion_contact_extension_dbu"
-            ),
-            bottom_gate_contact_y_offset_dbu=gate_y_offset,
-            supported_gate_length_dbu=positive_integer("supported_gate_length_dbu"),
-            gate_contact_parameters=pcell_parameters("gate_contact_parameters"),
-            pmos_contact_parameters=pcell_parameters("pmos_contact_parameters"),
-        ),
     )
 
 
 __all__ = [
-    "ContactedMosRecipe",
     "LayoutTechnology",
     "MosPcellInterface",
     "load_layout_technology",

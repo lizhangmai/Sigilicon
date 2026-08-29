@@ -11,7 +11,13 @@ from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_release import safe_relative
 
 
-COMPONENT_KINDS = {"composite-ip", "hard-macro", "rtl-shell", "rtl-ip"}
+COMPONENT_KINDS = {
+    "composite-ip",
+    "hard-macro",
+    "rtl-shell",
+    "rtl-ip",
+    "source-library",
+}
 
 
 def _string(value: object, label: str) -> str:

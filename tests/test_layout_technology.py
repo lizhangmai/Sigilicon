@@ -54,14 +54,6 @@ drain_alias_prefix = "D_"
 cdf_callback_parameter = "routePolydir"
 cdf_callback_bypass_parameters = ["polyContacts"]
 
-[contacted_mos]
-pitch_dbu = [1000, 1000]
-wire_half_width_dbu = 25
-diffusion_contact_extension_dbu = 50
-bottom_gate_contact_y_offset_dbu = -115
-supported_gate_length_dbu = 30
-gate_contact_parameters = [["polyContacts", "boolean", "True"]]
-pmos_contact_parameters = []
 ''',
         encoding="utf-8",
     )
@@ -107,3 +99,38 @@ def test_layout_technology_requires_landing_policy_for_every_via(
             contract_kind="test-layout-technology",
             owner="test-owner",
         )
+
+
+def test_layout_technology_reads_common_roles_from_platform_domain_payload(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "layout.toml"
+    _write_contract(contract)
+    owner_payload = contract.read_text(encoding="utf-8").split(
+        "owner = \"test-owner\"\n", 1
+    )[1]
+    contract.write_text(
+        '''schema = 1
+contract_kind = "platform-layout"
+path_scope = "platform"
+owner = "test-platform"
+dbu_per_micron = 1000
+
+[custom_layout]
+owner_recipe = "kept-native"
+'''
+        + owner_payload.replace("\n[", "\n[custom_layout."),
+        encoding="utf-8",
+    )
+
+    technology = load_layout_technology(
+        contract,
+        contract_kind="platform-layout",
+        owner="test-platform",
+        path_scope="platform",
+        payload_key="custom_layout",
+        extension_fields=frozenset({"owner_recipe"}),
+    )
+
+    assert technology.owner == "test-platform"
+    assert technology.layer("routing1") == "M1"

@@ -1,7 +1,6 @@
 from sigilicon.layout.ir import LayoutInstance, LayoutPlan
 from sigilicon.layout.pcell import apply_pcell_semantics
 from sigilicon.layout.technology import (
-    ContactedMosRecipe,
     LayoutTechnology,
     MosPcellInterface,
 )
@@ -22,15 +21,6 @@ def _technology() -> LayoutTechnology:
             drain_alias_prefix="D_",
             cdf_callback_parameter="routePolydir",
             cdf_callback_bypass_parameters=("polyContacts",),
-        ),
-        contacted_mos=ContactedMosRecipe(
-            pitch_dbu=(1000, 1000),
-            wire_half_width_dbu=25,
-            diffusion_contact_extension_dbu=50,
-            bottom_gate_contact_y_offset_dbu=-115,
-            supported_gate_length_dbu=30,
-            gate_contact_parameters=(),
-            pmos_contact_parameters=(),
         ),
     )
 
