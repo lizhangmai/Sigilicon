@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
@@ -70,7 +71,7 @@ def _relative_spec(root: Path, value: object, field: str) -> tuple[Path, Path]:
 
 
 def _actions(value: object, field: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
+    if not isinstance(value, (list, tuple)) or not value:
         raise ValueError(f"{field} must be a non-empty string array")
     result = tuple(value)
     if any(not isinstance(item, str) or item not in _ACTIONS for item in result):
@@ -113,7 +114,7 @@ def load_layout_target_catalog(
                 f"layout target catalog contains unknown fields: {sorted(unknown)}"
             )
         rows = raw.get("targets")
-        if not isinstance(rows, dict):
+        if not isinstance(rows, Mapping):
             raise ValueError("layout target catalog targets must be a table")
         for name, row in rows.items():
             field = f"targets.{name}"
@@ -122,7 +123,7 @@ def load_layout_target_catalog(
             if name in names:
                 raise ValueError(f"duplicate layout target across owner catalogs: {name}")
             names.add(name)
-            if not isinstance(row, dict):
+            if not isinstance(row, Mapping):
                 raise ValueError(f"{field} must be a table")
             unknown = set(row) - _TARGET_FIELDS
             if unknown:

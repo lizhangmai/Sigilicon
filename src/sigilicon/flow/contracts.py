@@ -59,8 +59,8 @@ def _string_mapping(value: object, label: str) -> dict[str, str]:
     return dict(table)
 
 
-def _table(value: object, label: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
+def _table(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
         raise FlowContractError(f"{label} must be a table")
     return value
 
@@ -68,7 +68,7 @@ def _table(value: object, label: str) -> dict[str, Any]:
 def _json_config(value: object, label: str) -> dict[str, Any]:
     if value is None:
         return {}
-    table = _table(value, label)
+    table = dict(_table(value, label))
     try:
         json.dumps(table, allow_nan=False)
     except (TypeError, ValueError) as exc:

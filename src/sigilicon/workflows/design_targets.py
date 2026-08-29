@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from typing import Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
@@ -146,13 +147,13 @@ def _validate_runner_args(value: tuple[str, ...], field: str) -> None:
 
 
 def _modes(value: object, field: str) -> tuple[DesignMode, ...]:
-    if not isinstance(value, dict) or not value:
+    if not isinstance(value, Mapping) or not value:
         raise ValueError(f"{field} must be a non-empty table")
     result: list[DesignMode] = []
     for name, raw_args in value.items():
         if not isinstance(name, str) or _NAME_RE.fullmatch(name) is None:
             raise ValueError(f"{field} mode names must match {_NAME_RE.pattern!r}")
-        if not isinstance(raw_args, list):
+        if not isinstance(raw_args, (list, tuple)):
             raise ValueError(f"{field}.{name} must be a string array")
         arguments = tuple(raw_args)
         _validate_runner_args(arguments, f"{field}.{name}")
@@ -193,7 +194,7 @@ def load_design_target_catalog(
                 f"design target catalog contains unknown fields: {sorted(unknown)}"
             )
         rows = raw.get("targets")
-        if not isinstance(rows, dict):
+        if not isinstance(rows, Mapping):
             raise ValueError("design target catalog targets must be a table")
         for name, row in rows.items():
             field = f"targets.{name}"
@@ -202,7 +203,7 @@ def load_design_target_catalog(
             if name in names:
                 raise ValueError(f"duplicate design target across owner catalogs: {name}")
             names.add(name)
-            if not isinstance(row, dict):
+            if not isinstance(row, Mapping):
                 raise ValueError(f"{field} must be a table")
             unknown = set(row) - _TARGET_FIELDS
             if unknown:

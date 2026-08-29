@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import UserDict
+from dataclasses import replace
 from pathlib import Path
 import tomllib
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -258,14 +260,38 @@ owner = "example"
 ''',
         encoding="utf-8",
     )
+    shared_sources = (
+        (flow_root / "flow.toml", "flow"),
+        (flow_root / "profile.toml", "execution-profile"),
+        (
+            owner_root / "configs/physical_materialization/target.toml",
+            "physical-materialization-target",
+        ),
+    )
+    for path, contract_kind in shared_sources:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f'''schema = 1
+contract_kind = "{contract_kind}"
+path_scope = "owner"
+owner = "example"
+
+[payload]
+values = ["fixture"]
+''',
+            encoding="utf-8",
+        )
+    selected_sources = (*catalogs, *(path for path, _kind in shared_sources))
     write_component_owner(
         tmp_path,
         "example",
         filesets={
-            "flow": tuple(path.relative_to(tmp_path).as_posix() for path in catalogs)
+            "flow": tuple(
+                path.relative_to(tmp_path).as_posix() for path in selected_sources
+            )
         },
     )
-    catalog_paths = {path.resolve() for path in catalogs}
+    catalog_paths = {path.resolve() for path in selected_sources}
     reads = {path: 0 for path in catalog_paths}
     original_load = tomllib.load
 
@@ -280,6 +306,87 @@ owner = "example"
 
     assert check_designs_main([]) == 0
     assert set(reads.values()) == {1}
+
+
+def test_flow_source_inventory_is_frozen_and_catalog_filtered(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "ip/example"
+    flow_root = owner_root / "configs/flows"
+    flow_root.mkdir(parents=True)
+    catalog = flow_root / "catalog.toml"
+    catalog.write_text(
+        '''schema = 1
+contract_kind = "flow-catalog"
+path_scope = "owner"
+owner = "example"
+
+[flows]
+''',
+        encoding="utf-8",
+    )
+    source = flow_root / "source.toml"
+    source.write_text(
+        '''schema = 1
+contract_kind = "source-assets"
+path_scope = "owner"
+owner = "example"
+
+[payload]
+values = ["fixture"]
+''',
+        encoding="utf-8",
+    )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": tuple(
+                path.relative_to(tmp_path).as_posix() for path in (catalog, source)
+            )
+        },
+    )
+    project = Project.from_project_root(tmp_path)
+    inventory = project.flow_catalog_inventory()
+
+    assert {snapshot.contract_kind for snapshot in inventory} == {
+        "flow-catalog",
+        "source-assets",
+    }
+    assert tuple(
+        snapshot.contract_kind
+        for snapshot in project.owner_flow_catalog_snapshots(
+            project.owner("example"),
+            inventory=inventory,
+        )
+    ) == ("flow-catalog",)
+    source_snapshot = next(
+        snapshot
+        for snapshot in inventory
+        if snapshot.contract_kind == "source-assets"
+    )
+    with pytest.raises(TypeError):
+        source_snapshot.document["payload"]["values"][0] = "changed"
+    with pytest.raises(ValueError, match="identity drift"):
+        project.owner_flow_catalog_snapshots(
+            project.owner("example"),
+            inventory=(
+                replace(source_snapshot, document=dict(source_snapshot.document)),
+            ),
+        )
+    mutable_document = MappingProxyType(
+        {
+            **source_snapshot.document,
+            "payload": UserDict({"values": ("fixture",)}),
+        }
+    )
+    with pytest.raises(ValueError, match="identity drift"):
+        project.owner_flow_catalog_snapshots(
+            project.owner("example"),
+            inventory=(
+                replace(source_snapshot, document=mutable_document),
+            ),
+        )
 
 
 def test_check_designs_reads_each_platform_source_once(

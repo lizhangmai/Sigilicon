@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import date, datetime, time
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, cast
@@ -25,6 +26,18 @@ _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _FLOW_CATALOG_KINDS = frozenset(
     {"flow-catalog", "flow-design-registry", "flow-layout-registry"}
 )
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
+def _is_frozen_toml(value: object) -> bool:
+    if isinstance(value, _MAPPING_PROXY_TYPE):
+        return all(
+            isinstance(key, str) and _is_frozen_toml(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, tuple):
+        return all(_is_frozen_toml(item) for item in value)
+    return isinstance(value, (str, int, float, bool, datetime, date, time))
 
 
 def _project_file(root: Path, value: object, field: str) -> Path:
@@ -80,7 +93,7 @@ class RepositoryFlowExtension:
 
 @dataclass(frozen=True)
 class OwnerCatalogSnapshot:
-    """One owner catalog document read for a caller-owned operation."""
+    """One owner-selected Flow source read for a caller-owned operation."""
 
     owner: str
     path: Path
@@ -471,7 +484,7 @@ class Project:
         self,
         owner: RepositoryOwner,
     ) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Read one owner's selected Flow catalog documents once."""
+        """Read one owner's selected Flow TOML sources once."""
 
         if owner not in self.owners:
             raise ValueError(f"repository does not contain owner {owner.name!r}")
@@ -481,20 +494,20 @@ class Project:
                 continue
             raw = read_toml(path)
             contract_kind = raw.get("contract_kind")
-            if contract_kind not in _FLOW_CATALOG_KINDS:
+            if not isinstance(contract_kind, str) or not contract_kind:
                 continue
             result.append(
                 OwnerCatalogSnapshot(
                     owner=owner.name,
                     path=path,
-                    contract_kind=cast(str, contract_kind),
-                    document=MappingProxyType(dict(raw)),
+                    contract_kind=contract_kind,
+                    document=freeze_toml_document(raw),
                 )
             )
         return tuple(sorted(result, key=lambda item: item.path))
 
     def flow_catalog_inventory(self) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Read every selected owner Flow catalog document once."""
+        """Read every owner-selected Flow TOML source once."""
 
         return tuple(
             snapshot
@@ -519,19 +532,27 @@ class Project:
                 )
             seen.add(identity)
             if (
-                snapshot.path not in owner.files("flow")
+                snapshot.path != snapshot.path.resolve()
+                or not snapshot.path.is_file()
+                or snapshot.path not in owner.files("flow")
                 or not snapshot.path.is_relative_to(self.project_root)
             ):
                 raise ValueError(
                     f"Flow catalog inventory path does not belong to the current "
                     f"Project owner {owner.name!r}: {snapshot.path}"
                 )
-            if snapshot.contract_kind not in _FLOW_CATALOG_KINDS:
+            if (
+                not isinstance(snapshot.contract_kind, str)
+                or not snapshot.contract_kind
+            ):
                 raise ValueError(
-                    f"unsupported Flow catalog inventory kind: "
+                    f"invalid Flow source inventory kind: "
                     f"{snapshot.contract_kind!r}"
                 )
-            if snapshot.document.get("contract_kind") != snapshot.contract_kind:
+            if (
+                not _is_frozen_toml(snapshot.document)
+                or snapshot.document.get("contract_kind") != snapshot.contract_kind
+            ):
                 raise ValueError(
                     f"Flow catalog inventory identity drift: {snapshot.path}"
                 )
