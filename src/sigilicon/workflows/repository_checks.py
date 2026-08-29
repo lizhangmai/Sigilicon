@@ -139,6 +139,16 @@ def inspect_repository_designs(
                 project=context,
             )
 
+    oa_plan_inventory = {
+        assembly: plan_oa_library_rebuild(
+            assembly,
+            project=context,
+            platform_inventory=platform_inventory,
+            oa_source_inventory=oa_source_inventory,
+        )
+        for assembly in oa_source_inventory
+    }
+
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
     for name, path in component_paths.items():
@@ -168,6 +178,7 @@ def inspect_repository_designs(
                 platform_inventory=platform_inventory,
                 release_inventory=release_inventory,
                 oa_source_inventory=oa_source_inventory,
+                oa_plan_inventory=oa_plan_inventory,
             )
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
@@ -190,12 +201,7 @@ def inspect_repository_designs(
             "exports": [item.name for item in contract.exports],
             "oa_assembly": contract.oa_assembly.as_posix(),
         }
-        oa_assemblies[name] = plan_oa_library_rebuild(
-            assembly,
-            project=context,
-            platform_inventory=platform_inventory,
-            oa_source_inventory=oa_source_inventory,
-        ).as_dict()
+        oa_assemblies[name] = oa_plan_inventory[assembly].as_dict()
 
     platforms: dict[str, Any] = {}
     for name, platform in platform_inventory.items():

@@ -243,9 +243,31 @@ def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
     cell_manifest = tmp_path / "cell.toml"
     netlist = tmp_path / "top.scs"
     setup = tmp_path / "simulation.toml"
+    layout = tmp_path / "layout.toml"
+    generator = tmp_path / "layout_generator.py"
+    generator_dependency = tmp_path / "generator_dependency.py"
+    generator_package = tmp_path / "generator_support"
+    generator_package.mkdir()
+    generator_package_init = generator_package / "__init__.py"
+    generator_support = generator_package / "recipe.py"
+    dependency_netlist = tmp_path / "dependency.scs"
     for path in (release, assembly, cell_manifest, setup):
         path.write_text("name = 'fixture'\n", encoding="utf-8")
     netlist.write_text("subckt TOP A\nends TOP\n", encoding="utf-8")
+    generator.write_text("VALUE = 1\n", encoding="utf-8")
+    generator_dependency.write_text("VALUE = 2\n", encoding="utf-8")
+    generator_package_init.write_text("VALUE = 3\n", encoding="utf-8")
+    generator_support.write_text("VALUE = 4\n", encoding="utf-8")
+    dependency_netlist.write_text("subckt DEP A\nends DEP\n", encoding="utf-8")
+    layout.write_text(
+        """[layout]
+generator_dependencies = ["generator_dependency.py"]
+generator_modules = ["generator_support.recipe", "sigilicon.workflows.ip_packaging"]
+source_netlist = "top.scs"
+dependency_netlists = ["dependency.scs"]
+""",
+        encoding="utf-8",
+    )
     top = SimpleNamespace(
         cell="TOP",
         owner="fixture",
@@ -254,7 +276,7 @@ def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
         source_manifest_path=assembly,
         manifest_path=cell_manifest,
         design_spec=None,
-        layout_specs=(),
+        layout_specs=(layout,),
         views=(
             SimpleNamespace(
                 kind="spectre_netlist",
@@ -379,7 +401,7 @@ def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
         resolve_release_oa_source,
     )
 
-    ip_packaging._source_inputs(
+    inventory_sources = ip_packaging._source_inputs(
         contract,
         platform_inventory={"testpdk": platform},
         oa_source_inventory={assembly: library},
@@ -387,6 +409,94 @@ def test_release_source_inventory_reuses_one_platform_for_all_testbenches(
 
     assert resolved_oa_sources == [(assembly, project, library)]
     assert simulation_platforms == [platform, platform]
+
+    simulation_platforms.clear()
+    planned_simulations = tuple(
+        SimpleNamespace(
+            path=setup,
+            project=project,
+            library="fixture",
+            cell=cell.cell,
+            native_setup=SimpleNamespace(rdb_contract=None),
+        )
+        for cell in testbenches
+    )
+    oa_plan = SimpleNamespace(
+        source=library,
+        library="fixture",
+        testbenches=tuple(
+            SimpleNamespace(
+                cell=cell.cell,
+                canonical_source=cell.canonical_source,
+                simulation=simulation,
+            )
+            for cell, simulation in zip(
+                testbenches,
+                planned_simulations,
+                strict=True,
+            )
+        ),
+        layouts=(
+            SimpleNamespace(
+                spec=SimpleNamespace(
+                    path=layout,
+                    project=project,
+                    library="fixture",
+                    cell="TOP",
+                    generator_source=generator,
+                    generator_dependencies=(generator_dependency,),
+                    generator_modules=(
+                        "generator_support.recipe",
+                        "sigilicon.workflows.ip_packaging",
+                    ),
+                    generator_module_sources=(
+                        generator_support,
+                        Path(ip_packaging.__file__).resolve(),
+                    ),
+                    source_netlist=netlist,
+                    dependency_netlists=(dependency_netlist,),
+                ),
+            ),
+        ),
+    )
+
+    def reject_simulation_load(*_args, **_kwargs):
+        raise AssertionError("explicit OA plan must replace simulation I/O")
+
+    def reject_layout_load(*_args, **_kwargs):
+        raise AssertionError("explicit OA plan must replace layout TOML I/O")
+
+    with monkeypatch.context() as plan_patch:
+        plan_patch.setattr(
+            oa_simulation_domain,
+            "load_oa_simulation_spec",
+            reject_simulation_load,
+        )
+        plan_patch.setattr(ip_packaging.tomllib, "load", reject_layout_load)
+        planned_sources = ip_packaging._source_inputs(
+            contract,
+            oa_source_inventory={assembly: library},
+            oa_plan_inventory={assembly: oa_plan},
+        )
+
+    assert simulation_platforms == []
+    assert planned_sources == inventory_sources
+
+    generator_support.unlink()
+    with pytest.raises(FileNotFoundError, match="release source is missing"):
+        ip_packaging._source_inputs(
+            contract,
+            oa_source_inventory={assembly: library},
+            oa_plan_inventory={assembly: oa_plan},
+        )
+    generator_support.write_text("VALUE = 4\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="OA plan inventory has no"):
+        ip_packaging._source_inputs(
+            contract,
+            oa_source_inventory={assembly: library},
+            oa_plan_inventory={},
+        )
 
     with pytest.raises(ValueError, match="OA source inventory has no"):
         ip_packaging._source_inputs(

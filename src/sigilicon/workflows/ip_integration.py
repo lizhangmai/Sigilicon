@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 import tomllib
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_integration import (
@@ -31,6 +31,9 @@ from sigilicon.workflows.ip_packaging import (
     release_role_view,
     resolve_release_role,
 )
+
+if TYPE_CHECKING:
+    from sigilicon.workflows.oa_library import OALibraryRebuildPlan
 
 
 def _ip_catalog(project: Project) -> tuple[Path, Mapping[str, Any]]:
@@ -304,6 +307,7 @@ def plan_ip_integration(
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
+    oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
@@ -331,6 +335,7 @@ def plan_ip_integration(
                 maturity=release.required_maturity,
                 platform_inventory=platform_inventory,
                 oa_source_inventory=oa_source_inventory,
+                oa_plan_inventory=oa_plan_inventory,
             )
             exported = _release_export(expected, release.export)
             interface = exported.get("interface")

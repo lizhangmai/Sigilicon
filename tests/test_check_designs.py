@@ -353,6 +353,7 @@ def test_repository_workflows_share_one_platform_inventory(
     observed_platform_inventories: list[object] = []
     observed_release_inventories: list[object] = []
     observed_oa_inventories: list[object] = []
+    observed_oa_plan_inventories: list[object] = []
     oa_source_reads: list[Path] = []
     oa_document_reads = 0
 
@@ -372,11 +373,13 @@ def test_repository_workflows_share_one_platform_inventory(
         platform_inventory,
         release_inventory,
         oa_source_inventory,
+        oa_plan_inventory,
     ):
         assert project.project_root == tmp_path.resolve()
         observed_platform_inventories.append(platform_inventory)
         observed_release_inventories.append(release_inventory)
         observed_oa_inventories.append(oa_source_inventory)
+        observed_oa_plan_inventories.append(oa_plan_inventory)
         return {"ip": "fixture"}
 
     def plan_oa(
@@ -465,5 +468,7 @@ def test_repository_workflows_share_one_platform_inventory(
         for inventory in observed_oa_inventories[1:]
     )
     assert set(observed_oa_inventories[0]) == set(oa_source_reads)
+    assert len(observed_oa_plan_inventories) == 1
+    assert set(observed_oa_plan_inventories[0]) == set(oa_source_reads)
     assert oa_document_reads == 0
     assert set(reads.values()) == {1}
