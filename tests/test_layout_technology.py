@@ -187,3 +187,50 @@ dbu_per_micron = 1000
 
     assert technology.owner == "test-platform"
     assert technology.layer("routing1") == "M1"
+
+
+def test_layout_technology_loads_optional_passive_pcell_interfaces(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "technology.toml"
+    _write_contract(contract)
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            "\n[mos_pcell]\n",
+            '''
+[mom_pcell]
+cell_name = "mom2t"
+plus_terminal = "PLUS"
+minus_terminal = "MINUS"
+finger_width_parameter = "wf"
+finger_spacing_parameter = "sf"
+finger_length_parameter = "lf"
+finger_count_parameter = "nf"
+start_metal_parameter = "start"
+stop_metal_parameter = "stop"
+multiplicity_parameter = "m"
+
+[resistor_pcell]
+cell_name = "rm4"
+plus_terminal = "PLUS"
+minus_terminal = "MINUS"
+length_parameter = "l"
+width_parameter = "w"
+calculation_parameter = "calc"
+calculation_value = "l_&_w"
+multiplicity_parameter = "m"
+
+[mos_pcell]
+''',
+        ),
+        encoding="utf-8",
+    )
+
+    technology = load_layout_technology(
+        contract,
+        contract_kind="test-layout-technology",
+        owner="test-owner",
+    )
+
+    assert technology.require_mom_pcell().finger_count_parameter == "nf"
+    assert technology.require_resistor_pcell().calculation_value == "l_&_w"

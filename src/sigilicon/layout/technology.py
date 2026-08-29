@@ -70,6 +70,32 @@ class MosPcellInterface:
 
 
 @dataclass(frozen=True)
+class MomPcellInterface:
+    cell_name: str
+    plus_terminal: str
+    minus_terminal: str
+    finger_width_parameter: str
+    finger_spacing_parameter: str
+    finger_length_parameter: str
+    finger_count_parameter: str
+    start_metal_parameter: str
+    stop_metal_parameter: str
+    multiplicity_parameter: str
+
+
+@dataclass(frozen=True)
+class ResistorPcellInterface:
+    cell_name: str
+    plus_terminal: str
+    minus_terminal: str
+    length_parameter: str
+    width_parameter: str
+    calculation_parameter: str
+    calculation_value: str
+    multiplicity_parameter: str
+
+
+@dataclass(frozen=True)
 class LayoutTechnology:
     """Validated technology roles consumed by project-owned layout recipes."""
 
@@ -81,6 +107,8 @@ class LayoutTechnology:
     via_landing_profiles: Mapping[
         str, Mapping[str, Mapping[str, tuple[int, int]]]
     ]
+    mom_pcell: MomPcellInterface | None
+    resistor_pcell: ResistorPcellInterface | None
     mos_pcell: MosPcellInterface
 
     def layer(self, role: str) -> str:
@@ -123,6 +151,16 @@ class LayoutTechnology:
                 f"{self.owner} via role {via_role!r} has no {layer_role!r} landing"
             ) from exc
 
+    def require_mom_pcell(self) -> MomPcellInterface:
+        if self.mom_pcell is None:
+            raise ValueError(f"{self.owner} does not declare a MOM PCell interface")
+        return self.mom_pcell
+
+    def require_resistor_pcell(self) -> ResistorPcellInterface:
+        if self.resistor_pcell is None:
+            raise ValueError(f"{self.owner} does not declare a resistor PCell interface")
+        return self.resistor_pcell
+
 
 def load_layout_technology(
     path: Path,
@@ -157,6 +195,8 @@ def load_layout_technology(
             "vias",
             "via_landings",
             "via_landing_profiles",
+            "mom_pcell",
+            "resistor_pcell",
             "mos_pcell",
         },
         f"{owner} layout technology",
@@ -264,6 +304,77 @@ def load_layout_technology(
                 parsed_layers[layer] = (half_size[0], half_size[1])
             parsed_profile[via_role] = parsed_layers
         via_landing_profiles[profile] = parsed_profile
+    mom_pcell: MomPcellInterface | None = None
+    if "mom_pcell" in technology_raw:
+        mom_raw = _table(technology_raw.get("mom_pcell"), "mom_pcell")
+        mom_fields = {
+            "cell_name",
+            "plus_terminal",
+            "minus_terminal",
+            "finger_width_parameter",
+            "finger_spacing_parameter",
+            "finger_length_parameter",
+            "finger_count_parameter",
+            "start_metal_parameter",
+            "stop_metal_parameter",
+            "multiplicity_parameter",
+        }
+        _reject_unknown(mom_raw, mom_fields, "mom_pcell")
+        mom_pcell = MomPcellInterface(
+            **{
+                field: _identifier(mom_raw.get(field), f"mom_pcell.{field}")
+                for field in mom_fields
+            }
+        )
+    resistor_pcell: ResistorPcellInterface | None = None
+    if "resistor_pcell" in technology_raw:
+        resistor_raw = _table(
+            technology_raw.get("resistor_pcell"), "resistor_pcell"
+        )
+        resistor_fields = {
+            "cell_name",
+            "plus_terminal",
+            "minus_terminal",
+            "length_parameter",
+            "width_parameter",
+            "calculation_parameter",
+            "calculation_value",
+            "multiplicity_parameter",
+        }
+        _reject_unknown(resistor_raw, resistor_fields, "resistor_pcell")
+        calculation_value = resistor_raw.get("calculation_value")
+        if not isinstance(calculation_value, str) or not calculation_value:
+            raise ValueError("resistor_pcell.calculation_value must be a string")
+        resistor_pcell = ResistorPcellInterface(
+            cell_name=_identifier(
+                resistor_raw.get("cell_name"), "resistor_pcell.cell_name"
+            ),
+            plus_terminal=_identifier(
+                resistor_raw.get("plus_terminal"),
+                "resistor_pcell.plus_terminal",
+            ),
+            minus_terminal=_identifier(
+                resistor_raw.get("minus_terminal"),
+                "resistor_pcell.minus_terminal",
+            ),
+            length_parameter=_identifier(
+                resistor_raw.get("length_parameter"),
+                "resistor_pcell.length_parameter",
+            ),
+            width_parameter=_identifier(
+                resistor_raw.get("width_parameter"),
+                "resistor_pcell.width_parameter",
+            ),
+            calculation_parameter=_identifier(
+                resistor_raw.get("calculation_parameter"),
+                "resistor_pcell.calculation_parameter",
+            ),
+            calculation_value=calculation_value,
+            multiplicity_parameter=_identifier(
+                resistor_raw.get("multiplicity_parameter"),
+                "resistor_pcell.multiplicity_parameter",
+            ),
+        )
     pcell_raw = _table(technology_raw.get("mos_pcell"), "mos_pcell")
     pcell_fields = {
         "length_parameter",
@@ -295,6 +406,8 @@ def load_layout_technology(
         vias=vias,
         via_landings=via_landings,
         via_landing_profiles=via_landing_profiles,
+        mom_pcell=mom_pcell,
+        resistor_pcell=resistor_pcell,
         mos_pcell=MosPcellInterface(
             length_parameter=_identifier(
                 pcell_raw.get("length_parameter"),
@@ -343,6 +456,8 @@ def load_layout_technology(
 
 __all__ = [
     "LayoutTechnology",
+    "MomPcellInterface",
     "MosPcellInterface",
+    "ResistorPcellInterface",
     "load_layout_technology",
 ]

@@ -14,6 +14,8 @@ def _technology() -> LayoutTechnology:
         vias={},
         via_landings={},
         via_landing_profiles={},
+        mom_pcell=None,
+        resistor_pcell=None,
         mos_pcell=MosPcellInterface(
             length_parameter="l",
             width_parameter="Wfg",
