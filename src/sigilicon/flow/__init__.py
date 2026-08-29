@@ -9,6 +9,7 @@ from sigilicon.flow.contracts import (
     load_execution_profile,
     load_flow_catalog,
     load_flow_contract,
+    parse_flow_catalog,
     resolve_catalog_selection,
 )
 from sigilicon.flow.builtin import builtin_registry
@@ -201,6 +202,7 @@ __all__ = [
     "load_flow_contract",
     "load_execution_profile",
     "load_flow_catalog",
+    "parse_flow_catalog",
     "load_catalog_selection",
     "resolve_catalog_selection",
     "load_execution_environment",

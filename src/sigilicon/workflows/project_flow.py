@@ -20,8 +20,8 @@ from sigilicon.flow import (
     FlowProgress,
     FlowResult,
     PreflightResult,
-    load_catalog_selection,
-    load_flow_catalog,
+    parse_flow_catalog,
+    resolve_catalog_selection,
 )
 from sigilicon.flow.model import SourceMember
 from sigilicon.flow.registry import FlowRegistry
@@ -253,7 +253,12 @@ class ProjectFlow:
     def catalog(self) -> FlowCatalog:
         """Load the owner's canonical typed Flow catalog."""
 
-        return load_flow_catalog(self.catalog_path, owner_root=self.owner.root)
+        snapshot = self.project.owner_flow_catalog_snapshot(self.owner)
+        return parse_flow_catalog(
+            snapshot.document,
+            snapshot.path,
+            owner_root=self.owner.root,
+        )
 
     def plan(
         self,
@@ -262,9 +267,8 @@ class ProjectFlow:
         target: str,
         profile: str | None = None,
     ) -> ProjectFlowPlan:
-        selection = load_catalog_selection(
-            self.catalog_path,
-            owner_root=self.owner.root,
+        selection = resolve_catalog_selection(
+            self.catalog(),
             flow_id=flow,
             profile_id=profile,
         )

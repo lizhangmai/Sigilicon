@@ -138,6 +138,40 @@ def _owner_flow_files(project_root: Path, source: Path, owner: str = "example") 
     )
 
 
+def test_project_flow_reads_its_canonical_catalog_once_per_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_extension(tmp_path)
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"flow": _owner_flow_files(tmp_path, source)},
+    )
+    _declare_extension(tmp_path, "example", source)
+    catalog_path = _write_owner_flow(tmp_path).resolve()
+    original_read_toml = repository_module.read_toml
+    catalog_reads = 0
+
+    def counted_read_toml(path: Path) -> dict[str, object]:
+        nonlocal catalog_reads
+        if Path(path).resolve() == catalog_path:
+            catalog_reads += 1
+        return original_read_toml(path)
+
+    monkeypatch.setattr(repository_module, "read_toml", counted_read_toml)
+    project_flow = ProjectFlow.from_project_root(tmp_path, owner="example")
+
+    assert project_flow.catalog().owner == "example"
+    assert catalog_reads == 1
+
+    catalog_reads = 0
+    planned = project_flow.plan(flow="owner-flow", target="all")
+
+    assert planned.plan_identity == "example:owner-flow:all:local"
+    assert catalog_reads == 1
+
+
 def test_project_flow_registry_applies_the_selected_owner_extension(
     tmp_path: Path,
 ) -> None:

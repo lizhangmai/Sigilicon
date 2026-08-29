@@ -285,16 +285,19 @@ def _owner_path(owner_root: Path, value: object, label: str) -> Path:
     return resolved
 
 
-def load_flow_catalog(path: Path, *, owner_root: Path) -> FlowCatalog:
+def parse_flow_catalog(
+    document: Mapping[str, Any],
+    path: Path,
+    *,
+    owner_root: Path,
+) -> FlowCatalog:
+    """Validate an already read Flow Catalog document."""
+
     root = Path(owner_root).resolve()
     contract = Path(path).resolve()
     if not contract.is_relative_to(root):
         raise FlowContractError("Flow Catalog must be inside the explicit owner root")
-    try:
-        with contract.open("rb") as stream:
-            raw: dict[str, Any] = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise FlowContractError(f"cannot read Flow Catalog {contract}: {exc}") from exc
+    raw = document
     _reject_unknown(raw, _HEADER_FIELDS | {"flows"}, str(contract))
     if raw.get("schema") != 1:
         raise FlowContractError("Flow Catalog must use the current schema 1")
@@ -340,6 +343,21 @@ def load_flow_catalog(path: Path, *, owner_root: Path) -> FlowCatalog:
         owner_root=root,
         entries=tuple(entries),
     )
+
+
+def load_flow_catalog(path: Path, *, owner_root: Path) -> FlowCatalog:
+    """Read and validate one Flow Catalog file."""
+
+    root = Path(owner_root).resolve()
+    contract = Path(path).resolve()
+    if not contract.is_relative_to(root):
+        raise FlowContractError("Flow Catalog must be inside the explicit owner root")
+    try:
+        with contract.open("rb") as stream:
+            raw: dict[str, Any] = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise FlowContractError(f"cannot read Flow Catalog {contract}: {exc}") from exc
+    return parse_flow_catalog(raw, contract, owner_root=root)
 
 
 def resolve_catalog_selection(

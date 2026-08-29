@@ -357,27 +357,63 @@ class Project:
             )
         return ProjectScope(self._paths, selected.name, selected.root)
 
-    def owner_flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
-        """Return typed Flow catalogs explicitly owned by one component."""
+    def owner_flow_catalog_snapshots(
+        self,
+        owner: RepositoryOwner,
+    ) -> tuple[OwnerCatalogSnapshot, ...]:
+        """Read and classify one owner's canonical Flow catalogs once."""
 
         if owner not in self.owners:
             raise ValueError(f"repository does not contain owner {owner.name!r}")
+        result: list[OwnerCatalogSnapshot] = []
+        for path in owner.files("flow"):
+            if path.suffix != ".toml":
+                continue
+            raw = read_toml(path)
+            if raw.get("contract_kind") != "flow-catalog":
+                continue
+            require_config_header(
+                raw,
+                path,
+                contract_kind="flow-catalog",
+                path_scope="owner",
+                owner=owner.name,
+            )
+            result.append(
+                OwnerCatalogSnapshot(
+                    owner=owner.name,
+                    path=path,
+                    contract_kind="flow-catalog",
+                    document=MappingProxyType(dict(raw)),
+                )
+            )
+        return tuple(sorted(result, key=lambda item: item.path))
+
+    def owner_flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
+        """Return path identities for one owner's typed Flow catalogs."""
+
         return tuple(
-            path
-            for path in owner.files("flow")
-            if path.suffix == ".toml"
-            and read_toml(path).get("contract_kind") == "flow-catalog"
+            snapshot.path
+            for snapshot in self.owner_flow_catalog_snapshots(owner)
         )
 
-    def owner_flow_catalog(self, owner: RepositoryOwner) -> Path:
-        """Select the unique typed Flow catalog for one owner."""
+    def owner_flow_catalog_snapshot(
+        self,
+        owner: RepositoryOwner,
+    ) -> OwnerCatalogSnapshot:
+        """Select one owner's unique typed Flow catalog snapshot."""
 
-        matches = self.owner_flow_catalogs(owner)
+        matches = self.owner_flow_catalog_snapshots(owner)
         if len(matches) != 1:
             raise ValueError(
                 f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
             )
         return matches[0]
+
+    def owner_flow_catalog(self, owner: RepositoryOwner) -> Path:
+        """Select the unique typed Flow catalog for one owner."""
+
+        return self.owner_flow_catalog_snapshot(owner).path
 
     def flow_registry_extension(self, owner: RepositoryOwner) -> Path | None:
         """Return the explicitly assembled registry source for one owner."""

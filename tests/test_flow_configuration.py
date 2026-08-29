@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -27,6 +28,7 @@ from sigilicon.flow import (
     load_catalog_selection,
     load_execution_profile,
     load_flow_catalog,
+    parse_flow_catalog,
     resolve_catalog_selection,
 )
 
@@ -140,6 +142,17 @@ def test_catalog_resolves_owner_scoped_flow_and_default_profile(
     assert selection.profile.selection(
         "fake.requirements"
     ).platform_asset_identities == {"logic-lib": "fake-platform:logic-lib@1"}
+
+
+def test_flow_catalog_document_parser_matches_path_loader(tmp_path: Path) -> None:
+    catalog = _write_catalog_sources(tmp_path)
+    document = tomllib.loads(catalog.read_text(encoding="utf-8"))
+
+    assert parse_flow_catalog(
+        document,
+        catalog,
+        owner_root=tmp_path,
+    ) == load_flow_catalog(catalog, owner_root=tmp_path)
 
 
 def test_catalog_rejects_paths_outside_the_explicit_owner_root(tmp_path: Path) -> None:
