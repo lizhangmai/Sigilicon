@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from sigilicon.domain.config_contracts import require_config_header
-from sigilicon.domain.repository import Project
+from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
 
 _TARGET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _ACTIONS = frozenset({"check", "generate", "verify"})
@@ -84,12 +84,16 @@ def load_layout_target_catalog(
     project_root: Path | None = None,
     *,
     project: Project | None = None,
+    catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
 ) -> LayoutTargetCatalog:
     """Load every selected layout target catalog, or an empty optional domain."""
 
     repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
-    catalogs = repository.flow_catalog_snapshots("layout_targets")
+    catalogs = repository.flow_catalog_snapshots(
+        "layout_targets",
+        inventory=catalog_inventory,
+    )
     targets: list[LayoutTarget] = []
     names: set[str] = set()
     for catalog in catalogs:

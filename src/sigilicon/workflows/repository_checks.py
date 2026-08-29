@@ -220,12 +220,17 @@ def inspect_repository_designs(
             "owner": platform.owner,
         }
 
+    flow_catalog_inventory = context.flow_catalog_inventory()
     configuration = inspect_project_configurations(
         context,
         owner_roots=owner_roots,
+        catalog_inventory=flow_catalog_inventory,
     )
 
-    design_catalog = load_design_target_catalog(project=context)
+    design_catalog = load_design_target_catalog(
+        project=context,
+        catalog_inventory=flow_catalog_inventory,
+    )
     designs = {
         target.name: {
             "owner": target.owner,
@@ -235,7 +240,10 @@ def inspect_repository_designs(
         for target in design_catalog.targets
     }
 
-    layout_catalog = load_layout_target_catalog(project=context)
+    layout_catalog = load_layout_target_catalog(
+        project=context,
+        catalog_inventory=flow_catalog_inventory,
+    )
     layout_targets = {
         target.name: {
             "owner": target.owner,

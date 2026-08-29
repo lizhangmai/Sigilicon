@@ -13,7 +13,7 @@ import tomllib
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
-    from sigilicon.domain.repository import Project
+    from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
 
 
 CONFIG_SCHEMA = 1
@@ -90,6 +90,7 @@ def inspect_project_configurations(
     context: Project,
     *,
     owner_roots: Mapping[str, Path],
+    catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -101,11 +102,28 @@ def inspect_project_configurations(
     root = context.project_root.resolve()
     project_contract = root / "sigilicon.toml"
     repository_owner = context.manifest_owner
+    flow_catalog_inventory = (
+        context.flow_catalog_inventory()
+        if catalog_inventory is None
+        else catalog_inventory
+    )
+    design_catalogs = context.flow_catalog_snapshots(
+        "design_targets",
+        inventory=flow_catalog_inventory,
+    )
+    layout_catalogs = context.flow_catalog_snapshots(
+        "layout_targets",
+        inventory=flow_catalog_inventory,
+    )
+    catalog_documents = {
+        snapshot.path.resolve(): snapshot.document
+        for snapshot in flow_catalog_inventory
+    }
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),
-        *(path for _, path in context.flow_catalogs("design_targets")),
-        *(path for _, path in context.flow_catalogs("layout_targets")),
+        *(snapshot.path for snapshot in design_catalogs),
+        *(snapshot.path for snapshot in layout_catalogs),
     }
     repository_owner_roots = {owner.root for owner in context.owners}
     scan_roots = set(repository_owner_roots)
@@ -160,7 +178,9 @@ def inspect_project_configurations(
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"configuration source escapes the project root: {path}")
-        raw = read_toml(resolved)
+        raw = catalog_documents.get(resolved)
+        if raw is None:
+            raw = read_toml(resolved)
         present = envelope_fields & raw.keys()
         if not present:
             native_documents += 1

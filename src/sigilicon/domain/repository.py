@@ -18,6 +18,9 @@ from sigilicon.paths import (
 
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
+_FLOW_CATALOG_KINDS = frozenset(
+    {"flow-catalog", "flow-design-registry", "flow-layout-registry"}
+)
 
 
 def _project_file(root: Path, value: object, field: str) -> Path:
@@ -360,8 +363,39 @@ class Project:
     def owner_flow_catalog_snapshots(
         self,
         owner: RepositoryOwner,
+        *,
+        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
     ) -> tuple[OwnerCatalogSnapshot, ...]:
         """Read and classify one owner's canonical Flow catalogs once."""
+
+        if owner not in self.owners:
+            raise ValueError(f"repository does not contain owner {owner.name!r}")
+        source = (
+            self.owner_flow_catalog_inventory(owner)
+            if inventory is None
+            else self._validate_flow_catalog_inventory(inventory)
+        )
+        result = tuple(
+            snapshot
+            for snapshot in source
+            if snapshot.owner == owner.name
+            and snapshot.contract_kind == "flow-catalog"
+        )
+        for snapshot in result:
+            require_config_header(
+                snapshot.document,
+                snapshot.path,
+                contract_kind="flow-catalog",
+                path_scope="owner",
+                owner=owner.name,
+            )
+        return tuple(sorted(result, key=lambda item: item.path))
+
+    def owner_flow_catalog_inventory(
+        self,
+        owner: RepositoryOwner,
+    ) -> tuple[OwnerCatalogSnapshot, ...]:
+        """Read one owner's selected Flow catalog documents once."""
 
         if owner not in self.owners:
             raise ValueError(f"repository does not contain owner {owner.name!r}")
@@ -370,24 +404,62 @@ class Project:
             if path.suffix != ".toml":
                 continue
             raw = read_toml(path)
-            if raw.get("contract_kind") != "flow-catalog":
+            contract_kind = raw.get("contract_kind")
+            if contract_kind not in _FLOW_CATALOG_KINDS:
                 continue
-            require_config_header(
-                raw,
-                path,
-                contract_kind="flow-catalog",
-                path_scope="owner",
-                owner=owner.name,
-            )
             result.append(
                 OwnerCatalogSnapshot(
                     owner=owner.name,
                     path=path,
-                    contract_kind="flow-catalog",
+                    contract_kind=cast(str, contract_kind),
                     document=MappingProxyType(dict(raw)),
                 )
             )
         return tuple(sorted(result, key=lambda item: item.path))
+
+    def flow_catalog_inventory(self) -> tuple[OwnerCatalogSnapshot, ...]:
+        """Read every selected owner Flow catalog document once."""
+
+        return tuple(
+            snapshot
+            for owner in self.owners
+            for snapshot in self.owner_flow_catalog_inventory(owner)
+        )
+
+    def _validate_flow_catalog_inventory(
+        self,
+        inventory: tuple[OwnerCatalogSnapshot, ...],
+    ) -> tuple[OwnerCatalogSnapshot, ...]:
+        """Prove that a reused inventory belongs to this exact Project."""
+
+        result = tuple(inventory)
+        seen: set[tuple[str, Path]] = set()
+        for snapshot in result:
+            owner = self.owner(snapshot.owner)
+            identity = (owner.name, snapshot.path)
+            if identity in seen:
+                raise ValueError(
+                    f"duplicate Flow catalog inventory path: {snapshot.path}"
+                )
+            seen.add(identity)
+            if (
+                snapshot.path not in owner.files("flow")
+                or not snapshot.path.is_relative_to(self.project_root)
+            ):
+                raise ValueError(
+                    f"Flow catalog inventory path does not belong to the current "
+                    f"Project owner {owner.name!r}: {snapshot.path}"
+                )
+            if snapshot.contract_kind not in _FLOW_CATALOG_KINDS:
+                raise ValueError(
+                    f"unsupported Flow catalog inventory kind: "
+                    f"{snapshot.contract_kind!r}"
+                )
+            if snapshot.document.get("contract_kind") != snapshot.contract_kind:
+                raise ValueError(
+                    f"Flow catalog inventory identity drift: {snapshot.path}"
+                )
+        return result
 
     def owner_flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
         """Return path identities for one owner's typed Flow catalogs."""
@@ -432,6 +504,8 @@ class Project:
     def flow_catalog_snapshots(
         self,
         kind: str,
+        *,
+        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
     ) -> tuple[OwnerCatalogSnapshot, ...]:
         """Read and classify selected design or layout target catalogs once."""
 
@@ -441,34 +515,24 @@ class Project:
         }.get(kind)
         if expected is None:
             raise ValueError(f"unsupported flow catalog kind: {kind!r}")
-        result: list[OwnerCatalogSnapshot] = []
-        for owner in self.owners:
-            for path in owner.files("flow"):
-                if path.suffix != ".toml":
-                    continue
-                raw = read_toml(path)
-                contract_kind = raw.get("contract_kind")
-                if contract_kind not in {
-                    "flow-design-registry",
-                    "flow-layout-registry",
-                }:
-                    continue
-                if contract_kind == expected:
-                    require_config_header(
-                        raw,
-                        path,
-                        contract_kind=expected,
-                        path_scope="owner",
-                        owner=owner.name,
-                    )
-                    result.append(
-                        OwnerCatalogSnapshot(
-                            owner=owner.name,
-                            path=path,
-                            contract_kind=expected,
-                            document=MappingProxyType(dict(raw)),
-                        )
-                    )
+        source = (
+            self.flow_catalog_inventory()
+            if inventory is None
+            else self._validate_flow_catalog_inventory(inventory)
+        )
+        result = tuple(
+            snapshot
+            for snapshot in source
+            if snapshot.contract_kind == expected
+        )
+        for snapshot in result:
+            require_config_header(
+                snapshot.document,
+                snapshot.path,
+                contract_kind=expected,
+                path_scope="owner",
+                owner=snapshot.owner,
+            )
         return tuple(sorted(result, key=lambda item: (item.owner, item.path)))
 
     def flow_catalogs(self, kind: str) -> tuple[tuple[str, Path], ...]:

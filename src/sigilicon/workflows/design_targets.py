@@ -10,7 +10,7 @@ import re
 import sys
 
 from sigilicon.domain.config_contracts import require_config_header
-from sigilicon.domain.repository import Project
+from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _MODULE_RE = re.compile(
@@ -164,12 +164,16 @@ def load_design_target_catalog(
     project_root: Path | None = None,
     *,
     project: Project | None = None,
+    catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
 ) -> DesignTargetCatalog:
     """Load every selected design target catalog, or an empty optional domain."""
 
     repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
-    catalogs = repository.flow_catalog_snapshots("design_targets")
+    catalogs = repository.flow_catalog_snapshots(
+        "design_targets",
+        inventory=catalog_inventory,
+    )
     targets: list[DesignTarget] = []
     names: set[str] = set()
     for catalog in catalogs:

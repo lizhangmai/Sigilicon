@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import write_component_owner
-import sigilicon.flow.contracts as flow_contracts_module
-import sigilicon.workflows.agentic_read as agentic_read_module
+from conftest import write_component_owner, write_project_context
+import sigilicon.domain.repository as repository_module
 from sigilicon.cli.agentic_read import main as agentic_read_cli_main
 from sigilicon.domain.repository import RepositoryContext
 from sigilicon.domain.circuit_design import (
@@ -140,17 +139,16 @@ def test_project_inspection_reads_each_flow_catalog_once(
 ) -> None:
     catalog = write_read_only_flow_project(tmp_path)
     interface = AgenticReadInterface.from_project_root(tmp_path)
-    original = flow_contracts_module.load_flow_catalog
+    original = repository_module.read_toml
     reads = 0
 
-    def counted(path: Path, *, owner_root: Path):
+    def counted(path: Path):
         nonlocal reads
         if path.resolve() == catalog.resolve():
             reads += 1
-        return original(path, owner_root=owner_root)
+        return original(path)
 
-    monkeypatch.setattr(agentic_read_module, "load_flow_catalog", counted)
-    monkeypatch.setattr(flow_contracts_module, "load_flow_catalog", counted)
+    monkeypatch.setattr(repository_module, "read_toml", counted)
 
     interface.inspect_project(owner="example")
 
@@ -163,9 +161,29 @@ def test_project_inspection_reads_each_flow_catalog_once(
     assert reads == 1
 
 
+def test_project_rejects_flow_catalog_inventory_from_another_project(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    write_project_context(first_root)
+    write_project_context(second_root)
+    write_read_only_flow_project(first_root)
+    write_read_only_flow_project(second_root)
+    first = AgenticReadInterface.from_project_root(first_root).project
+    second = AgenticReadInterface.from_project_root(second_root).project
+
+    with pytest.raises(ValueError, match="does not belong to the current Project"):
+        first.owner_flow_catalog_snapshots(
+            first.owner("example"),
+            inventory=second.flow_catalog_inventory(),
+        )
+
+
 def test_cli_python_and_run_inspection_share_the_exact_interface(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = write_read_only_flow_project(tmp_path)
     interface = AgenticReadInterface.from_project_root(tmp_path)
@@ -203,12 +221,23 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
         artifact_root=tmp_path / "artifacts",
         run_id="a" * 32,
     )
+    original = repository_module.read_toml
+    catalog_reads = 0
+
+    def counted(path: Path):
+        nonlocal catalog_reads
+        if path.resolve() == catalog.resolve():
+            catalog_reads += 1
+        return original(path)
+
+    monkeypatch.setattr(repository_module, "read_toml", counted)
     python_run = interface.inspect_run(
         owner="example",
         flow="pipeline",
         target="all",
         run_id=result.run_id,
     )
+    assert catalog_reads == 1
     assert python_run["operation"] == "run.inspect"
     assert python_run["authority"] == "recorded-flow-result"
     assert python_run["conclusion"] == "recorded"

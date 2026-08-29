@@ -19,6 +19,8 @@ from sigilicon.flow import (
     load_catalog_selection,
     load_execution_environment,
     load_flow_catalog,
+    parse_flow_catalog,
+    resolve_catalog_selection,
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.builtin import builtin_workflow_registry
@@ -222,6 +224,7 @@ def _resolved_plan(
             "path-based Flow selection requires catalog and --owner-root"
         )
     project_scope = None
+    catalog_snapshot = None
     try:
         binding = project_owner_binding_for_root(args.owner_root)
     except ValueError as exc:
@@ -229,7 +232,8 @@ def _resolved_plan(
     if binding is not None:
         repository, owner = binding
         project_scope = repository.scope(owner)
-        canonical_catalog = repository.owner_flow_catalog(owner)
+        catalog_snapshot = repository.owner_flow_catalog_snapshot(owner)
+        canonical_catalog = catalog_snapshot.path
         if args.catalog.resolve() != canonical_catalog:
             raise FlowContractError(
                 "project Flow path selection must use the selected owner's "
@@ -249,12 +253,23 @@ def _resolved_plan(
         registry,
         project_scope=project_scope,
     )
-    selection = load_catalog_selection(
-        args.catalog,
-        owner_root=args.owner_root,
-        flow_id=flow,
-        profile_id=args.profile,
-    )
+    if catalog_snapshot is None:
+        selection = load_catalog_selection(
+            args.catalog,
+            owner_root=args.owner_root,
+            flow_id=flow,
+            profile_id=args.profile,
+        )
+    else:
+        selection = resolve_catalog_selection(
+            parse_flow_catalog(
+                catalog_snapshot.document,
+                catalog_snapshot.path,
+                owner_root=owner.root,
+            ),
+            flow_id=flow,
+            profile_id=args.profile,
+        )
     return ProjectFlowPlan(
         engine,
         engine.plan(selection.spec, target, selection.profile),
@@ -304,21 +319,23 @@ def main(
                 "flow",
                 project=project is not None,
             )
-            catalog = args.catalog
-            owner_root = args.owner_root
             if project is not None:
-                catalog = project.catalog_path
-                owner_root = project.owner.root
-            if catalog is None or owner_root is None:
-                raise FlowContractError(
-                    "path-based Flow selection requires catalog and --owner-root"
+                selection = resolve_catalog_selection(
+                    project.catalog(),
+                    flow_id=flow,
+                    profile_id=args.profile,
                 )
-            selection = load_catalog_selection(
-                catalog,
-                owner_root=owner_root,
-                flow_id=flow,
-                profile_id=args.profile,
-            )
+            else:
+                if args.catalog is None or args.owner_root is None:
+                    raise FlowContractError(
+                        "path-based Flow selection requires catalog and --owner-root"
+                    )
+                selection = load_catalog_selection(
+                    args.catalog,
+                    owner_root=args.owner_root,
+                    flow_id=flow,
+                    profile_id=args.profile,
+                )
             emit_json(_spec_payload(selection.spec, selection.profile))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
