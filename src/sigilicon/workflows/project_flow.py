@@ -207,7 +207,7 @@ class ProjectFlow:
     owner Adapters.
     """
 
-    repository: Project
+    project: Project
     owner_name: str
     registry_factory: Callable[
         [Project | Path | str, Path | str | None], FlowRegistry
@@ -215,7 +215,7 @@ class ProjectFlow:
     _binding: object = field(default_factory=object, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        owner = self.repository.owner(self.owner_name)
+        owner = self.project.owner(self.owner_name)
         object.__setattr__(self, "owner_name", owner.name)
 
     @classmethod
@@ -238,11 +238,17 @@ class ProjectFlow:
 
     @property
     def owner(self) -> RepositoryOwner:
-        return self.repository.owner(self.owner_name)
+        return self.project.owner(self.owner_name)
+
+    @property
+    def repository(self) -> Project:
+        """Compatibility alias for callers predating the canonical Project name."""
+
+        return self.project
 
     @property
     def catalog_path(self) -> Path:
-        return self.repository.owner_flow_catalog(self.owner)
+        return self.project.owner_flow_catalog(self.owner)
 
     def catalog(self) -> FlowCatalog:
         """Load the owner's canonical typed Flow catalog."""
@@ -263,13 +269,13 @@ class ProjectFlow:
             profile_id=profile,
         )
         engine = FlowEngine(
-            self.registry_factory(self.repository, self.owner.root),
-            project_scope=self.repository.scope(self.owner),
+            self.registry_factory(self.project, self.owner.root),
+            project_scope=self.project.scope(self.owner),
         )
         return ProjectFlowPlan(
             engine,
             engine.plan(selection.spec, target, selection.profile),
-            self.repository.project_root,
+            self.project.project_root,
             self.owner.root,
             self._binding,
         )
@@ -293,7 +299,7 @@ class ProjectFlow:
         self._require_owned_plan(planned)
         return planned.engine.run(
             planned.plan,
-            artifact_root=self.repository.artifact_root,
+            artifact_root=self.project.artifact_root,
             environment=environment,
             run_id=run_id,
             progress=progress,
@@ -302,7 +308,7 @@ class ProjectFlow:
     def _require_owned_plan(self, planned: ProjectFlowPlan) -> None:
         if (
             planned.plan.spec.owner != self.owner.name
-            or planned.project_root != self.repository.project_root
+            or planned.project_root != self.project.project_root
             or planned.owner_root != self.owner.root
             or planned._binding is not self._binding
         ):

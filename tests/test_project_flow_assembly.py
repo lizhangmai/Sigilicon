@@ -302,6 +302,7 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
     _write_owner_flow(tmp_path)
 
     project_flow = ProjectFlow.from_project_root(tmp_path, owner="example")
+    assert project_flow.repository is project_flow.project
     planned = project_flow.plan(flow="owner-flow", target="all")
 
     assert planned.plan_identity == "example:owner-flow:all:local"

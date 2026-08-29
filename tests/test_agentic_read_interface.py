@@ -94,6 +94,7 @@ def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
 ) -> None:
     write_read_only_flow_project(tmp_path)
     interface = AgenticReadInterface.from_project_root(tmp_path)
+    assert interface.repository is interface.project
 
     with pytest.raises(ValueError, match="identity drift"):
         AgenticReadInterface(

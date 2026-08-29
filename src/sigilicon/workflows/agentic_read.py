@@ -106,11 +106,11 @@ class ResolvedAgenticCampaignPlan:
 class AgenticReadInterface:
     """Resolve only cataloged project identities through existing domain Modules."""
 
-    repository: Project
+    project: Project
     project_id: str
 
     def __post_init__(self) -> None:
-        if self.project_id != _repository_identity(self.repository):
+        if self.project_id != _repository_identity(self.project):
             raise ValueError("agentic project identity drift")
 
     @classmethod
@@ -141,6 +141,12 @@ class AgenticReadInterface:
     def project_resource_uri(self) -> str:
         return f"sigilicon://project/{self.project_id}"
 
+    @property
+    def repository(self) -> Project:
+        """Compatibility alias for callers predating the canonical Project name."""
+
+        return self.project
+
     def owner_resource_uri(self, owner: str) -> str:
         selected = self._owner(owner)
         return f"sigilicon://owners/{selected.name}/catalog"
@@ -166,7 +172,7 @@ class AgenticReadInterface:
         """Project canonical owner/target projection with no site path disclosure."""
 
         selected = (
-            self.repository.owners
+            self.project.owners
             if owner is None
             else (self._owner(owner),)
         )
@@ -176,7 +182,7 @@ class AgenticReadInterface:
             self._owner_payload(item, design_targets, layout_targets)
             for item in selected
         ]
-        source = inspect_source_state(self.repository.project_root)
+        source = inspect_source_state(self.project.project_root)
         resources = [self.project_resource_uri]
         resources.extend(self.owner_resource_uri(item.name) for item in selected)
         return self.response(
@@ -194,7 +200,7 @@ class AgenticReadInterface:
                     "dirty": source.working_tree_dirty,
                     "repository_available": source.repository_available,
                 },
-                "catalogs": [name for name, _path in self.repository.catalog_paths],
+                "catalogs": [name for name, _path in self.project.catalog_paths],
                 "owners": owners,
                 "runtime_capabilities": {
                     "status": "not-evaluated",
@@ -265,7 +271,7 @@ class AgenticReadInterface:
             else identifier(profile, "Execution Profile identity")
         )
         planned = ProjectFlow(
-            self.repository,
+            self.project,
             owner,
             project_workflow_registry,
         ).plan(
@@ -286,7 +292,7 @@ class AgenticReadInterface:
             raise ValueError("Flow Plan identity must be non-empty text")
         matches: list[ResolvedAgenticFlowPlan] = []
         combinations = 0
-        for owner in self.repository.owners:
+        for owner in self.project.owners:
             catalogs = self._flow_catalogs(owner)
             if not catalogs:
                 continue
@@ -378,7 +384,7 @@ class AgenticReadInterface:
         )
         runner = DesignCampaignRunner(
             engine,
-            artifact_root=self.repository.artifact_root,
+            artifact_root=self.project.artifact_root,
         )
         record = runner.plan_record(campaign)
         return ResolvedAgenticCampaignPlan(
@@ -433,10 +439,10 @@ class AgenticReadInterface:
         )
         selection.spec.target(target_name)
         engine = FlowEngine(
-            project_workflow_registry(self.repository, selected_owner.root)
+            project_workflow_registry(self.project, selected_owner.root)
         )
         managed = AgenticRunStore(
-            self.repository.artifact_root,
+            self.project.artifact_root,
             self.project_id,
         )
         managed_paths = managed.paths(
@@ -458,7 +464,7 @@ class AgenticReadInterface:
             result: dict[str, Any] | None = None
             try:
                 result = engine.read_run_result(
-                    artifact_root=self.repository.artifact_root,
+                    artifact_root=self.project.artifact_root,
                     owner=selected_owner.name,
                     flow_id=flow_name,
                     target=target_name,
@@ -505,7 +511,7 @@ class AgenticReadInterface:
                 ),
             )
         result = engine.read_run_result(
-            artifact_root=self.repository.artifact_root,
+            artifact_root=self.project.artifact_root,
             owner=selected_owner.name,
             flow_id=flow_name,
             target=target_name,
@@ -617,10 +623,10 @@ class AgenticReadInterface:
         )
 
     def _owner(self, name: str) -> RepositoryOwner:
-        return self.repository.owner(name)
+        return self.project.owner(name)
 
     def _flow_catalog(self, owner: RepositoryOwner) -> Path:
-        return self.repository.owner_flow_catalog(owner)
+        return self.project.owner_flow_catalog(owner)
 
     def _flows(self, owner: RepositoryOwner) -> list[dict[str, Any]]:
         matches = self._flow_catalogs(owner)
@@ -652,17 +658,17 @@ class AgenticReadInterface:
         return sorted(flows, key=lambda item: item["name"])
 
     def _flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
-        return self.repository.owner_flow_catalogs(owner)
+        return self.project.owner_flow_catalogs(owner)
 
     def _design_targets(self) -> tuple[Any, ...]:
-        if not self.repository.flow_catalogs("design_targets"):
+        if not self.project.flow_catalogs("design_targets"):
             return ()
-        return load_design_target_catalog(project=self.repository).targets
+        return load_design_target_catalog(project=self.project).targets
 
     def _layout_targets(self) -> tuple[Any, ...]:
-        if not self.repository.flow_catalogs("layout_targets"):
+        if not self.project.flow_catalogs("layout_targets"):
             return ()
-        return load_layout_target_catalog(project=self.repository).targets
+        return load_layout_target_catalog(project=self.project).targets
 
     def _owner_payload(
         self,
@@ -670,7 +676,7 @@ class AgenticReadInterface:
         design_targets: tuple[Any, ...],
         layout_targets: tuple[Any, ...],
     ) -> dict[str, Any]:
-        root = self.repository.project_root
+        root = self.project.project_root
         component = owner.component
         return {
             "name": owner.name,

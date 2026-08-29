@@ -41,7 +41,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     read = AgenticReadInterface.from_project_root(args.project_root)
-    store = AgenticRunStore(read.repository.artifact_root, read.project_id)
+    store = AgenticRunStore(read.project.artifact_root, read.project_id)
     paths = store.paths(
         owner=args.owner,
         flow=args.flow,
@@ -144,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         flow_result = resolved.engine.run(
             plan,
-            artifact_root=read.repository.artifact_root,
+            artifact_root=read.project.artifact_root,
             environment=environment,
             run_id=request["run_id"],
             progress=progress,

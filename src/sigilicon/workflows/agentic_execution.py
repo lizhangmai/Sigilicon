@@ -96,11 +96,11 @@ class AgenticExecutionInterface:
             self.environment_record_json = binding.record_json
             self.execution_environment = binding.environment
         self.store = AgenticRunStore(
-            read.repository.artifact_root,
+            read.project.artifact_root,
             read.project_id,
         )
         self.campaign_store = DesignCampaignStore(
-            read.repository.artifact_root,
+            read.project.artifact_root,
             read.project_id,
         )
         self._active: dict[str, ManagedBackgroundProcess] = {}
@@ -234,7 +234,7 @@ class AgenticExecutionInterface:
             try:
                 arguments = [
                     "--project-root",
-                    str(self.read.repository.project_root),
+                    str(self.read.project.project_root),
                     "--owner",
                     plan.spec.owner,
                     "--flow",
@@ -256,7 +256,7 @@ class AgenticExecutionInterface:
                     )
                 self._active[run_id] = spawn_agentic_flow_worker(
                     arguments,
-                    cwd=self.read.repository.project_root,
+                    cwd=self.read.project.project_root,
                     env=_worker_environment(),
                 )
             except BaseException:
@@ -460,7 +460,7 @@ class AgenticExecutionInterface:
     def _campaign_runner(self, resolved: object) -> DesignCampaignRunner:
         return DesignCampaignRunner(
             resolved.engine,
-            artifact_root=self.read.repository.artifact_root,
+            artifact_root=self.read.project.artifact_root,
             environment=self.execution_environment,
             execution_context_identity=(
                 f"{self.grant.approval}-{self.environment_identity}"

@@ -373,7 +373,7 @@ def main(
                 artifact_root=(
                     args.artifact_root
                     if args.artifact_root is not None
-                    else project.repository.artifact_root
+                    else project.project.artifact_root
                 ),
                 owner=result.owner,
                 flow_id=result.flow_id,
