@@ -27,6 +27,7 @@ from sigilicon.workflows import agentic_campaigns as agentic_campaigns_module
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_campaign import (
+    DESIGN_CAMPAIGN_ITERATION_EXTENSION,
     DesignArtifactBinding,
     DesignCampaignAttemptSpec,
     DesignCampaignBudget,
@@ -100,7 +101,7 @@ def _registry(original, owner_root: Path | None) -> FlowRegistry:
                 ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
             ),
             adapters=("typed-attempt",),
-            accepts_design_campaign_iteration=True,
+            accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
         )
     )
     from sigilicon.domain.circuit_design import EvidenceConclusion
@@ -123,7 +124,7 @@ def _feedback_registry(original, owner_root: Path | None) -> FlowRegistry:
                 ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
             ),
             adapters=("typed-attempt",),
-            accepts_design_campaign_iteration=True,
+            accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
         )
     )
     registry.register_adapter("typed-attempt", FeedbackDrivenAttemptAdapter())

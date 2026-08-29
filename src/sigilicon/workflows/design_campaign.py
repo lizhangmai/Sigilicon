@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 import json
@@ -39,8 +40,8 @@ from sigilicon.domain.circuit_design import (
     validate_design_decision,
 )
 from sigilicon.flow import (
-    DesignCampaignIterationInput,
     ExecutionEnvironment,
+    FlowContractError,
     FlowEngine,
     FlowPlan,
 )
@@ -58,6 +59,61 @@ from sigilicon.workflows.design_repair import (
     attribute_design_failure,
     compile_design_repair,
 )
+
+
+DESIGN_CAMPAIGN_ITERATION_EXTENSION = "design_campaign_iteration"
+
+
+@dataclass(frozen=True)
+class DesignCampaignIterationInput:
+    """Exact cross-round input owned and interpreted by Design Campaign."""
+
+    campaign_identity: str
+    iteration: int
+    parent_candidate_identity: str
+    attribution_json: str
+    proposal_json: str
+    repair_plan_json: str
+    schema: int = 1
+    contract_kind: str = "design-campaign-iteration-input"
+
+    def __post_init__(self) -> None:
+        if self.schema != 1 or self.contract_kind != "design-campaign-iteration-input":
+            raise ValueError("invalid Design Campaign iteration input contract")
+        bounded_identity(self.campaign_identity, "Design Campaign identity")
+        bounded_identity(
+            self.parent_candidate_identity,
+            "parent Candidate identity",
+        )
+        if type(self.iteration) is not int or self.iteration < 2:
+            raise ValueError("Design Campaign child iteration must be at least two")
+        for value, label in (
+            (self.attribution_json, "attribution record"),
+            (self.proposal_json, "proposal record"),
+            (self.repair_plan_json, "Repair Plan record"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Design Campaign {label} must be exact JSON text")
+
+
+def design_campaign_iteration_input(value: object) -> DesignCampaignIterationInput:
+    """Decode the Campaign-owned payload carried by a generic Flow extension."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("Design Campaign iteration extension must be a mapping")
+    expected = {
+        "campaign_identity",
+        "iteration",
+        "parent_candidate_identity",
+        "attribution_json",
+        "proposal_json",
+        "repair_plan_json",
+        "schema",
+        "contract_kind",
+    }
+    if set(value) != expected:
+        raise ValueError("Design Campaign iteration extension fields are invalid")
+    return DesignCampaignIterationInput(**dict(value))
 
 
 class DesignStage(str, Enum):
@@ -250,7 +306,10 @@ class DesignCampaignContinuation:
         identifier(self.proposal_node, "Design Campaign proposal input node")
         if self.proposal_node not in self.plan.topology:
             raise ValueError("Design Campaign proposal input node is outside the plan")
-        if self.plan.spec.node(self.proposal_node).design_campaign_iteration is not None:
+        if (
+            DESIGN_CAMPAIGN_ITERATION_EXTENSION
+            in self.plan.spec.node(self.proposal_node).extensions
+        ):
             raise ValueError("Design Campaign continuation reserves its iteration input")
         if self.repair_policy.owner != self.plan.spec.owner:
             raise ValueError("Design Campaign continuation repair policy owner drift")
@@ -640,10 +699,17 @@ class DesignCampaignRunner:
                         "Design Campaign stage binding must produce Design Evidence"
                     )
         if campaign.continuation is not None:
-            self._engine.validate_design_campaign_continuation(
-                campaign.continuation.plan,
-                campaign.continuation.proposal_node,
-            )
+            try:
+                self._engine.validate_extensions(
+                    campaign.continuation.plan,
+                    campaign.continuation.proposal_node,
+                    (DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
+                )
+            except FlowContractError as exc:
+                raise FlowContractError(
+                    "typed Design Campaign continuation Action and Adapter must "
+                    "accept the iteration extension"
+                ) from exc
             template = DesignCampaignAttempt(
                 "continuation-template",
                 campaign.continuation.plan,
@@ -1181,7 +1247,12 @@ class DesignCampaignRunner:
         nodes = tuple(
             replace(
                 node,
-                design_campaign_iteration=payload,
+                extensions={
+                    **node.extensions,
+                    DESIGN_CAMPAIGN_ITERATION_EXTENSION: json.loads(
+                        canonical_json(payload)
+                    ),
+                },
             )
             if node.node_id == continuation.proposal_node
             else node

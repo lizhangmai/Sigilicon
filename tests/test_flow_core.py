@@ -334,6 +334,10 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     plan = engine.plan(flow_spec(), "qualification", fake_profile())
 
     assert plan.topology == ("source", "transform", "verify")
+    assert all(
+        "design_campaign_iteration" not in node
+        for node in engine.plan_record(plan)["nodes"]
+    )
     assert "resume" not in inspect.signature(engine.run).parameters
     result = engine.run(
         plan,
@@ -363,6 +367,119 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
         run_id="a" * 32,
     )
     assert restored == result
+
+
+def test_flow_passes_declared_extensions_without_interpreting_the_payload(
+    tmp_path: Path,
+) -> None:
+    class ExtensionAdapter(SourceAdapter):
+        accepted_extensions = ("opaque_hint",)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.received = None
+
+        def execute(self, context: ActionContext) -> AdapterExecution:
+            self.received = context.extensions["opaque_hint"]
+            return super().execute(context)
+
+    adapter = ExtensionAdapter()
+    registered = FlowRegistry()
+    registered.register_action(
+        ActionContract(
+            "fake.extended-source",
+            outputs=(ArtifactPort("source", "text.plain"),),
+            adapters=("fake-extended-source",),
+            accepted_extensions=("opaque_hint",),
+        )
+    )
+    registered.register_adapter("fake-extended-source", adapter)
+    engine = FlowEngine(registered)
+    plan = engine.plan(
+        FlowSpec(
+            "example",
+            "extended-flow",
+            (
+                FlowNode(
+                    "source",
+                    "fake.extended-source",
+                    {"text": "hello"},
+                    extensions={"opaque_hint": {"iteration": 2}},
+                ),
+            ),
+            (FlowTarget("all", ("source",)),),
+        ),
+        "all",
+        ExecutionProfile(
+            "example",
+            "extended",
+            (AdapterSelection("fake.extended-source", "fake-extended-source"),),
+        ),
+    )
+
+    assert engine.plan_record(plan)["nodes"][0]["opaque_hint"] == {
+        "iteration": 2
+    }
+    result = engine.run(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        run_id="e" * 32,
+    )
+    request = json.loads(
+        (result.run_root / "inputs/source/action_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert request["opaque_hint"] == {"iteration": 2}
+    assert adapter.received == {"iteration": 2}
+
+
+def test_flow_rejects_extensions_not_declared_by_action_or_adapter() -> None:
+    accepted_adapter = SourceAdapter()
+    accepted_adapter.accepted_extensions = ("opaque_hint",)
+    action_rejects = FlowRegistry()
+    action_rejects.register_action(
+        ActionContract(
+            "fake.source",
+            outputs=(ArtifactPort("source", "text.plain"),),
+            adapters=("fake-source",),
+        )
+    )
+    action_rejects.register_adapter("fake-source", accepted_adapter)
+    spec = FlowSpec(
+        "example",
+        "extended-flow",
+        (
+            FlowNode(
+                "source",
+                "fake.source",
+                {"text": "hello"},
+                extensions={"opaque_hint": {}},
+            ),
+        ),
+        (FlowTarget("all", ("source",)),),
+    )
+    profile = ExecutionProfile(
+        "example",
+        "extended",
+        (AdapterSelection("fake.source", "fake-source"),),
+    )
+
+    with pytest.raises(FlowContractError, match="Action does not accept"):
+        FlowEngine(action_rejects).plan(spec, "all", profile)
+
+    adapter_rejects = FlowRegistry()
+    adapter_rejects.register_action(
+        ActionContract(
+            "fake.source",
+            outputs=(ArtifactPort("source", "text.plain"),),
+            adapters=("fake-source",),
+            accepted_extensions=("opaque_hint",),
+        )
+    )
+    adapter_rejects.register_adapter("fake-source", SourceAdapter())
+    with pytest.raises(FlowContractError, match="Adapter does not consume"):
+        FlowEngine(adapter_rejects).plan(spec, "all", profile)
 
 
 def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path) -> None:

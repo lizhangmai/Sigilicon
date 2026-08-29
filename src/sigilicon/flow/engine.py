@@ -15,6 +15,7 @@ from sigilicon.flow.environment import capability_available
 from sigilicon.flow.model import (
     ActionArtifact,
     ActionContext,
+    ActionContract,
     AdapterExecution,
     ArtifactPort,
     CollectedActionResult,
@@ -39,7 +40,7 @@ from sigilicon.flow.model import (
     run_identity,
 )
 from sigilicon.flow.policy import EvaluatedPolicy, evaluate_policy
-from sigilicon.flow.registry import FlowRegistry
+from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
     git_source,
@@ -48,6 +49,39 @@ from sigilicon.flow.source_assets import (
     source_member_matches,
 )
 from sigilicon.paths import ArtifactLayout, ProjectScope
+
+
+_NODE_EXTENSION_RESERVED = frozenset(
+    {
+        "id",
+        "action",
+        "adapter",
+        "action_config",
+        "adapter_config",
+        "required_capabilities",
+        "execution_capability",
+        "platform_assets",
+        "policy",
+        "dependencies",
+        "bindings",
+        "source_assets",
+    }
+)
+_REQUEST_EXTENSION_RESERVED = frozenset(
+    {
+        "schema",
+        "contract_kind",
+        "node",
+        "action",
+        "adapter",
+        "action_config",
+        "adapter_config",
+        "execution_environment",
+        "inputs",
+        "source_assets",
+    }
+)
+_RESERVED_EXTENSIONS = _NODE_EXTENSION_RESERVED | _REQUEST_EXTENSION_RESERVED
 
 
 def _utc_now() -> str:
@@ -62,6 +96,30 @@ def _plan_payload(
     topology: tuple[str, ...],
     implementation_sources: tuple[SourceMember, ...] = (),
 ) -> dict[str, Any]:
+    def node_payload(item: PlannedNode) -> dict[str, Any]:
+        value = {
+            "id": item.node.node_id,
+            "action": item.node.action_kind,
+            "adapter": item.adapter,
+            "action_config": json_value(item.node.config),
+            "adapter_config": json_value(item.adapter_config),
+            "required_capabilities": list(item.required_capabilities),
+            "execution_capability": item.execution_capability,
+            "platform_assets": [
+                json_value(requirement) for requirement in item.platform_assets
+            ],
+            "policy": item.node.policy,
+            "dependencies": list(item.dependencies),
+            "bindings": [json_value(binding) for binding in item.node.bindings],
+            "source_assets": (
+                None
+                if item.source_assets is None
+                else source_assets_payload(item.source_assets)
+            ),
+        }
+        value.update(json_value(item.node.extensions))
+        return value
+
     payload = {
         "schema": 1,
         "contract_kind": "resolved-flow-plan",
@@ -73,34 +131,7 @@ def _plan_payload(
         },
         "target": target_id,
         "topology": list(topology),
-        "nodes": [
-            {
-                "id": item.node.node_id,
-                "action": item.node.action_kind,
-                "adapter": item.adapter,
-                "action_config": json_value(item.node.config),
-                "design_campaign_iteration": (
-                    None
-                    if item.node.design_campaign_iteration is None
-                    else json_value(item.node.design_campaign_iteration)
-                ),
-                "adapter_config": json_value(item.adapter_config),
-                "required_capabilities": list(item.required_capabilities),
-                "execution_capability": item.execution_capability,
-                "platform_assets": [
-                    json_value(requirement) for requirement in item.platform_assets
-                ],
-                "policy": item.node.policy,
-                "dependencies": list(item.dependencies),
-                "bindings": [json_value(binding) for binding in item.node.bindings],
-                "source_assets": (
-                    None
-                    if item.source_assets is None
-                    else source_assets_payload(item.source_assets)
-                ),
-            }
-            for item in planned
-        ],
+        "nodes": [node_payload(item) for item in planned],
         "policies": [json_value(policy) for policy in spec.policies],
     }
     if implementation_sources:
@@ -134,6 +165,55 @@ class FlowEngine:
 
         planned = plan.planned_node(node_id)
         return self._registry.action(planned.node.action_kind).output(role)
+
+    @staticmethod
+    def _validate_extensions(
+        contract: ActionContract,
+        adapter: ToolAdapter,
+        names: tuple[str, ...],
+    ) -> None:
+        reserved = set(names) & _RESERVED_EXTENSIONS
+        if reserved:
+            raise FlowContractError(
+                f"Flow extensions use reserved fields: {sorted(reserved)}"
+            )
+        accepted_by_action = set(getattr(contract, "accepted_extensions", ()))
+        unsupported_action = set(names) - accepted_by_action
+        if unsupported_action:
+            raise FlowContractError(
+                "Action does not accept Flow extensions: "
+                f"{sorted(unsupported_action)}"
+            )
+        accepted_by_adapter = getattr(adapter, "accepted_extensions", ())
+        if not isinstance(accepted_by_adapter, tuple) or any(
+            not isinstance(name, str) for name in accepted_by_adapter
+        ):
+            raise FlowContractError("Adapter accepted_extensions must be a tuple")
+        for name in accepted_by_adapter:
+            identifier(name, "Adapter extension")
+        if len(accepted_by_adapter) != len(set(accepted_by_adapter)):
+            raise FlowContractError("duplicate Adapter extensions")
+        unsupported_adapter = set(names) - set(accepted_by_adapter)
+        if unsupported_adapter:
+            raise FlowContractError(
+                "Adapter does not consume Flow extensions: "
+                f"{sorted(unsupported_adapter)}"
+            )
+
+    def validate_extensions(
+        self,
+        plan: FlowPlan,
+        node_id: str,
+        names: tuple[str, ...],
+    ) -> None:
+        """Validate opaque extension names without interpreting their payloads."""
+
+        planned = plan.planned_node(node_id)
+        self._validate_extensions(
+            self._registry.action(planned.node.action_kind),
+            self._registry.adapter(planned.adapter),
+            names,
+        )
 
     @staticmethod
     def plan_id(plan: FlowPlan) -> str:
@@ -176,16 +256,11 @@ class FlowEngine:
                     f"Adapter {selection.adapter!r} cannot implement "
                     f"Action {contract.kind!r}"
                 )
-            if node.design_campaign_iteration is not None:
-                if not contract.accepts_design_campaign_iteration:
-                    raise FlowContractError(
-                        f"Action {contract.kind!r} does not accept a Design Campaign iteration"
-                    )
-                adapter = self._registry.adapter(selection.adapter)
-                if getattr(adapter, "accepts_design_campaign_iteration", False) is not True:
-                    raise FlowContractError(
-                        f"Adapter {selection.adapter!r} does not consume Design Campaign iterations"
-                    )
+            self._validate_extensions(
+                contract,
+                self._registry.adapter(selection.adapter),
+                tuple(node.extensions),
+            )
             source_assets[node.node_id] = resolve_node_source_assets(
                 spec,
                 node,
@@ -322,25 +397,6 @@ class FlowEngine:
             plan.topology,
             self._registry.implementation_sources,
         )
-
-    def validate_design_campaign_continuation(
-        self,
-        plan: FlowPlan,
-        node_id: str,
-    ) -> None:
-        """Verify at planning time that one Action and Adapter consume continuation input."""
-
-        planned = plan.planned_node(node_id)
-        contract = self._registry.action(planned.node.action_kind)
-        adapter = self._registry.adapter(planned.adapter)
-        if not contract.accepts_design_campaign_iteration or getattr(
-            adapter,
-            "accepts_design_campaign_iteration",
-            False,
-        ) is not True:
-            raise FlowContractError(
-                f"Adapter {planned.adapter!r} does not implement the typed Design Campaign continuation seam"
-            )
 
     def preflight(
         self,
@@ -622,7 +678,7 @@ class FlowEngine:
                     self._resolved_platform_assets(planned, current_environment)
                 ),
                 source_assets=planned.source_assets,
-                design_campaign_iteration=node.design_campaign_iteration,
+                extensions=node.extensions,
                 project_scope=self._project_scope,
             )
             request = {
@@ -632,11 +688,6 @@ class FlowEngine:
                 "action": node.action_kind,
                 "adapter": planned.adapter,
                 "action_config": json_value(node.config),
-                "design_campaign_iteration": (
-                    None
-                    if node.design_campaign_iteration is None
-                    else json_value(node.design_campaign_iteration)
-                ),
                 "adapter_config": json_value(planned.adapter_config),
                 "execution_environment": environment_payload,
                 "inputs": {
@@ -649,6 +700,7 @@ class FlowEngine:
                     else source_assets_payload(planned.source_assets)
                 ),
             }
+            request.update(json_value(node.extensions))
             atomic_write_json(input_root / "action_request.json", request)
             started = _utc_now()
             execution = AdapterExecution("failed")

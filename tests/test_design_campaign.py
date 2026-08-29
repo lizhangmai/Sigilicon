@@ -48,6 +48,7 @@ from sigilicon.flow import (
     ProducedArtifact,
 )
 from sigilicon.workflows.design_campaign import (
+    DESIGN_CAMPAIGN_ITERATION_EXTENSION,
     DesignArtifactBinding,
     DesignCampaign,
     DesignCampaignAttempt,
@@ -62,6 +63,7 @@ from sigilicon.workflows.design_campaign import (
     DesignStage,
     DesignStageBinding,
     DesignStageStatus,
+    design_campaign_iteration_input,
     design_campaign_result_from_json,
     design_campaign_spec_from_json,
     design_campaign_state_from_json,
@@ -573,17 +575,39 @@ def test_continuation_rejects_an_adapter_that_did_not_declare_consumption(
         )
 
 
+def test_campaign_owns_iteration_extension_schema_validation() -> None:
+    payload = {
+        "campaign_identity": "example:design-campaign:fixture",
+        "iteration": 2,
+        "parent_candidate_identity": "example:candidate:parent",
+        "attribution_json": "{}",
+        "proposal_json": "{}",
+        "repair_plan_json": "{}",
+        "schema": 1,
+        "contract_kind": "design-campaign-iteration-input",
+    }
+
+    assert design_campaign_iteration_input(payload).iteration == 2
+    with pytest.raises(ValueError, match="fields are invalid"):
+        design_campaign_iteration_input({**payload, "flow_owned": True})
+    with pytest.raises(ValueError, match="at least two"):
+        design_campaign_iteration_input({**payload, "iteration": 1})
+
+
 class FeedbackDrivenAttemptAdapter(AttemptAdapter):
     """Deterministic pilot whose second round is supplied by Campaign, not caller."""
 
-    accepts_design_campaign_iteration = True
+    accepted_extensions = (DESIGN_CAMPAIGN_ITERATION_EXTENSION,)
 
     def __init__(self) -> None:
         super().__init__(EvidenceConclusion.VIOLATED)
 
     def execute(self, context: ActionContext) -> AdapterExecution:
-        iteration = context.design_campaign_iteration
-        if iteration is not None:
+        iteration_payload = context.extensions.get(
+            DESIGN_CAMPAIGN_ITERATION_EXTENSION
+        )
+        if iteration_payload is not None:
+            iteration = design_campaign_iteration_input(iteration_payload)
             from sigilicon.workflows.design_repair import design_repair_proposal_from_json
 
             proposal = design_repair_proposal_from_json(iteration.proposal_json)
@@ -616,7 +640,7 @@ def test_feedback_driven_campaign_pauses_for_proposal_and_derives_second_round(
                 ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
             ),
             adapters=("feedback-driven",),
-            accepts_design_campaign_iteration=True,
+            accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
         )
     )
     feedback_adapter = FeedbackDrivenAttemptAdapter()
@@ -812,7 +836,7 @@ def test_sizing_child_binds_proposed_point_result_and_verification(
     )
 
     class SizingFeedbackAdapter(AttemptAdapter):
-        accepts_design_campaign_iteration = True
+        accepted_extensions = (DESIGN_CAMPAIGN_ITERATION_EXTENSION,)
 
         def __init__(self) -> None:
             self.values = (
@@ -824,8 +848,11 @@ def test_sizing_child_binds_proposed_point_result_and_verification(
             )
 
         def execute(self, context: ActionContext) -> AdapterExecution:
-            iteration = context.design_campaign_iteration
-            if iteration is not None:
+            iteration_payload = context.extensions.get(
+                DESIGN_CAMPAIGN_ITERATION_EXTENSION
+            )
+            if iteration_payload is not None:
+                iteration = design_campaign_iteration_input(iteration_payload)
                 proposal = design_repair_proposal_from_json(iteration.proposal_json)
                 repair = sizing_repair_plan_from_json(iteration.repair_plan_json)
                 assert proposal.proposed_sizing == repair.proposed_candidate
@@ -925,7 +952,7 @@ def test_sizing_child_binds_proposed_point_result_and_verification(
                 ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
             ),
             adapters=("sizing-feedback",),
-            accepts_design_campaign_iteration=True,
+            accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
         )
     )
     adapter = SizingFeedbackAdapter()
