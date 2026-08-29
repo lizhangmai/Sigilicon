@@ -46,24 +46,41 @@ class SpectreExecution:
     raw_outputs: Mapping[str, Path]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SpectreArtifactContext:
     """Repository and design coordinates for a direct-Spectre run."""
 
-    project_root: Path
+    project: Project = field(repr=False, compare=False, hash=False)
     library: str
     cell: str
     testbench: str
-    _project: Project = field(init=False, repr=False, compare=False)
+    _project_root: Path = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        project = Project.from_project_root(self.project_root)
-        object.__setattr__(self, "project_root", project.project_root)
-        object.__setattr__(self, "_project", project)
+    def __init__(
+        self,
+        project_root: Path | None = None,
+        library: str | None = None,
+        cell: str | None = None,
+        testbench: str | None = None,
+        *,
+        project: Project | None = None,
+    ) -> None:
+        """Bind an explicit Project or one legacy positional project root."""
+
+        repository = Project.bind(project=project, project_root=project_root)
+        if library is None or cell is None or testbench is None:
+            raise ValueError("Spectre artifact coordinates must be explicit")
+        object.__setattr__(self, "project", repository)
+        object.__setattr__(self, "library", library)
+        object.__setattr__(self, "cell", cell)
+        object.__setattr__(self, "testbench", testbench)
+        object.__setattr__(self, "_project_root", repository.project_root)
 
     @property
-    def project(self) -> Project:
-        return self._project
+    def project_root(self) -> Path:
+        """Compatibility path view of the canonical Project."""
+
+        return self._project_root
 
 
 @dataclass(frozen=True)
