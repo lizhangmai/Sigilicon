@@ -149,7 +149,13 @@ def inspect_repository_designs(
         for assembly in oa_source_inventory
     }
     oa_simulation_inventory = {}
+    oa_design_inventory = {}
     for plan in oa_plan_inventory.values():
+        for step in plan.designs:
+            path = step.inspection.spec.path.resolve()
+            if path in oa_design_inventory:
+                raise ValueError(f"design path belongs to multiple OA plans: {path}")
+            oa_design_inventory[path] = step.inspection.spec
         for step in plan.testbenches:
             path = step.simulation.path.resolve()
             if path in oa_simulation_inventory:
@@ -234,6 +240,7 @@ def inspect_repository_designs(
         release_inventory=release_inventory,
         oa_source_inventory=oa_source_inventory,
         oa_simulation_inventory=oa_simulation_inventory,
+        oa_design_inventory=oa_design_inventory,
     )
 
     design_catalog = load_design_target_catalog(

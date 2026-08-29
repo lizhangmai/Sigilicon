@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    read_toml,
+    require_config_header,
+)
 from sigilicon.domain.netlist import NetlistSnapshot, load_netlist_snapshot, subckt_ports
 from sigilicon.domain.platform import PdkConfig, resolve_platform
 from sigilicon.domain.repository import Project
@@ -36,6 +40,9 @@ class DesignSpec:
     directions: Mapping[str, str]
     pdk: PdkConfig
     netlist_snapshot: NetlistSnapshot
+    source_documents: Mapping[Path, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def project_root(self) -> Path:
@@ -125,9 +132,14 @@ def load_design_spec(
     source_value = design.get("source_netlist")
     if not isinstance(source_value, str) or not source_value:
         raise ValueError("design.source_netlist must be a non-empty path")
-    source_netlist = Path(os.path.abspath(spec_path.parent / source_value))
+    source_netlist = (spec_path.parent / source_value).resolve()
     if not source_netlist.is_file():
         raise ValueError(f"source netlist does not exist: {source_netlist}")
+    if not source_netlist.is_relative_to(root):
+        raise ValueError("design.source_netlist must stay below the project root")
+    owner = repository.owner_for(spec_path)
+    if owner is not None and not source_netlist.is_relative_to(owner.root):
+        raise ValueError("design.source_netlist must stay inside its owning active IP")
 
     inputs = _optional_names(ports.get("inputs"), "ports.inputs")
     outputs = _optional_names(ports.get("outputs"), "ports.outputs")
@@ -217,4 +229,96 @@ def load_design_spec(
         directions=directions,
         pdk=pdk,
         netlist_snapshot=netlist_snapshot,
+        source_documents=MappingProxyType(
+            {spec_path: freeze_toml_document(raw)}
+        ),
     )
+
+
+def resolve_design_spec(
+    path: Path,
+    *,
+    project: Project,
+    snapshot: DesignSpec | None = None,
+) -> DesignSpec:
+    """Load a design spec or validate one operation-owned snapshot."""
+
+    if snapshot is None:
+        return load_design_spec(path, project=project)
+    spec_path = path.resolve()
+    root = project.project_root
+    if (
+        snapshot.path != spec_path
+        or snapshot.project is not project
+        or not spec_path.is_relative_to(root)
+        or not spec_path.is_file()
+    ):
+        raise ValueError("design snapshot identity drift")
+    owner = project.owner_for(spec_path)
+    if (
+        not isinstance(snapshot.source_documents, Mapping)
+        or set(snapshot.source_documents) != {spec_path}
+        or any(
+            not isinstance(source, Path)
+            or source != source.resolve()
+            or not source.is_relative_to(root)
+            or not source.is_file()
+            or not isinstance(document, Mapping)
+            for source, document in snapshot.source_documents.items()
+        )
+    ):
+        raise ValueError("design snapshot source document identity drift")
+    raw = snapshot.source_documents[spec_path]
+    if owner is not None:
+        require_config_header(
+            raw,
+            spec_path,
+            contract_kind="cell-design",
+            path_scope="cell",
+            owner=owner.name,
+        )
+    design = raw.get("design")
+    ports = raw.get("ports")
+    if not isinstance(design, Mapping) or not isinstance(ports, Mapping):
+        raise ValueError("design snapshot source document drift")
+    source_value = design.get("source_netlist")
+    source_path = (
+        None
+        if not isinstance(source_value, str) or not source_value
+        else (spec_path.parent / source_value).resolve()
+    )
+    supplies = ports.get("supplies")
+    primary_supply = ports.get("primary_supply")
+    ground_supply = ports.get("ground_supply")
+    if (
+        primary_supply is None
+        and ground_supply is None
+        and isinstance(supplies, (list, tuple))
+        and len(supplies) == 2
+    ):
+        primary_supply, ground_supply = supplies
+    if (
+        design.get("library") != snapshot.library
+        or design.get("cell") != snapshot.cell
+        or design.get("sync_mode", "recursive") != snapshot.sync_mode
+        or design.get("pdk") != snapshot.pdk.key
+        or source_path != snapshot.source_netlist
+        or snapshot.source_netlist != snapshot.source_netlist.resolve()
+        or not snapshot.source_netlist.is_file()
+        or snapshot.netlist_snapshot.source_path != snapshot.source_netlist
+        or not snapshot.source_netlist.is_relative_to(root)
+        or (
+            owner is not None
+            and not snapshot.source_netlist.is_relative_to(owner.root)
+        )
+        or tuple(ports.get("inputs") or ()) != snapshot.inputs
+        or tuple(ports.get("outputs") or ()) != snapshot.outputs
+        or tuple(ports.get("inouts") or ()) != snapshot.inouts
+        or tuple(supplies or ()) != snapshot.supplies
+        or tuple(ports.get("order", ())) != snapshot.port_order
+        or primary_supply != snapshot.primary_supply
+        or ground_supply != snapshot.ground_supply
+        or ports.get("directions") != snapshot.directions
+    ):
+        raise ValueError("design snapshot source document drift")
+    return snapshot

@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
+    from sigilicon.domain.design import DesignSpec
     from sigilicon.domain.ip_release import IpContract
     from sigilicon.domain.oa_library import OALibrarySource
     from sigilicon.domain.oa_simulation import OASimulationSpec
@@ -127,6 +128,7 @@ def inspect_project_configurations(
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_simulation_inventory: Mapping[Path, OASimulationSpec] | None = None,
+    oa_design_inventory: Mapping[Path, DesignSpec] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -218,6 +220,20 @@ def inspect_project_configurations(
                 catalog_documents,
                 simulation.source_documents,
                 label="OA simulation snapshot",
+            )
+    if oa_design_inventory is not None:
+        from sigilicon.domain.design import resolve_design_spec
+
+        for path, snapshot in oa_design_inventory.items():
+            design = resolve_design_spec(
+                path,
+                project=context,
+                snapshot=snapshot,
+            )
+            _merge_source_documents(
+                catalog_documents,
+                design.source_documents,
+                label="design snapshot",
             )
     resolved_platform_catalog = None
     if platform_inventory is not None and platform_catalog is None:
