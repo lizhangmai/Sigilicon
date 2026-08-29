@@ -8,7 +8,10 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import freeze_toml_document
+from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
+    is_frozen_toml_document,
+)
 from sigilicon.domain.platform import PdkConfig, resolve_platform
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
@@ -20,6 +23,7 @@ from sigilicon.domain.repository import Project
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 @dataclass(frozen=True)
 class OANativeRdbContract:
     """Independent identity model used to audit a native Maestro RDB."""
@@ -147,6 +151,7 @@ def _load_native_rdb_contract(
     project_root: Path,
     owner_root: Path,
     default_diagnostic_processor: NativeDiagnosticProcessor | None,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> OANativeRdbContract:
     """Load the source-owned native RDB identity audit model.
 
@@ -307,10 +312,35 @@ def _load_native_rdb_contract(
                 "native RDB diagnostic_equivalence requires a testbench-local "
                 "diagnostic_processor declared by the native RDB contract"
             )
+        if architecture_source_documents is not None and (
+            not isinstance(architecture_source_documents, _MAPPING_PROXY_TYPE)
+            or any(
+                not isinstance(source, Path)
+                or source != source.resolve()
+                or not source.is_relative_to(project_root)
+                or not source.is_file()
+                or not isinstance(document, Mapping)
+                or not is_frozen_toml_document(document)
+                for source, document in architecture_source_documents.items()
+            )
+        ):
+            raise ValueError("architecture source inventory identity drift")
+        owner_architecture_documents = (
+            None
+            if architecture_source_documents is None
+            else MappingProxyType(
+                {
+                    source: document
+                    for source, document in architecture_source_documents.items()
+                    if source.is_relative_to(owner_root.resolve())
+                }
+            )
+        )
         diagnostic_equivalence = diagnostic_processor.load_contract(
             diagnostic_raw,
             contract_path=path,
             project_root=project_root,
+            source_documents=owner_architecture_documents,
         )
 
     waveform_names = [name for name, _signal in waveform_outputs]
@@ -432,6 +462,7 @@ def _load_native_oa_simulation_spec(
     raw: Mapping[str, Any],
     default_diagnostic_processor: NativeDiagnosticProcessor | None,
     platform_snapshot: PdkConfig | None,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> OASimulationSpec:
     """Load the thin contract used by native ADE/Maestro pilot cells.
 
@@ -504,6 +535,7 @@ def _load_native_oa_simulation_spec(
             project_root=project_root,
             owner_root=owner_root,
             default_diagnostic_processor=default_diagnostic_processor,
+            architecture_source_documents=architecture_source_documents,
         )
         if rdb_contract_path.is_file()
         else None
@@ -539,6 +571,7 @@ def load_oa_simulation_spec(
     project: Project | None = None,
     project_root: Path | None = None,
     platform: PdkConfig | None = None,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OASimulationSpec:
     """Load only the source-owned schema-3 thin native simulation contract."""
 
@@ -577,6 +610,7 @@ def load_oa_simulation_spec(
             owner_path=spec_path,
         ),
         platform_snapshot=platform,
+        architecture_source_documents=architecture_source_documents,
     )
 
 

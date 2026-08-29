@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import importlib.util
+import inspect
 from pathlib import Path
 from types import ModuleType
-from typing import Collection, Mapping
+from typing import Any, Collection, Mapping
 import uuid
 
 from sigilicon.domain.repository import Project
@@ -45,12 +46,19 @@ class NativeDiagnosticProcessor:
         *,
         contract_path: Path,
         project_root: Path,
+        source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
     ) -> NativeDiagnosticContract:
-        diagnostic = self.implementation.load_contract(
-            raw,
-            contract_path=contract_path,
-            project_root=project_root,
-        )
+        loader = self.implementation.load_contract
+        kwargs: dict[str, object] = {
+            "contract_path": contract_path,
+            "project_root": project_root,
+        }
+        if (
+            source_documents is not None
+            and "source_documents" in inspect.signature(loader).parameters
+        ):
+            kwargs["source_documents"] = source_documents
+        diagnostic = loader(raw, **kwargs)
         if not isinstance(diagnostic, NativeDiagnosticContract):
             raise TypeError("native diagnostic loader returned an invalid contract")
         support_sources = tuple(

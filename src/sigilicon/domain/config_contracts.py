@@ -157,6 +157,7 @@ def inspect_project_configurations(
     oa_simulation_inventory: Mapping[Path, OASimulationSpec] | None = None,
     oa_design_inventory: Mapping[Path, DesignSpec] | None = None,
     layout_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate TOML below the roots selected by repository catalogs.
 
@@ -319,6 +320,12 @@ def inspect_project_configurations(
             catalog_documents,
             layout_source_documents,
             label="layout snapshot",
+        )
+    if architecture_source_documents is not None:
+        _merge_source_documents(
+            catalog_documents,
+            architecture_source_documents,
+            label="architecture source snapshot",
         )
     resolved_platform_catalog = None
     if platform_inventory is not None and platform_catalog is None:

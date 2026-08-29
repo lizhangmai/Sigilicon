@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import (
+    freeze_toml_document,
     inspect_project_configurations,
+    read_toml,
+    require_config_header,
 )
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
@@ -79,6 +83,79 @@ def _register_owner_root(
     owner_roots[owner] = root
 
 
+def _architecture_source_documents(
+    context: Project,
+) -> Mapping[Path, Mapping[str, Any]]:
+    """Read owner-selected architecture TOML once for this repository check."""
+
+    root = context.project_root
+    documents: dict[Path, Mapping[str, Any]] = {}
+    declared_by: dict[Path, str] = {}
+    for component in context.component_inventory.values():
+        owner = context.require_owner(component.path)
+        if component.owner != owner.name:
+            raise ValueError("architecture component owner identity drift")
+        for relative in component.filesets.get("architecture", ()):
+            path = (root / relative).resolve()
+            if path.suffix != ".toml":
+                continue
+            if not path.is_relative_to(owner.root) or not path.is_file():
+                raise ValueError(f"architecture fileset source is missing: {path}")
+            previous_owner = declared_by.get(path)
+            if previous_owner is not None:
+                if previous_owner != owner.name:
+                    raise ValueError(
+                        f"architecture source has multiple owners: {path}"
+                    )
+                continue
+            declared_by[path] = owner.name
+            document = freeze_toml_document(read_toml(path))
+            envelope_fields = {"contract_kind", "path_scope", "owner"}
+            present = envelope_fields & document.keys()
+            if present:
+                if present != envelope_fields:
+                    raise ValueError(
+                        f"architecture source has an incomplete header: {path}"
+                    )
+                contract_kind = document.get("contract_kind")
+                if not isinstance(contract_kind, str) or not contract_kind:
+                    raise ValueError(
+                        f"architecture source contract kind is invalid: {path}"
+                    )
+                require_config_header(
+                    document,
+                    path,
+                    contract_kind=contract_kind,
+                    path_scope=("owner", "cell", "verification", "variant"),
+                    owner=owner.name,
+                )
+            documents[path] = document
+    return MappingProxyType(documents)
+
+
+def _integration_variant_inventory(
+    context: Project,
+    component_path: Path,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]],
+) -> Mapping[Path, Mapping[str, Any]] | None:
+    """Select a complete preloaded variant set, or preserve standalone loading."""
+
+    component = context.require_owner(component_path).component
+    variants = component.document.get("variants")
+    if not isinstance(variants, Mapping) or not variants:
+        return None
+    paths: list[Path] = []
+    for value in variants.values():
+        if not isinstance(value, str):
+            return None
+        paths.append((context.project_root / Path(value)).resolve())
+    if any(path not in architecture_source_documents for path in paths):
+        return None
+    return MappingProxyType(
+        {path: architecture_source_documents[path] for path in paths}
+    )
+
+
 def check_project_designs(
     project_contract: Path,
 ) -> dict[str, Any]:
@@ -125,6 +202,8 @@ def inspect_repository_designs(
             catalog=platform_catalog,
         )
 
+    architecture_source_documents = _architecture_source_documents(context)
+
     release_inventory = {}
     for name, path in release_paths.items():
         contract = load_ip_contract(path, project=context)
@@ -147,6 +226,7 @@ def inspect_repository_designs(
             project=context,
             platform_inventory=platform_inventory,
             oa_source_inventory=oa_source_inventory,
+            architecture_source_documents=architecture_source_documents,
         )
         for assembly in oa_source_inventory
     }
@@ -214,6 +294,11 @@ def inspect_repository_designs(
             integration_contract = load_ip_integration_contract(
                 path,
                 project=context,
+                variant_source_documents=_integration_variant_inventory(
+                    context,
+                    path,
+                    architecture_source_documents,
+                ),
             )
             integration = plan_ip_integration_contract(
                 integration_contract,
@@ -271,6 +356,7 @@ def inspect_repository_designs(
         oa_simulation_inventory=oa_simulation_inventory,
         oa_design_inventory=oa_design_inventory,
         layout_source_documents=layout_source_documents,
+        architecture_source_documents=architecture_source_documents,
     )
 
     design_catalog = load_design_target_catalog(

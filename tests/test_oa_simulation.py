@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 from sigilicon.domain.oa_simulation import (
     load_oa_simulation_spec,
     resolve_oa_simulation_spec,
+)
+from sigilicon.domain.native_diagnostics import (
+    NativeDiagnosticContract,
+    NativeDiagnosticProcessor,
 )
 from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.ade import _native_setup_entry_point
@@ -58,6 +63,50 @@ maestro_procedure = "fixtureNativeMaestro"
         },
     )
     return root, spec
+
+
+def test_native_diagnostic_processor_forwards_optional_source_documents(
+    tmp_path: Path,
+) -> None:
+    contract_path = (tmp_path / "native_rdb.toml").resolve()
+    architecture = (tmp_path / "architecture.toml").resolve()
+    inventory = MappingProxyType({architecture: MappingProxyType({})})
+
+    def snapshot_loader(
+        raw,
+        *,
+        contract_path,
+        project_root,
+        source_documents,
+    ):
+        assert source_documents is inventory
+        return NativeDiagnosticContract("fixture", {}, ())
+
+    processor = NativeDiagnosticProcessor(
+        source=(tmp_path / "processor.py").resolve(),
+        implementation=SimpleNamespace(load_contract=snapshot_loader),
+    )
+    assert processor.load_contract(
+        {},
+        contract_path=contract_path,
+        project_root=tmp_path.resolve(),
+        source_documents=inventory,
+    ).kind == "fixture"
+
+    legacy = NativeDiagnosticProcessor(
+        source=(tmp_path / "legacy.py").resolve(),
+        implementation=SimpleNamespace(
+            load_contract=lambda raw, *, contract_path, project_root: (
+                NativeDiagnosticContract("legacy", {}, ())
+            )
+        ),
+    )
+    assert legacy.load_contract(
+        {},
+        contract_path=contract_path,
+        project_root=tmp_path.resolve(),
+        source_documents=inventory,
+    ).kind == "legacy"
 
 
 def test_elaborated_netlist_selects_one_completed_history_file(
@@ -433,6 +482,12 @@ kind = "fixture"
     assert contract.diagnostic_scalar_names == ("diag_value",)
     assert processor.resolve() in contract.support_sources
     assert owner_processor.resolve() not in contract.support_sources
+    with pytest.raises(ValueError, match="architecture source inventory"):
+        load_oa_simulation_spec(
+            spec_path,
+            project_root=root,
+            architecture_source_documents={},
+        )
 
 
 def test_native_rdb_rejects_a_nonlocal_diagnostic_processor(tmp_path: Path) -> None:

@@ -510,6 +510,7 @@ def load_ip_integration_contract(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
+    variant_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> IpIntegrationContract:
     """Load composite-IP integration intent from its canonical component manifest."""
 
@@ -558,6 +559,11 @@ def load_ip_integration_contract(
         )
 
     variants_raw = _table(raw.get("variants"), "variants")
+    if (
+        variant_source_documents is not None
+        and not isinstance(variant_source_documents, _MAPPING_PROXY_TYPE)
+    ):
+        raise ValueError("IP operating variant source inventory must be immutable")
     variants: list[IpOperatingVariant] = []
     source_documents: dict[Path, Mapping[str, Any]] = {}
     for name, value in variants_raw.items():
@@ -571,17 +577,31 @@ def load_ip_integration_contract(
             raise FileNotFoundError(f"IP operating variant is missing: {variant_path}")
         if not variant_path.is_relative_to(cataloged_owner.root):
             raise ValueError("IP operating variant must stay inside its owner")
+        variant_document = None
+        if variant_source_documents is not None:
+            variant_document = variant_source_documents.get(variant_path)
+            if (
+                not isinstance(variant_document, Mapping)
+                or not is_frozen_toml_document(variant_document)
+            ):
+                raise ValueError("IP operating variant source inventory is incomplete")
         variant = _operating_variant(
             name,
             variant_path,
             contract=component,
             graph=graph,
             dependencies=by_name,
+            source_document=variant_document,
         )
         variants.append(variant)
         source_documents[variant.path] = variant.source_document
     if not variants:
         raise ValueError("IP integration must declare at least one operating variant")
+    if (
+        variant_source_documents is not None
+        and set(variant_source_documents) != {variant.path for variant in variants}
+    ):
+        raise ValueError("IP operating variant source inventory identity drift")
 
     implementation_profiles, implementation_documents = _implementation_profiles(
         raw,

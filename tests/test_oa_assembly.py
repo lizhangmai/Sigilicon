@@ -487,7 +487,13 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
         received.append(("layout", snapshot))
         return ()
 
-    def plan_testbenches(_source, _definitions, snapshot):
+    def plan_testbenches(
+        _source,
+        _definitions,
+        snapshot,
+        architecture_source_documents,
+    ):
+        assert architecture_source_documents is None
         received.append(("simulation", snapshot))
         return ()
 

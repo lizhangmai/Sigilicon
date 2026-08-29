@@ -229,6 +229,108 @@ def test_check_designs_reuses_the_loaded_component_owner(
     assert component_reads == 1
 
 
+def test_architecture_inventory_preserves_typed_variant_sources_for_reuse(
+    tmp_path: Path,
+) -> None:
+    behavior = tmp_path / "ip/example/configs/behavior.toml"
+    variant = tmp_path / "ip/example/configs/variant.toml"
+    behavior.parent.mkdir(parents=True)
+    behavior.write_text(
+        '''schema = 1
+contract_kind = "ip-architecture-behavior"
+path_scope = "owner"
+owner = "example"
+''',
+        encoding="utf-8",
+    )
+    variant.write_text(
+        '''schema = 1
+contract_kind = "ip-operating-variant"
+path_scope = "variant"
+owner = "example"
+''',
+        encoding="utf-8",
+    )
+    component = write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "architecture": (
+                "ip/example/configs/behavior.toml",
+                "ip/example/configs/variant.toml",
+            )
+        },
+    )
+    component.write_text(
+        component.read_text(encoding="utf-8")
+        + '\n[variants]\ndefault = "ip/example/configs/variant.toml"\n',
+        encoding="utf-8",
+    )
+
+    project = Project.from_project_root(tmp_path)
+    documents = repository_checks._architecture_source_documents(project)
+    variants = repository_checks._integration_variant_inventory(
+        project,
+        component.resolve(),
+        documents,
+    )
+
+    assert set(documents) == {behavior.resolve(), variant.resolve()}
+    assert variants is not None
+    assert set(variants) == {variant.resolve()}
+    assert variants[variant.resolve()] is documents[variant.resolve()]
+    with pytest.raises(TypeError):
+        documents[behavior.resolve()]["schema"] = 2
+
+
+def test_architecture_inventory_rejects_owner_drift(
+    tmp_path: Path,
+) -> None:
+    architecture = tmp_path / "ip/example/configs/behavior.toml"
+    architecture.parent.mkdir(parents=True)
+    architecture.write_text(
+        '''schema = 1
+contract_kind = "ip-architecture-behavior"
+path_scope = "owner"
+owner = "other"
+''',
+        encoding="utf-8",
+    )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "architecture": ("ip/example/configs/behavior.toml",),
+        },
+    )
+
+    with pytest.raises(ValueError, match="owner must be 'example'"):
+        repository_checks._architecture_source_documents(
+            Project.from_project_root(tmp_path)
+        )
+
+
+def test_architecture_inventory_rejects_cross_owner_sources(
+    tmp_path: Path,
+) -> None:
+    architecture = tmp_path / "ip/other/configs/behavior.toml"
+    architecture.parent.mkdir(parents=True)
+    architecture.write_text("name = 'native'\n", encoding="utf-8")
+    write_component_owner(tmp_path, "other", filesets={})
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "architecture": ("ip/other/configs/behavior.toml",),
+        },
+    )
+
+    with pytest.raises(ValueError, match="cataloged root|architecture fileset source"):
+        repository_checks._architecture_source_documents(
+            Project.from_project_root(tmp_path)
+        )
+
+
 def test_check_designs_reads_each_ip_release_contract_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -498,8 +600,18 @@ def test_repository_workflows_share_one_platform_inventory(
     write_test_platform(tmp_path)
     _write_release_target(tmp_path)
     component = tmp_path / "ip/fixture/component.toml"
+    architecture = tmp_path / "ip/fixture/architecture.toml"
+    architecture.write_text(
+        '''schema = 1
+contract_kind = "ip-architecture-behavior"
+path_scope = "owner"
+owner = "fixture"
+''',
+        encoding="utf-8",
+    )
     component.write_text(
         component.read_text(encoding="utf-8")
+        + 'architecture = ["ip/fixture/architecture.toml"]\n'
         + "\n[variants.fixture]\ncontract = 'unused.toml'\n",
         encoding="utf-8",
     )
@@ -534,22 +646,27 @@ def test_repository_workflows_share_one_platform_inventory(
     observed_oa_simulation_inventories: list[object] = []
     observed_oa_design_inventories: list[object] = []
     observed_oa_layout_inventories: list[object] = []
+    observed_architecture_inventories: list[object] = []
     oa_source_reads: list[Path] = []
     oa_document_reads = 0
+    architecture_reads = 0
 
     def counted_load(stream):
-        nonlocal oa_document_reads
+        nonlocal architecture_reads, oa_document_reads
         path = Path(stream.name).resolve()
         if path in reads:
             reads[path] += 1
         if path == (tmp_path / "ip/fixture/oa.toml").resolve():
             oa_document_reads += 1
+        if path == architecture.resolve():
+            architecture_reads += 1
         return original_load(stream)
 
     integration_contract = SimpleNamespace(name="fixture")
 
-    def load_integration(_path, *, project):
+    def load_integration(_path, *, project, variant_source_documents):
         assert project.project_root == tmp_path.resolve()
+        assert variant_source_documents is None
         return integration_contract
 
     def plan_integration(
@@ -573,10 +690,14 @@ def test_repository_workflows_share_one_platform_inventory(
         project,
         platform_inventory,
         oa_source_inventory,
+        architecture_source_documents,
     ):
         assert project.project_root == tmp_path.resolve()
         observed_platform_inventories.append(platform_inventory)
         observed_oa_inventories.append(oa_source_inventory)
+        observed_architecture_inventories.append(
+            architecture_source_documents
+        )
         return SimpleNamespace(
             as_dict=lambda: {},
             designs=(
@@ -623,6 +744,9 @@ def test_repository_workflows_share_one_platform_inventory(
         )
         observed_oa_design_inventories.append(kwargs["oa_design_inventory"])
         observed_oa_layout_inventories.append(kwargs["layout_source_documents"])
+        observed_architecture_inventories.append(
+            kwargs["architecture_source_documents"]
+        )
         forwarded = dict(kwargs)
         forwarded["oa_simulation_inventory"] = {}
         forwarded["oa_design_inventory"] = {}
@@ -702,5 +826,9 @@ def test_repository_workflows_share_one_platform_inventory(
     }
     assert len(observed_oa_layout_inventories) == 1
     assert observed_oa_layout_inventories[0] == planned_layout.source_documents
+    assert len(observed_architecture_inventories) == 2
+    assert observed_architecture_inventories[0] is observed_architecture_inventories[1]
+    assert set(observed_architecture_inventories[0]) == {architecture.resolve()}
+    assert architecture_reads == 1
     assert oa_document_reads == 0
     assert set(reads.values()) == {1}

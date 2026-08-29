@@ -506,6 +506,51 @@ def test_architecture_validator_reuses_variant_source_document(
     ) == {"variant": "default", "validated": True}
 
 
+def test_integration_loader_reuses_a_complete_variant_source_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    contract_path = _write_ip_fixture(
+        project_root,
+        "development-fixture",
+        "exports/fixture/manifest.json",
+    )
+    project = Project.from_project_root(project_root)
+    variant = (project_root / "ip/demo/configs/variants/default.toml").resolve()
+    with variant.open("rb") as stream:
+        document = config_contracts.freeze_toml_document(tomllib.load(stream))
+    inventory = MappingProxyType({variant: document})
+    original_load = ip_integration.tomllib.load
+
+    def reject_variant_reload(stream):
+        if Path(stream.name).resolve() == variant:
+            pytest.fail("variant source was reloaded")
+        return original_load(stream)
+
+    monkeypatch.setattr(ip_integration.tomllib, "load", reject_variant_reload)
+
+    contract = load_ip_integration_contract(
+        contract_path,
+        project=project,
+        variant_source_documents=inventory,
+    )
+
+    assert contract.get_variant("default").source_document == document
+    with pytest.raises(ValueError, match="inventory is incomplete"):
+        load_ip_integration_contract(
+            contract_path,
+            project=project,
+            variant_source_documents=MappingProxyType({}),
+        )
+    with pytest.raises(ValueError, match="inventory must be immutable"):
+        load_ip_integration_contract(
+            contract_path,
+            project=project,
+            variant_source_documents={variant: document},
+        )
+
+
 def test_ip_integration_is_exposed_only_under_the_ip_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

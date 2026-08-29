@@ -431,6 +431,7 @@ def _plan_testbenches(
     source: OALibrarySource,
     definitions: Mapping[str, NetlistSubcircuit],
     platform: PdkConfig,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> tuple[TestbenchRebuildStep, ...]:
     declared_cells = {cell.cell for cell in source.cells}
     result: list[TestbenchRebuildStep] = []
@@ -451,6 +452,7 @@ def _plan_testbenches(
             next(iter(setup_sources)),
             project=source.project,
             platform=platform,
+            architecture_source_documents=architecture_source_documents,
         )
         if simulation.library != source.name or simulation.cell != cell.cell:
             raise ValueError(f"testbench setup identity differs from {cell.cell}")
@@ -591,6 +593,7 @@ def plan_oa_library_rebuild(
     library: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
+    architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OALibraryRebuildPlan:
     """Prove that source alone describes every cell and canonical OA view."""
 
@@ -638,7 +641,12 @@ def plan_oa_library_rebuild(
         )
     designs = _plan_designs(source, target_library, definitions, platform)
     layouts = _plan_layouts(source, target_library, definitions, platform)
-    testbenches = _plan_testbenches(source, definitions, platform)
+    testbenches = _plan_testbenches(
+        source,
+        definitions,
+        platform,
+        architecture_source_documents,
+    )
     views = _plan_views(source)
     expected_views = {
         cell.cell: tuple(view.name for view in cell.views)
