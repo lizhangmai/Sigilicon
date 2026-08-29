@@ -10,8 +10,10 @@ from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
-from sigilicon.paths import ProjectContext
 from sigilicon.workflows.source_control import artifact_source_state
+
+
+_HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
 
 
 @dataclass(frozen=True)
@@ -23,16 +25,23 @@ class XceliumCellPlan:
     sources: tuple[Path, ...]
     command_template: tuple[str, ...]
 
-    def as_dict(self, *, project_root: Path) -> dict[str, object]:
-        root = project_root.resolve()
+    def as_dict(self) -> dict[str, object]:
+        root = self.spec.project_root
         return {
+            "owner": self.spec.owner,
             "cell": self.spec.cell,
             "dut": self.spec.dut,
             "simulator": self.spec.simulator,
             "contract": self.contract.relative_to(root).as_posix(),
             "canonical_source": self.spec.canonical_source.relative_to(root).as_posix(),
-            "dependencies": [
-                path.relative_to(root).as_posix() for path in self.spec.dependencies
+            "compile_sources": [
+                path.relative_to(root).as_posix() for path in self.spec.compile_sources
+            ],
+            "support_files": [
+                path.relative_to(root).as_posix() for path in self.spec.support_files
+            ],
+            "contracts": [
+                path.relative_to(root).as_posix() for path in self.spec.contracts
             ],
             "runner": (
                 self.spec.runner.relative_to(root).as_posix()
@@ -40,6 +49,7 @@ class XceliumCellPlan:
                 else None
             ),
             "sources": [path.relative_to(root).as_posix() for path in self.sources],
+            "success_marker": self.spec.success_marker,
             "command_template": list(self.command_template),
         }
 
@@ -51,35 +61,78 @@ class XceliumCellRun:
     plan: XceliumCellPlan
     manifest: Path
     returncode: int
+    passed: bool
     stdout: str
     stderr: str
+    native_log: str
+
+    @property
+    def evidence_output(self) -> str:
+        """Combined simulator output available to owner-specific result parsers."""
+
+        return "\n".join(output for output in (self.stdout, self.native_log) if output)
 
 
-def _resolve_contract(path: Path, *, project_root: Path) -> Path:
-    root = project_root.resolve()
+def _project(
+    project: Project | None,
+    project_root: Path | None,
+) -> Project:
+    if project is None:
+        if project_root is None:
+            raise ValueError("Xcelium workflow requires an explicit Project")
+        return Project.from_project_root(project_root)
+    if (
+        project_root is not None
+        and Path(project_root).resolve() != project.project_root
+    ):
+        raise ValueError("Xcelium project root disagrees with Project")
+    return project
+
+
+def _resolve_contract(path: Path, *, project: Project) -> Path:
+    root = project.project_root
     contract = path.resolve() if path.is_absolute() else (root / path).resolve()
     if not contract.is_relative_to(root) or not contract.is_file():
         raise ValueError(f"Xcelium verification cell contract is not project-owned: {path}")
+    project.require_owner(contract)
     return contract
 
 
 def plan_xcelium_cell(
     contract_path: Path,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
 ) -> XceliumCellPlan:
     """Resolve a cell without finding or launching an external simulator."""
 
-    contract = _resolve_contract(contract_path, project_root=project_root)
-    spec = load_verification_cell(contract, project_root=project_root)
+    repository = _project(project, project_root)
+    contract = _resolve_contract(contract_path, project=repository)
+    spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() != "xcelium":
         raise ValueError(
             f"verification cell {spec.cell} declares simulator {spec.simulator!r}, "
             "not xcelium"
         )
-    sources = (spec.canonical_source, *spec.dependencies)
+    if spec.success_marker is None:
+        raise ValueError(
+            f"Xcelium verification cell {spec.cell} must declare success_marker"
+        )
+    sources = (spec.canonical_source, *spec.compile_sources)
     if len(set(sources)) != len(sources):
         raise ValueError(f"verification cell {spec.cell} has duplicate compile sources")
+    invalid_sources = [
+        path for path in sources if path.suffix.lower() not in _HDL_SOURCE_SUFFIXES
+    ]
+    if invalid_sources:
+        invalid = ", ".join(
+            path.relative_to(repository.project_root).as_posix()
+            for path in invalid_sources
+        )
+        raise ValueError(
+            "Xcelium compile inputs must be Verilog/SystemVerilog sources; "
+            f"declare non-HDL inputs in support_files or contracts: {invalid}"
+        )
     command_template = (
         "xrun",
         "-64bit",
@@ -103,23 +156,25 @@ def plan_xcelium_cell(
 def run_xcelium_cell(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     xrun: Path | None = None,
     timeout: int = 600,
 ) -> XceliumCellRun:
     """Run one verification cell through an isolated artifact work directory."""
 
-    root = project_root.resolve()
-    plan = plan_xcelium_cell(contract_path, project_root=root)
+    repository = _project(project, project_root)
+    if artifact_root is not None:
+        repository = repository.with_artifact_root(artifact_root)
+    root = repository.project_root
+    plan = plan_xcelium_cell(contract_path, project=repository)
     xrun_bin = find_xrun(xrun)
     source_state = artifact_source_state(root)
-    paths = ProjectContext.from_project_root(root, artifact_root=artifact_root)
-    owner = Project.from_project_root(root).require_owner(plan.contract).name
     run_id = new_identity()
     attempt = ArtifactRecord.begin(
-        paths.artifacts.execution(
-            owner=owner,
+        repository.artifacts.execution(
+            owner=plan.spec.owner,
             target=plan.spec.cell,
             flow="xcelium",
             variant=plan.spec.simulator,
@@ -128,7 +183,7 @@ def run_xcelium_cell(
             identity_kind="run_id",
         ),
         entities={
-            "library": owner,
+            "library": plan.spec.owner,
             "cell": plan.spec.dut,
             "testbench": plan.spec.cell,
         },
@@ -143,7 +198,7 @@ def run_xcelium_cell(
             ("source-manifest.json",),
             {
                 "schema": 1,
-                "plan": plan.as_dict(project_root=root),
+                "plan": plan.as_dict(),
             },
             label="Xcelium source plan",
         )
@@ -163,9 +218,11 @@ def run_xcelium_cell(
         ]
 
         def validate_spawn() -> None:
-            for source in plan.sources:
-                if not source.is_file():
-                    raise FileNotFoundError(f"Xcelium source disappeared: {source}")
+            for source_input in plan.spec.source_inputs:
+                if not source_input.is_file():
+                    raise FileNotFoundError(
+                        f"Xcelium source input disappeared: {source_input}"
+                    )
 
         completed = run_process_group_capture(
             command,
@@ -181,11 +238,26 @@ def run_xcelium_cell(
             "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
         )
         native_log = work_dir / "xrun.log"
+        native_output = (
+            native_log.read_text(encoding="utf-8", errors="replace")
+            if native_log.is_file()
+            else ""
+        )
         native_log_path = (
             attempt.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
             if native_log.is_file()
             else None
         )
+        success_marker_evidence = [
+            source
+            for source, output in (
+                ("stdout", completed.stdout),
+                ("native_log", native_output),
+            )
+            if plan.spec.success_marker in output
+        ]
+        success_marker_seen = bool(success_marker_evidence)
+        passed = completed.returncode == 0 and success_marker_seen
         summary = {
             "schema": 1,
             "cell": plan.spec.cell,
@@ -193,7 +265,10 @@ def run_xcelium_cell(
             "xrun": str(xrun_bin),
             "command": command,
             "returncode": completed.returncode,
-            "passed": completed.returncode == 0,
+            "success_marker": plan.spec.success_marker,
+            "success_marker_seen": success_marker_seen,
+            "success_marker_evidence": success_marker_evidence,
+            "passed": passed,
             "logs": {
                 "stdout": str(stdout_path.relative_to(attempt.paths.root)),
                 "stderr": str(stderr_path.relative_to(attempt.paths.root)),
@@ -212,6 +287,12 @@ def run_xcelium_cell(
                 f"xrun failed for {plan.spec.cell} with exit code {completed.returncode}"
             )
             attempt.fail(error, details={"summary": summary})
+        elif not success_marker_seen:
+            error = RuntimeError(
+                f"Xcelium verification cell {plan.spec.cell} did not emit its "
+                f"success marker: {plan.spec.success_marker!r}"
+            )
+            attempt.fail(error, details={"summary": summary})
         else:
             attempt.succeed(
                 completion_evidence=(summary_path,),
@@ -221,10 +302,40 @@ def run_xcelium_cell(
             plan=plan,
             manifest=attempt.paths.manifest,
             returncode=completed.returncode,
+            passed=passed,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            native_log=native_output,
         )
     except BaseException as error:
         if attempt.status == "running":
             attempt.fail(error)
         raise
+
+
+@dataclass(frozen=True)
+class ProjectXceliumWorkflow:
+    """Bind Xcelium planning and execution to one canonical Project."""
+
+    _project: Project
+
+    @classmethod
+    def from_file(cls, project_contract: Path | str) -> "ProjectXceliumWorkflow":
+        return cls(Project.from_file(project_contract))
+
+    def plan(self, contract_path: Path) -> XceliumCellPlan:
+        return plan_xcelium_cell(contract_path, project=self._project)
+
+    def run(
+        self,
+        contract_path: Path,
+        *,
+        xrun: Path | None = None,
+        timeout: int = 600,
+    ) -> XceliumCellRun:
+        return run_xcelium_cell(
+            contract_path,
+            project=self._project,
+            xrun=xrun,
+            timeout=timeout,
+        )

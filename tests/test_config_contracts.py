@@ -179,18 +179,19 @@ path_scope = "cell"
 owner = "alpha"
 """,
     )
-    loaded: list[tuple[Path, Path]] = []
+    loaded: list[tuple[Path, RepositoryContext]] = []
     monkeypatch.setattr(
         "sigilicon.domain.verification_cell.load_verification_cell",
-        lambda path, *, project_root: loaded.append((path, project_root)),
+        lambda path, *, project: loaded.append((path, project)),
     )
 
+    context = RepositoryContext.from_project_root(tmp_path)
     inspect_project_configurations(
-        RepositoryContext.from_project_root(tmp_path),
+        context,
         owner_roots=_owner_roots(tmp_path),
     )
 
-    assert loaded == [(cell, tmp_path)]
+    assert loaded == [(cell, context)]
 
 
 def test_common_header_rejects_wrong_scope() -> None:

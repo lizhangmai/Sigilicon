@@ -7,8 +7,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from sigilicon.cli.common import die, emit_json
-from sigilicon.paths import ProjectContext, discover_project_context
-from sigilicon.workflows.xcelium import plan_xcelium_cell, run_xcelium_cell
+from sigilicon.paths import discover_project_contract
+from sigilicon.workflows.xcelium import ProjectXceliumWorkflow
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -23,26 +23,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args(argv)
-    context = discover_project_context(__file__)
-    root = context.project_root
+    workflow = ProjectXceliumWorkflow.from_file(discover_project_contract(__file__))
     try:
         if not args.execute:
-            payload = plan_xcelium_cell(args.cell, project_root=root).as_dict(
-                project_root=root
-            )
+            plan = workflow.plan(args.cell)
+            payload = plan.as_dict()
             payload["executed"] = False
         else:
-            result = run_xcelium_cell(
+            result = workflow.run(
                 args.cell,
-                project_root=root,
-                artifact_root=context.artifact_root,
                 xrun=args.xrun,
                 timeout=args.timeout,
             )
+            root = result.plan.spec.project_root
             payload = {
-                **result.plan.as_dict(project_root=root),
+                **result.plan.as_dict(),
                 "executed": True,
                 "returncode": result.returncode,
+                "passed": result.passed,
                 "manifest": result.manifest.relative_to(root).as_posix(),
                 "product_qualification_conclusion": False,
             }
@@ -56,10 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(
-            f"Xcelium run: {payload['cell']} returncode={payload['returncode']} "
+            f"Xcelium run: {payload['cell']} passed={payload['passed']} "
+            f"returncode={payload['returncode']} "
             f"manifest={payload['manifest']}"
         )
-    return 0 if payload.get("returncode", 0) == 0 else 1
+    return 0 if payload.get("passed", True) else 1
 
 
 if __name__ == "__main__":

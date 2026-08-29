@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.domain.repository import Project
 
 
 _FIELDS = frozenset(
@@ -20,9 +21,11 @@ _FIELDS = frozenset(
         "canonical_source",
         "dut",
         "simulator",
-        "dependencies",
+        "compile_sources",
+        "support_files",
         "contracts",
         "runner",
+        "success_marker",
     }
 )
 
@@ -84,15 +87,33 @@ class VerificationCellSpec:
     """One verification-owned testbench cell and its source boundary."""
 
     path: Path
-    project_root: Path
+    project: Project
+    owner: str
     cell: str
     role: str
     canonical_source: Path
     dut: str
     simulator: str
-    dependencies: tuple[Path, ...]
+    compile_sources: tuple[Path, ...]
+    support_files: tuple[Path, ...]
     contracts: tuple[Path, ...]
     runner: Path | None
+    success_marker: str | None
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
+
+    @property
+    def source_inputs(self) -> tuple[Path, ...]:
+        """Files whose identity defines this verification cell invocation."""
+
+        return (
+            self.canonical_source,
+            *self.compile_sources,
+            *self.support_files,
+            *self.contracts,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         root = self.project_root
@@ -101,26 +122,41 @@ class VerificationCellSpec:
             return path.relative_to(root).as_posix()
 
         return {
+            "owner": self.owner,
             "cell": self.cell,
             "role": self.role,
             "canonical_source": relative(self.canonical_source),
             "dut": self.dut,
             "simulator": self.simulator,
-            "dependencies": [relative(path) for path in self.dependencies],
+            "compile_sources": [relative(path) for path in self.compile_sources],
+            "support_files": [relative(path) for path in self.support_files],
             "contracts": [relative(path) for path in self.contracts],
             "runner": relative(self.runner) if self.runner is not None else None,
+            "success_marker": self.success_marker,
         }
 
 
 def load_verification_cell(
     path: Path,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
 ) -> VerificationCellSpec:
     """Load and validate one ``contract_kind = verification-cell`` document."""
 
+    if project is None:
+        if project_root is None:
+            raise ValueError("verification cell loading requires an explicit Project")
+        repository = Project.from_project_root(project_root)
+    else:
+        repository = project
+        if (
+            project_root is not None
+            and Path(project_root).resolve() != repository.project_root
+        ):
+            raise ValueError("verification cell project root disagrees with Project")
     contract = path.resolve()
-    root = project_root.resolve()
+    root = repository.project_root
     if not contract.is_relative_to(root) or not contract.is_file():
         raise ValueError("verification cell contract must be project-owned")
     cell_root = contract.parent
@@ -135,6 +171,12 @@ def load_verification_cell(
     if unknown:
         raise ValueError(
             f"{contract}: verification cell contains unknown fields: {sorted(unknown)}"
+        )
+    owner = _text(raw.get("owner"), f"{contract}: owner")
+    cataloged_owner = repository.require_owner(contract)
+    if owner != cataloged_owner.name:
+        raise ValueError(
+            f"{contract}: owner must be {cataloged_owner.name!r}, got {owner!r}"
         )
     cell = _text(raw.get("cell"), f"{contract}: cell")
     if cell != cell_root.name:
@@ -151,11 +193,17 @@ def load_verification_cell(
     )
     dut = _text(raw.get("dut"), f"{contract}: dut")
     simulator = _text(raw.get("simulator"), f"{contract}: simulator")
-    dependencies = _files(
-        raw.get("dependencies", []),
+    compile_sources = _files(
+        raw.get("compile_sources", []),
         cell_root=cell_root,
         project_root=root,
-        field=f"{contract}: dependencies",
+        field=f"{contract}: compile_sources",
+    )
+    support_files = _files(
+        raw.get("support_files", []),
+        cell_root=cell_root,
+        project_root=root,
+        field=f"{contract}: support_files",
     )
     contracts = _files(
         raw.get("contracts", []),
@@ -163,6 +211,29 @@ def load_verification_cell(
         project_root=root,
         field=f"{contract}: contracts",
     )
+    for declared_contract in contracts:
+        declared_owner = repository.require_owner(declared_contract).name
+        if declared_owner != owner:
+            raise ValueError(
+                f"{contract}: declared contract owner must be {owner!r}, "
+                f"got {declared_owner!r} for {declared_contract}"
+            )
+        declared_raw = read_toml(declared_contract)
+        declared_kind = _text(
+            declared_raw.get("contract_kind"),
+            f"{declared_contract}: contract_kind",
+        )
+        declared_scope = _text(
+            declared_raw.get("path_scope"),
+            f"{declared_contract}: path_scope",
+        )
+        require_config_header(
+            declared_raw,
+            declared_contract,
+            contract_kind=declared_kind,
+            path_scope=declared_scope,
+            owner=owner,
+        )
     runner_raw = raw.get("runner")
     runner = (
         None
@@ -175,15 +246,29 @@ def load_verification_cell(
             inside_cell=True,
         )
     )
+    source_inputs = (canonical_source, *compile_sources, *support_files, *contracts)
+    if len(set(source_inputs)) != len(source_inputs):
+        raise ValueError(
+            f"{contract}: source, support, and contract inputs must be disjoint"
+        )
+    success_marker_raw = raw.get("success_marker")
+    success_marker = (
+        None
+        if success_marker_raw is None
+        else _text(success_marker_raw, f"{contract}: success_marker")
+    )
     return VerificationCellSpec(
         path=contract,
-        project_root=root,
+        project=repository,
+        owner=owner,
         cell=cell,
         role=role,
         canonical_source=canonical_source,
         dut=dut,
         simulator=simulator,
-        dependencies=dependencies,
+        compile_sources=compile_sources,
+        support_files=support_files,
         contracts=contracts,
         runner=runner,
+        success_marker=success_marker,
     )

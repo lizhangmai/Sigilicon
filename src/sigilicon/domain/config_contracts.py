@@ -202,7 +202,7 @@ def inspect_project_configurations(
         if header.contract_kind == "verification-cell":
             from sigilicon.domain.verification_cell import load_verification_cell
 
-            load_verification_cell(resolved, project_root=root)
+            load_verification_cell(resolved, project=context)
         contract_kinds.add(header.contract_kind)
         owners.add(header.owner)
 
