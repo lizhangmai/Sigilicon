@@ -117,7 +117,6 @@ owner = "test-platform"
 dbu_per_micron = 1000
 
 [custom_layout]
-owner_recipe = "kept-native"
 '''
         + owner_payload.replace("\n[", "\n[custom_layout."),
         encoding="utf-8",
@@ -129,7 +128,6 @@ owner_recipe = "kept-native"
         owner="test-platform",
         path_scope="platform",
         payload_key="custom_layout",
-        extension_fields=frozenset({"owner_recipe"}),
     )
 
     assert technology.owner == "test-platform"

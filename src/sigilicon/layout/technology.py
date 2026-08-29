@@ -109,7 +109,6 @@ def load_layout_technology(
     owner: str,
     path_scope: str = "owner",
     payload_key: str | None = None,
-    extension_fields: frozenset[str] = frozenset(),
 ) -> LayoutTechnology:
     """Load common roles from a native contract or a named domain payload."""
 
@@ -136,8 +135,7 @@ def load_layout_technology(
             "vias",
             "via_landings",
             "mos_pcell",
-        }
-        | extension_fields,
+        },
         f"{owner} layout technology",
     )
     model_raw = _table(
