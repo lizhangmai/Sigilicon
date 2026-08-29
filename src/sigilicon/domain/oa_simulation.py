@@ -12,7 +12,11 @@ from sigilicon.domain.config_contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
 )
-from sigilicon.domain.platform import PdkConfig, resolve_platform
+from sigilicon.domain.platform import (
+    PdkConfig,
+    PlatformSnapshot,
+    resolve_platform_snapshot,
+)
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
@@ -461,7 +465,7 @@ def _load_native_oa_simulation_spec(
     owner_root: Path,
     raw: Mapping[str, Any],
     default_diagnostic_processor: NativeDiagnosticProcessor | None,
-    platform_snapshot: PdkConfig | None,
+    platform_snapshot: PlatformSnapshot | None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> OASimulationSpec:
     """Load the thin contract used by native ADE/Maestro pilot cells.
@@ -501,7 +505,7 @@ def _load_native_oa_simulation_spec(
     simulator = _identifier(testbench.get("simulator"), "testbench.simulator")
     if simulator not in {"spectre", "ams"}:
         raise ValueError("testbench.simulator must be spectre or ams")
-    pdk = resolve_platform(
+    pdk = resolve_platform_snapshot(
         context,
         _identifier(platform.get("pdk"), "platform.pdk"),
         snapshot=platform_snapshot,
@@ -570,7 +574,7 @@ def load_oa_simulation_spec(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
-    platform: PdkConfig | None = None,
+    platform: PlatformSnapshot | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OASimulationSpec:
     """Load only the source-owned schema-3 thin native simulation contract."""

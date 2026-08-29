@@ -17,7 +17,7 @@ from sigilicon.domain.config_contracts import (
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
-from sigilicon.domain.platform import load_platform, load_platform_catalog
+from sigilicon.domain.platform import load_platform_inventory
 from sigilicon.domain.repository import Project
 from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.design_targets import load_design_target_catalog
@@ -192,15 +192,9 @@ def inspect_repository_designs(
         owner_roots=True,
     )
 
-    platform_catalog = load_platform_catalog(context)
+    platform_inventory = load_platform_inventory(context)
+    platform_catalog = platform_inventory.catalog
     platform_catalog_path = platform_catalog.path
-    platform_inventory = {}
-    for name in platform_catalog.manifests:
-        platform_inventory[name] = load_platform(
-            context,
-            name,
-            catalog=platform_catalog,
-        )
 
     architecture_source_documents = _architecture_source_documents(context)
 
@@ -257,6 +251,7 @@ def inspect_repository_designs(
             path,
             project=context,
             snapshot=snapshot,
+            platform=platform_inventory,
         )
         for source_path, document in layout.source_documents.items():
             previous = layout_source_documents.get(source_path)

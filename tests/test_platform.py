@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import sigilicon.domain.platform as platform_domain
 from conftest import (
     write_project_context,
     write_test_layout_platform,
@@ -13,7 +14,10 @@ from conftest import (
 from sigilicon.domain.platform import (
     load_platform,
     load_platform_catalog,
+    load_platform_inventory,
+    PlatformInventory,
     resolve_platform,
+    resolve_platform_snapshot,
 )
 from sigilicon.domain.repository import RepositoryContext
 
@@ -78,6 +82,82 @@ def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> N
             "testpdk",
             snapshot=replace(snapshot, path=snapshot.simulation.path),
         )
+
+
+def test_operation_platform_inventory_uses_one_validated_platform_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = RepositoryContext.from_project_root(tmp_path)
+    inventory = load_platform_inventory(project)
+    platform = inventory["testpdk"]
+
+    with pytest.raises(ValueError, match="must be built by its loader"):
+        PlatformInventory(
+            _authority=object(),
+            project=project,
+            catalog=inventory.catalog,
+            platforms=inventory.platforms,
+        )
+    with pytest.raises(ValueError, match="complete catalog"):
+        PlatformInventory(
+            _authority=platform_domain._PLATFORM_INVENTORY_AUTHORITY,
+            project=project,
+            catalog=inventory.catalog,
+            platforms={},
+        )
+    with pytest.raises(TypeError, match="dataclass"):
+        replace(inventory, platforms={})
+    with pytest.raises(AttributeError, match="immutable"):
+        inventory._platforms = {}
+    with pytest.raises(TypeError):
+        inventory["testpdk"].simulation.model_sets["forged"] = object()
+    with pytest.raises(TypeError):
+        inventory["testpdk"].oa.primitive_subcircuits["forged"] = ()
+
+    def reject_revalidation(*_args, **_kwargs):
+        raise AssertionError("operation inventory must not repeat deep validation")
+
+    monkeypatch.setattr(
+        "sigilicon.domain.platform._platform_catalog_document",
+        reject_revalidation,
+    )
+
+    assert (
+        resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
+        is platform
+    )
+    with pytest.raises(AssertionError, match="must not repeat"):
+        resolve_platform(project, "testpdk", snapshot=platform)
+
+
+def test_operation_platform_inventory_rejects_foreign_project_and_key(
+    tmp_path: Path,
+) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (left, right):
+        write_project_context(root)
+        write_test_platform(root)
+    left_project = RepositoryContext.from_project_root(left)
+    inventory = load_platform_inventory(left_project)
+
+    with pytest.raises(ValueError, match="different operation"):
+        resolve_platform_snapshot(
+            RepositoryContext.from_project_root(left),
+            "testpdk",
+            snapshot=inventory,
+        )
+    with pytest.raises(ValueError, match="different operation"):
+        resolve_platform_snapshot(
+            RepositoryContext.from_project_root(right),
+            "testpdk",
+            snapshot=inventory,
+        )
+    with pytest.raises(ValueError, match="has no 'other' entry"):
+        resolve_platform_snapshot(left_project, "other", snapshot=inventory)
 
 
 def test_resolve_platform_rejects_layout_content_and_file_drift(

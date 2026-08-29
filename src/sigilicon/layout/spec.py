@@ -23,7 +23,8 @@ from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import (
     LayoutPdkConfig,
     PdkConfig,
-    resolve_platform,
+    PlatformSnapshot,
+    resolve_platform_snapshot,
 )
 from sigilicon.domain.repository import Project, RepositoryOwner
 
@@ -254,7 +255,7 @@ def load_layout_spec(
     project: Project | None = None,
     project_root: Path | None = None,
     oa_source: OALibrarySource | None = None,
-    platform: PdkConfig | None = None,
+    platform: PlatformSnapshot | None = None,
 ) -> LayoutSpec:
     spec_path = path.resolve()
     if project is None:
@@ -442,7 +443,7 @@ def load_layout_spec(
             raise ValueError(f"unsupported direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = resolve_platform(repository, pdk_key, snapshot=platform)
+    pdk = resolve_platform_snapshot(repository, pdk_key, snapshot=platform)
     if pdk.layout is None:
         raise ValueError(
             f"platform {pdk_key!r} does not declare layout and verification contracts"
@@ -514,11 +515,12 @@ def resolve_layout_spec(
     *,
     project: Project,
     snapshot: LayoutSpec | None = None,
+    platform: PlatformSnapshot | None = None,
 ) -> LayoutSpec:
     """Load a layout spec or validate one operation-owned snapshot."""
 
     if snapshot is None:
-        return load_layout_spec(path, project=project)
+        return load_layout_spec(path, project=project, platform=platform)
     spec_path = path.resolve()
     root = project.project_root
     if (
@@ -529,10 +531,10 @@ def resolve_layout_spec(
     ):
         raise ValueError("layout snapshot identity drift")
     owner = project.owner_for(spec_path)
-    resolved_pdk = resolve_platform(
+    resolved_pdk = resolve_platform_snapshot(
         project,
         snapshot.pdk.key,
-        snapshot=snapshot.pdk,
+        snapshot=snapshot.pdk if platform is None else platform,
     )
     if not resolved_pdk.source_documents:
         raise ValueError("layout snapshot platform source document drift")

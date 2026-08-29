@@ -15,7 +15,11 @@ from sigilicon.domain.config_contracts import (
     require_config_header,
 )
 from sigilicon.domain.netlist import NetlistSnapshot, load_netlist_snapshot, subckt_ports
-from sigilicon.domain.platform import PdkConfig, resolve_platform
+from sigilicon.domain.platform import (
+    PdkConfig,
+    PlatformSnapshot,
+    resolve_platform_snapshot,
+)
 from sigilicon.domain.repository import Project
 
 
@@ -101,7 +105,7 @@ def load_design_spec(
     *,
     project: Project | None = None,
     project_root: Path | None = None,
-    platform: PdkConfig | None = None,
+    platform: PlatformSnapshot | None = None,
 ) -> DesignSpec:
     spec_path = path.resolve()
     if project is None:
@@ -209,7 +213,7 @@ def load_design_spec(
             raise ValueError(f"invalid direction for {name}: {direction!r}")
         directions[name] = direction
 
-    pdk = resolve_platform(
+    pdk = resolve_platform_snapshot(
         repository,
         _string(design.get("pdk"), "design.pdk"),
         snapshot=platform,

@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
+    is_frozen_toml_document,
     read_toml,
     require_config_header,
 )
@@ -146,6 +147,111 @@ class PlatformCatalogSnapshot:
             return self.manifests[key]
         except KeyError as exc:
             raise ValueError(f"platform catalog has no {key!r} entry") from exc
+
+
+_PLATFORM_INVENTORY_AUTHORITY = object()
+
+
+class PlatformInventory(Mapping[str, PdkConfig]):
+    """Validated platform set trusted only within one repository operation.
+
+    Public and standalone APIs continue to accept a ``PdkConfig`` and validate
+    its complete source identity. Repository workflows use this immutable
+    capability after loading the catalog and every selected platform once.
+    """
+
+    __slots__ = ("_catalog", "_platforms", "_project")
+
+    def __init__(
+        self,
+        *,
+        _authority: object,
+        project: Project,
+        catalog: PlatformCatalogSnapshot,
+        platforms: Mapping[str, PdkConfig],
+    ) -> None:
+        if _authority is not _PLATFORM_INVENTORY_AUTHORITY:
+            raise ValueError("platform inventory must be built by its loader")
+        if (
+            catalog.project_root != project.project_root
+            or catalog.path != project.catalog("platform")
+        ):
+            raise ValueError("platform inventory catalog identity drift")
+        selected = dict(platforms)
+        if set(selected) != set(catalog.manifests):
+            raise ValueError("platform inventory does not cover its complete catalog")
+        for key, platform in selected.items():
+            if (
+                platform.key != key
+                or platform.path != catalog.manifest(key)
+                or platform.catalog_document != catalog.document
+                or not platform.source_paths
+                or platform.source_paths[0] != catalog.path
+                or set(platform.source_documents) != set(platform.source_paths[1:])
+                or any(
+                    not is_frozen_toml_document(document)
+                    for document in platform.source_documents.values()
+                )
+            ):
+                raise ValueError("platform inventory identity drift")
+        object.__setattr__(self, "_project", project)
+        object.__setattr__(self, "_catalog", catalog)
+        object.__setattr__(self, "_platforms", MappingProxyType(selected))
+
+    @property
+    def project(self) -> Project:
+        return self._project
+
+    @property
+    def catalog(self) -> PlatformCatalogSnapshot:
+        return self._catalog
+
+    @property
+    def platforms(self) -> Mapping[str, PdkConfig]:
+        return self._platforms
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("platform inventory is immutable")
+
+    def __getitem__(self, key: str) -> PdkConfig:
+        return self.platforms[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.platforms)
+
+    def __len__(self) -> int:
+        return len(self.platforms)
+
+    def resolve_catalog(self, context: Project) -> PlatformCatalogSnapshot:
+        """Return the catalog after a cheap operation-identity check."""
+
+        if (
+            context is not self.project
+            or self.catalog.project_root != context.project_root
+            or self.catalog.path != context.catalog("platform")
+        ):
+            raise ValueError("platform inventory belongs to a different operation")
+        return self.catalog
+
+    def resolve(self, context: Project, key: str) -> PdkConfig:
+        """Select one already-validated platform for this exact operation."""
+
+        self.resolve_catalog(context)
+        try:
+            platform = self.platforms[key]
+        except KeyError as exc:
+            raise ValueError(f"platform inventory has no {key!r} entry") from exc
+        if (
+            self.catalog.manifest(key) != platform.path
+            or platform.key != key
+            or not platform.source_paths
+            or platform.source_paths[0] != self.catalog.path
+        ):
+            raise ValueError("platform inventory identity drift")
+        return platform
+
+
+PlatformSnapshot = PdkConfig | PlatformInventory
 
 
 def resolve_platform(
@@ -347,6 +453,19 @@ def resolve_platform(
         ):
             raise ValueError("platform snapshot source identity drift")
     return snapshot
+
+
+def resolve_platform_snapshot(
+    context: Project,
+    key: str,
+    *,
+    snapshot: PlatformSnapshot | None = None,
+) -> PdkConfig:
+    """Resolve a public snapshot or select an operation-trusted inventory."""
+
+    if isinstance(snapshot, PlatformInventory):
+        return snapshot.resolve(context, key)
+    return resolve_platform(context, key, snapshot=snapshot)
 
 
 def resolve_platform_catalog(
@@ -554,7 +673,11 @@ def _load_simulation(
     if default_name not in model_sets:
         raise ValueError("default_model_set must select a declared model set")
     model_sets[default_name].single_section
-    return SimulationPlatformConfig(path, default_name, model_sets)
+    return SimulationPlatformConfig(
+        path,
+        default_name,
+        MappingProxyType(model_sets),
+    )
 
 
 def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
@@ -581,7 +704,7 @@ def _load_oa(path: Path, raw: Mapping[str, Any]) -> OaPlatformConfig:
             raw.get("technology_library"), "technology_library"
         ),
         reference_libraries=_names(raw.get("reference_libraries"), "reference_libraries"),
-        primitive_subcircuits=primitive_subcircuits,
+        primitive_subcircuits=MappingProxyType(primitive_subcircuits),
     )
 
 
@@ -919,4 +1042,28 @@ def load_platform(
         ),
         asset_root=asset_root,
         installation_root_environment=root_environment,
+    )
+
+
+def load_platform_inventory(
+    context: Project,
+    *,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PlatformInventory:
+    """Load the complete project platform set once for one operation."""
+
+    selected_catalog = (
+        load_platform_catalog(context)
+        if catalog is None
+        else resolve_platform_catalog(context, snapshot=catalog)
+    )
+    platforms = {
+        key: load_platform(context, key, catalog=selected_catalog)
+        for key in selected_catalog.manifests
+    }
+    return PlatformInventory(
+        _authority=_PLATFORM_INVENTORY_AUTHORITY,
+        project=context,
+        catalog=selected_catalog,
+        platforms=MappingProxyType(platforms),
     )

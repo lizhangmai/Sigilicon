@@ -773,7 +773,7 @@ owner = "fixture"
     monkeypatch.setattr(
         repository_checks,
         "resolve_layout_spec",
-        lambda path, *, project, snapshot: snapshot,
+        lambda path, *, project, snapshot, platform: snapshot,
     )
     monkeypatch.setattr(
         repository_checks,

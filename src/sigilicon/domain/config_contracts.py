@@ -331,17 +331,30 @@ def inspect_project_configurations(
     if platform_inventory is not None and platform_catalog is None:
         raise ValueError("platform inventory requires its platform catalog snapshot")
     if platform_catalog is not None:
-        from sigilicon.domain.platform import resolve_platform_catalog
-
-        resolved_platform_catalog = resolve_platform_catalog(
-            context,
-            snapshot=platform_catalog,
+        from sigilicon.domain.platform import (
+            PlatformInventory,
+            resolve_platform_catalog,
         )
+
+        if isinstance(platform_inventory, PlatformInventory):
+            if platform_catalog is not platform_inventory.catalog:
+                raise ValueError(
+                    "platform inventory disagrees with its catalog snapshot"
+                )
+            resolved_platform_catalog = platform_inventory.resolve_catalog(context)
+        else:
+            resolved_platform_catalog = resolve_platform_catalog(
+                context,
+                snapshot=platform_catalog,
+            )
         catalog_documents[resolved_platform_catalog.path] = (
             resolved_platform_catalog.document
         )
     if platform_inventory is not None:
-        from sigilicon.domain.platform import resolve_platform
+        from sigilicon.domain.platform import (
+            PlatformInventory,
+            resolve_platform_snapshot,
+        )
 
         for key, snapshot in platform_inventory.items():
             assert resolved_platform_catalog is not None
@@ -349,10 +362,14 @@ def inspect_project_configurations(
                 raise ValueError(
                     "platform snapshot manifest disagrees with its catalog"
                 )
-            platform = resolve_platform(
+            platform = resolve_platform_snapshot(
                 context,
                 key,
-                snapshot=snapshot,
+                snapshot=(
+                    platform_inventory
+                    if isinstance(platform_inventory, PlatformInventory)
+                    else snapshot
+                ),
             )
             _merge_source_documents(
                 catalog_documents,

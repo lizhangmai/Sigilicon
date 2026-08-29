@@ -544,7 +544,7 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
         reject_platform_load,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.resolve_platform",
+        "sigilicon.workflows.oa_library.resolve_platform_snapshot",
         resolve_project_platform,
     )
 

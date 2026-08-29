@@ -23,7 +23,13 @@ from sigilicon.domain.oa_library import (
     load_oa_library_source,
     resolve_oa_library_source,
 )
-from sigilicon.domain.platform import PdkConfig, load_platform, resolve_platform
+from sigilicon.domain.platform import (
+    PdkConfig,
+    PlatformInventory,
+    PlatformSnapshot,
+    load_platform,
+    resolve_platform_snapshot,
+)
 from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
@@ -288,7 +294,7 @@ def _plan_designs(
     source: OALibrarySource,
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
-    platform: PdkConfig,
+    platform: PlatformSnapshot,
 ) -> tuple[DesignRebuildStep, ...]:
     inspections: list[DesignInspection] = []
     for cell in source.cells:
@@ -430,7 +436,7 @@ def _instance_parameter_expectations(
 def _plan_testbenches(
     source: OALibrarySource,
     definitions: Mapping[str, NetlistSubcircuit],
-    platform: PdkConfig,
+    platform: PlatformSnapshot,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> tuple[TestbenchRebuildStep, ...]:
     declared_cells = {cell.cell for cell in source.cells}
@@ -497,7 +503,7 @@ def _plan_layouts(
     source: OALibrarySource,
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
-    platform: PdkConfig,
+    platform: PlatformSnapshot,
 ) -> tuple[LayoutRebuildStep, ...]:
     specs: list[LayoutSpec] = []
     plans: dict[tuple[str, str], LayoutPlan] = {}
@@ -626,25 +632,31 @@ def plan_oa_library_rebuild(
         )
     definitions = _load_definitions(source)
     if platform_inventory is None:
-        platform = load_platform(source.project, source.pdk)
+        platform_snapshot: PlatformSnapshot = load_platform(
+            source.project,
+            source.pdk,
+        )
     else:
-        try:
-            platform_snapshot = platform_inventory[source.pdk]
-        except KeyError as exc:
-            raise ValueError(
-                f"platform inventory has no {source.pdk!r} entry"
-            ) from exc
-        platform = resolve_platform(
+        if isinstance(platform_inventory, PlatformInventory):
+            platform_snapshot = platform_inventory
+        else:
+            try:
+                platform_snapshot = platform_inventory[source.pdk]
+            except KeyError as exc:
+                raise ValueError(
+                    f"platform inventory has no {source.pdk!r} entry"
+                ) from exc
+        resolve_platform_snapshot(
             source.project,
             source.pdk,
             snapshot=platform_snapshot,
         )
-    designs = _plan_designs(source, target_library, definitions, platform)
-    layouts = _plan_layouts(source, target_library, definitions, platform)
+    designs = _plan_designs(source, target_library, definitions, platform_snapshot)
+    layouts = _plan_layouts(source, target_library, definitions, platform_snapshot)
     testbenches = _plan_testbenches(
         source,
         definitions,
-        platform,
+        platform_snapshot,
         architecture_source_documents,
     )
     views = _plan_views(source)
