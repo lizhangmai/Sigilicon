@@ -25,7 +25,18 @@ def _technology() -> LayoutTechnology:
             "routing3_routing4": {"routing3": (10, 10), "routing4": (10, 10)},
         },
         mos_pcell=MosPcellInterface(
-            "fingers", "S", "D", "S_", "D_", "routePolydir", ()
+            length_parameter="channelLength",
+            width_parameter="fingerWidth",
+            finger_count_parameter="fingerCount",
+            source_terminal="source",
+            drain_terminal="drain",
+            source_alias_prefix="source_",
+            drain_alias_prefix="drain_",
+            cdf_callback_parameter="gateContactSide",
+            cdf_callback_bypass_parameters=(),
+            gate_contact_value="lower",
+            gate_contact_enhancement_parameter="enhanceGateContacts",
+            gate_contact_enhancement_value="lower",
         ),
     )
 

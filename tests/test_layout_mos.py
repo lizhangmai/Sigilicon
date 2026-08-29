@@ -95,13 +95,18 @@ def test_mos_pcell_instance_uses_only_the_declared_technology_interface() -> Non
         vias={},
         via_landings={},
         mos_pcell=MosPcellInterface(
-            "fingers",
-            "S",
-            "D",
-            "S_",
-            "D_",
-            "routePolydir",
-            ("polyContacts",),
+            length_parameter="channelLength",
+            width_parameter="fingerWidth",
+            finger_count_parameter="fingerCount",
+            source_terminal="source",
+            drain_terminal="drain",
+            source_alias_prefix="source_",
+            drain_alias_prefix="drain_",
+            cdf_callback_parameter="gateContactSide",
+            cdf_callback_bypass_parameters=("gateContacts",),
+            gate_contact_value="lower",
+            gate_contact_enhancement_parameter="enhanceGateContacts",
+            gate_contact_enhancement_value="lower",
             gate_contact_parameters=(("polyContacts", "boolean", "True"),),
         ),
     )
@@ -119,10 +124,10 @@ def test_mos_pcell_instance_uses_only_the_declared_technology_interface() -> Non
     assert tuple(instance.xy) == (1000, 2000)
     assert instance.libname == "test_pdk"
     assert instance.params["pcell_params"][:4] == [
-        ["l", "string", "30n"],
-        ["Wfg", "string", "120n"],
-        ["fingers", "string", "1"],
-        ["routePolydir", "string", "Bottom"],
+        ["channelLength", "string", "30n"],
+        ["fingerWidth", "string", "120n"],
+        ["fingerCount", "string", "1"],
+        ["gateContactSide", "string", "lower"],
     ]
 
 

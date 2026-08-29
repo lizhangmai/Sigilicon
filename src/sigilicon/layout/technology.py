@@ -85,6 +85,8 @@ def _pcell_parameters(
 
 @dataclass(frozen=True)
 class MosPcellInterface:
+    length_parameter: str
+    width_parameter: str
     finger_count_parameter: str
     source_terminal: str
     drain_terminal: str
@@ -92,13 +94,9 @@ class MosPcellInterface:
     drain_alias_prefix: str
     cdf_callback_parameter: str
     cdf_callback_bypass_parameters: tuple[str, ...]
-    length_parameter: str = field(default="l", kw_only=True)
-    width_parameter: str = field(default="Wfg", kw_only=True)
-    gate_contact_value: str = field(default="Bottom", kw_only=True)
-    gate_contact_enhancement_parameter: str = field(
-        default="polyContactsEnh", kw_only=True
-    )
-    gate_contact_enhancement_value: str = field(default="Bottom", kw_only=True)
+    gate_contact_value: str
+    gate_contact_enhancement_parameter: str
+    gate_contact_enhancement_value: str
     gate_contact_parameters: tuple[tuple[str, str, str], ...] = field(
         default=(), kw_only=True
     )

@@ -6,15 +6,20 @@ from sigilicon.layout.technology import (
 )
 
 
-def test_layout_technology_value_objects_preserve_legacy_constructor_order() -> None:
+def test_layout_technology_requires_an_explicit_pcell_interface() -> None:
     mos = MosPcellInterface(
-        "fingers",
-        "S",
-        "D",
-        "S_",
-        "D_",
-        "routePolydir",
-        ("polyContacts",),
+        length_parameter="channelLength",
+        width_parameter="fingerWidth",
+        finger_count_parameter="fingerCount",
+        source_terminal="source",
+        drain_terminal="drain",
+        source_alias_prefix="source_",
+        drain_alias_prefix="drain_",
+        cdf_callback_parameter="gateContactSide",
+        cdf_callback_bypass_parameters=("gateContacts",),
+        gate_contact_value="lower",
+        gate_contact_enhancement_parameter="enhanceGateContacts",
+        gate_contact_enhancement_value="lower",
     )
     technology = LayoutTechnology(
         "test-owner",
@@ -25,7 +30,7 @@ def test_layout_technology_value_objects_preserve_legacy_constructor_order() -> 
         mos,
     )
 
-    assert technology.mos_pcell.length_parameter == "l"
+    assert technology.mos_pcell.length_parameter == "channelLength"
 
 
 def _technology() -> LayoutTechnology:
