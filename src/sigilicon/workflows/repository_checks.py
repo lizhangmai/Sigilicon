@@ -88,13 +88,6 @@ def _contract_entries(
     return result
 
 
-def _document_owner(path: Path) -> str:
-    owner = read_toml(path).get("owner")
-    if not isinstance(owner, str) or not owner:
-        raise ValueError(f"{path}: owner must be a non-empty string")
-    return owner
-
-
 def _component_owner_root(context: Project, path: Path) -> Path:
     return context.require_owner(path).root
 
@@ -160,7 +153,7 @@ def inspect_repository_designs(
             raise ValueError(f"IP component catalog identity mismatch: {name}")
         _register_owner_root(
             owner_roots,
-            owner=_document_owner(path),
+            owner=component.owner,
             root=_component_owner_root(context, path),
         )
         component_result: dict[str, Any] = {
@@ -186,7 +179,7 @@ def inspect_repository_designs(
             raise ValueError(f"IP release catalog identity mismatch: {name}")
         _register_owner_root(
             owner_roots,
-            owner=_document_owner(path),
+            owner=contract.owner,
             root=_component_owner_root(context, path),
         )
         assembly = (root / contract.oa_assembly).resolve()
