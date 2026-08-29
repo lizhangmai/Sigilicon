@@ -213,18 +213,15 @@ def _cell_owned_path(directory: Path, value: object, field: str) -> Path:
     return result
 
 
-def _is_non_oa_verification_cell(directory: Path) -> bool:
-    """Return whether a functional verification root contains a non-OA cell.
+def _is_non_oa_verification_cell(raw: dict[str, Any]) -> bool:
+    """Return whether one cell contract declares a non-OA verification cell.
 
     Verification is organized by circuit responsibility, so one domain root may
     contain both native OA testbench cells and RTL-only verification cells.  The
     OA assembly consumes the former and leaves the latter to their own runner.
     """
 
-    manifest = directory / "cell.toml"
-    if not manifest.is_file():
-        return False
-    return _read_toml(manifest).get("contract_kind") == "verification-cell"
+    return raw.get("contract_kind") == "verification-cell"
 
 
 def _view_reference(value: str, field: str) -> OAViewReference:
@@ -237,9 +234,13 @@ def _view_reference(value: str, field: str) -> OAViewReference:
     )
 
 
-def _load_cell(owner: str, source_manifest: Path, directory: Path) -> OACellSource:
+def _load_cell(
+    owner: str,
+    source_manifest: Path,
+    directory: Path,
+    raw: dict[str, Any],
+) -> OACellSource:
     cell_manifest = directory / "cell.toml"
-    raw = _read_toml(cell_manifest)
     unknown = set(raw) - {
         "schema",
         "contract_kind",
@@ -368,6 +369,7 @@ def _load_source_root(
     root_values = _strings(raw.get("cell_roots"), f"{path}: cell_roots")
     cell_roots: list[Path] = []
     source_directories: list[Path] = []
+    cell_documents: dict[Path, dict[str, Any]] = {}
     for index, value in enumerate(root_values):
         relative = Path(value)
         field = f"{path}: cell_roots[{index}]"
@@ -392,8 +394,13 @@ def _load_source_root(
             raise ValueError(
                 f"OA cell root contains directories without cell.toml: {undeclared}"
             )
+        cell_documents.update(
+            {item: _read_toml(item / "cell.toml") for item in all_children}
+        )
         children = tuple(
-            item for item in all_children if not _is_non_oa_verification_cell(item)
+            item
+            for item in all_children
+            if not _is_non_oa_verification_cell(cell_documents[item])
         )
         if not children:
             raise ValueError(f"OA cell root declares no cells: {cell_root}")
@@ -402,7 +409,7 @@ def _load_source_root(
     if len(set(source_directories)) != len(source_directories):
         raise ValueError(f"OA source manifest selects a cell directory more than once: {path}")
     cells = tuple(
-        _load_cell(owner, path, item)
+        _load_cell(owner, path, item, cell_documents[item])
         for item in source_directories
     )
     if not cells:

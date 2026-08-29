@@ -176,6 +176,14 @@ cell_roots = ["design/cells"]
     assert [source.owner for source in assembly.source_roots] == ["alpha", "beta"]
     assert reads.count(manifest.resolve()) == 1
     assert reads.count(additional_manifest.resolve()) == 1
+    cell_manifests = {
+        path.resolve()
+        for owner in ("alpha", "beta")
+        for path in (root / "ip" / owner).rglob("cell.toml")
+    }
+    assert {path: reads.count(path) for path in cell_manifests} == {
+        path: 1 for path in cell_manifests
+    }
 
 
 def test_oa_layout_plan_reuses_loaded_assembly_source(
