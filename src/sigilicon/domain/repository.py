@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping, cast
+from types import MappingProxyType
+from typing import Any, Mapping, cast
 
 from sigilicon.domain.component import ComponentContract, load_component_contract
 from sigilicon.domain.config_contracts import read_toml, require_config_header
@@ -68,6 +69,16 @@ class RepositoryFlowExtension:
 
     owner: str
     source: Path
+
+
+@dataclass(frozen=True)
+class OwnerCatalogSnapshot:
+    """One owner catalog document read for a caller-owned operation."""
+
+    owner: str
+    path: Path
+    contract_kind: str
+    document: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -382,14 +393,19 @@ class Project:
             None,
         )
 
-    def flow_catalogs(self, kind: str) -> tuple[tuple[str, Path], ...]:
+    def flow_catalog_snapshots(
+        self,
+        kind: str,
+    ) -> tuple[OwnerCatalogSnapshot, ...]:
+        """Read and classify selected design or layout target catalogs once."""
+
         expected = {
             "design_targets": "flow-design-registry",
             "layout_targets": "flow-layout-registry",
         }.get(kind)
         if expected is None:
             raise ValueError(f"unsupported flow catalog kind: {kind!r}")
-        result: list[tuple[str, Path]] = []
+        result: list[OwnerCatalogSnapshot] = []
         for owner in self.owners:
             for path in owner.files("flow"):
                 if path.suffix != ".toml":
@@ -409,8 +425,23 @@ class Project:
                         path_scope="owner",
                         owner=owner.name,
                     )
-                    result.append((owner.name, path))
-        return tuple(sorted(result))
+                    result.append(
+                        OwnerCatalogSnapshot(
+                            owner=owner.name,
+                            path=path,
+                            contract_kind=expected,
+                            document=MappingProxyType(dict(raw)),
+                        )
+                    )
+        return tuple(sorted(result, key=lambda item: (item.owner, item.path)))
+
+    def flow_catalogs(self, kind: str) -> tuple[tuple[str, Path], ...]:
+        """Return compatibility path identities for selected target catalogs."""
+
+        return tuple(
+            (snapshot.owner, snapshot.path)
+            for snapshot in self.flow_catalog_snapshots(kind)
+        )
 
     def owner_file(self, path: Path | str, fileset: str) -> Path | None:
         owner = self.require_owner(path)

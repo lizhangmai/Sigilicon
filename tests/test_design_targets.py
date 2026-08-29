@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tomllib
 
 import pytest
 
@@ -101,6 +102,32 @@ def test_design_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="root disagrees with explicit Project"):
         load_design_target_catalog(tmp_path / "other", project=project)
+
+
+def test_design_target_loader_reads_its_catalog_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _catalog_project(tmp_path)
+    catalog_path = (
+        tmp_path / "ip/example/configs/flows/design_targets.toml"
+    ).resolve()
+    reads = 0
+    original_load = tomllib.load
+
+    def counted_load(stream):
+        nonlocal reads
+        if Path(stream.name).resolve() == catalog_path:
+            reads += 1
+        return original_load(stream)
+
+    monkeypatch.setattr(tomllib, "load", counted_load)
+    project = Project.from_project_root(tmp_path)
+
+    catalog = load_design_target_catalog(project=project)
+
+    assert len(catalog.targets) == 1
+    assert reads == 1
 
 
 def test_project_targets_preserves_design_project_identity(tmp_path: Path) -> None:

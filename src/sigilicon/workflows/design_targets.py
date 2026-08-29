@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import sys
-import tomllib
 
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import Project
@@ -170,17 +169,13 @@ def load_design_target_catalog(
 
     repository = Project.bind(project=project, project_root=project_root)
     root = repository.project_root
-    catalogs = repository.flow_catalogs("design_targets")
+    catalogs = repository.flow_catalog_snapshots("design_targets")
     targets: list[DesignTarget] = []
     names: set[str] = set()
-    for owner, catalog_path in catalogs:
-        try:
-            with catalog_path.open("rb") as stream:
-                raw = tomllib.load(stream)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise ValueError(
-                f"cannot read design target catalog {catalog_path}: {exc}"
-            ) from exc
+    for catalog in catalogs:
+        owner = catalog.owner
+        catalog_path = catalog.path
+        raw = catalog.document
         require_config_header(
             raw,
             catalog_path,
@@ -263,7 +258,7 @@ def load_design_target_catalog(
                 )
             )
     return DesignTargetCatalog(
-        tuple(path for _, path in catalogs),
+        tuple(catalog.path for catalog in catalogs),
         repository,
         tuple(targets),
     )
