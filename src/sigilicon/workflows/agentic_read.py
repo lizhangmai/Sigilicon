@@ -24,7 +24,7 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.paths import ProjectContext
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.project_flow import project_workflow_registry
 from sigilicon.workflows.design_artifacts import DesignArtifactInterface
 from sigilicon.workflows.design_campaign import (
     DesignCampaign,
@@ -264,7 +264,9 @@ class AgenticReadInterface:
             flow_id=flow_name,
             profile_id=profile_name,
         )
-        engine = FlowEngine(builtin_workflow_registry(selected_owner.root))
+        engine = FlowEngine(
+            project_workflow_registry(self.repository, selected_owner.root)
+        )
         plan = engine.plan(selection.spec, target_name, selection.profile)
         return ResolvedAgenticFlowPlan(
             engine,
@@ -425,7 +427,9 @@ class AgenticReadInterface:
             flow_id=flow_name,
         )
         selection.spec.target(target_name)
-        engine = FlowEngine(builtin_workflow_registry(selected_owner.root))
+        engine = FlowEngine(
+            project_workflow_registry(self.repository, selected_owner.root)
+        )
         managed = AgenticRunStore(
             self.repository.project.artifact_root,
             self.project_id,

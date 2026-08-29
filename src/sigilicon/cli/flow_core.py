@@ -20,7 +20,9 @@ from sigilicon.flow import (
     load_execution_environment,
     load_flow_catalog,
 )
+from sigilicon.paths import discover_project_context
 from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.project_flow import project_workflow_registry
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -33,11 +35,13 @@ def _parser() -> argparse.ArgumentParser:
     list_parser = commands.add_parser("list", help="list cataloged Flows")
     list_parser.add_argument("catalog", type=Path)
     list_parser.add_argument("--owner-root", type=Path, required=True)
+    list_parser.add_argument("--project-root", type=Path)
 
     show = commands.add_parser("show", help="show one cataloged Flow selection")
     show.add_argument("catalog", type=Path)
     show.add_argument("flow")
     show.add_argument("--owner-root", type=Path, required=True)
+    show.add_argument("--project-root", type=Path)
     show.add_argument("--profile")
 
     for name, help_text in (
@@ -50,6 +54,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("flow")
         command.add_argument("target")
         command.add_argument("--owner-root", type=Path, required=True)
+        command.add_argument("--project-root", type=Path)
         command.add_argument("--profile")
         if name == "preflight":
             command.add_argument("--environment", type=Path)
@@ -59,6 +64,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("flow")
     run.add_argument("target")
     run.add_argument("--owner-root", type=Path, required=True)
+    run.add_argument("--project-root", type=Path)
     run.add_argument("--profile")
     run.add_argument("--environment", type=Path)
     run.add_argument("--artifact-root", type=Path, required=True)
@@ -113,17 +119,46 @@ def _execution_environment(
     )
 
 
+def _flow_registry(
+    args: argparse.Namespace,
+    registry_factory: Callable[[Path | None], FlowRegistry] | None,
+) -> FlowRegistry:
+    try:
+        owner_root = getattr(args, "owner_root", None)
+        if registry_factory is not None:
+            return registry_factory(owner_root)
+        project_root = getattr(args, "project_root", None)
+        if project_root is not None:
+            return project_workflow_registry(
+                project_root,
+                owner_root,
+            )
+        try:
+            project = discover_project_context()
+        except RuntimeError:
+            return builtin_workflow_registry(owner_root)
+        if owner_root is None or Path(owner_root).resolve().is_relative_to(
+            project.project_root
+        ):
+            return project_workflow_registry(
+                project.project_root,
+                owner_root,
+            )
+        return builtin_workflow_registry(owner_root)
+    except ValueError as exc:
+        raise FlowContractError(str(exc)) from exc
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
-    registry_factory: Callable[[Path | None], FlowRegistry] = builtin_workflow_registry,
+    registry_factory: Callable[[Path | None], FlowRegistry] | None = None,
     environment_factory: Callable[[ExecutionProfile], ExecutionEnvironment] = (
         lambda _profile: ExecutionEnvironment()
     ),
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        engine = FlowEngine(registry_factory(getattr(args, "owner_root", None)))
         if args.action == "list":
             catalog = load_flow_catalog(args.catalog, owner_root=args.owner_root)
             emit_json(
@@ -147,6 +182,7 @@ def main(
             emit_json(_spec_payload(selection.spec, selection.profile))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
+            engine = FlowEngine(_flow_registry(args, registry_factory))
             selection = load_catalog_selection(
                 args.catalog,
                 owner_root=args.owner_root,
@@ -196,6 +232,7 @@ def main(
             emit_json(payload)
             return _flow_status_exit(payload)
         if args.action == "status":
+            engine = FlowEngine(builtin_workflow_registry())
             payload = engine.read_run_result(
                 artifact_root=args.artifact_root,
                 owner=args.owner,
@@ -206,6 +243,7 @@ def main(
             emit_json(payload)
             return _flow_status_exit(payload)
         if args.action == "clean":
+            engine = FlowEngine(builtin_workflow_registry())
             engine.clean_run(
                 artifact_root=args.artifact_root,
                 owner=args.owner,

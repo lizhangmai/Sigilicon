@@ -377,6 +377,7 @@ class ProjectContext:
                 "path_scope",
                 "owner",
                 "catalogs",
+                "flow",
                 "paths",
             },
             str(contract),

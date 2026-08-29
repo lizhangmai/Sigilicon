@@ -42,12 +42,21 @@ class RepositoryOwner:
 
 
 @dataclass(frozen=True)
+class RepositoryFlowExtension:
+    """One project-selected, owner-owned Flow registry extension source."""
+
+    owner: str
+    source: Path
+
+
+@dataclass(frozen=True)
 class RepositoryContext:
     """Repository inventory kept separate from runtime/artifact paths."""
 
     project: ProjectContext
     catalog_paths: tuple[tuple[str, Path], ...]
     owners: tuple[RepositoryOwner, ...]
+    flow_registry_extensions: tuple[RepositoryFlowExtension, ...]
 
     @classmethod
     def from_file(cls, path: Path | str) -> "RepositoryContext":
@@ -162,10 +171,56 @@ class RepositoryContext:
             for right in owners:
                 if left is not right and left.root.is_relative_to(right.root):
                     raise ValueError("repository owner roots must not overlap")
+        flow = raw.get("flow", {})
+        if not isinstance(flow, Mapping):
+            raise ValueError(f"{contract}: flow must be a table")
+        unknown_flow_fields = set(flow) - {"registry_extensions"}
+        if unknown_flow_fields:
+            raise ValueError(
+                f"{contract}: flow contains unknown fields: "
+                f"{sorted(unknown_flow_fields)}"
+            )
+        extensions = flow.get("registry_extensions", {})
+        if not isinstance(extensions, Mapping):
+            raise ValueError(
+                f"{contract}: flow.registry_extensions must be a table"
+            )
+        owners_by_name = {owner.name: owner for owner in owners}
+        flow_registry_extensions: list[RepositoryFlowExtension] = []
+        for name, value in extensions.items():
+            if not isinstance(name, str) or name not in owners_by_name:
+                raise ValueError(
+                    f"{contract}: Flow registry extension names unknown owner {name!r}"
+                )
+            owner = owners_by_name[name]
+            source = _project_file(
+                project.project_root,
+                value,
+                f"{contract}: flow.registry_extensions.{name}",
+            )
+            if not source.is_relative_to(owner.root):
+                raise ValueError(
+                    f"{contract}: Flow registry extension for {name!r} must stay "
+                    "inside its owner root"
+                )
+            if source.suffix != ".py":
+                raise ValueError(
+                    f"{contract}: Flow registry extension for {name!r} must be "
+                    "a Python source"
+                )
+            if source not in owner.files("flow"):
+                raise ValueError(
+                    f"{contract}: Flow registry extension for {name!r} must be "
+                    "declared in its owner flow fileset"
+                )
+            flow_registry_extensions.append(RepositoryFlowExtension(name, source))
         return cls(
             project=project,
             catalog_paths=catalog_paths,
             owners=tuple(sorted(owners, key=lambda item: item.name)),
+            flow_registry_extensions=tuple(
+                sorted(flow_registry_extensions, key=lambda item: item.owner)
+            ),
         )
 
     @classmethod
@@ -205,6 +260,20 @@ class RepositoryContext:
         if owner is None:
             raise ValueError(f"repository path has no cataloged owner: {Path(path).resolve()}")
         return owner
+
+    def flow_registry_extension(self, owner: RepositoryOwner) -> Path | None:
+        """Return the explicitly assembled registry source for one owner."""
+
+        if owner not in self.owners:
+            raise ValueError(f"repository does not contain owner {owner.name!r}")
+        return next(
+            (
+                extension.source
+                for extension in self.flow_registry_extensions
+                if extension.owner == owner.name
+            ),
+            None,
+        )
 
     def flow_catalogs(self, kind: str) -> tuple[tuple[str, Path], ...]:
         expected = {

@@ -149,6 +149,25 @@ def _failing_registry(original, owner_root: Path | None) -> FlowRegistry:
     return registry
 
 
+def _patch_project_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    extension=_registry,
+) -> None:
+    original = agentic_read_module.project_workflow_registry
+
+    def assemble(project, owner_root):
+        return extension(
+            lambda selected_root: original(project, selected_root),
+            owner_root,
+        )
+
+    monkeypatch.setattr(
+        agentic_read_module,
+        "project_workflow_registry",
+        assemble,
+    )
+
+
 def _campaign() -> DesignCampaignSpec:
     return DesignCampaignSpec(
         "example",
@@ -222,12 +241,7 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch)
     source = _campaign()
     campaign_path = tmp_path / "campaign.json"
     campaign_path.write_text(source.canonical_json(), encoding="utf-8")
@@ -291,12 +305,7 @@ def test_campaign_run_identity_includes_execution_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch)
     source = _campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -345,12 +354,7 @@ def test_same_environment_id_with_changed_path_or_record_cannot_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch)
     source = _campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -401,12 +405,7 @@ def test_campaign_run_requires_exact_identity_and_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch)
     source = _campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -437,12 +436,7 @@ def test_failed_baseline_is_a_durable_terminal_campaign_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _failing_registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch, _failing_registry)
     source = _campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -472,12 +466,7 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original_registry = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _registry(original_registry, owner_root),
-    )
+    _patch_project_registry(monkeypatch)
     source = _campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -529,12 +518,7 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _feedback_registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch, _feedback_registry)
     source = _feedback_campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
