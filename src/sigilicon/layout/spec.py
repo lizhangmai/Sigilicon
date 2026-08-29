@@ -8,6 +8,7 @@ from pathlib import Path
 import tomllib
 from typing import Any, Mapping
 
+from sigilicon.domain.component import ComponentContract, load_component_graph
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.design import IDENTIFIER_RE
 from sigilicon.domain.netlist import (
@@ -23,7 +24,7 @@ from sigilicon.domain.platform import (
     PdkConfig,
     load_platform,
 )
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import RepositoryContext, RepositoryOwner
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
@@ -104,6 +105,122 @@ def _owner_oa_assembly(
             f"layout spec is below an OA assembly owner but is not declared: {spec_path}"
         )
     return source
+
+
+def _component_source_files(
+    graph: Mapping[str, ComponentContract], *, project_root: Path
+) -> Mapping[Path, tuple[tuple[ComponentContract, str], ...]]:
+    """Index files declared by source-library components in *graph*.
+
+    A layout generator is allowed to import project code only through the
+    current owner's own source tree or an explicitly composed source-library
+    component.  Keeping the index here makes that boundary use the component
+    contract rather than directory naming conventions.
+    """
+
+    declared: dict[Path, list[tuple[ComponentContract, str]]] = {}
+    for component in graph.values():
+        if component.kind != "source-library":
+            continue
+        for fileset, values in component.filesets.items():
+            for relative in values:
+                source = (project_root / Path(relative)).resolve()
+                declared.setdefault(source, []).append((component, fileset))
+    return {
+        source: tuple(declarations)
+        for source, declarations in declared.items()
+    }
+
+
+def _validate_generator_ownership(
+    repository: RepositoryContext,
+    *,
+    owner: RepositoryOwner,
+    component_graph: Mapping[str, ComponentContract],
+    generator_source: Path,
+    generator_dependencies: tuple[Path, ...],
+    generator_modules: tuple[str, ...],
+    generator_module_sources: tuple[Path, ...],
+    selected_platform_layout: Path,
+) -> None:
+    """Enforce the project source boundary for one cataloged layout owner.
+
+    ``generator_source`` is executable entrypoint code and therefore must be
+    physically owned by the owner which owns the layout spec.  Dependencies
+    and module sources may cross that boundary only through a component graph
+    edge to a ``source-library`` component.  The selected platform's exact
+    layout contract is the one intentional non-component project dependency;
+    other platform or repository files are not implicitly trusted.
+    """
+
+    owner_name = owner.name
+    owner_root = owner.root
+
+    try:
+        generator_source.relative_to(owner_root)
+    except ValueError as exc:
+        raise ValueError(
+            "layout.generator_source must belong to cataloged owner "
+            f"{owner_name!r}: {generator_source}"
+        ) from exc
+
+    source_library_files = _component_source_files(
+        component_graph, project_root=repository.project_root
+    )
+
+    def validate_project_source(source: Path, field: str) -> None:
+        source_owner = repository.owner_for(source)
+        declarations = source_library_files.get(source, ())
+        if source_owner is not None and source_owner.name == owner_name:
+            # Files in the current owner's root are already covered by the
+            # owner contract.  The source-library declaration rule applies
+            # only when a generator crosses that root boundary.
+            return
+
+        matching = (
+            declarations
+            if source_owner is None
+            else tuple(
+                (component, fileset)
+                for component, fileset in declarations
+                if component.name == source_owner.name
+            )
+        )
+        if not matching:
+            if declarations:
+                declared = ", ".join(
+                    f"{component.name!r} ({fileset})"
+                    for component, fileset in declarations
+                )
+                if source_owner is None:
+                    reason = (
+                        "the project source has no cataloged owner and is not "
+                        f"declared by the current owner graph (declared: {declared})"
+                    )
+                else:
+                    reason = (
+                        "the source-library declaration does not match the "
+                        f"cataloged owner {source_owner.name!r} (declared: {declared})"
+                    )
+            else:
+                reason = (
+                    "the path is absent from the current owner component graph's "
+                    "source-library filesets"
+                )
+            raise ValueError(
+                f"{field} crosses owner boundary at {source}; {reason}"
+            )
+
+    for dependency in generator_dependencies:
+        if dependency == selected_platform_layout:
+            continue
+        validate_project_source(dependency, "layout.generator_dependencies[]")
+
+    for module, source in zip(generator_modules, generator_module_sources, strict=True):
+        # Sources outside the project root are installed package modules and
+        # remain valid.  Only project-owned module sources need this check.
+        if source.is_relative_to(repository.project_root):
+            validate_project_source(source, f"layout.generator_modules[{module!r}]")
 
 
 def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutSpec:
@@ -296,6 +413,22 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
         raise ValueError(
             f"layout spec platform {pdk_key!r} disagrees with OA assembly "
             f"{assembly.pdk!r}"
+        )
+    owner = repository.owner_for(spec_path)
+    if owner is not None:
+        component_graph = load_component_graph(
+            owner.component.path,
+            project_root=root,
+        )
+        _validate_generator_ownership(
+            repository,
+            owner=owner,
+            component_graph=component_graph,
+            generator_source=generator_source,
+            generator_dependencies=generator_dependencies,
+            generator_modules=generator_modules,
+            generator_module_sources=generator_module_sources,
+            selected_platform_layout=layout_pdk.layout_path,
         )
     return LayoutSpec(
         path=spec_path,

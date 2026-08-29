@@ -46,6 +46,8 @@ routing2 = [85, 130]
 routing3 = [55, 55]
 
 [mos_pcell]
+length_parameter = "l"
+width_parameter = "Wfg"
 finger_count_parameter = "fingers"
 source_terminal = "S"
 drain_terminal = "D"
@@ -53,6 +55,9 @@ source_alias_prefix = "S_"
 drain_alias_prefix = "D_"
 cdf_callback_parameter = "routePolydir"
 cdf_callback_bypass_parameters = ["polyContacts"]
+gate_contact_value = "Bottom"
+gate_contact_enhancement_parameter = "polyContactsEnh"
+gate_contact_enhancement_value = "Bottom"
 
 ''',
         encoding="utf-8",
@@ -78,6 +83,34 @@ def test_layout_technology_keeps_owner_schema_and_resolves_routing_roles(
         "routing2_routing3",
         "routing2",
     ) == (85, 130)
+
+
+def test_layout_technology_applies_partial_via_landing_profile_overrides(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "technology.toml"
+    _write_contract(contract)
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            "\n[mos_pcell]\n",
+            "\n[via_landing_profiles.stacked.routing1_routing2]\n"
+            "routing2 = [85, 130]\n\n[mos_pcell]\n",
+        ),
+        encoding="utf-8",
+    )
+
+    technology = load_layout_technology(
+        contract,
+        contract_kind="test-layout-technology",
+        owner="test-owner",
+    )
+
+    assert technology.via_landing_half_size(
+        "routing1_routing2", "routing2", profile="stacked"
+    ) == (85, 130)
+    assert technology.via_landing_half_size(
+        "routing1_routing2", "routing1", profile="stacked"
+    ) == (55, 55)
 
 
 def test_layout_technology_requires_landing_policy_for_every_via(

@@ -13,7 +13,10 @@ def _technology() -> LayoutTechnology:
         layers={},
         vias={},
         via_landings={},
+        via_landing_profiles={},
         mos_pcell=MosPcellInterface(
+            length_parameter="l",
+            width_parameter="Wfg",
             finger_count_parameter="fingers",
             source_terminal="S",
             drain_terminal="D",
@@ -21,6 +24,9 @@ def _technology() -> LayoutTechnology:
             drain_alias_prefix="D_",
             cdf_callback_parameter="routePolydir",
             cdf_callback_bypass_parameters=("polyContacts",),
+            gate_contact_value="Bottom",
+            gate_contact_enhancement_parameter="polyContactsEnh",
+            gate_contact_enhancement_value="Bottom",
         ),
     )
 

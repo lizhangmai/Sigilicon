@@ -55,6 +55,8 @@ def _reject_unknown(
 
 @dataclass(frozen=True)
 class MosPcellInterface:
+    length_parameter: str
+    width_parameter: str
     finger_count_parameter: str
     source_terminal: str
     drain_terminal: str
@@ -62,6 +64,9 @@ class MosPcellInterface:
     drain_alias_prefix: str
     cdf_callback_parameter: str
     cdf_callback_bypass_parameters: tuple[str, ...]
+    gate_contact_value: str
+    gate_contact_enhancement_parameter: str
+    gate_contact_enhancement_value: str
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,9 @@ class LayoutTechnology:
     layers: Mapping[str, str]
     vias: Mapping[str, str]
     via_landings: Mapping[str, Mapping[str, tuple[int, int]]]
+    via_landing_profiles: Mapping[
+        str, Mapping[str, Mapping[str, tuple[int, int]]]
+    ]
     mos_pcell: MosPcellInterface
 
     def layer(self, role: str) -> str:
@@ -93,7 +101,21 @@ class LayoutTechnology:
         except KeyError as exc:
             raise ValueError(f"{self.owner} has no polarity for model {model!r}") from exc
 
-    def via_landing_half_size(self, via_role: str, layer_role: str) -> tuple[int, int]:
+    def via_landing_half_size(
+        self,
+        via_role: str,
+        layer_role: str,
+        *,
+        profile: str | None = None,
+    ) -> tuple[int, int]:
+        if profile is not None:
+            try:
+                return self.via_landing_profiles[profile][via_role][layer_role]
+            except KeyError:
+                if profile not in self.via_landing_profiles:
+                    raise ValueError(
+                        f"{self.owner} has no via landing profile {profile!r}"
+                    ) from None
         try:
             return self.via_landings[via_role][layer_role]
         except KeyError as exc:
@@ -134,6 +156,7 @@ def load_layout_technology(
             "layers",
             "vias",
             "via_landings",
+            "via_landing_profiles",
             "mos_pcell",
         },
         f"{owner} layout technology",
@@ -188,8 +211,58 @@ def load_layout_technology(
                 )
             parsed[layer] = (half_size[0], half_size[1])
         via_landings[role] = parsed
+    profiles_raw = technology_raw.get("via_landing_profiles", {})
+    profiles_table = _table(profiles_raw, "via_landing_profiles")
+    via_landing_profiles: dict[
+        str, dict[str, dict[str, tuple[int, int]]]
+    ] = {}
+    for profile_name, profile_value in profiles_table.items():
+        profile = _identifier(profile_name, "via landing profile")
+        profile_vias = _table(profile_value, f"via_landing_profiles.{profile}")
+        if not profile_vias:
+            raise ValueError(f"via_landing_profiles.{profile} must not be empty")
+        if unknown_vias := set(profile_vias) - set(vias):
+            raise ValueError(
+                f"via_landing_profiles.{profile} uses unknown via roles: "
+                f"{sorted(unknown_vias)}"
+            )
+        parsed_profile: dict[str, dict[str, tuple[int, int]]] = {}
+        for via_role, value in profile_vias.items():
+            layer_landings = _table(
+                value, f"via_landing_profiles.{profile}.{via_role}"
+            )
+            parsed_layers: dict[str, tuple[int, int]] = {}
+            for layer_role, half_size in layer_landings.items():
+                layer = _identifier(
+                    layer_role,
+                    f"via_landing_profiles.{profile}.{via_role} layer",
+                )
+                if layer not in layers:
+                    raise ValueError(
+                        f"via_landing_profiles.{profile}.{via_role} uses unknown "
+                        f"layer role {layer!r}"
+                    )
+                if (
+                    not isinstance(half_size, list)
+                    or len(half_size) != 2
+                    or any(
+                        isinstance(item, bool)
+                        or not isinstance(item, int)
+                        or item <= 0
+                        for item in half_size
+                    )
+                ):
+                    raise ValueError(
+                        f"via_landing_profiles.{profile}.{via_role}.{layer} "
+                        "must be two positive DBU integers"
+                    )
+                parsed_layers[layer] = (half_size[0], half_size[1])
+            parsed_profile[via_role] = parsed_layers
+        via_landing_profiles[profile] = parsed_profile
     pcell_raw = _table(technology_raw.get("mos_pcell"), "mos_pcell")
     pcell_fields = {
+        "length_parameter",
+        "width_parameter",
         "finger_count_parameter",
         "source_terminal",
         "drain_terminal",
@@ -197,6 +270,9 @@ def load_layout_technology(
         "drain_alias_prefix",
         "cdf_callback_parameter",
         "cdf_callback_bypass_parameters",
+        "gate_contact_value",
+        "gate_contact_enhancement_parameter",
+        "gate_contact_enhancement_value",
     }
     _reject_unknown(pcell_raw, pcell_fields, "mos_pcell")
     bypass = pcell_raw.get("cdf_callback_bypass_parameters")
@@ -213,7 +289,16 @@ def load_layout_technology(
         layers=layers,
         vias=vias,
         via_landings=via_landings,
+        via_landing_profiles=via_landing_profiles,
         mos_pcell=MosPcellInterface(
+            length_parameter=_identifier(
+                pcell_raw.get("length_parameter"),
+                "mos_pcell.length_parameter",
+            ),
+            width_parameter=_identifier(
+                pcell_raw.get("width_parameter"),
+                "mos_pcell.width_parameter",
+            ),
             finger_count_parameter=_identifier(
                 pcell_raw.get("finger_count_parameter"),
                 "mos_pcell.finger_count_parameter",
@@ -235,6 +320,18 @@ def load_layout_technology(
                 "mos_pcell.cdf_callback_parameter",
             ),
             cdf_callback_bypass_parameters=bypass_parameters,
+            gate_contact_value=_identifier(
+                pcell_raw.get("gate_contact_value"),
+                "mos_pcell.gate_contact_value",
+            ),
+            gate_contact_enhancement_parameter=_identifier(
+                pcell_raw.get("gate_contact_enhancement_parameter"),
+                "mos_pcell.gate_contact_enhancement_parameter",
+            ),
+            gate_contact_enhancement_value=_identifier(
+                pcell_raw.get("gate_contact_enhancement_value"),
+                "mos_pcell.gate_contact_enhancement_value",
+            ),
         ),
     )
 
