@@ -177,8 +177,7 @@ def inspect_repository_designs(
         if "variants" in read_toml(path):
             integration = plan_ip_integration(
                 path,
-                project_root=root,
-                artifact_root=context.artifact_root,
+                project=context,
             )
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
@@ -188,7 +187,7 @@ def inspect_repository_designs(
     ip_releases: dict[str, Any] = {}
     oa_assemblies: dict[str, Any] = {}
     for name, path in release_paths.items():
-        contract = load_ip_contract(path, project_root=root)
+        contract = load_ip_contract(path, project=context)
         if contract.name != name:
             raise ValueError(f"IP release catalog identity mismatch: {name}")
         _register_owner_root(

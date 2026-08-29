@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import tomllib
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
+
+if TYPE_CHECKING:
+    from sigilicon.domain.repository import Project
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
 
@@ -71,7 +74,8 @@ class IpExport:
 @dataclass(frozen=True)
 class IpContract:
     path: Path
-    project_root: Path
+    project: Project
+    owner: str
     name: str
     producer: PurePosixPath
     component_contract: PurePosixPath
@@ -79,6 +83,10 @@ class IpContract:
     exports: tuple[IpExport, ...]
     source_files: tuple[PurePosixPath, ...]
     oa_assembly: PurePosixPath
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
 
     @property
     def collateral(self) -> tuple[IpCollateral, ...]:
@@ -99,19 +107,29 @@ class IpContract:
         return level
 
 
-def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
-    root = project_root.resolve()
+def load_ip_contract(
+    path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+) -> IpContract:
+    from sigilicon.domain.repository import Project
+
+    repository = Project.bind(project=project, project_root=project_root)
+    root = repository.project_root
     contract_path = path.resolve()
     if not contract_path.is_relative_to(root):
         raise ValueError("IP contract must be inside the project root")
     with contract_path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
     producer = safe_relative(raw.get("producer"), "producer")
-    require_config_header(
+    cataloged_owner = repository.require_owner(contract_path)
+    header = require_config_header(
         raw,
         contract_path,
         contract_kind="ip-release",
         path_scope="owner",
+        owner=cataloged_owner.name,
     )
     source = _table(raw.get("source"), "source")
 
@@ -121,6 +139,7 @@ def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
         not producer_path.is_dir()
         or not producer_path.is_relative_to(root)
         or not contract_path.is_relative_to(producer_path)
+        or producer_path != cataloged_owner.root
     ):
         raise ValueError("IP release contract must stay inside its declared producer")
     component_path = (producer_path / component_contract).resolve()
@@ -340,7 +359,8 @@ def load_ip_contract(path: Path, *, project_root: Path) -> IpContract:
         raise ValueError("default_maturity is unsupported")
     result = IpContract(
         path=contract_path,
-        project_root=root,
+        project=repository,
+        owner=header.owner,
         name=ip_name,
         producer=producer,
         component_contract=component_contract,

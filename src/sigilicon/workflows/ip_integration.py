@@ -28,9 +28,8 @@ from sigilicon.workflows.ip_packaging import (
 )
 
 
-def _ip_catalog(root: Path) -> tuple[Path, Mapping[str, Any]]:
-    context = Project.from_project_root(root)
-    path = context.catalog("ip")
+def _ip_catalog(project: Project) -> tuple[Path, Mapping[str, Any]]:
+    path = project.catalog("ip")
     with path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
     require_config_header(
@@ -38,29 +37,31 @@ def _ip_catalog(root: Path) -> tuple[Path, Mapping[str, Any]]:
         path,
         contract_kind="ip-catalog",
         path_scope="repository",
-        owner="repository",
+        owner=project.manifest_owner,
     )
     return path, raw
 
 
 def ip_catalog_contract_path(
-    root: Path,
+    root: Path | None,
     target: str,
     *,
+    project: Project | None = None,
     section: str = "targets",
 ) -> Path:
     """Resolve one release or component contract through the canonical IP catalog."""
 
     if section not in {"targets", "components"}:
         raise ValueError(f"unsupported IP catalog section: {section}")
-    _, raw = _ip_catalog(root)
+    repository = Project.bind(project=project, project_root=root)
+    _, raw = _ip_catalog(repository)
     entries = raw.get(section)
     if not isinstance(entries, Mapping):
         raise ValueError(f"IP catalog {section} must be a table")
     entry = entries.get(target)
     if not isinstance(entry, Mapping) or not isinstance(entry.get("contract"), str):
         raise KeyError(f"unknown IP {section[:-1]}: {target}")
-    project_root = root.resolve()
+    project_root = repository.project_root
     relative = Path(entry["contract"])
     path = (project_root / relative).resolve()
     if (
@@ -75,11 +76,12 @@ def ip_catalog_contract_path(
 
 def _producer_contract(contract: IpIntegrationContract, dependency_name: str) -> Path:
     path = ip_catalog_contract_path(
-        contract.project_root,
+        None,
         dependency_name,
+        project=contract.project,
         section="targets",
     )
-    producer = load_ip_contract(path, project_root=contract.project_root)
+    producer = load_ip_contract(path, project=contract.project)
     if producer.name != dependency_name:
         raise ValueError(f"IP catalog identity mismatch: {dependency_name}")
     return path
@@ -259,15 +261,35 @@ def _validate_variant_architecture(
     return dict(result)
 
 
+def _integration_project(
+    *,
+    project: Project | None,
+    project_root: Path | None,
+    artifact_root: Path | None,
+) -> Project:
+    repository = Project.bind(project=project, project_root=project_root)
+    return (
+        repository
+        if artifact_root is None
+        else repository.with_artifact_root(artifact_root)
+    )
+
+
 def plan_ip_integration(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
-    contract = load_ip_integration_contract(contract_path, project_root=project_root)
+    repository = _integration_project(
+        project=project,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+    contract = load_ip_integration_contract(contract_path, project=repository)
     dependencies: list[dict[str, Any]] = []
     for dependency in contract.dependencies:
         row: dict[str, Any] = {
@@ -279,8 +301,7 @@ def plan_ip_integration(
             producer_path = _producer_contract(contract, dependency.name)
             expected = plan_ip_release(
                 producer_path,
-                project_root=contract.project_root,
-                artifact_root=artifact_root,
+                project=contract.project,
                 maturity=release.required_maturity,
             )
             exported = _release_export(expected, release.export)
@@ -345,11 +366,13 @@ def plan_ip_integration(
 def plan_ip_integration_fileset(
     contract_path: Path,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
 ) -> dict[str, Any]:
-    contract = load_ip_integration_contract(contract_path, project_root=project_root)
+    repository = Project.bind(project=project, project_root=project_root)
+    contract = load_ip_integration_contract(contract_path, project=repository)
     variant = contract.get_variant(variant_name)
     fileset = variant.get_fileset(fileset_name)
     return _fileset_source_plan(contract, variant, fileset.name)
@@ -367,8 +390,8 @@ def resolve_locked_ip_release(
     """Resolve one exact cross-owner release without following producer state."""
 
     root = artifact_root.resolve()
-    manifest_path = (root / Path(pinned.manifest)).resolve()
-    if not manifest_path.is_relative_to(root):
+    manifest_path = root / Path(pinned.manifest)
+    if not manifest_path.resolve().is_relative_to(root):
         raise RuntimeError("IP dependency lock escapes the artifact root")
     manifest = audit_ip_release_manifest(manifest_path)
     if (
@@ -410,6 +433,18 @@ def _locked_release_manifest(
     )
     if manifest.get("ip_name") != dependency.name:
         raise RuntimeError("IP dependency lock identity does not match its dependency")
+    component_path = (
+        contract.project_root / Path(dependency.component_contract)
+    ).resolve()
+    expected_owner = contract.project.require_owner(component_path)
+    provenance = manifest.get("provenance")
+    expected_producer = expected_owner.root.relative_to(
+        contract.project_root
+    ).as_posix()
+    if not isinstance(provenance, Mapping) or (
+        provenance.get("producer") != expected_producer
+    ):
+        raise RuntimeError("IP dependency release does not match its provider owner")
     exported = _release_export(manifest, release.export)
     interface = exported.get("interface")
     if not isinstance(interface, Mapping) or (
@@ -443,17 +478,23 @@ def _selected_lock(
 def check_ip_integration(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
     lock_path: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve one variant through its explicitly selected immutable releases."""
 
-    contract = load_ip_integration_contract(contract_path, project_root=project_root)
+    repository = _integration_project(
+        project=project,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+    contract = load_ip_integration_contract(contract_path, project=repository)
     root = contract.project_root
-    artifact_root = artifact_root.resolve()
+    artifact_root = contract.project.artifact_root
     variant = contract.get_variant(variant_name)
     architecture = _validate_variant_architecture(variant)
     fileset = variant.get_fileset(fileset_name)
@@ -583,13 +624,19 @@ def check_ip_integration(
 def resolve_ip_dependency_role(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     dependency_name: str,
     role: str,
     lock_path: Path | None = None,
 ) -> Path:
-    contract = load_ip_integration_contract(contract_path, project_root=project_root)
+    repository = _integration_project(
+        project=project,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+    contract = load_ip_integration_contract(contract_path, project=repository)
     matches = [
         item
         for item in contract.release_dependencies
@@ -604,7 +651,7 @@ def resolve_ip_dependency_role(
     pinned = next(item for item in lock.dependencies if item.name == dependency_name)
     manifest_path, manifest = _locked_release_manifest(
         contract=contract,
-        artifact_root=artifact_root,
+        artifact_root=contract.project.artifact_root,
         dependency=dependency,
         pinned=pinned,
     )
@@ -621,28 +668,33 @@ def resolve_ip_dependency_role(
 def resolve_ip_integration_fileset(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
     lock_path: Path | None = None,
 ) -> tuple[Path, ...]:
     """Resolve one complete IP compilation unit for an execution adapter."""
 
-    result = check_ip_integration(
-        contract_path,
+    repository = _integration_project(
+        project=project,
         project_root=project_root,
         artifact_root=artifact_root,
+    )
+    result = check_ip_integration(
+        contract_path,
+        project=repository,
         variant_name=variant_name,
         fileset_name=fileset_name,
         lock_path=lock_path,
     )
     source_files = tuple(
-        (project_root.resolve() / Path(value)).resolve()
+        (repository.project_root / Path(value)).resolve()
         for value in result["source_files"]
     )
     release_sources = tuple(
-        (artifact_root.resolve() / Path(value)).resolve()
+        (repository.artifact_root / Path(value)).resolve()
         for value in result["release_sources"]
     )
     return (*source_files, *release_sources)

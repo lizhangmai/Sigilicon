@@ -26,13 +26,14 @@ from sigilicon.domain.netlist import (
     parse_subcircuit_instances,
     subckt_ports,
 )
+from sigilicon.domain.repository import Project
 from sigilicon.domain.systemverilog import (
     ModulePort,
     module_ports,
     module_port_signatures,
     named_port_connections,
 )
-from sigilicon.external_tools import run_process_group
+from sigilicon.external_tools import owned_directory, run_process_group
 from sigilicon.flow.model import (
     PolicyCheck,
     PolicySpec,
@@ -352,7 +353,7 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
     oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
     from sigilicon.domain.oa_library import load_oa_library_source
 
-    library = load_oa_library_source(oa_manifest, project_root=root)
+    library = load_oa_library_source(oa_manifest, project=contract.project)
     cell_by_name = {cell.cell: cell for cell in library.cells}
     netlist_cells = [
         cell
@@ -645,14 +646,26 @@ def _availability(
     }
 
 
-def plan_ip_release(
-    contract_path: Path,
+def _release_project(
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None,
+    project_root: Path | None,
+    artifact_root: Path | None,
+) -> Project:
+    repository = Project.bind(project=project, project_root=project_root)
+    return (
+        repository
+        if artifact_root is None
+        else repository.with_artifact_root(artifact_root)
+    )
+
+
+def _plan_loaded_ip_release(
+    contract: IpContract,
+    *,
     maturity: str | None = None,
 ) -> dict[str, Any]:
-    contract = load_ip_contract(contract_path, project_root=project_root)
+    repository = contract.project
     level = contract.require_level(maturity or contract.default_maturity)
     source_paths = _source_inputs(contract)
     commit, dirty = _source_control(contract.project_root)
@@ -738,6 +751,7 @@ def plan_ip_release(
     }
     return {
         "ip_name": contract.name,
+        "owner": contract.owner,
         "contract": contract.path.relative_to(contract.project_root).as_posix(),
         "producer": contract.producer.as_posix(),
         "component": {
@@ -746,9 +760,9 @@ def plan_ip_release(
             "contract": component.path.relative_to(contract.project_root).as_posix(),
         },
         "release_id": release_id,
-        "release_root": ArtifactLayout(artifact_root.resolve())
+        "release_root": ArtifactLayout(repository.artifact_root)
         .export(contract.name, "package", release_id)
-        .relative_to(artifact_root.resolve())
+        .relative_to(repository.artifact_root)
         .as_posix(),
         "source_commit": commit,
         "working_tree_dirty": dirty,
@@ -783,6 +797,23 @@ def plan_ip_release(
     }
 
 
+def plan_ip_release(
+    contract_path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
+    maturity: str | None = None,
+) -> dict[str, Any]:
+    repository = _release_project(
+        project=project,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+    contract = load_ip_contract(contract_path, project=repository)
+    return _plan_loaded_ip_release(contract, maturity=maturity)
+
+
 def _readonly_tree(root: Path) -> None:
     for path in sorted(root.rglob("*"), reverse=True):
         if path.is_dir():
@@ -792,19 +823,39 @@ def _readonly_tree(root: Path) -> None:
     root.chmod(stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
 
+def _remove_tree_at(parent_fd: int, name: str) -> None:
+    """Remove one exact staging tree without following filesystem links."""
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        os.fchmod(descriptor, stat.S_IRWXU)
+        for child in os.listdir(descriptor):
+            metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                _remove_tree_at(descriptor, child)
+            else:
+                os.unlink(child, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
 def build_ip_release(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
-    plan = plan_ip_release(
-        contract_path,
+    repository = _release_project(
+        project=project,
         project_root=project_root,
         artifact_root=artifact_root,
-        maturity=maturity,
     )
+    contract = load_ip_contract(contract_path, project=repository)
+    plan = _plan_loaded_ip_release(contract, maturity=maturity)
     if plan["missing_items"]:
         missing = ", ".join(plan["missing_items"])
         raise IpReleaseError(
@@ -814,85 +865,93 @@ def build_ip_release(
         raise IpReleaseError(
             "IP releases require a clean source checkout"
         )
-    contract = load_ip_contract(contract_path, project_root=project_root)
-    release_root = artifact_root.resolve() / Path(plan["release_root"])
-    if release_root.exists():
-        return audit_ip_release(
-            contract_path,
-            project_root=project_root,
-            artifact_root=artifact_root,
-            maturity=maturity,
-        )
+    release_root = repository.artifact_root / Path(plan["release_root"])
     namespace = release_root.parent
-    namespace.mkdir(parents=True, exist_ok=True)
-    temporary = namespace / f".{plan['release_id']}.{uuid.uuid4().hex}.tmp"
-    temporary.mkdir()
-    try:
-        views: list[dict[str, Any]] = []
-        for item in contract.collateral:
-            source = _project_path(
-                contract.project_root,
-                Path(item.source),
-                "collateral source",
-            )
-            destination = temporary / item.package_path
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-            views.append(
-                {
-                    "export": item.export,
-                    "role": item.role,
-                    "path": item.package_path.as_posix(),
-                    "size": destination.stat().st_size,
-                    "format": item.format,
-                    "module": item.module,
-                    "library": item.library,
-                    "cell": item.cell,
-                    "view": item.view,
-                    "corner": item.corner,
-                    "capabilities": list(item.capabilities),
-                }
-            )
-        manifest: dict[str, Any] = {
-            "schema": 1,
-            "contract_kind": "ip-release-manifest",
-            "release_kind": "source-package",
-            "ip_name": plan["ip_name"],
-            "release_id": plan["release_id"],
-            "source_commit": plan["source_commit"],
-            "source_files": plan["source_files"],
-            "component": plan["component"],
-            "exports": plan["exports"],
-            "views": views,
-            "maturity": {
-                "level": plan["maturity_level"],
-                "checks": plan["maturity_checks"],
-                "missing_items": plan["missing_items"],
-            },
-            "provenance": {
-                "contract": plan["contract"],
-                "producer": plan["producer"],
-                "generated_at": utc_now(),
-                "generator": "flow-ip-packaging",
-                "working_tree_dirty": plan["working_tree_dirty"],
-            },
-            "availability": plan["availability"],
-        }
-        atomic_write_json(temporary / "manifest.json", manifest)
-        _readonly_tree(temporary)
+    with owned_directory(namespace, create_missing=True) as release_namespace:
         try:
-            os.replace(temporary, release_root)
-        except FileExistsError:
+            existing = os.stat(
+                release_root.name,
+                dir_fd=release_namespace.fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
             pass
-    finally:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-    return audit_ip_release(
-        contract_path,
-        project_root=project_root,
-        artifact_root=artifact_root,
-        maturity=maturity,
-    )
+        else:
+            if not stat.S_ISDIR(existing.st_mode):
+                raise RuntimeError(f"IP release path is unsafe: {release_root}")
+            return _audit_loaded_ip_release(contract, plan)
+
+        temporary_name = f".{plan['release_id']}.{uuid.uuid4().hex}.tmp"
+        os.mkdir(temporary_name, dir_fd=release_namespace.fd)
+        temporary = namespace / temporary_name
+        installed = False
+        try:
+            views: list[dict[str, Any]] = []
+            for item in contract.collateral:
+                source = _project_path(
+                    contract.project_root,
+                    Path(item.source),
+                    "collateral source",
+                )
+                destination = temporary / item.package_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                views.append(
+                    {
+                        "export": item.export,
+                        "role": item.role,
+                        "path": item.package_path.as_posix(),
+                        "size": destination.stat().st_size,
+                        "format": item.format,
+                        "module": item.module,
+                        "library": item.library,
+                        "cell": item.cell,
+                        "view": item.view,
+                        "corner": item.corner,
+                        "capabilities": list(item.capabilities),
+                    }
+                )
+            manifest: dict[str, Any] = {
+                "schema": 1,
+                "contract_kind": "ip-release-manifest",
+                "release_kind": "source-package",
+                "ip_name": plan["ip_name"],
+                "release_id": plan["release_id"],
+                "source_commit": plan["source_commit"],
+                "source_files": plan["source_files"],
+                "component": plan["component"],
+                "exports": plan["exports"],
+                "views": views,
+                "maturity": {
+                    "level": plan["maturity_level"],
+                    "checks": plan["maturity_checks"],
+                    "missing_items": plan["missing_items"],
+                },
+                "provenance": {
+                    "contract": plan["contract"],
+                    "producer": plan["producer"],
+                    "generated_at": utc_now(),
+                    "generator": "flow-ip-packaging",
+                    "working_tree_dirty": plan["working_tree_dirty"],
+                },
+                "availability": plan["availability"],
+            }
+            atomic_write_json(temporary / "manifest.json", manifest)
+            _readonly_tree(temporary)
+            os.rename(
+                temporary_name,
+                release_root.name,
+                src_dir_fd=release_namespace.fd,
+                dst_dir_fd=release_namespace.fd,
+            )
+            installed = True
+        finally:
+            if not installed:
+                try:
+                    _remove_tree_at(release_namespace.fd, temporary_name)
+                except FileNotFoundError:
+                    pass
+    return _audit_loaded_ip_release(contract, plan)
 
 
 def _load_release(release_root: Path) -> dict[str, Any]:
@@ -1209,6 +1268,18 @@ def _packaged_maturity_check(
 def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Audit an exact immutable package without consulting producer source."""
 
+    release_root = manifest_path.parent
+    if manifest_path.is_symlink() or release_root.is_symlink():
+        raise RuntimeError("IP release root and manifest cannot be symlinks")
+    with owned_directory(release_root, create_missing=False):
+        return _audit_ip_release_manifest(manifest_path)
+
+
+def _audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
+    release_root = manifest_path.parent
+    for path in release_root.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"IP release cannot contain symlinks: {path}")
     manifest = _load_release(manifest_path.parent)
     if (
         manifest.get("schema") != 1
@@ -1217,7 +1288,7 @@ def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
         raise RuntimeError("unsupported IP release manifest schema")
     if manifest.get("release_kind") != "source-package":
         raise RuntimeError("unsupported IP release kind")
-    release_root = manifest_path.parent.resolve()
+    release_root = release_root.resolve()
     views = manifest.get("views")
     if not isinstance(views, list) or not views:
         raise RuntimeError("IP release views must be a non-empty list")
@@ -1258,20 +1329,12 @@ def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     return manifest
 
 
-def _audit_source_ip_release(
-    contract_path: Path,
-    *,
-    project_root: Path,
-    artifact_root: Path,
-    maturity: str | None = None,
+def _audit_loaded_ip_release(
+    contract: IpContract,
+    plan: Mapping[str, Any],
 ) -> dict[str, Any]:
-    plan = plan_ip_release(
-        contract_path,
-        project_root=project_root,
-        artifact_root=artifact_root,
-        maturity=maturity,
-    )
-    release_root = artifact_root.resolve() / Path(plan["release_root"])
+    repository = contract.project
+    release_root = repository.artifact_root / Path(plan["release_root"])
     if not release_root.is_dir() or release_root.is_symlink():
         raise FileNotFoundError(f"IP release has not been built: {release_root}")
     manifest = audit_ip_release_manifest(release_root / "manifest.json")
@@ -1287,6 +1350,11 @@ def _audit_source_ip_release(
     for key, value in expected.items():
         if manifest.get(key) != value:
             raise RuntimeError(f"IP release manifest {key} does not match its source plan")
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, Mapping) or any(
+        provenance.get(key) != plan[key] for key in ("contract", "producer")
+    ):
+        raise RuntimeError("IP release provenance does not match its source plan")
     source_commit = manifest.get("source_commit")
     if (
         not isinstance(source_commit, str)
@@ -1364,42 +1432,57 @@ def _audit_source_ip_release(
     return {
         **manifest,
         "manifest": (release_root / "manifest.json")
-        .relative_to(artifact_root.resolve())
+        .relative_to(repository.artifact_root)
         .as_posix(),
         "audit": {"passed": True, "audited_at": utc_now()},
     }
 
 
+def _audit_source_ip_release(
+    contract_path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
+    maturity: str | None = None,
+) -> dict[str, Any]:
+    repository = _release_project(
+        project=project,
+        project_root=project_root,
+        artifact_root=artifact_root,
+    )
+    contract = load_ip_contract(contract_path, project=repository)
+    plan = _plan_loaded_ip_release(contract, maturity=maturity)
+    return _audit_loaded_ip_release(contract, plan)
+
+
 def publish_ip_release(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
-    plan = plan_ip_release(
-        contract_path,
+    repository = _release_project(
+        project=project,
         project_root=project_root,
         artifact_root=artifact_root,
-        maturity=maturity,
     )
+    contract = load_ip_contract(contract_path, project=repository)
+    plan = _plan_loaded_ip_release(contract, maturity=maturity)
     if plan["working_tree_dirty"]:
         raise IpReleaseError(
             "cannot publish an immutable IP release from a dirty source checkout"
         )
-    audited = audit_ip_release(
-        contract_path,
-        project_root=project_root,
-        artifact_root=artifact_root,
-        maturity=maturity,
-    )
+    audited = _audit_loaded_ip_release(contract, plan)
     provenance = audited.get("provenance")
     if not isinstance(provenance, Mapping) or provenance.get("working_tree_dirty"):
         raise IpReleaseError(
             "cannot publish a release candidate that was built from dirty source"
         )
-    manifest = artifact_root.resolve() / Path(str(audited["manifest"]))
-    namespace = ArtifactLayout(artifact_root.resolve()).export(
+    manifest = repository.artifact_root / Path(str(audited["manifest"]))
+    namespace = ArtifactLayout(repository.artifact_root).export(
         str(audited["ip_name"]), "package"
     )
     pointer = {
@@ -1407,7 +1490,7 @@ def publish_ip_release(
         "release_id": audited["release_id"],
         "maturity": audited["maturity"]["level"],
         "source_commit": audited["source_commit"],
-        "manifest": manifest.relative_to(artifact_root.resolve()).as_posix(),
+        "manifest": manifest.relative_to(repository.artifact_root).as_posix(),
         "published_at": utc_now(),
     }
     atomic_write_json(namespace / "current.json", pointer)
@@ -1423,8 +1506,9 @@ def load_published_ip(
     relative = Path(str(pointer.get("manifest", "")))
     if relative.is_absolute() or ".." in relative.parts or not relative.parts:
         raise RuntimeError("IP current pointer manifest path is unsafe")
-    manifest_path = (artifact_root.resolve() / relative).resolve()
-    if not manifest_path.is_relative_to(artifact_root.resolve()):
+    artifact_base = artifact_root.resolve()
+    manifest_path = artifact_base / relative
+    if not manifest_path.resolve().is_relative_to(artifact_base):
         raise RuntimeError("IP current pointer escapes the artifact root")
     manifest = load_ip_release_manifest(manifest_path)
     for key in ("ip_name", "release_id", "source_commit"):
@@ -1455,13 +1539,15 @@ def resolve_release_role(
 def audit_ip_release(
     contract_path: Path,
     *,
-    project_root: Path,
-    artifact_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
     """Audit the exact release selected by the configured IP contract."""
     return _audit_source_ip_release(
         contract_path,
+        project=project,
         project_root=project_root,
         artifact_root=artifact_root,
         maturity=maturity,

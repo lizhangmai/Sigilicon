@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import tomllib
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.domain.component import (
     ComponentContract,
@@ -14,6 +14,9 @@ from sigilicon.domain.component import (
 )
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
+
+if TYPE_CHECKING:
+    from sigilicon.domain.repository import Project
 
 
 _CAPABILITIES = frozenset({"simulation", "synthesis", "physical_implementation"})
@@ -103,6 +106,7 @@ class IpOperatingVariant:
 
 @dataclass(frozen=True)
 class IpIntegrationContract:
+    project: Project
     component: ComponentContract
     dependency_lock: PurePosixPath | None
     dependencies: tuple[IpIntegrationDependency, ...]
@@ -115,7 +119,7 @@ class IpIntegrationContract:
 
     @property
     def project_root(self) -> Path:
-        return self.component.project_root
+        return self.project.project_root
 
     @property
     def owner(self) -> str:
@@ -435,12 +439,21 @@ def _operating_variant(
 
 
 def load_ip_integration_contract(
-    path: Path, *, project_root: Path
+    path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
 ) -> IpIntegrationContract:
     """Load composite-IP integration intent from its canonical component manifest."""
 
-    root = project_root.resolve()
+    from sigilicon.domain.repository import Project
+
+    repository = Project.bind(project=project, project_root=project_root)
+    root = repository.project_root
     component = load_component_contract(path, project_root=root)
+    cataloged_owner = repository.require_owner(component.path)
+    if component.owner != cataloged_owner.name:
+        raise ValueError("IP integration owner disagrees with the project catalog")
     if component.kind != "composite-ip":
         raise ValueError("IP integration requires a composite-ip component")
     with component.path.open("rb") as stream:
@@ -503,6 +516,7 @@ def load_ip_integration_contract(
         raise ValueError("IP integration must declare at least one operating variant")
 
     return IpIntegrationContract(
+        project=repository,
         component=component,
         dependency_lock=dependency_lock,
         dependencies=tuple(dependencies),

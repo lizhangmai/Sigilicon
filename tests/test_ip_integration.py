@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
 
 from sigilicon.cli.main import main as sigilicon_cli_main
+from sigilicon.domain.ip_integration import LockedIpRelease
 from sigilicon.workflows.ip_integration import (
     check_ip_integration,
     plan_ip_integration,
+    resolve_locked_ip_release,
     resolve_ip_integration_fileset,
 )
+
+from conftest import write_project_context
 
 
 def _fixture_architecture_validator(raw: dict[str, Any]) -> dict[str, Any]:
@@ -84,7 +88,6 @@ endmodule
         "schema": 1,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
-        "owner": "fixture",
         "ip_name": "fixture-ip",
         "release_id": release_id,
         "source_commit": "a" * 40,
@@ -116,7 +119,10 @@ endmodule
             "checks": [{"name": "fixture-interface", "passed": True}],
             "missing_items": [],
         },
-        "provenance": {"working_tree_dirty": False},
+        "provenance": {
+            "producer": "ip/fixture",
+            "working_tree_dirty": False,
+        },
     }
     (release_root / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -296,6 +302,7 @@ def _absolute_strings(value: Any) -> list[str]:
 
 
 def _write_source_component_fixture(project_root: Path) -> Path:
+    write_project_context(project_root)
     dependency = project_root / "ip/leaf"
     owner = project_root / "ip/composite"
     (dependency / "rtl").mkdir(parents=True)
@@ -372,6 +379,24 @@ contract = "ip/leaf/configs/ip.toml"
 ''',
         encoding="utf-8",
     )
+    (project_root / "catalogs/ip.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-catalog"
+path_scope = "repository"
+owner = "test"
+
+[targets]
+
+[components.leaf]
+contract = "ip/leaf/configs/ip.toml"
+root = "ip/leaf"
+
+[components.composite]
+contract = "ip/composite/configs/ip.toml"
+root = "ip/composite"
+''',
+        encoding="utf-8",
+    )
     return contract
 
 
@@ -445,6 +470,25 @@ def test_ip_integration_is_exposed_only_under_the_ip_cli(
     assert payload["contract_kind"] == "ip-integration-check"
     assert payload["ip"] == "demo"
     assert _absolute_strings(payload) == []
+
+
+def test_locked_release_resolution_preserves_symlink_evidence(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    release_root = (artifact_root / manifest).parent
+    alias = artifact_root / "release-alias"
+    alias.symlink_to(release_root, target_is_directory=True)
+    pinned = LockedIpRelease(
+        name="fixture-ip",
+        release_id=release_id,
+        manifest=PurePosixPath("release-alias/manifest.json"),
+        maturity="development",
+    )
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        resolve_locked_ip_release(artifact_root=artifact_root, pinned=pinned)
 
 
 def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
@@ -569,6 +613,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_source_planning(
         ("lock-maturity", "lock maturity"),
         ("unavailable", "unavailable for simulation"),
         ("dirty-source", "dirty source"),
+        ("provider-drift", "provider owner"),
         ("interface-drift", "interface identities disagree"),
         ("failed-maturity-check", "maturity checks are incomplete"),
         ("module-drift", "module disagrees"),
@@ -613,6 +658,12 @@ def test_ip_integration_rejects_invalid_locked_release_state(
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         payload["source"]["dirty"] = True
         payload["provenance"]["working_tree_dirty"] = True
+        manifest_path.write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+    elif case == "provider-drift":
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["provenance"]["producer"] = "ip/other-owner"
         manifest_path.write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )

@@ -5,10 +5,14 @@ from pathlib import Path
 import pytest
 
 from sigilicon.domain.ip_release import load_ip_contract
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import release_role_view
+
+from conftest import write_project_context
 
 
 def _contract_fixture(root: Path) -> Path:
+    write_project_context(root)
     owner = root / "ip/fixture"
     configs = owner / "configs"
     sources = owner / "sources"
@@ -107,6 +111,16 @@ files = []
 """,
         encoding="utf-8",
     )
+    catalog = root / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8")
+        + '''
+[components.fixture-ip]
+contract = "ip/fixture/configs/ip.toml"
+root = "ip/fixture"
+''',
+        encoding="utf-8",
+    )
     return contract
 
 
@@ -114,6 +128,7 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
     contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
 
     assert contract.name == "fixture-ip"
+    assert contract.owner == "fixture"
     assert [item.name for item in contract.exports] == ["left", "right"]
     assert contract.get_export("left").oa_cell == "LEFT"
     assert contract.get_export("right").oa_cell == "RIGHT"
@@ -121,6 +136,29 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
         "interface_contract",
         "interface_contract",
     ]
+
+
+def test_ip_contract_reuses_explicit_project(tmp_path: Path) -> None:
+    contract_path = _contract_fixture(tmp_path)
+    project = Project.from_project_root(tmp_path)
+
+    contract = load_ip_contract(contract_path, project=project)
+
+    assert contract.project is project
+    assert contract.project_root == tmp_path
+
+
+def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:
+    contract_path = _contract_fixture(tmp_path)
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            'owner = "fixture"', 'owner = "other"', 1
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="owner"):
+        load_ip_contract(contract_path, project_root=tmp_path)
 
 
 def test_release_roles_are_unique_within_an_export_not_across_ip(
