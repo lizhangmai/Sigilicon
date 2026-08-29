@@ -15,6 +15,7 @@ from conftest import (
 )
 import sigilicon.domain.repository as repository_module
 from sigilicon.cli.check_designs import main as check_designs_main
+from sigilicon.domain.config_contracts import freeze_toml_document
 from sigilicon.domain.repository import Project
 import sigilicon.workflows.repository_checks as repository_checks
 
@@ -107,7 +108,9 @@ def test_check_designs_parses_the_project_manifest_once(
 ) -> None:
     contract = (tmp_path / "sigilicon.toml").resolve()
     original = repository_module.read_toml
+    original_load = tomllib.load
     manifest_reads = 0
+    toml_reads = 0
 
     def counted(path: Path):
         nonlocal manifest_reads
@@ -115,12 +118,59 @@ def test_check_designs_parses_the_project_manifest_once(
             manifest_reads += 1
         return original(path)
 
+    def counted_load(stream):
+        nonlocal toml_reads
+        if Path(stream.name).resolve() == contract:
+            toml_reads += 1
+        return original_load(stream)
+
     monkeypatch.setattr(repository_module, "read_toml", counted)
+    monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.chdir(tmp_path)
 
     assert check_designs_main([]) == 0
     assert manifest_reads == 1
+    assert toml_reads == 1
     assert '"passed": true' in capsys.readouterr().out
+
+
+def test_project_manifest_source_document_is_frozen_and_resolved(
+    tmp_path: Path,
+) -> None:
+    project = Project.from_project_root(tmp_path)
+
+    assert project.manifest_source_document() is project.manifest_document
+    with pytest.raises(TypeError):
+        project.manifest_document["catalogs"]["ip"] = "other.toml"
+    with pytest.raises(ValueError, match="source document drift"):
+        replace(
+            project,
+            manifest_document=dict(project.manifest_document),
+        ).manifest_source_document()
+
+    drifted = dict(project.manifest_document)
+    drifted["catalogs"] = {
+        **project.manifest_document["catalogs"],
+        "ip": "configs/platform/catalog.toml",
+    }
+    with pytest.raises(ValueError, match="catalog|source document drift"):
+        replace(
+            project,
+            manifest_document=freeze_toml_document(drifted),
+        ).manifest_source_document()
+
+    run_scoped = project.with_artifact_root(tmp_path / "run-artifacts")
+    assert run_scoped.manifest_source_document() is project.manifest_document
+    path_drift = dict(project.manifest_document)
+    path_drift["paths"] = {
+        **project.manifest_document["paths"],
+        "artifact_root": "other-artifacts",
+    }
+    with pytest.raises(ValueError, match="identity drift"):
+        replace(
+            project,
+            manifest_document=freeze_toml_document(path_drift),
+        ).manifest_source_document()
 
 
 def test_check_designs_reads_the_ip_catalog_once(

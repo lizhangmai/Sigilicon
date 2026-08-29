@@ -422,7 +422,7 @@ class ProjectContext:
             str(contract),
         )
         paths = raw.get("paths")
-        if not isinstance(paths, dict):
+        if not isinstance(paths, Mapping):
             raise ValueError(f"{contract}: paths must be a table")
         allowed_paths = {
             "project_root",

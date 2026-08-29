@@ -121,6 +121,17 @@ class Project:
     catalog_paths: tuple[tuple[str, Path], ...]
     owners: tuple[RepositoryOwner, ...]
     flow_registry_extensions: tuple[RepositoryFlowExtension, ...]
+    manifest_document: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+    _manifest_path: Path | None = field(default=None, repr=False, compare=False)
+    _manifest_context: ProjectContext | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     _ip_catalog: RepositoryCatalogSnapshot | None = field(
         default=None,
         repr=False,
@@ -300,6 +311,9 @@ class Project:
             flow_registry_extensions=tuple(
                 sorted(flow_registry_extensions, key=lambda item: item.owner)
             ),
+            manifest_document=freeze_toml_document(raw),
+            _manifest_path=contract,
+            _manifest_context=project,
             _ip_catalog=RepositoryCatalogSnapshot(
                 role="ip",
                 path=ip_catalog,
@@ -316,6 +330,83 @@ class Project:
         if project.project_root != root:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
+
+    def manifest_source_document(self) -> Mapping[str, Any]:
+        """Validate and return the manifest source captured with this Project."""
+
+        raw = self.manifest_document
+        if not raw:
+            return raw
+        if not _is_frozen_toml(raw):
+            raise ValueError("project manifest snapshot source document drift")
+        contract = self.manifest_path
+        source_paths = ProjectContext.from_contract(contract, raw)
+        if (
+            (
+                self._manifest_context is not None
+                and source_paths != self._manifest_context
+            )
+            or source_paths.project_root != self.project_root
+            or source_paths.workspace_root != self.workspace_root
+            or raw.get("owner") != self.manifest_owner
+        ):
+            raise ValueError("project manifest snapshot identity drift")
+        catalogs = raw.get("catalogs")
+        if not isinstance(catalogs, Mapping) or set(catalogs) != {"ip", "platform"}:
+            raise ValueError("project manifest snapshot catalog drift")
+        catalog_paths = tuple(
+            sorted(
+                (
+                    validate_artifact_component(name, "catalog name"),
+                    _project_file(
+                        self.project_root,
+                        value,
+                        f"{contract}: catalogs.{name}",
+                    ),
+                )
+                for name, value in catalogs.items()
+            )
+        )
+        flow = raw.get("flow", {})
+        if not isinstance(flow, Mapping) or set(flow) - {"registry_extensions"}:
+            raise ValueError("project manifest snapshot Flow selection drift")
+        extensions = flow.get("registry_extensions", {})
+        if not isinstance(extensions, Mapping):
+            raise ValueError("project manifest snapshot Flow selection drift")
+        selected_extensions = tuple(
+            sorted(
+                (
+                    RepositoryFlowExtension(
+                        owner,
+                        _project_file(
+                            self.project_root,
+                            value,
+                            f"{contract}: flow.registry_extensions.{owner}",
+                        ),
+                    )
+                    for owner, value in extensions.items()
+                    if isinstance(owner, str)
+                ),
+                key=lambda item: item.owner,
+            )
+        )
+        if (
+            catalog_paths != self.catalog_paths
+            or selected_extensions != self.flow_registry_extensions
+            or len(selected_extensions) != len(extensions)
+        ):
+            raise ValueError("project manifest snapshot source document drift")
+        return raw
+
+    @property
+    def manifest_path(self) -> Path:
+        """Return the explicit source path used to construct this Project."""
+
+        return (
+            self.project_root / "sigilicon.toml"
+            if self._manifest_path is None
+            else self._manifest_path
+        )
 
     @classmethod
     def bind(

@@ -139,7 +139,7 @@ def inspect_project_configurations(
     """
 
     root = context.project_root.resolve()
-    project_contract = root / "sigilicon.toml"
+    project_contract = context.manifest_path
     repository_owner = context.manifest_owner
     flow_catalog_inventory = (
         context.flow_catalog_inventory()
@@ -158,6 +158,9 @@ def inspect_project_configurations(
         snapshot.path.resolve(): snapshot.document
         for snapshot in flow_catalog_inventory
     }
+    manifest_document = context.manifest_source_document()
+    if manifest_document:
+        catalog_documents[project_contract] = manifest_document
     catalog_documents.update(
         {
             owner.component.path: owner.component.document
