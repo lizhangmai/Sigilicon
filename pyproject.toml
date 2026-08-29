@@ -13,13 +13,13 @@ dependencies = []
 layout = ["laygo2==0.6.9"]
 mcp = ["mcp>=2,<3"]
 virtuoso = [
-  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@57cdac99bd9afa62e163ef1faa782e1afaa0a1c3",
+  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@main",
 ]
 test = [
   "pytest>=8",
   "laygo2==0.6.9",
   "mcp>=2,<3",
-  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@57cdac99bd9afa62e163ef1faa782e1afaa0a1c3",
+  "virtuoso-bridge @ git+https://github.com/Arcadia-1/virtuoso-bridge-lite.git@main",
 ]
 
 [project.scripts]

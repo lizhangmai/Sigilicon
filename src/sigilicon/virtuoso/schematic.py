@@ -44,47 +44,37 @@ class _SchematicReadClient:
         return getattr(self._client, name)
 
     def execute_skill(self, source: str, **kwargs: Any) -> Any:
-        """Repair the bridge's unescaped open expression, or fail closed."""
+        """Validate the bridge-owned read lifecycle, then audit its delta."""
 
         bridge_open = (
-            f'dbOpenCellViewByType("{self._library}" "{self._cell}" '
-            '"schematic" "schematic" "r")'
-        )
-        safe_open = (
             f"dbOpenCellViewByType({skill_quote(self._library)} "
             f'{skill_quote(self._cell)} "schematic" "schematic" "r")'
         )
-        if source.count(bridge_open) != 1:
-            raise RuntimeError(
-                "unsupported virtuoso-bridge public schematic reader source"
-            )
-        escaped_source = source.replace(bridge_open, safe_open, 1).strip()
-        opening = "let((cv result)\n"
-        ending = "\n  result)"
-        if not escaped_source.startswith(opening) or not escaped_source.rstrip().endswith(
-            ending
+        owned_prefix = (
+            "let((cv result)\n"
+            "  unwindProtect(\n"
+            "    progn(\n"
+            f"  cv = {bridge_open}"
+        )
+        owned_suffix = '''  )
+    progn(
+      when(cv
+        unless(dbClose(cv)
+          error("schematic reader close failed"))
+        cv = nil))))'''
+        stripped_source = source.strip()
+        if (
+            source.count(bridge_open) != 1
+            or source.count("unwindProtect(") != 1
+            or source.count("dbClose(cv)") != 1
+            or not stripped_source.startswith(owned_prefix)
+            or not stripped_source.endswith(owned_suffix)
         ):
             raise RuntimeError(
-                "bridge schematic reader SKILL shape changed; exact handle cleanup "
-                "cannot be proven"
+                "unsupported virtuoso-bridge owned schematic reader source"
             )
-        body = escaped_source[len(opening) :].rstrip()[: -len(ending)]
-        exact_cleanup = f'''let((cv result flowBodyResult)
-  cv = nil
-  flowBodyResult = unwindProtect(
-    progn(
-{body}
-      result)
-    when(cv
-      unless(dbClose(cv) error("schematic reader exact handle close failed"))
-      cv = nil))
-  flowBodyResult
-)'''
         protected = audit_cellview_delta_skill(
-            own_synchronous_cellview_delta_skill(
-                exact_cleanup,
-                label=self._label,
-            ),
+            stripped_source,
             label=self._label,
         )
         return require_bridge_confirmation(
