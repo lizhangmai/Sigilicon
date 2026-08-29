@@ -24,7 +24,10 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.paths import ProjectContext
-from sigilicon.workflows.project_flow import project_workflow_registry
+from sigilicon.workflows.project_flow import (
+    ProjectFlow,
+    project_workflow_registry,
+)
 from sigilicon.workflows.design_artifacts import DesignArtifactInterface
 from sigilicon.workflows.design_campaign import (
     DesignCampaign,
@@ -89,6 +92,8 @@ def _public_value(value: Any, *, field: str | None = None) -> Any:
 
 @dataclass(frozen=True)
 class ResolvedAgenticFlowPlan:
+    """Compatibility view of a ProjectFlow plan for agentic workflows."""
+
     engine: FlowEngine
     plan: FlowPlan
     plan_identity: str
@@ -250,7 +255,6 @@ class AgenticReadInterface:
     ) -> ResolvedAgenticFlowPlan:
         """Resolve one exact catalog plan for peer application Interfaces."""
 
-        selected_owner = self._owner(owner)
         flow_name = identifier(flow, "Flow identity")
         target_name = identifier(target, "Flow target")
         profile_name = (
@@ -258,20 +262,19 @@ class AgenticReadInterface:
             if profile is None
             else identifier(profile, "Execution Profile identity")
         )
-        selection = load_catalog_selection(
-            self._flow_catalog(selected_owner),
-            owner_root=selected_owner.root,
-            flow_id=flow_name,
-            profile_id=profile_name,
+        planned = ProjectFlow(
+            self.repository,
+            owner,
+            project_workflow_registry,
+        ).plan(
+            flow=flow_name,
+            target=target_name,
+            profile=profile_name,
         )
-        engine = FlowEngine(
-            project_workflow_registry(self.repository, selected_owner.root)
-        )
-        plan = engine.plan(selection.spec, target_name, selection.profile)
         return ResolvedAgenticFlowPlan(
-            engine,
-            plan,
-            engine.plan_id(plan),
+            planned.engine,
+            planned.plan,
+            planned.plan_identity,
         )
 
     def resolve_plan_identity(self, plan_identity: str) -> ResolvedAgenticFlowPlan:
@@ -612,19 +615,10 @@ class AgenticReadInterface:
         )
 
     def _owner(self, name: str) -> RepositoryOwner:
-        identity = owner_identity(name, "project owner")
-        try:
-            return next(item for item in self.repository.owners if item.name == identity)
-        except StopIteration as exc:
-            raise ValueError(f"unknown cataloged project owner: {identity!r}") from exc
+        return self.repository.owner(name)
 
     def _flow_catalog(self, owner: RepositoryOwner) -> Path:
-        matches = self._flow_catalogs(owner)
-        if len(matches) != 1:
-            raise ValueError(
-                f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
-            )
-        return matches[0]
+        return self.repository.owner_flow_catalog(owner)
 
     def _flows(self, owner: RepositoryOwner) -> list[dict[str, Any]]:
         matches = self._flow_catalogs(owner)
@@ -656,12 +650,7 @@ class AgenticReadInterface:
         return sorted(flows, key=lambda item: item["name"])
 
     def _flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
-        return tuple(
-            path
-            for path in owner.files("flow")
-            if path.suffix == ".toml"
-            and read_toml(path).get("contract_kind") == "flow-catalog"
-        )
+        return self.repository.owner_flow_catalogs(owner)
 
     def _design_targets(self) -> tuple[Any, ...]:
         if not self.repository.flow_catalogs("design_targets"):

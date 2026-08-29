@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from types import MappingProxyType
@@ -32,6 +33,7 @@ from sigilicon.flow.model import (
     PreflightCheck,
     PreflightResult,
     ProducedArtifact,
+    SourceMember,
     identifier,
     owner_identity,
     run_identity,
@@ -58,8 +60,9 @@ def _plan_payload(
     target_id: str,
     planned: tuple[PlannedNode, ...],
     topology: tuple[str, ...],
+    implementation_sources: tuple[SourceMember, ...] = (),
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema": 1,
         "contract_kind": "resolved-flow-plan",
         "owner": spec.owner,
@@ -100,6 +103,18 @@ def _plan_payload(
         ],
         "policies": [json_value(policy) for policy in spec.policies],
     }
+    if implementation_sources:
+        payload["implementation_sources"] = [
+            {
+                "path": source.path,
+                "sha256": hashlib.sha256(
+                    source.record_text.encode("utf-8")
+                ).hexdigest(),
+                "executable": source.executable,
+            }
+            for source in implementation_sources
+        ]
+    return payload
 
 
 class FlowEngine:
@@ -294,6 +309,7 @@ class FlowEngine:
             plan.target.target_id,
             plan.nodes,
             plan.topology,
+            self._registry.implementation_sources,
         )
 
     def validate_design_campaign_continuation(
@@ -323,6 +339,21 @@ class FlowEngine:
         """Purely compare planned semantic requirements with current site facts."""
 
         checks: list[PreflightCheck] = []
+        for source in self._registry.implementation_sources:
+            try:
+                exact_source = source_member_matches(source)
+            except (OSError, RuntimeError, UnicodeError):
+                exact_source = False
+            checks.append(
+                PreflightCheck(
+                    requirement=source.path,
+                    requirement_kind="implementation-source",
+                    status="available" if exact_source else "changed",
+                    expected=hashlib.sha256(
+                        source.record_text.encode("utf-8")
+                    ).hexdigest(),
+                )
+            )
         seen_adapters: set[str] = set()
         seen_capabilities: set[str] = set()
         seen_assets: set[tuple[str, str, tuple[str, ...], str | None]] = set()

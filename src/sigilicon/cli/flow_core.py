@@ -22,7 +22,12 @@ from sigilicon.flow import (
 )
 from sigilicon.paths import discover_project_context
 from sigilicon.workflows.builtin import builtin_workflow_registry
-from sigilicon.workflows.project_flow import project_workflow_registry
+from sigilicon.workflows.project_flow import (
+    ProjectFlow,
+    ProjectFlowPlan,
+    project_workflow_registry,
+    project_workflow_registry_for_owner_root,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -33,15 +38,18 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="action", required=True)
 
     list_parser = commands.add_parser("list", help="list cataloged Flows")
-    list_parser.add_argument("catalog", type=Path)
-    list_parser.add_argument("--owner-root", type=Path, required=True)
+    list_parser.add_argument("catalog", type=Path, nargs="?")
+    list_parser.add_argument("--owner-root", type=Path)
     list_parser.add_argument("--project-root", type=Path)
+    list_parser.add_argument("--owner")
 
     show = commands.add_parser("show", help="show one cataloged Flow selection")
-    show.add_argument("catalog", type=Path)
-    show.add_argument("flow")
-    show.add_argument("--owner-root", type=Path, required=True)
+    show.add_argument("catalog", type=Path, nargs="?")
+    show.add_argument("flow_positional", metavar="flow", nargs="?")
+    show.add_argument("--owner-root", type=Path)
     show.add_argument("--project-root", type=Path)
+    show.add_argument("--owner")
+    show.add_argument("--flow", dest="flow_option")
     show.add_argument("--profile")
 
     for name, help_text in (
@@ -50,24 +58,30 @@ def _parser() -> argparse.ArgumentParser:
         ("preflight", "check adapters and an explicit current-site environment"),
     ):
         command = commands.add_parser(name, help=help_text)
-        command.add_argument("catalog", type=Path)
-        command.add_argument("flow")
-        command.add_argument("target")
-        command.add_argument("--owner-root", type=Path, required=True)
+        command.add_argument("catalog", type=Path, nargs="?")
+        command.add_argument("flow_positional", metavar="flow", nargs="?")
+        command.add_argument("target_positional", metavar="target", nargs="?")
+        command.add_argument("--owner-root", type=Path)
         command.add_argument("--project-root", type=Path)
+        command.add_argument("--owner")
+        command.add_argument("--flow", dest="flow_option")
+        command.add_argument("--target", dest="target_option")
         command.add_argument("--profile")
         if name == "preflight":
             command.add_argument("--environment", type=Path)
 
     run = commands.add_parser("run", help="execute a resolved Flow plan")
-    run.add_argument("catalog", type=Path)
-    run.add_argument("flow")
-    run.add_argument("target")
-    run.add_argument("--owner-root", type=Path, required=True)
+    run.add_argument("catalog", type=Path, nargs="?")
+    run.add_argument("flow_positional", metavar="flow", nargs="?")
+    run.add_argument("target_positional", metavar="target", nargs="?")
+    run.add_argument("--owner-root", type=Path)
     run.add_argument("--project-root", type=Path)
+    run.add_argument("--owner")
+    run.add_argument("--flow", dest="flow_option")
+    run.add_argument("--target", dest="target_option")
     run.add_argument("--profile")
     run.add_argument("--environment", type=Path)
-    run.add_argument("--artifact-root", type=Path, required=True)
+    run.add_argument("--artifact-root", type=Path)
     run.add_argument("--run-id")
 
     for name, help_text in (
@@ -133,20 +147,87 @@ def _flow_registry(
                 project_root,
                 owner_root,
             )
+        if owner_root is not None:
+            return project_workflow_registry_for_owner_root(owner_root)
         try:
             project = discover_project_context()
         except RuntimeError:
-            return builtin_workflow_registry(owner_root)
-        if owner_root is None or Path(owner_root).resolve().is_relative_to(
-            project.project_root
-        ):
-            return project_workflow_registry(
-                project.project_root,
-                owner_root,
-            )
-        return builtin_workflow_registry(owner_root)
+            return builtin_workflow_registry()
+        return project_workflow_registry(project.project_root, None)
     except ValueError as exc:
         raise FlowContractError(str(exc)) from exc
+
+
+def _project_flow(args: argparse.Namespace) -> ProjectFlow | None:
+    owner = getattr(args, "owner", None)
+    if owner is None:
+        return None
+    if getattr(args, "catalog", None) is not None or getattr(
+        args, "owner_root", None
+    ) is not None:
+        raise FlowContractError(
+            "semantic --owner selection cannot be mixed with catalog or --owner-root"
+        )
+    project_root = getattr(args, "project_root", None)
+    if project_root is None:
+        try:
+            project_root = discover_project_context().project_root
+        except RuntimeError as exc:
+            raise FlowContractError(str(exc)) from exc
+    try:
+        return ProjectFlow.from_project_root(project_root, owner=owner)
+    except ValueError as exc:
+        raise FlowContractError(str(exc)) from exc
+
+
+def _selection_value(
+    args: argparse.Namespace,
+    name: str,
+    *,
+    project: bool,
+) -> str:
+    value = getattr(
+        args,
+        f"{name}_option" if project else f"{name}_positional",
+        None,
+    )
+    if not isinstance(value, str) or not value:
+        form = f"--{name}" if project else name
+        raise FlowContractError(f"Flow {form} selection is required")
+    return value
+
+
+def _resolved_plan(
+    args: argparse.Namespace,
+    registry_factory: Callable[[Path | None], FlowRegistry] | None,
+) -> tuple[ProjectFlowPlan, ProjectFlow | None]:
+    project = _project_flow(args)
+    if project is not None:
+        return (
+            project.plan(
+                flow=_selection_value(args, "flow", project=True),
+                target=_selection_value(args, "target", project=True),
+                profile=args.profile,
+            ),
+            project,
+        )
+    if args.catalog is None or args.owner_root is None:
+        raise FlowContractError(
+            "path-based Flow selection requires catalog and --owner-root"
+        )
+    flow = _selection_value(args, "flow", project=False)
+    target = _selection_value(args, "target", project=False)
+    engine = FlowEngine(_flow_registry(args, registry_factory))
+    selection = load_catalog_selection(
+        args.catalog,
+        owner_root=args.owner_root,
+        flow_id=flow,
+        profile_id=args.profile,
+    )
+    return ProjectFlowPlan(
+        engine,
+        engine.plan(selection.spec, target, selection.profile),
+    ), None
 
 
 def main(
@@ -157,10 +238,23 @@ def main(
         lambda _profile: ExecutionEnvironment()
     ),
 ) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] and arguments[0] in {"layout", "design", "oa", "ip"}:
+        from sigilicon.cli.flow import main as legacy_flow_main
+
+        return legacy_flow_main(arguments)
+    args = _parser().parse_args(arguments)
     try:
         if args.action == "list":
-            catalog = load_flow_catalog(args.catalog, owner_root=args.owner_root)
+            project = _project_flow(args)
+            if project is not None:
+                catalog = project.catalog()
+            else:
+                if args.catalog is None or args.owner_root is None:
+                    raise FlowContractError(
+                        "path-based Flow selection requires catalog and --owner-root"
+                    )
+                catalog = load_flow_catalog(args.catalog, owner_root=args.owner_root)
             emit_json(
                 [
                     {
@@ -173,25 +267,35 @@ def main(
             )
             return 0
         if args.action == "show":
+            project = _project_flow(args)
+            flow = _selection_value(
+                args,
+                "flow",
+                project=project is not None,
+            )
+            catalog = args.catalog
+            owner_root = args.owner_root
+            if project is not None:
+                catalog = project.catalog_path
+                owner_root = project.owner.root
+            if catalog is None or owner_root is None:
+                raise FlowContractError(
+                    "path-based Flow selection requires catalog and --owner-root"
+                )
             selection = load_catalog_selection(
-                args.catalog,
-                owner_root=args.owner_root,
-                flow_id=args.flow,
+                catalog,
+                owner_root=owner_root,
+                flow_id=flow,
                 profile_id=args.profile,
             )
             emit_json(_spec_payload(selection.spec, selection.profile))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
-            engine = FlowEngine(_flow_registry(args, registry_factory))
-            selection = load_catalog_selection(
-                args.catalog,
-                owner_root=args.owner_root,
-                flow_id=args.flow,
-                profile_id=args.profile,
-            )
-            plan = engine.plan(selection.spec, args.target, selection.profile)
+            resolved, project = _resolved_plan(args, registry_factory)
+            engine = resolved.engine
+            plan = resolved.plan
             if args.action == "plan":
-                emit_json(engine.plan_record(plan))
+                emit_json(resolved.record)
                 return 0
             if args.action == "graph":
                 print(f'digraph "{plan.spec.flow_id}:{plan.target.target_id}" {{')
@@ -206,24 +310,40 @@ def main(
                     plan,
                     _execution_environment(
                         args,
-                        selection.profile,
+                        plan.profile,
                         environment_factory,
                     ),
                 )
                 emit_json(engine.preflight_record(plan, preflight))
                 return 0 if preflight.status == "ready" else 2
-            result = engine.run(
-                plan,
-                artifact_root=args.artifact_root,
-                environment=_execution_environment(
-                    args,
-                    selection.profile,
-                    environment_factory,
-                ),
-                run_id=args.run_id,
+            environment = _execution_environment(
+                args,
+                plan.profile,
+                environment_factory,
             )
+            if project is not None and args.artifact_root is None:
+                result = project.run(
+                    resolved,
+                    environment,
+                    run_id=args.run_id,
+                )
+            else:
+                if args.artifact_root is None:
+                    raise FlowContractError(
+                        "path-based Flow run requires --artifact-root"
+                    )
+                result = engine.run(
+                    plan,
+                    artifact_root=args.artifact_root,
+                    environment=environment,
+                    run_id=args.run_id,
+                )
             payload = engine.read_run_result(
-                artifact_root=args.artifact_root,
+                artifact_root=(
+                    args.artifact_root
+                    if args.artifact_root is not None
+                    else project.repository.project.artifact_root
+                ),
                 owner=result.owner,
                 flow_id=result.flow_id,
                 target=result.target,

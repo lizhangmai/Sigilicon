@@ -11,6 +11,7 @@ from sigilicon.flow.model import (
     AdapterExecution,
     CollectedActionResult,
     FlowContractError,
+    SourceMember,
     identifier,
 )
 
@@ -35,6 +36,25 @@ class FlowRegistry:
     def __init__(self) -> None:
         self._actions: dict[str, ActionContract] = {}
         self._adapters: dict[str, ToolAdapter] = {}
+        self._implementation_sources: dict[str, SourceMember] = {}
+
+    def bind_implementation_source(self, source: SourceMember) -> None:
+        """Bind exact project-owned Adapter code to plans built by this registry."""
+
+        if source.path in self._implementation_sources:
+            raise FlowContractError(
+                f"Flow implementation source {source.path!r} is already bound"
+            )
+        self._implementation_sources[source.path] = source
+
+    @property
+    def implementation_sources(self) -> tuple[SourceMember, ...]:
+        """Return exact owner implementation records in stable path order."""
+
+        return tuple(
+            self._implementation_sources[path]
+            for path in sorted(self._implementation_sources)
+        )
 
     def register_action(self, contract: ActionContract) -> None:
         if contract.kind in self._actions:

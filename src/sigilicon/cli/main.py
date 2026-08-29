@@ -48,3 +48,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from sigilicon.cli.flow import main as flow_main
 
     return flow_main(arguments)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

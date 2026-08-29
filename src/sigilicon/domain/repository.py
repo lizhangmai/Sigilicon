@@ -261,6 +261,39 @@ class RepositoryContext:
             raise ValueError(f"repository path has no cataloged owner: {Path(path).resolve()}")
         return owner
 
+    def owner(self, name: str) -> RepositoryOwner:
+        """Select one cataloged owner by its canonical identity."""
+
+        identity = validate_artifact_component(name, "project owner")
+        try:
+            return next(owner for owner in self.owners if owner.name == identity)
+        except StopIteration as exc:
+            raise ValueError(
+                f"unknown cataloged project owner: {identity!r}"
+            ) from exc
+
+    def owner_flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
+        """Return typed Flow catalogs explicitly owned by one component."""
+
+        if owner not in self.owners:
+            raise ValueError(f"repository does not contain owner {owner.name!r}")
+        return tuple(
+            path
+            for path in owner.files("flow")
+            if path.suffix == ".toml"
+            and read_toml(path).get("contract_kind") == "flow-catalog"
+        )
+
+    def owner_flow_catalog(self, owner: RepositoryOwner) -> Path:
+        """Select the unique typed Flow catalog for one owner."""
+
+        matches = self.owner_flow_catalogs(owner)
+        if len(matches) != 1:
+            raise ValueError(
+                f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
+            )
+        return matches[0]
+
     def flow_registry_extension(self, owner: RepositoryOwner) -> Path | None:
         """Return the explicitly assembled registry source for one owner."""
 

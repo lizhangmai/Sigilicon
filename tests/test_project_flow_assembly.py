@@ -7,7 +7,8 @@ import pytest
 
 from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.domain.repository import RepositoryContext
-from sigilicon.workflows.project_flow import project_workflow_registry
+from sigilicon.flow import ExecutionEnvironment, FlowEngine, load_catalog_selection
+from sigilicon.workflows.project_flow import ProjectFlow, project_workflow_registry
 
 from conftest import write_component_owner
 
@@ -74,6 +75,56 @@ def _write_other_flow_source(project_root: Path, owner: str) -> str:
     return source.relative_to(project_root).as_posix()
 
 
+def _write_owner_flow(project_root: Path, owner: str = "example") -> Path:
+    owner_root = project_root / f"ip/{owner}"
+    (owner_root / "flow.toml").write_text(
+        f'''schema = 1
+contract_kind = "flow"
+path_scope = "owner"
+owner = "{owner}"
+name = "owner-flow"
+
+[[nodes]]
+id = "check"
+action = "example.owner-check"
+
+[[targets]]
+name = "all"
+goals = ["check"]
+''',
+        encoding="utf-8",
+    )
+    (owner_root / "profile.toml").write_text(
+        f'''schema = 1
+contract_kind = "execution-profile"
+path_scope = "owner"
+owner = "{owner}"
+name = "local"
+
+[actions."example.owner-check"]
+adapter = "example-owner-check"
+''',
+        encoding="utf-8",
+    )
+    catalog = owner_root / "catalog.toml"
+    catalog.write_text(
+        f'''schema = 1
+contract_kind = "flow-catalog"
+path_scope = "owner"
+owner = "{owner}"
+
+[flows.owner-flow]
+contract = "flow.toml"
+default_profile = "local"
+
+[flows.owner-flow.profiles]
+local = "profile.toml"
+''',
+        encoding="utf-8",
+    )
+    return catalog
+
+
 def test_project_flow_registry_applies_the_selected_owner_extension(
     tmp_path: Path,
 ) -> None:
@@ -99,6 +150,7 @@ def test_project_flow_registry_applies_the_selected_owner_extension(
 def test_public_flow_cli_uses_explicit_project_assembly(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _write_extension(tmp_path)
     write_component_owner(
@@ -108,51 +160,27 @@ def test_public_flow_cli_uses_explicit_project_assembly(
     )
     _declare_extension(tmp_path, "example", source)
     owner_root = tmp_path / "ip/example"
-    (owner_root / "flow.toml").write_text(
+    catalog = _write_owner_flow(tmp_path)
+    unrelated = tmp_path / "unrelated-project"
+    unrelated.mkdir()
+    (unrelated / "sigilicon.toml").write_text(
         '''schema = 1
-contract_kind = "flow"
-path_scope = "owner"
-owner = "example"
-name = "owner-flow"
+contract_kind = "sigilicon-project"
+path_scope = "repository"
+owner = "unrelated"
 
-[[nodes]]
-id = "check"
-action = "example.owner-check"
+[catalogs]
+ip = "missing-ip.toml"
+platform = "missing-platform.toml"
 
-[[targets]]
-name = "all"
-goals = ["check"]
+[paths]
+project_root = "."
+workspace_root = "workspace"
+artifact_root = "artifacts"
 ''',
         encoding="utf-8",
     )
-    (owner_root / "profile.toml").write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "local"
-
-[actions."example.owner-check"]
-adapter = "example-owner-check"
-''',
-        encoding="utf-8",
-    )
-    catalog = owner_root / "catalog.toml"
-    catalog.write_text(
-        '''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-
-[flows.owner-flow]
-contract = "flow.toml"
-default_profile = "local"
-
-[flows.owner-flow.profiles]
-local = "profile.toml"
-''',
-        encoding="utf-8",
-    )
+    monkeypatch.chdir(unrelated)
 
     result = flow_cli_main(
         [
@@ -162,8 +190,6 @@ local = "profile.toml"
             "all",
             "--owner-root",
             str(owner_root),
-            "--project-root",
-            str(tmp_path),
         ]
     )
 
@@ -171,6 +197,113 @@ local = "profile.toml"
     assert json.loads(capsys.readouterr().out)["nodes"][0]["adapter"] == (
         "example-owner-check"
     )
+
+
+def test_project_extension_content_is_bound_to_plan_and_preflight(
+    tmp_path: Path,
+) -> None:
+    source = _write_extension(tmp_path)
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"flow": (source.relative_to(tmp_path).as_posix(),)},
+    )
+    _declare_extension(tmp_path, "example", source)
+    owner_root = tmp_path / "ip/example"
+    catalog = _write_owner_flow(tmp_path)
+    registry = project_workflow_registry(tmp_path, owner_root)
+    engine = FlowEngine(registry)
+    selection = load_catalog_selection(
+        catalog,
+        owner_root=owner_root,
+        flow_id="owner-flow",
+    )
+    plan = engine.plan(selection.spec, "all", selection.profile)
+
+    approved_record = engine.plan_record(plan)
+    source_record = approved_record["implementation_sources"][0]
+    assert source_record["path"] == "ip/example/tools/flow_extension.py"
+    assert len(source_record["sha256"]) == 64
+    assert engine.preflight(plan, ExecutionEnvironment()).status == "ready"
+
+    source.write_text(source.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
+
+    preflight = engine.preflight(plan, ExecutionEnvironment())
+    assert preflight.status == "blocked"
+    assert preflight.checks[0].requirement_kind == "implementation-source"
+    assert preflight.checks[0].status == "changed"
+
+    replanned_engine = FlowEngine(project_workflow_registry(tmp_path, owner_root))
+    replanned = replanned_engine.plan(selection.spec, "all", selection.profile)
+    assert replanned_engine.plan_record(replanned) != approved_record
+
+
+def test_project_flow_hides_owner_paths_and_registry_assembly(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_extension(tmp_path)
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": (
+                source.relative_to(tmp_path).as_posix(),
+                "ip/example/catalog.toml",
+                "ip/example/flow.toml",
+                "ip/example/profile.toml",
+            )
+        },
+    )
+    _declare_extension(tmp_path, "example", source)
+    _write_owner_flow(tmp_path)
+
+    project_flow = ProjectFlow.from_project_root(tmp_path, owner="example")
+    planned = project_flow.plan(flow="owner-flow", target="all")
+
+    assert planned.plan_identity == "example:owner-flow:all:local"
+    assert planned.record["nodes"][0]["adapter"] == "example-owner-check"
+    assert project_flow.preflight(
+        planned,
+        ExecutionEnvironment(),
+    ).status == "ready"
+
+    result = flow_cli_main(
+        [
+            "plan",
+            "--owner",
+            "example",
+            "--flow",
+            "owner-flow",
+            "--target",
+            "all",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == planned.record
+
+    result = flow_cli_main(
+        [
+            "run",
+            "--owner",
+            "example",
+            "--flow",
+            "owner-flow",
+            "--target",
+            "all",
+            "--project-root",
+            str(tmp_path),
+            "--run-id",
+            "2" * 32,
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "accepted"
+    assert (tmp_path / "artifacts").is_dir()
 
 
 def test_project_flow_registry_rejects_extension_outside_owner_flow_fileset(
@@ -207,6 +340,46 @@ def test_project_flow_registry_requires_the_single_extension_interface(
             RepositoryContext.from_project_root(tmp_path),
             tmp_path / "ip/example",
         )
+
+
+def test_project_flow_registry_reports_registration_failure_as_contract_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_extension(tmp_path)
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "def register_flow_adapters(registry, owner_root):",
+            "def register_flow_adapters(registry, owner_root):\n    raise RuntimeError('broken owner registration')",
+        ),
+        encoding="utf-8",
+    )
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"flow": (source.relative_to(tmp_path).as_posix(),)},
+    )
+    _declare_extension(tmp_path, "example", source)
+    owner_root = tmp_path / "ip/example"
+    catalog = _write_owner_flow(tmp_path)
+
+    result = flow_cli_main(
+        [
+            "plan",
+            str(catalog),
+            "owner-flow",
+            "all",
+            "--owner-root",
+            str(owner_root),
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert result == 2
+    error = capsys.readouterr().err
+    assert "cannot register Flow extension" in error
+    assert "Sigilicon defect" not in error
 
 
 def test_project_flow_registry_rejects_an_extension_owned_by_another_ip(
