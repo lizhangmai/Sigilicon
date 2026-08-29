@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.oa_testbench import _sync_oa_testbench_impl
 from conftest import write_project_context
 
@@ -55,6 +56,7 @@ def test_testbench_schematic_is_finalized_after_all_generated_views(
     canonical = tmp_path / "testbench.scs"
     canonical.write_text("subckt tb VSS\nends tb\n", encoding="utf-8")
     spec = SimpleNamespace(
+        project=Project.from_project_root(project_root),
         project_root=project_root,
         library="lib",
         cell="tb",

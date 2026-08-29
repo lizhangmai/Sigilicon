@@ -14,7 +14,7 @@ from sigilicon.domain.native_diagnostics import (
     load_native_diagnostic_processor,
     load_owner_native_diagnostic_processor,
 )
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -88,7 +88,7 @@ class OASimulationSpec:
     """The native-only schema-3 simulation identity consumed by OA workflows."""
 
     path: Path
-    project_root: Path
+    project: Project
     library: str
     cell: str
     dut: str
@@ -96,6 +96,10 @@ class OASimulationSpec:
     simulator: str
     native_setup: OANativeSetup
     contract_schema: int = 3
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
 
 
 def _identifier(value: object, field: str) -> str:
@@ -414,7 +418,7 @@ def _load_native_oa_simulation_spec(
     spec_path: Path,
     project_root: Path,
     *,
-    context: RepositoryContext,
+    context: Project,
     owner_root: Path,
     raw: Mapping[str, Any],
     default_diagnostic_processor: NativeDiagnosticProcessor | None,
@@ -498,7 +502,7 @@ def _load_native_oa_simulation_spec(
         _validate_native_rdb_platform_models(rdb_contract, pdk)
     return OASimulationSpec(
         path=spec_path,
-        project_root=project_root,
+        project=context,
         library=library,
         cell=cell,
         dut=dut,
@@ -517,12 +521,23 @@ def _load_native_oa_simulation_spec(
 def load_oa_simulation_spec(
     path: Path,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
 ) -> OASimulationSpec:
     """Load only the source-owned schema-3 thin native simulation contract."""
 
     spec_path = path.resolve()
-    context = RepositoryContext.from_project_root(project_root)
+    if project is None:
+        if project_root is None:
+            raise ValueError("project or project_root is required for an OA simulation spec")
+        context = Project.from_project_root(project_root)
+    else:
+        context = project
+        if (
+            project_root is not None
+            and project_root.resolve() != context.project_root
+        ):
+            raise ValueError("project_root disagrees with the explicit project")
     root = context.project_root
     if not spec_path.is_file() or not spec_path.is_relative_to(root):
         raise ValueError("OA simulation spec must be a project-owned file")

@@ -7,9 +7,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from sigilicon.cli.common import die, emit_json
-from sigilicon.paths import discover_project_context
-from sigilicon.workflows.design_catalog import inspect_design_catalog
-from sigilicon.workflows.repository_checks import inspect_repository_designs
+from sigilicon.paths import discover_project_contract
+from sigilicon.workflows.repository_checks import check_project_designs
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -20,13 +19,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="check one explicit design catalog",
     )
     args = parser.parse_args(argv)
-    context = discover_project_context(__file__)
-    root = context.project_root
     try:
-        if args.catalog is None:
-            report = inspect_repository_designs(root)
-        else:
-            _, report = inspect_design_catalog(args.catalog, project_root=root)
+        report = check_project_designs(
+            discover_project_contract(__file__),
+            catalog=args.catalog,
+        )
     except (OSError, RuntimeError, ValueError) as error:
         die(f"ERROR: {error}")
     emit_json(report)

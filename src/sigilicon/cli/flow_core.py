@@ -20,7 +20,7 @@ from sigilicon.flow import (
     load_execution_environment,
     load_flow_catalog,
 )
-from sigilicon.paths import discover_project_context
+from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.builtin import builtin_workflow_registry
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
@@ -142,19 +142,15 @@ def _flow_registry(
         owner_root = getattr(args, "owner_root", None)
         if registry_factory is not None:
             return registry_factory(owner_root)
+        if owner_root is None:
+            return builtin_workflow_registry()
         project_root = getattr(args, "project_root", None)
         if project_root is not None:
             return project_workflow_registry(
                 project_root,
                 owner_root,
             )
-        if owner_root is not None:
-            return project_workflow_registry_for_owner_root(owner_root)
-        try:
-            project = discover_project_context()
-        except RuntimeError:
-            return builtin_workflow_registry()
-        return project_workflow_registry(project.project_root, None)
+        return project_workflow_registry_for_owner_root(owner_root)
     except ValueError as exc:
         raise FlowContractError(str(exc)) from exc
 
@@ -172,10 +168,12 @@ def _project_flow(args: argparse.Namespace) -> ProjectFlow | None:
     project_root = getattr(args, "project_root", None)
     if project_root is None:
         try:
-            project_root = discover_project_context().project_root
+            project_contract = discover_project_contract()
         except RuntimeError as exc:
             raise FlowContractError(str(exc)) from exc
     try:
+        if project_root is None:
+            return ProjectFlow.from_file(project_contract, owner=owner)
         return ProjectFlow.from_project_root(project_root, owner=owner)
     except ValueError as exc:
         raise FlowContractError(str(exc)) from exc
@@ -223,12 +221,14 @@ def _resolved_plan(
         raise FlowContractError(
             "path-based Flow selection requires catalog and --owner-root"
         )
+    project_scope = None
     try:
         binding = project_owner_binding_for_root(args.owner_root)
     except ValueError as exc:
         raise FlowContractError(str(exc)) from exc
     if binding is not None:
         repository, owner = binding
+        project_scope = repository.scope(owner)
         canonical_catalog = repository.owner_flow_catalog(owner)
         if args.catalog.resolve() != canonical_catalog:
             raise FlowContractError(
@@ -237,7 +237,18 @@ def _resolved_plan(
             )
     flow = _selection_value(args, "flow", project=False)
     target = _selection_value(args, "target", project=False)
-    engine = FlowEngine(_flow_registry(args, registry_factory))
+    try:
+        registry = (
+            project_workflow_registry(repository, owner.root)
+            if binding is not None and registry_factory is None
+            else _flow_registry(args, registry_factory)
+        )
+    except ValueError as exc:
+        raise FlowContractError(str(exc)) from exc
+    engine = FlowEngine(
+        registry,
+        project_scope=project_scope,
+    )
     selection = load_catalog_selection(
         args.catalog,
         owner_root=args.owner_root,
@@ -362,7 +373,7 @@ def main(
                 artifact_root=(
                     args.artifact_root
                     if args.artifact_root is not None
-                    else project.repository.project.artifact_root
+                    else project.repository.artifact_root
                 ),
                 owner=result.owner,
                 flow_id=result.flow_id,

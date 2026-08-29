@@ -24,7 +24,7 @@ from sigilicon.domain.platform import (
     PdkConfig,
     load_platform,
 )
-from sigilicon.domain.repository import RepositoryContext, RepositoryOwner
+from sigilicon.domain.repository import Project, RepositoryOwner
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
@@ -33,7 +33,7 @@ _DIRECTIONS = {"input", "output", "inputOutput"}
 @dataclass(frozen=True)
 class LayoutSpec:
     path: Path
-    project_root: Path
+    project: Project
     library: str
     cell: str
     view: str
@@ -54,6 +54,10 @@ class LayoutSpec:
     physical_verification: PhysicalVerificationPolicy | None
     pdk: PdkConfig
     layout_pdk: LayoutPdkConfig
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
 
 def _table(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -84,7 +88,7 @@ def _required_file(value: Any, field: str, *, base: Path) -> Path:
 
 
 def _owner_oa_assembly(
-    repository: RepositoryContext,
+    repository: Project,
     spec_path: Path,
 ) -> OALibrarySource | None:
     """Resolve the canonical owner assembly when the spec belongs to one."""
@@ -94,7 +98,7 @@ def _owner_oa_assembly(
     manifest = repository.oa_assembly_for(spec_path)
     if manifest is None:
         return None
-    source = load_oa_library_source(manifest, project_root=repository.project_root)
+    source = load_oa_library_source(manifest, project=repository)
     declared_specs = {
         layout_spec
         for cell in source.cells
@@ -133,7 +137,7 @@ def _component_source_files(
 
 
 def _validate_generator_ownership(
-    repository: RepositoryContext,
+    repository: Project,
     *,
     owner: RepositoryOwner,
     component_graph: Mapping[str, ComponentContract],
@@ -223,11 +227,24 @@ def _validate_generator_ownership(
             validate_project_source(source, f"layout.generator_modules[{module!r}]")
 
 
-def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutSpec:
+def load_layout_spec(
+    path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+) -> LayoutSpec:
     spec_path = path.resolve()
-    if project_root is None:
-        raise ValueError("project_root is required for a layout spec")
-    repository = RepositoryContext.from_project_root(project_root)
+    if project is None:
+        if project_root is None:
+            raise ValueError("project or project_root is required for a layout spec")
+        repository = Project.from_project_root(project_root)
+    else:
+        repository = project
+        if (
+            project_root is not None
+            and project_root.resolve() != repository.project_root
+        ):
+            raise ValueError("project_root disagrees with the explicit project")
     root = repository.project_root
     try:
         spec_payload = spec_path.read_bytes()
@@ -432,7 +449,7 @@ def load_layout_spec(path: Path, *, project_root: Path | None = None) -> LayoutS
         )
     return LayoutSpec(
         path=spec_path,
-        project_root=root,
+        project=repository,
         library=library,
         cell=cell,
         view=view,

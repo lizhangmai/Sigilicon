@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import read_toml, require_config_header
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -460,7 +460,7 @@ def _load_layout(
     )
 
 
-def load_platform(context: RepositoryContext, key: str) -> PdkConfig:
+def load_platform(context: Project, key: str) -> PdkConfig:
     """Resolve and validate one platform without leaking repository layout."""
 
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:

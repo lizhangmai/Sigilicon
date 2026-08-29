@@ -29,7 +29,6 @@ from sigilicon.flow import (
     ExecutionEnvironment,
     load_execution_environment_contract,
 )
-from sigilicon.paths import ProjectContext
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_campaign import (
     DesignCampaignPhase,
@@ -97,11 +96,11 @@ class AgenticExecutionInterface:
             self.environment_record_json = binding.record_json
             self.execution_environment = binding.environment
         self.store = AgenticRunStore(
-            read.repository.project.artifact_root,
+            read.repository.artifact_root,
             read.project_id,
         )
         self.campaign_store = DesignCampaignStore(
-            read.repository.project.artifact_root,
+            read.repository.artifact_root,
             read.project_id,
         )
         self._active: dict[str, ManagedBackgroundProcess] = {}
@@ -114,9 +113,8 @@ class AgenticExecutionInterface:
         grant: AgenticExecutionGrant,
         environment_contract: Path | None = None,
     ) -> "AgenticExecutionInterface":
-        project = ProjectContext.from_project_root(project_root)
         return cls(
-            AgenticReadInterface.from_project_context(project),
+            AgenticReadInterface.from_project_root(project_root),
             grant=grant,
             environment_contract=environment_contract,
         )
@@ -192,7 +190,10 @@ class AgenticExecutionInterface:
             ):
                 raise ValueError("idempotent Flow Run identity drift")
         else:
-            submitted_at = _now()
+            stored_request = self.store.read_request_if_present(paths)
+            submitted_at = (
+                _now() if stored_request is None else stored_request["submitted_at"]
+            )
             common = {
                 "schema": 1,
                 "project_id": self.read.project_id,
@@ -459,7 +460,7 @@ class AgenticExecutionInterface:
     def _campaign_runner(self, resolved: object) -> DesignCampaignRunner:
         return DesignCampaignRunner(
             resolved.engine,
-            artifact_root=self.read.repository.project.artifact_root,
+            artifact_root=self.read.repository.artifact_root,
             environment=self.execution_environment,
             execution_context_identity=(
                 f"{self.grant.approval}-{self.environment_identity}"
@@ -550,12 +551,12 @@ class AgenticExecutionInterface:
         located = self.store.locate(run_id)
         state = located.state
         deadline = time.monotonic() + state["budget"]["maximum_seconds"] + 20
-        while state["status"] in RUNNING_STATUSES:
+        while state["status"] in RUNNING_STATUSES or run_id in self._active:
             self._reconcile(run_id, located.paths)
             state = self.store.read_state(located.paths)
             if time.monotonic() >= deadline:
                 raise ValueError("managed Flow Run did not reach a terminal artifact")
-            if state["status"] in RUNNING_STATUSES:
+            if state["status"] in RUNNING_STATUSES or run_id in self._active:
                 time.sleep(0.02)
         return self.inspect_run(run_id=run_id)
 

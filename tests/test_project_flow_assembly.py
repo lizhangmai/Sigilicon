@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+import sigilicon.domain.repository as repository_module
 
 from sigilicon.cli.flow_core import main as flow_cli_main
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 from sigilicon.flow import ExecutionEnvironment, FlowEngine, load_catalog_selection
 from sigilicon.workflows.project_flow import ProjectFlow, project_workflow_registry
 
@@ -26,6 +27,9 @@ def _write_extension(
 
 class QualificationAdapter:
     def validate_inputs(self, context):
+        scope = context.require_project_scope()
+        if scope.owner != "example" or scope.owner_root.name != "example":
+            return ("wrong project owner scope",)
         return ()
 
     def prepare(self, context):
@@ -146,7 +150,7 @@ def test_project_flow_registry_applies_the_selected_owner_extension(
     _declare_extension(tmp_path, "example", source)
 
     registry = project_workflow_registry(
-        RepositoryContext.from_project_root(tmp_path),
+        Project.from_project_root(tmp_path),
         tmp_path / "ip/example",
     )
 
@@ -302,6 +306,7 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
 
     assert planned.plan_identity == "example:owner-flow:all:local"
     assert planned.record["nodes"][0]["adapter"] == "example-owner-check"
+    assert str(tmp_path.resolve()) not in json.dumps(planned.record)
     assert project_flow.preflight(
         planned,
         ExecutionEnvironment(),
@@ -349,6 +354,49 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
     assert result == 0
     assert json.loads(capsys.readouterr().out)["status"] == "accepted"
     assert (tmp_path / "artifacts").is_dir()
+
+
+def test_semantic_flow_cli_discovers_and_parses_the_project_once(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_extension(tmp_path)
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"flow": _owner_flow_files(tmp_path, source)},
+    )
+    _declare_extension(tmp_path, "example", source)
+    _write_owner_flow(tmp_path)
+    contract = (tmp_path / "sigilicon.toml").resolve()
+    original = repository_module.read_toml
+    manifest_reads = 0
+
+    def counted(path: Path):
+        nonlocal manifest_reads
+        if path.resolve() == contract:
+            manifest_reads += 1
+        return original(path)
+
+    monkeypatch.setattr(repository_module, "read_toml", counted)
+    monkeypatch.chdir(tmp_path)
+
+    result = flow_cli_main(
+        [
+            "plan",
+            "--owner",
+            "example",
+            "--flow",
+            "owner-flow",
+            "--target",
+            "all",
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["owner"] == "example"
+    assert manifest_reads == 1
 
 
 def test_project_path_selection_rejects_noncanonical_catalog_and_option_mixing(
@@ -413,7 +461,7 @@ def test_project_flow_registry_rejects_extension_outside_owner_flow_fileset(
 
     with pytest.raises(ValueError, match="owner flow fileset"):
         project_workflow_registry(
-            RepositoryContext.from_project_root(tmp_path),
+            Project.from_project_root(tmp_path),
             tmp_path / "ip/example",
         )
 
@@ -431,7 +479,7 @@ def test_project_flow_registry_requires_the_single_extension_interface(
 
     with pytest.raises(ValueError, match="register_flow_adapters"):
         project_workflow_registry(
-            RepositoryContext.from_project_root(tmp_path),
+            Project.from_project_root(tmp_path),
             tmp_path / "ip/example",
         )
 
@@ -513,6 +561,6 @@ def test_project_flow_registry_rejects_an_extension_owned_by_another_ip(
 
     with pytest.raises(ValueError, match="must stay inside its owner root"):
         project_workflow_registry(
-            RepositoryContext.from_project_root(tmp_path),
+            Project.from_project_root(tmp_path),
             tmp_path / "ip/example",
         )

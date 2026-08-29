@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from sigilicon.domain.oa_simulation import load_oa_simulation_spec
+from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.ade import _native_setup_entry_point
 from sigilicon.workflows.oa_simulation import _elaborated_netlist
 from conftest import write_component_owner, write_project_context, write_test_platform
@@ -114,9 +115,11 @@ def test_elaborated_netlist_prefers_ams_design_over_spectre_config_map(
 
 def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
+    project = Project.from_project_root(root)
 
-    spec = load_oa_simulation_spec(spec_path, project_root=root)
+    spec = load_oa_simulation_spec(spec_path, project=project)
 
+    assert spec.project is project
     assert spec.contract_schema == 3
     assert spec.native_setup.source.name == "setup.il"
     assert spec.native_setup.rdb_contract is None

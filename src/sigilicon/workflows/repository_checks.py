@@ -14,7 +14,8 @@ from sigilicon.domain.config_contracts import (
 )
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.platform import load_platform
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
+from sigilicon.workflows.design_catalog import inspect_design_catalog
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
@@ -25,7 +26,7 @@ _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 
 
 def _catalog(
-    context: RepositoryContext,
+    context: Project,
     name: str,
     contract_kind: str,
     sections: tuple[str, ...],
@@ -54,7 +55,7 @@ def _catalog(
 
 
 def _contract_entries(
-    context: RepositoryContext,
+    context: Project,
     catalog: str,
     rows: Mapping[str, Any],
     *,
@@ -95,7 +96,7 @@ def _document_owner(path: Path) -> str:
     return owner
 
 
-def _component_owner_root(context: RepositoryContext, path: Path) -> Path:
+def _component_owner_root(context: Project, path: Path) -> Path:
     return context.require_owner(path).root
 
 
@@ -117,12 +118,30 @@ def _register_owner_root(
     owner_roots[owner] = root
 
 
+def check_project_designs(
+    project_contract: Path,
+    *,
+    catalog: Path | None = None,
+) -> dict[str, Any]:
+    """Inspect one explicit project while parsing its manifest exactly once."""
+
+    project = Project.from_file(project_contract)
+    if catalog is None:
+        return inspect_repository_designs(project)
+    _, report = inspect_design_catalog(catalog, project=project)
+    return report
+
+
 def inspect_repository_designs(
-    project_root: Path,
+    project: Project | Path,
 ) -> dict[str, Any]:
     """Validate every canonical source selected by one project context."""
 
-    context = RepositoryContext.from_project_root(project_root)
+    context = (
+        project
+        if isinstance(project, Project)
+        else Project.from_project_root(project)
+    )
     root = context.project_root
     ip_catalog_path, ip_catalog = _catalog(
         context,
@@ -159,7 +178,7 @@ def inspect_repository_designs(
             integration = plan_ip_integration(
                 path,
                 project_root=root,
-                artifact_root=context.project.artifact_root,
+                artifact_root=context.artifact_root,
             )
             if integration.get("ip") != name:
                 raise ValueError(f"IP integration catalog identity mismatch: {name}")
@@ -186,7 +205,7 @@ def inspect_repository_designs(
         }
         oa_assemblies[name] = plan_oa_library_rebuild(
             assembly,
-            project_root=root,
+            project=context,
         ).as_dict()
 
     platform_catalog_path, platform_catalog = _catalog(

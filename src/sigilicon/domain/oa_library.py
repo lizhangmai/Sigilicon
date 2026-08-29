@@ -13,7 +13,7 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationPolicy,
     load_physical_verification_policy,
 )
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _VIEW_KINDS = {
@@ -133,7 +133,7 @@ class OALibrarySource:
     """Assembly contract for one generated OA library."""
 
     manifest_path: Path
-    project_root: Path
+    project: Project
     name: str
     pdk: str
     workspace_template: Path
@@ -142,6 +142,10 @@ class OALibrarySource:
     physical_verification: PhysicalVerificationPolicy | None
     source_roots: tuple[OASourceRoot, ...]
     cells: tuple[OACellSource, ...]
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -339,7 +343,7 @@ def _load_cell(owner: str, source_manifest: Path, directory: Path) -> OACellSour
 def _load_source_root(
     path: Path,
     *,
-    context: RepositoryContext,
+    context: Project,
     allow_assembly_fields: bool = False,
 ) -> OASourceRoot:
     raw = _read_toml(path)
@@ -414,14 +418,23 @@ def _load_source_root(
 def load_oa_library_source(
     path: Path,
     *,
+    project: Project | None = None,
     project_root: Path | None = None,
 ) -> OALibrarySource:
     """Load one OA assembly and all explicitly selected IP source roots."""
 
     manifest_path = path.resolve()
-    if project_root is None:
-        raise ValueError("project_root is required for an OA assembly")
-    context = RepositoryContext.from_project_root(project_root)
+    if project is None:
+        if project_root is None:
+            raise ValueError("project or project_root is required for an OA assembly")
+        context = Project.from_project_root(project_root)
+    else:
+        context = project
+        if (
+            project_root is not None
+            and project_root.resolve() != context.project_root
+        ):
+            raise ValueError("project_root disagrees with the explicit project")
     root = context.project_root
     repository_owner = context.require_owner(manifest_path)
     raw = _read_toml(manifest_path)
@@ -445,7 +458,7 @@ def load_oa_library_source(
     workspace_template = _project_path(
         root, raw.get("workspace_template"), "workspace_template", file=False
     )
-    if workspace_template != context.project.workspace_root or not workspace_template.is_dir():
+    if workspace_template != context.workspace_root or not workspace_template.is_dir():
         raise ValueError("workspace_template must match the project workspace root")
     oa_library = _project_path(root, raw.get("oa_library"), "oa_library", file=False)
     expected_library = workspace_template / name
@@ -525,7 +538,7 @@ def load_oa_library_source(
         raise ValueError(f"OA assembly has unresolved view dependencies: {rendered}")
     return OALibrarySource(
         manifest_path=manifest_path,
-        project_root=root,
+        project=context,
         name=name,
         pdk=pdk,
         workspace_template=workspace_template,

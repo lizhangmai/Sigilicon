@@ -11,7 +11,7 @@ import sys
 from types import ModuleType
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.domain.repository import RepositoryContext, RepositoryOwner
+from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.flow import (
     ExecutionEnvironment,
     FlowCatalog,
@@ -62,7 +62,7 @@ def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
 
 
 def project_workflow_registry(
-    project: RepositoryContext | Path | str,
+    project: Project | Path | str,
     owner_root: Path | str | None,
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
@@ -75,8 +75,8 @@ def project_workflow_registry(
         return builtin_workflow_registry()
     repository = (
         project
-        if isinstance(project, RepositoryContext)
-        else RepositoryContext.from_project_root(project)
+        if isinstance(project, Project)
+        else Project.from_project_root(project)
     )
     selected_root = Path(owner_root).resolve()
     owner = repository.require_owner(selected_root)
@@ -84,7 +84,7 @@ def project_workflow_registry(
         raise ValueError(
             f"Flow owner root must equal its cataloged root: {owner.root}"
         )
-    registry = builtin_workflow_registry(owner.root)
+    registry = builtin_workflow_registry()
     source = repository.flow_registry_extension(owner)
     if source is None:
         return registry
@@ -154,19 +154,19 @@ def project_workflow_registry_for_owner_root(owner_root: Path | str) -> FlowRegi
         repository, owner = binding
         return project_workflow_registry(repository, owner.root)
     selected_root = Path(owner_root).resolve()
-    return builtin_workflow_registry(selected_root)
+    return builtin_workflow_registry()
 
 
 def project_owner_binding_for_root(
     owner_root: Path | str,
-) -> tuple[RepositoryContext, RepositoryOwner] | None:
+) -> tuple[Project, RepositoryOwner] | None:
     """Resolve an explicit owner root without consulting the current directory."""
 
     selected_root = Path(owner_root).resolve()
     for candidate in (selected_root, *selected_root.parents):
         if not (candidate / "sigilicon.toml").is_file():
             continue
-        repository = RepositoryContext.from_project_root(candidate)
+        repository = Project.from_project_root(candidate)
         owner = repository.owner_for(selected_root)
         if candidate == selected_root and owner is None:
             return None
@@ -207,10 +207,10 @@ class ProjectFlow:
     owner Adapters.
     """
 
-    repository: RepositoryContext
+    repository: Project
     owner_name: str
     registry_factory: Callable[
-        [RepositoryContext | Path | str, Path | str | None], FlowRegistry
+        [Project | Path | str, Path | str | None], FlowRegistry
     ] = field(default=project_workflow_registry, repr=False, compare=False)
     _binding: object = field(default_factory=object, init=False, repr=False, compare=False)
 
@@ -225,7 +225,16 @@ class ProjectFlow:
         *,
         owner: str,
     ) -> "ProjectFlow":
-        return cls(RepositoryContext.from_project_root(project_root), owner)
+        return cls(Project.from_project_root(project_root), owner)
+
+    @classmethod
+    def from_file(
+        cls,
+        project_contract: Path | str,
+        *,
+        owner: str,
+    ) -> "ProjectFlow":
+        return cls(Project.from_file(project_contract), owner)
 
     @property
     def owner(self) -> RepositoryOwner:
@@ -254,7 +263,8 @@ class ProjectFlow:
             profile_id=profile,
         )
         engine = FlowEngine(
-            self.registry_factory(self.repository, self.owner.root)
+            self.registry_factory(self.repository, self.owner.root),
+            project_scope=self.repository.scope(self.owner),
         )
         return ProjectFlowPlan(
             engine,
@@ -283,7 +293,7 @@ class ProjectFlow:
         self._require_owned_plan(planned)
         return planned.engine.run(
             planned.plan,
-            artifact_root=self.repository.project.artifact_root,
+            artifact_root=self.repository.artifact_root,
             environment=environment,
             run_id=run_id,
             progress=progress,

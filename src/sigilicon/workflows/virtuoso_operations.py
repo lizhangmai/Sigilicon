@@ -119,10 +119,7 @@ def export_project_netlist(
     timeout: int,
 ) -> ProjectNetlistExport:
     if artifact_root is not None:
-        paths = ProjectContext.from_project_root(
-            paths.project_root,
-            artifact_root=artifact_root,
-        )
+        paths = paths.with_artifact_root(artifact_root)
     record = ArtifactRecord.begin(
         paths.artifacts.execution(
             owner=library,
@@ -480,10 +477,7 @@ def import_spectre_hierarchy(
     snapshot = load_netlist_snapshot(netlist)
     hierarchy_plan = plan_hierarchy(snapshot, top=top)
     if artifact_root is not None:
-        paths = ProjectContext.from_project_root(
-            paths.project_root,
-            artifact_root=artifact_root,
-        )
+        paths = paths.with_artifact_root(artifact_root)
     record = ArtifactRecord.begin(
         paths.artifacts.execution(
             owner=library,

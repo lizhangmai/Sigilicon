@@ -7,6 +7,7 @@ import pytest
 
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.netlist import NetlistSubcircuit
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.oa_library import (
     _instance_parameter_expectations,
     check_oa_parity,
@@ -120,6 +121,16 @@ def test_ip_oa_contract_can_own_sources_and_assemble_the_library(
         "schematic",
         "symbol",
     ]
+
+
+def test_oa_assembly_reuses_one_explicit_project(tmp_path: Path) -> None:
+    root, manifest = _assembly(tmp_path)
+    project = Project.from_project_root(root)
+
+    assembly = load_oa_library_source(manifest, project=project)
+
+    assert assembly.project is project
+    assert assembly.project_root == project.project_root
 
 
 def test_pre_layout_oa_assembly_can_omit_physical_verification(

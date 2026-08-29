@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, cast
 
 from sigilicon.domain.component import ComponentContract, load_component_contract
 from sigilicon.domain.config_contracts import read_toml, require_config_header
-from sigilicon.paths import ProjectContext, validate_artifact_component
+from sigilicon.paths import (
+    ArtifactLayout,
+    ProjectContext,
+    ProjectScope,
+    validate_artifact_component,
+)
 
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
@@ -66,19 +71,21 @@ class RepositoryFlowExtension:
 
 
 @dataclass(frozen=True)
-class RepositoryContext:
-    """Repository inventory kept separate from runtime/artifact paths."""
+class Project:
+    """Canonical project paths, catalogs, owners and Flow extensions."""
 
-    project: ProjectContext
+    _paths: ProjectContext
+    manifest_owner: str
     catalog_paths: tuple[tuple[str, Path], ...]
     owners: tuple[RepositoryOwner, ...]
     flow_registry_extensions: tuple[RepositoryFlowExtension, ...]
 
     @classmethod
-    def from_file(cls, path: Path | str) -> "RepositoryContext":
+    def from_file(cls, path: Path | str) -> "Project":
         contract = Path(path).resolve()
-        project = ProjectContext.from_file(contract)
         raw = read_toml(contract)
+        project = ProjectContext.from_contract(contract, raw)
+        manifest_owner = cast(str, raw["owner"])
         catalogs = raw.get("catalogs")
         if not isinstance(catalogs, Mapping):
             raise ValueError(f"{contract}: catalogs must be a table")
@@ -231,7 +238,8 @@ class RepositoryContext:
                 )
             flow_registry_extensions.append(RepositoryFlowExtension(name, source))
         return cls(
-            project=project,
+            _paths=project,
+            manifest_owner=manifest_owner,
             catalog_paths=catalog_paths,
             owners=tuple(sorted(owners, key=lambda item: item.name)),
             flow_registry_extensions=tuple(
@@ -240,16 +248,36 @@ class RepositoryContext:
         )
 
     @classmethod
-    def from_project_root(cls, project_root: Path | str) -> "RepositoryContext":
+    def from_project_root(cls, project_root: Path | str) -> "Project":
         root = Path(project_root).resolve()
-        repository = cls.from_file(root / "sigilicon.toml")
-        if repository.project.project_root != root:
+        project = cls.from_file(root / "sigilicon.toml")
+        if project.project_root != root:
             raise ValueError("sigilicon.toml declares a different project root")
-        return repository
+        return project
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self._paths.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self._paths.workspace_root
+
+    @property
+    def artifact_root(self) -> Path:
+        return self._paths.artifact_root
+
+    @property
+    def artifacts(self) -> ArtifactLayout:
+        return self._paths.artifacts
+
+    def with_artifact_root(self, artifact_root: Path | str) -> "Project":
+        """Return this exact project inventory with a run-scoped artifact root."""
+
+        return replace(
+            self,
+            _paths=self._paths.with_artifact_root(artifact_root),
+        )
 
     def find_catalog(self, name: str) -> Path | None:
         """Return a registered catalog, or ``None`` for an optional domain."""
@@ -287,6 +315,16 @@ class RepositoryContext:
             raise ValueError(
                 f"unknown cataloged project owner: {identity!r}"
             ) from exc
+
+    def scope(self, owner: RepositoryOwner | str) -> ProjectScope:
+        """Bind one cataloged owner to this project's explicit runtime paths."""
+
+        selected = self.owner(owner) if isinstance(owner, str) else owner
+        if selected not in self.owners:
+            raise ValueError(
+                f"repository does not contain owner {selected.name!r}"
+            )
+        return ProjectScope(self._paths, selected.name, selected.root)
 
     def owner_flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
         """Return typed Flow catalogs explicitly owned by one component."""
@@ -374,3 +412,8 @@ class RepositoryContext:
         if len(matches) > 1:
             raise ValueError(f"owner {owner.name!r} has multiple OA assemblies")
         return matches[0] if matches else None
+
+
+# Transitional import compatibility through Phase 2.  Production code uses
+# Project; this name does not own a second parsing Implementation.
+RepositoryContext = Project

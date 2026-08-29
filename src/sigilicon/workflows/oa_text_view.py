@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell_view
 from sigilicon.virtuoso.text_view import import_oa_text_view
@@ -15,7 +15,7 @@ from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 def sync_oa_text_view(
     client: Any,
     *,
-    project_root: Path,
+    project: Project,
     library: str,
     cell: str,
     view: str,
@@ -33,7 +33,7 @@ def sync_oa_text_view(
     with DisposableWork.create(prefix="sigilicon-oa-text-") as work:
         _sync_oa_text_view_impl(
             client,
-            project_root=project_root,
+            project=project,
             library=library,
             cell=cell,
             view=view,
@@ -48,7 +48,7 @@ def sync_oa_text_view(
 def _sync_oa_text_view_impl(
     client: Any,
     *,
-    project_root: Path,
+    project: Project,
     library: str,
     cell: str,
     view: str,
@@ -60,16 +60,15 @@ def _sync_oa_text_view_impl(
 ) -> None:
     """Materialize one text view under its caller-owned temporary scope."""
 
-    paths = ProjectContext.from_project_root(project_root)
     source_path = source.resolve()
-    if not source_path.is_file() or not source_path.is_relative_to(project_root.resolve()):
+    if not source_path.is_file() or not source_path.is_relative_to(project.project_root):
         raise ValueError("OA text-view source must be a project-owned file")
     if _work is None:
         raise RuntimeError("OA text-view synchronization requires a work scope")
     work = _work
     with workspace_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         "sync-oa-text-view",
         policy=OperationPolicy.DIRECT_MUTATION,
     ) as operation, operation.view_lease(

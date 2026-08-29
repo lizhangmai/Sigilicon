@@ -47,7 +47,7 @@ from sigilicon.flow.source_assets import (
     source_assets_payload,
     source_member_matches,
 )
-from sigilicon.paths import ArtifactLayout
+from sigilicon.paths import ArtifactLayout, ProjectScope
 
 
 def _utc_now() -> str:
@@ -120,8 +120,14 @@ def _plan_payload(
 class FlowEngine:
     """Deep module that plans typed graphs and executes them through Adapters."""
 
-    def __init__(self, registry: FlowRegistry) -> None:
+    def __init__(
+        self,
+        registry: FlowRegistry,
+        *,
+        project_scope: ProjectScope | None = None,
+    ) -> None:
         self._registry = registry
+        self._project_scope = project_scope
 
     def planned_output(self, plan: FlowPlan, node_id: str, role: str) -> ArtifactPort:
         """Resolve one output through the exact Action registry used by this engine."""
@@ -148,6 +154,11 @@ class FlowEngine:
         target_id: str,
         profile: ExecutionProfile,
     ) -> FlowPlan:
+        if self._project_scope is not None and spec.owner != self._project_scope.owner:
+            raise FlowContractError(
+                f"Flow owner {spec.owner!r} does not match explicit project owner "
+                f"{self._project_scope.owner!r}"
+            )
         if profile.owner != spec.owner:
             raise FlowContractError(
                 f"Execution Profile owner {profile.owner!r} does not match "
@@ -612,6 +623,7 @@ class FlowEngine:
                 ),
                 source_assets=planned.source_assets,
                 design_campaign_iteration=node.design_campaign_iteration,
+                project_scope=self._project_scope,
             )
             request = {
                 "schema": 1,

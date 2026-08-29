@@ -8,7 +8,7 @@ native-log checks, and raw-output existence checks.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -17,6 +17,7 @@ import shutil
 from typing import Any, Callable, Mapping, Sequence
 
 from sigilicon.artifacts import ArtifactRecord, new_identity, read_nofollow_text
+from sigilicon.domain.repository import Project
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
@@ -53,6 +54,16 @@ class SpectreArtifactContext:
     library: str
     cell: str
     testbench: str
+    _project: Project = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        project = Project.from_project_root(self.project_root)
+        object.__setattr__(self, "project_root", project.project_root)
+        object.__setattr__(self, "_project", project)
+
+    @property
+    def project(self) -> Project:
+        return self._project
 
 
 @dataclass(frozen=True)
@@ -316,7 +327,7 @@ def export_oa_spectre_netlist(
 
 
 def _terminalize_spectre_record(
-    paths: ProjectContext,
+    project: Project,
     record: ArtifactRecord,
     error: BaseException,
 ) -> None:
@@ -335,8 +346,8 @@ def _terminalize_spectre_record(
     reason = "Spectre process-group cleanup could not be proven: " + cleanup_reason
     try:
         incident = write_operation_incident(
-            workspace_root=paths.workspace_root,
-            artifact_root=paths.artifact_root,
+            workspace_root=project.workspace_root,
+            artifact_root=project.artifact_root,
             operation_id=str(record.manifest["operation_id"]),
             name="direct-spectre",
             policy="isolated-process-group",
@@ -402,9 +413,13 @@ def run_spectre_measurement(
     invokes the guarded Spectre runner, and terminalizes success/failure.
     """
 
-    paths = ProjectContext.from_project_root(context.project_root, artifact_root=artifact_root)
+    project = (
+        context.project
+        if artifact_root is None
+        else context.project.with_artifact_root(artifact_root)
+    )
     record = ArtifactRecord.begin(
-        paths.artifacts.execution(
+        project.artifacts.execution(
             owner=context.library,
             target=context.testbench,
             flow="spectre",
@@ -474,7 +489,7 @@ def run_spectre_measurement(
         record.succeed(completion_evidence=(measurements,), details=details)
         return result
     except BaseException as error:
-        _terminalize_spectre_record(paths, record, error)
+        _terminalize_spectre_record(project, record, error)
         raise
 
 
@@ -504,9 +519,13 @@ def run_spectre_multi_measurement(
         raise ValueError("multi-output Spectre measurement requires outputs")
     if len(set(outputs.values())) != len(outputs):
         raise ValueError("multi-output Spectre destinations must be unique")
-    paths = ProjectContext.from_project_root(context.project_root, artifact_root=artifact_root)
+    project = (
+        context.project
+        if artifact_root is None
+        else context.project.with_artifact_root(artifact_root)
+    )
     record = ArtifactRecord.begin(
-        paths.artifacts.execution(
+        project.artifacts.execution(
             owner=context.library,
             target=context.testbench,
             flow="spectre",
@@ -586,7 +605,7 @@ def run_spectre_multi_measurement(
         )
         return result
     except BaseException as error:
-        _terminalize_spectre_record(paths, record, error)
+        _terminalize_spectre_record(project, record, error)
         raise
 
 
@@ -602,9 +621,13 @@ def publish_measurement_summary(
 ) -> SpectreRunResult:
     """Publish a self-contained derived sweep or distribution result."""
 
-    paths = ProjectContext.from_project_root(context.project_root, artifact_root=artifact_root)
+    project = (
+        context.project
+        if artifact_root is None
+        else context.project.with_artifact_root(artifact_root)
+    )
     record = ArtifactRecord.begin(
-        paths.artifacts.execution(
+        project.artifacts.execution(
             owner=context.library,
             target=context.testbench,
             flow="spectre-derived",
@@ -657,5 +680,5 @@ def publish_measurement_summary(
         )
         return result
     except BaseException as error:
-        _terminalize_spectre_record(paths, record, error)
+        _terminalize_spectre_record(project, record, error)
         raise

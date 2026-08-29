@@ -76,10 +76,6 @@ def test_cli_attest_reports_current_check_without_prior_state(
     monkeypatch, capsys, tmp_path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    plan = type("Plan", (), {
-        "library": "fixture_lib",
-        "testbenches": (type("Step", (), {"cell": "tb_main"})(),),
-    })()
     payload = {
         "passed": True,
         "library": "fixture_lib",
@@ -88,11 +84,8 @@ def test_cli_attest_reports_current_check_without_prior_state(
         "product_qualification_conclusion": False,
     }
     monkeypatch.setattr(
-        flow_cli, "plan_oa_library_rebuild", lambda *_args, **_kwargs: plan
-    )
-    monkeypatch.setattr(
-        flow_cli,
-        "attest_oa_testbench",
+        flow_cli.ProjectOaWorkflow,
+        "attest",
         lambda *_args, **_kwargs: payload,
     )
 

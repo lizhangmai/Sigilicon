@@ -11,7 +11,7 @@ from typing import Any
 from sigilicon.cli.common import add_json_arg, die, emit_json
 from sigilicon.cli.generate_layout import main as generate_layout_main
 from sigilicon.cli.verify_layout import main as verify_layout_main
-from sigilicon.paths import ProjectContext, discover_project_context
+from sigilicon.paths import ProjectContext, discover_project_contract
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.ip_integration import (
     check_ip_integration,
@@ -30,13 +30,8 @@ from sigilicon.workflows.ip_packaging import (
     plan_ip_release,
     publish_ip_release,
 )
-from sigilicon.workflows.oa_library import (
-    attest_oa_testbench,
-    plan_oa_library_rebuild,
-    rebuild_oa_library,
-)
-from sigilicon.workflows.oa_check import UnavailableBridge, check_oa_library
-from sigilicon.workflows.oa_simulation import run_oa_maestro_testbench
+from sigilicon.workflows.oa_check import UnavailableBridge
+from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 
 def _target_payload(target: LayoutTarget) -> dict[str, object]:
@@ -450,10 +445,12 @@ def _run_design(
         die(f"ERROR: {exc}")
 
 
-def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
+def _run_oa(
+    args: argparse.Namespace,
+    workflow: ProjectOaWorkflow,
+    client_factory: Any,
+) -> int:
     manifest = Path(args.manifest)
-    if not manifest.is_absolute():
-        manifest = root / manifest
     if args.action == "check":
         try:
             try:
@@ -463,9 +460,8 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
                 # lock inspection stay read-only while live evidence is marked
                 # unavailable.
                 client = UnavailableBridge(exc)
-            payload = check_oa_library(
+            payload = workflow.check(
                 manifest,
-                project_root=root,
                 library=args.library,
                 client=client,
                 timeout=args.timeout,
@@ -478,41 +474,25 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
             _print_oa_check_summary(payload)
         return 0 if bool(payload.get("passed")) else 1
     try:
-        plan = plan_oa_library_rebuild(
-            manifest,
-            project_root=root,
-            library=args.library,
-        )
         if args.action == "plan":
+            plan = workflow.plan(manifest, library=args.library)
             payload = plan.as_dict()
         else:
             client = client_factory()
             if args.action == "attest":
-                matches = [
-                    step for step in plan.testbenches if step.cell == args.testbench
-                ]
-                if len(matches) != 1:
-                    raise ValueError(
-                        f"unknown OA testbench in assembly: {args.testbench}"
-                    )
-                payload = attest_oa_testbench(
-                    plan,
-                    matches[0],
-                    client,
+                payload = workflow.attest(
+                    manifest,
+                    library=args.library,
+                    testbench=args.testbench,
+                    client=client,
                     timeout=args.timeout,
                 )
             elif args.action == "simulate":
-                matches = [
-                    step for step in plan.testbenches if step.cell == args.testbench
-                ]
-                if len(matches) != 1:
-                    raise ValueError(
-                        f"unknown OA testbench in assembly: {args.testbench}"
-                    )
-                result = run_oa_maestro_testbench(
-                    plan,
-                    matches[0],
-                    client,
+                result = workflow.simulate(
+                    manifest,
+                    library=args.library,
+                    testbench=args.testbench,
+                    client=client,
                     timeout=args.timeout,
                 )
                 payload = {
@@ -535,9 +515,10 @@ def _run_oa(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
                     "product_qualification_conclusion": False,
                 }
             else:
-                payload = rebuild_oa_library(
-                    plan,
-                    client,
+                payload = workflow.rebuild(
+                    manifest,
+                    library=args.library,
+                    client=client,
                     cell=args.cell,
                     testbench=args.testbench,
                     timeout=args.timeout,
@@ -596,13 +577,18 @@ def main(
     process_executor: Callable[[str, list[str]], Any] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
-    root = discover_project_context(__file__).project_root
+    project_contract = discover_project_contract(__file__)
+    if args.domain == "oa":
+        return _run_oa(
+            args,
+            ProjectOaWorkflow.from_file(project_contract),
+            client_factory,
+        )
+    root = ProjectContext.from_file(project_contract).project_root
     if args.domain == "layout":
         return _run_layout(args, root, client_factory)
     if args.domain == "design":
         return _run_design(args, root, process_executor)
-    if args.domain == "oa":
-        return _run_oa(args, root, client_factory)
     if args.domain == "ip":
         return _run_ip(args, root)
     raise AssertionError(f"unhandled flow domain: {args.domain}")

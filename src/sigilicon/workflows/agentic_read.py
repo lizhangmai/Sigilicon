@@ -8,13 +8,12 @@ from pathlib import Path
 import re
 from typing import Any
 
-from sigilicon.domain.config_contracts import read_toml
 from sigilicon.domain.circuit_design import (
     design_artifact_from_json,
     design_candidate_from_json,
     design_decision_from_json,
 )
-from sigilicon.domain.repository import RepositoryContext, RepositoryOwner
+from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.flow import (
     FlowContractError,
     FlowEngine,
@@ -55,13 +54,8 @@ _SENSITIVE_FIELDS = frozenset(
 )
 
 
-def _repository_identity(repository: RepositoryContext) -> str:
-    root = repository.project_root
-    project = read_toml(root / "sigilicon.toml")
-    owner = project.get("owner")
-    if not isinstance(owner, str) or not owner:
-        raise ValueError("sigilicon.toml must declare a project owner")
-    return f"{owner}.{root.name}"
+def _repository_identity(project: Project) -> str:
+    return f"{project.manifest_owner}.{project.project_root.name}"
 
 
 def _public_value(value: Any, *, field: str | None = None) -> Any:
@@ -112,7 +106,7 @@ class ResolvedAgenticCampaignPlan:
 class AgenticReadInterface:
     """Resolve only cataloged project identities through existing domain Modules."""
 
-    repository: RepositoryContext
+    repository: Project
     project_id: str
 
     def __post_init__(self) -> None:
@@ -121,19 +115,27 @@ class AgenticReadInterface:
 
     @classmethod
     def from_project_root(cls, project_root: Path | str) -> "AgenticReadInterface":
-        return cls.from_project_context(ProjectContext.from_project_root(project_root))
+        return cls.from_project(Project.from_project_root(project_root))
+
+    @classmethod
+    def from_project(cls, project: Project) -> "AgenticReadInterface":
+        return cls(project, _repository_identity(project))
 
     @classmethod
     def from_project_context(
         cls,
         project: ProjectContext,
     ) -> "AgenticReadInterface":
-        repository = RepositoryContext.from_file(
+        repository = Project.from_file(
             project.project_root / "sigilicon.toml"
         )
-        if repository.project != project:
+        if (
+            repository.project_root != project.project_root
+            or repository.workspace_root != project.workspace_root
+            or repository.artifact_root != project.artifact_root
+        ):
             raise ValueError("agentic read context disagrees with sigilicon.toml")
-        return cls(repository, _repository_identity(repository))
+        return cls.from_project(repository)
 
     @property
     def project_resource_uri(self) -> str:
@@ -376,7 +378,7 @@ class AgenticReadInterface:
         )
         runner = DesignCampaignRunner(
             engine,
-            artifact_root=self.repository.project.artifact_root,
+            artifact_root=self.repository.artifact_root,
         )
         record = runner.plan_record(campaign)
         return ResolvedAgenticCampaignPlan(
@@ -434,7 +436,7 @@ class AgenticReadInterface:
             project_workflow_registry(self.repository, selected_owner.root)
         )
         managed = AgenticRunStore(
-            self.repository.project.artifact_root,
+            self.repository.artifact_root,
             self.project_id,
         )
         managed_paths = managed.paths(
@@ -456,7 +458,7 @@ class AgenticReadInterface:
             result: dict[str, Any] | None = None
             try:
                 result = engine.read_run_result(
-                    artifact_root=self.repository.project.artifact_root,
+                    artifact_root=self.repository.artifact_root,
                     owner=selected_owner.name,
                     flow_id=flow_name,
                     target=target_name,
@@ -503,7 +505,7 @@ class AgenticReadInterface:
                 ),
             )
         result = engine.read_run_result(
-            artifact_root=self.repository.project.artifact_root,
+            artifact_root=self.repository.artifact_root,
             owner=selected_owner.name,
             flow_id=flow_name,
             target=target_name,

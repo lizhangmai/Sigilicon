@@ -250,7 +250,7 @@ def _registry(owner_root: Path) -> FlowRegistry:
     )
     register_standard_asic_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
-    registry.register_adapter("synopsys-fc", SynopsysFCAdapter(owner_root))
+    registry.register_adapter("synopsys-fc", SynopsysFCAdapter())
     return registry
 
 

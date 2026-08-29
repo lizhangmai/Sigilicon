@@ -7,8 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sigilicon.domain.repository import RepositoryContext
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.locks import discover_oa_locks, inspect_flow_operation_lock
 from sigilicon.virtuoso.maestro import active_maestro_sessions
 from sigilicon.virtuoso.oa import open_cell_views, virtuoso_pid, virtuoso_workdir
@@ -93,9 +92,9 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
     for owner, cells in owners.items():
         duplicates = sorted(cell for cell in set(cells) if cells.count(cell) > 1)
         conflicts.extend(f"{owner}/{cell}" for cell in duplicates)
-    context = RepositoryContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
     unmanaged_consumed = any(
-        context.owner_for(path) is None
+        project.owner_for(path) is None
         for source in plan.source.source_roots
         for path in (source.directory, *source.cell_roots)
     )
@@ -116,11 +115,11 @@ def _library_ownership(
     """Prove that the live library resolves to the manifest-owned OA path."""
 
     expected = plan.source.oa_library.resolve()
-    paths = ProjectContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
     try:
         with workspace_operation(
             client,
-            paths.workspace_root,
+            project.workspace_root,
             "check-oa-library-ownership",
             policy=OperationPolicy.READ_ONLY,
             acquire_flow_lock=False,
@@ -290,7 +289,8 @@ def _recommendation(
 def check_oa_library(
     manifest_path: Path,
     *,
-    project_root: Path,
+    project: Project | None = None,
+    project_root: Path | None = None,
     library: str | None,
     client: Any,
     timeout: int = 300,
@@ -307,6 +307,7 @@ def check_oa_library(
     try:
         plan = plan_oa_library_rebuild(
             manifest_path,
+            project=project,
             project_root=project_root,
             library=library,
         )

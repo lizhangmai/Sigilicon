@@ -64,7 +64,6 @@ from sigilicon.layout.materialization_execution import (
     validate_receipt_bound_layout,
 )
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
-from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.virtuoso.xstream import XStreamExportRequest, run_xstream_export
@@ -665,7 +664,7 @@ def _run_xstream(
     staged_layermap = record.copy_file(
         "inputs", ("layermap",), spec.layout_pdk.layermap, label="XStream layer map"
     )
-    cds_lib = ProjectContext.from_project_root(spec.project_root).workspace_root / "cds.lib"
+    cds_lib = spec.project.workspace_root / "cds.lib"
     if not cds_lib.is_file():
         raise FileNotFoundError(f"workspace cds.lib does not exist: {cds_lib}")
     work = record.paths.role("work")
@@ -1334,9 +1333,13 @@ def verify_layout(
     plan = build_layout_plan(spec)
     if plan.stage != "routed":
         raise ValueError("physical verification requires a routed layout plan")
-    paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
+    project = (
+        spec.project
+        if artifact_root is None
+        else spec.project.with_artifact_root(artifact_root)
+    )
     record = ArtifactRecord.begin(
-        paths.artifacts.execution(
+        project.artifacts.execution(
             owner=spec.library,
             target=spec.cell,
             flow="physical-verification",
@@ -1418,7 +1421,7 @@ def verify_layout(
         ),
         workspace_operation(
             client,
-            paths.workspace_root,
+            project.workspace_root,
             f"verify-layout-{check}",
             policy=OperationPolicy.READ_ONLY,
         ) as operation,

@@ -19,7 +19,7 @@ from sigilicon.domain.ip_integration import (
     load_ip_integration_contract,
 )
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, load_ip_contract
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
     plan_ip_release,
@@ -29,7 +29,7 @@ from sigilicon.workflows.ip_packaging import (
 
 
 def _ip_catalog(root: Path) -> tuple[Path, Mapping[str, Any]]:
-    context = RepositoryContext.from_project_root(root)
+    context = Project.from_project_root(root)
     path = context.catalog("ip")
     with path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)

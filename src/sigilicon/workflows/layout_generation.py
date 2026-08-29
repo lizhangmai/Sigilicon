@@ -12,7 +12,6 @@ from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
 from sigilicon.layout.spec import load_layout_spec
-from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.layout_generation import (
     validate_layout_plan,
@@ -94,14 +93,18 @@ def _generate_layout_impl(
     """Run layout generation under its caller-owned work scope."""
 
     plan = build_layout_plan(spec)
-    paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
+    project = (
+        spec.project
+        if artifact_root is None
+        else spec.project.with_artifact_root(artifact_root)
+    )
     if disposable:
         if _disposable_work is None:
             raise RuntimeError("disposable layout generation requires a work scope")
         attempt: Any = _disposable_work
     else:
         attempt = ArtifactRecord.begin(
-            paths.artifacts.execution(
+            project.artifacts.execution(
                 owner=spec.library,
                 target=spec.cell,
                 flow="layout-generation",
@@ -191,7 +194,7 @@ def _generate_layout_impl(
         failure_context,
         workspace_operation(
             client,
-            paths.workspace_root,
+            project.workspace_root,
             "generate-layout",
             policy=OperationPolicy.DIRECT_MUTATION,
         ) as operation,

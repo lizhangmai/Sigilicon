@@ -13,7 +13,6 @@ from sigilicon.domain.netlist import (
     lower_subckt_default_parameters,
     materialize_netlist_snapshot,
 )
-from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.library import LibrarySyncResult, ensure_project_library
 from sigilicon.virtuoso.importer import generate_symbol, import_schematic
@@ -128,19 +127,18 @@ def _sync_design_impl(
 ) -> DesignSyncResult:
     """Run the shared design synchronizer under its caller-owned work scope."""
 
-    paths = ProjectContext.from_project_root(spec.project_root)
-    if artifact_root is not None:
-        paths = ProjectContext.from_project_root(
-            spec.project_root,
-            artifact_root=artifact_root,
-        )
+    project = (
+        spec.project
+        if artifact_root is None
+        else spec.project.with_artifact_root(artifact_root)
+    )
     if disposable:
         if _disposable_work is None:
             raise RuntimeError("disposable design sync requires a work scope")
         attempt: Any = _disposable_work
     else:
         attempt = ArtifactRecord.begin(
-            paths.artifacts.execution(
+            project.artifacts.execution(
                 owner=spec.library,
                 target=spec.cell,
                 flow="design-sync",
@@ -173,7 +171,7 @@ def _sync_design_impl(
         failure_context,
         workspace_operation(
             client,
-            paths.workspace_root,
+            project.workspace_root,
             "sync-design",
             policy=OperationPolicy.RECURSIVE_OA,
         ) as operation,
@@ -237,7 +235,7 @@ def _sync_design_impl(
             spec.library,
             cells=None,
             phase="ensure design library",
-            expected_library_path=paths.workspace_root / spec.library,
+            expected_library_path=project.workspace_root / spec.library,
             quarantine_root=attempt.directory("outputs", "stale-locks")
             if quarantine_stale_locks
             else None,
@@ -246,9 +244,9 @@ def _sync_design_impl(
             library = ensure_project_library(
                 client,
                 library=spec.library,
-                path=paths.workspace_root / spec.library,
+                path=project.workspace_root / spec.library,
                 technology_library=spec.pdk.oa.technology_library,
-                cds_lib=paths.workspace_root / "cds.lib",
+                cds_lib=project.workspace_root / "cds.lib",
                 operation=operation,
                 timeout=timeout,
             )
@@ -367,7 +365,11 @@ def _sync_existing_design_target_only_impl(
 ) -> TargetOnlyDesignSyncResult:
     """Run target-only synchronization under its caller-owned work scope."""
 
-    paths = ProjectContext.from_project_root(spec.project_root, artifact_root=artifact_root)
+    project = (
+        spec.project
+        if artifact_root is None
+        else spec.project.with_artifact_root(artifact_root)
+    )
     plan = plan_hierarchy(spec.netlist_snapshot, top=spec.cell)
     if plan.ordered_cells != (spec.cell,):
         raise ValueError(
@@ -380,7 +382,7 @@ def _sync_existing_design_target_only_impl(
         attempt: Any = _disposable_work
     else:
         attempt = ArtifactRecord.begin(
-            paths.artifacts.execution(
+            project.artifacts.execution(
                 owner=spec.library,
                 target=spec.cell,
                 flow="design-sync",
@@ -423,7 +425,7 @@ def _sync_existing_design_target_only_impl(
         failure_context,
         workspace_operation(
             client,
-            paths.workspace_root,
+            project.workspace_root,
             "sync-existing-design-target-only",
             policy=OperationPolicy.DIRECT_MUTATION,
         ) as operation,
@@ -445,7 +447,7 @@ def _sync_existing_design_target_only_impl(
                 f"target-only sync requires an existing library: {spec.library}"
             )
         info = client.library.get(spec.library, timeout=30)
-        expected_library_path = paths.workspace_root / spec.library
+        expected_library_path = project.workspace_root / spec.library
         library_path = operation.require_project_library_target(client, spec.library)
         if library_path != expected_library_path:
             raise RuntimeError(

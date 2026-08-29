@@ -14,7 +14,7 @@ from typing import Any
 
 from sigilicon.domain.design import DesignSpec, load_design_spec
 from sigilicon.domain.netlist import select_subckt_snapshot
-from sigilicon.paths import ProjectContext
+from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.oa import (
     validate_cell_port_directions,
     validate_instance_parameters,
@@ -55,11 +55,16 @@ class DesignInspection:
 def inspect_design(
     spec_path: Path,
     *,
+    project: Project | None = None,
     project_root: Path | None = None,
 ) -> DesignInspection:
     """Load one canonical spec and prove its source hierarchy is coherent."""
 
-    spec = load_design_spec(spec_path, project_root=project_root)
+    spec = load_design_spec(
+        spec_path,
+        project=project,
+        project_root=project_root,
+    )
     if spec.sync_mode == "target-only" and spec.netlist_snapshot.subckts != (spec.cell,):
         spec = replace(
             spec,
@@ -119,10 +124,10 @@ def attest_oa_design(
     """Fail unless OA schematic+symbol match the canonical source."""
 
     spec = inspection.spec
-    paths = ProjectContext.from_project_root(spec.project_root)
+    project = spec.project
     with workspace_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         "attest-design-source-parity",
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=acquire_flow_lock,

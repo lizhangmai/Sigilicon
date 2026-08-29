@@ -13,7 +13,7 @@ import tomllib
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
-    from sigilicon.domain.repository import RepositoryContext
+    from sigilicon.domain.repository import Project
 
 
 CONFIG_SCHEMA = 1
@@ -87,7 +87,7 @@ def read_toml(path: Path) -> dict[str, Any]:
 
 
 def inspect_project_configurations(
-    context: RepositoryContext,
+    context: Project,
     *,
     owner_roots: Mapping[str, Path],
 ) -> dict[str, Any]:
@@ -100,10 +100,7 @@ def inspect_project_configurations(
 
     root = context.project_root.resolve()
     project_contract = root / "sigilicon.toml"
-    repository_owner = _text(
-        read_toml(project_contract).get("owner"),
-        f"{project_contract}: owner",
-    )
+    repository_owner = context.manifest_owner
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),

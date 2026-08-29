@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write_project_context
+from conftest import write_component_owner, write_project_context
 from sigilicon.flow import (
     ActionContract,
     AdapterExecution,
@@ -72,6 +72,7 @@ from sigilicon.layout.pnr import (
 )
 from sigilicon.virtuoso.xstream import XStreamExportError, XStreamExportResult
 from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
+from sigilicon.domain.repository import Project
 
 
 _INPUT_ACTION = "fixture.oa-materialization-inputs"
@@ -492,7 +493,7 @@ def _environment(root: Path, asset: ResolvedPlatformAsset) -> ExecutionEnvironme
     )
 
 
-def _engine(job, result, plan, adapter) -> FlowEngine:
+def _engine(root: Path | None, job, result, plan, adapter) -> FlowEngine:
     registry = FlowRegistry()
     register_physical_design_actions(registry)
     registry.register_action(
@@ -508,7 +509,13 @@ def _engine(job, result, plan, adapter) -> FlowEngine:
     )
     registry.register_adapter(_INPUT_ADAPTER, _InputsAdapter(job, result, plan))
     registry.register_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER, adapter)
-    return FlowEngine(registry)
+    scope = None
+    if root is not None:
+        if not (root / "ip/benchmark/component.toml").is_file():
+            write_component_owner(root, "benchmark", filesets={})
+        project = Project.from_project_root(root)
+        scope = project.scope("benchmark")
+    return FlowEngine(registry, project_scope=scope)
 
 
 def _plan(engine: FlowEngine):
@@ -544,7 +551,6 @@ def _plan(engine: FlowEngine):
             AdapterSelection(
                 PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
                 OA_XSTREAM_MATERIALIZATION_ADAPTER,
-                config={"project_root": "."},
                 required_capabilities=(
                     "tool.virtuoso-bridge",
                     "tool.xstream",
@@ -574,12 +580,18 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     write_project_context(tmp_path)
     asset, library = _write_assets(tmp_path)
     client = _Client(library)
-    adapter = OaXStreamMaterializationAdapter(
-        tmp_path,
-        _client_factory=lambda: client,
-    )
+    adapter = OaXStreamMaterializationAdapter(_client_factory=lambda: client)
     job, result, plan = _artifacts()
-    engine = _engine(job, result, plan, adapter)
+    engine = _engine(tmp_path, job, result, plan, adapter)
+    monkeypatch.setattr(
+        Project,
+        "from_project_root",
+        classmethod(
+            lambda cls, root, **kwargs: (_ for _ in ()).throw(
+                AssertionError("Adapter must reuse the injected project scope")
+            )
+        ),
+    )
     _patch_workspace(monkeypatch)
     monkeypatch.setattr(
         "sigilicon.workflows.oa_materialization.run_xstream_export",
@@ -612,6 +624,30 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     assert layout_identity == receipt.layout.content_identity
 
 
+def test_production_adapter_requires_explicit_project_scope(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    asset, _library = _write_assets(tmp_path)
+    job, result, plan = _artifacts()
+    engine = _engine(
+        None,
+        job,
+        result,
+        plan,
+        OaXStreamMaterializationAdapter(_client_factory=lambda: None),
+    )
+
+    flow_result = engine.run(
+        _plan(engine),
+        artifact_root=tmp_path / "artifacts",
+        environment=_environment(tmp_path, asset),
+        run_id="9" * 32,
+    )
+
+    outcome = flow_result.nodes["materialize"]
+    assert outcome.status == "failed"
+    assert "requires an explicit project owner scope" in str(outcome.reason)
+
+
 def test_repeated_materialization_canonicalizes_xstream_timestamps(
     monkeypatch,
     tmp_path: Path,
@@ -623,10 +659,9 @@ def test_repeated_materialization_canonicalizes_xstream_timestamps(
     identities = []
     for index, timestamp in enumerate((2025, 2026), start=2):
         adapter = OaXStreamMaterializationAdapter(
-            tmp_path,
             _client_factory=lambda: _Client(library),
         )
-        engine = _engine(job, result, plan, adapter)
+        engine = _engine(tmp_path, job, result, plan, adapter)
         monkeypatch.setattr(
             "sigilicon.workflows.oa_materialization.run_xstream_export",
             _fake_xstream(timestamp),
@@ -657,10 +692,11 @@ def test_flow_preflight_requires_backend_and_license_capabilities(
     asset, _library = _write_assets(tmp_path)
     job, result, plan = _artifacts()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=lambda: None),
+        OaXStreamMaterializationAdapter(_client_factory=lambda: None),
     )
     environment = _environment(tmp_path, asset)
     capabilities = dict(environment.capabilities)
@@ -695,10 +731,11 @@ def test_adapter_preflight_requires_every_explicit_layout_asset(tmp_path: Path) 
         raise AssertionError("incomplete assets must not contact OA")
 
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=client_factory),
+        OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -729,11 +766,11 @@ def test_missing_managed_library_is_created_inside_managed_workspace(
 
     job, result, plan = _artifacts()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
         OaXStreamMaterializationAdapter(
-            tmp_path,
             _client_factory=lambda: _Client(library),
         ),
     )
@@ -765,10 +802,11 @@ def test_managed_library_symlink_is_rejected_before_bridge_connection(
 
     job, result, plan = _artifacts()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=client_factory),
+        OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -799,10 +837,11 @@ def test_unmapped_plan_feature_is_typed_unsupported_before_oa(
 
     job, result, plan = _artifacts()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=client_factory),
+        OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
     flow_result = engine.run(
         _plan(engine),
@@ -830,10 +869,11 @@ def test_unmapped_master_is_typed_unsupported_before_oa(tmp_path: Path) -> None:
 
     job, result, plan = _artifacts_with_instance()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=client_factory),
+        OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -882,10 +922,11 @@ blockage_purpose = "drawing"
     job, result, plan = _artifacts_with_via()
     assert plan.route_vias
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=client_factory),
+        OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -914,10 +955,11 @@ def test_diagnostic_plan_is_identity_rejected_before_oa(tmp_path: Path) -> None:
 
     job, result, plan = _artifacts(maximum_route_states=1)
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(tmp_path, _client_factory=client_factory),
+        OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
     flow_result = engine.run(
         _plan(engine),
@@ -938,11 +980,11 @@ def test_bridge_unavailability_is_not_execution_failure(tmp_path: Path) -> None:
     asset, _library = _write_assets(tmp_path)
     job, result, plan = _artifacts()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
         OaXStreamMaterializationAdapter(
-            tmp_path,
             _client_factory=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
         ),
     )
@@ -970,11 +1012,11 @@ def test_attempted_backend_failures_never_publish_layout(
     client = _Client(library, write_error="save failed" if failure == "oa-save" else None)
     job, result, plan = _artifacts()
     engine = _engine(
+        tmp_path,
         job,
         result,
         plan,
         OaXStreamMaterializationAdapter(
-            tmp_path,
             _client_factory=lambda: client,
         ),
     )

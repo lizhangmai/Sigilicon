@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from sigilicon.flow.builtin import builtin_registry
 from sigilicon.flow.physical_design import (
     OA_XSTREAM_MATERIALIZATION_ADAPTER,
@@ -14,7 +12,7 @@ from sigilicon.flow.physical_verification import (
     CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
     RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
 )
-from sigilicon.flow.registry import FlowRegistry
+from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.workflows.physical_design import (
     MaterializationPlanAdapter,
     ReferencePhysicalDesignAdapter,
@@ -35,8 +33,11 @@ from sigilicon.flow.circuit_design import PHYSICAL_DESIGN_OBSERVATION_ADAPTER
 from sigilicon.workflows.design_physical import PhysicalDesignObservationAdapter
 
 
-def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
-    registry = builtin_registry(owner_root)
+def builtin_workflow_registry(
+    *,
+    materialization_adapter: ToolAdapter | None = None,
+) -> FlowRegistry:
+    registry = builtin_registry()
     registry.register_adapter(
         REFERENCE_PNR_ADAPTER,
         ReferencePhysicalDesignAdapter(),
@@ -62,11 +63,14 @@ def builtin_workflow_registry(owner_root: Path | None = None) -> FlowRegistry:
         CALIBRE_XRC_PEX_ADAPTER,
         CalibreXrcPexAdapter(),
     )
-    if owner_root is not None:
-        registry.register_adapter(
-            OA_XSTREAM_MATERIALIZATION_ADAPTER,
-            OaXStreamMaterializationAdapter(owner_root),
-        )
+    registry.register_adapter(
+        OA_XSTREAM_MATERIALIZATION_ADAPTER,
+        (
+            OaXStreamMaterializationAdapter()
+            if materialization_adapter is None
+            else materialization_adapter
+        ),
+    )
     return registry
 
 

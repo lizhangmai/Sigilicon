@@ -10,7 +10,6 @@ from typing import Any
 import uuid
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
-from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import (
@@ -97,9 +96,9 @@ def _run_native_oa_maestro_testbench(
         raise ValueError(
             f"OA testbench {step.cell} does not resolve to one source owner"
         )
-    paths = ProjectContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
     record = ArtifactRecord.begin(
-        paths.artifacts.execution(
+        project.artifacts.execution(
             owner=next(iter(owners)),
             target=step.cell,
             flow="oa-maestro",
@@ -233,11 +232,11 @@ def _run_native_oa_maestro_testbench_impl(
             )
     parsed_results: dict[str, Any] | None = None
     rdb_export = record.path("work", "maestro-rdb.tsv")
-    paths = ProjectContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
 
     with _registered_oa_maestro_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         record,
     ) as operation, operation.view_lease(
         plan.library,

@@ -8,7 +8,7 @@ import re
 import tomllib
 
 from sigilicon.domain.config_contracts import require_config_header
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 
 _TARGET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _ACTIONS = frozenset({"check", "generate", "verify"})
@@ -81,7 +81,7 @@ def load_layout_target_catalog(
     project_root: Path,
 ) -> LayoutTargetCatalog:
     root = project_root.resolve()
-    repository = RepositoryContext.from_project_root(root)
+    repository = Project.from_project_root(root)
     catalogs = repository.flow_catalogs("layout_targets")
     if not catalogs:
         raise ValueError("project context declares no layout target catalogs")

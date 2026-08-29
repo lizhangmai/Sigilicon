@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.identifiers import RUN_ID_PATTERN
+from sigilicon.paths import ProjectScope
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
@@ -894,10 +895,18 @@ class ActionContext:
     inputs: Mapping[str, InputArtifact]
     action_config: Mapping[str, Any]
     adapter_config: Mapping[str, Any]
-    capabilities: Mapping[str, str]
+    capabilities: Mapping[str, ResolvedCapability]
     platform_assets: Mapping[str, ResolvedPlatformAsset]
     source_assets: SourceAssets | None = None
     design_campaign_iteration: DesignCampaignIterationInput | None = None
+    project_scope: ProjectScope | None = None
+
+    def require_project_scope(self) -> ProjectScope:
+        if self.project_scope is None:
+            raise FlowExecutionError(
+                f"Action {self.node_id!r} requires an explicit project owner scope"
+            )
+        return self.project_scope
 
     def input(self, role: str) -> InputArtifact:
         try:

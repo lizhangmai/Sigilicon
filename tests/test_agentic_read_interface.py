@@ -165,7 +165,7 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
         flow_id="pipeline",
         profile_id="offline",
     )
-    engine = FlowEngine(builtin_workflow_registry(owner_root))
+    engine = FlowEngine(builtin_workflow_registry())
     result = engine.run(
         engine.plan(selection.spec, "all", selection.profile),
         artifact_root=tmp_path / "artifacts",

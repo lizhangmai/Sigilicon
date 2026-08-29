@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.cli.flow import _parser, _print_oa_check_summary
+from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_check import (
     _library_ownership,
@@ -118,7 +119,11 @@ def test_check_proves_live_library_path_is_the_manifest_target(
     shadow.mkdir()
     plan = SimpleNamespace(
         library="fixture_lib",
-        source=SimpleNamespace(project_root=tmp_path, oa_library=expected),
+        source=SimpleNamespace(
+            project=Project.from_project_root(tmp_path),
+            project_root=tmp_path,
+            oa_library=expected,
+        ),
     )
     client = SimpleNamespace(
         library=SimpleNamespace(

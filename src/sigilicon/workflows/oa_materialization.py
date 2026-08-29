@@ -137,7 +137,7 @@ def _header(
 
 @dataclass(frozen=True)
 class _AdapterConfiguration:
-    project_root: Path
+    project: ProjectContext
     oa_timeout_seconds: int
     xstream_timeout_seconds: int
 
@@ -173,37 +173,13 @@ class _MaterializationAssets:
     suppressed_warnings: tuple[str, ...]
 
 
-def _configuration(
-    owner_root: Path,
-    context: ActionContext,
-) -> _AdapterConfiguration:
+def _configuration(context: ActionContext) -> _AdapterConfiguration:
     allowed = {
-        "project_root",
         "oa_timeout_seconds",
         "xstream_timeout_seconds",
     }
     _reject_unknown(context.adapter_config, allowed, "OA materialization Adapter config")
-    relative_text = _text(
-        context.adapter_config.get("project_root", "."),
-        "OA materialization project_root",
-    )
-    relative = Path(relative_text)
-    if relative.is_absolute():
-        project_root = relative.resolve()
-    else:
-        project_root = (owner_root / relative).resolve()
-    if not owner_root.resolve().is_relative_to(project_root):
-        raise FlowExecutionError(
-            "OA materialization project_root must contain the explicit owner root"
-        )
-    try:
-        project = ProjectContext.from_project_root(project_root)
-    except (OSError, ValueError, TypeError) as exc:
-        raise FlowExecutionError(
-            f"invalid OA materialization project root: {exc}"
-        ) from exc
-    if project.project_root != project_root:
-        raise FlowExecutionError("OA materialization project root identity changed")
+    project = context.require_project_scope().project
     timeouts: list[int] = []
     for name, default in (
         ("oa_timeout_seconds", 120),
@@ -213,7 +189,7 @@ def _configuration(
         if type(value) is not int or value <= 0:
             raise FlowExecutionError(f"{name} must be a positive integer")
         timeouts.append(value)
-    return _AdapterConfiguration(project_root, *timeouts)
+    return _AdapterConfiguration(project, *timeouts)
 
 
 def _asset(context: ActionContext) -> ResolvedPlatformAsset:
@@ -402,10 +378,10 @@ def _load_assets(
     configuration: _AdapterConfiguration,
 ) -> _MaterializationAssets:
     asset = _asset(context)
-    project = ProjectContext.from_project_root(configuration.project_root)
+    project = configuration.project
     target, masters = _load_target(
         _member(asset, "oa-target"),
-        project_root=configuration.project_root,
+        project_root=project.project_root,
         workspace_root=project.workspace_root,
     )
     dbu, layers, vias = _load_geometry_mapping(
@@ -852,11 +828,9 @@ class OaXStreamMaterializationAdapter:
 
     def __init__(
         self,
-        owner_root: Path,
         *,
         _client_factory: Callable[[], Any] = get_client,
     ) -> None:
-        self._owner_root = Path(owner_root).resolve()
         self._client_factory = _client_factory
 
     def _inputs(
@@ -873,7 +847,7 @@ class OaXStreamMaterializationAdapter:
         job, result, plan, target = read_materialization_execution_request(context)
         if target.format is not LayoutArtifactFormat.GDSII:
             raise FlowExecutionError("OA/XStream Adapter supports only GDSII")
-        configuration = _configuration(self._owner_root, context)
+        configuration = _configuration(context)
         assets = _load_assets(context, configuration)
         if (assets.target.owner, assets.target.name) != (target.owner, target.name):
             raise FlowExecutionError(
@@ -966,7 +940,7 @@ class OaXStreamMaterializationAdapter:
         *,
         executable: Path,
     ) -> tuple[Path, int]:
-        project = ProjectContext.from_project_root(configuration.project_root)
+        project = configuration.project
         cds_lib = project.workspace_root / "cds.lib"
         if not cds_lib.is_file() or cds_lib.is_symlink():
             raise RuntimeError(f"managed OA workspace cds.lib is unavailable: {cds_lib}")

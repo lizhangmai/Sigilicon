@@ -135,27 +135,7 @@ class DesignCampaignStore:
             "campaign_plan_record_json",
         ):
             _canonical_record(request[field], f"Design Campaign {field}")
-        if not paths.root.exists():
-            try:
-                paths.create()
-            except FileExistsError:
-                pass
-        if (
-            not paths.root.is_dir()
-            or paths.root.is_symlink()
-            or not paths.root.resolve().is_relative_to(self.artifact_root)
-        ):
-            raise ValueError("Design Campaign partial create path is unsafe")
-        known_roles = set(paths.roles)
-        entries = {item.name: item for item in os.scandir(paths.root)}
-        if set(entries) - known_roles:
-            raise ValueError("Design Campaign partial create inventory conflicts")
-        for role in paths.roles:
-            target = paths.role(role)
-            if not target.exists():
-                target.mkdir()
-            if not target.is_dir() or target.is_symlink():
-                raise ValueError("Design Campaign partial create role conflicts")
+        paths.complete_partial_create()
         events = paths.role("control") / "events"
         if not events.exists():
             events.mkdir()

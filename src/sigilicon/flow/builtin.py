@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from sigilicon.flow.fake import fake_registry
 from sigilicon.flow.post_layout import register_post_layout_actions
 from sigilicon.flow.physical_design import register_physical_design_actions
@@ -22,7 +20,7 @@ from sigilicon.flow.synopsys import (
 )
 
 
-def builtin_registry(owner_root: Path | None = None) -> FlowRegistry:
+def builtin_registry() -> FlowRegistry:
     """Assemble implemented package Adapters without inventing site capability."""
 
     registry = fake_registry()
@@ -32,14 +30,10 @@ def builtin_registry(owner_root: Path | None = None) -> FlowRegistry:
     register_post_layout_actions(registry)
     register_circuit_design_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
-    if owner_root is not None:
-        registry.register_adapter("synopsys-dc", SynopsysDCAdapter(owner_root))
-        registry.register_adapter("synopsys-fc", SynopsysFCAdapter(owner_root))
-        registry.register_adapter(
-            "synopsys-hspice",
-            SynopsysHSpiceAdapter(owner_root),
-        )
-        registry.register_adapter("synopsys-vcs", SynopsysVCSAdapter(owner_root))
+    registry.register_adapter("synopsys-dc", SynopsysDCAdapter())
+    registry.register_adapter("synopsys-fc", SynopsysFCAdapter())
+    registry.register_adapter("synopsys-hspice", SynopsysHSpiceAdapter())
+    registry.register_adapter("synopsys-vcs", SynopsysVCSAdapter())
     return registry
 
 

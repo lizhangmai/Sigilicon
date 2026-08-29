@@ -8,7 +8,11 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from sigilicon.artifacts import atomic_write_json, read_json_object
+from sigilicon.artifacts import (
+    atomic_write_json,
+    read_json_object,
+    write_immutable_text,
+)
 from sigilicon.canonical import canonical_json
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.identifiers import bounded_identity
@@ -61,6 +65,29 @@ _REQUEST_FIELDS = _STATE_FIELDS - {
     "environment_identity",
     "environment_record_json",
 }
+_AUDIT_FIELDS = {
+    "schema",
+    "contract_kind",
+    "project_id",
+    "owner",
+    "flow",
+    "target",
+    "run_id",
+    "plan_identity",
+    "grant_identity",
+    "principal",
+    "role",
+    "approval",
+    "required_capabilities",
+    "budget",
+    "environment_identity",
+    "submitted_at",
+    "started_at",
+    "finished_at",
+    "terminal_status",
+    "flow_status",
+    "error_code",
+}
 
 
 def _exact(value: Mapping[str, Any], fields: set[str], label: str) -> None:
@@ -92,6 +119,29 @@ def _canonical_record(value: object, label: str) -> None:
         raise ValueError(f"{label} must be an exact canonical JSON object")
 
 
+def _capabilities(value: object, label: str) -> None:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) for item in value)
+        or value != sorted(set(value))
+        or any(item not in {"execute-derived", "mutate-workspace"} for item in value)
+    ):
+        raise ValueError(f"{label} capabilities are invalid")
+
+
+def _budget(value: object, label: str) -> None:
+    if not isinstance(value, dict) or set(value) != {"maximum_seconds", "maximum_nodes"}:
+        raise ValueError(f"{label} budget is invalid")
+    if (
+        type(value["maximum_seconds"]) is not int
+        or not 1 <= value["maximum_seconds"] <= 86_400
+        or type(value["maximum_nodes"]) is not int
+        or not 1 <= value["maximum_nodes"] <= 10_000
+    ):
+        raise ValueError(f"{label} budget is outside supported bounds")
+
+
 def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
     _exact(value, _REQUEST_FIELDS if request else _STATE_FIELDS, "agentic run record")
     if value.get("schema") != 1:
@@ -109,24 +159,9 @@ def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
     run_identity(value.get("run_id"))
     bounded_identity(value.get("grant_identity"), "agentic execution grant")
     _canonical_record(value.get("grant_json"), "agentic execution grant record")
-    capabilities = value.get("required_capabilities")
-    if (
-        not isinstance(capabilities, list)
-        or not capabilities
-        or capabilities != sorted(set(capabilities))
-        or any(item not in {"execute-derived", "mutate-workspace"} for item in capabilities)
-    ):
-        raise ValueError("agentic run capabilities are invalid")
-    budget = value.get("budget")
-    if not isinstance(budget, dict) or set(budget) != {"maximum_seconds", "maximum_nodes"}:
-        raise ValueError("agentic run budget is invalid")
-    if (
-        type(budget["maximum_seconds"]) is not int
-        or not 1 <= budget["maximum_seconds"] <= 86_400
-        or type(budget["maximum_nodes"]) is not int
-        or not 1 <= budget["maximum_nodes"] <= 10_000
-    ):
-        raise ValueError("agentic run budget is outside supported bounds")
+    _capabilities(value.get("required_capabilities"), "agentic run")
+    _budget(value.get("budget"), "agentic run")
+    budget = value["budget"]
     _timestamp(value.get("submitted_at"), "agentic run submission")
     total = value.get("total_nodes")
     if type(total) is not int or total <= 0 or total > budget["maximum_nodes"]:
@@ -159,6 +194,44 @@ def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
         raise ValueError("running agentic run cannot have a finish timestamp")
 
 
+def _validate_audit(value: Mapping[str, Any]) -> None:
+    _exact(value, _AUDIT_FIELDS, "agentic run audit")
+    if value.get("schema") != 1:
+        raise ValueError("agentic run audit must use schema 1")
+    if value.get("contract_kind") != AGENTIC_RUN_AUDIT_KIND:
+        raise ValueError(f"agentic run audit kind must be {AGENTIC_RUN_AUDIT_KIND!r}")
+    bounded_identity(value.get("project_id"), "agentic project")
+    owner_identity(value.get("owner"), "agentic run owner")
+    identifier(value.get("flow"), "agentic run Flow")
+    identifier(value.get("target"), "agentic run target")
+    run_identity(value.get("run_id"))
+    bounded_identity(value.get("plan_identity"), "agentic Flow Plan")
+    bounded_identity(value.get("grant_identity"), "agentic execution grant")
+    for field in ("principal", "role", "approval", "environment_identity"):
+        identifier(value.get(field), f"agentic run {field}")
+    _capabilities(value.get("required_capabilities"), "agentic run audit")
+    _budget(value.get("budget"), "agentic run audit")
+    _timestamp(value.get("submitted_at"), "agentic run audit submission")
+    _timestamp(value.get("started_at"), "agentic run audit start", nullable=True)
+    _timestamp(value.get("finished_at"), "agentic run audit finish")
+    if value.get("terminal_status") not in TERMINAL_STATUSES:
+        raise ValueError("agentic run audit terminal status is invalid")
+    terminal_status = value["terminal_status"]
+    flow_status = value.get("flow_status")
+    valid_flow_statuses = {
+        "accepted": {"accepted"},
+        "failed": {None, "failed"},
+        "cancelled": {None, "failed"},
+        "budget-exhausted": {None, "accepted", "failed"},
+        "uncertain": {None},
+    }
+    if flow_status not in valid_flow_statuses[terminal_status]:
+        raise ValueError("agentic run audit Flow status is invalid")
+    error = value.get("error_code")
+    if error is not None:
+        identifier(error, "agentic run audit error code")
+
+
 @dataclass(frozen=True)
 class LocatedAgenticRun:
     paths: ArtifactExecutionPaths
@@ -189,6 +262,20 @@ class AgenticRunStore:
             identity=run_id,
         )
 
+    def _validate_path_identity(
+        self,
+        paths: ArtifactExecutionPaths,
+        record: Mapping[str, Any],
+    ) -> None:
+        expected = self.paths(
+            owner=record["owner"],
+            flow=record["flow"],
+            target=record["target"],
+            run_id=record["run_id"],
+        )
+        if paths != expected:
+            raise ValueError("agentic run path identity drift")
+
     def create(
         self,
         paths: ArtifactExecutionPaths,
@@ -203,22 +290,46 @@ class AgenticRunStore:
         shared = (_STATE_FIELDS & _REQUEST_FIELDS) - {"contract_kind"}
         if any(request[field] != state[field] for field in shared):
             raise ValueError("agentic run request/state identity drift")
-        paths.create()
-        atomic_write_json(paths.role("control") / "request.json", request)
-        atomic_write_json(paths.role("control") / "state.json", state)
+        self._validate_path_identity(paths, request)
+        self._validate_path_identity(paths, state)
+        paths.complete_partial_create()
+        request_path = paths.role("control") / "request.json"
+        request_text = canonical_json(dict(request))
+        if request_path.exists():
+            if self.read_request(paths) != dict(request):
+                raise ValueError("agentic run partial request conflict")
+        else:
+            write_immutable_text(request_path, request_text)
+        state_path = paths.role("control") / "state.json"
+        if state_path.exists():
+            if self.read_state(paths) != dict(state):
+                raise ValueError("agentic run partial state conflict")
+        else:
+            atomic_write_json(state_path, state)
 
     def read_request(self, paths: ArtifactExecutionPaths) -> dict[str, Any]:
         request = read_json_object(paths.role("control") / "request.json", "Agentic Run Request")
         _validate_common(request, request=True)
         if request["project_id"] != self.project_id:
             raise ValueError("agentic run request project identity drift")
+        self._validate_path_identity(paths, request)
         return request
+
+    def read_request_if_present(
+        self,
+        paths: ArtifactExecutionPaths,
+    ) -> dict[str, Any] | None:
+        target = paths.role("control") / "request.json"
+        if not target.exists():
+            return None
+        return self.read_request(paths)
 
     def read_state(self, paths: ArtifactExecutionPaths) -> dict[str, Any]:
         state = read_json_object(paths.role("control") / "state.json", "Agentic Run State")
         _validate_common(state, request=False)
         if state["project_id"] != self.project_id:
             raise ValueError("agentic run state project identity drift")
+        self._validate_path_identity(paths, state)
         return state
 
     def write_state(self, paths: ArtifactExecutionPaths, state: Mapping[str, Any]) -> None:
@@ -241,10 +352,29 @@ class AgenticRunStore:
         atomic_write_json(paths.role("control") / "state.json", state)
 
     def write_audit(self, paths: ArtifactExecutionPaths, audit: Mapping[str, Any]) -> None:
+        _validate_audit(audit)
+        if audit["project_id"] != self.project_id:
+            raise ValueError("agentic run audit project identity drift")
+        self._validate_path_identity(paths, audit)
+        request = self.read_request(paths)
+        state = self.read_state(paths)
+        request_fields = (_AUDIT_FIELDS & _REQUEST_FIELDS) - {"contract_kind"}
+        if any(audit[field] != request[field] for field in request_fields):
+            raise ValueError("agentic run audit request identity drift")
+        if state["status"] not in TERMINAL_STATUSES:
+            raise ValueError("agentic run audit requires terminal state")
+        for audit_field, state_field in (
+            ("started_at", "started_at"),
+            ("finished_at", "finished_at"),
+            ("terminal_status", "status"),
+            ("error_code", "error_code"),
+        ):
+            if audit[audit_field] != state[state_field]:
+                raise ValueError("agentic run audit terminal state drift")
         target = paths.role("audit") / "audit.json"
         if target.exists():
             raise ValueError("agentic run audit is immutable")
-        atomic_write_json(target, audit)
+        write_immutable_text(target, canonical_json(dict(audit)))
 
     def locate(self, run_id: str) -> LocatedAgenticRun:
         identity = run_identity(run_id)
@@ -275,7 +405,12 @@ class AgenticRunStore:
         relative = matches[0].relative_to(root)
         owner, target, flow, _identity = relative.parts
         paths = self.paths(owner=owner, target=target, flow=flow, run_id=identity)
-        return LocatedAgenticRun(paths, self.read_state(paths))
+        request = self.read_request(paths)
+        state = self.read_state(paths)
+        shared = (_STATE_FIELDS & _REQUEST_FIELDS) - {"contract_kind"}
+        if any(request[field] != state[field] for field in shared):
+            raise ValueError("agentic run request/state identity drift")
+        return LocatedAgenticRun(paths, state)
 
 
 __all__ = [

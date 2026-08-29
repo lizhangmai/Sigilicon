@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
 from sigilicon.paths import ProjectContext
@@ -115,7 +115,7 @@ def run_xcelium_cell(
     xrun_bin = find_xrun(xrun)
     source_state = artifact_source_state(root)
     paths = ProjectContext.from_project_root(root, artifact_root=artifact_root)
-    owner = RepositoryContext.from_project_root(root).require_owner(plan.contract).name
+    owner = Project.from_project_root(root).require_owner(plan.contract).name
     run_id = new_identity()
     attempt = ArtifactRecord.begin(
         paths.artifacts.execution(

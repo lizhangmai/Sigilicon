@@ -170,6 +170,31 @@ class ArtifactExecutionPaths:
         finally:
             os.close(root_descriptor)
 
+    def complete_partial_create(self) -> None:
+        """Safely finish an interrupted identity/role directory creation."""
+
+        if not self.root.exists():
+            try:
+                self.create()
+            except FileExistsError:
+                pass
+        if (
+            not self.root.is_dir()
+            or self.root.is_symlink()
+            or not self.root.resolve().is_relative_to(self.artifact_root)
+        ):
+            raise ValueError(f"{self.artifact_kind} partial create path is unsafe")
+        known_roles = set(self.roles)
+        entries = {item.name: item for item in os.scandir(self.root)}
+        if set(entries) - known_roles:
+            raise ValueError(f"{self.artifact_kind} partial create inventory conflicts")
+        for role in self.roles:
+            target = self.role(role)
+            if not target.exists():
+                target.mkdir()
+            if not target.is_dir() or target.is_symlink():
+                raise ValueError(f"{self.artifact_kind} partial create role conflicts")
+
 
 @dataclass(frozen=True)
 class OperationIncidentPaths:
@@ -363,10 +388,24 @@ class ProjectContext:
                 raw = tomllib.load(stream)
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"cannot read Sigilicon project context {contract}: {exc}") from exc
+        return cls.from_contract(contract, raw)
+
+    @classmethod
+    def from_contract(
+        cls,
+        path: Path | str,
+        raw: Mapping[str, object],
+    ) -> "ProjectContext":
+        """Construct paths from an already-read explicit project contract."""
+
+        contract = Path(path).resolve()
         if raw.get("schema") != 1 or raw.get("contract_kind") != "sigilicon-project":
             raise ValueError(f"{contract}: invalid Sigilicon project context header")
-        if raw.get("path_scope") != "repository" or not isinstance(
-            raw.get("owner"), str
+        manifest_owner = raw.get("owner")
+        if (
+            raw.get("path_scope") != "repository"
+            or not isinstance(manifest_owner, str)
+            or not manifest_owner
         ):
             raise ValueError(f"{contract}: invalid Sigilicon project context ownership")
         _reject_unknown_fields(
@@ -447,8 +486,25 @@ class ProjectContext:
         return ArtifactLayout(self.artifact_root)
 
 
-def discover_project_context(anchor: Path | str | None = None) -> ProjectContext:
-    """Discover ``sigilicon.toml`` for a public CLI invocation."""
+@dataclass(frozen=True)
+class ProjectScope:
+    """Neutral runtime paths bound to one explicit project owner identity."""
+
+    project: ProjectContext
+    owner: str
+    owner_root: Path
+
+    def __post_init__(self) -> None:
+        owner = validate_artifact_component(self.owner, "project owner")
+        root = Path(self.owner_root).resolve()
+        if not root.is_relative_to(self.project.project_root):
+            raise ValueError("project owner root must stay below the project root")
+        object.__setattr__(self, "owner", owner)
+        object.__setattr__(self, "owner_root", root)
+
+
+def discover_project_contract(anchor: Path | str | None = None) -> Path:
+    """Locate ``sigilicon.toml`` for a public CLI without parsing it."""
 
     starts = [Path.cwd()]
     if anchor is not None:
@@ -462,7 +518,13 @@ def discover_project_context(anchor: Path | str | None = None) -> ProjectContext
             visited.add(candidate)
             contract = candidate / "sigilicon.toml"
             if contract.is_file():
-                return ProjectContext.from_file(contract)
+                return contract.resolve()
     raise RuntimeError(
         "cannot locate sigilicon.toml; run inside a configured project or pass a ProjectContext"
     )
+
+
+def discover_project_context(anchor: Path | str | None = None) -> ProjectContext:
+    """Discover and load project runtime paths for a public CLI invocation."""
+
+    return ProjectContext.from_file(discover_project_contract(anchor))

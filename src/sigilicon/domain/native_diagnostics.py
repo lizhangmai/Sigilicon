@@ -9,7 +9,7 @@ from types import ModuleType
 from typing import Collection, Mapping
 import uuid
 
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 
 
 _REQUIRED_CALLABLES = (
@@ -112,7 +112,7 @@ def load_native_diagnostic_processor(source: Path) -> NativeDiagnosticProcessor:
 
 
 def load_owner_native_diagnostic_processor(
-    repository: RepositoryContext,
+    repository: Project,
     *,
     owner_path: Path,
 ) -> NativeDiagnosticProcessor | None:

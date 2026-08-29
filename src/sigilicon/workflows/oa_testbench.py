@@ -12,7 +12,6 @@ from sigilicon.domain.netlist import (
     parse_spectre_pwl_sources,
 )
 from sigilicon.domain.oa_simulation import OASimulationSpec
-from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.ade import (
     create_oa_native_config_view,
     create_oa_native_maestro_view,
@@ -123,11 +122,11 @@ def _sync_oa_testbench_impl(
         "devselect := resistor res\ndevselect := capacitor cap\n",
     )
     measurement_source = _native_setup_source(spec)
-    paths = ProjectContext.from_project_root(spec.project_root)
+    project = spec.project
 
     with workspace_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         "rebuild-oa-testbench",
         policy=OperationPolicy.DIRECT_MUTATION,
     ) as operation, operation.view_lease(
@@ -139,7 +138,7 @@ def _sync_oa_testbench_impl(
             raise RuntimeError(
                 f"testbench materialization requires existing library {spec.library}"
             )
-        expected_library = paths.workspace_root / spec.library
+        expected_library = project.workspace_root / spec.library
         if operation.require_project_library_target(client, spec.library) != expected_library:
             raise RuntimeError(
                 "testbench library does not resolve inside the project workspace"

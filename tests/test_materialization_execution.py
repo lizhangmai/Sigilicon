@@ -556,6 +556,6 @@ def test_builtin_registry_exposes_only_the_production_materializer() -> None:
     assert contract.adapters == (OA_XSTREAM_MATERIALIZATION_ADAPTER,)
     assert contract.adapter_extensible
     assert not registry.has_adapter(_MATERIALIZER)
-    assert not registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
     assert contract.output("layout").kind == MATERIALIZED_GDS_KIND
     assert contract.output("receipt").kind == MATERIALIZATION_RECEIPT_KIND

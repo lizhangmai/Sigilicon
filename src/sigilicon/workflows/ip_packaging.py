@@ -424,7 +424,8 @@ def _source_inputs(contract: IpContract) -> tuple[str, ...]:
                     f"release testbench config and Maestro sources disagree: {cell.cell}"
                 )
             simulation = load_oa_simulation_spec(
-                next(iter(setup_sources)), project_root=root
+                next(iter(setup_sources)),
+                project=library.project,
             )
             rdb_contract = simulation.native_setup.rdb_contract
             if rdb_contract is not None:

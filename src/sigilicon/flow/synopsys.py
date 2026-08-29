@@ -287,9 +287,6 @@ def _pinned_owner_runner(
 class SynopsysDCAdapter:
     """Run one owner recipe behind the typed ``asic.synthesis`` interface."""
 
-    def __init__(self, owner_root: Path) -> None:
-        self._owner_root = Path(owner_root).resolve()
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         if context.action.kind != "asic.synthesis":
@@ -561,9 +558,6 @@ class SynopsysDCAdapter:
 
 class SynopsysFCAdapter:
     """Run managed reference-library and place-and-route Action interfaces."""
-
-    def __init__(self, owner_root: Path) -> None:
-        self._owner_root = Path(owner_root).resolve()
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
@@ -1108,9 +1102,6 @@ class SynopsysFCAdapter:
 class SynopsysVCSAdapter:
     """Run owner VCS recipes behind typed simulation Action interfaces."""
 
-    def __init__(self, owner_root: Path) -> None:
-        self._owner_root = Path(owner_root).resolve()
-
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         if context.action.kind not in _VCS_TARGETS:
@@ -1322,9 +1313,6 @@ class SynopsysVCSAdapter:
 
 class SynopsysHSpiceAdapter:
     """Run an owner-selected HSPICE regression or characterization campaign."""
-
-    def __init__(self, owner_root: Path) -> None:
-        self._owner_root = Path(owner_root).resolve()
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []

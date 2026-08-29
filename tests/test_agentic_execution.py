@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import sigilicon.workflows.agentic_runs as agentic_runs_module
+
 from sigilicon.cli.agentic_execute import main as agentic_execute_cli_main
 from sigilicon.domain.agentic_execution import (
     AGENTIC_EXECUTION_GRANT_KIND,
@@ -291,3 +293,85 @@ def test_run_locator_never_traverses_symlinked_namespace(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="unknown"):
         store.locate("f" * 32)
+
+
+def test_partial_flow_run_create_recovers_without_replacing_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_read_only_flow_project(tmp_path)
+    plan_identity = _plan_identity(tmp_path)
+    interface = AgenticExecutionInterface.from_project_root(
+        tmp_path,
+        grant=_grant(tmp_path, plan_identity),
+    )
+    original_write = agentic_runs_module.atomic_write_json
+    failed = False
+
+    def interrupt_state_write(path: Path, value: dict[str, object]) -> None:
+        nonlocal failed
+        if path.name == "state.json" and not failed:
+            failed = True
+            raise OSError("injected partial Flow Run create")
+        original_write(path, value)
+
+    monkeypatch.setattr(
+        agentic_runs_module,
+        "atomic_write_json",
+        interrupt_state_write,
+    )
+    with pytest.raises(OSError, match="partial Flow Run create"):
+        interface.run_flow(
+            plan_identity=plan_identity,
+            budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
+            wait=True,
+        )
+    request_path = next((tmp_path / "artifacts").rglob("control/request.json"))
+    request_text = request_path.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        agentic_runs_module,
+        "atomic_write_json",
+        original_write,
+    )
+
+    completed = interface.run_flow(
+        plan_identity=plan_identity,
+        budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
+        wait=True,
+    )
+
+    assert completed["data"]["management"]["status"] == "accepted"
+    assert request_path.read_text(encoding="utf-8") == request_text
+
+
+def test_agentic_run_audit_and_physical_path_identity_are_strict(tmp_path: Path) -> None:
+    write_read_only_flow_project(tmp_path)
+    plan_identity = _plan_identity(tmp_path)
+    interface = AgenticExecutionInterface.from_project_root(
+        tmp_path,
+        grant=_grant(tmp_path, plan_identity),
+    )
+    completed = interface.run_flow(
+        plan_identity=plan_identity,
+        budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
+        wait=True,
+    )
+    run_id = completed["data"]["management"]["run_id"]
+    located = interface.store.locate(run_id)
+    audit_path = located.paths.role("audit") / "audit.json"
+    valid_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit_path.unlink()
+    with pytest.raises(ValueError, match="fields do not match"):
+        interface.store.write_audit(located.paths, {"schema": 1})
+    with pytest.raises(ValueError, match="Flow status"):
+        interface.store.write_audit(
+            located.paths,
+            {**valid_audit, "flow_status": "failed"},
+        )
+
+    state_path = located.paths.role("control") / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["owner"] = "forged-owner"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="path identity drift"):
+        interface.store.locate(run_id)

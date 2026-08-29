@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import sigilicon.domain.repository as repository_module
 
 from sigilicon.paths import (
     ProjectContext,
+    ProjectScope,
     discover_project_context,
     validate_artifact_component,
 )
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project, RepositoryContext
 
 from conftest import write_component_owner
 
@@ -169,6 +172,47 @@ def test_repository_context_rejects_a_retired_catalog_domain(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="unknown catalog roles.*legacy"):
         RepositoryContext.from_project_root(tmp_path)
+
+
+def test_project_is_the_single_manifest_parser_and_repository_compatibility_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = (tmp_path / "sigilicon.toml").resolve()
+    original = repository_module.read_toml
+    manifest_reads = 0
+
+    def counted(path: Path):
+        nonlocal manifest_reads
+        if path.resolve() == contract:
+            manifest_reads += 1
+        return original(path)
+
+    monkeypatch.setattr(repository_module, "read_toml", counted)
+
+    project = Project.from_project_root(tmp_path)
+
+    assert RepositoryContext is Project
+    assert project.manifest_owner == "test"
+    assert project.project_root == tmp_path.resolve()
+    assert project.artifact_root == (tmp_path / "artifacts").resolve()
+    assert manifest_reads == 1
+
+
+def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
+    write_component_owner(tmp_path, "example", filesets={})
+    project = Project.from_project_root(tmp_path)
+
+    scope = project.scope("example")
+
+    assert scope.project.project_root == project.project_root
+    assert scope.owner == "example"
+    assert scope.owner_root == (tmp_path / "ip/example").resolve()
+    selected = project.owner("example")
+    with pytest.raises(ValueError, match="does not contain owner"):
+        project.scope(replace(selected, root=(tmp_path / "ip").resolve()))
+    with pytest.raises(ValueError, match="must stay below the project root"):
+        ProjectScope(scope.project, "example", tmp_path.parent / "outside")
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

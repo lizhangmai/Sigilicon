@@ -14,7 +14,6 @@ from sigilicon.flow import (
     FlowProgress,
     load_execution_environment_contract,
 )
-from sigilicon.paths import ProjectContext
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.agentic_runs import (
     AGENTIC_RUN_AUDIT_KIND,
@@ -41,10 +40,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    read = AgenticReadInterface.from_project_context(
-        ProjectContext.from_project_root(args.project_root)
-    )
-    store = AgenticRunStore(read.repository.project.artifact_root, read.project_id)
+    read = AgenticReadInterface.from_project_root(args.project_root)
+    store = AgenticRunStore(read.repository.artifact_root, read.project_id)
     paths = store.paths(
         owner=args.owner,
         flow=args.flow,
@@ -147,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         flow_result = resolved.engine.run(
             plan,
-            artifact_root=read.repository.project.artifact_root,
+            artifact_root=read.repository.artifact_root,
             environment=environment,
             run_id=request["run_id"],
             progress=progress,

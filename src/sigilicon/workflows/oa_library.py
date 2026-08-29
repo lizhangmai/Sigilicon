@@ -22,10 +22,10 @@ from sigilicon.domain.oa_library import (
     OAViewReference,
     load_oa_library_source,
 )
+from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
-from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.discovery import list_cells
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
@@ -291,7 +291,7 @@ def _plan_designs(
     for cell in source.cells:
         if cell.design_spec is None:
             continue
-        inspection = inspect_design(cell.design_spec, project_root=source.project_root)
+        inspection = inspect_design(cell.design_spec, project=source.project)
         if inspection.spec.library != source.name:
             raise ValueError(
                 f"design spec library differs from {source.name}: {cell.design_spec}"
@@ -440,7 +440,8 @@ def _plan_testbenches(
                 f"testbench {cell.cell} config and Maestro views must share one setup source"
             )
         simulation = load_oa_simulation_spec(
-            next(iter(setup_sources)), project_root=source.project_root
+            next(iter(setup_sources)),
+            project=source.project,
         )
         if simulation.library != source.name or simulation.cell != cell.cell:
             raise ValueError(f"testbench setup identity differs from {cell.cell}")
@@ -491,7 +492,7 @@ def _plan_layouts(
     spec_by_key: dict[tuple[str, str], LayoutSpec] = {}
     for cell in source.cells:
         for spec_path in cell.layout_specs:
-            spec = load_layout_spec(spec_path, project_root=source.project_root)
+            spec = load_layout_spec(spec_path, project=source.project)
             if spec.library != source.name:
                 raise ValueError(
                     f"layout spec library differs from {source.name}: {spec_path}"
@@ -570,12 +571,17 @@ def _plan_views(source: OALibrarySource) -> tuple[ViewRebuildStep, ...]:
 def plan_oa_library_rebuild(
     manifest_path: Path,
     *,
+    project: Project | None = None,
     project_root: Path | None = None,
     library: str | None = None,
 ) -> OALibraryRebuildPlan:
     """Prove that source alone describes every cell and canonical OA view."""
 
-    source = load_oa_library_source(manifest_path, project_root=project_root)
+    source = load_oa_library_source(
+        manifest_path,
+        project=project,
+        project_root=project_root,
+    )
     target_library = library or source.name
     if _IDENTIFIER.fullmatch(target_library) is None:
         raise ValueError("target OA library must be an identifier")
@@ -618,10 +624,10 @@ def attest_oa_testbench(
         raise ValueError(f"testbench plan identity mismatch: {step.cell} != {spec.cell}")
     if spec.native_setup is None:
         raise ValueError(f"native setup is not declared for {step.cell}")
-    paths = ProjectContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
     with workspace_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         "attest-oa-native-setup",
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=False,
@@ -877,14 +883,14 @@ def _attest_layout_steps(
 
     if not steps:
         return
-    paths = ProjectContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
     layout_cells = tuple(dict.fromkeys(step.spec.cell for step in steps))
     layout_views = tuple(
         dict.fromkeys((step.spec.cell, step.spec.view) for step in steps)
     )
     with workspace_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         operation_name,
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=acquire_flow_lock,
@@ -927,10 +933,10 @@ def _discard_undeclared_oa_cache(
     target_cells = tuple(
         sorted(set(extra_cells) | {cell for cell, _view in extra_views})
     )
-    paths = ProjectContext.from_project_root(plan.source.project_root)
+    project = plan.source.project
     with workspace_operation(
         client,
-        paths.workspace_root,
+        project.workspace_root,
         "discard-undeclared-oa-cache",
         policy=OperationPolicy.DIRECT_MUTATION,
     ) as operation, operation.view_lease(
@@ -1071,7 +1077,7 @@ def rebuild_oa_library(
             emit(f"text view {index}/{len(text_steps)}: {action} {identity}")
             sync_oa_text_view(
                 client,
-                project_root=plan.source.project_root,
+                project=plan.source.project,
                 library=plan.library,
                 cell=step.cell,
                 view=step.view.name,

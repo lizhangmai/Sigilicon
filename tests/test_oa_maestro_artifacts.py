@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.artifacts import load_manifest
+from sigilicon.paths import ProjectContext
 from sigilicon.workflows import oa_simulation
 
 
@@ -44,6 +45,7 @@ def _oa_plan(root: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
         simulation=simulation,
     )
     source = SimpleNamespace(
+        project=ProjectContext.from_project_root(root),
         project_root=root,
         cells=(SimpleNamespace(cell=step.cell, owner="fixture-owner"),),
     )

@@ -179,7 +179,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
     )
     register_standard_asic_actions(registry)
     registry.register_adapter("fixture-assets", SourceAssetsAdapter(owner_root))
-    registry.register_adapter("synopsys-dc", SynopsysDCAdapter(owner_root))
+    registry.register_adapter("synopsys-dc", SynopsysDCAdapter())
     spec = FlowSpec(
         owner="fixture",
         flow_id="dc-managed",
