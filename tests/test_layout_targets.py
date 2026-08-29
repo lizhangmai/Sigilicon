@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from sigilicon.cli import flow as flow_cli
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
+from sigilicon.workflows.project_targets import ProjectTargets
 
 from conftest import write_component_owner
 
@@ -60,6 +62,27 @@ def test_layout_target_catalog_can_start_empty(tmp_path: Path) -> None:
     )
 
     assert load_layout_target_catalog(tmp_path).targets == ()
+
+
+def test_layout_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+    project = Project.from_project_root(tmp_path)
+
+    catalog = load_layout_target_catalog(project=project)
+
+    assert catalog.project is project
+    assert catalog.project_root == tmp_path
+
+    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
+        load_layout_target_catalog(tmp_path / "other", project=project)
+
+
+def test_project_targets_preserves_layout_project_identity(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+
+    targets = ProjectTargets.from_file(tmp_path / "sigilicon.toml")
+
+    assert targets.layout().project is targets.project
 
 
 def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -129,6 +152,15 @@ def test_layout_cli_lists_targets_without_opening_a_tool_client(
 ) -> None:
     _catalog_project(tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        Project,
+        "from_project_root",
+        classmethod(
+            lambda cls, root: pytest.fail(
+                "layout CLI must pass its already-loaded Project to the catalog"
+            )
+        ),
+    )
 
     assert flow_cli.main(["layout", "list"], client_factory=object) == 0
 

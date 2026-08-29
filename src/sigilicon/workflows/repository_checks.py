@@ -237,7 +237,7 @@ def inspect_repository_designs(
     designs: dict[str, Any] = {}
     design_catalog_paths = context.flow_catalogs("design_targets")
     if design_catalog_paths:
-        design_catalog = load_design_target_catalog(root)
+        design_catalog = load_design_target_catalog(project=context)
         designs = {
             target.name: {
                 "owner": target.owner,
@@ -250,7 +250,7 @@ def inspect_repository_designs(
     layout_targets: dict[str, Any] = {}
     layout_catalog_paths = context.flow_catalogs("layout_targets")
     if layout_catalog_paths:
-        layout_catalog = load_layout_target_catalog(root)
+        layout_catalog = load_layout_target_catalog(project=context)
         layout_targets = {
             target.name: {
                 "owner": target.owner,

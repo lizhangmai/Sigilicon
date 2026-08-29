@@ -73,22 +73,6 @@ class XceliumCellRun:
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
 
 
-def _project(
-    project: Project | None,
-    project_root: Path | None,
-) -> Project:
-    if project is None:
-        if project_root is None:
-            raise ValueError("Xcelium workflow requires an explicit Project")
-        return Project.from_project_root(project_root)
-    if (
-        project_root is not None
-        and Path(project_root).resolve() != project.project_root
-    ):
-        raise ValueError("Xcelium project root disagrees with Project")
-    return project
-
-
 def _resolve_contract(path: Path, *, project: Project) -> Path:
     root = project.project_root
     contract = path.resolve() if path.is_absolute() else (root / path).resolve()
@@ -106,7 +90,7 @@ def plan_xcelium_cell(
 ) -> XceliumCellPlan:
     """Resolve a cell without finding or launching an external simulator."""
 
-    repository = _project(project, project_root)
+    repository = Project.bind(project=project, project_root=project_root)
     contract = _resolve_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() != "xcelium":
@@ -164,7 +148,7 @@ def run_xcelium_cell(
 ) -> XceliumCellRun:
     """Run one verification cell through an isolated artifact work directory."""
 
-    repository = _project(project, project_root)
+    repository = Project.bind(project=project, project_root=project_root)
     if artifact_root is not None:
         repository = repository.with_artifact_root(artifact_root)
     root = repository.project_root

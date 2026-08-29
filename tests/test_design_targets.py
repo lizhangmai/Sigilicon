@@ -6,7 +6,9 @@ import sys
 import pytest
 
 from sigilicon.cli import flow as flow_cli
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.design_targets import load_design_target_catalog
+from sigilicon.workflows.project_targets import ProjectTargets
 
 from conftest import write_component_owner
 
@@ -65,6 +67,27 @@ def test_design_target_catalog_can_start_empty(tmp_path: Path) -> None:
     )
 
     assert load_design_target_catalog(tmp_path).targets == ()
+
+
+def test_design_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+    project = Project.from_project_root(tmp_path)
+
+    catalog = load_design_target_catalog(project=project)
+
+    assert catalog.project is project
+    assert catalog.project_root == tmp_path
+
+    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
+        load_design_target_catalog(tmp_path / "other", project=project)
+
+
+def test_project_targets_preserves_design_project_identity(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+
+    targets = ProjectTargets.from_file(tmp_path / "sigilicon.toml")
+
+    assert targets.design().project is targets.project
 
 
 def test_design_catalog_owner_must_match_project_flow(tmp_path: Path) -> None:
@@ -211,6 +234,15 @@ def test_design_cli_lists_targets_without_executing_a_runner(
 ) -> None:
     _catalog_project(tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        Project,
+        "from_project_root",
+        classmethod(
+            lambda cls, root: pytest.fail(
+                "design CLI must pass its already-loaded Project to the catalog"
+            )
+        ),
+    )
     events: list[object] = []
 
     assert (

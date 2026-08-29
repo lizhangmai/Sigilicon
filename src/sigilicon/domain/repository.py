@@ -255,6 +255,26 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
+    @classmethod
+    def bind(
+        cls,
+        *,
+        project: "Project" | None = None,
+        project_root: Path | str | None = None,
+    ) -> "Project":
+        """Reuse an explicit Project or bind one explicit legacy root."""
+
+        if project is None:
+            if project_root is None:
+                raise ValueError("an explicit Project or project root is required")
+            return cls.from_project_root(project_root)
+        if (
+            project_root is not None
+            and Path(project_root).resolve() != project.project_root
+        ):
+            raise ValueError("project root disagrees with explicit Project")
+        return project
+
     @property
     def project_root(self) -> Path:
         return self._paths.project_root

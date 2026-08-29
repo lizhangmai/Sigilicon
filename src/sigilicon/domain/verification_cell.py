@@ -144,17 +144,7 @@ def load_verification_cell(
 ) -> VerificationCellSpec:
     """Load and validate one ``contract_kind = verification-cell`` document."""
 
-    if project is None:
-        if project_root is None:
-            raise ValueError("verification cell loading requires an explicit Project")
-        repository = Project.from_project_root(project_root)
-    else:
-        repository = project
-        if (
-            project_root is not None
-            and Path(project_root).resolve() != repository.project_root
-        ):
-            raise ValueError("verification cell project root disagrees with Project")
+    repository = Project.bind(project=project, project_root=project_root)
     contract = path.resolve()
     root = repository.project_root
     if not contract.is_relative_to(root) or not contract.is_file():

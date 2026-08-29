@@ -83,8 +83,12 @@ class DesignTarget:
 @dataclass(frozen=True)
 class DesignTargetCatalog:
     paths: tuple[Path, ...]
-    project_root: Path
+    project: Project
     targets: tuple[DesignTarget, ...]
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
 
     def get(self, name: str) -> DesignTarget:
         try:
@@ -158,10 +162,12 @@ def _modes(value: object, field: str) -> tuple[DesignMode, ...]:
 
 
 def load_design_target_catalog(
-    project_root: Path,
+    project_root: Path | None = None,
+    *,
+    project: Project | None = None,
 ) -> DesignTargetCatalog:
-    root = project_root.resolve()
-    repository = Project.from_project_root(root)
+    repository = Project.bind(project=project, project_root=project_root)
+    root = repository.project_root
     catalogs = repository.flow_catalogs("design_targets")
     if not catalogs:
         raise ValueError("project context declares no design target catalogs")
@@ -256,4 +262,8 @@ def load_design_target_catalog(
                     modes=_modes(row.get("modes"), f"{field}.modes"),
                 )
             )
-    return DesignTargetCatalog(tuple(path for _, path in catalogs), root, tuple(targets))
+    return DesignTargetCatalog(
+        tuple(path for _, path in catalogs),
+        repository,
+        tuple(targets),
+    )

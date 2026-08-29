@@ -21,9 +21,8 @@ from sigilicon.workflows.ip_integration import (
 from sigilicon.workflows.design_targets import (
     DesignTarget,
     execute_design_target,
-    load_design_target_catalog,
 )
-from sigilicon.workflows.layout_targets import LayoutTarget, load_layout_target_catalog
+from sigilicon.workflows.layout_targets import LayoutTarget
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release,
     build_ip_release,
@@ -32,6 +31,7 @@ from sigilicon.workflows.ip_packaging import (
 )
 from sigilicon.workflows.oa_check import UnavailableBridge
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
+from sigilicon.workflows.project_targets import ProjectTargets
 
 
 def _target_payload(target: LayoutTarget) -> dict[str, object]:
@@ -345,9 +345,13 @@ def _run_ip(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
-def _run_layout(args: argparse.Namespace, root: Path, client_factory: Any) -> int:
+def _run_layout(
+    args: argparse.Namespace,
+    project: ProjectTargets,
+    client_factory: Any,
+) -> int:
     try:
-        catalog = load_layout_target_catalog(root)
+        catalog = project.layout()
         if args.action == "list":
             payload = [_target_payload(target) for target in catalog.targets]
             if args.json:
@@ -400,11 +404,11 @@ def _run_layout(args: argparse.Namespace, root: Path, client_factory: Any) -> in
 
 def _run_design(
     args: argparse.Namespace,
-    root: Path,
+    project: ProjectTargets,
     process_executor: Callable[[str, list[str]], Any] | None,
 ) -> int:
     try:
-        catalog = load_design_target_catalog(root)
+        catalog = project.design()
         if args.action == "list":
             payload = [_design_target_payload(target) for target in catalog.targets]
             if args.json:
@@ -584,12 +588,20 @@ def main(
             ProjectOaWorkflow.from_file(project_contract),
             client_factory,
         )
-    root = ProjectContext.from_file(project_contract).project_root
     if args.domain == "layout":
-        return _run_layout(args, root, client_factory)
+        return _run_layout(
+            args,
+            ProjectTargets.from_file(project_contract),
+            client_factory,
+        )
     if args.domain == "design":
-        return _run_design(args, root, process_executor)
+        return _run_design(
+            args,
+            ProjectTargets.from_file(project_contract),
+            process_executor,
+        )
     if args.domain == "ip":
+        root = ProjectContext.from_file(project_contract).project_root
         return _run_ip(args, root)
     raise AssertionError(f"unhandled flow domain: {args.domain}")
 

@@ -215,6 +215,18 @@ def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
         ProjectScope(scope.project, "example", tmp_path.parent / "outside")
 
 
+def test_project_bind_reuses_identity_and_checks_legacy_root(tmp_path: Path) -> None:
+    write_component_owner(tmp_path, "example", filesets={})
+    project = Project.from_project_root(tmp_path)
+
+    assert Project.bind(project=project) is project
+    assert Project.bind(project=project, project_root=tmp_path) is project
+    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
+        Project.bind(project=project, project_root=tmp_path / "other")
+    with pytest.raises(ValueError, match="explicit Project or project root"):
+        Project.bind()
+
+
 def test_execution_creation_rejects_symlinked_structural_components(
     tmp_path: Path,
 ) -> None:

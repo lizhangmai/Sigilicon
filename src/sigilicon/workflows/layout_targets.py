@@ -32,8 +32,12 @@ class LayoutTarget:
 @dataclass(frozen=True)
 class LayoutTargetCatalog:
     paths: tuple[Path, ...]
-    project_root: Path
+    project: Project
     targets: tuple[LayoutTarget, ...]
+
+    @property
+    def project_root(self) -> Path:
+        return self.project.project_root
 
     def get(self, name: str, *, action: str | None = None) -> LayoutTarget:
         try:
@@ -78,10 +82,12 @@ def _actions(value: object, field: str) -> tuple[str, ...]:
 
 
 def load_layout_target_catalog(
-    project_root: Path,
+    project_root: Path | None = None,
+    *,
+    project: Project | None = None,
 ) -> LayoutTargetCatalog:
-    root = project_root.resolve()
-    repository = Project.from_project_root(root)
+    repository = Project.bind(project=project, project_root=project_root)
+    root = repository.project_root
     catalogs = repository.flow_catalogs("layout_targets")
     if not catalogs:
         raise ValueError("project context declares no layout target catalogs")
@@ -136,4 +142,8 @@ def load_layout_target_catalog(
                     actions=_actions(row.get("actions"), f"{field}.actions"),
                 )
             )
-    return LayoutTargetCatalog(tuple(path for _, path in catalogs), root, tuple(targets))
+    return LayoutTargetCatalog(
+        tuple(path for _, path in catalogs),
+        repository,
+        tuple(targets),
+    )
