@@ -320,7 +320,10 @@ def _load_native_rdb_contract(
                 "native RDB diagnostic_processor must be an existing "
                 "testbench-owned file"
             )
-        diagnostic_processor = load_native_diagnostic_processor(processor_source)
+        diagnostic_processor = load_native_diagnostic_processor(
+            processor_source,
+            project_root=project_root,
+        )
 
     diagnostic_equivalence: NativeDiagnosticContract | None = None
     if diagnostic_raw is not None:

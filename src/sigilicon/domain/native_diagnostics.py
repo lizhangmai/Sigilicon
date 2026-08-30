@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import inspect
 from pathlib import Path
@@ -22,6 +24,21 @@ _REQUIRED_CALLABLES = (
     "reconstruct",
     "attestation_requirements",
 )
+
+
+@contextmanager
+def _project_import_path(project_root: Path) -> Iterator[None]:
+    """Expose the explicitly selected project only while loading its processor."""
+
+    root = str(project_root.resolve())
+    already_present = root in sys.path
+    if not already_present:
+        sys.path.insert(0, root)
+    try:
+        yield
+    finally:
+        if not already_present:
+            sys.path.remove(root)
 
 
 @dataclass(frozen=True)
@@ -109,10 +126,15 @@ class NativeDiagnosticProcessor:
         return value
 
 
-def load_native_diagnostic_processor(source: Path) -> NativeDiagnosticProcessor:
+def load_native_diagnostic_processor(
+    source: Path, *, project_root: Path
+) -> NativeDiagnosticProcessor:
     """Load one processor explicitly selected by its native RDB contract."""
 
     source = source.resolve()
+    root = project_root.resolve()
+    if not source.is_relative_to(root):
+        raise ValueError("native diagnostic processor must stay inside its project")
     snapshot = load_text_source_snapshot(source)
     module_name = f"_sigilicon_project_native_diagnostics_{uuid.uuid4().hex}"
     module = ModuleType(module_name)
@@ -121,7 +143,8 @@ def load_native_diagnostic_processor(source: Path) -> NativeDiagnosticProcessor:
     previous = sys.modules.get(module_name)
     sys.modules[module_name] = module
     try:
-        exec(compile(snapshot.text, str(source), "exec"), module.__dict__)
+        with _project_import_path(root):
+            exec(compile(snapshot.text, str(source), "exec"), module.__dict__)
     finally:
         if previous is None:
             sys.modules.pop(module_name, None)
@@ -149,4 +172,7 @@ def load_owner_native_diagnostic_processor(
     source = repository.owner_file(owner_path, "native_diagnostics")
     if source is None:
         return None
-    return load_native_diagnostic_processor(source)
+    return load_native_diagnostic_processor(
+        source,
+        project_root=repository.project_root,
+    )

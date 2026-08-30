@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import sys
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from sigilicon.domain.config_contracts import thaw_toml_document
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
+    load_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import Project
 from sigilicon.domain.source import TextSourceSnapshot
@@ -463,8 +465,6 @@ def load_contract(raw, *, contract_path, project_root):
         settings={},
         scalar_outputs=(("diag_value", 'value(VT("/OUT") 1u)'),),
     )
-
-
 def validate_contract(diagnostic, *, point_count):
     if point_count != 1:
         raise ValueError("fixture expects one point")
@@ -487,6 +487,55 @@ def attestation_requirements(diagnostic, tests):
 ''',
         encoding="utf-8",
     )
+
+
+def test_native_diagnostic_processor_imports_its_selected_project(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    policy = project / "project_diagnostic_policy.py"
+    policy.write_text('KIND = "project-fixture"\n', encoding="utf-8")
+    processor = project / "native_diagnostics.py"
+    processor.write_text(
+        '''from project_diagnostic_policy import KIND
+from sigilicon.domain.native_diagnostics import NativeDiagnosticContract
+
+
+def load_contract(raw, *, contract_path, project_root):
+    return NativeDiagnosticContract(KIND, {}, (), (project_root / "project_diagnostic_policy.py",))
+
+
+def validate_contract(diagnostic, *, point_count):
+    return None
+
+
+def validate_source(diagnostic, setup_text):
+    return ()
+
+
+def nullable_scalar_names(diagnostic):
+    return ()
+
+
+def reconstruct(result, contract):
+    return {}
+
+
+def attestation_requirements(diagnostic, tests):
+    return {}
+''',
+        encoding="utf-8",
+    )
+    assert str(project.resolve()) not in sys.path
+
+    loaded = load_native_diagnostic_processor(
+        processor,
+        project_root=project,
+    )
+
+    assert loaded.implementation.KIND == "project-fixture"
+    assert str(project.resolve()) not in sys.path
 
 
 def test_native_rdb_selects_a_testbench_local_diagnostic_processor(
