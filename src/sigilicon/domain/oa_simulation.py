@@ -656,10 +656,15 @@ def resolve_oa_simulation_spec(
         rdb_contract is not None and rdb_contract.path != native_rdb_path
     ):
         raise ValueError("OA simulation snapshot native RDB path identity drift")
-    if any(
-        not isinstance(source, Path) or not isinstance(document, Mapping)
-        for source, document in snapshot.source_documents.items()
-    ) or set(snapshot.source_documents) != expected_documents:
+    if (
+        not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE)
+        or any(
+            not isinstance(source, Path)
+            or not is_frozen_toml_document(document)
+            for source, document in snapshot.source_documents.items()
+        )
+        or set(snapshot.source_documents) != expected_documents
+    ):
         raise ValueError("OA simulation snapshot source document identity drift")
     if any(
         source != source.resolve()
@@ -696,10 +701,11 @@ def resolve_oa_simulation_spec(
         }
     ):
         raise ValueError("OA simulation snapshot source document drift")
-    if rdb_contract is not None and (
-        snapshot.source_documents[rdb_contract.path]
-        != rdb_contract.source_document
-        or rdb_contract.source_document.get("schema") != 2
-    ):
-        raise ValueError("OA simulation snapshot native RDB document drift")
+    if rdb_contract is not None:
+        if not is_frozen_toml_document(rdb_contract.source_document) or (
+            snapshot.source_documents[rdb_contract.path]
+            != rdb_contract.source_document
+            or rdb_contract.source_document.get("schema") != 2
+        ):
+            raise ValueError("OA simulation snapshot native RDB document drift")
     return snapshot

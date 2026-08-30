@@ -10,6 +10,7 @@ from sigilicon.domain.oa_simulation import (
     load_oa_simulation_spec,
     resolve_oa_simulation_spec,
 )
+from sigilicon.domain.config_contracts import thaw_toml_document
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
@@ -220,7 +221,7 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
         **drifted_document["testbench"],
         "library": "drift",
     }
-    with pytest.raises(ValueError, match="source document drift"):
+    with pytest.raises(ValueError, match="source document identity drift"):
         resolve_oa_simulation_spec(
             spec_path,
             project=project,
@@ -228,6 +229,19 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
                 spec,
                 source_documents={spec_path.resolve(): drifted_document},
             ),
+        )
+    mutable_nested = MappingProxyType(
+        {
+            spec_path.resolve(): thaw_toml_document(
+                spec.source_documents[spec_path.resolve()]
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="source document identity drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=replace(spec, source_documents=mutable_nested),
         )
     unowned = root / "unowned/simulation.toml"
     unowned.parent.mkdir()
