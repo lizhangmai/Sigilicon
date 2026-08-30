@@ -418,7 +418,25 @@ domains = []
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
     )
+    _refresh_lock_manifest_digest(contract, manifest_path)
     return manifest_path
+
+
+def _refresh_lock_manifest_digest(contract: Path, manifest_path: Path) -> None:
+    lock_path = contract.parent / "dependency.lock.toml"
+    _replace_lock_value(
+        lock_path,
+        "manifest_sha256",
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    )
+
+
+def _replace_lock_value(lock_path: Path, field: str, value: str) -> None:
+    source = lock_path.read_text(encoding="utf-8")
+    marker = f'{field} = "'
+    start = source.index(marker) + len(marker)
+    end = source.index('"', start)
+    lock_path.write_text(source[:start] + value + source[end:], encoding="utf-8")
 
 
 def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Path:
@@ -479,6 +497,12 @@ blockers = ["implementation_release_missing"]
 """,
         encoding="utf-8",
     )
+    manifest_path = project_root.parent / "artifacts" / manifest
+    manifest_sha256 = (
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if manifest_path.is_file()
+        else "b" * 64
+    )
     (owner_root / "configs/dependency.lock.toml").write_text(
         f"""schema = 1
 contract_kind = "ip-dependency-lock"
@@ -492,6 +516,8 @@ name = "fixture-ip"
 release_id = "{release_id}"
 manifest = "{manifest}"
 maturity = "development"
+source_commit = "{'a' * 40}"
+manifest_sha256 = "{manifest_sha256}"
 """,
         encoding="utf-8",
     )
@@ -874,6 +900,10 @@ def test_locked_release_resolution_preserves_symlink_evidence(
         release_id=release_id,
         manifest=PurePosixPath("release-alias/manifest.json"),
         maturity="development",
+        source_commit="a" * 40,
+        manifest_sha256=hashlib.sha256(
+            (release_root / "manifest.json").read_bytes()
+        ).hexdigest(),
     )
 
     with pytest.raises(RuntimeError, match="symlink"):
@@ -1295,6 +1325,8 @@ def test_native_oa_binding_rejects_transaction_shell_fields(
     (
         ("lock-identity", "lock identity"),
         ("lock-maturity", "lock maturity"),
+        ("lock-source-commit", "source commit"),
+        ("manifest-digest", "manifest digest"),
         ("dirty-source", "dirty source"),
         ("provider-drift", "provider owner"),
         ("role-unavailable", "unavailable for simulation"),
@@ -1332,6 +1364,10 @@ def test_native_oa_locked_release_retains_fail_closed_safeguards(
             ),
             encoding="utf-8",
         )
+    elif case == "lock-source-commit":
+        _replace_lock_value(lock_path, "source_commit", "c" * 40)
+    elif case == "manifest-digest":
+        _replace_lock_value(lock_path, "manifest_sha256", "c" * 64)
     else:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         if case == "dirty-source":
@@ -1353,6 +1389,7 @@ def test_native_oa_locked_release_retains_fail_closed_safeguards(
             json.dumps(payload, indent=2) + "\n",
             encoding="utf-8",
         )
+        _refresh_lock_manifest_digest(contract_path, manifest_path)
 
     with pytest.raises((RuntimeError, ValueError), match=message):
         check_ip_integration(
@@ -2008,6 +2045,16 @@ def test_ip_integration_rejects_invalid_locked_release_state(
         )
     else:  # pragma: no cover - the parametrization is closed above
         raise AssertionError(case)
+
+    if case in {
+        "unavailable",
+        "dirty-source",
+        "provider-drift",
+        "interface-drift",
+        "failed-maturity-check",
+        "module-drift",
+    }:
+        _refresh_lock_manifest_digest(contract, manifest_path)
 
     with pytest.raises((RuntimeError, FileNotFoundError), match=message):
         check_ip_integration(

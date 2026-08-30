@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 from pathlib import Path
 import tomllib
@@ -505,12 +506,26 @@ def resolve_locked_ip_release(
     manifest_path = root / Path(pinned.manifest)
     if not manifest_path.resolve().is_relative_to(root):
         raise RuntimeError("IP dependency lock escapes the artifact root")
+    try:
+        manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise FileNotFoundError(
+            f"IP dependency release manifest is unavailable: {manifest_path}"
+        ) from exc
+    if manifest_digest != pinned.manifest_sha256:
+        raise RuntimeError(
+            "IP dependency lock manifest digest does not match its package"
+        )
     manifest = audit_ip_release_manifest(manifest_path)
     if (
         manifest.get("ip_name") != pinned.name
         or manifest.get("release_id") != pinned.release_id
     ):
         raise RuntimeError("IP dependency lock identity does not match its manifest")
+    if manifest.get("source_commit") != pinned.source_commit:
+        raise RuntimeError(
+            "IP dependency lock source commit does not match its manifest"
+        )
     maturity = manifest.get("maturity")
     if not isinstance(maturity, Mapping):
         raise RuntimeError("IP dependency release has no maturity record")
@@ -698,6 +713,8 @@ def check_ip_integration(
                 "name": dependency.name,
                 "export": release.export,
                 "release_id": pinned.release_id,
+                "source_commit": pinned.source_commit,
+                "manifest_sha256": pinned.manifest_sha256,
                 "maturity": actual_level,
                 "manifest": manifest_path.relative_to(artifact_root).as_posix(),
                 "role_exports": {

@@ -42,6 +42,23 @@ def _string(value: object, label: str) -> str:
     return value
 
 
+def _hex_digest(
+    value: object,
+    label: str,
+    *,
+    lengths: tuple[int, ...],
+) -> str:
+    digest = _string(value, label)
+    if len(digest) not in lengths or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        allowed = " or ".join(str(length) for length in lengths)
+        raise ValueError(
+            f"{label} must be a {allowed}-character lowercase hex digest"
+        )
+    return digest
+
+
 @dataclass(frozen=True)
 class OaReleaseInterfaceReference:
     kind: Literal["oa-mixed-signal"]
@@ -201,6 +218,8 @@ class LockedIpRelease:
     release_id: str
     manifest: PurePosixPath
     maturity: str
+    source_commit: str
+    manifest_sha256: str
 
 
 @dataclass(frozen=True)
@@ -927,6 +946,19 @@ def load_ip_dependency_lock(
     locked: list[LockedIpRelease] = []
     for index, value in enumerate(entries):
         item = _table(value, f"lock.dependency[{index}]")
+        required_fields = {
+            "name",
+            "release_id",
+            "manifest",
+            "maturity",
+            "source_commit",
+            "manifest_sha256",
+        }
+        if set(item) != required_fields:
+            raise ValueError(
+                f"lock.dependency[{index}] fields must be exactly "
+                f"{sorted(required_fields)}"
+            )
         maturity = _string(
             item.get("maturity"), f"lock.dependency[{index}].maturity"
         )
@@ -944,6 +976,16 @@ def load_ip_dependency_lock(
                     f"lock.dependency[{index}].manifest",
                 ),
                 maturity=maturity,
+                source_commit=_hex_digest(
+                    item.get("source_commit"),
+                    f"lock.dependency[{index}].source_commit",
+                    lengths=(40, 64),
+                ),
+                manifest_sha256=_hex_digest(
+                    item.get("manifest_sha256"),
+                    f"lock.dependency[{index}].manifest_sha256",
+                    lengths=(64,),
+                ),
             )
         )
     expected = {item.name for item in contract.release_dependencies}
