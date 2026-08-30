@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 import sigilicon.domain.oa_library as oa_library_domain
+from sigilicon.domain.config_contracts import thaw_toml_document
 from sigilicon.domain.oa_library import (
     load_oa_library_source,
     resolve_oa_library_source,
@@ -154,6 +155,92 @@ def test_oa_assembly_reuses_one_explicit_project(tmp_path: Path) -> None:
             snapshot=assembly,
         )
     source_root = assembly.source_roots[0]
+    assert assembly.physical_verification is not None
+    mutable_snapshots = (
+        (
+            replace(
+                assembly,
+                source_roots=(
+                    replace(
+                        source_root,
+                        source_documents=dict(source_root.source_documents),
+                    ),
+                    *assembly.source_roots[1:],
+                ),
+            ),
+            "source-root documents are mutable",
+        ),
+        (
+            replace(
+                assembly,
+                source_roots=(
+                    replace(
+                        source_root,
+                        source_documents=MappingProxyType(
+                            {
+                                source: thaw_toml_document(document)
+                                for source, document in (
+                                    source_root.source_documents.items()
+                                )
+                            }
+                        ),
+                    ),
+                    *assembly.source_roots[1:],
+                ),
+            ),
+            "source-root documents are mutable",
+        ),
+        (
+            replace(
+                assembly,
+                source_documents=dict(assembly.source_documents),
+            ),
+            "assembly documents are mutable",
+        ),
+        (
+            replace(
+                assembly,
+                source_documents=MappingProxyType(
+                    {
+                        source: dict(document)
+                        for source, document in assembly.source_documents.items()
+                    }
+                ),
+            ),
+            "assembly documents are mutable",
+        ),
+        (
+            replace(
+                assembly,
+                physical_verification=replace(
+                    assembly.physical_verification,
+                    document=thaw_toml_document(
+                        assembly.physical_verification.document
+                    ),
+                ),
+            ),
+            "physical policy drift",
+        ),
+        (
+            replace(
+                assembly,
+                physical_verification=replace(
+                    assembly.physical_verification,
+                    drc_disabled_defines=dict(
+                        assembly.physical_verification.drc_disabled_defines
+                    ),
+                ),
+            ),
+            "physical policy drift",
+        ),
+    )
+    for mutable_snapshot, message in mutable_snapshots:
+        with pytest.raises(ValueError, match=message):
+            resolve_oa_library_source(
+                manifest,
+                project=project,
+                snapshot=mutable_snapshot,
+            )
     unexpected = source_root.directory / "unexpected.toml"
     tampered_documents = dict(source_root.source_documents)
     tampered_documents[unexpected] = source_root.source_documents[

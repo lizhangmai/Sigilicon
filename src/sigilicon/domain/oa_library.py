@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from sigilicon.domain.config_contracts import (
     freeze_toml_document,
+    is_frozen_toml_document,
     require_config_header,
 )
 from sigilicon.domain.physical_verification import (
@@ -63,6 +64,7 @@ _ASSEMBLY_FIELDS = {
     "primitive_masters",
     "physical_verification",
 }
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 @dataclass(frozen=True, order=True)
@@ -834,6 +836,13 @@ def resolve_oa_library_source(
             for cell_root in source_root.cell_roots
         ):
             raise ValueError("OA source snapshot source root declares no OA cells")
+        if not isinstance(
+            source_root.source_documents, _MAPPING_PROXY_TYPE
+        ) or any(
+            not is_frozen_toml_document(document)
+            for document in source_root.source_documents.values()
+        ):
+            raise ValueError("OA source snapshot source-root documents are mutable")
         expected_cells.extend(source_root.cells)
     if tuple(expected_cells) != snapshot.cells:
         raise ValueError("OA source snapshot cell inventory drift")
@@ -863,6 +872,8 @@ def resolve_oa_library_source(
             policy.path != policy.path.resolve()
             or not policy.path.is_relative_to(owner.root)
             or not policy.document
+            or not is_frozen_toml_document(policy.document)
+            or not isinstance(policy.drc_disabled_defines, _MAPPING_PROXY_TYPE)
             or parse_physical_verification_policy(
                 policy.path,
                 policy.document,
@@ -877,4 +888,9 @@ def resolve_oa_library_source(
         expected_documents[policy.path] = policy.document
     if dict(snapshot.source_documents) != expected_documents:
         raise ValueError("OA source snapshot document content drift")
+    if not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE) or any(
+        not is_frozen_toml_document(document)
+        for document in snapshot.source_documents.values()
+    ):
+        raise ValueError("OA source snapshot assembly documents are mutable")
     return snapshot

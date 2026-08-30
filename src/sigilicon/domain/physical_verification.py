@@ -295,7 +295,7 @@ def _integer_map(value: object, field: str) -> Mapping[str, int]:
         ):
             raise ValueError(f"{field} must map names to integers")
         result[name] = item
-    return result
+    return MappingProxyType(result)
 
 
 def load_physical_verification_policy(
