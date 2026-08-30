@@ -785,6 +785,26 @@ def render_canonical_cdl(
     return "\n".join(lines)
 
 
+def render_canonical_spectre(hierarchy: NetlistHierarchy) -> str:
+    """Render one resolved hierarchy as a self-contained Spectre source.
+
+    Only subcircuits reachable from ``hierarchy.top`` are emitted.  Child
+    definitions precede their parents so a packaged source has a deterministic
+    order independent of the producer's directory layout.
+    """
+
+    lines = ["simulator lang=spectre", ""]
+    for name in hierarchy.dependency_order:
+        definition = hierarchy.definitions[name]
+        header = f"subckt {name} {' '.join(definition.ports)}".rstrip()
+        if definition.parameters:
+            header += " parameters " + " ".join(definition.parameters)
+        lines.append(header)
+        lines.extend(f"    {statement}" for statement in definition.statements)
+        lines.extend((f"ends {name}", ""))
+    return "\n".join(lines)
+
+
 _PARAMETER_DEFAULT = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_$]*)=(?P<value>[^\s]+)\Z"
 )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import tomllib
@@ -401,6 +402,11 @@ domains = []
         view["size"] = (release_root / view["path"]).stat().st_size
         if view["role"] == "circuit_netlist":
             view["format"] = "spectre-source"
+            circuit = (release_root / view["path"]).read_bytes()
+            view["composition"] = "reachable-spectre-hierarchy"
+            view["subcircuits"] = ["fixture_macro"]
+            view["primitive_masters"] = []
+            view["sha256"] = hashlib.sha256(circuit).hexdigest()
     manifest_path.write_text(
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",

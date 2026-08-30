@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import shutil
@@ -304,7 +305,15 @@ OUT = "output"
         encoding="utf-8",
     )
     (sources / "circuit.scs").write_text(
-        "subckt NATIVE_TOP IN OUT\nends NATIVE_TOP\n",
+        "subckt NATIVE_TOP IN OUT\n"
+        "X0 (IN OUT) NATIVE_CHILD\n"
+        "ends NATIVE_TOP\n",
+        encoding="utf-8",
+    )
+    (sources / "child.scs").write_text(
+        "subckt NATIVE_CHILD IN OUT\n"
+        "M0 (OUT IN 0 0) nch_mac l=30n w=120n\n"
+        "ends NATIVE_CHILD\n",
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
@@ -320,6 +329,7 @@ kind = "hard-macro"
 interface = ["ip/native_fixture/configs/interface.toml"]
 ports = ["ip/native_fixture/sources/design.toml"]
 circuit = ["ip/native_fixture/sources/circuit.scs"]
+circuit_dependencies = ["ip/native_fixture/sources/child.scs"]
 ''',
         encoding="utf-8",
     )
@@ -399,6 +409,21 @@ contract = "ip/native_fixture/configs/release.toml"
     return contract
 
 
+def _native_oa_library_fixture(root: Path) -> SimpleNamespace:
+    sources = root / "ip/native_fixture/sources"
+    return SimpleNamespace(
+        name="native-lib",
+        primitive_masters=("nch_mac",),
+        cells=tuple(
+            SimpleNamespace(
+                canonical_source=sources / filename,
+                views=(SimpleNamespace(kind="spectre_netlist"),),
+            )
+            for filename in ("circuit.scs", "child.scs")
+        ),
+    )
+
+
 def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> None:
     contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
 
@@ -435,6 +460,11 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     )
     monkeypatch.setattr(
         ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+    )
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
 
     plan = ip_packaging.plan_ip_release_contract(contract)
@@ -478,15 +508,31 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         "physical_port_count": 2,
         "native_oa_port_contract_checked": True,
     }
+    circuit = next(
+        item for item in plan["collateral"] if item["role"] == "circuit_netlist"
+    )
+    assert circuit["composition"] == "reachable-spectre-hierarchy"
+    assert circuit["subcircuits"] == ["NATIVE_CHILD", "NATIVE_TOP"]
+    assert circuit["primitive_masters"] == ["nch_mac"]
 
     built = ip_packaging.build_ip_release(
         contract_path,
         project=contract.project,
     )
     manifest = contract.project.artifact_root / built["manifest"]
-    assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
-        plan["exports"]
+    audited = ip_packaging.audit_ip_release_manifest(manifest)
+    assert audited["exports"] == plan["exports"]
+    circuit_path = ip_packaging.resolve_release_role(
+        audited,
+        manifest,
+        "circuit_netlist",
+        export="native-top",
     )
+    packaged = circuit_path.read_text(encoding="utf-8")
+    assert packaged.index("subckt NATIVE_CHILD") < packaged.index(
+        "subckt NATIVE_TOP"
+    )
+    assert "nch_mac" in packaged
 
 
 def test_native_oa_release_rejects_circuit_port_order_drift(
@@ -546,6 +592,11 @@ def test_native_oa_package_rejects_digital_interface_sections(
     monkeypatch.setattr(
         ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
     )
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
+    )
     built = ip_packaging.build_ip_release(
         contract_path,
         project=contract.project,
@@ -580,6 +631,60 @@ module = "forged"
     with pytest.raises(
         RuntimeError, match="cannot declare digital transaction sections"
     ):
+        ip_packaging.audit_ip_release_manifest(tampered_manifest)
+
+
+def test_native_oa_package_rejects_missing_reachable_subcircuit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    monkeypatch.setattr(
+        ip_packaging,
+        "_source_inputs",
+        lambda *_args, **_kwargs: (
+            "ip/native_fixture/configs/release.toml",
+        ),
+    )
+    monkeypatch.setattr(
+        ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+    )
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
+    )
+    built = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    manifest_path = contract.project.artifact_root / built["manifest"]
+    tampered_root = tmp_path / "tampered-native-hierarchy"
+    shutil.copytree(manifest_path.parent, tampered_root)
+    tampered_manifest = tampered_root / "manifest.json"
+    tampered_manifest.chmod(0o600)
+    manifest = json.loads(tampered_manifest.read_text(encoding="utf-8"))
+    circuit_view = release_role_view(
+        manifest,
+        "circuit_netlist",
+        export="native-top",
+    )
+    circuit_path = tampered_root / str(circuit_view["path"])
+    circuit_path.chmod(0o600)
+    source = circuit_path.read_text(encoding="utf-8")
+    source = source[: source.index("subckt NATIVE_CHILD")] + source[
+        source.index("subckt NATIVE_TOP") :
+    ]
+    circuit_path.write_text(source, encoding="utf-8")
+    circuit_view["size"] = circuit_path.stat().st_size
+    circuit_view["sha256"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    tampered_manifest.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="missing master NATIVE_CHILD"):
         ip_packaging.audit_ip_release_manifest(tampered_manifest)
 
 

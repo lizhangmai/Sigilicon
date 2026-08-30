@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -29,6 +30,8 @@ from sigilicon.domain.netlist import (
     load_netlist_snapshot,
     parse_subcircuit_definitions,
     parse_subcircuit_instances,
+    render_canonical_spectre,
+    resolve_netlist_hierarchy,
     subckt_ports,
 )
 from sigilicon.domain.repository import Project
@@ -593,12 +596,57 @@ def _rtl_development_interface_check(
     return result
 
 
+def _resolve_release_oa_source(
+    contract: IpContract,
+    *,
+    oa_source_inventory: Mapping[Path, OALibrarySource] | None,
+    resolved_oa_source: OALibrarySource | None = None,
+) -> tuple[Path, OALibrarySource]:
+    """Resolve one operation-owned OA assembly snapshot for release work."""
+
+    if contract.oa_assembly is None:
+        raise ValueError("OA release exports require source.oa_assembly")
+    oa_manifest = _project_path(
+        contract.project_root,
+        Path(contract.oa_assembly),
+        "OA assembly",
+    )
+    from sigilicon.domain.oa_library import (
+        load_oa_library_source,
+        resolve_oa_library_source,
+    )
+
+    if resolved_oa_source is not None:
+        if (
+            resolved_oa_source.project is not contract.project
+            or resolved_oa_source.manifest_path != oa_manifest
+        ):
+            raise ValueError("resolved OA release source identity drift")
+        library = resolved_oa_source
+    elif oa_source_inventory is None:
+        library = load_oa_library_source(oa_manifest, project=contract.project)
+    else:
+        try:
+            source_snapshot = oa_source_inventory[oa_manifest]
+        except KeyError as exc:
+            raise ValueError(
+                f"OA source inventory has no {oa_manifest} entry"
+            ) from exc
+        library = resolve_oa_library_source(
+            oa_manifest,
+            project=contract.project,
+            snapshot=source_snapshot,
+        )
+    return oa_manifest, library
+
+
 def _source_inputs(
     contract: IpContract,
     *,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
+    resolved_oa_source: OALibrarySource | None = None,
 ) -> tuple[str, ...]:
     root = contract.project_root
     graph = contract.component_graph
@@ -645,28 +693,11 @@ def _source_inputs(
             path.relative_to(root).as_posix() for path in sorted(paths)
         )
 
-    if contract.oa_assembly is None:
-        raise ValueError("OA release exports require source.oa_assembly")
-    oa_manifest = _project_path(root, Path(contract.oa_assembly), "OA assembly")
-    from sigilicon.domain.oa_library import (
-        load_oa_library_source,
-        resolve_oa_library_source,
+    oa_manifest, library = _resolve_release_oa_source(
+        contract,
+        oa_source_inventory=oa_source_inventory,
+        resolved_oa_source=resolved_oa_source,
     )
-
-    if oa_source_inventory is None:
-        library = load_oa_library_source(oa_manifest, project=contract.project)
-    else:
-        try:
-            source_snapshot = oa_source_inventory[oa_manifest]
-        except KeyError as exc:
-            raise ValueError(
-                f"OA source inventory has no {oa_manifest} entry"
-            ) from exc
-        library = resolve_oa_library_source(
-            oa_manifest,
-            project=contract.project,
-            snapshot=source_snapshot,
-        )
     oa_plan = None
     if oa_plan_inventory is not None:
         try:
@@ -1233,6 +1264,62 @@ def _export_interface_manifest(
     return {"interface": row}
 
 
+def _native_oa_spectre_bundle(
+    contract: IpContract,
+    exported: IpExport,
+    *,
+    library: OALibrarySource,
+) -> tuple[str, dict[str, Any]]:
+    """Close one native OA circuit role over its reachable Spectre hierarchy."""
+
+    interface = exported.interface
+    if not isinstance(interface, OaNativeIpInterface):
+        raise TypeError("native OA Spectre bundling requires a native OA export")
+    circuit = [
+        item for item in exported.collateral if item.role == "circuit_netlist"
+    ]
+    if len(circuit) != 1:
+        raise ValueError(
+            f"native OA export {exported.name} must have one circuit_netlist role"
+        )
+    if circuit[0].format != "spectre-source":
+        raise ValueError(
+            f"native OA export {exported.name} circuit_netlist must use "
+            "spectre-source format"
+        )
+    if library.name != interface.library:
+        raise ValueError(
+            f"native OA export {exported.name} library identity drifted"
+        )
+    snapshots = tuple(
+        load_netlist_snapshot(cell.canonical_source)
+        for cell in library.cells
+        if any(view.kind == "spectre_netlist" for view in cell.views)
+    )
+    hierarchy = resolve_netlist_hierarchy(
+        snapshots,
+        top=interface.cell,
+        primitive_masters=library.primitive_masters,
+    )
+    expected_source = _project_path(
+        contract.project_root,
+        Path(circuit[0].source),
+        "native OA circuit source",
+    )
+    if hierarchy.definitions[interface.cell].source_path != expected_source:
+        raise ValueError(
+            f"native OA export {exported.name} circuit source disagrees with its "
+            "OA assembly"
+        )
+    text = render_canonical_spectre(hierarchy)
+    return text, {
+        "composition": "reachable-spectre-hierarchy",
+        "subcircuits": list(hierarchy.dependency_order),
+        "primitive_masters": sorted(hierarchy.primitive_counts),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+
 def _plan_loaded_ip_release(
     contract: IpContract,
     *,
@@ -1248,11 +1335,25 @@ def _plan_loaded_ip_release(
         snapshot=contract,
     )
     level = contract.require_level(maturity or contract.default_maturity)
+    oa_exports = [
+        exported
+        for exported in contract.exports
+        if isinstance(
+            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
+        )
+    ]
+    oa_library = None
+    if oa_exports:
+        _, oa_library = _resolve_release_oa_source(
+            contract,
+            oa_source_inventory=oa_source_inventory,
+        )
     source_paths = _source_inputs(
         contract,
         platform_inventory=platform_inventory,
         oa_source_inventory=oa_source_inventory,
         oa_plan_inventory=oa_plan_inventory,
+        resolved_oa_source=oa_library,
     )
     commit, dirty = _source_control(contract.project_root)
     release_id = f"{level}-{commit[:12]}"
@@ -1335,6 +1436,17 @@ def _plan_loaded_ip_release(
             "physical_implementation",
         )
     }
+    native_bundle_metadata: dict[tuple[str, str], dict[str, Any]] = {}
+    if oa_library is not None:
+        for exported in contract.exports:
+            if not isinstance(exported.interface, OaNativeIpInterface):
+                continue
+            _, metadata = _native_oa_spectre_bundle(
+                contract,
+                exported,
+                library=oa_library,
+            )
+            native_bundle_metadata[(exported.name, "circuit_netlist")] = metadata
     return {
         "ip_name": contract.name,
         "owner": contract.owner,
@@ -1377,6 +1489,7 @@ def _plan_loaded_ip_release(
                 "view": item.view,
                 "corner": item.corner,
                 "capabilities": list(item.capabilities),
+                **native_bundle_metadata.get((item.export, item.role), {}),
             }
             for item in contract.collateral
         ],
@@ -1501,6 +1614,19 @@ def build_ip_release(
         installed = False
         try:
             views: list[dict[str, Any]] = []
+            planned_collateral = {
+                (item["export"], item["role"]): item
+                for item in plan["collateral"]
+            }
+            oa_library = None
+            if any(
+                item.get("composition") == "reachable-spectre-hierarchy"
+                for item in plan["collateral"]
+            ):
+                _, oa_library = _resolve_release_oa_source(
+                    contract,
+                    oa_source_inventory=None,
+                )
             for item in contract.collateral:
                 source = _project_path(
                     contract.project_root,
@@ -1509,23 +1635,50 @@ def build_ip_release(
                 )
                 destination = temporary / item.package_path
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, destination)
-                views.append(
-                    {
-                        "export": item.export,
-                        "role": item.role,
-                        "path": item.package_path.as_posix(),
-                        "source": item.source.as_posix(),
-                        "size": destination.stat().st_size,
-                        "format": item.format,
-                        "module": item.module,
-                        "library": item.library,
-                        "cell": item.cell,
-                        "view": item.view,
-                        "corner": item.corner,
-                        "capabilities": list(item.capabilities),
-                    }
-                )
+                expected = planned_collateral[(item.export, item.role)]
+                if expected.get("composition") == "reachable-spectre-hierarchy":
+                    if oa_library is None:
+                        raise RuntimeError("native OA release source is unavailable")
+                    text, metadata = _native_oa_spectre_bundle(
+                        contract,
+                        contract.get_export(item.export),
+                        library=oa_library,
+                    )
+                    if any(
+                        expected.get(key) != value
+                        for key, value in metadata.items()
+                    ):
+                        raise RuntimeError(
+                            "native OA Spectre hierarchy changed during release "
+                            "build: "
+                            f"{item.export}"
+                        )
+                    destination.write_text(text, encoding="utf-8")
+                else:
+                    shutil.copyfile(source, destination)
+                view = {
+                    "export": item.export,
+                    "role": item.role,
+                    "path": item.package_path.as_posix(),
+                    "source": item.source.as_posix(),
+                    "size": destination.stat().st_size,
+                    "format": item.format,
+                    "module": item.module,
+                    "library": item.library,
+                    "cell": item.cell,
+                    "view": item.view,
+                    "corner": item.corner,
+                    "capabilities": list(item.capabilities),
+                }
+                for field in (
+                    "composition",
+                    "subcircuits",
+                    "primitive_masters",
+                    "sha256",
+                ):
+                    if field in expected:
+                        view[field] = expected[field]
+                views.append(view)
             manifest: dict[str, Any] = {
                 "schema": 1,
                 "contract_kind": "ip-release-manifest",
@@ -1769,7 +1922,56 @@ def _packaged_native_oa_interface_check(
         circuit_path = resolve_release_role(
             manifest, manifest_path, "circuit_netlist", export=export_name
         )
-        circuit_ports = subckt_ports(circuit_path, str(oa["cell"]))
+        circuit_view = release_role_view(
+            manifest, "circuit_netlist", export=export_name
+        )
+        if circuit_view.get("composition") != "reachable-spectre-hierarchy":
+            raise ValueError(
+                "native OA circuit is not a closed reachable Spectre hierarchy"
+            )
+        subcircuits = circuit_view.get("subcircuits")
+        primitive_masters = circuit_view.get("primitive_masters")
+        if (
+            not isinstance(subcircuits, list)
+            or not subcircuits
+            or any(not isinstance(value, str) or not value for value in subcircuits)
+            or len(set(subcircuits)) != len(subcircuits)
+        ):
+            raise ValueError("native OA circuit subcircuit inventory is invalid")
+        if (
+            not isinstance(primitive_masters, list)
+            or any(
+                not isinstance(value, str) or not value
+                for value in primitive_masters
+            )
+            or len(set(primitive_masters)) != len(primitive_masters)
+        ):
+            raise ValueError("native OA circuit primitive inventory is invalid")
+        expected_digest = circuit_view.get("sha256")
+        if (
+            not isinstance(expected_digest, str)
+            or len(expected_digest) != 64
+            or any(value not in "0123456789abcdef" for value in expected_digest)
+        ):
+            raise ValueError("native OA circuit digest is invalid")
+        circuit_snapshot = load_netlist_snapshot(circuit_path)
+        actual_digest = hashlib.sha256(
+            circuit_snapshot.text.encode("utf-8")
+        ).hexdigest()
+        if actual_digest != expected_digest:
+            raise ValueError("native OA circuit digest drifted")
+        hierarchy = resolve_netlist_hierarchy(
+            (circuit_snapshot,),
+            top=str(oa["cell"]),
+            primitive_masters=primitive_masters,
+        )
+        if list(hierarchy.dependency_order) != subcircuits:
+            raise ValueError("native OA circuit subcircuit inventory drifted")
+        if hierarchy.unreachable_subckts:
+            raise ValueError("native OA circuit contains unreachable subcircuits")
+        if set(hierarchy.primitive_counts) != set(primitive_masters):
+            raise ValueError("native OA circuit primitive inventory drifted")
+        circuit_ports = hierarchy.definitions[str(oa["cell"])].ports
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         raise RuntimeError(
             f"packaged {export_name} native OA interface is invalid: {exc}"
@@ -2213,13 +2415,17 @@ def _audit_loaded_ip_release(
             expected_view is None
             or view.get("path") != expected_view["package_path"]
             or any(
-                view.get(field) != expected_view[field]
+                view.get(field) != expected_view.get(field)
                 for field in (
                     "source",
                     "format",
                     "module",
                     "corner",
                     "capabilities",
+                    "composition",
+                    "subcircuits",
+                    "primitive_masters",
+                    "sha256",
                 )
             )
         ):

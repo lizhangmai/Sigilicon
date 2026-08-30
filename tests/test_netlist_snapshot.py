@@ -12,6 +12,7 @@ from sigilicon.domain.netlist import (
     materialize_netlist_snapshot,
     parse_spectre_pwl_sources,
     render_canonical_cdl,
+    render_canonical_spectre,
     resolve_netlist_hierarchy,
 )
 
@@ -288,6 +289,23 @@ def test_recursive_hierarchy_counts_instances_and_omits_unreachable_cdl(
     assert ".SUBCKT child A Y VSS PARAMS: drive=1" in cdl
     assert "X0 A N VSS child drive=2" in cdl
     assert "unreachable" not in cdl
+
+    spectre = render_canonical_spectre(hierarchy)
+    assert spectre.startswith("simulator lang=spectre\n")
+    assert spectre.index("subckt child") < spectre.index("subckt top")
+    assert "subckt child A Y VSS parameters drive=1" in spectre
+    assert "X0 (A N VSS) child drive=2" in spectre
+    assert "unreachable" not in spectre
+
+    packaged = tmp_path / "packaged.scs"
+    packaged.write_text(spectre, encoding="utf-8")
+    packaged_hierarchy = resolve_netlist_hierarchy(
+        (load_netlist_snapshot(packaged),),
+        top="top",
+        primitive_masters=("nch_mac",),
+    )
+    assert packaged_hierarchy.dependency_order == hierarchy.dependency_order
+    assert packaged_hierarchy.primitive_counts == hierarchy.primitive_counts
 
 
 def test_recursive_hierarchy_rejects_missing_master(tmp_path: Path) -> None:
