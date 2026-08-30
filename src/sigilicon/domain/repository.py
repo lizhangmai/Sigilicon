@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Mapping, cast
 
@@ -515,6 +515,38 @@ class Project:
             raise ValueError(
                 f"unknown cataloged project owner: {identity!r}"
             ) from exc
+
+    def resolve_owner_file(
+        self,
+        owner: RepositoryOwner | str,
+        value: object,
+        field: str,
+    ) -> tuple[Path, PurePosixPath]:
+        """Resolve one canonical project-relative file inside an owner's root."""
+
+        selected = self.owner(owner) if isinstance(owner, str) else owner
+        if selected not in self.owners:
+            raise ValueError(
+                f"repository does not contain owner {selected.name!r}"
+            )
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} must be a non-empty relative path")
+        relative = PurePosixPath(value)
+        if (
+            relative.is_absolute()
+            or "\\" in value
+            or relative.as_posix() != value
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError(f"{field} must be a canonical project-relative path")
+        resolved = self.project_root.joinpath(*relative.parts).resolve()
+        if not resolved.is_relative_to(selected.root):
+            raise ValueError(
+                f"{field} must stay inside owner {selected.name!r} root"
+            )
+        if not resolved.is_file():
+            raise ValueError(f"{field} does not exist inside its owner root")
+        return resolved, relative
 
     def scope(self, owner: RepositoryOwner | str) -> ProjectScope:
         """Bind one cataloged owner to this project's explicit runtime paths."""

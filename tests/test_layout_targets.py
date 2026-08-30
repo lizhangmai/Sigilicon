@@ -173,7 +173,7 @@ actions = ["check"]
 ''',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="must stay below the project root"):
+    with pytest.raises(ValueError, match="canonical project-relative path"):
         load_layout_target_catalog(tmp_path)
 
     catalog_path.write_text(
@@ -191,6 +191,27 @@ actions = ["check", "publish"]
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="must contain only"):
+        load_layout_target_catalog(tmp_path)
+
+
+def test_layout_catalog_cannot_route_to_another_owner_spec(
+    tmp_path: Path,
+) -> None:
+    _catalog_project(tmp_path)
+    neighbor = tmp_path / "ip/neighbor"
+    neighbor.mkdir(parents=True)
+    (neighbor / "layout.toml").write_text("# neighbor spec\n", encoding="utf-8")
+    write_component_owner(tmp_path, "neighbor", filesets={})
+    catalog_path = tmp_path / "ip/example/configs/flows/layout_targets.toml"
+    catalog_path.write_text(
+        catalog_path.read_text(encoding="utf-8").replace(
+            'spec = "ip/example/leaf.toml"',
+            'spec = "ip/neighbor/layout.toml"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="owner 'example' root"):
         load_layout_target_catalog(tmp_path)
 
 

@@ -56,20 +56,6 @@ class LayoutTargetCatalog:
         return target
 
 
-def _relative_spec(root: Path, value: object, field: str) -> tuple[Path, Path]:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty relative path")
-    relative = Path(value)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise ValueError(f"{field} must stay below the project root")
-    resolved = (root / relative).resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError(f"{field} must stay below the project root")
-    if not resolved.is_file():
-        raise ValueError(f"{field} does not exist: {resolved}")
-    return resolved, relative
-
-
 def _actions(value: object, field: str) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)) or not value:
         raise ValueError(f"{field} must be a non-empty string array")
@@ -131,7 +117,9 @@ def load_layout_target_catalog(
             description = row.get("description")
             if not isinstance(description, str) or not description.strip():
                 raise ValueError(f"{field}.description must be a non-empty string")
-            spec, spec_relative = _relative_spec(root, row.get("spec"), f"{field}.spec")
+            spec, spec_relative = repository.resolve_owner_file(
+                owner, row.get("spec"), f"{field}.spec"
+            )
             targets.append(
                 LayoutTarget(
                     name=name,

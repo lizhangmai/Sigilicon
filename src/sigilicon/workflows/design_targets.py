@@ -17,7 +17,7 @@ _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _MODULE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z"
 )
-_PACKAGE_MODULE_PREFIXES = ("sigilicon.cli.",)
+_SHARED_MODULES = frozenset({"sigilicon.cli.design_lifecycle"})
 _KINDS = frozenset({"script", "module"})
 _SPEC_ARGUMENTS = frozenset({"--spec", "--design"})
 _ROUTING_ARGUMENTS = frozenset({"--spec", "--design", "--mode"})
@@ -123,18 +123,26 @@ def execute_design_target(
     return 0
 
 
-def _relative_file(root: Path, value: object, field: str) -> tuple[Path, Path]:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty relative path")
-    relative = Path(value)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise ValueError(f"{field} must stay below the project root")
-    resolved = (root / relative).resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError(f"{field} must stay below the project root")
-    if not resolved.is_file():
-        raise ValueError(f"{field} does not exist: {resolved}")
-    return resolved, relative
+def _owned_module(
+    repository: Project,
+    owner: str,
+    module: str,
+    field: str,
+) -> None:
+    module_path = Path(*module.split("."))
+    candidates = (
+        module_path.with_suffix(".py"),
+        module_path / "__main__.py",
+    )
+    existing = tuple(
+        path for path in candidates if (repository.project_root / path).is_file()
+    )
+    if len(existing) != 1:
+        raise ValueError(
+            f"{field} must name a Sigilicon CLI or one unambiguous "
+            "project-owned module"
+        )
+    repository.resolve_owner_file(owner, existing[0].as_posix(), field)
 
 
 def _validate_runner_args(value: tuple[str, ...], field: str) -> None:
@@ -217,24 +225,16 @@ def load_design_target_catalog(
             entrypoint = row.get("entrypoint")
             entrypoint_path: Path | None = None
             if kind == "script":
-                entrypoint_path, entrypoint_relative = _relative_file(
-                    root, entrypoint, f"{field}.entrypoint"
+                entrypoint_path, entrypoint_relative = repository.resolve_owner_file(
+                    owner, entrypoint, f"{field}.entrypoint"
                 )
                 if entrypoint_path.suffix != ".py":
                     raise ValueError(f"{field}.entrypoint must be a Python script")
                 entrypoint = entrypoint_relative.as_posix()
             elif not isinstance(entrypoint, str) or _MODULE_RE.fullmatch(entrypoint) is None:
                 raise ValueError(f"{field}.entrypoint must name a Python module")
-            elif not entrypoint.startswith(_PACKAGE_MODULE_PREFIXES):
-                module_path = root.joinpath(*entrypoint.split("."))
-                if not (
-                    module_path.with_suffix(".py").is_file()
-                    or (module_path / "__main__.py").is_file()
-                ):
-                    raise ValueError(
-                        f"{field}.entrypoint must name a Sigilicon CLI or a "
-                        "project-owned module"
-                    )
+            elif entrypoint not in _SHARED_MODULES:
+                _owned_module(repository, owner, entrypoint, f"{field}.entrypoint")
             spec_argument = row.get("spec_argument")
             spec_value = row.get("spec")
             spec: Path | None = None
@@ -246,7 +246,9 @@ def load_design_target_catalog(
                     f"{field}.spec_argument must be one of {sorted(_SPEC_ARGUMENTS)}"
                 )
             else:
-                spec, spec_relative = _relative_file(root, spec_value, f"{field}.spec")
+                spec, spec_relative = repository.resolve_owner_file(
+                    owner, spec_value, f"{field}.spec"
+                )
             targets.append(
                 DesignTarget(
                     name=name,

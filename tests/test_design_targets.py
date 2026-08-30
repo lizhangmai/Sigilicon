@@ -197,7 +197,7 @@ topology = []
 ''',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="must stay below the project root"):
+    with pytest.raises(ValueError, match="canonical project-relative path"):
         load_design_target_catalog(tmp_path)
 
     catalog_path.write_text(
@@ -272,6 +272,68 @@ contract = []
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project-owned module"):
+        load_design_target_catalog(tmp_path)
+
+    catalog_path.write_text(
+        '''
+schema = 1
+contract_kind = "flow-design-registry"
+path_scope = "owner"
+owner = "example"
+
+[targets.future-cli]
+description = "Undeclared shared CLI"
+kind = "module"
+entrypoint = "sigilicon.cli.future_command"
+[targets.future-cli.modes]
+contract = []
+''',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="project-owned module"):
+        load_design_target_catalog(tmp_path)
+
+
+def test_design_catalog_cannot_route_through_another_owner(
+    tmp_path: Path,
+) -> None:
+    _catalog_project(tmp_path)
+    neighbor = tmp_path / "ip/neighbor"
+    neighbor.mkdir(parents=True)
+    (neighbor / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (neighbor / "design.toml").write_text("# neighbor spec\n", encoding="utf-8")
+    write_component_owner(tmp_path, "neighbor", filesets={})
+    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
+    original = catalog_path.read_text(encoding="utf-8")
+
+    catalog_path.write_text(
+        original.replace(
+            'entrypoint = "ip/example/leaf/run.py"',
+            'entrypoint = "ip/neighbor/run.py"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="owner 'example' root"):
+        load_design_target_catalog(tmp_path)
+
+    catalog_path.write_text(
+        original.replace(
+            'spec = "ip/example/leaf/design.toml"',
+            'spec = "ip/neighbor/design.toml"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="owner 'example' root"):
+        load_design_target_catalog(tmp_path)
+
+    catalog_path.write_text(
+        original.replace('kind = "script"', 'kind = "module"').replace(
+            'entrypoint = "ip/example/leaf/run.py"',
+            'entrypoint = "ip.neighbor.run"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="owner 'example' root"):
         load_design_target_catalog(tmp_path)
 
 
