@@ -144,6 +144,127 @@ def _merge_source_documents(
         target[resolved] = document
 
 
+_REPOSITORY_SOURCE_LEDGER_AUTHORITY = object()
+
+
+class RepositorySourceLedger:
+    """Immutable source closure trusted by one repository scan operation.
+
+    The ledger knows no IP, OA, layout, or platform schema. The workflow that
+    owns those snapshots validates them first and contributes only their frozen
+    source documents. A partial ledger is valid; scanner misses continue to use
+    the existing filesystem fallback.
+    """
+
+    __slots__ = ("_documents", "_project")
+
+    def __init__(
+        self,
+        *,
+        _authority: object,
+        project: Project,
+        documents: Mapping[Path, Mapping[str, Any]],
+    ) -> None:
+        if _authority is not _REPOSITORY_SOURCE_LEDGER_AUTHORITY:
+            raise ValueError("repository source ledger must use its factory")
+        object.__setattr__(self, "_project", project)
+        object.__setattr__(self, "_documents", MappingProxyType(dict(documents)))
+
+    @classmethod
+    def for_project(
+        cls,
+        project: Project,
+        *,
+        catalog_inventory: tuple[OwnerCatalogSnapshot, ...] = (),
+    ) -> RepositorySourceLedger:
+        """Seed one ledger with already-loaded project and owner catalogs."""
+
+        ledger = cls(
+            _authority=_REPOSITORY_SOURCE_LEDGER_AUTHORITY,
+            project=project,
+            documents={},
+        )
+        manifest_document = project.manifest_source_document()
+        if manifest_document:
+            ledger = ledger.merge(
+                "project manifest snapshot",
+                {project.manifest_path: manifest_document},
+            )
+        for owner in project.owners:
+            ledger = ledger.merge(
+                "owner component snapshot",
+                {owner.component.path: owner.component.document},
+            )
+        ip_catalog = project.ip_catalog_snapshot()
+        ledger = ledger.merge(
+            "IP catalog snapshot",
+            {ip_catalog.path: ip_catalog.document},
+        )
+        for snapshot in catalog_inventory:
+            ledger = ledger.merge(
+                "owner flow catalog snapshot",
+                {snapshot.path: snapshot.document},
+            )
+        return ledger
+
+    @property
+    def project(self) -> Project:
+        return self._project
+
+    @property
+    def documents(self) -> Mapping[Path, Mapping[str, Any]]:
+        return self._documents
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("repository source ledger is immutable")
+
+    def require_project(self, project: Project) -> None:
+        """Require the exact operation that created this ledger."""
+
+        if project is not self.project:
+            raise ValueError("repository source ledger belongs to another operation")
+
+    def merge(
+        self,
+        label: str,
+        source_documents: Mapping[Path, Mapping[str, Any]],
+    ) -> RepositorySourceLedger:
+        """Return a ledger extended by one validated domain source set."""
+
+        if not isinstance(label, str) or not label:
+            raise ValueError("repository source ledger label must be non-empty")
+        if not isinstance(source_documents, Mapping):
+            raise TypeError("repository source documents must be a mapping")
+        root = self.project.project_root
+        merged = dict(self.documents)
+        for path, document in source_documents.items():
+            if (
+                not isinstance(path, Path)
+                or path != path.resolve()
+                or not path.is_relative_to(root)
+                or not path.is_file()
+            ):
+                raise ValueError(f"{label} source path identity drift: {path}")
+            if not is_frozen_toml_document(document):
+                raise ValueError(f"{label} source document must be frozen: {path}")
+            previous = merged.get(path)
+            if previous is not None and previous != document:
+                raise ValueError(f"{label} disagrees with another source: {path}")
+            merged[path] = document
+        return RepositorySourceLedger(
+            _authority=_REPOSITORY_SOURCE_LEDGER_AUTHORITY,
+            project=self.project,
+            documents=merged,
+        )
+
+    def resolve(self, path: Path) -> Mapping[str, Any] | None:
+        """Return one exact seeded document without filesystem fallback."""
+
+        if not isinstance(path, Path) or path != path.resolve():
+            raise ValueError("repository source ledger lookup must be resolved")
+        return self.documents.get(path)
+
+
 def inspect_project_configurations(
     context: Project,
     *,
@@ -168,35 +289,37 @@ def inspect_project_configurations(
 
     root = context.project_root.resolve()
     project_contract = context.manifest_path
-    repository_owner = context.manifest_owner
     flow_catalog_inventory = (
         context.flow_catalog_inventory()
         if catalog_inventory is None
         else catalog_inventory
     )
-    design_catalogs = context.flow_catalog_snapshots(
-        "design_targets",
-        inventory=flow_catalog_inventory,
-    )
-    layout_catalogs = context.flow_catalog_snapshots(
-        "layout_targets",
-        inventory=flow_catalog_inventory,
-    )
-    catalog_documents = {
-        snapshot.path.resolve(): snapshot.document
-        for snapshot in flow_catalog_inventory
-    }
+    catalog_documents: dict[Path, Mapping[str, Any]] = {}
+    for snapshot in flow_catalog_inventory:
+        _merge_source_documents(
+            catalog_documents,
+            {snapshot.path: snapshot.document},
+            label="owner flow catalog snapshot",
+        )
     manifest_document = context.manifest_source_document()
     if manifest_document:
-        catalog_documents[project_contract] = manifest_document
-    catalog_documents.update(
-        {
-            owner.component.path: owner.component.document
-            for owner in context.owners
-        }
-    )
+        _merge_source_documents(
+            catalog_documents,
+            {project_contract: manifest_document},
+            label="project manifest snapshot",
+        )
+    for owner in context.owners:
+        _merge_source_documents(
+            catalog_documents,
+            {owner.component.path: owner.component.document},
+            label="owner component snapshot",
+        )
     ip_catalog = context.ip_catalog_snapshot()
-    catalog_documents[ip_catalog.path] = ip_catalog.document
+    _merge_source_documents(
+        catalog_documents,
+        {ip_catalog.path: ip_catalog.document},
+        label="IP catalog snapshot",
+    )
     if release_inventory is not None:
         from sigilicon.domain.ip_release import resolve_ip_contract
 
@@ -226,7 +349,11 @@ def inspect_project_configurations(
             ):
                 raise ValueError(f"IP release snapshot identity drift: {name}")
             if contract.document:
-                catalog_documents[contract.path] = contract.document
+                _merge_source_documents(
+                    catalog_documents,
+                    {contract.path: contract.document},
+                    label="IP release contract snapshot",
+                )
             contract = resolve_ip_contract(
                 contract.path,
                 project=context,
@@ -347,8 +474,14 @@ def inspect_project_configurations(
                 context,
                 snapshot=platform_catalog,
             )
-        catalog_documents[resolved_platform_catalog.path] = (
-            resolved_platform_catalog.document
+        _merge_source_documents(
+            catalog_documents,
+            {
+                resolved_platform_catalog.path: (
+                    resolved_platform_catalog.document
+                )
+            },
+            label="platform catalog snapshot",
         )
     if platform_inventory is not None:
         from sigilicon.domain.platform import (
@@ -376,6 +509,39 @@ def inspect_project_configurations(
                 platform.source_documents,
                 label="platform source snapshot",
             )
+    source_ledger = RepositorySourceLedger.for_project(
+        context,
+        catalog_inventory=flow_catalog_inventory,
+    ).merge("validated configuration snapshot", catalog_documents)
+    return inspect_project_configuration_sources(
+        context,
+        owner_roots=owner_roots,
+        catalog_inventory=flow_catalog_inventory,
+        sources=source_ledger,
+    )
+
+
+def inspect_project_configuration_sources(
+    context: Project,
+    *,
+    owner_roots: Mapping[str, Path],
+    catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
+    sources: RepositorySourceLedger,
+) -> dict[str, Any]:
+    """Scan configuration envelopes from one operation-owned source ledger."""
+
+    sources.require_project(context)
+    root = context.project_root.resolve()
+    project_contract = context.manifest_path
+    repository_owner = context.manifest_owner
+    design_catalogs = context.flow_catalog_snapshots(
+        "design_targets",
+        inventory=catalog_inventory,
+    )
+    layout_catalogs = context.flow_catalog_snapshots(
+        "layout_targets",
+        inventory=catalog_inventory,
+    )
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),
@@ -431,12 +597,14 @@ def inspect_project_configurations(
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
     repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
     platform_root = context.catalog("platform").parent
-    operation_documents = dict(catalog_documents)
+    operation_documents = dict(sources.documents)
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"configuration source escapes the project root: {path}")
-        raw = operation_documents.get(resolved)
+        raw = sources.resolve(resolved)
+        if raw is None:
+            raw = operation_documents.get(resolved)
         if raw is None:
             raw = read_toml(resolved)
             operation_documents[resolved] = raw

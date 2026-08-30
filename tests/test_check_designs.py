@@ -600,6 +600,21 @@ def test_repository_workflows_share_one_platform_inventory(
     write_test_platform(tmp_path)
     _write_release_target(tmp_path)
     component = tmp_path / "ip/fixture/component.toml"
+    dependency = tmp_path / "ip/fixture/internal/component.toml"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text(
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "fixture"
+
+name = "fixture-internal"
+kind = "rtl-ip"
+
+[filesets]
+''',
+        encoding="utf-8",
+    )
     architecture = tmp_path / "ip/fixture/architecture.toml"
     architecture.write_text(
         '''schema = 1
@@ -612,22 +627,49 @@ owner = "fixture"
     component.write_text(
         component.read_text(encoding="utf-8")
         + 'architecture = ["ip/fixture/architecture.toml"]\n'
+        + '''
+[[component]]
+name = "fixture-internal"
+contract = "ip/fixture/internal/component.toml"
+'''
         + "\n[variants.fixture]\ncontract = 'unused.toml'\n",
         encoding="utf-8",
     )
     planned_simulation_path = tmp_path / "ip/fixture/planned_simulation.toml"
     planned_simulation_path.write_text("schema = 3\n", encoding="utf-8")
-    planned_simulation = SimpleNamespace(path=planned_simulation_path.resolve())
+    planned_simulation = SimpleNamespace(
+        path=planned_simulation_path.resolve(),
+        source_documents=MappingProxyType(
+            {
+                planned_simulation_path.resolve(): freeze_toml_document(
+                    {"schema": 3}
+                )
+            }
+        ),
+    )
     planned_design_path = tmp_path / "ip/fixture/planned_design.toml"
     planned_design_path.write_text("schema = 1\n", encoding="utf-8")
-    planned_design = SimpleNamespace(path=planned_design_path.resolve())
+    planned_design = SimpleNamespace(
+        path=planned_design_path.resolve(),
+        source_documents=MappingProxyType(
+            {
+                planned_design_path.resolve(): freeze_toml_document(
+                    {"schema": 1}
+                )
+            }
+        ),
+    )
     planned_layout_path = tmp_path / "ip/fixture/planned_layout.toml"
     planned_layout_path.write_text("schema = 1\n", encoding="utf-8")
     planned_layout = SimpleNamespace(
         path=planned_layout_path.resolve(),
-        source_documents={
-            planned_layout_path.resolve(): {"schema": 1},
-        },
+        source_documents=MappingProxyType(
+            {
+                planned_layout_path.resolve(): freeze_toml_document(
+                    {"schema": 1}
+                )
+            }
+        ),
     )
     platform_sources = {
         (tmp_path / "configs/platform/catalog.toml").resolve(),
@@ -640,19 +682,17 @@ owner = "fixture"
     original_load = tomllib.load
     observed_platform_inventories: list[object] = []
     observed_release_inventories: list[object] = []
-    observed_integration_inventories: list[object] = []
     observed_oa_inventories: list[object] = []
     observed_oa_plan_inventories: list[object] = []
-    observed_oa_simulation_inventories: list[object] = []
-    observed_oa_design_inventories: list[object] = []
-    observed_oa_layout_inventories: list[object] = []
     observed_architecture_inventories: list[object] = []
+    observed_source_ledgers: list[object] = []
     oa_source_reads: list[Path] = []
     oa_document_reads = 0
     architecture_reads = 0
+    dependency_reads = 0
 
     def counted_load(stream):
-        nonlocal architecture_reads, oa_document_reads
+        nonlocal architecture_reads, dependency_reads, oa_document_reads
         path = Path(stream.name).resolve()
         if path in reads:
             reads[path] += 1
@@ -660,9 +700,14 @@ owner = "fixture"
             oa_document_reads += 1
         if path == architecture.resolve():
             architecture_reads += 1
+        if path == dependency.resolve():
+            dependency_reads += 1
         return original_load(stream)
 
-    integration_contract = SimpleNamespace(name="fixture")
+    integration_contract = SimpleNamespace(
+        name="fixture",
+        source_documents=MappingProxyType({}),
+    )
 
     def load_integration(_path, *, project, variant_source_documents):
         assert project.project_root == tmp_path.resolve()
@@ -721,42 +766,31 @@ owner = "fixture"
                     owner="fixture",
                 ),
             ),
-            source_documents={
-                resolved: {
-                    "schema": 1,
-                    "contract_kind": "oa-assembly",
-                    "path_scope": "owner",
-                    "owner": "fixture",
-                    "name": "fixture",
+            source_documents=MappingProxyType(
+                {
+                    resolved: freeze_toml_document(
+                        {
+                            "schema": 1,
+                            "contract_kind": "oa-assembly",
+                            "path_scope": "owner",
+                            "owner": "fixture",
+                            "name": "fixture",
+                        }
+                    )
                 }
-            },
+            ),
         )
 
-    original_inspect_configurations = repository_checks.inspect_project_configurations
+    original_inspect_sources = (
+        repository_checks.inspect_project_configuration_sources
+    )
 
-    def inspect_configurations(*args, platform_inventory, **kwargs):
-        observed_platform_inventories.append(platform_inventory)
-        observed_release_inventories.append(kwargs["release_inventory"])
-        observed_integration_inventories.append(kwargs["integration_inventory"])
-        observed_oa_inventories.append(kwargs["oa_source_inventory"])
-        observed_oa_simulation_inventories.append(
-            kwargs["oa_simulation_inventory"]
-        )
-        observed_oa_design_inventories.append(kwargs["oa_design_inventory"])
-        observed_oa_layout_inventories.append(kwargs["layout_source_documents"])
-        observed_architecture_inventories.append(
-            kwargs["architecture_source_documents"]
-        )
-        forwarded = dict(kwargs)
-        forwarded["oa_simulation_inventory"] = {}
-        forwarded["oa_design_inventory"] = {}
-        forwarded["layout_source_documents"] = {}
-        forwarded["integration_inventory"] = {}
-        return original_inspect_configurations(
-            *args,
-            platform_inventory=platform_inventory,
-            **forwarded,
-        )
+    def inspect_sources(*args, sources, **kwargs):
+        observed_source_ledgers.append(sources)
+        reads_before_scan = dependency_reads
+        result = original_inspect_sources(*args, sources=sources, **kwargs)
+        assert dependency_reads == reads_before_scan
+        return result
 
     monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.setattr(
@@ -786,8 +820,8 @@ owner = "fixture"
     )
     monkeypatch.setattr(
         repository_checks,
-        "inspect_project_configurations",
-        inspect_configurations,
+        "inspect_project_configuration_sources",
+        inspect_sources,
     )
 
     report = repository_checks.inspect_repository_designs(
@@ -795,20 +829,16 @@ owner = "fixture"
     )
 
     assert report["passed"] is True
-    assert len(observed_platform_inventories) == 3
+    assert len(observed_platform_inventories) == 2
     assert all(
         inventory is observed_platform_inventories[0]
         for inventory in observed_platform_inventories[1:]
     )
     assert set(observed_platform_inventories[0]) == {"testpdk"}
-    assert len(observed_release_inventories) == 2
-    assert observed_release_inventories[0] is observed_release_inventories[1]
+    assert len(observed_release_inventories) == 1
     assert set(observed_release_inventories[0]) == {"fixture"}
-    assert observed_integration_inventories == [
-        {"fixture": integration_contract}
-    ]
     assert len(oa_source_reads) == 1
-    assert len(observed_oa_inventories) == 3
+    assert len(observed_oa_inventories) == 2
     assert all(
         inventory is observed_oa_inventories[0]
         for inventory in observed_oa_inventories[1:]
@@ -816,19 +846,21 @@ owner = "fixture"
     assert set(observed_oa_inventories[0]) == set(oa_source_reads)
     assert len(observed_oa_plan_inventories) == 1
     assert set(observed_oa_plan_inventories[0]) == set(oa_source_reads)
-    assert len(observed_oa_simulation_inventories) == 1
-    assert observed_oa_simulation_inventories[0] == {
-        planned_simulation_path.resolve(): planned_simulation
-    }
-    assert len(observed_oa_design_inventories) == 1
-    assert observed_oa_design_inventories[0] == {
-        planned_design_path.resolve(): planned_design
-    }
-    assert len(observed_oa_layout_inventories) == 1
-    assert observed_oa_layout_inventories[0] == planned_layout.source_documents
-    assert len(observed_architecture_inventories) == 2
-    assert observed_architecture_inventories[0] is observed_architecture_inventories[1]
+    assert len(observed_architecture_inventories) == 1
     assert set(observed_architecture_inventories[0]) == {architecture.resolve()}
+    assert len(observed_source_ledgers) == 1
+    ledger = observed_source_ledgers[0]
+    assert ledger.project.project_root == tmp_path.resolve()
+    assert {
+        planned_simulation_path.resolve(),
+        planned_design_path.resolve(),
+        planned_layout_path.resolve(),
+        architecture.resolve(),
+        dependency.resolve(),
+        *platform_sources,
+        *oa_source_reads,
+    } <= set(ledger.documents)
     assert architecture_reads == 1
+    assert dependency_reads >= 1
     assert oa_document_reads == 0
     assert set(reads.values()) == {1}

@@ -8,12 +8,14 @@ import pytest
 import sigilicon.domain.config_contracts as config_contracts
 from conftest import write_project_context, write_test_platform
 from sigilicon.domain.config_contracts import (
+    RepositorySourceLedger,
     freeze_toml_document,
+    inspect_project_configuration_sources,
     inspect_project_configurations,
     require_config_header,
 )
 from sigilicon.domain.platform import load_platform, load_platform_catalog
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import OwnerCatalogSnapshot, RepositoryContext
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -141,6 +143,96 @@ owner = "alpha"
     assert "ip/alpha" in report["roots"]
 
 
+def test_repository_source_ledger_is_operation_bound_and_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_selected_catalogs(tmp_path)
+    seeded = (tmp_path / "ip/alpha/seeded.toml").resolve()
+    fallback = (tmp_path / "ip/beta/fallback.toml").resolve()
+    _write(
+        tmp_path,
+        seeded.relative_to(tmp_path).as_posix(),
+        '''schema = 1
+contract_kind = "seeded-contract"
+path_scope = "owner"
+owner = "alpha"
+''',
+    )
+    _write(
+        tmp_path,
+        fallback.relative_to(tmp_path).as_posix(),
+        '''schema = 1
+contract_kind = "fallback-contract"
+path_scope = "owner"
+owner = "beta"
+''',
+    )
+    context = RepositoryContext.from_project_root(tmp_path)
+    catalogs = context.flow_catalog_inventory()
+    seeded_document = freeze_toml_document(
+        tomllib.loads(seeded.read_text(encoding="utf-8"))
+    )
+    ledger = RepositorySourceLedger.for_project(
+        context,
+        catalog_inventory=catalogs,
+    ).merge("seeded fixture", {seeded: seeded_document})
+
+    component = context.owners[0].component
+    conflicting_catalog = OwnerCatalogSnapshot(
+        owner=component.owner,
+        path=component.path,
+        contract_kind="flow-catalog",
+        document=freeze_toml_document({"schema": 999}),
+    )
+    with pytest.raises(ValueError, match="disagrees with another source"):
+        RepositorySourceLedger.for_project(
+            context,
+            catalog_inventory=(*catalogs, conflicting_catalog),
+        )
+
+    assert ledger.resolve(seeded) is seeded_document
+    assert ledger.resolve(fallback) is None
+    with pytest.raises(AttributeError, match="immutable"):
+        ledger._documents = {}
+    with pytest.raises(ValueError, match="must be frozen"):
+        ledger.merge("mutable fixture", {seeded: {"schema": 1}})
+    with pytest.raises(ValueError, match="disagrees with another source"):
+        ledger.merge(
+            "conflicting fixture",
+            {seeded: freeze_toml_document({"schema": 2})},
+        )
+
+    reads: list[Path] = []
+    original_read_toml = config_contracts.read_toml
+
+    def counted_read_toml(path: Path):
+        if path.resolve() in {seeded, fallback}:
+            reads.append(path.resolve())
+        return original_read_toml(path)
+
+    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
+    report = inspect_project_configuration_sources(
+        context,
+        owner_roots=_owner_roots(tmp_path),
+        catalog_inventory=catalogs,
+        sources=ledger,
+    )
+
+    assert report["passed"] is True
+    assert "seeded-contract" in report["contract_kinds"]
+    assert "fallback-contract" in report["contract_kinds"]
+    assert seeded not in reads
+    assert fallback in reads
+    with pytest.raises(ValueError, match="another operation"):
+        inspect_project_configuration_sources(
+            RepositoryContext.from_project_root(tmp_path),
+            owner_roots=_owner_roots(tmp_path),
+            catalog_inventory=catalogs,
+            sources=ledger,
+        )
+
+
 def test_project_configuration_rejects_platform_catalog_snapshot_drift(
     tmp_path: Path,
 ) -> None:
@@ -153,6 +245,55 @@ def test_project_configuration_rejects_platform_catalog_snapshot_drift(
             context,
             owner_roots=_owner_roots(tmp_path),
             platform_catalog=replace(catalog, owner="drift"),
+        )
+
+
+def test_legacy_configuration_inventory_conflicts_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_selected_catalogs(tmp_path)
+    ip_catalog_path = tmp_path / "catalogs/ip.toml"
+    ip_catalog_path.write_text(
+        ip_catalog_path.read_text(encoding="utf-8")
+        + '''
+[targets.collision]
+contract = "ip/alpha/component.toml"
+''',
+        encoding="utf-8",
+    )
+    context = RepositoryContext.from_project_root(tmp_path)
+    component = context.owners[0].component
+    conflicting_document = freeze_toml_document({"schema": 999})
+    release = SimpleNamespace(
+        project=context,
+        name="collision",
+        path=component.path,
+        document=conflicting_document,
+    )
+
+    with pytest.raises(ValueError, match="IP release contract snapshot disagrees"):
+        inspect_project_configurations(
+            context,
+            owner_roots=_owner_roots(tmp_path),
+            release_inventory={"collision": release},
+        )
+
+    platform_catalog = load_platform_catalog(context)
+    resolved_conflict = replace(
+        platform_catalog,
+        path=component.path,
+        document=conflicting_document,
+    )
+    monkeypatch.setattr(
+        "sigilicon.domain.platform.resolve_platform_catalog",
+        lambda _context, *, snapshot: resolved_conflict,
+    )
+    with pytest.raises(ValueError, match="platform catalog snapshot disagrees"):
+        inspect_project_configurations(
+            context,
+            owner_roots=_owner_roots(tmp_path),
+            platform_catalog=platform_catalog,
         )
 
 

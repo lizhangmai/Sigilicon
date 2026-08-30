@@ -9,8 +9,9 @@ from typing import Any
 
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import (
+    RepositorySourceLedger,
     freeze_toml_document,
-    inspect_project_configurations,
+    inspect_project_configuration_sources,
     read_toml,
     require_config_header,
 )
@@ -265,6 +266,7 @@ def inspect_repository_designs(
 
     owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
+    component_source_documents = {}
     integration_inventory = {}
     for name, path in component_paths.items():
         owner = context.require_owner(path)
@@ -277,6 +279,16 @@ def inspect_repository_designs(
         component = graph.get(name)
         if component is None or component.path != path:
             raise ValueError(f"IP component catalog identity mismatch: {name}")
+        for graph_component in graph.values():
+            previous = component_source_documents.get(graph_component.path)
+            if previous is not None and previous != graph_component.document:
+                raise ValueError(
+                    "component graph snapshots disagree for source: "
+                    f"{graph_component.path}"
+                )
+            component_source_documents[graph_component.path] = (
+                graph_component.document
+            )
         _register_owner_root(
             owner_roots,
             owner=component.owner,
@@ -346,19 +358,64 @@ def inspect_repository_designs(
         }
 
     flow_catalog_inventory = context.flow_catalog_inventory()
-    configuration = inspect_project_configurations(
+    source_ledger = RepositorySourceLedger.for_project(
+        context,
+        catalog_inventory=flow_catalog_inventory,
+    ).merge(
+        "component graph snapshot",
+        component_source_documents,
+    )
+    source_ledger = source_ledger.merge(
+        "platform catalog snapshot",
+        {platform_catalog.path: platform_catalog.document},
+    )
+    for platform in platform_inventory.values():
+        source_ledger = source_ledger.merge(
+            "platform source snapshot",
+            platform.source_documents,
+        )
+    for contract in release_inventory.values():
+        if contract.document:
+            source_ledger = source_ledger.merge(
+                "IP release contract snapshot",
+                {contract.path: contract.document},
+            )
+        source_ledger = source_ledger.merge(
+            "IP release interface snapshot",
+            contract.interface_documents,
+        )
+    for contract in integration_inventory.values():
+        source_ledger = source_ledger.merge(
+            "IP integration source snapshot",
+            contract.source_documents,
+        )
+    for source in oa_source_inventory.values():
+        source_ledger = source_ledger.merge(
+            "OA source snapshot",
+            source.source_documents,
+        )
+    for simulation in oa_simulation_inventory.values():
+        source_ledger = source_ledger.merge(
+            "OA simulation snapshot",
+            simulation.source_documents,
+        )
+    for design in oa_design_inventory.values():
+        source_ledger = source_ledger.merge(
+            "design snapshot",
+            design.source_documents,
+        )
+    source_ledger = source_ledger.merge(
+        "layout snapshot",
+        layout_source_documents,
+    ).merge(
+        "architecture source snapshot",
+        architecture_source_documents,
+    )
+    configuration = inspect_project_configuration_sources(
         context,
         owner_roots=owner_roots,
         catalog_inventory=flow_catalog_inventory,
-        platform_catalog=platform_catalog,
-        platform_inventory=platform_inventory,
-        release_inventory=release_inventory,
-        integration_inventory=integration_inventory,
-        oa_source_inventory=oa_source_inventory,
-        oa_simulation_inventory=oa_simulation_inventory,
-        oa_design_inventory=oa_design_inventory,
-        layout_source_documents=layout_source_documents,
-        architecture_source_documents=architecture_source_documents,
+        sources=source_ledger,
     )
 
     design_catalog = load_design_target_catalog(
