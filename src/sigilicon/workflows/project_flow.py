@@ -39,6 +39,10 @@ from sigilicon.flow.circuit_design import (
     DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
     DESIGN_SOURCE_CHECK_ADAPTER,
 )
+from sigilicon.flow.layout import (
+    LAYOUT_GENERATION_ADAPTER,
+    LAYOUT_VERIFICATION_ADAPTER,
+)
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
@@ -53,6 +57,10 @@ from sigilicon.workflows.design_targets import (
     DesignTargetCatalog,
     load_design_target_catalog,
 )
+from sigilicon.virtuoso.client import get_client
+from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
+from sigilicon.workflows.layout_generation import plan_layout_spec
+from sigilicon.workflows.layout_targets import LayoutTargetCatalog
 
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
@@ -94,6 +102,7 @@ def _project_workflow_registry(
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     *,
     design_catalog: DesignTargetCatalog | None = None,
+    layout_adapter: ProjectLayoutTargetAdapter | None = None,
     intent_sources: tuple[SourceMember, ...] = (),
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
@@ -140,6 +149,9 @@ def _project_workflow_registry(
         DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
         design_adapter,
     )
+    if layout_adapter is not None:
+        registry.register_adapter(LAYOUT_GENERATION_ADAPTER, layout_adapter)
+        registry.register_adapter(LAYOUT_VERIFICATION_ADAPTER, layout_adapter)
     source = repository.flow_registry_extension(owner)
     if source is None:
         return registry
@@ -264,9 +276,16 @@ class ProjectFlow:
 
     project: Project
     owner_name: str
+    client_factory: Callable[[], Any] = field(
+        default=get_client,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         owner = self.project.owner(self.owner_name)
+        if not callable(self.client_factory):
+            raise ValueError("ProjectFlow client factory must be callable")
         object.__setattr__(self, "owner_name", owner.name)
 
     @property
@@ -356,6 +375,49 @@ class ProjectFlow:
             engine.plan(selection.spec, selected_mode.target, selection.profile),
         )
 
+    def plan_layout(
+        self,
+        catalog: LayoutTargetCatalog,
+        *,
+        target: str,
+        operation: str,
+    ) -> ProjectFlowPlan:
+        """Compile one owner layout intent into its exact typed Flow plan."""
+
+        if catalog.project is not self.project:
+            raise ValueError("layout catalog does not belong to this exact Project")
+        selected_catalog = catalog.for_owner(self.owner.name)
+        selected_target = selected_catalog.get(target)
+        route = selected_target.get_route(operation)
+        planning = plan_layout_spec(selected_target.spec, project=self.project)
+        intent_sources = selected_catalog.source_members_for(
+            selected_target, planning
+        )
+        adapter = ProjectLayoutTargetAdapter(
+            self.project,
+            self.owner.name,
+            selected_catalog,
+            target=selected_target.name,
+            operation=operation,
+            planning=planning,
+            client_factory=self.client_factory,
+            sources=intent_sources,
+        )
+        engine = self._engine(
+            selected_catalog.inventory,
+            layout_adapter=adapter,
+            intent_sources=intent_sources,
+        )
+        selection = resolve_catalog_selection(
+            self._catalog(selected_catalog.inventory),
+            flow_id=route.flow,
+            profile_id=None,
+        )
+        return self._bind(
+            engine,
+            engine.plan(selection.spec, route.target, selection.profile),
+        )
+
     def preflight(
         self,
         planned: ProjectFlowPlan,
@@ -432,6 +494,7 @@ class ProjectFlow:
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
         *,
         design_catalog: DesignTargetCatalog | None = None,
+        layout_adapter: ProjectLayoutTargetAdapter | None = None,
         intent_sources: tuple[SourceMember, ...] = (),
     ) -> FlowEngine:
         return FlowEngine(
@@ -440,6 +503,7 @@ class ProjectFlow:
                 self.owner,
                 catalog_inventory,
                 design_catalog=design_catalog,
+                layout_adapter=layout_adapter,
                 intent_sources=intent_sources,
             ),
             project_scope=self.project.scope(self.owner),

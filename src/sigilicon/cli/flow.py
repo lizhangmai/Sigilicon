@@ -39,10 +39,9 @@ from sigilicon.workflows.layout_targets import (
     load_layout_target_catalog,
 )
 from sigilicon.workflows.layout_generation import (
-    execute_layout_generation_spec,
     plan_layout_spec,
 )
-from sigilicon.workflows.layout_verification import execute_layout_verification_set
+from sigilicon.workflows.layout_verification import find_calibre, find_xstream
 from sigilicon.workflows.oa_check import UnavailableBridge
 from sigilicon.workflows.project import load_project
 from sigilicon.workflows.project_flow import ProjectFlow
@@ -56,6 +55,10 @@ def _target_payload(target: LayoutTarget) -> dict[str, object]:
         "description": target.description,
         "spec": target.spec_relative.as_posix(),
         "actions": list(target.actions),
+        "routes": {
+            route.operation: [route.flow, route.target]
+            for route in target.routes
+        },
     }
 
 
@@ -162,15 +165,18 @@ def _parser() -> argparse.ArgumentParser:
         "generate", help="generate a cataloged target in OpenAccess"
     )
     generate_parser.add_argument("target")
-    generate_parser.add_argument("--timeout", type=int, default=120)
+    generate_parser.add_argument("--environment", type=Path)
+    generate_parser.add_argument("--capability", action="append", default=[])
+    generate_parser.add_argument("--run-id")
 
     verify_parser = commands.add_parser(
         "verify", help="run audited XStream/Calibre physical verification"
     )
     verify_parser.add_argument("target")
     verify_parser.add_argument("--check", choices=("drc", "lvs", "all"), default="all")
-    verify_parser.add_argument("--xstream-timeout", type=int, default=120)
-    verify_parser.add_argument("--calibre-timeout", type=int, default=600)
+    verify_parser.add_argument("--environment", type=Path)
+    verify_parser.add_argument("--capability", action="append", default=[])
+    verify_parser.add_argument("--run-id")
 
     design = domains.add_parser("design", help="run a cataloged design workflow")
     design_commands = design.add_subparsers(dest="action", required=True)
@@ -387,6 +393,13 @@ def _run_layout(
                 print(f"description: {target.description}")
                 print(f"spec: {target.spec_relative.as_posix()}")
                 print(f"actions: {', '.join(target.actions)}")
+                print(
+                    "routes: "
+                    + ", ".join(
+                        f"{route.operation}->{route.flow}:{route.target}"
+                        for route in target.routes
+                    )
+                )
             return 0
         target = catalog.get(args.target, action=args.action)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -397,37 +410,76 @@ def _run_layout(
             preview = plan_layout_spec(target.spec, project=project)
             print(preview.plan.canonical_json(), end="")
             return 0
-        client = client_factory()
-        if args.action == "generate":
-            spec, result = execute_layout_generation_spec(
-                target.spec,
-                client,
-                project=project,
-                timeout=args.timeout,
-            )
-            print(
-                f"[generated] {spec.library}/{spec.cell}/{spec.view} "
-                f"instances={result.instance_count}"
-            )
-            print(f"[artifact] {result.manifest_path}")
-            return 0
-        checks = ("drc", "lvs") if args.check == "all" else (args.check,)
-        results = execute_layout_verification_set(
-            target.spec,
-            client,
+        operation = (
+            "generate"
+            if args.action == "generate"
+            else f"verify-{args.check}"
+        )
+        project_flow = ProjectFlow(
+            project,
+            target.owner,
+            client_factory=client_factory,
+        )
+        planned = project_flow.plan_layout(
+            catalog,
+            target=target.name,
+            operation=operation,
+        )
+        environment = _layout_execution_environment(
+            args,
             project=project,
-            checks=checks,
-            xstream_timeout=args.xstream_timeout,
-            calibre_timeout=args.calibre_timeout,
+            target=target,
+            verification=args.action == "verify",
+        )
+        result = project_flow.run(
+            planned,
+            environment,
+            run_id=args.run_id,
+        )
+        payload = project_flow.read_result(
+            flow=result.flow_id,
+            target=result.target,
+            run_id=result.run_id,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"ERROR: {exc}")
-    for spec, result in results:
-        status = "PASS" if result.passed else "FAIL"
-        print(f"[{result.check}] {status} {spec.library}/{spec.cell}/{spec.view}")
-        print(f"[details] {dict(result.details)}")
-        print(f"[artifact] {result.manifest_path}")
-    return 0 if all(result.passed for _spec, result in results) else 2
+    emit_json(payload)
+    return 0 if payload.get("status") == "accepted" else 2
+
+
+def _layout_execution_environment(
+    args: argparse.Namespace,
+    *,
+    project: Any,
+    target: LayoutTarget,
+    verification: bool,
+) -> ExecutionEnvironment:
+    base = _execution_environment(args)
+    capabilities = dict(base.capabilities)
+
+    def attest(name: str, executable: Path | None = None) -> None:
+        if name not in capabilities:
+            capabilities[name] = ResolvedCapability(
+                identity=f"current-process:{name}",
+                executable=executable,
+            )
+
+    attest("tool.virtuoso-bridge")
+    attest("license.cadence-oa")
+    if verification:
+        planning = plan_layout_spec(target.spec, project=project)
+        attest(
+            "tool.cadence-xstream",
+            find_xstream(planning.spec.layout_pdk.xstream_bin),
+        )
+        attest(
+            "tool.calibre",
+            find_calibre(planning.spec.layout_pdk.calibre_bin),
+        )
+    return ExecutionEnvironment(
+        capabilities=capabilities,
+        platform_assets=base.platform_assets,
+    )
 
 
 def _run_design(

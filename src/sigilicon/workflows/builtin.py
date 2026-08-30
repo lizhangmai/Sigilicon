@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sigilicon.flow.circuit_design import register_circuit_design_actions
+from sigilicon.flow.layout import register_layout_actions
 from sigilicon.flow.physical_design import register_physical_design_actions
 from sigilicon.flow.physical_design import (
     OA_XSTREAM_MATERIALIZATION_ADAPTER,
@@ -57,6 +58,7 @@ def build_flow_registry(
     register_physical_verification_actions(registry)
     register_post_layout_actions(registry)
     register_circuit_design_actions(registry)
+    register_layout_actions(registry)
     register_native_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
     registry.register_adapter("synopsys-dc", SynopsysDCAdapter())

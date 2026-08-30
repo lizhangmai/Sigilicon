@@ -17,6 +17,15 @@ def _catalog_project(
     *,
     actions: str = '"check", "generate", "verify"',
 ) -> Path:
+    routes = ""
+    if "generate" in actions:
+        routes += 'routes.generate = ["layout-validation", "leaf-generate"]\n'
+    if "verify" in actions:
+        routes += (
+            'routes.verify-drc = ["layout-validation", "leaf-verify-drc"]\n'
+            'routes.verify-lvs = ["layout-validation", "leaf-verify-lvs"]\n'
+            'routes.verify-all = ["layout-validation", "leaf-verify-all"]\n'
+        )
     flow_root = tmp_path / "ip/example/configs/flows"
     flow_root.mkdir(parents=True)
     (tmp_path / "ip/example").mkdir(parents=True, exist_ok=True)
@@ -33,6 +42,7 @@ owner = "example"
 description = "Test leaf"
 spec = "ip/example/leaf.toml"
 actions = [{actions}]
+{routes}
 ''',
         encoding="utf-8",
     )
@@ -248,26 +258,6 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
     )
     events: list[tuple[str, Project, object | None]] = []
     plan = type("Plan", (), {"canonical_json": lambda self: '{"plan":true}\n'})()
-    layout_spec = type(
-        "LayoutSpec",
-        (),
-        {"library": "example", "cell": "leaf", "view": "layout"},
-    )()
-    generation = type(
-        "Generation",
-        (),
-        {"instance_count": 3, "manifest_path": tmp_path / "generation.json"},
-    )()
-    verification = type(
-        "Verification",
-        (),
-        {
-            "check": "lvs",
-            "passed": True,
-            "details": {},
-            "manifest_path": tmp_path / "lvs.json",
-        },
-    )()
     client = object()
 
     def preview(path: Path, *, project: Project) -> object:
@@ -275,40 +265,46 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
         events.append(("check", project, None))
         return type("Preview", (), {"plan": plan})()
 
-    def generate(
-        path: Path,
-        oa_client: object,
-        *,
-        project: Project,
-        timeout: int,
-    ) -> tuple[object, object]:
-        assert path == spec
-        assert oa_client is client
-        assert timeout == 91
-        events.append(("generate", project, oa_client))
-        return layout_spec, generation
+    class FakeProjectFlow:
+        def __init__(self, project, owner, *, client_factory):
+            assert project is canonical_project
+            assert owner == "example"
+            assert client_factory() is client
+            self.operation = ""
 
-    def verify_set(
-        path: Path,
-        oa_client: object,
-        *,
-        project: Project,
-        checks: tuple[str, ...],
-        xstream_timeout: int,
-        calibre_timeout: int,
-    ) -> tuple[tuple[object, object], ...]:
-        assert path == spec
-        assert oa_client is client
-        assert project is canonical_project
-        assert checks == ("lvs",)
-        assert xstream_timeout == 92
-        assert calibre_timeout == 93
-        events.append(("verify", canonical_project, oa_client))
-        return ((layout_spec, verification),)
+        def plan_layout(self, catalog, *, target, operation):
+            assert catalog.project is canonical_project
+            assert target == "leaf"
+            self.operation = operation
+            events.append((operation, canonical_project, client))
+            return object()
+
+        def run(self, planned, environment, *, run_id=None):
+            assert planned is not None
+            assert environment is not None
+            assert run_id is None
+            return type(
+                "Result",
+                (),
+                {
+                    "flow_id": "layout-validation",
+                    "target": f"leaf-{self.operation}",
+                    "run_id": "test-run",
+                },
+            )()
+
+        def read_result(self, *, flow, target, run_id):
+            assert flow == "layout-validation"
+            assert run_id == "test-run"
+            return {"status": "accepted", "target": target}
 
     monkeypatch.setattr(flow_cli, "plan_layout_spec", preview)
-    monkeypatch.setattr(flow_cli, "execute_layout_generation_spec", generate)
-    monkeypatch.setattr(flow_cli, "execute_layout_verification_set", verify_set)
+    monkeypatch.setattr(flow_cli, "ProjectFlow", FakeProjectFlow)
+    monkeypatch.setattr(
+        flow_cli,
+        "_layout_execution_environment",
+        lambda args, **kwargs: object(),
+    )
 
     assert (
         flow_cli.main(
@@ -319,7 +315,7 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
     )
     assert (
         flow_cli.main(
-            ["layout", "generate", "leaf", "--timeout", "91"],
+            ["layout", "generate", "leaf"],
             client_factory=lambda: client,
         )
         == 0
@@ -332,10 +328,6 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
                 "leaf",
                 "--check",
                 "lvs",
-                "--xstream-timeout",
-                "92",
-                "--calibre-timeout",
-                "93",
             ],
             client_factory=lambda: client,
         )
@@ -345,15 +337,15 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
     assert [kind for kind, _project, _client in events] == [
         "check",
         "generate",
-        "verify",
+        "verify-lvs",
     ]
     assert all(
         project is canonical_project for _kind, project, _client in events
     )
     output = capsys.readouterr().out
     assert '{"plan":true}\n' in output
-    assert "[generated] example/leaf/layout instances=3" in output
-    assert "[lvs] PASS example/leaf/layout" in output
+    assert '"status": "accepted"' in output
+    assert '"target": "leaf-verify-lvs"' in output
 
 
 def test_layout_cli_refuses_an_action_not_enabled_for_the_target(
