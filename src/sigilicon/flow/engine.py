@@ -329,7 +329,7 @@ class FlowEngine:
     @staticmethod
     def _validate_extensions(
         contract: ActionContract,
-        adapter: ToolAdapter,
+        accepted_by_adapter: tuple[str, ...],
         names: tuple[str, ...],
     ) -> None:
         reserved = set(names) & _RESERVED_EXTENSIONS
@@ -344,7 +344,6 @@ class FlowEngine:
                 "Action does not accept Flow extensions: "
                 f"{sorted(unsupported_action)}"
             )
-        accepted_by_adapter = getattr(adapter, "accepted_extensions", ())
         if not isinstance(accepted_by_adapter, tuple) or any(
             not isinstance(name, str) for name in accepted_by_adapter
         ):
@@ -371,7 +370,7 @@ class FlowEngine:
         planned = plan.planned_node(node_id)
         self._validate_extensions(
             self._registry.action(planned.node.action_kind),
-            self._registry.adapter(planned.adapter),
+            self._registry.adapter_extensions(planned.adapter),
             names,
         )
 
@@ -424,7 +423,7 @@ class FlowEngine:
                 )
             self._validate_extensions(
                 contract,
-                self._registry.adapter(selection.adapter),
+                self._registry.adapter_extensions(selection.adapter),
                 tuple(node.extensions),
             )
             source_assets[node.node_id] = resolve_node_source_assets(

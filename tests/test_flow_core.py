@@ -380,6 +380,44 @@ def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:
         )
 
 
+def test_adapter_factory_is_materialized_only_when_a_plan_runs(tmp_path: Path) -> None:
+    materialized: list[SourceAdapter] = []
+    registered = FlowRegistry()
+    registered.register_action(
+        ActionContract(
+            kind="fake.source",
+            outputs=(ArtifactPort("source", "text.plain"),),
+            adapters=("lazy-source",),
+        )
+    )
+
+    def create_adapter() -> SourceAdapter:
+        adapter = SourceAdapter()
+        materialized.append(adapter)
+        return adapter
+
+    registered.register_adapter_factory("lazy-source", create_adapter)
+    engine = FlowEngine(registered)
+    spec = FlowSpec(
+        owner="example",
+        flow_id="lazy-adapter",
+        nodes=(FlowNode("source", "fake.source", {"text": "hello"}),),
+        targets=(FlowTarget("all", ("source",)),),
+    )
+    profile = ExecutionProfile(
+        owner="example",
+        profile_id="lazy",
+        selections=(AdapterSelection("fake.source", "lazy-source"),),
+    )
+
+    plan = engine.plan(spec, "all", profile)
+
+    assert materialized == []
+    engine.run(plan, artifact_root=tmp_path / "artifacts", run_id="1" * 32)
+    assert len(materialized) == 1
+
+
+
 def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     registered, source, transform, verify = registry()
     engine = FlowEngine(registered)

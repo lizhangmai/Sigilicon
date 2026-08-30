@@ -9,7 +9,7 @@ from pathlib import Path
 import stat
 import sys
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.repository import (
@@ -43,24 +43,71 @@ from sigilicon.flow.layout import (
     LAYOUT_GENERATION_ADAPTER,
     LAYOUT_VERIFICATION_ADAPTER,
 )
-from sigilicon.flow.registry import FlowRegistry
+from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
-from sigilicon.workflows.native_flow import (
-    NativeOaPlanAdapter,
-    NativeOaSimulationAdapter,
-    XceliumVerificationAdapter,
-    XceliumAmsVerificationAdapter,
-)
-from sigilicon.workflows.design_flow import ProjectDesignTargetAdapter
 from sigilicon.workflows.design_targets import (
     DesignTargetCatalog,
     load_design_target_catalog,
 )
-from sigilicon.virtuoso.client import get_client
-from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
 from sigilicon.workflows.layout_generation import plan_layout_spec
 from sigilicon.workflows.layout_targets import LayoutTargetCatalog
+
+if TYPE_CHECKING:
+    from sigilicon.virtuoso.client import VirtuosoClient
+
+
+def _default_client_factory() -> VirtuosoClient:
+    from sigilicon.virtuoso.client import get_client
+
+    return get_client()
+
+
+def _native_oa_plan_adapter(project: Project, owner: str) -> ToolAdapter:
+    from sigilicon.workflows.native_flow import NativeOaPlanAdapter
+
+    return NativeOaPlanAdapter(project, owner)
+
+
+def _native_oa_simulation_adapter(project: Project, owner: str) -> ToolAdapter:
+    from sigilicon.workflows.native_flow import NativeOaSimulationAdapter
+
+    return NativeOaSimulationAdapter(project, owner)
+
+
+def _xcelium_verification_adapter(project: Project, owner: str) -> ToolAdapter:
+    from sigilicon.workflows.native_flow import XceliumVerificationAdapter
+
+    return XceliumVerificationAdapter(project, owner)
+
+
+def _xcelium_ams_verification_adapter(
+    project: Project,
+    owner: str,
+) -> ToolAdapter:
+    from sigilicon.workflows.native_flow import XceliumAmsVerificationAdapter
+
+    return XceliumAmsVerificationAdapter(project, owner)
+
+
+def _design_target_adapter(
+    project: Project,
+    owner: str,
+    catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
+    design_catalog: DesignTargetCatalog | None,
+) -> ToolAdapter:
+    from sigilicon.workflows.design_flow import ProjectDesignTargetAdapter
+
+    return ProjectDesignTargetAdapter(
+        project,
+        owner,
+        design_catalog
+        if design_catalog is not None
+        else load_design_target_catalog(
+            project,
+            catalog_inventory=catalog_inventory,
+        ),
+    )
 
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
@@ -102,7 +149,7 @@ def _project_workflow_registry(
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     *,
     design_catalog: DesignTargetCatalog | None = None,
-    layout_adapter: ProjectLayoutTargetAdapter | None = None,
+    layout_adapter: ToolAdapter | None = None,
     intent_sources: tuple[SourceMember, ...] = (),
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
@@ -119,35 +166,39 @@ def _project_workflow_registry(
     registry = build_flow_registry()
     for record in intent_sources:
         registry.bind_implementation_source(record)
-    registry.register_adapter(
+    registry.register_adapter_factory(
         NATIVE_OA_PLAN_ADAPTER,
-        NativeOaPlanAdapter(project, owner.name),
+        lambda: _native_oa_plan_adapter(project, owner.name),
     )
-    registry.register_adapter(
+    registry.register_adapter_factory(
         NATIVE_OA_SIMULATION_ADAPTER,
-        NativeOaSimulationAdapter(project, owner.name),
+        lambda: _native_oa_simulation_adapter(project, owner.name),
     )
-    registry.register_adapter(
+    registry.register_adapter_factory(
         XCELIUM_VERIFICATION_ADAPTER,
-        XceliumVerificationAdapter(project, owner.name),
+        lambda: _xcelium_verification_adapter(project, owner.name),
     )
-    registry.register_adapter(
+    registry.register_adapter_factory(
         XCELIUM_AMS_VERIFICATION_ADAPTER,
-        XceliumAmsVerificationAdapter(project, owner.name),
+        lambda: _xcelium_ams_verification_adapter(project, owner.name),
     )
-    design_adapter = ProjectDesignTargetAdapter(
-        project,
-        owner.name,
-        design_catalog
-        if design_catalog is not None
-        else load_design_target_catalog(
-            project, catalog_inventory=catalog_inventory
+    registry.register_adapter_factory(
+        DESIGN_SOURCE_CHECK_ADAPTER,
+        lambda: _design_target_adapter(
+            project,
+            owner.name,
+            catalog_inventory,
+            design_catalog,
         ),
     )
-    registry.register_adapter(DESIGN_SOURCE_CHECK_ADAPTER, design_adapter)
-    registry.register_adapter(
+    registry.register_adapter_factory(
         DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
-        design_adapter,
+        lambda: _design_target_adapter(
+            project,
+            owner.name,
+            catalog_inventory,
+            design_catalog,
+        ),
     )
     if layout_adapter is not None:
         registry.register_adapter(LAYOUT_GENERATION_ADAPTER, layout_adapter)
@@ -277,7 +328,7 @@ class ProjectFlow:
     project: Project
     owner_name: str
     client_factory: Callable[[], Any] = field(
-        default=get_client,
+        default=_default_client_factory,
         repr=False,
         compare=False,
     )
@@ -393,6 +444,8 @@ class ProjectFlow:
         intent_sources = selected_catalog.source_members_for(
             selected_target, planning
         )
+        from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
+
         adapter = ProjectLayoutTargetAdapter(
             self.project,
             self.owner.name,
@@ -494,7 +547,7 @@ class ProjectFlow:
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
         *,
         design_catalog: DesignTargetCatalog | None = None,
-        layout_adapter: ProjectLayoutTargetAdapter | None = None,
+        layout_adapter: ToolAdapter | None = None,
         intent_sources: tuple[SourceMember, ...] = (),
     ) -> FlowEngine:
         return FlowEngine(

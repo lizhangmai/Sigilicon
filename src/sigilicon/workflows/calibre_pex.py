@@ -34,7 +34,12 @@ from sigilicon.flow.model import (
     FlowExecutionError,
     ProducedArtifact,
 )
-from sigilicon.flow.post_layout import PEX_ACTION, PEX_EVIDENCE_KIND, PEX_NETLIST_KIND
+from sigilicon.flow.post_layout import (
+    CALIBRE_XRC_PEX_ADAPTER,
+    PEX_ACTION,
+    PEX_EVIDENCE_KIND,
+    PEX_NETLIST_KIND,
+)
 from sigilicon.workflows.layout_verification import (
     ReceiptBoundLayoutSourceInputs,
     calibre_environment,
@@ -43,7 +48,6 @@ from sigilicon.workflows.layout_verification import (
 )
 
 
-CALIBRE_XRC_PEX_ADAPTER = "calibre-xrc-pex"
 _PRIMARY = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _INCLUDE = re.compile(
     r'^[ \t]*\.include[ \t]+"(?P<name>[^"]+)"[ \t]*$',

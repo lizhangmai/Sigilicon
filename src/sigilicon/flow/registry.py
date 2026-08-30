@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Protocol, runtime_checkable
 
 from sigilicon.flow.model import (
@@ -32,12 +33,29 @@ def _tool_adapter(
     raise FlowContractError("Adapter must provide run(context)")
 
 
+@dataclass(frozen=True)
+class AdapterProvider:
+    """A side-effect-free description and lazy factory for one Adapter."""
+
+    factory: Callable[[], ToolAdapter]
+    accepted_extensions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not callable(self.factory):
+            raise FlowContractError("Adapter factory must be callable")
+        for name in self.accepted_extensions:
+            identifier(name, "Adapter extension")
+        if len(self.accepted_extensions) != len(set(self.accepted_extensions)):
+            raise FlowContractError("duplicate Adapter extensions")
+
+
 class FlowRegistry:
     """The explicit dependencies accepted by a FlowEngine instance."""
 
     def __init__(self) -> None:
         self._actions: dict[str, ActionContract] = {}
         self._adapters: dict[str, ToolAdapter] = {}
+        self._adapter_providers: dict[str, AdapterProvider] = {}
         self._implementation_sources: dict[str, SourceMember] = {}
 
     def bind_implementation_source(self, source: SourceMember) -> None:
@@ -69,9 +87,32 @@ class FlowRegistry:
         adapter: ToolAdapter,
     ) -> None:
         identity = identifier(name, "Adapter name")
-        if identity in self._adapters:
+        if identity in self._adapter_providers:
             raise FlowContractError(f"Adapter {identity!r} is already registered")
-        self._adapters[identity] = _tool_adapter(adapter)
+        implementation = _tool_adapter(adapter)
+        accepted_extensions = getattr(implementation, "accepted_extensions", ())
+        self._adapter_providers[identity] = AdapterProvider(
+            factory=lambda: implementation,
+            accepted_extensions=accepted_extensions,
+        )
+        self._adapters[identity] = implementation
+
+    def register_adapter_factory(
+        self,
+        name: str,
+        factory: Callable[[], ToolAdapter],
+        *,
+        accepted_extensions: tuple[str, ...] = (),
+    ) -> None:
+        """Register a provider without importing or creating its tool Adapter."""
+
+        identity = identifier(name, "Adapter name")
+        if identity in self._adapter_providers:
+            raise FlowContractError(f"Adapter {identity!r} is already registered")
+        self._adapter_providers[identity] = AdapterProvider(
+            factory=factory,
+            accepted_extensions=accepted_extensions,
+        )
 
     def register_action_adapter(
         self,
@@ -97,6 +138,36 @@ class FlowRegistry:
             adapters=(*contract.adapters, identity),
         )
 
+    def register_action_adapter_factory(
+        self,
+        action_kind: str,
+        name: str,
+        factory: Callable[[], ToolAdapter],
+        *,
+        accepted_extensions: tuple[str, ...] = (),
+    ) -> None:
+        """Register one lazy implementation of an extensible Action seam."""
+
+        contract = self.action(action_kind)
+        if not contract.adapter_extensible:
+            raise FlowContractError(
+                f"Action {action_kind!r} does not accept Adapter extensions"
+            )
+        identity = identifier(name, "Adapter name")
+        if identity in contract.adapters:
+            raise FlowContractError(
+                f"Adapter {identity!r} is already allowed by Action {action_kind!r}"
+            )
+        self.register_adapter_factory(
+            identity,
+            factory,
+            accepted_extensions=accepted_extensions,
+        )
+        self._actions[action_kind] = replace(
+            contract,
+            adapters=(*contract.adapters, identity),
+        )
+
     def action(self, kind: str) -> ActionContract:
         try:
             return self._actions[kind]
@@ -105,9 +176,29 @@ class FlowRegistry:
 
     def adapter(self, name: str) -> ToolAdapter:
         try:
-            return self._adapters[name]
+            provider = self._adapter_providers[name]
+        except KeyError as exc:
+            raise FlowContractError(f"unknown Adapter: {name!r}") from exc
+        implementation = self._adapters.get(name)
+        if implementation is None:
+            try:
+                implementation = _tool_adapter(provider.factory())
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as exc:
+                raise FlowContractError(
+                    f"cannot materialize Adapter {name!r}: {exc}"
+                ) from exc
+            self._adapters[name] = implementation
+        return implementation
+
+    def adapter_extensions(self, name: str) -> tuple[str, ...]:
+        """Return plan-time Adapter metadata without materializing it."""
+
+        try:
+            return self._adapter_providers[name].accepted_extensions
         except KeyError as exc:
             raise FlowContractError(f"unknown Adapter: {name!r}") from exc
 
     def has_adapter(self, name: str) -> bool:
-        return name in self._adapters
+        return name in self._adapter_providers

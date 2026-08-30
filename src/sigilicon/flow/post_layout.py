@@ -14,6 +14,7 @@ from sigilicon.flow.registry import FlowRegistry
 
 
 PEX_ACTION = "physical-verification.pex"
+CALIBRE_XRC_PEX_ADAPTER = "calibre-xrc-pex"
 POST_LAYOUT_ACTION = "physical-design.post-layout"
 PHYSICAL_QUALIFICATION_ACTION = "physical-design.qualification"
 PEX_EVIDENCE_KIND = "evidence.pex"
@@ -94,6 +95,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
 
 
 __all__ = [
+    "CALIBRE_XRC_PEX_ADAPTER",
     "PEX_ACTION",
     "PEX_EVIDENCE_KIND",
     "PEX_NETLIST_KIND",
