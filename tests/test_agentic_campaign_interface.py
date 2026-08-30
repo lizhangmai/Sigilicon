@@ -21,6 +21,7 @@ from sigilicon.domain.circuit_design import (
     EvidenceLevel,
     EvidenceRole,
 )
+from sigilicon.domain.repository import Project
 from sigilicon.flow import ActionContract, AdapterExecution, ArtifactPort, FlowRegistry
 from sigilicon.workflows import agentic_read as agentic_read_module
 from sigilicon.workflows import agentic_campaigns as agentic_campaigns_module
@@ -54,6 +55,10 @@ from test_design_campaign import (
     _topology,
 )
 from test_design_promotion import _inputs as promotion_inputs
+
+
+def _read(root: Path) -> AgenticReadInterface:
+    return AgenticReadInterface(Project.from_project_root(root))
 
 
 def _write_campaign_project(root: Path) -> None:
@@ -246,7 +251,7 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
     source = _campaign()
     campaign_path = tmp_path / "campaign.json"
     campaign_path.write_text(source.canonical_json(), encoding="utf-8")
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
 
@@ -308,7 +313,7 @@ def test_campaign_run_identity_includes_execution_environment(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch)
     source = _campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
     grant = _grant(campaign_identity, planned["data"]["plan"])
@@ -357,7 +362,7 @@ def test_same_environment_id_with_changed_path_or_record_cannot_resume(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch)
     source = _campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
     grant = _grant(campaign_identity, planned["data"]["plan"])
@@ -392,7 +397,7 @@ identity = "different-site-contract"
 
     with pytest.raises(ValueError, match="partial request conflict"):
         AgenticExecutionInterface(
-            AgenticReadInterface.from_project_root(tmp_path),
+            _read(tmp_path),
             grant=grant,
             environment_contract=second_path,
         ).run_campaign(
@@ -408,7 +413,7 @@ def test_campaign_run_requires_exact_identity_and_grant(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch)
     source = _campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
     execution = AgenticExecutionInterface(
@@ -439,7 +444,7 @@ def test_failed_baseline_is_a_durable_terminal_campaign_state(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch, _failing_registry)
     source = _campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
     interface = AgenticExecutionInterface(
@@ -469,7 +474,7 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch)
     source = _campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     grant = _grant(
         planned["data"]["campaign_identity"],
@@ -521,7 +526,7 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch, _feedback_registry)
     source = _feedback_campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
     grant = _grant(campaign_identity, planned["data"]["plan"])
@@ -559,7 +564,7 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     baseline_event.unlink()
     baseline_pointer.unlink()
     recovered = AgenticExecutionInterface(
-        AgenticReadInterface.from_project_root(tmp_path),
+        _read(tmp_path),
         grant=grant,
     ).run_campaign(
         campaign_json=source.canonical_json(),
@@ -573,14 +578,14 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     sequence_gap.write_text(event_text, encoding="utf-8")
     with pytest.raises(ValueError, match="sequence is incomplete"):
         AgenticExecutionInterface(
-            AgenticReadInterface.from_project_root(tmp_path),
+            _read(tmp_path),
             grant=grant,
         ).campaign_store.locate(run_id)
     sequence_gap.unlink()
     baseline_event.write_text("{\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="cannot read Design Campaign Event"):
         AgenticExecutionInterface(
-            AgenticReadInterface.from_project_root(tmp_path),
+            _read(tmp_path),
             grant=grant,
         ).campaign_store.locate(run_id)
     baseline_event.write_text(event_text, encoding="utf-8")
@@ -593,7 +598,7 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     )
     with pytest.raises(ValueError, match="Proposal rejected"):
         AgenticExecutionInterface(
-            AgenticReadInterface.from_project_root(tmp_path),
+            _read(tmp_path),
             grant=grant,
         ).run_campaign(
             run_id=run_id,
@@ -604,14 +609,14 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     state_pointer.unlink()
 
     resumed_interface = AgenticExecutionInterface(
-        AgenticReadInterface.from_project_root(tmp_path),
+        _read(tmp_path),
         grant=grant,
     )
     located = resumed_interface.campaign_store.locate(run_id)
     with resumed_interface.campaign_store.exclusive(located.paths):
         with pytest.raises(ValueError, match="already in progress"):
             AgenticExecutionInterface(
-                AgenticReadInterface.from_project_root(tmp_path),
+                _read(tmp_path),
                 grant=grant,
             ).run_campaign(
                 run_id=run_id,
@@ -680,7 +685,7 @@ def test_promotion_plan_python_and_cli_share_non_writing_interface(
         for path in (tmp_path / "ip").rglob("*")
         if path.is_file()
     }
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
     expected = interface.plan_candidate_promotion(
         owner="example",
         candidate_json=inputs["candidate.json"],

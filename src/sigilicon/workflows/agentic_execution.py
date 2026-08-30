@@ -11,15 +11,11 @@ import sys
 import time
 from typing import Any
 
-from sigilicon.artifacts import (
-    read_nofollow_text,
-)
 from sigilicon.canonical import canonical_json
 from sigilicon.domain.agentic_execution import (
     AgenticExecutionBudget,
     AgenticExecutionCapability,
     AgenticExecutionGrant,
-    agentic_execution_grant_from_json,
 )
 from sigilicon.external_tools import (
     ManagedBackgroundProcess,
@@ -104,37 +100,6 @@ class AgenticExecutionInterface:
             read.project_id,
         )
         self._active: dict[str, ManagedBackgroundProcess] = {}
-
-    @classmethod
-    def from_project_root(
-        cls,
-        project_root: Path | str,
-        *,
-        grant: AgenticExecutionGrant,
-        environment_contract: Path | None = None,
-    ) -> "AgenticExecutionInterface":
-        return cls(
-            AgenticReadInterface.from_project_root(project_root),
-            grant=grant,
-            environment_contract=environment_contract,
-        )
-
-    @classmethod
-    def from_launcher_contracts(
-        cls,
-        project_root: Path | str,
-        *,
-        grant_contract: Path,
-        environment_contract: Path | None = None,
-    ) -> "AgenticExecutionInterface":
-        grant = agentic_execution_grant_from_json(
-            read_nofollow_text(Path(grant_contract).resolve())
-        )
-        return cls.from_project_root(
-            project_root,
-            grant=grant,
-            environment_contract=environment_contract,
-        )
 
     def run_flow(
         self,

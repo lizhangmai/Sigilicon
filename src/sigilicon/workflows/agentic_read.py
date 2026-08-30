@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
@@ -103,19 +103,10 @@ class AgenticReadInterface:
     """Resolve only cataloged project identities through existing domain Modules."""
 
     project: Project
-    project_id: str
+    project_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.project_id != _repository_identity(self.project):
-            raise ValueError("agentic project identity drift")
-
-    @classmethod
-    def from_project_root(cls, project_root: Path | str) -> "AgenticReadInterface":
-        return cls.from_project(Project.from_project_root(project_root))
-
-    @classmethod
-    def from_project(cls, project: Project) -> "AgenticReadInterface":
-        return cls(project, _repository_identity(project))
+        object.__setattr__(self, "project_id", _repository_identity(self.project))
 
     @property
     def project_resource_uri(self) -> str:

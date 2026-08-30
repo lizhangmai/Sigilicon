@@ -17,6 +17,7 @@ from sigilicon.domain.agentic_execution import (
     AgenticPlanApproval,
     agentic_execution_grant_from_json,
 )
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.agentic_runs import AgenticRunStore
@@ -24,8 +25,25 @@ from sigilicon.workflows.agentic_runs import AgenticRunStore
 from test_agentic_read_interface import write_read_only_flow_project
 
 
+def _read(root: Path) -> AgenticReadInterface:
+    return AgenticReadInterface(Project.from_project_root(root))
+
+
+def _execution(
+    root: Path,
+    *,
+    grant: AgenticExecutionGrant,
+    environment_contract: Path | None = None,
+) -> AgenticExecutionInterface:
+    return AgenticExecutionInterface(
+        _read(root),
+        grant=grant,
+        environment_contract=environment_contract,
+    )
+
+
 def _plan_identity(root: Path) -> str:
-    return AgenticReadInterface.from_project_root(root).plan_flow(
+    return _read(root).plan_flow(
         owner="example",
         flow="pipeline",
         target="all",
@@ -39,7 +57,7 @@ def _grant(
     *,
     approval: str = "phase3-test-approval",
 ) -> AgenticExecutionGrant:
-    record = AgenticReadInterface.from_project_root(root).plan_flow(
+    record = _read(root).plan_flow(
         owner="example",
         flow="pipeline",
         target="all",
@@ -134,7 +152,7 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
     grant_path.write_text(grant.canonical_json(), encoding="utf-8")
     budget = AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1)
 
-    interface = AgenticExecutionInterface.from_project_root(
+    interface = _execution(
         tmp_path,
         grant=grant,
     )
@@ -187,7 +205,7 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
     write_read_only_flow_project(tmp_path)
     plan_identity = _plan_identity(tmp_path)
 
-    unauthorized = AgenticExecutionInterface.from_project_root(
+    unauthorized = _execution(
         tmp_path,
         grant=_grant(tmp_path, "forged-plan"),
     )
@@ -198,7 +216,7 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
             wait=False,
         )
 
-    interface = AgenticExecutionInterface.from_project_root(
+    interface = _execution(
         tmp_path,
         grant=_grant(tmp_path, plan_identity),
     )
@@ -225,7 +243,7 @@ def test_grant_rejects_plan_config_changed_after_approval(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="changed after execution approval"):
-        AgenticExecutionInterface.from_project_root(
+        _execution(
             tmp_path,
             grant=grant,
         ).run_flow(
@@ -239,7 +257,7 @@ def test_grant_rejects_plan_config_changed_after_approval(tmp_path: Path) -> Non
 def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path: Path) -> None:
     _write_wait_flow(tmp_path)
     plan_identity = _plan_identity(tmp_path)
-    interface = AgenticExecutionInterface.from_project_root(
+    interface = _execution(
         tmp_path,
         grant=_grant(tmp_path, plan_identity),
     )
@@ -267,7 +285,7 @@ def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path:
     assert inspected["data"]["result"]["interrupted"] is True
     assert inspected["data"]["result"]["nodes"]["wait"]["execution_status"] == "cancelled"
 
-    other = AgenticExecutionInterface.from_project_root(
+    other = _execution(
         tmp_path,
         grant=AgenticExecutionGrant(
             principal="other-operator",
@@ -301,7 +319,7 @@ def test_partial_flow_run_create_recovers_without_replacing_request(
 ) -> None:
     write_read_only_flow_project(tmp_path)
     plan_identity = _plan_identity(tmp_path)
-    interface = AgenticExecutionInterface.from_project_root(
+    interface = _execution(
         tmp_path,
         grant=_grant(tmp_path, plan_identity),
     )
@@ -347,7 +365,7 @@ def test_partial_flow_run_create_recovers_without_replacing_request(
 def test_agentic_run_audit_and_physical_path_identity_are_strict(tmp_path: Path) -> None:
     write_read_only_flow_project(tmp_path)
     plan_identity = _plan_identity(tmp_path)
-    interface = AgenticExecutionInterface.from_project_root(
+    interface = _execution(
         tmp_path,
         grant=_grant(tmp_path, plan_identity),
     )

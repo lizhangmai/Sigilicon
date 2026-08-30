@@ -53,37 +53,6 @@ class DesignInspection:
         }
 
 
-@dataclass(frozen=True)
-class ProjectDesignWorkflow:
-    """Inspect and attest canonical designs through one Project."""
-
-    project: Project
-
-    @classmethod
-    def from_file(cls, project_contract: Path | str) -> "ProjectDesignWorkflow":
-        return cls(Project.from_file(project_contract))
-
-    def inspect(self, spec_path: Path) -> DesignInspection:
-        return inspect_design(spec_path, project=self.project)
-
-    def attest_set(
-        self,
-        spec_paths: Sequence[Path],
-        client: Any,
-        *,
-        timeout: int = 60,
-    ) -> dict[str, object]:
-        reports = tuple(
-            attest_oa_design(
-                self.inspect(path),
-                client,
-                timeout=timeout,
-            )
-            for path in spec_paths
-        )
-        return {"passed": True, "designs": reports}
-
-
 def inspect_design(
     spec_path: Path,
     *,
@@ -210,8 +179,12 @@ def attest_design_set(
     weaker OA-view checks.
     """
 
-    return ProjectDesignWorkflow(project).attest_set(
-        spec_paths,
-        client,
-        timeout=timeout,
+    reports = tuple(
+        attest_oa_design(
+            inspect_design(path, project=project),
+            client,
+            timeout=timeout,
+        )
+        for path in spec_paths
     )
+    return {"passed": True, "designs": reports}

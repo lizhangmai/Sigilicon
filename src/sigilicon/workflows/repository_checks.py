@@ -135,25 +135,12 @@ def _integration_variant_inventory(
     )
 
 
-def check_project_designs(
-    project_contract: Path,
-) -> dict[str, Any]:
-    """Inspect one explicit project while parsing its manifest exactly once."""
-
-    project = Project.from_file(project_contract)
-    return inspect_repository_designs(project)
-
-
 def inspect_repository_designs(
-    project: Project | Path,
+    project: Project,
 ) -> dict[str, Any]:
     """Validate every canonical source selected by one project context."""
 
-    context = (
-        project
-        if isinstance(project, Project)
-        else Project.from_project_root(project)
-    )
+    context = project
     root = context.project_root
     source_inventory = RepositorySourceInventory.for_project(context)
     flow_catalog_inventory = context.flow_catalog_inventory()

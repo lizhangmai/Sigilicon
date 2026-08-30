@@ -21,12 +21,12 @@ from sigilicon.flow import (
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.project import load_project
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
     ProjectFlowPlan,
     project_workflow_registry,
 )
-from sigilicon.workflows.project import load_project
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -40,6 +40,7 @@ from sigilicon.domain.agentic_execution import (
     AgenticExecutionGrant,
     AgenticPlanApproval,
 )
+from sigilicon.domain.repository import Project
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_campaign import design_campaign_state_from_json
@@ -56,6 +57,10 @@ from test_agentic_campaign_interface import (
 )
 from test_design_promotion import _inputs as promotion_inputs
 from test_design_campaign import _topology
+
+
+def _read(root: Path) -> AgenticReadInterface:
+    return AgenticReadInterface(Project.from_project_root(root))
 
 
 def write_mcp_project(root: Path) -> None:
@@ -157,7 +162,7 @@ def candidate_chain() -> tuple[str, list[str]]:
 
 def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
     server = create_server(interface)
 
     async def scenario() -> None:
@@ -269,7 +274,7 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
 
 def test_native_mcp_stdio_entrypoint_round_trips(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
-    expected = AgenticReadInterface.from_project_root(tmp_path).inspect_project(
+    expected = _read(tmp_path).inspect_project(
         owner="example"
     )
     python_path = os.environ.get("PYTHONPATH", "")
@@ -298,7 +303,7 @@ def test_native_mcp_stdio_entrypoint_round_trips(tmp_path: Path) -> None:
 
 def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     plan = read.plan_flow(
         owner="example",
         flow="pipeline",
@@ -405,8 +410,8 @@ def test_native_mcp_rejects_cross_project_read_execution_composition(
     write_project_context(execution_root)
     write_mcp_project(read_root)
     write_mcp_project(execution_root)
-    read = AgenticReadInterface.from_project_root(read_root)
-    execution_read = AgenticReadInterface.from_project_root(execution_root)
+    read = _read(read_root)
+    execution_read = _read(execution_root)
     plan = execution_read.plan_flow(
         owner="example",
         flow="pipeline",
@@ -441,7 +446,7 @@ def test_native_mcp_campaign_plan_and_run_match_shared_interfaces(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch, campaign_registry)
     source = _campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     expected_plan = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = expected_plan["data"]["campaign_identity"]
     execution = AgenticExecutionInterface(
@@ -494,7 +499,7 @@ def test_native_mcp_campaign_run_resumes_with_semantic_proposal_only(
     _write_campaign_project(tmp_path)
     _patch_project_registry(monkeypatch, _feedback_registry)
     source = _feedback_campaign()
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
     execution = AgenticExecutionInterface(
@@ -551,7 +556,7 @@ def test_native_mcp_campaign_run_resumes_with_semantic_proposal_only(
 
 def test_native_mcp_stdio_executes_only_the_launcher_grant(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
-    read = AgenticReadInterface.from_project_root(tmp_path)
+    read = _read(tmp_path)
     plan = read.plan_flow(
         owner="example",
         flow="pipeline",

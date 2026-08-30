@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json
-from sigilicon.workflows.agentic_read import AgenticReadInterface
+from sigilicon.workflows.project import bind_agentic_read
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -61,7 +61,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        interface = AgenticReadInterface.from_project_root(args.project_root)
+        interface = bind_agentic_read(args.project_root)
         if args.action == "project":
             result = interface.inspect_project(owner=args.owner)
         elif args.action == "flow-plan":

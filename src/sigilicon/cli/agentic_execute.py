@@ -8,10 +8,8 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json
-from sigilicon.workflows.agentic_execution import (
-    AgenticExecutionBudget,
-    AgenticExecutionInterface,
-)
+from sigilicon.workflows.agentic_execution import AgenticExecutionBudget
+from sigilicon.workflows.project import bind_agentic_execution
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,7 +43,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        interface = AgenticExecutionInterface.from_launcher_contracts(
+        interface = bind_agentic_execution(
             args.project_root,
             grant_contract=args.grant,
             environment_contract=args.environment,

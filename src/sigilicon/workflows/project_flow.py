@@ -178,10 +178,6 @@ class ProjectFlow:
     def owner(self) -> RepositoryOwner:
         return self.project.owner(self.owner_name)
 
-    @property
-    def catalog_path(self) -> Path:
-        return self.project.owner_flow_catalog(self.owner)
-
     def catalog(self) -> FlowCatalog:
         """Load the owner's canonical typed Flow catalog."""
 

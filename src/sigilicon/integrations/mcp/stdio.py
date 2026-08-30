@@ -60,17 +60,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise
 
     try:
+        from sigilicon.workflows.project import (
+            bind_agentic_execution,
+            bind_agentic_read,
+        )
+
         execution = None
         if args.execution_grant is None:
             if args.environment is not None:
                 raise ValueError("execution environment requires an execution grant")
-            from sigilicon.workflows.agentic_read import AgenticReadInterface
-
-            interface = AgenticReadInterface.from_project_root(args.project_root)
+            interface = bind_agentic_read(args.project_root)
         else:
-            from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
-
-            execution = AgenticExecutionInterface.from_launcher_contracts(
+            execution = bind_agentic_execution(
                 args.project_root,
                 grant_contract=args.execution_grant,
                 environment_contract=args.environment,

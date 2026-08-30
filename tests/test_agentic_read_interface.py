@@ -32,6 +32,10 @@ from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
 from sigilicon.workflows.project_flow import project_workflow_registry
 
 
+def _read(root: Path) -> AgenticReadInterface:
+    return AgenticReadInterface(Project.from_project_root(root))
+
+
 def write_read_only_flow_project(root: Path, owner: str = "example") -> Path:
     owner_root = root / "ip" / owner
     flow_root = owner_root / "configs" / "flows"
@@ -106,13 +110,9 @@ def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
     tmp_path: Path,
 ) -> None:
     write_read_only_flow_project(tmp_path)
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
 
-    with pytest.raises(ValueError, match="identity drift"):
-        AgenticReadInterface(
-            Project.from_project_root(tmp_path),
-            "corrupt-identity",
-        )
+    assert interface.project_id == f"test.{tmp_path.name}"
 
     project = interface.inspect_project(owner="example")
     plan = interface.plan_flow(
@@ -149,7 +149,7 @@ def test_project_inspection_reads_each_flow_catalog_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = write_read_only_flow_project(tmp_path)
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
     original = repository_module.read_toml
     reads = 0
 
@@ -181,8 +181,8 @@ def test_project_rejects_flow_catalog_inventory_from_another_project(
     write_project_context(second_root)
     write_read_only_flow_project(first_root)
     write_read_only_flow_project(second_root)
-    first = AgenticReadInterface.from_project_root(first_root).project
-    second = AgenticReadInterface.from_project_root(second_root).project
+    first = _read(first_root).project
+    second = _read(second_root).project
 
     with pytest.raises(ValueError, match="does not belong to the current Project"):
         first.owner_flow_catalog_snapshots(
@@ -197,7 +197,7 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = write_read_only_flow_project(tmp_path)
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
     python_plan = interface.plan_flow(
         owner="example",
         flow="pipeline",
@@ -275,7 +275,7 @@ def test_read_interface_rejects_injection_cross_owner_and_identity_drift(
 ) -> None:
     write_read_only_flow_project(tmp_path, "example")
     write_read_only_flow_project(tmp_path, "other")
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
 
     with pytest.raises(ValueError, match="owner"):
         interface.inspect_project(owner="../example")
@@ -319,7 +319,7 @@ def test_candidate_validation_has_python_cli_parity(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     write_read_only_flow_project(tmp_path)
-    interface = AgenticReadInterface.from_project_root(tmp_path)
+    interface = _read(tmp_path)
     topology = CircuitTopologyProposal(
         ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, "example", "example:topology:agentic-read"),
         "inv",

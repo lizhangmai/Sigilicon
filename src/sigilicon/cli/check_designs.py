@@ -7,14 +7,17 @@ from collections.abc import Sequence
 
 from sigilicon.cli.common import die, emit_json
 from sigilicon.paths import discover_project_contract
-from sigilicon.workflows.repository_checks import check_project_designs
+from sigilicon.workflows.project import load_project
+from sigilicon.workflows.repository_checks import inspect_repository_designs
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
     try:
-        report = check_project_designs(discover_project_contract(__file__))
+        report = inspect_repository_designs(
+            load_project(discover_project_contract(__file__))
+        )
     except (OSError, RuntimeError, ValueError) as error:
         die(f"ERROR: {error}")
     emit_json(report)
