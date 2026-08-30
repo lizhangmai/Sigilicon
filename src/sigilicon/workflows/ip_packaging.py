@@ -1126,7 +1126,12 @@ def _availability(
         return {
             "simulation": collateral_passed
             and bool({"simulation", "circuit_simulation"} & circuit_capabilities),
-            "synthesis": False,
+            # A native OA macro is linkable by synthesis only when its release
+            # carries the typed Liberty/DB role.  This may be an explicitly
+            # uncharacterized structural model in a development release; the
+            # role's corner and release metadata preserve that distinction.
+            "synthesis": collateral_passed
+            and "raw_macro_liberty_or_db" in roles,
             "physical_implementation": collateral_passed
             and level in {"implementation", "signoff"}
             and set(_IMPLEMENTATION_ROLE_FORMATS).issubset(roles),

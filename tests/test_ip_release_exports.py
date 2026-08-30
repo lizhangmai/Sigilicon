@@ -535,6 +535,84 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     assert "nch_mac" in packaged
 
 
+def test_native_oa_release_exposes_only_structural_synthesis_with_liberty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    owner = tmp_path / "ip/native_fixture"
+    liberty = owner / "sources/NATIVE_TOP_structural.lib"
+    liberty.write_text(
+        "library (native_structural) { cell (NATIVE_TOP) { "
+        "pin (IN) { direction : input; } "
+        "pin (OUT) { direction : output; } } }\n",
+        encoding="utf-8",
+    )
+    component = owner / "configs/ip.toml"
+    component.write_text(
+        component.read_text(encoding="utf-8")
+        + 'structural_liberty = ["ip/native_fixture/sources/NATIVE_TOP_structural.lib"]\n',
+        encoding="utf-8",
+    )
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8")
+        + '''
+[[collateral]]
+export = "native-top"
+role = "raw_macro_liberty_or_db"
+component = "native-fixture"
+fileset = "structural_liberty"
+package_path = "exports/native-top/synthesis/NATIVE_TOP_structural.lib"
+format = "liberty"
+library = "native-lib"
+cell = "NATIVE_TOP"
+view = "structural_liberty"
+corner = "structural-uncharacterized"
+capabilities = ["synthesis"]
+''',
+        encoding="utf-8",
+    )
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    monkeypatch.setattr(
+        ip_packaging,
+        "_source_inputs",
+        lambda *_args, **_kwargs: (
+            "ip/native_fixture/configs/release.toml",
+        ),
+    )
+    monkeypatch.setattr(
+        ip_packaging, "_source_control", lambda _root: ("e" * 40, False)
+    )
+    monkeypatch.setattr(
+        oa_library_domain,
+        "load_oa_library_source",
+        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
+    )
+
+    plan = ip_packaging.plan_ip_release_contract(contract)
+
+    assert plan["exports"][0]["availability"] == {
+        "simulation": True,
+        "synthesis": True,
+        "physical_implementation": False,
+    }
+    built = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    manifest = contract.project.artifact_root / built["manifest"]
+    audited = ip_packaging.audit_ip_release_manifest(manifest)
+    assert audited["exports"][0]["availability"] == plan["exports"][0][
+        "availability"
+    ]
+    assert ip_packaging.resolve_release_role(
+        audited,
+        manifest,
+        "raw_macro_liberty_or_db",
+        export="native-top",
+    ).read_text(encoding="utf-8") == liberty.read_text(encoding="utf-8")
+
+
 def test_native_oa_release_rejects_circuit_port_order_drift(
     tmp_path: Path,
 ) -> None:
