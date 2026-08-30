@@ -1,9 +1,11 @@
-"""Contract and source-boundary checks for one non-OA verification cell."""
+"""Contract and source-boundary checks for one verification cell."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -31,7 +33,26 @@ _FIELDS = frozenset(
         "contracts",
         "runner",
         "success_marker",
+        "ams",
     }
+)
+
+_AMS_FIELDS = frozenset(
+    {
+        "platform",
+        "model_set",
+        "integration_contract",
+        "variant",
+        "fileset",
+        "dependency",
+        "circuit_role",
+        "transient_stop",
+        "ie_voltage",
+    }
+)
+_AMS_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+_SPECTRE_TIME = re.compile(
+    r"(?P<value>(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)(?:[fpnum])?\Z"
 )
 
 
@@ -39,6 +60,13 @@ def _text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value
+
+
+def _token(value: object, field: str) -> str:
+    text = _text(value, field)
+    if _AMS_TOKEN.fullmatch(text) is None:
+        raise ValueError(f"{field} contains unsupported characters")
+    return text
 
 
 def _file(
@@ -106,6 +134,7 @@ class VerificationCellSpec:
     contracts: tuple[Path, ...]
     runner: Path | None
     success_marker: str | None
+    ams: XceliumAmsConfiguration | None = None
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -123,6 +152,7 @@ class VerificationCellSpec:
             *self.compile_sources,
             *self.support_files,
             *self.contracts,
+            *((self.ams.integration_contract,) if self.ams is not None else ()),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -131,7 +161,7 @@ class VerificationCellSpec:
         def relative(path: Path) -> str:
             return path.relative_to(root).as_posix()
 
-        return {
+        payload: dict[str, Any] = {
             "owner": self.owner,
             "cell": self.cell,
             "role": self.role,
@@ -144,6 +174,97 @@ class VerificationCellSpec:
             "runner": relative(self.runner) if self.runner is not None else None,
             "success_marker": self.success_marker,
         }
+        if self.ams is not None:
+            payload["ams"] = self.ams.as_dict(root=root)
+        return payload
+
+
+@dataclass(frozen=True)
+class XceliumAmsConfiguration:
+    """Typed native-circuit inputs for one Xcelium AMS verification cell."""
+
+    platform: str
+    model_set: str
+    integration_contract: Path
+    variant: str
+    fileset: str
+    dependency: str
+    circuit_role: str
+    transient_stop: str
+    ie_voltage: float
+
+    def as_dict(self, *, root: Path) -> dict[str, object]:
+        return {
+            "platform": self.platform,
+            "model_set": self.model_set,
+            "integration_contract": self.integration_contract.relative_to(
+                root
+            ).as_posix(),
+            "variant": self.variant,
+            "fileset": self.fileset,
+            "dependency": self.dependency,
+            "circuit_role": self.circuit_role,
+            "transient_stop": self.transient_stop,
+            "ie_voltage": self.ie_voltage,
+        }
+
+
+def _parse_xcelium_ams_configuration(
+    value: object,
+    *,
+    contract: Path,
+    cell_root: Path,
+    project_root: Path,
+    owner: str,
+    repository: Project,
+) -> XceliumAmsConfiguration:
+    field = f"{contract}: ams"
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a table")
+    unknown = set(value) - _AMS_FIELDS
+    missing = _AMS_FIELDS - set(value)
+    if unknown or missing:
+        raise ValueError(
+            f"{field} fields must be exactly {sorted(_AMS_FIELDS)}; "
+            f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+        )
+    integration_contract = _file(
+        value.get("integration_contract"),
+        cell_root=cell_root,
+        project_root=project_root,
+        field=f"{field}.integration_contract",
+    )
+    integration_owner = repository.require_owner(integration_contract).name
+    if integration_owner != owner:
+        raise ValueError(
+            f"{field}.integration_contract owner must be {owner!r}, "
+            f"got {integration_owner!r}"
+        )
+    transient_stop = _text(value.get("transient_stop"), f"{field}.transient_stop")
+    time_match = _SPECTRE_TIME.fullmatch(transient_stop)
+    if time_match is None or float(time_match.group("value")) <= 0.0:
+        raise ValueError(
+            f"{field}.transient_stop must be a positive Spectre time token"
+        )
+    ie_voltage = value.get("ie_voltage")
+    if (
+        isinstance(ie_voltage, bool)
+        or not isinstance(ie_voltage, (int, float))
+        or not math.isfinite(float(ie_voltage))
+        or float(ie_voltage) <= 0.0
+    ):
+        raise ValueError(f"{field}.ie_voltage must be a positive finite number")
+    return XceliumAmsConfiguration(
+        platform=_token(value.get("platform"), f"{field}.platform"),
+        model_set=_token(value.get("model_set"), f"{field}.model_set"),
+        integration_contract=integration_contract,
+        variant=_token(value.get("variant"), f"{field}.variant"),
+        fileset=_token(value.get("fileset"), f"{field}.fileset"),
+        dependency=_token(value.get("dependency"), f"{field}.dependency"),
+        circuit_role=_token(value.get("circuit_role"), f"{field}.circuit_role"),
+        transient_stop=transient_stop,
+        ie_voltage=float(ie_voltage),
+    )
 
 
 def _verification_cell_path(path: Path, repository: Project) -> Path:
@@ -258,7 +379,50 @@ def _parse_verification_cell(
             inside_cell=True,
         )
     )
-    source_inputs = (canonical_source, *compile_sources, *support_files, *contracts)
+    ams_raw = raw.get("ams")
+    if simulator.lower() == "xcelium-ams":
+        if ams_raw is None:
+            raise ValueError(
+                f"{contract}: xcelium-ams verification cell must declare ams"
+            )
+        ams = _parse_xcelium_ams_configuration(
+            ams_raw,
+            contract=contract,
+            cell_root=cell_root,
+            project_root=root,
+            owner=owner,
+            repository=repository,
+        )
+        integration_raw = (
+            None
+            if contract_documents is None
+            else contract_documents.get(ams.integration_contract)
+        )
+        if integration_raw is None:
+            integration_raw = read_toml(ams.integration_contract)
+        require_config_header(
+            integration_raw,
+            ams.integration_contract,
+            contract_kind="ip-component",
+            path_scope="owner",
+            owner=owner,
+        )
+        source_documents[ams.integration_contract] = freeze_toml_document(
+            integration_raw
+        )
+    else:
+        if ams_raw is not None:
+            raise ValueError(
+                f"{contract}: ams is valid only when simulator is xcelium-ams"
+            )
+        ams = None
+    source_inputs = (
+        canonical_source,
+        *compile_sources,
+        *support_files,
+        *contracts,
+        *((ams.integration_contract,) if ams is not None else ()),
+    )
     if len(set(source_inputs)) != len(source_inputs):
         raise ValueError(
             f"{contract}: source, support, and contract inputs must be disjoint"
@@ -283,6 +447,7 @@ def _parse_verification_cell(
         contracts=contracts,
         runner=runner,
         success_marker=success_marker,
+        ams=ams,
         source_documents=MappingProxyType(source_documents),
     )
 

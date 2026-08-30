@@ -163,3 +163,93 @@ def test_verification_cell_rejects_unknown_fields(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="contains unknown fields"):
         load_verification_cell(contract, project_root=tmp_path)
+
+
+def _as_xcelium_ams(contract: Path, *, stop: str = "1u") -> None:
+    source = contract.read_text(encoding="utf-8").replace(
+        'simulator = "xcelium"',
+        'simulator = "xcelium-ams"',
+    )
+    contract.write_text(
+        source
+        + f'''
+[ams]
+platform = "testpdk"
+model_set = "nominal"
+integration_contract = "../../../component.toml"
+variant = "no-recovery"
+fileset = "ams"
+dependency = "native-provider"
+circuit_role = "circuit_netlist"
+transient_stop = "{stop}"
+ie_voltage = 0.9
+''',
+        encoding="utf-8",
+    )
+
+
+def test_verification_cell_loads_typed_xcelium_ams_inputs(tmp_path: Path) -> None:
+    contract = _contract(tmp_path)
+    _as_xcelium_ams(contract)
+
+    spec = load_verification_cell(contract, project_root=tmp_path)
+
+    assert spec.ams is not None
+    assert spec.ams.platform == "testpdk"
+    assert spec.ams.integration_contract == tmp_path / "ip/demo/component.toml"
+    assert spec.ams.circuit_role == "circuit_netlist"
+    assert spec.ams.transient_stop == "1u"
+    assert spec.ams.ie_voltage == 0.9
+    assert spec.ams.integration_contract in spec.source_inputs
+    assert spec.ams.integration_contract in spec.source_documents
+
+
+def test_verification_cell_requires_ams_only_for_xcelium_ams(tmp_path: Path) -> None:
+    missing = _contract(tmp_path)
+    missing.write_text(
+        missing.read_text(encoding="utf-8").replace(
+            'simulator = "xcelium"',
+            'simulator = "xcelium-ams"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must declare ams"):
+        load_verification_cell(missing, project_root=tmp_path)
+
+    _as_xcelium_ams(missing)
+    missing.write_text(
+        missing.read_text(encoding="utf-8").replace(
+            'simulator = "xcelium-ams"',
+            'simulator = "xcelium"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="valid only"):
+        load_verification_cell(missing, project_root=tmp_path)
+
+
+@pytest.mark.parametrize("stop", ["0", "0.0", "0.0u", "1u; alter"])
+def test_verification_cell_rejects_unsafe_ams_stop_time(
+    tmp_path: Path,
+    stop: str,
+) -> None:
+    contract = _contract(tmp_path)
+    _as_xcelium_ams(contract, stop=stop)
+
+    with pytest.raises(ValueError, match="positive Spectre time token"):
+        load_verification_cell(contract, project_root=tmp_path)
+
+
+def test_verification_cell_rejects_incomplete_ams_table(tmp_path: Path) -> None:
+    contract = _contract(tmp_path)
+    _as_xcelium_ams(contract)
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'circuit_role = "circuit_netlist"\n',
+            'unexpected = "value"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fields must be exactly"):
+        load_verification_cell(contract, project_root=tmp_path)

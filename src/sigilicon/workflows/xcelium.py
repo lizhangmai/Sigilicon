@@ -308,3 +308,54 @@ def run_xcelium_cell(
         if attempt.status == "running":
             attempt.fail(error)
         raise
+
+
+def plan_xcelium_verification_cell(
+    contract_path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+):
+    """Dispatch one typed Xcelium verification cell without flattening its mode."""
+
+    repository = Project.bind(project=project, project_root=project_root)
+    contract = _resolve_contract(contract_path, project=repository)
+    spec = load_verification_cell(contract, project=repository)
+    if spec.simulator.lower() == "xcelium-ams":
+        from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
+
+        return plan_xcelium_ams_cell(contract, project=repository)
+    return plan_xcelium_cell(contract, project=repository)
+
+
+def run_xcelium_verification_cell(
+    contract_path: Path,
+    *,
+    project: Project | None = None,
+    project_root: Path | None = None,
+    artifact_root: Path | None = None,
+    xrun: Path | None = None,
+    timeout: int = 600,
+):
+    """Dispatch one typed Xcelium RTL or AMS execution adapter."""
+
+    repository = Project.bind(project=project, project_root=project_root)
+    if artifact_root is not None:
+        repository = repository.with_artifact_root(artifact_root)
+    contract = _resolve_contract(contract_path, project=repository)
+    spec = load_verification_cell(contract, project=repository)
+    if spec.simulator.lower() == "xcelium-ams":
+        from sigilicon.workflows.xcelium_ams import run_xcelium_ams_cell
+
+        return run_xcelium_ams_cell(
+            contract,
+            project=repository,
+            xrun=xrun,
+            timeout=timeout,
+        )
+    return run_xcelium_cell(
+        contract,
+        project=repository,
+        xrun=xrun,
+        timeout=timeout,
+    )

@@ -1,4 +1,4 @@
-"""Plan or execute one source-owned Xcelium verification cell."""
+"""Plan or execute one source-owned Xcelium RTL or AMS verification cell."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from pathlib import Path
 from sigilicon.cli.common import die, emit_json
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows import load_project
-from sigilicon.workflows.xcelium import plan_xcelium_cell, run_xcelium_cell
+from sigilicon.workflows.xcelium import (
+    plan_xcelium_verification_cell,
+    run_xcelium_verification_cell,
+)
 
 
 def _display_path(path: Path, *, project_root: Path) -> str:
@@ -36,13 +39,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     project = load_project(discover_project_contract(__file__))
     try:
+        cell_path = (
+            args.cell.resolve()
+            if args.cell.is_absolute()
+            else (project.project_root / args.cell).resolve()
+        )
         if not args.execute:
-            plan = plan_xcelium_cell(args.cell, project=project)
+            plan = plan_xcelium_verification_cell(
+                cell_path,
+                project=project,
+            )
             payload = plan.as_dict()
             payload["executed"] = False
         else:
-            result = run_xcelium_cell(
-                args.cell,
+            result = run_xcelium_verification_cell(
+                cell_path,
                 project=project,
                 xrun=args.xrun,
                 timeout=args.timeout,
