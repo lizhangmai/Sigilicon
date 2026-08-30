@@ -181,6 +181,7 @@ def test_xcelium_run_reuses_project_and_writes_managed_artifact(
     assert result.manifest == result.manifest_path
     manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
+    assert manifest["operation_id"] == "3" * 32
     assert manifest["entities"]["library"] == "demo"
     assert manifest["completion_evidence"] == ["outputs/summary.json"]
 
@@ -207,6 +208,7 @@ def test_xcelium_run_fails_artifact_when_success_marker_is_absent(
     assert not result.passed
     manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "failed"
+    assert manifest["operation_id"] == "4" * 32
     assert manifest["details"]["summary"]["success_marker_seen"] is False
 
 
@@ -236,5 +238,6 @@ def test_xcelium_run_accepts_success_marker_from_native_log(
     assert "TB_DEMO_SUMMARY failures=0" in result.evidence_output
     manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
+    assert manifest["operation_id"] == "5" * 32
     summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
     assert summary["success_marker_evidence"] == ["native_log"]

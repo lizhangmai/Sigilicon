@@ -186,6 +186,7 @@ def run_xcelium_cell(
     )
 
     try:
+        attempt.bind_operation(new_identity())
         attempt.write_json(
             "inputs",
             ("source-manifest.json",),
