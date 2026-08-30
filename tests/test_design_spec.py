@@ -8,7 +8,10 @@ import pytest
 
 import sigilicon.domain.config_contracts as config_contracts
 from conftest import write_component_owner
-from sigilicon.domain.config_contracts import inspect_project_configurations
+from sigilicon.domain.config_contracts import (
+    RepositorySourceLedger,
+    inspect_project_configuration_sources,
+)
 from sigilicon.domain.design import load_design_spec, resolve_design_spec
 from sigilicon.domain.repository import Project
 
@@ -196,10 +199,16 @@ def test_configuration_scanner_reuses_design_source_document(
 
     owner_roots = {owner.name: owner.root for owner in project.owners}
     owner_roots["test-platform"] = root / "configs/platform/testpdk"
-    report = inspect_project_configurations(
+    catalogs = project.flow_catalog_inventory()
+    sources = RepositorySourceLedger.for_project(
+        project,
+        catalog_inventory=catalogs,
+    ).merge("design snapshot", spec.source_documents)
+    report = inspect_project_configuration_sources(
         project,
         owner_roots=owner_roots,
-        oa_design_inventory={path.resolve(): spec},
+        catalog_inventory=catalogs,
+        sources=sources,
     )
 
     assert report["passed"] is True

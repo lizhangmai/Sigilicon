@@ -16,8 +16,9 @@ import sigilicon.domain.oa_simulation as oa_simulation_domain
 import sigilicon.domain.platform as platform_domain
 import sigilicon.workflows.ip_packaging as ip_packaging
 from sigilicon.domain.config_contracts import (
+    RepositorySourceLedger,
     freeze_toml_document,
-    inspect_project_configurations,
+    inspect_project_configuration_sources,
 )
 from sigilicon.domain.ip_release import (
     OaMixedSignalIpInterface,
@@ -622,10 +623,20 @@ def test_project_configuration_reuses_ip_release_interface_documents(
 
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
 
-    report = inspect_project_configurations(
-        contract.project,
+    project = contract.project
+    catalogs = project.flow_catalog_inventory()
+    sources = RepositorySourceLedger.for_project(
+        project,
+        catalog_inventory=catalogs,
+    ).merge(
+        "IP release snapshot",
+        {contract.path: contract.document, **contract.interface_documents},
+    )
+    report = inspect_project_configuration_sources(
+        project,
         owner_roots={"fixture": tmp_path / "ip/fixture"},
-        release_inventory={"fixture-ip": contract},
+        catalog_inventory=catalogs,
+        sources=sources,
     )
 
     assert report["passed"] is True
