@@ -9,12 +9,14 @@ from pathlib import Path
 import stat
 import sys
 from types import ModuleType
+from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.flow import (
     ExecutionEnvironment,
     FlowCatalog,
+    FlowContractError,
     FlowEngine,
     FlowPlan,
     FlowProgress,
@@ -62,9 +64,9 @@ def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
     )
 
 
-def project_workflow_registry(
+def _project_workflow_registry(
     project: Project,
-    owner_root: Path,
+    owner: RepositoryOwner,
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
 
@@ -73,11 +75,9 @@ def project_workflow_registry(
     """
 
     repository = project
-    selected_root = Path(owner_root).resolve()
-    owner = repository.require_owner(selected_root)
-    if owner.root != selected_root:
+    if owner not in repository.owners:
         raise ValueError(
-            f"Flow owner root must equal its cataloged root: {owner.root}"
+            f"Flow owner {owner.name!r} does not belong to the selected Project"
         )
     registry = build_flow_registry()
     source = repository.flow_registry_extension(owner)
@@ -142,7 +142,7 @@ class ProjectFlowPlan:
 
     engine: FlowEngine = field(repr=False, compare=False)
     plan: FlowPlan
-    _binding: object | None = field(default=None, repr=False, compare=False)
+    _binding: object = field(repr=False, compare=False)
 
     @property
     def plan_identity(self) -> str:
@@ -165,10 +165,12 @@ class ProjectFlow:
 
     project: Project
     owner_name: str
-    registry_factory: Callable[
-        [Project, Path], FlowRegistry
-    ] = field(default=project_workflow_registry, repr=False, compare=False)
-    _binding: object = field(default_factory=object, init=False, repr=False, compare=False)
+    _binding: object = field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         owner = self.project.owner(self.owner_name)
@@ -200,14 +202,10 @@ class ProjectFlow:
             flow_id=flow,
             profile_id=profile,
         )
-        engine = FlowEngine(
-            self.registry_factory(self.project, self.owner.root),
-            project_scope=self.project.scope(self.owner),
-        )
-        return ProjectFlowPlan(
+        engine = self._engine()
+        return self._bind(
             engine,
             engine.plan(selection.spec, target, selection.profile),
-            self._binding,
         )
 
     def preflight(
@@ -235,6 +233,53 @@ class ProjectFlow:
             progress=progress,
         )
 
+    def read_result(
+        self,
+        *,
+        flow: str,
+        target: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Read one persisted result selected through this owner's catalog."""
+
+        selection = resolve_catalog_selection(self.catalog(), flow_id=flow)
+        selected_target = selection.spec.target(target)
+        return FlowEngine(FlowRegistry()).read_run_result(
+            artifact_root=self.project.artifact_root,
+            owner=self.owner.name,
+            flow_id=selection.spec.flow_id,
+            target=selected_target.target_id,
+            run_id=run_id,
+        )
+
+    def clean_run(
+        self,
+        *,
+        flow: str,
+        target: str,
+        run_id: str,
+    ) -> None:
+        """Remove one manifest-owned result selected through this owner."""
+
+        selection = resolve_catalog_selection(self.catalog(), flow_id=flow)
+        selected_target = selection.spec.target(target)
+        FlowEngine(FlowRegistry()).clean_run(
+            artifact_root=self.project.artifact_root,
+            owner=self.owner.name,
+            flow_id=selection.spec.flow_id,
+            target=selected_target.target_id,
+            run_id=run_id,
+        )
+
+    def _engine(self) -> FlowEngine:
+        return FlowEngine(
+            _project_workflow_registry(self.project, self.owner),
+            project_scope=self.project.scope(self.owner),
+        )
+
+    def _bind(self, engine: FlowEngine, plan: FlowPlan) -> ProjectFlowPlan:
+        return ProjectFlowPlan(engine, plan, self._binding)
+
     def _require_owned_plan(self, planned: ProjectFlowPlan) -> None:
         if (
             planned.plan.spec.owner != self.owner.name
@@ -245,8 +290,64 @@ class ProjectFlow:
             )
 
 
+def resolve_project_flow_plan(
+    project: Project,
+    plan_identity: str,
+) -> ProjectFlowPlan:
+    """Resolve one exact plan identity across the project's owner catalogs."""
+
+    if not isinstance(plan_identity, str) or not plan_identity:
+        raise ValueError("Flow Plan identity must be non-empty text")
+    inventory = project.flow_catalog_inventory()
+    matches: list[ProjectFlowPlan] = []
+    combinations = 0
+    for owner in project.owners:
+        snapshots = project.owner_flow_catalog_snapshots(owner, inventory=inventory)
+        if not snapshots:
+            continue
+        if len(snapshots) != 1:
+            raise ValueError(
+                f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
+            )
+        catalog = parse_flow_catalog(
+            snapshots[0].document,
+            snapshots[0].path,
+            owner_root=owner.root,
+        )
+        project_flow = ProjectFlow(project, owner.name)
+        engine = project_flow._engine()
+        for entry in catalog.entries:
+            profiles = tuple(sorted({entry.default_profile, *entry.profiles}))
+            for profile in profiles:
+                selection = resolve_catalog_selection(
+                    catalog,
+                    flow_id=entry.flow_id,
+                    profile_id=profile,
+                )
+                for target in selection.spec.targets:
+                    combinations += 1
+                    if combinations > 10_000:
+                        raise ValueError(
+                            "project exposes too many executable Flow plans"
+                        )
+                    try:
+                        plan = engine.plan(
+                            selection.spec,
+                            target.target_id,
+                            selection.profile,
+                        )
+                    except FlowContractError:
+                        continue
+                    resolved = project_flow._bind(engine, plan)
+                    if resolved.plan_identity == plan_identity:
+                        matches.append(resolved)
+    if len(matches) != 1:
+        raise ValueError("Flow Plan identity is unknown or ambiguous in this project")
+    return matches[0]
+
+
 __all__ = [
     "ProjectFlow",
     "ProjectFlowPlan",
-    "project_workflow_registry",
+    "resolve_project_flow_plan",
 ]

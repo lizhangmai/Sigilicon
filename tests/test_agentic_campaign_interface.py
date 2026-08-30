@@ -13,22 +13,12 @@ from sigilicon.domain.agentic_execution import (
     AgenticExecutionGrant,
     AgenticPlanApproval,
 )
-from sigilicon.domain.circuit_design import (
-    CIRCUIT_TOPOLOGY_KIND,
-    DESIGN_CANDIDATE_KIND,
-    DESIGN_EVIDENCE_KIND,
-    EvidenceConclusion,
-    EvidenceLevel,
-    EvidenceRole,
-)
+from sigilicon.domain.circuit_design import EvidenceLevel, EvidenceRole
 from sigilicon.domain.repository import Project
-from sigilicon.flow import ActionContract, AdapterExecution, ArtifactPort, FlowRegistry
-from sigilicon.workflows import agentic_read as agentic_read_module
 from sigilicon.workflows import agentic_campaigns as agentic_campaigns_module
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_campaign import (
-    DESIGN_CAMPAIGN_ITERATION_EXTENSION,
     DesignArtifactBinding,
     DesignCampaignAttemptSpec,
     DesignCampaignBudget,
@@ -48,10 +38,7 @@ from sigilicon.workflows.design_repair import (
 
 from test_agentic_read_interface import write_read_only_flow_project
 from test_design_campaign import (
-    ACTION,
     POLICY,
-    AttemptAdapter,
-    FeedbackDrivenAttemptAdapter,
     _topology,
 )
 from test_design_promotion import _inputs as promotion_inputs
@@ -95,82 +82,54 @@ adapter = "typed-attempt"
     )
 
 
-def _registry(original, owner_root: Path | None) -> FlowRegistry:
-    registry = original(owner_root)
+def _write_campaign_extension(root: Path, *, mode: str = "satisfied") -> None:
+    if mode not in {"satisfied", "feedback", "failing"}:
+        raise ValueError(f"unsupported campaign test adapter mode: {mode}")
+    accepted_extensions = (
+        "()"
+        if mode == "failing"
+        else "(DESIGN_CAMPAIGN_ITERATION_EXTENSION,)"
+    )
+    adapter = (
+        "FeedbackDrivenAttemptAdapter()"
+        if mode == "feedback"
+        else "AttemptAdapter(EvidenceConclusion.SATISFIED)"
+    )
+    failure = (
+        '    adapter.execute = lambda context: AdapterExecution("failed", 7)\n'
+        if mode == "failing"
+        else ""
+    )
+    extension = root / "ip/example/tools/fake_flow_extension.py"
+    extension.write_text(
+        f'''from sigilicon.domain.circuit_design import (
+    CIRCUIT_TOPOLOGY_KIND,
+    DESIGN_CANDIDATE_KIND,
+    DESIGN_EVIDENCE_KIND,
+    EvidenceConclusion,
+)
+from sigilicon.flow import ActionContract, AdapterExecution, ArtifactPort
+from sigilicon.workflows.design_campaign import DESIGN_CAMPAIGN_ITERATION_EXTENSION
+from test_design_campaign import AttemptAdapter, FeedbackDrivenAttemptAdapter
+
+
+def register_flow_adapters(registry, owner_root):
     registry.register_action(
         ActionContract(
-            ACTION,
+            "design.attempt",
             outputs=(
                 ArtifactPort("candidate", DESIGN_CANDIDATE_KIND),
                 ArtifactPort("topology", CIRCUIT_TOPOLOGY_KIND),
                 ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
             ),
             adapters=("typed-attempt",),
-            accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
+            accepted_extensions={accepted_extensions},
         )
     )
-    from sigilicon.domain.circuit_design import EvidenceConclusion
-
-    registry.register_adapter(
-        "typed-attempt",
-        AttemptAdapter(EvidenceConclusion.SATISFIED),
-    )
-    return registry
-
-
-def _feedback_registry(original, owner_root: Path | None) -> FlowRegistry:
-    registry = original(owner_root)
-    registry.register_action(
-        ActionContract(
-            ACTION,
-            outputs=(
-                ArtifactPort("candidate", DESIGN_CANDIDATE_KIND),
-                ArtifactPort("topology", CIRCUIT_TOPOLOGY_KIND),
-                ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
-            ),
-            adapters=("typed-attempt",),
-            accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,),
-        )
-    )
-    registry.register_adapter("typed-attempt", FeedbackDrivenAttemptAdapter())
-    return registry
-
-
-def _failing_registry(original, owner_root: Path | None) -> FlowRegistry:
-    registry = original(owner_root)
-    registry.register_action(
-        ActionContract(
-            ACTION,
-            outputs=(
-                ArtifactPort("candidate", DESIGN_CANDIDATE_KIND),
-                ArtifactPort("topology", CIRCUIT_TOPOLOGY_KIND),
-                ArtifactPort("l0-evidence", DESIGN_EVIDENCE_KIND),
-            ),
-            adapters=("typed-attempt",),
-        )
-    )
-    adapter = AttemptAdapter(EvidenceConclusion.SATISFIED)
-    adapter.execute = lambda context: AdapterExecution("failed", 7)  # type: ignore[method-assign]
-    registry.register_adapter("typed-attempt", adapter)
-    return registry
-
-
-def _patch_project_registry(
-    monkeypatch: pytest.MonkeyPatch,
-    extension=_registry,
-) -> None:
-    original = agentic_read_module.project_workflow_registry
-
-    def assemble(project, owner_root):
-        return extension(
-            lambda selected_root: original(project, selected_root),
-            owner_root,
-        )
-
-    monkeypatch.setattr(
-        agentic_read_module,
-        "project_workflow_registry",
-        assemble,
+    adapter = {adapter}
+{failure}    registry.register_adapter("typed-attempt", adapter)
+''',
+        encoding="utf-8",
     )
 
 
@@ -243,11 +202,10 @@ def _grant(campaign_identity: str, plan_record: dict[str, object]) -> AgenticExe
 
 def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch)
+    _write_campaign_extension(tmp_path)
     source = _campaign()
     campaign_path = tmp_path / "campaign.json"
     campaign_path.write_text(source.canonical_json(), encoding="utf-8")
@@ -308,10 +266,9 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
 
 def test_campaign_run_identity_includes_execution_environment(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch)
+    _write_campaign_extension(tmp_path)
     source = _campaign()
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -357,10 +314,9 @@ name = "{name}"
 
 def test_same_environment_id_with_changed_path_or_record_cannot_resume(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch)
+    _write_campaign_extension(tmp_path)
     source = _campaign()
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -408,10 +364,9 @@ identity = "different-site-contract"
 
 def test_campaign_run_requires_exact_identity_and_grant(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch)
+    _write_campaign_extension(tmp_path)
     source = _campaign()
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -439,10 +394,9 @@ def test_campaign_run_requires_exact_identity_and_grant(
 
 def test_failed_baseline_is_a_durable_terminal_campaign_state(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch, _failing_registry)
+    _write_campaign_extension(tmp_path, mode="failing")
     source = _campaign()
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -472,7 +426,7 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch)
+    _write_campaign_extension(tmp_path)
     source = _campaign()
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
@@ -524,7 +478,7 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch, _feedback_registry)
+    _write_campaign_extension(tmp_path, mode="feedback")
     source = _feedback_campaign()
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())

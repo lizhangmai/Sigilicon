@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 import sys
 from typing import Any
@@ -11,22 +11,15 @@ from typing import Any
 from sigilicon.cli.common import emit_json
 from sigilicon.flow import (
     FlowContractError,
-    FlowEngine,
     ExecutionEnvironment,
     ExecutionProfile,
     FlowExecutionError,
-    FlowRegistry,
     load_execution_environment,
     resolve_catalog_selection,
 )
 from sigilicon.paths import discover_project_contract
-from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_flow import (
-    ProjectFlow,
-    ProjectFlowPlan,
-    project_workflow_registry,
-)
+from sigilicon.workflows.project_flow import ProjectFlow
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -107,12 +100,10 @@ def _flow_status_exit(payload: dict[str, Any]) -> int:
 
 def _execution_environment(
     args: argparse.Namespace,
-    profile: ExecutionProfile,
-    factory: Callable[[ExecutionProfile], ExecutionEnvironment],
 ) -> ExecutionEnvironment:
     contract = getattr(args, "environment", None)
     return (
-        factory(profile)
+        ExecutionEnvironment()
         if contract is None
         else load_execution_environment(contract)
     )
@@ -127,64 +118,22 @@ def _project(args: argparse.Namespace) -> Any:
             raise FlowContractError(str(exc)) from exc
     else:
         project_contract = project_root.resolve() / "sigilicon.toml"
-    try:
-        return load_project(project_contract)
-    except ValueError as exc:
-        raise FlowContractError(str(exc)) from exc
+    return load_project(project_contract)
 
 
-def _project_flow(
-    args: argparse.Namespace,
-    *,
-    registry_factory: Callable[[Any, Path], FlowRegistry] | None,
-) -> ProjectFlow:
-    try:
-        return ProjectFlow(
-            _project(args),
-            args.owner,
-            project_workflow_registry if registry_factory is None else registry_factory,
-        )
-    except ValueError as exc:
-        raise FlowContractError(str(exc)) from exc
-
-
-def _catalog(project: ProjectFlow) -> Any:
-    try:
-        return project.catalog()
-    except ValueError as exc:
-        raise FlowContractError(str(exc)) from exc
-
-
-def _resolved_plan(
-    args: argparse.Namespace,
-    registry_factory: Callable[[Any, Path], FlowRegistry] | None,
-) -> tuple[ProjectFlowPlan, ProjectFlow]:
-    project = _project_flow(args, registry_factory=registry_factory)
-    try:
-        planned = project.plan(
-            flow=args.flow,
-            target=args.target,
-            profile=args.profile,
-        )
-    except ValueError as exc:
-        raise FlowContractError(str(exc)) from exc
-    return planned, project
+def _project_flow(args: argparse.Namespace) -> ProjectFlow:
+    return ProjectFlow(_project(args), args.owner)
 
 
 def main(
     argv: Sequence[str] | None = None,
-    *,
-    registry_factory: Callable[[Any, Path], FlowRegistry] | None = None,
-    environment_factory: Callable[[ExecutionProfile], ExecutionEnvironment] = (
-        lambda _profile: ExecutionEnvironment()
-    ),
 ) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(arguments)
     try:
         if args.action == "list":
-            project = _project_flow(args, registry_factory=registry_factory)
-            catalog = _catalog(project)
+            project = _project_flow(args)
+            catalog = project.catalog()
             emit_json(
                 [
                     {
@@ -197,16 +146,21 @@ def main(
             )
             return 0
         if args.action == "show":
-            project = _project_flow(args, registry_factory=registry_factory)
+            project = _project_flow(args)
             selection = resolve_catalog_selection(
-                _catalog(project),
+                project.catalog(),
                 flow_id=args.flow,
                 profile_id=args.profile,
             )
             emit_json(_spec_payload(selection.spec, selection.profile))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
-            resolved, project = _resolved_plan(args, registry_factory)
+            project = _project_flow(args)
+            resolved = project.plan(
+                flow=args.flow,
+                target=args.target,
+                profile=args.profile,
+            )
             engine = resolved.engine
             plan = resolved.plan
             if args.action == "plan":
@@ -221,54 +175,42 @@ def main(
                 print("}")
                 return 0
             if args.action == "preflight":
-                preflight = engine.preflight(
-                    plan,
+                preflight = project.preflight(
+                    resolved,
                     _execution_environment(
                         args,
-                        plan.profile,
-                        environment_factory,
                     ),
                 )
                 emit_json(engine.preflight_record(plan, preflight))
                 return 0 if preflight.status == "ready" else 2
             environment = _execution_environment(
                 args,
-                plan.profile,
-                environment_factory,
             )
             result = project.run(
                 resolved,
                 environment,
                 run_id=args.run_id,
             )
-            payload = engine.read_run_result(
-                artifact_root=project.project.artifact_root,
-                owner=result.owner,
-                flow_id=result.flow_id,
+            payload = project.read_result(
+                flow=result.flow_id,
                 target=result.target,
                 run_id=result.run_id,
             )
             emit_json(payload)
             return _flow_status_exit(payload)
         if args.action == "status":
-            project = _project(args)
-            engine = FlowEngine(build_flow_registry())
-            payload = engine.read_run_result(
-                artifact_root=project.artifact_root,
-                owner=args.owner,
-                flow_id=args.flow,
+            project = _project_flow(args)
+            payload = project.read_result(
+                flow=args.flow,
                 target=args.target,
                 run_id=args.run_id,
             )
             emit_json(payload)
             return _flow_status_exit(payload)
         if args.action == "clean":
-            project = _project(args)
-            engine = FlowEngine(build_flow_registry())
-            engine.clean_run(
-                artifact_root=project.artifact_root,
-                owner=args.owner,
-                flow_id=args.flow,
+            project = _project_flow(args)
+            project.clean_run(
+                flow=args.flow,
                 target=args.target,
                 run_id=args.run_id,
             )
@@ -285,7 +227,7 @@ def main(
             )
             return 0
         raise AssertionError(f"unhandled Flow command: {args.action}")
-    except FlowContractError as exc:
+    except (FlowContractError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     except FlowExecutionError as exc:

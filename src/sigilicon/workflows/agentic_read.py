@@ -19,10 +19,7 @@ from sigilicon.domain.repository import (
     RepositoryOwner,
 )
 from sigilicon.flow import (
-    FlowContractError,
-    FlowCatalog,
     FlowEngine,
-    FlowPlan,
     parse_flow_catalog,
     resolve_catalog_selection,
 )
@@ -30,7 +27,7 @@ from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
     ProjectFlowPlan,
-    project_workflow_registry,
+    resolve_project_flow_plan,
 )
 from sigilicon.workflows.design_artifacts import DesignArtifactInterface
 from sigilicon.workflows.design_campaign import (
@@ -244,7 +241,6 @@ class AgenticReadInterface:
         planned = ProjectFlow(
             self.project,
             owner,
-            project_workflow_registry,
         ).plan(
             flow=flow_name,
             target=target_name,
@@ -255,52 +251,7 @@ class AgenticReadInterface:
     def resolve_plan_identity(self, plan_identity: str) -> ProjectFlowPlan:
         """Recompile project catalogs and find one uniquely matching Plan identity."""
 
-        if not isinstance(plan_identity, str) or not plan_identity:
-            raise ValueError("Flow Plan identity must be non-empty text")
-        matches: list[ProjectFlowPlan] = []
-        combinations = 0
-        for owner in self.project.owners:
-            snapshots = self._flow_catalog_snapshots(owner)
-            if not snapshots:
-                continue
-            if len(snapshots) != 1:
-                raise ValueError(
-                    f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
-                )
-            catalog = self._parse_flow_catalog(owner, snapshots[0])
-            engine = FlowEngine(
-                project_workflow_registry(self.project, owner.root),
-                project_scope=self.project.scope(owner),
-            )
-            for entry in catalog.entries:
-                profiles = tuple(sorted({entry.default_profile, *entry.profiles}))
-                for profile in profiles:
-                    selection = resolve_catalog_selection(
-                        catalog,
-                        flow_id=entry.flow_id,
-                        profile_id=profile,
-                    )
-                    for target in selection.spec.targets:
-                        combinations += 1
-                        if combinations > 10_000:
-                            raise ValueError("project exposes too many executable Flow plans")
-                        try:
-                            plan = engine.plan(
-                                selection.spec,
-                                target.target_id,
-                                selection.profile,
-                            )
-                        except FlowContractError:
-                            # Project-owned Adapter extensions are not globally
-                            # available. They cannot match a plan compiled by
-                            # this server's current owner registry.
-                            continue
-                        resolved = ProjectFlowPlan(engine, plan)
-                        if resolved.plan_identity == plan_identity:
-                            matches.append(resolved)
-        if len(matches) != 1:
-            raise ValueError("Flow Plan identity is unknown or ambiguous in this project")
-        return matches[0]
+        return resolve_project_flow_plan(self.project, plan_identity)
 
     def resolve_campaign_plan(
         self,
@@ -400,14 +351,7 @@ class AgenticReadInterface:
         flow_name = identifier(flow, "Flow identity")
         target_name = identifier(target, "Flow target")
         identity = run_identity(run_id)
-        selection = resolve_catalog_selection(
-            self._flow_catalog(selected_owner),
-            flow_id=flow_name,
-        )
-        selection.spec.target(target_name)
-        engine = FlowEngine(
-            project_workflow_registry(self.project, selected_owner.root)
-        )
+        project_flow = ProjectFlow(self.project, selected_owner.name)
         managed = AgenticRunStore(
             self.project.artifact_root,
             self.project_id,
@@ -430,10 +374,8 @@ class AgenticReadInterface:
                 raise ValueError("managed Flow Run identity drift")
             result: dict[str, Any] | None = None
             try:
-                result = engine.read_run_result(
-                    artifact_root=self.project.artifact_root,
-                    owner=selected_owner.name,
-                    flow_id=flow_name,
+                result = project_flow.read_result(
+                    flow=flow_name,
                     target=target_name,
                     run_id=identity,
                 )
@@ -477,10 +419,8 @@ class AgenticReadInterface:
                     else ["project.inspect", "run.inspect"]
                 ),
             )
-        result = engine.read_run_result(
-            artifact_root=self.project.artifact_root,
-            owner=selected_owner.name,
-            flow_id=flow_name,
+        result = project_flow.read_result(
+            flow=flow_name,
             target=target_name,
             run_id=identity,
         )
@@ -592,16 +532,12 @@ class AgenticReadInterface:
     def _owner(self, name: str) -> RepositoryOwner:
         return self.project.owner(name)
 
-    def _flow_catalog(self, owner: RepositoryOwner) -> FlowCatalog:
-        snapshot = self.project.owner_flow_catalog_snapshot(owner)
-        return self._parse_flow_catalog(owner, snapshot)
-
     def _flows(
         self,
         owner: RepositoryOwner,
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     ) -> list[dict[str, Any]]:
-        snapshots = self._flow_catalog_snapshots(
+        snapshots = self.project.owner_flow_catalog_snapshots(
             owner,
             inventory=catalog_inventory,
         )
@@ -611,7 +547,11 @@ class AgenticReadInterface:
             raise ValueError(
                 f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
             )
-        catalog = self._parse_flow_catalog(owner, snapshots[0])
+        catalog = parse_flow_catalog(
+            snapshots[0].document,
+            snapshots[0].path,
+            owner_root=owner.root,
+        )
         flows: list[dict[str, Any]] = []
         for entry in catalog.entries:
             selection = resolve_catalog_selection(
@@ -629,28 +569,6 @@ class AgenticReadInterface:
                 }
             )
         return sorted(flows, key=lambda item: item["name"])
-
-    def _flow_catalog_snapshots(
-        self,
-        owner: RepositoryOwner,
-        *,
-        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
-    ) -> tuple[OwnerCatalogSnapshot, ...]:
-        return self.project.owner_flow_catalog_snapshots(
-            owner,
-            inventory=inventory,
-        )
-
-    @staticmethod
-    def _parse_flow_catalog(
-        owner: RepositoryOwner,
-        snapshot: OwnerCatalogSnapshot,
-    ) -> FlowCatalog:
-        return parse_flow_catalog(
-            snapshot.document,
-            snapshot.path,
-            owner_root=owner.root,
-        )
 
     def _design_targets(
         self,

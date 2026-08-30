@@ -27,9 +27,9 @@ from sigilicon.domain.circuit_design import (
     ProposalProvenance,
     TopologyOrigin,
 )
-from sigilicon.flow import FlowEngine, load_catalog_selection
+from sigilicon.flow import ExecutionEnvironment
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
-from sigilicon.workflows.project_flow import project_workflow_registry
+from sigilicon.workflows.project_flow import ProjectFlow
 
 
 def _read(root: Path) -> AgenticReadInterface:
@@ -219,19 +219,15 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
     ) == 0
     assert json.loads(capsys.readouterr().out) == python_plan
 
-    owner_root = tmp_path / "ip/example"
-    selection = load_catalog_selection(
-        catalog,
-        owner_root=owner_root,
-        flow_id="pipeline",
-        profile_id="offline",
+    project_flow = ProjectFlow(interface.project, "example")
+    planned = project_flow.plan(
+        flow="pipeline",
+        target="all",
+        profile="offline",
     )
-    engine = FlowEngine(
-        project_workflow_registry(interface.project, owner_root)
-    )
-    result = engine.run(
-        engine.plan(selection.spec, "all", selection.profile),
-        artifact_root=tmp_path / "artifacts",
+    result = project_flow.run(
+        planned,
+        ExecutionEnvironment(),
         run_id="a" * 32,
     )
     original = repository_module.read_toml
