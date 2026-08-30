@@ -12,7 +12,6 @@ from sigilicon.domain.component import (
     ComponentContract,
     load_component_contract,
     load_component_graph,
-    parse_component_contract,
     resolve_component_contract,
     resolve_component_graph,
 )
@@ -101,8 +100,8 @@ class IpIntegrationFileset:
 
 
 @dataclass(frozen=True)
-class IpPhysicalBinding:
-    """Legacy mixed-signal transaction-shell binding."""
+class OaMixedSignalPhysicalBinding:
+    """Consumer transaction shell bound to a mixed-signal OA release."""
 
     dependency: str
     transaction_module: str
@@ -129,8 +128,7 @@ class OaNativePhysicalBinding:
     blockers: tuple[str, ...]
 
 
-OaMixedSignalPhysicalBinding = IpPhysicalBinding
-PhysicalBinding = IpPhysicalBinding | OaNativePhysicalBinding
+PhysicalBinding = OaMixedSignalPhysicalBinding | OaNativePhysicalBinding
 
 
 @dataclass(frozen=True)
@@ -214,6 +212,15 @@ class IpDependencyLock:
 
 def _release_dependency(value: object, label: str) -> IpReleaseDependency:
     item = _table(value, label)
+    if set(item) - {
+        "export",
+        "required_maturity",
+        "roles",
+        "role_modules",
+        "role_exports",
+        "interface",
+    }:
+        raise ValueError(f"{label} fields are invalid")
     maturity = _string(item.get("required_maturity"), f"{label}.required_maturity")
     if maturity not in RELEASE_MATURITY_LEVELS:
         raise ValueError(f"{label}.required_maturity is unsupported: {maturity}")
@@ -246,92 +253,66 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
         if role not in roles:
             raise ValueError(f"{label}.role_exports names undeclared role: {role}")
         role_exports[role] = _string(role_export, f"{label}.role_exports.{role}")
-    interface_raw = item.get("interface")
-    legacy_fields = {"logical_interface", "physical_interface"} & item.keys()
-    if interface_raw is None:
-        if legacy_fields != {"logical_interface", "physical_interface"}:
-            raise ValueError(
-                f"{label} must declare an interface reference"
-            )
-        interface: ReleaseInterfaceReference = OaReleaseInterfaceReference(
+    interface_table = _table(item.get("interface"), f"{label}.interface")
+    interface_kind = interface_table.get("kind")
+    interface: ReleaseInterfaceReference
+    if interface_kind == "oa-mixed-signal":
+        if set(interface_table) != {"kind", "logical", "physical"}:
+            raise ValueError(f"{label}.interface OA fields are invalid")
+        interface = OaReleaseInterfaceReference(
             kind="oa-mixed-signal",
             logical_interface=_string(
-                item.get("logical_interface"), f"{label}.logical_interface"
+                interface_table.get("logical"),
+                f"{label}.interface.logical",
             ),
             physical_interface=_string(
-                item.get("physical_interface"), f"{label}.physical_interface"
+                interface_table.get("physical"),
+                f"{label}.interface.physical",
+            ),
+        )
+    elif interface_kind == "oa-native":
+        expected_fields = {
+            "kind",
+            "library",
+            "cell",
+            "schematic_view",
+            "layout_view",
+        }
+        if set(interface_table) != expected_fields:
+            raise ValueError(f"{label}.interface native OA fields are invalid")
+        interface = OaNativeReleaseInterfaceReference(
+            kind="oa-native",
+            library=_string(
+                interface_table.get("library"),
+                f"{label}.interface.library",
+            ),
+            cell=_string(
+                interface_table.get("cell"),
+                f"{label}.interface.cell",
+            ),
+            schematic_view=_string(
+                interface_table.get("schematic_view"),
+                f"{label}.interface.schematic_view",
+            ),
+            layout_view=_string(
+                interface_table.get("layout_view"),
+                f"{label}.interface.layout_view",
+            ),
+        )
+    elif interface_kind == "rtl":
+        if set(interface_table) != {"kind", "module"}:
+            raise ValueError(f"{label}.interface RTL fields are invalid")
+        interface = RtlReleaseInterfaceReference(
+            kind="rtl",
+            module=_string(
+                interface_table.get("module"),
+                f"{label}.interface.module",
             ),
         )
     else:
-        if legacy_fields:
-            raise ValueError(
-                f"{label} cannot mix tagged and legacy interface references"
-            )
-        interface_table = _table(interface_raw, f"{label}.interface")
-        interface_kind = interface_table.get("kind")
-        if interface_kind == "oa-mixed-signal":
-            if set(interface_table) != {"kind", "logical", "physical"}:
-                raise ValueError(
-                    f"{label}.interface OA fields are invalid"
-                )
-            interface = OaReleaseInterfaceReference(
-                kind="oa-mixed-signal",
-                logical_interface=_string(
-                    interface_table.get("logical"),
-                    f"{label}.interface.logical",
-                ),
-                physical_interface=_string(
-                    interface_table.get("physical"),
-                    f"{label}.interface.physical",
-                ),
-            )
-        elif interface_kind == "oa-native":
-            expected_fields = {
-                "kind",
-                "library",
-                "cell",
-                "schematic_view",
-                "layout_view",
-            }
-            if set(interface_table) != expected_fields:
-                raise ValueError(
-                    f"{label}.interface native OA fields are invalid"
-                )
-            interface = OaNativeReleaseInterfaceReference(
-                kind="oa-native",
-                library=_string(
-                    interface_table.get("library"),
-                    f"{label}.interface.library",
-                ),
-                cell=_string(
-                    interface_table.get("cell"),
-                    f"{label}.interface.cell",
-                ),
-                schematic_view=_string(
-                    interface_table.get("schematic_view"),
-                    f"{label}.interface.schematic_view",
-                ),
-                layout_view=_string(
-                    interface_table.get("layout_view"),
-                    f"{label}.interface.layout_view",
-                ),
-            )
-        elif interface_kind == "rtl":
-            if set(interface_table) != {"kind", "module"}:
-                raise ValueError(
-                    f"{label}.interface RTL fields are invalid"
-                )
-            interface = RtlReleaseInterfaceReference(
-                kind="rtl",
-                module=_string(
-                    interface_table.get("module"),
-                    f"{label}.interface.module",
-                ),
-            )
-        else:
-            raise ValueError(
-                f"{label}.interface.kind is unsupported: {interface_kind!r}"
-            )
+        raise ValueError(
+            f"{label}.interface.kind is unsupported: {interface_kind!r}"
+        )
     if isinstance(interface, OaNativeReleaseInterfaceReference) and role_modules:
         raise ValueError(
             f"{label}.role_modules are invalid for an oa-native interface"
@@ -550,7 +531,7 @@ def _operating_variant(
                 "ready binding must not"
             )
         assert dependency.release is not None
-        binding_kind = binding.get("kind", "oa-mixed-signal")
+        binding_kind = binding.get("kind")
         common_fields = {
             "dependency",
             "transaction_module",
@@ -585,11 +566,11 @@ def _operating_variant(
                 blockers=tuple(blockers_raw),
             )
         elif binding_kind == "oa-mixed-signal":
-            legacy_fields = common_fields | {
+            mixed_signal_fields = common_fields | {
                 "physical_shell_module",
                 "raw_macro_module",
             }
-            allowed_fields = legacy_fields | ({"kind"} if "kind" in binding else set())
+            allowed_fields = mixed_signal_fields | {"kind"}
             if set(binding) != allowed_fields:
                 raise ValueError(
                     f"variant {name} mixed-signal physical binding fields are invalid"
@@ -601,7 +582,7 @@ def _operating_variant(
                     f"variant {name} mixed-signal physical binding requires an "
                     "oa-mixed-signal release interface"
                 )
-            physical_binding = IpPhysicalBinding(
+            physical_binding = OaMixedSignalPhysicalBinding(
                 dependency=dependency_name,
                 transaction_module=_string(
                     binding.get("transaction_module"),
@@ -683,15 +664,14 @@ def _integration_dependencies(
 def load_ip_integration_contract(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     variant_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> IpIntegrationContract:
     """Load composite-IP integration intent from its canonical component manifest."""
 
     from sigilicon.domain.repository import Project
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     root = repository.project_root
     contract_path = path.resolve()
     cataloged_owner = repository.require_owner(contract_path)
@@ -704,16 +684,7 @@ def load_ip_integration_contract(
         raise ValueError("IP integration owner disagrees with the project catalog")
     if component.kind != "composite-ip":
         raise ValueError("IP integration requires a composite-ip component")
-    if component.document:
-        raw = component.document
-    else:
-        with component.path.open("rb") as stream:
-            raw = tomllib.load(stream)
-        component = parse_component_contract(
-            component.path,
-            project_root=root,
-            document=raw,
-        )
+    raw = component.document
     graph = load_component_graph(
         component.path,
         project_root=root,

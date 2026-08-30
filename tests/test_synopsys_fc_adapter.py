@@ -26,9 +26,9 @@ from sigilicon.flow import (
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
     SourceAssetsAdapter,
-    SynopsysFCAdapter,
     register_standard_asic_actions,
 )
+from sigilicon.workflows.synopsys import SynopsysFCAdapter
 
 
 def _write_executable(path: Path, body: str) -> None:

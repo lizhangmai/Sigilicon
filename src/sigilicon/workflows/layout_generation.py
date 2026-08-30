@@ -61,27 +61,21 @@ class LayoutPlanningResult:
 
 def plan_layout_spec(
     spec_path: Path,
-    project_root: Path | None = None,
     *,
-    project: Project | None = None,
+    project: Project,
 ) -> LayoutPlanningResult:
-    repository = Project.bind(project=project, project_root=project_root)
-    spec = load_layout_spec(spec_path, project=repository)
+    spec = load_layout_spec(spec_path, project=project)
     return LayoutPlanningResult(spec)
 
 
 def execute_layout_generation_spec(
     spec_path: Path,
-    project_root: Path | None = None,
-    client: Any = None,
+    client: Any,
     *,
-    project: Project | None = None,
+    project: Project,
     timeout: int = 120,
 ) -> tuple[LayoutSpec, LayoutGenerationResult]:
-    if client is None:
-        raise ValueError("layout generation requires an OA client")
-    repository = Project.bind(project=project, project_root=project_root)
-    spec = load_layout_spec(spec_path, project=repository)
+    spec = load_layout_spec(spec_path, project=project)
     return spec, generate_layout(spec, client, timeout=timeout)
 
 

@@ -37,9 +37,8 @@ def test_project_ip_catalog_reuses_bound_project(
     )
 
     assert ip_integration.ip_catalog_contract_path(
-        None,
+        project,
         "fixture",
-        project=project,
         section="components",
     ) == component
 

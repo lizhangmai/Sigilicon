@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from sigilicon.flow.model import FlowExecutionError
-from sigilicon.flow.synopsys_reports import parse_synopsys_fc_report_facts
+from sigilicon.workflows.synopsys_reports import parse_synopsys_fc_report_facts
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "synopsys_fc"

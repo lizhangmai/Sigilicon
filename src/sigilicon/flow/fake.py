@@ -153,10 +153,9 @@ class _WaitAdapter:
         return CollectedActionResult()
 
 
-def fake_registry() -> FlowRegistry:
-    """Build a fresh registry containing only the M1 fake Action seams."""
+def register_fake_actions(registry: FlowRegistry) -> None:
+    """Register the explicit test-only vertical slice into one registry."""
 
-    registry = FlowRegistry()
     registry.register_action(
         ActionContract(
             kind="fake.source",
@@ -192,6 +191,13 @@ def fake_registry() -> FlowRegistry:
     registry.register_adapter("fake-transform", _TransformAdapter())
     registry.register_adapter("fake-verify", _VerifyAdapter())
     registry.register_adapter("fake-wait", _WaitAdapter())
+
+
+def fake_registry() -> FlowRegistry:
+    """Build a fresh registry containing only the fake test Action seams."""
+
+    registry = FlowRegistry()
+    register_fake_actions(registry)
     return registry
 
 
@@ -209,4 +215,4 @@ def fake_profile(owner: str = "example") -> ExecutionProfile:
     )
 
 
-__all__ = ["fake_profile", "fake_registry"]
+__all__ = ["fake_profile", "fake_registry", "register_fake_actions"]

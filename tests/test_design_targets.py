@@ -66,7 +66,7 @@ def test_design_target_catalog_can_start_empty(tmp_path: Path) -> None:
         },
     )
 
-    catalog = load_design_target_catalog(tmp_path)
+    catalog = load_design_target_catalog(Project.from_project_root(tmp_path))
 
     assert catalog.paths == ((flows / "design_targets.toml").resolve(),)
     assert catalog.targets == ()
@@ -90,7 +90,7 @@ def test_design_target_catalog_is_an_optional_project_domain(
     assert capsys.readouterr().out == "[]\n"
 
 
-def test_design_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
+def test_design_target_catalog_binds_explicit_project(tmp_path: Path) -> None:
     _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
 
@@ -98,9 +98,6 @@ def test_design_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
 
     assert catalog.project is project
     assert catalog.project_root == tmp_path
-
-    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
-        load_design_target_catalog(tmp_path / "other", project=project)
 
 
 def test_design_target_loader_reads_its_catalog_once(
@@ -149,7 +146,7 @@ def test_design_catalog_owner_must_match_project_flow(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="owner must be 'example'"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_design_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -161,7 +158,7 @@ def test_design_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="catalog contains unknown fields"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         source.replace(
@@ -171,7 +168,7 @@ def test_design_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="targets.leaf contains unknown fields"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_design_catalog_rejects_unsafe_entrypoints_and_routing_overrides(
@@ -198,7 +195,7 @@ topology = []
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="canonical project-relative path"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         '''
@@ -219,7 +216,7 @@ topology = ["--mode", "sync"]
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="cannot override routing argument --mode"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_design_catalog_routes_dv_owned_modules_without_script_wrappers(
@@ -246,7 +243,7 @@ contract = []
 ''',
         encoding="utf-8",
     )
-    target = load_design_target_catalog(tmp_path).get("dv-check")
+    target = load_design_target_catalog(Project.from_project_root(tmp_path)).get("dv-check")
     assert target.command("contract") == (
         sys.executable,
         "-m",
@@ -272,7 +269,7 @@ contract = []
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project-owned module"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         '''
@@ -291,7 +288,7 @@ contract = []
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project-owned module"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_design_catalog_cannot_route_through_another_owner(
@@ -314,7 +311,7 @@ def test_design_catalog_cannot_route_through_another_owner(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="owner 'example' root"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         original.replace(
@@ -324,7 +321,7 @@ def test_design_catalog_cannot_route_through_another_owner(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="owner 'example' root"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         original.replace('kind = "script"', 'kind = "module"').replace(
@@ -334,7 +331,7 @@ def test_design_catalog_cannot_route_through_another_owner(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="owner 'example' root"):
-        load_design_target_catalog(tmp_path)
+        load_design_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_design_cli_lists_targets_without_executing_a_runner(

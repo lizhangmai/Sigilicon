@@ -461,23 +461,12 @@ def _load_source_root(
 def load_oa_library_source(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
 ) -> OALibrarySource:
     """Load one OA assembly and all explicitly selected IP source roots."""
 
     manifest_path = path.resolve()
-    if project is None:
-        if project_root is None:
-            raise ValueError("project or project_root is required for an OA assembly")
-        context = Project.from_project_root(project_root)
-    else:
-        context = project
-        if (
-            project_root is not None
-            and project_root.resolve() != context.project_root
-        ):
-            raise ValueError("project_root disagrees with the explicit project")
+    context = project
     root = context.project_root
     repository_owner = context.require_owner(manifest_path)
     raw = _read_toml(manifest_path)
@@ -614,8 +603,7 @@ def load_oa_library_source(
 def resolve_oa_library_source(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     snapshot: OALibrarySource | None = None,
 ) -> OALibrarySource:
     """Load an OA source or validate one caller-owned operation snapshot."""
@@ -624,9 +612,8 @@ def resolve_oa_library_source(
         return load_oa_library_source(
             path,
             project=project,
-            project_root=project_root,
         )
-    context = Project.bind(project=project, project_root=project_root)
+    context = project
     manifest_path = path.resolve()
     if not manifest_path.is_relative_to(context.project_root):
         raise ValueError("OA source snapshot manifest escapes the project root")

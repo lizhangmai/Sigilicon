@@ -394,26 +394,6 @@ class Project:
             else self._manifest_path
         )
 
-    @classmethod
-    def bind(
-        cls,
-        *,
-        project: "Project" | None = None,
-        project_root: Path | str | None = None,
-    ) -> "Project":
-        """Reuse an explicit Project or bind one explicit legacy root."""
-
-        if project is None:
-            if project_root is None:
-                raise ValueError("an explicit Project or project root is required")
-            return cls.from_project_root(project_root)
-        if (
-            project_root is not None
-            and Path(project_root).resolve() != project.project_root
-        ):
-            raise ValueError("project root disagrees with explicit Project")
-        return project
-
     @property
     def project_root(self) -> Path:
         return self._paths.project_root
@@ -745,14 +725,6 @@ class Project:
             )
         return tuple(sorted(result, key=lambda item: (item.owner, item.path)))
 
-    def flow_catalogs(self, kind: str) -> tuple[tuple[str, Path], ...]:
-        """Return compatibility path identities for selected target catalogs."""
-
-        return tuple(
-            (snapshot.owner, snapshot.path)
-            for snapshot in self.flow_catalog_snapshots(kind)
-        )
-
     def owner_file(self, path: Path | str, fileset: str) -> Path | None:
         owner = self.require_owner(path)
         files = owner.files(fileset)
@@ -773,8 +745,3 @@ class Project:
         if len(matches) > 1:
             raise ValueError(f"owner {owner.name!r} has multiple OA assemblies")
         return matches[0] if matches else None
-
-
-# Transitional import compatibility through Phase 2.  Production code uses
-# Project; this name does not own a second parsing Implementation.
-RepositoryContext = Project

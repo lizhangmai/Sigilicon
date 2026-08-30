@@ -20,9 +20,9 @@ from sigilicon.flow import (
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
     SourceAssetsAdapter,
-    SynopsysVCSAdapter,
     register_standard_asic_actions,
 )
+from sigilicon.workflows.synopsys import SynopsysVCSAdapter
 
 
 def _write_owner(owner_root: Path) -> None:

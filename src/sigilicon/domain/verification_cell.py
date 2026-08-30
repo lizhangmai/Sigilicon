@@ -456,13 +456,12 @@ def parse_verification_cell(
     path: Path,
     document: Mapping[str, Any],
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     """Validate one already read ``verification-cell`` document."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract = _verification_cell_path(path, repository)
     return _parse_verification_cell(
         contract,
@@ -475,12 +474,11 @@ def parse_verification_cell(
 def load_verification_cell(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
 ) -> VerificationCellSpec:
     """Load and validate one ``contract_kind = verification-cell`` document."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract = _verification_cell_path(path, repository)
     return _parse_verification_cell(
         contract,

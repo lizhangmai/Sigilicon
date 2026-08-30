@@ -117,7 +117,7 @@ def test_ip_oa_contract_can_own_sources_and_assemble_the_library(
 ) -> None:
     root, manifest = _assembly(tmp_path)
 
-    assembly = load_oa_library_source(manifest, project_root=root)
+    assembly = load_oa_library_source(manifest, project=Project.from_project_root(root))
 
     assert assembly.manifest_path == manifest.resolve()
     assert assembly.primitive_masters == ("nch",)
@@ -358,7 +358,7 @@ cell_roots = ["design/cells"]
 
     monkeypatch.setattr(oa_library_domain, "_read_toml", tracked_read_toml)
 
-    assembly = load_oa_library_source(manifest, project_root=root)
+    assembly = load_oa_library_source(manifest, project=Project.from_project_root(root))
 
     assert [source.owner for source in assembly.source_roots] == ["alpha", "beta"]
     assert reads.count(manifest.resolve()) == 1
@@ -387,7 +387,7 @@ def test_oa_assembly_rejects_cell_directory_symlink_escape(
     )
 
     with pytest.raises(ValueError, match="escapes its declared cell root"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_oa_assembly_rejects_cell_manifest_symlink_escape(
@@ -403,7 +403,7 @@ def test_oa_assembly_rejects_cell_manifest_symlink_escape(
     (cell_directory / "cell.toml").symlink_to(external_manifest)
 
     with pytest.raises(ValueError, match="manifest escapes"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_oa_snapshot_rejects_forged_source_root_membership(
@@ -650,7 +650,7 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
         lambda *_args: (),
     )
 
-    plan = plan_oa_library_rebuild(tmp_path / "oa.toml")
+    plan = plan_oa_library_rebuild(tmp_path / "oa.toml", project=project)
 
     assert plan.source is source
     assert received == [
@@ -682,6 +682,7 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
 
     plan = plan_oa_library_rebuild(
         tmp_path / "oa.toml",
+        project=project,
         platform_inventory={"testpdk": platform},
     )
 
@@ -699,10 +700,9 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
     def reject_oa_source_load(*_args, **_kwargs):
         raise AssertionError("explicit inventory must replace OA source I/O")
 
-    def resolve_oa_source(path, *, project, project_root, snapshot):
+    def resolve_oa_source(path, *, project, snapshot):
         assert path == manifest
         assert project is source.project
-        assert project_root is None
         received.append(("oa", snapshot))
         return snapshot
 
@@ -763,7 +763,7 @@ def test_pre_layout_oa_assembly_can_omit_physical_verification(
         encoding="utf-8",
     )
 
-    assembly = load_oa_library_source(manifest, project_root=root)
+    assembly = load_oa_library_source(manifest, project=Project.from_project_root(root))
 
     assert assembly.physical_verification is None
 
@@ -781,7 +781,7 @@ def test_oa_assembly_rejects_unknown_physical_verification_policy_fields(
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*accepted_violations"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_oa_assembly_rejects_cross_owner_physical_policy(
@@ -810,7 +810,7 @@ waiver_layers = []
     )
 
     with pytest.raises(ValueError, match="inside the assembly owner"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_instance_parameter_contract_elaborates_child_defaults_and_overrides(
@@ -854,7 +854,7 @@ def test_assembly_rejects_duplicate_global_cell_ownership(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="globally unique"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_assembly_rejects_unresolved_view_dependency(tmp_path: Path) -> None:
@@ -870,7 +870,7 @@ def test_assembly_rejects_unresolved_view_dependency(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unresolved view dependencies"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_assembly_rejects_unmanaged_owner(tmp_path: Path) -> None:
@@ -892,7 +892,7 @@ cell_roots = ["design/cells"]
     _cell(root, "unmanaged", "OLD")
 
     with pytest.raises(ValueError, match="no cataloged owner"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_source_root_rejects_undeclared_top_level_directory(tmp_path: Path) -> None:
@@ -900,7 +900,7 @@ def test_source_root_rejects_undeclared_top_level_directory(tmp_path: Path) -> N
     (root / "ip" / "alpha" / "design" / "cells" / "misc").mkdir()
 
     with pytest.raises(ValueError, match="directories without cell.toml"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_one_ip_contract_can_select_multiple_functional_cell_roots(
@@ -908,7 +908,7 @@ def test_one_ip_contract_can_select_multiple_functional_cell_roots(
 ) -> None:
     root, manifest = _assembly(tmp_path)
 
-    assembly = load_oa_library_source(manifest, project_root=root)
+    assembly = load_oa_library_source(manifest, project=Project.from_project_root(root))
 
     alpha = assembly.source_roots[0]
     assert [path.relative_to(root).as_posix() for path in alpha.cell_roots] == [
@@ -944,7 +944,7 @@ simulator = "xcelium"
         encoding="utf-8",
     )
 
-    assembly = load_oa_library_source(manifest, project_root=root)
+    assembly = load_oa_library_source(manifest, project=Project.from_project_root(root))
 
     assert [cell.cell for cell in assembly.cells] == [
         "CELL_A", "CELL_B", "OA_CELL",
@@ -976,7 +976,7 @@ cell_roots = ["design/cells"]
         encoding="utf-8",
     )
 
-    assembly = load_oa_library_source(manifest, project_root=root)
+    assembly = load_oa_library_source(manifest, project=Project.from_project_root(root))
 
     assert [source.owner for source in assembly.source_roots] == ["alpha", "beta"]
     assert [cell.cell for cell in assembly.cells] == ["CELL_A", "CELL_B", "CELL_C"]
@@ -995,7 +995,7 @@ def test_assembly_rejects_itself_as_an_additional_source(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="must not list itself"):
-        load_oa_library_source(manifest, project_root=root)
+        load_oa_library_source(manifest, project=Project.from_project_root(root))
 
 
 def test_read_only_check_classifies_missing_and_extra_objects(monkeypatch) -> None:

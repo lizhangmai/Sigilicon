@@ -252,24 +252,13 @@ def _validate_generator_ownership(
 def load_layout_spec(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     oa_source: OALibrarySource | None = None,
     platform: PlatformSnapshot | None = None,
     netlist_inventory: Mapping[Path, NetlistSnapshot] | None = None,
 ) -> LayoutSpec:
     spec_path = path.resolve()
-    if project is None:
-        if project_root is None:
-            raise ValueError("project or project_root is required for a layout spec")
-        repository = Project.from_project_root(project_root)
-    else:
-        repository = project
-        if (
-            project_root is not None
-            and project_root.resolve() != repository.project_root
-        ):
-            raise ValueError("project_root disagrees with the explicit project")
+    repository = project
     root = repository.project_root
     try:
         spec_payload = spec_path.read_bytes()

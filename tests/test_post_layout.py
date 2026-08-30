@@ -33,6 +33,7 @@ from sigilicon.flow import (
     ExecutionProfile,
     FlowEngine,
     FlowNode,
+    FlowRegistry,
     FlowSpec,
     FlowTarget,
     MATERIALIZED_LAYOUT_KIND,
@@ -45,7 +46,7 @@ from sigilicon.flow import (
     ResolvedCapability,
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
-    builtin_registry,
+    register_post_layout_actions,
 )
 
 
@@ -181,7 +182,8 @@ def test_downstream_success_cannot_be_inferred_from_exit_or_artifact_alone() -> 
 
 
 def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> None:
-    registry = builtin_registry()
+    registry = FlowRegistry()
+    register_post_layout_actions(registry)
     pex_contract = registry.action(PEX_ACTION)
     assert pex_contract.adapters == ()
     assert pex_contract.adapter_extensible

@@ -21,7 +21,7 @@ from sigilicon.flow.model import (
     FlowExecutionError,
     ProducedArtifact,
 )
-from sigilicon.flow.synopsys_reports import parse_synopsys_fc_report_facts
+from sigilicon.workflows.synopsys_reports import parse_synopsys_fc_report_facts
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")

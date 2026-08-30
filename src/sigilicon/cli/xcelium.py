@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sigilicon.cli.common import die, emit_json
 from sigilicon.paths import discover_project_contract
-from sigilicon.workflows import load_project
+from sigilicon.workflows.project import load_project
 from sigilicon.workflows.xcelium import (
     plan_xcelium_verification_cell,
     run_xcelium_verification_cell,

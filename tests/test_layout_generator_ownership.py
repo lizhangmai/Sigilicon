@@ -176,7 +176,7 @@ def test_layout_generators_allow_owned_source_library_and_exact_platform_contrac
 ) -> None:
     root, layout = _write_fixture(tmp_path)
 
-    spec = load_layout_spec(layout, project_root=root)
+    spec = load_layout_spec(layout, project=Project.from_project_root(root))
 
     assert spec.generator_source == root / "ip/example/cell/layout_generator.py"
     assert root / "ip/shared/shared_dependency.py" in spec.generator_dependencies
@@ -313,7 +313,7 @@ def test_layout_loader_rejects_undeclared_cross_owner_netlist(
     )
 
     with pytest.raises(ValueError, match="crosses owner boundary"):
-        load_layout_spec(layout, project_root=root)
+        load_layout_spec(layout, project=Project.from_project_root(root))
 
 
 def test_layout_resolver_rejects_dependency_netlist_snapshot_drift(
@@ -446,7 +446,7 @@ def test_layout_generator_source_must_belong_to_spec_owner(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="generator_source must belong to cataloged owner"):
-        load_layout_spec(layout, project_root=root)
+        load_layout_spec(layout, project=Project.from_project_root(root))
 
 
 def test_layout_generator_cannot_use_sibling_owner_without_component_graph_edge(
@@ -471,7 +471,7 @@ def test_layout_generator_cannot_use_sibling_owner_without_component_graph_edge(
     )
 
     with pytest.raises(ValueError, match="source-library"):
-        load_layout_spec(layout, project_root=root)
+        load_layout_spec(layout, project=Project.from_project_root(root))
 
 
 def test_layout_generator_modules_cannot_use_uncomposed_sibling_owner(
@@ -493,7 +493,7 @@ def test_layout_generator_modules_cannot_use_uncomposed_sibling_owner(
     )
 
     with pytest.raises(ValueError, match="generator_modules.*source-library"):
-        load_layout_spec(layout, project_root=root)
+        load_layout_spec(layout, project=Project.from_project_root(root))
 
 
 def test_layout_generator_rejects_unowned_project_dependency_except_selected_platform(
@@ -510,4 +510,4 @@ def test_layout_generator_rejects_unowned_project_dependency_except_selected_pla
     (root / "repository_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="cataloged owner|owner component graph"):
-        load_layout_spec(layout, project_root=root)
+        load_layout_spec(layout, project=Project.from_project_root(root))

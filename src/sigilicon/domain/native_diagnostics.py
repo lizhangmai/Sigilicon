@@ -5,14 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-import inspect
 from pathlib import Path
 import sys
 from types import ModuleType
 from typing import Any, Collection, Mapping
 import uuid
 
-from sigilicon.domain.repository import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 
 
@@ -74,17 +72,12 @@ class NativeDiagnosticProcessor:
         project_root: Path,
         source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
     ) -> NativeDiagnosticContract:
-        loader = self.implementation.load_contract
-        kwargs: dict[str, object] = {
-            "contract_path": contract_path,
-            "project_root": project_root,
-        }
-        if (
-            source_documents is not None
-            and "source_documents" in inspect.signature(loader).parameters
-        ):
-            kwargs["source_documents"] = source_documents
-        diagnostic = loader(raw, **kwargs)
+        diagnostic = self.implementation.load_contract(
+            raw,
+            contract_path=contract_path,
+            project_root=project_root,
+            source_documents=source_documents,
+        )
         if not isinstance(diagnostic, NativeDiagnosticContract):
             raise TypeError("native diagnostic loader returned an invalid contract")
         support_sources = tuple(
@@ -115,6 +108,10 @@ class NativeDiagnosticProcessor:
         value = self.implementation.reconstruct(result, contract)
         if not isinstance(value, Mapping):
             raise TypeError("native diagnostic reconstruction must return a mapping")
+        if not isinstance(value.get("passed"), bool):
+            raise ValueError(
+                "native diagnostic reconstruction must return a top-level passed boolean"
+            )
         return value
 
     def attestation_requirements(
@@ -159,20 +156,4 @@ def load_native_diagnostic_processor(
         source=source,
         implementation=module,
         source_snapshot=snapshot,
-    )
-
-
-def load_owner_native_diagnostic_processor(
-    repository: Project,
-    *,
-    owner_path: Path,
-) -> NativeDiagnosticProcessor | None:
-    """Load the legacy owner default for unmodified downstream projects."""
-
-    source = repository.owner_file(owner_path, "native_diagnostics")
-    if source is None:
-        return None
-    return load_native_diagnostic_processor(
-        source,
-        project_root=repository.project_root,
     )

@@ -46,7 +46,7 @@ class SpectreExecution:
     raw_outputs: Mapping[str, Path]
 
 
-@dataclass(frozen=True, init=False, eq=False)
+@dataclass(frozen=True, eq=False)
 class SpectreArtifactContext:
     """Repository and design coordinates for a direct-Spectre run."""
 
@@ -55,33 +55,8 @@ class SpectreArtifactContext:
     cell: str
     testbench: str
 
-    def __init__(
-        self,
-        project_root: Path | None = None,
-        library: str | None = None,
-        cell: str | None = None,
-        testbench: str | None = None,
-        *,
-        project: Project | None = None,
-    ) -> None:
-        """Bind an explicit Project or one legacy positional project root."""
-
-        repository = Project.bind(project=project, project_root=project_root)
-        if library is None or cell is None or testbench is None:
-            raise ValueError("Spectre artifact coordinates must be explicit")
-        object.__setattr__(self, "project", repository)
-        object.__setattr__(self, "library", library)
-        object.__setattr__(self, "cell", cell)
-        object.__setattr__(self, "testbench", testbench)
-
-    @property
-    def project_root(self) -> Path:
-        """Compatibility path view of the canonical Project."""
-
-        return self.project.project_root
-
     def _comparison_key(self) -> tuple[Path, str, str, str]:
-        return (self.project_root, self.library, self.cell, self.testbench)
+        return (self.project.project_root, self.library, self.cell, self.testbench)
 
     def __eq__(self, other: object) -> bool:
         if other.__class__ is not self.__class__:
@@ -462,7 +437,7 @@ def run_spectre_measurement(
         },
         operation="direct-spectre-characterization",
         backend="spectre",
-        source=artifact_source_state(context.project_root),
+        source=artifact_source_state(context.project.project_root),
     )
     record.bind_operation(new_identity())
     try:
@@ -568,7 +543,7 @@ def run_spectre_multi_measurement(
         },
         operation="direct-spectre-characterization",
         backend="spectre",
-        source=artifact_source_state(context.project_root),
+        source=artifact_source_state(context.project.project_root),
     )
     record.bind_operation(new_identity())
     try:
@@ -670,7 +645,7 @@ def publish_measurement_summary(
         },
         operation="characterization-analysis",
         backend="analysis",
-        source=artifact_source_state(context.project_root),
+        source=artifact_source_state(context.project.project_root),
     )
     record.bind_operation(new_identity())
     try:

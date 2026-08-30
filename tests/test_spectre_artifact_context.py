@@ -33,7 +33,7 @@ def test_spectre_artifact_context_preserves_an_explicit_project(
     )
 
     assert context.project is project
-    assert context.project_root == project.project_root
+    assert context.project.project_root == project.project_root
     assert hash(context) == hash(
         SpectreArtifactContext(
             project=project,
@@ -45,7 +45,7 @@ def test_spectre_artifact_context_preserves_an_explicit_project(
     assert "Project(" not in repr(context)
     replaced = replace(context, library="other")
     assert replaced.project is project
-    assert replaced.project_root == context.project_root
+    assert replaced.project.project_root == context.project.project_root
     assert replaced.library == "other"
 
     other_root = tmp_path / "other-project"
@@ -58,36 +58,3 @@ def test_spectre_artifact_context_preserves_an_explicit_project(
     )
     assert other_context != context
     assert len({context, other_context}) == 2
-
-    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
-        SpectreArtifactContext(
-            tmp_path / "other",
-            "fixture",
-            "leaf",
-            "tb_leaf",
-            project=project,
-        )
-
-
-def test_spectre_artifact_context_keeps_legacy_positional_root_binding(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    project = Project.from_project_root(tmp_path)
-    roots: list[Path] = []
-
-    def bind_root(cls: type[Project], root: Path) -> Project:
-        roots.append(root)
-        return project
-
-    monkeypatch.setattr(Project, "from_project_root", classmethod(bind_root))
-
-    context = SpectreArtifactContext(
-        tmp_path,
-        "fixture",
-        "leaf",
-        "tb_leaf",
-    )
-
-    assert context.project is project
-    assert roots == [tmp_path]

@@ -214,12 +214,11 @@ def _resolved_circuit(
 def plan_xcelium_ams_cell(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
 ) -> XceliumAmsCellPlan:
     """Resolve one AMS cell without finding or launching an external simulator."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract = _resolve_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() != "xcelium-ams" or spec.ams is None:
@@ -284,15 +283,14 @@ def plan_xcelium_ams_cell(
 def run_xcelium_ams_cell(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     xrun: Path | None = None,
     timeout: int = 600,
 ) -> XceliumAmsCellRun:
     """Run one locked native-OA circuit through an isolated AMS work directory."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     if artifact_root is not None:
         repository = repository.with_artifact_root(artifact_root)
     root = repository.project_root

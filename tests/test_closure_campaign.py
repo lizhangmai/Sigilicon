@@ -109,7 +109,7 @@ from sigilicon.layout.pnr import (
     RoutingTrackPattern,
     physical_design_job_id,
 )
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.closure_campaign import (
     CampaignArtifactReference,
     ClosureArtifactBindings,
@@ -926,7 +926,7 @@ def _flow(
 ):
     if corrupt_layout_identity:
         corrupt_identity = "result"
-    registry = builtin_workflow_registry()
+    registry = build_flow_registry()
     registry.register_action(
         ActionContract(
             _BENCHMARK_INPUT_ACTION,

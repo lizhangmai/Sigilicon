@@ -48,11 +48,7 @@ class ComponentContract:
     public_interface: PurePosixPath | None
     filesets: Mapping[str, tuple[PurePosixPath, ...]]
     components: tuple[ComponentDependency, ...]
-    document: Mapping[str, Any] = field(
-        default_factory=lambda: MappingProxyType({}),
-        repr=False,
-        compare=False,
-    )
+    document: Mapping[str, Any] = field(repr=False, compare=False)
 
 
 def parse_component_contract(
@@ -228,14 +224,11 @@ def load_component_graph(
                 if (
                     inventory_snapshot is not None
                     and inventory_snapshot is not root_contract
-                    and inventory_snapshot.document
                 ):
                     raise ValueError(
                         "component graph inventory disagrees with its root snapshot"
                     )
                 inventory_snapshot = root_contract
-            if inventory_snapshot is not None and not inventory_snapshot.document:
-                inventory_snapshot = None
             contract = resolve_component_contract(
                 resolved,
                 project_root=root,

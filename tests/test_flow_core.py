@@ -31,6 +31,12 @@ from sigilicon.flow import (
 )
 from sigilicon.virtuoso.operation_journal import write_operation_incident
 
+from conftest import (
+    write_component_owner,
+    write_fake_flow_extension,
+    write_project_context,
+)
+
 
 class SourceAdapter:
     def __init__(self) -> None:
@@ -847,7 +853,9 @@ def test_run_identity_is_immutable(tmp_path: Path) -> None:
 
 
 def test_flow_contract_loader_supports_only_the_current_schema(tmp_path: Path) -> None:
-    contract = tmp_path / "flow.toml"
+    owner_root = tmp_path / "ip/example"
+    owner_root.mkdir(parents=True)
+    contract = owner_root / "flow.toml"
     contract.write_text(
         '''schema = 2
 contract_kind = "flow"
@@ -1179,7 +1187,9 @@ def test_public_flow_cli_plans_runs_reads_and_cleans_fake_flow(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    contract = tmp_path / "flow.toml"
+    owner_root = tmp_path / "ip/example"
+    owner_root.mkdir(parents=True)
+    contract = owner_root / "flow.toml"
     contract.write_text(
         '''schema = 1
 contract_kind = "flow"
@@ -1227,7 +1237,7 @@ expected = true
 ''',
         encoding="utf-8",
     )
-    profile = tmp_path / "profile.toml"
+    profile = owner_root / "profile.toml"
     profile.write_text(
         '''schema = 1
 contract_kind = "execution-profile"
@@ -1246,7 +1256,7 @@ adapter = "fake-verify"
 ''',
         encoding="utf-8",
     )
-    catalog = tmp_path / "catalog.toml"
+    catalog = owner_root / "catalog.toml"
     catalog.write_text(
         '''schema = 1
 contract_kind = "flow-catalog"
@@ -1262,19 +1272,41 @@ fake = "profile.toml"
 ''',
         encoding="utf-8",
     )
+    extension = write_fake_flow_extension(tmp_path, "example")
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={
+            "flow": (
+                "ip/example/catalog.toml",
+                "ip/example/flow.toml",
+                "ip/example/profile.toml",
+                extension.relative_to(tmp_path).as_posix(),
+            )
+        },
+    )
     artifact_root = tmp_path / "artifacts"
     run_id = "3" * 32
     source_args = [
-        str(catalog),
-        "fake-pipeline",
-        "qualification",
-        "--owner-root",
+        "--project-root",
         str(tmp_path),
+        "--owner",
+        "example",
+        "--flow",
+        "fake-pipeline",
+        "--target",
+        "qualification",
     ]
 
     assert (
         flow_cli_main(
-            ["list", str(catalog), "--owner-root", str(tmp_path)]
+            [
+                "list",
+                "--project-root",
+                str(tmp_path),
+                "--owner",
+                "example",
+            ]
         )
         == 0
     )
@@ -1283,10 +1315,12 @@ fake = "profile.toml"
         flow_cli_main(
             [
                 "show",
-                str(catalog),
-                "fake-pipeline",
-                "--owner-root",
+                "--project-root",
                 str(tmp_path),
+                "--owner",
+                "example",
+                "--flow",
+                "fake-pipeline",
             ]
         )
         == 0
@@ -1308,8 +1342,6 @@ fake = "profile.toml"
             [
                 "run",
                 *source_args,
-                "--artifact-root",
-                str(artifact_root),
                 "--run-id",
                 run_id,
             ]
@@ -1318,8 +1350,8 @@ fake = "profile.toml"
     )
     assert json.loads(capsys.readouterr().out)["status"] == "accepted"
     identity = [
-        "--artifact-root",
-        str(artifact_root),
+        "--project-root",
+        str(tmp_path),
         "example",
         "fake-pipeline",
         "qualification",
@@ -1329,3 +1361,27 @@ fake = "profile.toml"
     assert json.loads(capsys.readouterr().out)["status"] == "accepted"
     assert flow_cli_main(["clean", *identity]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "cleaned"
+
+
+def test_public_flow_cli_reports_missing_owner_catalog_as_contract_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    write_project_context(tmp_path)
+    write_component_owner(tmp_path, "example", filesets={})
+
+    assert (
+        flow_cli_main(
+            [
+                "list",
+                "--project-root",
+                str(tmp_path),
+                "--owner",
+                "example",
+            ]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "must select exactly one Flow Catalog" in captured.err
+    assert "Sigilicon defect" not in captured.err

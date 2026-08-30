@@ -1156,15 +1156,13 @@ def _availability(
 
 def _release_project(
     *,
-    project: Project | None,
-    project_root: Path | None,
+    project: Project,
     artifact_root: Path | None,
 ) -> Project:
-    repository = Project.bind(project=project, project_root=project_root)
     return (
-        repository
+        project
         if artifact_root is None
-        else repository.with_artifact_root(artifact_root)
+        else project.with_artifact_root(artifact_root)
     )
 
 
@@ -1504,8 +1502,7 @@ def _plan_loaded_ip_release(
 def plan_ip_release(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     maturity: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
@@ -1514,7 +1511,6 @@ def plan_ip_release(
 ) -> dict[str, Any]:
     repository = _release_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_contract(contract_path, project=repository)
@@ -1576,14 +1572,12 @@ def _remove_tree_at(parent_fd: int, name: str) -> None:
 def build_ip_release(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
     repository = _release_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_contract(contract_path, project=repository)
@@ -2473,14 +2467,12 @@ def _audit_loaded_ip_release(
 def _audit_source_ip_release(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
     repository = _release_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_contract(contract_path, project=repository)
@@ -2491,14 +2483,12 @@ def _audit_source_ip_release(
 def publish_ip_release(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
     repository = _release_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_contract(contract_path, project=repository)
@@ -2571,8 +2561,7 @@ def resolve_release_role(
 def audit_ip_release(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
@@ -2580,7 +2569,6 @@ def audit_ip_release(
     return _audit_source_ip_release(
         contract_path,
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
         maturity=maturity,
     )

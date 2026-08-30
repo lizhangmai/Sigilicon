@@ -462,7 +462,7 @@ def _parse_ip_contract(
             interface_documents[interface_path] = freeze_toml_document(interface_raw)
         exports.append(exported)
 
-    if interface_documents and set(interface_documents) != expected_interface_paths:
+    if set(interface_documents) != expected_interface_paths:
         raise ValueError("IP release snapshot interface document identity drift")
 
     source_files = source.get("files", [])
@@ -517,12 +517,11 @@ def _parse_ip_contract(
 def load_ip_contract(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
 ) -> IpContract:
     from sigilicon.domain.repository import Project
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract_path = path.resolve()
     if not contract_path.is_relative_to(repository.project_root):
         raise ValueError("IP contract must be inside the project root")

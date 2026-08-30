@@ -12,9 +12,7 @@ from sigilicon.workflows import (
     design_lifecycle,
     layout_generation,
     layout_verification,
-    project_layout,
 )
-from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
 
 from conftest import write_component_owner
 
@@ -109,13 +107,6 @@ def test_layout_wrappers_preserve_an_explicit_project(
     ]
     assert all(bound is project for _operation, bound in loaded)
 
-    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
-        layout_generation.plan_layout_spec(
-            spec_path,
-            tmp_path / "other",
-            project=project,
-        )
-
 
 def test_design_set_attestation_binds_project_once(
     monkeypatch: pytest.MonkeyPatch,
@@ -151,14 +142,6 @@ def test_design_set_attestation_binds_project_once(
         "designs": tuple({"path": path, "timeout": 17} for path in paths),
     }
 
-    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
-        design_lifecycle.attest_design_set(
-            paths,
-            client,
-            project=project,
-            project_root=tmp_path / "other",
-        )
-
 
 def test_layout_clis_skip_discovery_and_reuse_one_loaded_spec(
     monkeypatch: pytest.MonkeyPatch,
@@ -170,42 +153,47 @@ def test_layout_clis_skip_discovery_and_reuse_one_loaded_spec(
     spec = SimpleNamespace(library="example", cell="leaf", view="layout")
     plan = SimpleNamespace(canonical_json=lambda: '{"plan":true}\n')
     loads: list[Project] = []
-    checks: list[str] = []
+    executed_checks: list[str] = []
 
     def fail_discovery(*_args: object) -> Path:
         pytest.fail("an explicit Project must bypass project discovery")
 
-    def load(path: Path, *, project: Project) -> object:
-        assert path == spec_path
-        loads.append(project)
-        return spec
-
-    def verify(
-        loaded_spec: object,
+    def verify_set(
+        path: Path,
         client: object,
         *,
-        check: str,
+        project: Project,
+        checks: tuple[str, ...],
         xstream_timeout: int,
         calibre_timeout: int,
-    ) -> object:
-        assert loaded_spec is spec
+    ) -> tuple[tuple[object, object], ...]:
+        assert path == spec_path
+        loads.append(project)
         assert xstream_timeout == 12
         assert calibre_timeout == 34
-        checks.append(check)
-        return SimpleNamespace(
-            check=check,
-            passed=True,
-            details={},
-            manifest_path=tmp_path / f"{check}.json",
+        executed_checks.extend(checks)
+        return tuple(
+            (
+                spec,
+                SimpleNamespace(
+                    check=check,
+                    passed=True,
+                    details={},
+                    manifest_path=tmp_path / f"{check}.json",
+                ),
+            )
+            for check in checks
         )
 
-    monkeypatch.setattr(project_layout, "load_layout_spec", load)
-    monkeypatch.setattr(project_layout, "verify_layout", verify)
-    workflow = ProjectLayoutWorkflow(project)
     monkeypatch.setattr(
-        ProjectLayoutWorkflow,
-        "plan",
-        lambda self, path: SimpleNamespace(spec=spec, plan=plan),
+        generate_layout_cli,
+        "plan_layout_spec",
+        lambda path, *, project: SimpleNamespace(spec=spec, plan=plan),
+    )
+    monkeypatch.setattr(
+        verify_layout_cli,
+        "execute_layout_verification_set",
+        verify_set,
     )
     monkeypatch.setattr(generate_layout_cli, "discover_project_contract", fail_discovery)
     monkeypatch.setattr(verify_layout_cli, "discover_project_contract", fail_discovery)
@@ -214,7 +202,7 @@ def test_layout_clis_skip_discovery_and_reuse_one_loaded_spec(
         generate_layout_cli.main(
             ["--spec", str(spec_path), "--preview"],
             client_factory=lambda: pytest.fail("preview must not open an OA client"),
-            workflow=workflow,
+            project=project,
         )
         == 0
     )
@@ -231,11 +219,11 @@ def test_layout_clis_skip_discovery_and_reuse_one_loaded_spec(
                 "34",
             ],
             client_factory=object,
-            workflow=workflow,
+            project=project,
         )
         == 0
     )
 
     assert loads == [project]
-    assert checks == ["drc", "lvs"]
+    assert executed_checks == ["drc", "lvs"]
     assert capsys.readouterr().out.startswith('{"plan":true}\n[drc] PASS')

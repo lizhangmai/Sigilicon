@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from sigilicon.domain.repository import Project
+
 from sigilicon.artifacts import ArtifactRecord, load_manifest
 from sigilicon.domain.design import load_design_spec
 from sigilicon.paths import ProjectContext
@@ -148,7 +150,7 @@ def test_sync_design_consumes_source_and_pdk_config(
     monkeypatch, project_factory
 ) -> None:
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     _patch_fake_import(monkeypatch)
 
@@ -210,7 +212,7 @@ IN = "inputOutput"
         encoding="utf-8",
     )
 
-    spec = load_design_spec(path, project_root=root)
+    spec = load_design_spec(path, project=Project.from_project_root(root))
 
     assert spec.primary_supply is None
     assert spec.ground_supply == "VSS"
@@ -220,7 +222,7 @@ def test_target_only_sync_reuses_bridge_import_without_touching_cds_lib(
     monkeypatch, project_factory
 ) -> None:
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     library_path = root / "virtuoso" / "designLib"
     library_path.mkdir()
@@ -256,7 +258,7 @@ def test_target_only_sync_rejects_multicell_source_before_oa_mutation(
     project_factory,
 ) -> None:
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     spec.design.source_netlist.write_text(
         """subckt leaf A Y\nends leaf\nsubckt inv IN OUT VDD VSS\n"
         "MP0 (OUT IN VDD VDD) pch_mac l=30n w=200n\n"
@@ -264,7 +266,7 @@ def test_target_only_sync_rejects_multicell_source_before_oa_mutation(
         "ends inv\n""",
         encoding="utf-8",
     )
-    multi = load_design_spec(spec.design.path, project_root=root)
+    multi = load_design_spec(spec.design.path, project=Project.from_project_root(root))
     client = FakeClient(root / "virtuoso")
 
     with pytest.raises(ValueError, match="exactly one canonical subckt"):
@@ -289,7 +291,7 @@ def test_real_spec_to_sync_chain_reads_and_parses_netlist_once(
         return original(source)
 
     monkeypatch.setattr(design_domain, "load_netlist_snapshot", load_once)
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     _patch_fake_import(monkeypatch)
 
@@ -304,7 +306,7 @@ def test_import_hierarchy_passes_explicit_device_map(
     from sigilicon.workflows.hierarchy_import import import_hierarchy, plan_hierarchy
 
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     _patch_fake_import(monkeypatch)
     device_map = tmp_path / "spiceIn.devmap"
@@ -343,7 +345,7 @@ def test_import_hierarchy_preserves_unowned_leaked_handle(
     )
 
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     _patch_fake_import(monkeypatch)
     inventories = 0
@@ -664,7 +666,7 @@ def test_symbol_generation_cleanup_uses_exact_handle_identity() -> None:
 
 def test_sync_refuses_an_existing_library_with_wrong_technology(project_factory) -> None:
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     library_path = root / "virtuoso" / "designLib"
     library_path.mkdir()
@@ -676,7 +678,7 @@ def test_sync_refuses_an_existing_library_with_wrong_technology(project_factory)
 
 def test_sync_refuses_to_overwrite_an_open_cell(project_factory) -> None:
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     client.list_windows = lambda: [{"name": "Schematic Editing: designLib inv schematic"}]
 
@@ -689,7 +691,7 @@ def test_port_direction_write_rechecks_quiescence_after_hierarchy(
     project_factory,
 ) -> None:
     root, path = project_factory()
-    spec = SimpleNamespace(design=load_design_spec(path, project_root=root))
+    spec = SimpleNamespace(design=load_design_spec(path, project=Project.from_project_root(root)))
     client = FakeClient(root / "virtuoso")
     _patch_fake_import(monkeypatch)
     direction_writes: list[str] = []

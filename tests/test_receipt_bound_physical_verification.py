@@ -73,7 +73,7 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     run,
 )
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.physical_verification import (
     OfflinePhysicalVerificationAdapter,
 )
@@ -307,7 +307,7 @@ class _ReceiptBoundInputsAdapter:
 
 
 def _registry(*, corrupt: str | None = None, offline: bool = False):
-    registry = builtin_workflow_registry()
+    registry = build_flow_registry()
     registry.register_action(
         ActionContract(
             _INPUT_ACTION,
@@ -671,7 +671,7 @@ def test_runtime_backend_unavailable_is_typed_without_a_false_conclusion(
 def test_offline_adapter_is_unregistered_and_cannot_claim_clean(
     tmp_path: Path,
 ) -> None:
-    builtin = builtin_workflow_registry()
+    builtin = build_flow_registry()
     assert builtin.has_adapter(CALIBRE_PHYSICAL_VERIFICATION_ADAPTER)
     assert not builtin.has_adapter(OFFLINE_PHYSICAL_VERIFICATION_ADAPTER)
     source = builtin.action(PHYSICAL_VERIFICATION_SOURCE_ACTION)

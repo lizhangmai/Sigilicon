@@ -1,6 +1,6 @@
 """Internal source-driven Virtuoso symbol generator.
 
-Use ``flow oa rebuild`` for the public workflow; this module is an adapter used
+Use ``sigilicon oa rebuild`` for the public workflow; this module is an adapter used
 by guarded rebuild implementations and tests.
 """
 

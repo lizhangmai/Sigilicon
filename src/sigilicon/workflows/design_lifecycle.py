@@ -87,8 +87,7 @@ class ProjectDesignWorkflow:
 def inspect_design(
     spec_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     platform: PlatformSnapshot | None = None,
     netlist_snapshot: NetlistSnapshot | None = None,
 ) -> DesignInspection:
@@ -97,7 +96,6 @@ def inspect_design(
     spec = load_design_spec(
         spec_path,
         project=project,
-        project_root=project_root,
         platform=platform,
         netlist_snapshot=netlist_snapshot,
     )
@@ -202,8 +200,7 @@ def attest_design_set(
     spec_paths: Sequence[Path],
     client: Any,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     timeout: int = 60,
 ) -> dict[str, object]:
     """Attest an explicit dependency set before a design-owned simulation.
@@ -213,8 +210,7 @@ def attest_design_set(
     weaker OA-view checks.
     """
 
-    repository = Project.bind(project=project, project_root=project_root)
-    return ProjectDesignWorkflow(repository).attest_set(
+    return ProjectDesignWorkflow(project).attest_set(
         spec_paths,
         client,
         timeout=timeout,

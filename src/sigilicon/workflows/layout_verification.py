@@ -1552,22 +1552,45 @@ def verify_layout(
 
 def execute_layout_verification_spec(
     spec_path: Path,
-    project_root: Path | None = None,
-    client: Any = None,
+    client: Any,
     *,
-    project: Project | None = None,
+    project: Project,
     check: str,
     xstream_timeout: int = 120,
     calibre_timeout: int = 600,
 ) -> tuple[LayoutSpec, LayoutVerificationResult]:
-    if client is None:
-        raise ValueError("layout verification requires an OA client")
-    repository = Project.bind(project=project, project_root=project_root)
-    spec = load_layout_spec(spec_path, project=repository)
+    spec = load_layout_spec(spec_path, project=project)
     return spec, verify_layout(
         spec,
         client,
         check=check,
         xstream_timeout=xstream_timeout,
         calibre_timeout=calibre_timeout,
+    )
+
+
+def execute_layout_verification_set(
+    spec_path: Path,
+    client: Any,
+    *,
+    project: Project,
+    checks: tuple[str, ...],
+    xstream_timeout: int = 120,
+    calibre_timeout: int = 600,
+) -> tuple[tuple[LayoutSpec, LayoutVerificationResult], ...]:
+    """Load one layout identity and execute its requested verification set."""
+
+    spec = load_layout_spec(spec_path, project=project)
+    return tuple(
+        (
+            spec,
+            verify_layout(
+                spec,
+                client,
+                check=check,
+                xstream_timeout=xstream_timeout,
+                calibre_timeout=calibre_timeout,
+            ),
+        )
+        for check in checks
     )

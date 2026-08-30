@@ -123,6 +123,11 @@ def test_oa_maestro_writes_directly_to_configured_artifact_root(
             normalized_result_database=normalized,
             run_summary=summary,
             scalar_output_count=1,
+            evidence=oa_simulation.evaluate_oa_maestro_evidence(
+                overall_spec_status="pass",
+                per_output_spec_status=("pass",),
+                diagnostic_equivalence=None,
+            ),
         )
 
     monkeypatch.setattr(
@@ -155,6 +160,7 @@ def test_oa_maestro_writes_directly_to_configured_artifact_root(
         "outputs/run-summary.json",
         "outputs/maestro-rdb.json",
     ]
+    assert manifest["details"]["evidence_status"] == "pass"
 
 
 def test_oa_maestro_records_failure_in_configured_artifact_root(

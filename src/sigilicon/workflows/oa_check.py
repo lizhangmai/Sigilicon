@@ -289,8 +289,7 @@ def _recommendation(
 def check_oa_library(
     manifest_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     library: str | None,
     client: Any,
     timeout: int = 300,
@@ -298,7 +297,7 @@ def check_oa_library(
     """Check only current source/OA parity and live safety state.
 
     Native setup semantic attestation is intentionally not part of this
-    command.  Use ``flow oa attest --testbench ...`` when one testbench needs
+    command.  Use ``sigilicon oa attest --testbench ...`` when one testbench needs
     the Cadence API-level check.
     """
 
@@ -308,7 +307,6 @@ def check_oa_library(
         plan = plan_oa_library_rebuild(
             manifest_path,
             project=project,
-            project_root=project_root,
             library=library,
         )
     except (OSError, RuntimeError, ValueError) as exc:

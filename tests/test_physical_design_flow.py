@@ -67,7 +67,7 @@ from sigilicon.layout.pnr import (
     placement_routing_closure_evidence_from_json,
     run,
 )
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.builtin import build_flow_registry
 
 
 def _routing_technology() -> PhysicalTechnology:
@@ -220,7 +220,7 @@ def _run_flow(
     *,
     run_id: str,
 ):
-    registry = builtin_workflow_registry()
+    registry = build_flow_registry()
     registry.register_action(
         ActionContract(
             "benchmark.physical-job",

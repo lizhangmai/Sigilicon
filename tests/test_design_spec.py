@@ -32,7 +32,7 @@ def test_design_loader_rejects_project_escape_and_symlink(
     )
 
     with pytest.raises(ValueError, match="project root"):
-        load_design_spec(path, project_root=root)
+        load_design_spec(path, project=Project.from_project_root(root))
 
     link = path.with_name("linked.scs")
     link.symlink_to(external)
@@ -44,7 +44,7 @@ def test_design_loader_rejects_project_escape_and_symlink(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project root"):
-        load_design_spec(path, project_root=root)
+        load_design_spec(path, project=Project.from_project_root(root))
 
 
 def test_cataloged_design_loader_rejects_cross_owner_source(

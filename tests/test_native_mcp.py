@@ -10,7 +10,11 @@ import pytest
 
 mcp = pytest.importorskip("mcp")
 
-from conftest import write_component_owner, write_project_context
+from conftest import (
+    write_component_owner,
+    write_fake_flow_extension,
+    write_project_context,
+)
 from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp.shared.exceptions import MCPError
@@ -38,7 +42,6 @@ from sigilicon.domain.agentic_execution import (
 )
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
-from sigilicon.workflows import agentic_read as agentic_read_module
 from sigilicon.workflows.design_campaign import design_campaign_state_from_json
 from sigilicon.workflows.design_repair import DesignRepairProposal
 
@@ -47,6 +50,7 @@ from test_agentic_campaign_interface import (
     _feedback_campaign,
     _feedback_registry,
     _grant as campaign_grant,
+    _patch_project_registry,
     _registry as campaign_registry,
     _write_campaign_project,
 )
@@ -105,6 +109,7 @@ offline = "configs/flows/profiles/offline.toml"
 ''',
         encoding="utf-8",
     )
+    extension = write_fake_flow_extension(root, "example")
     write_component_owner(
         root,
         "example",
@@ -115,6 +120,7 @@ offline = "configs/flows/profiles/offline.toml"
                     catalog,
                     flow_root / "pipeline.toml",
                     profile_root / "offline.toml",
+                    extension,
                 )
             )
         },
@@ -433,12 +439,7 @@ def test_native_mcp_campaign_plan_and_run_match_shared_interfaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: campaign_registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch, campaign_registry)
     source = _campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     expected_plan = read.plan_campaign(campaign_json=source.canonical_json())
@@ -491,12 +492,7 @@ def test_native_mcp_campaign_run_resumes_with_semantic_proposal_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_campaign_project(tmp_path)
-    original = agentic_read_module.builtin_workflow_registry
-    monkeypatch.setattr(
-        agentic_read_module,
-        "builtin_workflow_registry",
-        lambda owner_root: _feedback_registry(original, owner_root),
-    )
+    _patch_project_registry(monkeypatch, _feedback_registry)
     source = _feedback_campaign()
     read = AgenticReadInterface.from_project_root(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())

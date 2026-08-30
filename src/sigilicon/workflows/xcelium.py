@@ -70,12 +70,6 @@ class XceliumCellRun:
     native_log: str
 
     @property
-    def manifest(self) -> Path:
-        """Compatibility alias for the canonical artifact manifest path."""
-
-        return self.manifest_path
-
-    @property
     def evidence_output(self) -> str:
         """Combined simulator output available to owner-specific result parsers."""
 
@@ -94,12 +88,11 @@ def _resolve_contract(path: Path, *, project: Project) -> Path:
 def plan_xcelium_cell(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
 ) -> XceliumCellPlan:
     """Resolve a cell without finding or launching an external simulator."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract = _resolve_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() != "xcelium":
@@ -149,15 +142,14 @@ def plan_xcelium_cell(
 def run_xcelium_cell(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     xrun: Path | None = None,
     timeout: int = 600,
 ) -> XceliumCellRun:
     """Run one verification cell through an isolated artifact work directory."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     if artifact_root is not None:
         repository = repository.with_artifact_root(artifact_root)
     root = repository.project_root
@@ -313,12 +305,11 @@ def run_xcelium_cell(
 def plan_xcelium_verification_cell(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
 ):
     """Dispatch one typed Xcelium verification cell without flattening its mode."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract = _resolve_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() == "xcelium-ams":
@@ -331,15 +322,14 @@ def plan_xcelium_verification_cell(
 def run_xcelium_verification_cell(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     xrun: Path | None = None,
     timeout: int = 600,
 ):
     """Dispatch one typed Xcelium RTL or AMS execution adapter."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     if artifact_root is not None:
         repository = repository.with_artifact_root(artifact_root)
     contract = _resolve_contract(contract_path, project=repository)

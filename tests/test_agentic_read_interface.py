@@ -5,10 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import write_component_owner, write_project_context
+from conftest import (
+    write_component_owner,
+    write_fake_flow_extension,
+    write_project_context,
+)
 import sigilicon.domain.repository as repository_module
 from sigilicon.cli.agentic_read import main as agentic_read_cli_main
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
     CIRCUIT_TOPOLOGY_KIND,
@@ -25,7 +29,7 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.flow import FlowEngine, load_catalog_selection
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.project_flow import project_workflow_registry
 
 
 def write_read_only_flow_project(root: Path, owner: str = "example") -> Path:
@@ -82,10 +86,18 @@ offline = "configs/flows/profiles/offline.toml"
     relative_catalog = catalog.relative_to(root).as_posix()
     relative_flow = (flow_root / "pipeline.toml").relative_to(root).as_posix()
     relative_profile = (profile_root / "offline.toml").relative_to(root).as_posix()
+    extension = write_fake_flow_extension(root, owner)
     write_component_owner(
         root,
         owner,
-        filesets={"flow": (relative_catalog, relative_flow, relative_profile)},
+        filesets={
+            "flow": (
+                relative_catalog,
+                relative_flow,
+                relative_profile,
+                extension.relative_to(root).as_posix(),
+            )
+        },
     )
     return catalog
 
@@ -95,11 +107,10 @@ def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
 ) -> None:
     write_read_only_flow_project(tmp_path)
     interface = AgenticReadInterface.from_project_root(tmp_path)
-    assert interface.repository is interface.project
 
     with pytest.raises(ValueError, match="identity drift"):
         AgenticReadInterface(
-            RepositoryContext.from_project_root(tmp_path),
+            Project.from_project_root(tmp_path),
             "corrupt-identity",
         )
 
@@ -215,7 +226,9 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
         flow_id="pipeline",
         profile_id="offline",
     )
-    engine = FlowEngine(builtin_workflow_registry())
+    engine = FlowEngine(
+        project_workflow_registry(interface.project, owner_root)
+    )
     result = engine.run(
         engine.plan(selection.spec, "all", selection.profile),
         artifact_root=tmp_path / "artifacts",

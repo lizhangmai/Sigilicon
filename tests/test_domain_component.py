@@ -5,7 +5,6 @@ import pytest
 
 import sigilicon.domain.component as component_domain
 from sigilicon.domain.component import (
-    ComponentContract,
     load_component_contract,
     load_component_graph,
     resolve_component_contract,
@@ -44,23 +43,6 @@ python = ["ip/shared/library.py"]
     )
     with pytest.raises(TypeError):
         loaded.document["filesets"]["python"][0] = "changed.py"
-
-
-def test_component_contract_preserves_direct_construction_compatibility(
-    tmp_path: Path,
-) -> None:
-    contract = ComponentContract(
-        path=tmp_path / "ip/example/ip.toml",
-        project_root=tmp_path,
-        owner="example",
-        name="example",
-        kind="rtl-ip",
-        public_interface=None,
-        filesets={},
-        components=(),
-    )
-
-    assert contract.document == {}
 
 
 def test_component_graph_reuses_an_explicit_root_snapshot(
@@ -102,17 +84,6 @@ python = ["ip/shared/library.py"]
 
     assert graph == {"shared": root_contract}
     assert reads == []
-
-    legacy_root = replace(root_contract, document={})
-    graph = load_component_graph(
-        contract,
-        project_root=tmp_path,
-        root_contract=legacy_root,
-    )
-
-    assert graph["shared"] == root_contract
-    assert reads == [contract.resolve()]
-
 
 def test_component_graph_rejects_a_snapshot_from_another_root(
     tmp_path: Path,

@@ -103,23 +103,12 @@ def _optional_names(value: Any, field: str) -> tuple[str, ...]:
 def load_design_spec(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     platform: PlatformSnapshot | None = None,
     netlist_snapshot: NetlistSnapshot | None = None,
 ) -> DesignSpec:
     spec_path = path.resolve()
-    if project is None:
-        if project_root is None:
-            raise ValueError("project or project_root is required for a design spec")
-        repository = Project.from_project_root(project_root)
-    else:
-        repository = project
-        if (
-            project_root is not None
-            and project_root.resolve() != repository.project_root
-        ):
-            raise ValueError("project_root disagrees with the explicit project")
+    repository = project
     root = repository.project_root
     raw = _read_toml(spec_path)
     if repository.owner_for(spec_path) is not None:

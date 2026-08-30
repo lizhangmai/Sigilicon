@@ -187,7 +187,6 @@ def test_xcelium_run_reuses_project_and_writes_managed_artifact(
     assert result.run_id == "3" * 32
     assert result.run_dir == result.manifest_path.parent
     assert result.run_summary == result.run_dir / "outputs/summary.json"
-    assert result.manifest == result.manifest_path
     manifest = load_manifest(result.manifest_path)
     assert manifest["status"] == "succeeded"
     assert manifest["operation_id"] == "3" * 32

@@ -56,17 +56,16 @@ def _ip_catalog(project: Project) -> tuple[Path, Mapping[str, Any]]:
 
 
 def ip_catalog_contract_path(
-    root: Path | None,
+    project: Project,
     target: str,
     *,
-    project: Project | None = None,
     section: str = "targets",
 ) -> Path:
     """Resolve one release or component contract through the canonical IP catalog."""
 
     if section not in {"targets", "components"}:
         raise ValueError(f"unsupported IP catalog section: {section}")
-    repository = Project.bind(project=project, project_root=root)
+    repository = project
     _, raw = _ip_catalog(repository)
     entries = raw.get(section)
     if not isinstance(entries, Mapping):
@@ -92,9 +91,8 @@ def _producer_contract(
     release_inventory: Mapping[str, IpContract] | None = None,
 ) -> IpContract:
     path = ip_catalog_contract_path(
-        None,
+        contract.project,
         dependency_name,
-        project=contract.project,
         section="targets",
     )
     if release_inventory is None:
@@ -353,23 +351,20 @@ def _validate_variant_architecture(
 
 def _integration_project(
     *,
-    project: Project | None,
-    project_root: Path | None,
+    project: Project,
     artifact_root: Path | None,
 ) -> Project:
-    repository = Project.bind(project=project, project_root=project_root)
     return (
-        repository
+        project
         if artifact_root is None
-        else repository.with_artifact_root(artifact_root)
+        else project.with_artifact_root(artifact_root)
     )
 
 
 def plan_ip_integration(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
@@ -380,7 +375,6 @@ def plan_ip_integration(
 
     repository = _integration_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_integration_contract(contract_path, project=repository)
@@ -485,12 +479,11 @@ def plan_ip_integration_contract(
 def plan_ip_integration_fileset(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     variant_name: str,
     fileset_name: str | None = None,
 ) -> dict[str, Any]:
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     contract = load_ip_integration_contract(contract_path, project=repository)
     variant = contract.get_variant(variant_name)
     fileset = variant.get_fileset(fileset_name)
@@ -593,8 +586,7 @@ def _selected_lock(
 def check_ip_integration(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
@@ -604,7 +596,6 @@ def check_ip_integration(
 
     repository = _integration_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_integration_contract(contract_path, project=repository)
@@ -739,8 +730,7 @@ def check_ip_integration(
 def resolve_ip_dependency_role(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     dependency_name: str,
     role: str,
@@ -748,7 +738,6 @@ def resolve_ip_dependency_role(
 ) -> Path:
     repository = _integration_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     contract = load_ip_integration_contract(contract_path, project=repository)
@@ -783,8 +772,7 @@ def resolve_ip_dependency_role(
 def resolve_ip_integration_fileset(
     contract_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     artifact_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
@@ -794,7 +782,6 @@ def resolve_ip_integration_fileset(
 
     repository = _integration_project(
         project=project,
-        project_root=project_root,
         artifact_root=artifact_root,
     )
     result = check_ip_integration(

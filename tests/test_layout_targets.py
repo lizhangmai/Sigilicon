@@ -8,7 +8,6 @@ import pytest
 from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
-from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
 
 from conftest import write_component_owner
 
@@ -62,7 +61,7 @@ def test_layout_target_catalog_can_start_empty(tmp_path: Path) -> None:
         },
     )
 
-    catalog = load_layout_target_catalog(tmp_path)
+    catalog = load_layout_target_catalog(Project.from_project_root(tmp_path))
 
     assert catalog.paths == ((flows / "layout_targets.toml").resolve(),)
     assert catalog.targets == ()
@@ -86,7 +85,7 @@ def test_layout_target_catalog_is_an_optional_project_domain(
     assert capsys.readouterr().out == "[]\n"
 
 
-def test_layout_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
+def test_layout_target_catalog_binds_explicit_project(tmp_path: Path) -> None:
     _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
 
@@ -94,9 +93,6 @@ def test_layout_target_catalog_reuses_explicit_project(tmp_path: Path) -> None:
 
     assert catalog.project is project
     assert catalog.project_root == tmp_path
-
-    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
-        load_layout_target_catalog(tmp_path / "other", project=project)
 
 
 def test_layout_target_loader_reads_its_catalog_once(
@@ -143,7 +139,7 @@ def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="catalog contains unknown fields"):
-        load_layout_target_catalog(tmp_path)
+        load_layout_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         source.replace(
@@ -153,7 +149,7 @@ def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="targets.leaf contains unknown fields"):
-        load_layout_target_catalog(tmp_path)
+        load_layout_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_layout_catalog_rejects_unsafe_specs_and_invalid_actions(tmp_path: Path) -> None:
@@ -174,7 +170,7 @@ actions = ["check"]
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="canonical project-relative path"):
-        load_layout_target_catalog(tmp_path)
+        load_layout_target_catalog(Project.from_project_root(tmp_path))
 
     catalog_path.write_text(
         '''
@@ -191,7 +187,7 @@ actions = ["check", "publish"]
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="must contain only"):
-        load_layout_target_catalog(tmp_path)
+        load_layout_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_layout_catalog_cannot_route_to_another_owner_spec(
@@ -212,7 +208,7 @@ def test_layout_catalog_cannot_route_to_another_owner_spec(
     )
 
     with pytest.raises(ValueError, match="owner 'example' root"):
-        load_layout_target_catalog(tmp_path)
+        load_layout_target_catalog(Project.from_project_root(tmp_path))
 
 
 def test_layout_cli_lists_targets_without_opening_a_tool_client(
@@ -250,7 +246,7 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
         "from_file",
         classmethod(lambda cls, path: canonical_project),
     )
-    events: list[tuple[str, ProjectLayoutWorkflow, object | None]] = []
+    events: list[tuple[str, Project, object | None]] = []
     plan = type("Plan", (), {"canonical_json": lambda self: '{"plan":true}\n'})()
     layout_spec = type(
         "LayoutSpec",
@@ -274,44 +270,45 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
     )()
     client = object()
 
-    def preview(workflow: ProjectLayoutWorkflow, path: Path) -> object:
+    def preview(path: Path, *, project: Project) -> object:
         assert path == spec
-        events.append(("check", workflow, None))
+        events.append(("check", project, None))
         return type("Preview", (), {"plan": plan})()
 
     def generate(
-        workflow: ProjectLayoutWorkflow,
         path: Path,
         oa_client: object,
         *,
+        project: Project,
         timeout: int,
     ) -> tuple[object, object]:
         assert path == spec
         assert oa_client is client
         assert timeout == 91
-        events.append(("generate", workflow, oa_client))
+        events.append(("generate", project, oa_client))
         return layout_spec, generation
 
-    def verify(
-        workflow: ProjectLayoutWorkflow,
+    def verify_set(
         path: Path,
         oa_client: object,
         *,
+        project: Project,
         checks: tuple[str, ...],
         xstream_timeout: int,
         calibre_timeout: int,
     ) -> tuple[tuple[object, object], ...]:
         assert path == spec
         assert oa_client is client
+        assert project is canonical_project
         assert checks == ("lvs",)
         assert xstream_timeout == 92
         assert calibre_timeout == 93
-        events.append(("verify", workflow, oa_client))
+        events.append(("verify", canonical_project, oa_client))
         return ((layout_spec, verification),)
 
-    monkeypatch.setattr(ProjectLayoutWorkflow, "plan", preview)
-    monkeypatch.setattr(ProjectLayoutWorkflow, "generate", generate)
-    monkeypatch.setattr(ProjectLayoutWorkflow, "verify", verify)
+    monkeypatch.setattr(flow_cli, "plan_layout_spec", preview)
+    monkeypatch.setattr(flow_cli, "execute_layout_generation_spec", generate)
+    monkeypatch.setattr(flow_cli, "execute_layout_verification_set", verify_set)
 
     assert (
         flow_cli.main(
@@ -345,13 +342,13 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
         == 0
     )
 
-    assert [kind for kind, _workflow, _client in events] == [
+    assert [kind for kind, _project, _client in events] == [
         "check",
         "generate",
         "verify",
     ]
     assert all(
-        workflow.project is canonical_project for _kind, workflow, _client in events
+        project is canonical_project for _kind, project, _client in events
     )
     output = capsys.readouterr().out
     assert '{"plan":true}\n' in output

@@ -659,8 +659,7 @@ def _plan_views(
 def plan_oa_library_rebuild(
     manifest_path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     library: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
@@ -673,7 +672,6 @@ def plan_oa_library_rebuild(
         source = load_oa_library_source(
             resolved_manifest,
             project=project,
-            project_root=project_root,
         )
     else:
         try:
@@ -685,7 +683,6 @@ def plan_oa_library_rebuild(
         source = resolve_oa_library_source(
             resolved_manifest,
             project=project,
-            project_root=project_root,
             snapshot=source_snapshot,
         )
     target_library = library or source.name

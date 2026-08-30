@@ -170,14 +170,13 @@ def _modes(value: object, field: str) -> tuple[DesignMode, ...]:
 
 
 def load_design_target_catalog(
-    project_root: Path | None = None,
+    project: Project,
     *,
-    project: Project | None = None,
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
 ) -> DesignTargetCatalog:
     """Load every selected design target catalog, or an empty optional domain."""
 
-    repository = Project.bind(project=project, project_root=project_root)
+    repository = project
     root = repository.project_root
     catalogs = repository.flow_catalog_snapshots(
         "design_targets",

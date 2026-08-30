@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
@@ -30,6 +30,109 @@ from sigilicon.workflows.source_control import artifact_source_state
 
 
 @dataclass(frozen=True)
+class OAMaestroEvidence:
+    """Evaluated evidence from one completed native Maestro result."""
+
+    status: Literal["pass", "fail", "not_evaluated", "inconclusive"]
+    sources: tuple[str, ...]
+    overall_spec_status: object
+    per_output_spec_status: tuple[str, ...]
+    diagnostic_passed: bool | None
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "pass"
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "passed": self.passed,
+            "sources": list(self.sources),
+            "overall_spec_status": self.overall_spec_status,
+            "per_output_spec_status": list(self.per_output_spec_status),
+            "diagnostic_passed": self.diagnostic_passed,
+        }
+
+
+def _spec_status(value: object) -> Literal[
+    "pass", "fail", "not_evaluated", "inconclusive"
+]:
+    if value is None:
+        return "not_evaluated"
+    if isinstance(value, bool):
+        return "pass" if value else "fail"
+    token = str(value).strip().lower()
+    compact = "".join(token.replace('"', "").split())
+    if compact in {"t", "true", "pass", "passed", "((overallt))"}:
+        return "pass"
+    if compact in {"false", "fail", "failed", "((overallnil))"}:
+        return "fail"
+    if compact in {"", "nil", "none", "undefined", "not_evaluated"}:
+        return "not_evaluated"
+    return "inconclusive"
+
+
+def evaluate_oa_maestro_evidence(
+    *,
+    overall_spec_status: object,
+    per_output_spec_status: tuple[str, ...],
+    diagnostic_equivalence: Mapping[str, object] | None,
+) -> OAMaestroEvidence:
+    """Evaluate official Maestro and owner diagnostic results without guessing."""
+
+    overall = _spec_status(overall_spec_status)
+    outputs = tuple(_spec_status(value) for value in per_output_spec_status)
+    diagnostic_value = (
+        None
+        if diagnostic_equivalence is None
+        else diagnostic_equivalence.get("passed")
+    )
+    diagnostic_passed = (
+        diagnostic_value if isinstance(diagnostic_value, bool) else None
+    )
+    diagnostic_inconclusive = (
+        diagnostic_equivalence is not None and diagnostic_passed is None
+    )
+
+    failed_sources: list[str] = []
+    if overall == "fail":
+        failed_sources.append("maestro-overall")
+    if "fail" in outputs:
+        failed_sources.append("maestro-outputs")
+    if diagnostic_passed is False:
+        failed_sources.append("native-diagnostic")
+    if failed_sources:
+        status = "fail"
+        sources = tuple(failed_sources)
+    elif diagnostic_inconclusive:
+        status = "inconclusive"
+        sources = ("native-diagnostic",)
+    elif diagnostic_passed is True:
+        status = "pass"
+        sources = ("native-diagnostic",)
+    elif outputs and all(value == "pass" for value in outputs):
+        status = "pass"
+        sources = ("maestro-outputs",)
+    elif overall == "inconclusive":
+        status = "inconclusive"
+        sources = ("maestro-overall",)
+    elif "inconclusive" in outputs or "pass" in outputs:
+        status = "inconclusive"
+        sources = ("maestro-outputs",)
+    else:
+        status = "not_evaluated"
+        sources = ()
+
+    return OAMaestroEvidence(
+        status=status,
+        sources=sources,
+        overall_spec_status=overall_spec_status,
+        per_output_spec_status=per_output_spec_status,
+        diagnostic_passed=diagnostic_passed,
+    )
+
+
+@dataclass(frozen=True)
 class OAMaestroRunResult:
     """Completed managed OA Maestro run and its persistent result identity."""
 
@@ -44,6 +147,34 @@ class OAMaestroRunResult:
     normalized_result_database: Path
     run_summary: Path
     scalar_output_count: int
+    evidence: OAMaestroEvidence
+
+    @property
+    def passed(self) -> bool:
+        return self.evidence.passed
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the canonical CLI and owner-runner result envelope."""
+
+        return {
+            "passed": self.passed,
+            "execution": "oa-maestro",
+            "execution_status": "completed",
+            "evidence_status": self.evidence.status,
+            "evidence": self.evidence.as_dict(),
+            "library": self.library,
+            "testbench": self.testbench,
+            "history": self.history,
+            "run_id": self.run_id,
+            "run_dir": str(self.run_dir),
+            "manifest": str(self.manifest_path),
+            "elaborated_netlist": str(self.elaborated_netlist),
+            "result_database_export": str(self.result_database_export),
+            "normalized_result_database": str(self.normalized_result_database),
+            "run_summary": str(self.run_summary),
+            "scalar_output_count": self.scalar_output_count,
+            "product_qualification_conclusion": False,
+        }
 
 
 def _elaborated_netlist(work_dir: Path, history: str) -> Path:
@@ -134,6 +265,8 @@ def _run_native_oa_maestro_testbench(
             ),
             details={
                 "history": result.history,
+                "execution_status": "completed",
+                "evidence_status": result.evidence.status,
                 "elaborated_netlist": str(
                     result.elaborated_netlist.relative_to(result.run_dir)
                 ),
@@ -308,6 +441,14 @@ def _run_native_oa_maestro_testbench_impl(
             record.paths.role("work"),
             label="native Maestro work directory",
         )
+        per_output_spec_status = tuple(
+            str(output["spec_status"]) for output in parsed_results["outputs"]
+        )
+        evidence = evaluate_oa_maestro_evidence(
+            overall_spec_status=parsed_results["overall_spec_status"],
+            per_output_spec_status=per_output_spec_status,
+            diagnostic_equivalence=diagnostic_equivalence,
+        )
         run_summary = record.write_json(
             "outputs",
             ("run-summary.json",),
@@ -360,6 +501,10 @@ def _run_native_oa_maestro_testbench_impl(
                 "rdb_identity": parsed_results["identity"],
                 "overall_spec_status": parsed_results["overall_spec_status"],
                 "simulation_completed": True,
+                "execution_status": "completed",
+                "evidence_status": evidence.status,
+                "evidence": evidence.as_dict(),
+                "passed": evidence.passed,
                 "product_qualification_conclusion": False,
             },
         )
@@ -376,6 +521,7 @@ def _run_native_oa_maestro_testbench_impl(
         normalized_result_database=parsed,
         run_summary=run_summary,
         scalar_output_count=int(parsed_results["expression_count"]),
+        evidence=evidence,
     )
 
 
@@ -491,8 +637,7 @@ def run_oa_maestro_testbench(
 def run_named_oa_maestro_testbench(
     manifest: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     library: str,
     testbench: str,
     client: Any,
@@ -500,10 +645,9 @@ def run_named_oa_maestro_testbench(
 ) -> OAMaestroRunResult:
     """Resolve and run one testbench through its source assembly contract."""
 
-    repository = Project.bind(project=project, project_root=project_root)
     plan = plan_oa_library_rebuild(
         manifest,
-        project=repository,
+        project=project,
         library=library,
     )
     matches = [step for step in plan.testbenches if step.cell == testbench]

@@ -84,7 +84,7 @@ def test_invalid_manifest_is_reported_as_blocked_without_artifact_write(
     )
     report = check_oa_library(
         tmp_path / "missing-oa.toml",
-        project_root=tmp_path,
+        project=Project.from_project_root(tmp_path),
         library="fixture_lib",
         client=SimpleNamespace(),
     )

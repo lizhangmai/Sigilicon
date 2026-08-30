@@ -26,7 +26,7 @@ from sigilicon.flow import (
 from sigilicon.flow.model import SourceMember
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.builtin import build_flow_registry
 
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
@@ -63,8 +63,8 @@ def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
 
 
 def project_workflow_registry(
-    project: Project | Path | str,
-    owner_root: Path | str | None,
+    project: Project,
+    owner_root: Path,
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
 
@@ -72,20 +72,14 @@ def project_workflow_registry(
     proves that source belongs to the selected owner and its ``flow`` fileset.
     """
 
-    if owner_root is None:
-        return builtin_workflow_registry()
-    repository = (
-        project
-        if isinstance(project, Project)
-        else Project.from_project_root(project)
-    )
+    repository = project
     selected_root = Path(owner_root).resolve()
     owner = repository.require_owner(selected_root)
     if owner.root != selected_root:
         raise ValueError(
             f"Flow owner root must equal its cataloged root: {owner.root}"
         )
-    registry = builtin_workflow_registry()
+    registry = build_flow_registry()
     source = repository.flow_registry_extension(owner)
     if source is None:
         return registry
@@ -142,51 +136,12 @@ def project_workflow_registry(
     return registry
 
 
-def project_workflow_registry_for_owner_root(owner_root: Path | str) -> FlowRegistry:
-    """Assemble the project containing an explicit owner root.
-
-    A loose standalone owner directory remains supported when it is itself a
-    minimal project root with no cataloged components. Discovery never consults
-    cwd, so a neighboring project cannot silently select the wrong assembly.
-    """
-
-    binding = project_owner_binding_for_root(owner_root)
-    if binding is not None:
-        repository, owner = binding
-        return project_workflow_registry(repository, owner.root)
-    selected_root = Path(owner_root).resolve()
-    return builtin_workflow_registry()
-
-
-def project_owner_binding_for_root(
-    owner_root: Path | str,
-) -> tuple[Project, RepositoryOwner] | None:
-    """Resolve an explicit owner root without consulting the current directory."""
-
-    selected_root = Path(owner_root).resolve()
-    for candidate in (selected_root, *selected_root.parents):
-        if not (candidate / "sigilicon.toml").is_file():
-            continue
-        repository = Project.from_project_root(candidate)
-        owner = repository.owner_for(selected_root)
-        if candidate == selected_root and owner is None:
-            return None
-        if owner is None or owner.root != selected_root:
-            raise ValueError(
-                f"owner root must equal a cataloged component root: {selected_root}"
-            )
-        return repository, owner
-    return None
-
-
 @dataclass(frozen=True)
 class ProjectFlowPlan:
     """One owner plan bound to its exact registry assembly."""
 
     engine: FlowEngine = field(repr=False, compare=False)
     plan: FlowPlan
-    project_root: Path | None = field(default=None, repr=False)
-    owner_root: Path | None = field(default=None, repr=False)
     _binding: object | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -211,7 +166,7 @@ class ProjectFlow:
     project: Project
     owner_name: str
     registry_factory: Callable[
-        [Project | Path | str, Path | str | None], FlowRegistry
+        [Project, Path], FlowRegistry
     ] = field(default=project_workflow_registry, repr=False, compare=False)
     _binding: object = field(default_factory=object, init=False, repr=False, compare=False)
 
@@ -219,33 +174,9 @@ class ProjectFlow:
         owner = self.project.owner(self.owner_name)
         object.__setattr__(self, "owner_name", owner.name)
 
-    @classmethod
-    def from_project_root(
-        cls,
-        project_root: Path | str,
-        *,
-        owner: str,
-    ) -> "ProjectFlow":
-        return cls(Project.from_project_root(project_root), owner)
-
-    @classmethod
-    def from_file(
-        cls,
-        project_contract: Path | str,
-        *,
-        owner: str,
-    ) -> "ProjectFlow":
-        return cls(Project.from_file(project_contract), owner)
-
     @property
     def owner(self) -> RepositoryOwner:
         return self.project.owner(self.owner_name)
-
-    @property
-    def repository(self) -> Project:
-        """Compatibility alias for callers predating the canonical Project name."""
-
-        return self.project
 
     @property
     def catalog_path(self) -> Path:
@@ -280,8 +211,6 @@ class ProjectFlow:
         return ProjectFlowPlan(
             engine,
             engine.plan(selection.spec, target, selection.profile),
-            self.project.project_root,
-            self.owner.root,
             self._binding,
         )
 
@@ -313,8 +242,6 @@ class ProjectFlow:
     def _require_owned_plan(self, planned: ProjectFlowPlan) -> None:
         if (
             planned.plan.spec.owner != self.owner.name
-            or planned.project_root != self.project.project_root
-            or planned.owner_root != self.owner.root
             or planned._binding is not self._binding
         ):
             raise ValueError(
@@ -326,6 +253,4 @@ __all__ = [
     "ProjectFlow",
     "ProjectFlowPlan",
     "project_workflow_registry",
-    "project_workflow_registry_for_owner_root",
-    "project_owner_binding_for_root",
 ]

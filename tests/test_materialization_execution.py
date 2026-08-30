@@ -69,7 +69,7 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     run,
 )
-from sigilicon.workflows.builtin import builtin_workflow_registry
+from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
     materialization_execution_facts,
@@ -550,7 +550,7 @@ def test_layout_content_accepts_only_zero_tape_padding_after_endlib() -> None:
 
 
 def test_builtin_registry_exposes_only_the_production_materializer() -> None:
-    registry = builtin_workflow_registry()
+    registry = build_flow_registry()
     contract = registry.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION)
 
     assert contract.adapters == (OA_XSTREAM_MATERIALIZATION_ADAPTER,)

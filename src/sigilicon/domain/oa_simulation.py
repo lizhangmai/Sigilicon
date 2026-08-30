@@ -21,7 +21,6 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
     load_native_diagnostic_processor,
-    load_owner_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
@@ -167,7 +166,6 @@ def _load_native_rdb_contract(
     *,
     project_root: Path,
     owner_root: Path,
-    default_diagnostic_processor: NativeDiagnosticProcessor | None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> OANativeRdbContract:
     """Load the source-owned native RDB identity audit model.
@@ -292,7 +290,7 @@ def _load_native_rdb_contract(
             )
         setup_model_identities = tuple(models)
 
-    diagnostic_processor = default_diagnostic_processor
+    diagnostic_processor: NativeDiagnosticProcessor | None = None
     processor_value = raw.get("diagnostic_processor")
     diagnostic_raw = raw.get("diagnostic_equivalence")
     if processor_value is not None:
@@ -508,7 +506,6 @@ def _load_native_oa_simulation_spec(
     owner_root: Path,
     raw: Mapping[str, Any],
     source_snapshot: TextSourceSnapshot,
-    default_diagnostic_processor: NativeDiagnosticProcessor | None,
     platform_snapshot: PlatformSnapshot | None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> OASimulationSpec:
@@ -583,7 +580,6 @@ def _load_native_oa_simulation_spec(
             rdb_contract_path,
             project_root=project_root,
             owner_root=owner_root,
-            default_diagnostic_processor=default_diagnostic_processor,
             architecture_source_documents=architecture_source_documents,
         )
         if rdb_contract_path.is_file()
@@ -618,25 +614,14 @@ def _load_native_oa_simulation_spec(
 def load_oa_simulation_spec(
     path: Path,
     *,
-    project: Project | None = None,
-    project_root: Path | None = None,
+    project: Project,
     platform: PlatformSnapshot | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OASimulationSpec:
     """Load only the source-owned schema-3 thin native simulation contract."""
 
     spec_path = path.resolve()
-    if project is None:
-        if project_root is None:
-            raise ValueError("project or project_root is required for an OA simulation spec")
-        context = Project.from_project_root(project_root)
-    else:
-        context = project
-        if (
-            project_root is not None
-            and project_root.resolve() != context.project_root
-        ):
-            raise ValueError("project_root disagrees with the explicit project")
+    context = project
     root = context.project_root
     if not spec_path.is_file() or not spec_path.is_relative_to(root):
         raise ValueError("OA simulation spec must be a project-owned file")
@@ -656,10 +641,6 @@ def load_oa_simulation_spec(
         owner_root=owner_root,
         raw=raw,
         source_snapshot=source_snapshot,
-        default_diagnostic_processor=load_owner_native_diagnostic_processor(
-            context,
-            owner_path=spec_path,
-        ),
         platform_snapshot=platform,
         architecture_source_documents=architecture_source_documents,
     )

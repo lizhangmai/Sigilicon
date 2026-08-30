@@ -1,4 +1,4 @@
-"""Internal XStream/Calibre adapter used by ``flow layout verify``."""
+"""Internal XStream/Calibre adapter used by ``sigilicon layout verify``."""
 
 from __future__ import annotations
 
@@ -10,14 +10,15 @@ from typing import Any
 from sigilicon.cli.common import die
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
-from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
+from sigilicon.workflows.layout_verification import execute_layout_verification_set
+from sigilicon.workflows.project import load_project
 
 
 def main(
     argv: Sequence[str] | None = None,
     *,
     client_factory: Callable[[], Any] = get_client,
-    workflow: ProjectLayoutWorkflow | None = None,
+    project: Any | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", type=Path, required=True)
@@ -25,17 +26,18 @@ def main(
     parser.add_argument("--xstream-timeout", type=int, default=120)
     parser.add_argument("--calibre-timeout", type=int, default=600)
     args = parser.parse_args(argv)
-    project_layout = (
-        workflow
-        if workflow is not None
-        else ProjectLayoutWorkflow.from_file(discover_project_contract(__file__))
+    canonical_project = (
+        project
+        if project is not None
+        else load_project(discover_project_contract(__file__))
     )
     checks = ("drc", "lvs") if args.check == "all" else (args.check,)
     try:
         client = client_factory()
-        results = project_layout.verify(
+        results = execute_layout_verification_set(
             args.spec,
             client,
+            project=canonical_project,
             checks=checks,
             xstream_timeout=args.xstream_timeout,
             calibre_timeout=args.calibre_timeout,

@@ -8,9 +8,9 @@
   更新 `CONTEXT.md`。架构事实优先由 source、类型、测试和 ADR 表达。
 - 公共 import namespace 是 `sigilicon`，实现采用 `src/sigilicon` layout。
 - 需要 owner、catalog 或 artifact inventory 的 domain loader 与 workflow 接收同一个显式
-  `Project`；只需路径和直接工具操作的窄接口接收显式 `ProjectContext`。兼容入口可接收
-  显式 project root，并只在最外层读取一次该 root 的项目 contract；只有 CLI 可从 cwd
-  发现 `sigilicon.toml`。
+  `Project`；只需路径和直接工具操作的窄接口接收显式 `ProjectContext`。最外层 composition
+  入口把显式 project root 解析成 `Project`，内部接口不接受 project root 代替 `Project`；
+  只有 CLI 可从 cwd 发现 `sigilicon.toml`。
 - `virtuoso_bridge` 只能由 `sigilicon.virtuoso` adapter 直接导入。顶层
   `import sigilicon` 和 CLI help 不得要求 Bridge 或 Virtuoso 可用。
 - 测试不得启动真实 EDA；需要 Bridge 的测试使用 fake client 或已有离线 helper。

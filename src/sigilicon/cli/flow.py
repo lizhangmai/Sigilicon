@@ -11,7 +11,6 @@ from typing import Any
 from sigilicon.cli.common import add_json_arg, die, emit_json
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
-from sigilicon.workflows import load_project
 from sigilicon.workflows.design_targets import (
     DesignTarget,
     execute_design_target,
@@ -32,8 +31,13 @@ from sigilicon.workflows.layout_targets import (
     LayoutTarget,
     load_layout_target_catalog,
 )
+from sigilicon.workflows.layout_generation import (
+    execute_layout_generation_spec,
+    plan_layout_spec,
+)
+from sigilicon.workflows.layout_verification import execute_layout_verification_set
 from sigilicon.workflows.oa_check import UnavailableBridge
-from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
+from sigilicon.workflows.project import load_project
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 
@@ -269,9 +273,8 @@ def _run_ip(args: argparse.Namespace, project: Any) -> int:
     if args.action == "integration":
         try:
             contract = ip_catalog_contract_path(
-                None,
+                project,
                 args.target,
-                project=project,
                 section="components",
             )
             if args.integration_action == "plan":
@@ -302,9 +305,8 @@ def _run_ip(args: argparse.Namespace, project: Any) -> int:
         return 0
     try:
         contract = ip_catalog_contract_path(
-            None,
+            project,
             args.target,
-            project=project,
         )
         operation = {
             "plan": plan_ip_release,
@@ -376,17 +378,17 @@ def _run_layout(
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"ERROR: {exc}")
 
-    workflow = ProjectLayoutWorkflow(project)
     try:
         if args.action == "check":
-            preview = workflow.plan(target.spec)
+            preview = plan_layout_spec(target.spec, project=project)
             print(preview.plan.canonical_json(), end="")
             return 0
         client = client_factory()
         if args.action == "generate":
-            spec, result = workflow.generate(
+            spec, result = execute_layout_generation_spec(
                 target.spec,
                 client,
+                project=project,
                 timeout=args.timeout,
             )
             print(
@@ -396,9 +398,10 @@ def _run_layout(
             print(f"[artifact] {result.manifest_path}")
             return 0
         checks = ("drc", "lvs") if args.check == "all" else (args.check,)
-        results = workflow.verify(
+        results = execute_layout_verification_set(
             target.spec,
             client,
+            project=project,
             checks=checks,
             xstream_timeout=args.xstream_timeout,
             calibre_timeout=args.calibre_timeout,
@@ -510,25 +513,7 @@ def _run_oa(
                     client=client,
                     timeout=args.timeout,
                 )
-                payload = {
-                    "passed": True,
-                    "library": result.library,
-                    "testbench": result.testbench,
-                    "history": result.history,
-                    "run_id": result.run_id,
-                    "run_dir": str(result.run_dir),
-                    "manifest": str(result.manifest_path),
-                    "elaborated_netlist": str(result.elaborated_netlist),
-                    "result_database_export": (
-                        str(result.result_database_export)
-                    ),
-                    "normalized_result_database": (
-                        str(result.normalized_result_database)
-                    ),
-                    "run_summary": str(result.run_summary),
-                    "scalar_output_count": result.scalar_output_count,
-                    "product_qualification_conclusion": False,
-                }
+                payload = result.as_dict()
             else:
                 payload = workflow.rebuild(
                     manifest,
@@ -571,7 +556,8 @@ def _run_oa(
         elif args.action == "simulate":
             print(
                 f"OA Maestro run completed: {payload['library']}/"
-                f"{payload['testbench']} history={payload['history']}"
+                f"{payload['testbench']} history={payload['history']} "
+                f"evidence={payload['evidence_status']}"
             )
             print(f"managed artifact: {payload['run_dir']}")
         else:

@@ -157,7 +157,7 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     contract, circuit = _ams_project(tmp_path)
     _patch_native_resolution(monkeypatch, root=tmp_path, circuit=circuit)
 
-    plan = plan_xcelium_ams_cell(contract, project_root=tmp_path)
+    plan = plan_xcelium_ams_cell(contract, project=Project.from_project_root(tmp_path))
 
     assert plan.native_cell == "NATIVE_TOP"
     assert plan.circuit_netlist == circuit
@@ -189,7 +189,7 @@ def test_xcelium_ams_plan_rejects_spectre_compile_input(
     )
 
     with pytest.raises(ValueError, match="locked release role"):
-        plan_xcelium_ams_cell(contract, project_root=tmp_path)
+        plan_xcelium_ams_cell(contract, project=Project.from_project_root(tmp_path))
 
 
 def test_xcelium_ams_run_stages_inputs_and_records_regression(
@@ -256,7 +256,7 @@ def test_xcelium_ams_run_fails_without_success_marker(
 
     result = run_xcelium_ams_cell(
         contract,
-        project_root=tmp_path,
+        project=Project.from_project_root(tmp_path),
         xrun=xrun,
     )
 

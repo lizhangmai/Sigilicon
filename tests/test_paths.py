@@ -12,7 +12,7 @@ from sigilicon.paths import (
     discover_project_context,
     validate_artifact_component,
 )
-from sigilicon.domain.repository import Project, RepositoryContext
+from sigilicon.domain.repository import Project
 
 from conftest import write_component_owner
 
@@ -164,7 +164,7 @@ def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
     )
 
     with pytest.raises(ValueError, match="component source escapes"):
-        RepositoryContext.from_project_root(tmp_path)
+        Project.from_project_root(tmp_path)
 
 
 def test_repository_context_rejects_unknown_catalog_roles(tmp_path: Path) -> None:
@@ -177,7 +177,7 @@ def test_repository_context_rejects_unknown_catalog_roles(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="unknown catalog roles.*unexpected"):
-        RepositoryContext.from_project_root(tmp_path)
+        Project.from_project_root(tmp_path)
 
 
 def test_repository_context_rejects_a_retired_catalog_domain(tmp_path: Path) -> None:
@@ -190,10 +190,10 @@ def test_repository_context_rejects_a_retired_catalog_domain(tmp_path: Path) -> 
     )
 
     with pytest.raises(ValueError, match="unknown catalog roles.*legacy"):
-        RepositoryContext.from_project_root(tmp_path)
+        Project.from_project_root(tmp_path)
 
 
-def test_project_is_the_single_manifest_parser_and_repository_compatibility_name(
+def test_project_is_the_single_manifest_parser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,7 +211,6 @@ def test_project_is_the_single_manifest_parser_and_repository_compatibility_name
 
     project = Project.from_project_root(tmp_path)
 
-    assert RepositoryContext is Project
     assert project.manifest_owner == "test"
     assert project.project_root == tmp_path.resolve()
     assert project.artifact_root == (tmp_path / "artifacts").resolve()
@@ -258,18 +257,6 @@ def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
         project.scope(replace(selected, root=(tmp_path / "ip").resolve()))
     with pytest.raises(TypeError):
         ProjectScope(scope.project, "bogus", tmp_path)
-
-
-def test_project_bind_reuses_identity_and_checks_legacy_root(tmp_path: Path) -> None:
-    write_component_owner(tmp_path, "example", filesets={})
-    project = Project.from_project_root(tmp_path)
-
-    assert Project.bind(project=project) is project
-    assert Project.bind(project=project, project_root=tmp_path) is project
-    with pytest.raises(ValueError, match="root disagrees with explicit Project"):
-        Project.bind(project=project, project_root=tmp_path / "other")
-    with pytest.raises(ValueError, match="explicit Project or project root"):
-        Project.bind()
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

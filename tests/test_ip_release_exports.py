@@ -425,7 +425,7 @@ def _native_oa_library_fixture(root: Path) -> SimpleNamespace:
 
 
 def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
 
     assert contract.name == "fixture-ip"
     assert contract.owner == "fixture"
@@ -447,7 +447,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     exported = contract.get_export("native-top")
     assert isinstance(exported.interface, OaNativeIpInterface)
 
@@ -572,7 +572,7 @@ capabilities = ["synthesis"]
 ''',
         encoding="utf-8",
     )
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
@@ -617,7 +617,7 @@ def test_native_oa_release_rejects_circuit_port_order_drift(
     tmp_path: Path,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     (tmp_path / "ip/native_fixture/sources/circuit.scs").write_text(
         "subckt NATIVE_TOP OUT IN\nends NATIVE_TOP\n",
         encoding="utf-8",
@@ -643,7 +643,7 @@ module = "forged"
 ''',
         encoding="utf-8",
     )
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
 
     with pytest.raises(
         ValueError, match="cannot declare digital transaction sections"
@@ -659,7 +659,7 @@ def test_native_oa_package_rejects_digital_interface_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
@@ -717,7 +717,7 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
@@ -771,7 +771,7 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _rtl_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     exported = contract.get_export("rtl-top")
     assert isinstance(exported.interface, RtlIpInterface)
     assert contract.oa_assembly is None
@@ -874,7 +874,7 @@ layout_view = "layout"
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="cannot declare an OA identity"):
-        load_ip_contract(rtl_path, project_root=tmp_path / "rtl-with-oa")
+        load_ip_contract(rtl_path, project=Project.from_project_root(tmp_path / "rtl-with-oa"))
 
     rtl_assembly_path = _rtl_contract_fixture(tmp_path / "rtl-assembly")
     rtl_assembly_path.write_text(
@@ -885,7 +885,7 @@ layout_view = "layout"
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="cannot declare source.oa_assembly"):
-        load_ip_contract(rtl_assembly_path, project_root=tmp_path / "rtl-assembly")
+        load_ip_contract(rtl_assembly_path, project=Project.from_project_root(tmp_path / "rtl-assembly"))
 
     oa_path = _contract_fixture(tmp_path / "oa-without-assembly")
     oa_path.write_text(
@@ -895,7 +895,7 @@ layout_view = "layout"
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="source.oa_assembly"):
-        load_ip_contract(oa_path, project_root=tmp_path / "oa-without-assembly")
+        load_ip_contract(oa_path, project=Project.from_project_root(tmp_path / "oa-without-assembly"))
 
 
 def test_rtl_release_variant_selects_its_declared_module(
@@ -933,7 +933,7 @@ source = "ip/rtl_fixture/rtl/top.sv"
         ip_packaging, "_source_control", lambda _root: ("b" * 40, False)
     )
 
-    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
     exported = contract.get_export("rtl-top")
     assert isinstance(exported.interface, RtlIpInterface)
     assert exported.interface.variant == "alternate"
@@ -973,7 +973,7 @@ def test_development_interface_check_reuses_contract_document(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
 
     def reject_reload(*_args, **_kwargs):
         raise AssertionError("interface contract was reloaded")
@@ -990,7 +990,7 @@ def test_development_interface_check_reuses_contract_document(
 def test_ip_contract_rejects_partial_or_mutable_interface_snapshots(
     tmp_path: Path,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
     left_path = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
     incomplete = replace(
         contract,
@@ -1061,41 +1061,24 @@ def test_ip_contract_rejects_partial_or_mutable_interface_snapshots(
         )
 
 
-def test_ip_contract_empty_interface_snapshot_uses_legacy_fallback(
+def test_ip_contract_rejects_an_incomplete_interface_snapshot(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
-    legacy = replace(contract, interface_documents=MappingProxyType({}))
-    assert resolve_ip_contract(
-        legacy.path,
-        project=legacy.project,
-        snapshot=legacy,
-    ) is legacy
-    reads = 0
-    original_load = ip_packaging.tomllib.load
-
-    def counted_load(stream):
-        nonlocal reads
-        reads += 1
-        return original_load(stream)
-
-    monkeypatch.setattr(ip_packaging.tomllib, "load", counted_load)
-
-    with pytest.raises(ValueError, match="physical_macro must be a table"):
-        ip_packaging._development_interface_check(
-            legacy,
-            legacy.get_export("left"),
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
+    incomplete = replace(contract, interface_documents=MappingProxyType({}))
+    with pytest.raises(ValueError, match="interface document identity drift"):
+        resolve_ip_contract(
+            incomplete.path,
+            project=incomplete.project,
+            snapshot=incomplete,
         )
-
-    assert reads == 1
 
 
 def test_project_configuration_reuses_ip_release_interface_documents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
     snapshot_paths = set(contract.interface_documents) | {contract.path}
     snapshot_reads: list[Path] = []
     original_read_toml = config_contracts.read_toml
@@ -1128,7 +1111,7 @@ def test_oa_port_contract_reuses_release_owned_design_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
     source = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
     document = freeze_toml_document(
         {
@@ -1191,7 +1174,7 @@ def test_oa_port_contract_reuses_release_owned_design_snapshot(
 def test_release_design_inventory_rejects_forged_oa_plan(
     tmp_path: Path,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
     oa_manifest = (tmp_path / "ip/fixture/configs/oa.toml").resolve()
     declared = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
     forged = (tmp_path / "ip/fixture/configs/right_interface.toml").resolve()
@@ -1224,7 +1207,7 @@ def test_release_consumers_reuse_the_contract_component_graph(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
 
     def reject_graph_reload(*_args, **_kwargs):
         raise AssertionError("release consumer reloaded the component graph")
@@ -1601,7 +1584,7 @@ def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="owner"):
-        load_ip_contract(contract_path, project_root=tmp_path)
+        load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
 
 
 def test_release_roles_are_unique_within_an_export_not_across_ip(
@@ -1650,7 +1633,7 @@ files = []
     )
 
     with pytest.raises(ValueError, match="exports"):
-        load_ip_contract(contract_path, project_root=tmp_path)
+        load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
 
 
 def test_release_maturity_is_not_a_qualification_compatibility_alias(
@@ -1665,7 +1648,7 @@ def test_release_maturity_is_not_a_qualification_compatibility_alias(
     )
 
     with pytest.raises(ValueError, match="maturity"):
-        load_ip_contract(contract_path, project_root=tmp_path)
+        load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
 
 
 def test_release_identity_cannot_alias_one_component_as_another_ip(
@@ -1680,4 +1663,4 @@ def test_release_identity_cannot_alias_one_component_as_another_ip(
     )
 
     with pytest.raises(ValueError, match="component identity"):
-        load_ip_contract(contract_path, project_root=tmp_path)
+        load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))

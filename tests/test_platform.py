@@ -22,7 +22,7 @@ from sigilicon.domain.platform import (
     resolve_platform_snapshot,
 )
 from sigilicon.domain.config_contracts import thaw_toml_document
-from sigilicon.domain.repository import RepositoryContext
+from sigilicon.domain.repository import Project
 
 
 def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
@@ -31,7 +31,7 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
     write_project_context(tmp_path)
     model = write_test_platform(tmp_path)
 
-    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
     assert platform.path == tmp_path / "configs/platform/testpdk/platform.toml"
     assert platform.simulation.default.file == model
@@ -57,7 +57,7 @@ def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
 def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     snapshot = load_platform(project, "testpdk")
 
     resolved = resolve_platform(project, "testpdk", snapshot=snapshot)
@@ -92,7 +92,7 @@ def test_platform_resolvers_reject_mutable_snapshot_documents(
 ) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     snapshot = load_platform(project, "testpdk")
     catalog = load_platform_catalog(project)
 
@@ -150,7 +150,7 @@ routing1_routing2 = "M2_M1c"
 ''',
         encoding="utf-8",
     )
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     snapshot = load_platform(project, "testpdk")
 
     with pytest.raises(ValueError, match="typed mapping identity drift"):
@@ -205,7 +205,7 @@ def test_operation_platform_inventory_uses_one_validated_platform_set(
 ) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     inventory = load_platform_inventory(project)
     platform = inventory["testpdk"]
 
@@ -280,18 +280,18 @@ def test_operation_platform_inventory_rejects_foreign_project_and_key(
     for root in (left, right):
         write_project_context(root)
         write_test_platform(root)
-    left_project = RepositoryContext.from_project_root(left)
+    left_project = Project.from_project_root(left)
     inventory = load_platform_inventory(left_project)
 
     with pytest.raises(ValueError, match="different operation"):
         resolve_platform_snapshot(
-            RepositoryContext.from_project_root(left),
+            Project.from_project_root(left),
             "testpdk",
             snapshot=inventory,
         )
     with pytest.raises(ValueError, match="different operation"):
         resolve_platform_snapshot(
-            RepositoryContext.from_project_root(right),
+            Project.from_project_root(right),
             "testpdk",
             snapshot=inventory,
         )
@@ -304,7 +304,7 @@ def test_resolve_platform_rejects_layout_content_and_file_drift(
 ) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     snapshot = load_platform(project, "testpdk")
     assert snapshot.layout is not None
 
@@ -340,7 +340,7 @@ def test_load_platform_reuses_one_project_owned_catalog_snapshot(
 ) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     catalog = load_platform_catalog(project)
 
     platform = load_platform(project, "testpdk", catalog=catalog)
@@ -356,8 +356,8 @@ def test_load_platform_rejects_another_project_catalog_snapshot(
     for root in (left, right):
         write_project_context(root)
         write_test_platform(root)
-    left_project = RepositoryContext.from_project_root(left)
-    right_project = RepositoryContext.from_project_root(right)
+    left_project = Project.from_project_root(left)
+    right_project = Project.from_project_root(right)
     catalog = load_platform_catalog(left_project)
 
     with pytest.raises(ValueError, match="different project"):
@@ -371,13 +371,13 @@ def test_resolve_platform_rejects_another_project_catalog(tmp_path: Path) -> Non
         write_project_context(root)
         write_test_platform(root)
     snapshot = load_platform(
-        RepositoryContext.from_project_root(left),
+        Project.from_project_root(left),
         "testpdk",
     )
 
     with pytest.raises(ValueError, match="different project catalog"):
         resolve_platform(
-            RepositoryContext.from_project_root(right),
+            Project.from_project_root(right),
             "testpdk",
             snapshot=snapshot,
         )
@@ -386,7 +386,7 @@ def test_resolve_platform_rejects_another_project_catalog(tmp_path: Path) -> Non
 def test_resolve_platform_rejects_a_different_key(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
     snapshot = load_platform(project, "testpdk")
 
     with pytest.raises(ValueError, match="disagrees with requested key"):
@@ -403,7 +403,7 @@ def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*model_sects"):
-        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.from_project_root(tmp_path), "testpdk")
 
 
 def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
@@ -416,7 +416,7 @@ def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*primitive_masters"):
-        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.from_project_root(tmp_path), "testpdk")
 
 
 def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> None:
@@ -430,7 +430,7 @@ def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
     assert platform.layout is not None
     assert platform.layout.qrc_tech_file is None
@@ -459,7 +459,7 @@ routing1_routing2 = "M2_M1c"
         encoding="utf-8",
     )
 
-    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
     assert platform.layout is not None
     mapping = platform.layout.oa_materialization
@@ -480,7 +480,7 @@ def test_platform_layout_rejects_owner_specific_technology_roles(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*technology"):
-        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.from_project_root(tmp_path), "testpdk")
 
 
 def test_verification_contract_rejects_owner_drc_policy(tmp_path: Path) -> None:
@@ -494,7 +494,7 @@ def test_verification_contract_rejects_owner_drc_policy(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*drc_profile"):
-        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.from_project_root(tmp_path), "testpdk")
 
 
 def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> None:
@@ -510,7 +510,7 @@ def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> Non
     manifest = tmp_path / "configs/platform/custom/platform.toml"
     manifest.rename(manifest.with_name("platform-contract.toml"))
 
-    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "custom")
+    platform = load_platform(Project.from_project_root(tmp_path), "custom")
 
     assert platform.path.name == "platform-contract.toml"
 
@@ -526,7 +526,7 @@ def test_standalone_platform_lookup_ignores_invalid_unselected_entries(
         + 'other = "../outside.toml"\n',
         encoding="utf-8",
     )
-    project = RepositoryContext.from_project_root(tmp_path)
+    project = Project.from_project_root(tmp_path)
 
     platform = load_platform(project, "testpdk")
 
@@ -562,7 +562,7 @@ package_root = "testpdk"
     )
     monkeypatch.setenv("TEST_PDK_ROOT", str(installation))
 
-    platform = load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
     assert platform.asset_root == package
     assert platform.simulation.default.file == model
@@ -583,4 +583,4 @@ def test_platform_contract_owners_must_match_the_manifest(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="owner must be 'test-platform'"):
-        load_platform(RepositoryContext.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.from_project_root(tmp_path), "testpdk")

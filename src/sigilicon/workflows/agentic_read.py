@@ -29,6 +29,7 @@ from sigilicon.flow import (
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
+    ProjectFlowPlan,
     project_workflow_registry,
 )
 from sigilicon.workflows.design_artifacts import DesignArtifactInterface
@@ -89,15 +90,6 @@ def _public_value(value: Any, *, field: str | None = None) -> Any:
 
 
 @dataclass(frozen=True)
-class ResolvedAgenticFlowPlan:
-    """Compatibility view of a ProjectFlow plan for agentic workflows."""
-
-    engine: FlowEngine
-    plan: FlowPlan
-    plan_identity: str
-
-
-@dataclass(frozen=True)
 class ResolvedAgenticCampaignPlan:
     engine: FlowEngine
     campaign: DesignCampaign
@@ -128,12 +120,6 @@ class AgenticReadInterface:
     @property
     def project_resource_uri(self) -> str:
         return f"sigilicon://project/{self.project_id}"
-
-    @property
-    def repository(self) -> Project:
-        """Compatibility alias for callers predating the canonical Project name."""
-
-        return self.project
 
     def owner_resource_uri(self, owner: str) -> str:
         selected = self._owner(owner)
@@ -254,7 +240,7 @@ class AgenticReadInterface:
         flow: str,
         target: str,
         profile: str | None,
-    ) -> ResolvedAgenticFlowPlan:
+    ) -> ProjectFlowPlan:
         """Resolve one exact catalog plan for peer application Interfaces."""
 
         flow_name = identifier(flow, "Flow identity")
@@ -273,18 +259,14 @@ class AgenticReadInterface:
             target=target_name,
             profile=profile_name,
         )
-        return ResolvedAgenticFlowPlan(
-            planned.engine,
-            planned.plan,
-            planned.plan_identity,
-        )
+        return planned
 
-    def resolve_plan_identity(self, plan_identity: str) -> ResolvedAgenticFlowPlan:
+    def resolve_plan_identity(self, plan_identity: str) -> ProjectFlowPlan:
         """Recompile project catalogs and find one uniquely matching Plan identity."""
 
         if not isinstance(plan_identity, str) or not plan_identity:
             raise ValueError("Flow Plan identity must be non-empty text")
-        matches: list[ResolvedAgenticFlowPlan] = []
+        matches: list[ProjectFlowPlan] = []
         combinations = 0
         for owner in self.project.owners:
             snapshots = self._flow_catalog_snapshots(owner)
@@ -322,11 +304,7 @@ class AgenticReadInterface:
                             # available. They cannot match a plan compiled by
                             # this server's current owner registry.
                             continue
-                        resolved = ResolvedAgenticFlowPlan(
-                            engine,
-                            plan,
-                            engine.plan_id(plan),
-                        )
+                        resolved = ProjectFlowPlan(engine, plan)
                         if resolved.plan_identity == plan_identity:
                             matches.append(resolved)
         if len(matches) != 1:
@@ -780,5 +758,4 @@ __all__ = [
     "AgenticReadInterface",
     "READ_RESULT_KIND",
     "ResolvedAgenticCampaignPlan",
-    "ResolvedAgenticFlowPlan",
 ]

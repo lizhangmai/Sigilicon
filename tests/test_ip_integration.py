@@ -242,9 +242,12 @@ def _select_rtl_dependency(contract: Path) -> None:
         '''[component.release]
 export = "macro"
 required_maturity = "development"
-logical_interface = "fixture_model:transaction-1-port"
-physical_interface = "fixture_macro:oa-1-pin"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+
+[component.release.interface]
+kind = "oa-mixed-signal"
+logical = "fixture_model:transaction-1-port"
+physical = "fixture_macro:oa-1-pin"
 
 [component.release.role_modules]
 transaction_model = "fixture_model"
@@ -292,9 +295,12 @@ def _select_native_oa_dependency(
         '''[component.release]
 export = "macro"
 required_maturity = "development"
-logical_interface = "fixture_model:transaction-1-port"
-physical_interface = "fixture_macro:oa-1-pin"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+
+[component.release.interface]
+kind = "oa-mixed-signal"
+logical = "fixture_model:transaction-1-port"
+physical = "fixture_macro:oa-1-pin"
 
 [component.release.role_modules]
 transaction_model = "fixture_model"
@@ -323,6 +329,7 @@ layout_view = "layout"
         'fixture-ip = ["circuit_netlist"]',
     ).replace(
         '''[physical_binding]
+kind = "oa-mixed-signal"
 dependency = "fixture-ip"
 transaction_module = "fixture_model"
 physical_shell_module = "fixture_shell"
@@ -461,6 +468,7 @@ required_capability = "simulation"
 fixture-ip = ["transaction_model"]
 
 [physical_binding]
+kind = "oa-mixed-signal"
 dependency = "fixture-ip"
 transaction_module = "fixture_model"
 physical_shell_module = "fixture_shell"
@@ -505,9 +513,12 @@ contract = "ip/fixture/configs/ip.toml"
 [component.release]
 export = "macro"
 required_maturity = "development"
-logical_interface = "fixture_model:transaction-1-port"
-physical_interface = "fixture_macro:oa-1-pin"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+
+[component.release.interface]
+kind = "oa-mixed-signal"
+logical = "fixture_model:transaction-1-port"
+physical = "fixture_macro:oa-1-pin"
 
 [component.release.role_modules]
 transaction_model = "fixture_model"
@@ -717,7 +728,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
 
     result = check_ip_integration(
         contract,
-        project_root=project_root,
+        project=Project.from_project_root(project_root),
         artifact_root=artifact_root,
         variant_name="default",
     )
@@ -738,7 +749,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
 
     resolved = resolve_ip_integration_fileset(
         contract,
-        project_root=project_root,
+        project=Project.from_project_root(project_root),
         artifact_root=artifact_root,
         variant_name="default",
     )
@@ -762,7 +773,7 @@ def test_architecture_validator_reuses_variant_source_document(
     )
     contract = load_ip_integration_contract(
         contract_path,
-        project_root=project_root,
+        project=Project.from_project_root(project_root),
     )
     monkeypatch.setattr(
         ip_integration.tomllib,
@@ -877,13 +888,13 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
 
     plan = plan_ip_integration(
         contract,
-        project_root=project_root,
+        project=Project.from_project_root(project_root),
         artifact_root=tmp_path / "artifacts",
     )
 
     result = check_ip_integration(
         contract,
-        project_root=project_root,
+        project=Project.from_project_root(project_root),
         artifact_root=tmp_path / "artifacts",
         variant_name="default",
     )
@@ -1224,7 +1235,7 @@ def test_native_oa_release_dependency_rejects_mixed_interface_fields(
     )
 
     with pytest.raises(ValueError, match=message):
-        load_ip_integration_contract(contract_path, project_root=project_root)
+        load_ip_integration_contract(contract_path, project=Project.from_project_root(project_root))
 
 
 def test_native_oa_release_dependency_rejects_role_modules(
@@ -1250,7 +1261,7 @@ def test_native_oa_release_dependency_rejects_role_modules(
     )
 
     with pytest.raises(ValueError, match="role_modules.*oa-native"):
-        load_ip_integration_contract(contract_path, project_root=project_root)
+        load_ip_integration_contract(contract_path, project=Project.from_project_root(project_root))
 
 
 def test_native_oa_binding_rejects_transaction_shell_fields(
@@ -1276,7 +1287,7 @@ def test_native_oa_binding_rejects_transaction_shell_fields(
     )
 
     with pytest.raises(ValueError, match="native OA physical binding fields"):
-        load_ip_integration_contract(contract_path, project_root=project_root)
+        load_ip_integration_contract(contract_path, project=Project.from_project_root(project_root))
 
 
 @pytest.mark.parametrize(
@@ -1346,20 +1357,20 @@ def test_native_oa_locked_release_retains_fail_closed_safeguards(
     with pytest.raises((RuntimeError, ValueError), match=message):
         check_ip_integration(
             contract_path,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )
 
 
-def test_tagged_release_dependency_rejects_mixed_or_unknown_fields(
+def test_release_dependency_rejects_unknown_fields(
     tmp_path: Path,
 ) -> None:
     for name, replacement, error in (
         (
-            "mixed",
+            "release-unknown",
             'roles = ["rtl_source"]\nlogical_interface = "forged"',
-            "cannot mix tagged and legacy",
+            "release fields are invalid",
         ),
         (
             "unknown",
@@ -1373,7 +1384,7 @@ def test_tagged_release_dependency_rejects_mixed_or_unknown_fields(
         _select_rtl_dependency(contract_path)
         marker = (
             'roles = ["rtl_source"]'
-            if name == "mixed"
+            if name == "release-unknown"
             else 'module = "fixture_rtl"'
         )
         contract_path.write_text(
@@ -1385,32 +1396,19 @@ def test_tagged_release_dependency_rejects_mixed_or_unknown_fields(
         with pytest.raises(ValueError, match=error):
             load_ip_integration_contract(
                 contract_path,
-                project_root=root / "project",
+                project=Project.from_project_root(root / "project"),
             )
 
 
-def test_tagged_oa_release_dependency_matches_legacy_identity(
+def test_oa_mixed_signal_release_dependency_has_typed_identity(
     tmp_path: Path,
 ) -> None:
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
     contract_path = _write_ip_fixture(tmp_path / "project", release_id, manifest)
-    source = contract_path.read_text(encoding="utf-8")
-    source = source.replace(
-        'logical_interface = "fixture_model:transaction-1-port"\n'
-        'physical_interface = "fixture_macro:oa-1-pin"\n'
-        'roles = ["transaction_model", "integration_adapter", "physical_blackbox"]',
-        'roles = ["transaction_model", "integration_adapter", "physical_blackbox"]\n\n'
-        '[component.release.interface]\n'
-        'kind = "oa-mixed-signal"\n'
-        'logical = "fixture_model:transaction-1-port"\n'
-        'physical = "fixture_macro:oa-1-pin"',
-    )
-    contract_path.write_text(source, encoding="utf-8")
-
     contract = load_ip_integration_contract(
         contract_path,
-        project_root=tmp_path / "project",
+        project=Project.from_project_root(tmp_path / "project"),
     )
     release = contract.release_dependencies[0].release
     assert release is not None
@@ -1574,7 +1572,7 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
 
     def tracked_loader(path: Path, *, project_root: Path):
         reads.append(path.resolve())
-        return original_loader(path, project_root=project_root)
+        return original_loader(path, project=Project.from_project_root(project_root))
 
     monkeypatch.setattr(component_domain, "load_component_contract", tracked_loader)
 
@@ -1646,25 +1644,7 @@ def test_ip_integration_contract_preserves_its_validated_component_graph(
     assert project_root / "ip/leaf/rtl/leaf.sv" in allowed
     assert reads == []
 
-    owner = project.owner("composite")
-    legacy_component = replace(owner.component, document={})
-    legacy_project = replace(
-        project,
-        owners=tuple(
-            replace(item, component=legacy_component)
-            if item is owner
-            else item
-            for item in project.owners
-        ),
-    )
-
-    legacy_contract = load_ip_integration_contract(
-        contract_path,
-        project=legacy_project,
-    )
-
-    assert legacy_contract.get_variant("default").name == "default"
-    assert root_reads == 2
+    assert root_reads == 1
 
 
 def test_configuration_scanner_reuses_ip_integration_source_documents(
@@ -1714,9 +1694,8 @@ def test_component_catalog_lookup_ignores_an_unselected_malformed_section(
     project = Project.from_project_root(project_root)
 
     selected = ip_catalog_contract_path(
-        None,
+        project,
         "leaf",
-        project=project,
         section="components",
     )
 
@@ -1743,9 +1722,8 @@ def test_ip_catalog_never_selects_an_uncataloged_project_file(
 
     with pytest.raises(ValueError, match="no cataloged owner"):
         ip_catalog_contract_path(
-            None,
+            project,
             "rogue",
-            project=project,
         )
 
 
@@ -1775,7 +1753,7 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
 
     result = check_ip_integration(
         contract,
-        project_root=project_root,
+        project=Project.from_project_root(project_root),
         artifact_root=artifact_root,
         variant_name="default",
     )
@@ -1798,7 +1776,7 @@ def test_ip_integration_rejects_a_lock_outside_the_project(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="inside its owner root"):
         check_ip_integration(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             artifact_root=artifact_root,
             variant_name="default",
             lock_path=external_lock,
@@ -1819,7 +1797,7 @@ def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="stay inside owner 'demo' root"):
         check_ip_integration(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             artifact_root=artifact_root,
             variant_name="default",
             lock_path=foreign_lock,
@@ -1882,7 +1860,7 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
     with pytest.raises(ValueError, match="filelist.*inside owner 'demo' root"):
         ip_integration.plan_ip_integration_fileset(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             variant_name="default",
         )
 
@@ -1894,7 +1872,7 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
     with pytest.raises(RuntimeError, match="safe project-relative path"):
         ip_integration.plan_ip_integration_fileset(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             variant_name="default",
         )
 
@@ -1918,7 +1896,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     with pytest.raises(RuntimeError, match="unavailable for synthesis"):
         check_ip_integration(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )
@@ -1933,7 +1911,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     with pytest.raises(RuntimeError, match="physical binding is blocked"):
         check_ip_integration(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )
@@ -2034,7 +2012,7 @@ def test_ip_integration_rejects_invalid_locked_release_state(
     with pytest.raises((RuntimeError, FileNotFoundError), match=message):
         check_ip_integration(
             contract,
-            project_root=project_root,
+            project=Project.from_project_root(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )

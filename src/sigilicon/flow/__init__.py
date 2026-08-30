@@ -12,7 +12,6 @@ from sigilicon.flow.contracts import (
     parse_flow_catalog,
     resolve_catalog_selection,
 )
-from sigilicon.flow.builtin import builtin_registry
 from sigilicon.flow.circuit_design import (
     CIRCUIT_DESIGN_SOURCE_ACTION,
     PHYSICAL_DESIGN_OBSERVATION_ACTION,
@@ -108,12 +107,6 @@ from sigilicon.flow.post_layout import (
     register_post_layout_actions,
 )
 from sigilicon.flow.standard_asic import register_standard_asic_actions
-from sigilicon.flow.synopsys import (
-    SynopsysDCAdapter,
-    SynopsysFCAdapter,
-    SynopsysHSpiceAdapter,
-    SynopsysVCSAdapter,
-)
 from sigilicon.flow.source_assets import (
     SourceAssetsAdapter,
     load_source_assets,
@@ -212,11 +205,6 @@ __all__ = [
     "register_circuit_design_actions",
     "register_physical_verification_actions",
     "register_post_layout_actions",
-    "SynopsysDCAdapter",
-    "SynopsysFCAdapter",
-    "SynopsysHSpiceAdapter",
-    "SynopsysVCSAdapter",
-    "builtin_registry",
     "load_source_assets",
     "source_assets_payload",
 ]

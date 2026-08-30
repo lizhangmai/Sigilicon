@@ -1,8 +1,9 @@
-"""Cross-domain dependency assembly for the public operator CLI."""
+"""Cross-domain dependency assembly for every public Flow client."""
 
 from __future__ import annotations
 
-from sigilicon.flow.builtin import builtin_registry
+from sigilicon.flow.circuit_design import register_circuit_design_actions
+from sigilicon.flow.physical_design import register_physical_design_actions
 from sigilicon.flow.physical_design import (
     OA_XSTREAM_MATERIALIZATION_ADAPTER,
     REFERENCE_MATERIALIZATION_ADAPTER,
@@ -11,8 +12,12 @@ from sigilicon.flow.physical_design import (
 from sigilicon.flow.physical_verification import (
     CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
     RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
+    register_physical_verification_actions,
 )
+from sigilicon.flow.post_layout import register_post_layout_actions
 from sigilicon.flow.registry import FlowRegistry, ToolAdapter
+from sigilicon.flow.source_assets import SourceAssetsAdapter
+from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.workflows.physical_design import (
     MaterializationPlanAdapter,
     ReferencePhysicalDesignAdapter,
@@ -31,13 +36,29 @@ from sigilicon.workflows.physical_verification import (
 from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
 from sigilicon.flow.circuit_design import PHYSICAL_DESIGN_OBSERVATION_ADAPTER
 from sigilicon.workflows.design_physical import PhysicalDesignObservationAdapter
+from sigilicon.workflows.synopsys import (
+    SynopsysDCAdapter,
+    SynopsysFCAdapter,
+    SynopsysHSpiceAdapter,
+    SynopsysVCSAdapter,
+)
 
 
-def builtin_workflow_registry(
+def build_flow_registry(
     *,
     materialization_adapter: ToolAdapter | None = None,
 ) -> FlowRegistry:
-    registry = builtin_registry()
+    registry = FlowRegistry()
+    register_standard_asic_actions(registry)
+    register_physical_design_actions(registry)
+    register_physical_verification_actions(registry)
+    register_post_layout_actions(registry)
+    register_circuit_design_actions(registry)
+    registry.register_adapter("source-assets", SourceAssetsAdapter())
+    registry.register_adapter("synopsys-dc", SynopsysDCAdapter())
+    registry.register_adapter("synopsys-fc", SynopsysFCAdapter())
+    registry.register_adapter("synopsys-hspice", SynopsysHSpiceAdapter())
+    registry.register_adapter("synopsys-vcs", SynopsysVCSAdapter())
     registry.register_adapter(
         REFERENCE_PNR_ADAPTER,
         ReferencePhysicalDesignAdapter(),
@@ -74,4 +95,4 @@ def builtin_workflow_registry(
     return registry
 
 
-__all__ = ["builtin_workflow_registry"]
+__all__ = ["build_flow_registry"]

@@ -103,6 +103,31 @@ root = "ip/{owner}"
     return component
 
 
+def write_fake_flow_extension(root: Path, owner: str) -> Path:
+    """Attach fake actions through the same owner extension seam as real IP."""
+
+    extension = root / "ip" / owner / "tools" / "fake_flow_extension.py"
+    extension.parent.mkdir(parents=True, exist_ok=True)
+    extension.write_text(
+        '''from sigilicon.flow.fake import register_fake_actions
+
+
+def register_flow_adapters(registry, owner_root):
+    register_fake_actions(registry)
+''',
+        encoding="utf-8",
+    )
+    project = root / "sigilicon.toml"
+    source = project.read_text(encoding="utf-8")
+    header = "[flow.registry_extensions]\n"
+    declaration = f'{owner} = "{extension.relative_to(root).as_posix()}"\n'
+    project.write_text(
+        source + (declaration if header in source else f"\n{header}{declaration}"),
+        encoding="utf-8",
+    )
+    return extension
+
+
 def write_test_platform(root: Path, key: str = "testpdk") -> Path:
     """Write a minimal cataloged simulation/OA platform for offline tests."""
 
