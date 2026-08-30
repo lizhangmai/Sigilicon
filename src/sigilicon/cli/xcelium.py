@@ -8,7 +8,8 @@ from pathlib import Path
 
 from sigilicon.cli.common import die, emit_json
 from sigilicon.paths import discover_project_contract
-from sigilicon.workflows.xcelium import ProjectXceliumWorkflow
+from sigilicon.workflows import load_project
+from sigilicon.workflows.xcelium import plan_xcelium_cell, run_xcelium_cell
 
 
 def _display_path(path: Path, *, project_root: Path) -> str:
@@ -33,15 +34,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args(argv)
-    workflow = ProjectXceliumWorkflow.from_file(discover_project_contract(__file__))
+    project = load_project(discover_project_contract(__file__))
     try:
         if not args.execute:
-            plan = workflow.plan(args.cell)
+            plan = plan_xcelium_cell(args.cell, project=project)
             payload = plan.as_dict()
             payload["executed"] = False
         else:
-            result = workflow.run(
+            result = run_xcelium_cell(
                 args.cell,
+                project=project,
                 xrun=args.xrun,
                 timeout=args.timeout,
             )

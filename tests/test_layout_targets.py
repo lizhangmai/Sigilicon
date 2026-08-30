@@ -9,7 +9,6 @@ from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
-from sigilicon.workflows.project_targets import ProjectTargets
 
 from conftest import write_component_owner
 
@@ -126,12 +125,13 @@ def test_layout_target_loader_reads_its_catalog_once(
     assert reads == 1
 
 
-def test_project_targets_preserves_layout_project_identity(tmp_path: Path) -> None:
+def test_layout_catalog_preserves_project_identity(tmp_path: Path) -> None:
     _catalog_project(tmp_path)
+    project = Project.from_file(tmp_path / "sigilicon.toml")
 
-    targets = ProjectTargets.from_file(tmp_path / "sigilicon.toml")
+    catalog = load_layout_target_catalog(project=project)
 
-    assert targets.layout().project is targets.project
+    assert catalog.project is project
 
 
 def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ from sigilicon.domain.repository import Project
 import sigilicon.domain.repository as repository_module
 from sigilicon.workflows import xcelium
 from sigilicon.workflows.xcelium import (
-    ProjectXceliumWorkflow,
+    plan_xcelium_cell,
     run_xcelium_cell,
 )
 
@@ -97,12 +97,12 @@ def test_project_xcelium_plan_parses_one_project(
 
     monkeypatch.setattr(repository_module, "read_toml", counted)
 
-    workflow = ProjectXceliumWorkflow.from_file(project_contract)
-    plan = workflow.plan(contract)
+    project = Project.from_file(project_contract)
+    plan = plan_xcelium_cell(contract, project=project)
     payload = plan.as_dict()
 
     assert plan.spec.project_root == tmp_path
-    assert plan.spec.project is workflow.project
+    assert plan.spec.project is project
     assert plan.spec.owner == "demo"
     assert payload["contract"] == "ip/demo/verification/tb_demo/cell.toml"
     assert payload["owner"] == "demo"
@@ -124,7 +124,10 @@ def test_xcelium_plan_rejects_non_hdl_compile_dependency(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="support_files or contracts"):
-        ProjectXceliumWorkflow.from_file(tmp_path / "sigilicon.toml").plan(contract)
+        plan_xcelium_cell(
+            contract,
+            project=Project.from_file(tmp_path / "sigilicon.toml"),
+        )
 
 
 def test_xcelium_plan_requires_explicit_success_marker(tmp_path: Path) -> None:
@@ -138,7 +141,10 @@ def test_xcelium_plan_requires_explicit_success_marker(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="must declare success_marker"):
-        ProjectXceliumWorkflow.from_file(tmp_path / "sigilicon.toml").plan(contract)
+        plan_xcelium_cell(
+            contract,
+            project=Project.from_file(tmp_path / "sigilicon.toml"),
+        )
 
 
 def test_xcelium_plan_validates_declared_contract_header(tmp_path: Path) -> None:
@@ -147,7 +153,10 @@ def test_xcelium_plan_validates_declared_contract_header(tmp_path: Path) -> None
     interface.write_text('schema = 1\nowner = "demo"\n', encoding="utf-8")
 
     with pytest.raises(ValueError, match="contract_kind must be a non-empty string"):
-        ProjectXceliumWorkflow.from_file(tmp_path / "sigilicon.toml").plan(contract)
+        plan_xcelium_cell(
+            contract,
+            project=Project.from_file(tmp_path / "sigilicon.toml"),
+        )
 
 
 def test_xcelium_run_reuses_project_and_writes_managed_artifact(

@@ -11,15 +11,30 @@ from typing import Any
 from sigilicon.cli.common import add_json_arg, die, emit_json
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
+from sigilicon.workflows import load_project
 from sigilicon.workflows.design_targets import (
     DesignTarget,
     execute_design_target,
+    load_design_target_catalog,
 )
-from sigilicon.workflows.layout_targets import LayoutTarget
+from sigilicon.workflows.ip_integration import (
+    check_ip_integration,
+    ip_catalog_contract_path,
+    plan_ip_integration,
+)
+from sigilicon.workflows.ip_packaging import (
+    audit_ip_release,
+    build_ip_release,
+    plan_ip_release,
+    publish_ip_release,
+)
+from sigilicon.workflows.layout_targets import (
+    LayoutTarget,
+    load_layout_target_catalog,
+)
 from sigilicon.workflows.oa_check import UnavailableBridge
-from sigilicon.workflows.project_ip import ProjectIpWorkflow
+from sigilicon.workflows.project_layout import ProjectLayoutWorkflow
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
-from sigilicon.workflows.project_targets import ProjectTargets
 
 
 def _target_payload(target: LayoutTarget) -> dict[str, object]:
@@ -249,16 +264,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_ip(args: argparse.Namespace, workflow: ProjectIpWorkflow) -> int:
-    root = workflow.project.project_root
+def _run_ip(args: argparse.Namespace, project: Any) -> int:
+    root = project.project_root
     if args.action == "integration":
         try:
-            contract = workflow.contract(args.target, section="components")
+            contract = ip_catalog_contract_path(
+                None,
+                args.target,
+                project=project,
+                section="components",
+            )
             if args.integration_action == "plan":
-                payload = workflow.plan_integration(contract)
+                payload = plan_ip_integration(contract, project=project)
             else:
-                payload = workflow.check_integration(
+                payload = check_ip_integration(
                     contract,
+                    project=project,
                     variant_name=args.variant,
                     fileset_name=args.fileset,
                 )
@@ -280,8 +301,17 @@ def _run_ip(args: argparse.Namespace, workflow: ProjectIpWorkflow) -> int:
             )
         return 0
     try:
-        contract = workflow.contract(args.target)
-        operation = getattr(workflow, args.action)
+        contract = ip_catalog_contract_path(
+            None,
+            args.target,
+            project=project,
+        )
+        operation = {
+            "plan": plan_ip_release,
+            "build": build_ip_release,
+            "audit": audit_ip_release,
+            "publish": publish_ip_release,
+        }[args.action]
         keywords: dict[str, Any] = {"maturity": args.maturity}
         if args.action == "audit" and args.artifact_root is not None:
             keywords["artifact_root"] = (
@@ -289,7 +319,7 @@ def _run_ip(args: argparse.Namespace, workflow: ProjectIpWorkflow) -> int:
                 if args.artifact_root.is_absolute()
                 else (root / args.artifact_root)
             ).resolve()
-        payload = operation(contract, **keywords)
+        payload = operation(contract, project=project, **keywords)
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
         die(f"ERROR: {exc}")
     if args.json:
@@ -315,11 +345,11 @@ def _run_ip(args: argparse.Namespace, workflow: ProjectIpWorkflow) -> int:
 
 def _run_layout(
     args: argparse.Namespace,
-    project: ProjectTargets,
+    project: Any,
     client_factory: Any,
 ) -> int:
     try:
-        catalog = project.layout()
+        catalog = load_layout_target_catalog(project=project)
         if args.action == "list":
             payload = [_target_payload(target) for target in catalog.targets]
             if args.json:
@@ -346,7 +376,7 @@ def _run_layout(
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"ERROR: {exc}")
 
-    workflow = project.layout_workflow()
+    workflow = ProjectLayoutWorkflow(project)
     try:
         if args.action == "check":
             preview = workflow.plan(target.spec)
@@ -385,11 +415,11 @@ def _run_layout(
 
 def _run_design(
     args: argparse.Namespace,
-    project: ProjectTargets,
+    project: Any,
     process_executor: Callable[[str, list[str]], Any] | None,
 ) -> int:
     try:
-        catalog = project.design()
+        catalog = load_design_target_catalog(project=project)
         if args.action == "list":
             payload = [_design_target_payload(target) for target in catalog.targets]
             if args.json:
@@ -563,26 +593,27 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     project_contract = discover_project_contract(__file__)
+    project = load_project(project_contract)
     if args.domain == "oa":
         return _run_oa(
             args,
-            ProjectOaWorkflow.from_file(project_contract),
+            ProjectOaWorkflow(project),
             client_factory,
         )
     if args.domain == "layout":
         return _run_layout(
             args,
-            ProjectTargets.from_file(project_contract),
+            project,
             client_factory,
         )
     if args.domain == "design":
         return _run_design(
             args,
-            ProjectTargets.from_file(project_contract),
+            project,
             process_executor,
         )
     if args.domain == "ip":
-        return _run_ip(args, ProjectIpWorkflow.from_file(project_contract))
+        return _run_ip(args, project)
     raise AssertionError(f"unhandled flow domain: {args.domain}")
 
 

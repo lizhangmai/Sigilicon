@@ -27,7 +27,6 @@ from sigilicon.flow import (
     resolve_catalog_selection,
 )
 from sigilicon.flow.model import identifier, owner_identity, run_identity
-from sigilicon.paths import ProjectContext
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
     project_workflow_registry,
@@ -125,22 +124,6 @@ class AgenticReadInterface:
     @classmethod
     def from_project(cls, project: Project) -> "AgenticReadInterface":
         return cls(project, _repository_identity(project))
-
-    @classmethod
-    def from_project_context(
-        cls,
-        project: ProjectContext,
-    ) -> "AgenticReadInterface":
-        repository = Project.from_file(
-            project.project_root / "sigilicon.toml"
-        )
-        if (
-            repository.project_root != project.project_root
-            or repository.workspace_root != project.workspace_root
-            or repository.artifact_root != project.artifact_root
-        ):
-            raise ValueError("agentic read context disagrees with sigilicon.toml")
-        return cls.from_project(repository)
 
     @property
     def project_resource_uri(self) -> str:

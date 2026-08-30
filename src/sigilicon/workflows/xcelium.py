@@ -308,31 +308,3 @@ def run_xcelium_cell(
         if attempt.status == "running":
             attempt.fail(error)
         raise
-
-
-@dataclass(frozen=True)
-class ProjectXceliumWorkflow:
-    """Bind Xcelium planning and execution to one canonical Project."""
-
-    project: Project
-
-    @classmethod
-    def from_file(cls, project_contract: Path | str) -> "ProjectXceliumWorkflow":
-        return cls(Project.from_file(project_contract))
-
-    def plan(self, contract_path: Path) -> XceliumCellPlan:
-        return plan_xcelium_cell(contract_path, project=self.project)
-
-    def run(
-        self,
-        contract_path: Path,
-        *,
-        xrun: Path | None = None,
-        timeout: int = 600,
-    ) -> XceliumCellRun:
-        return run_xcelium_cell(
-            contract_path,
-            project=self.project,
-            xrun=xrun,
-            timeout=timeout,
-        )
