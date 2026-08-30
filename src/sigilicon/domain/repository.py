@@ -524,7 +524,11 @@ class Project:
             raise ValueError(
                 f"repository does not contain owner {selected.name!r}"
             )
-        return ProjectScope(self._paths, selected.name, selected.root)
+        return ProjectScope._from_cataloged_owner(
+            self._paths,
+            selected.name,
+            selected.root,
+        )
 
     def owner_flow_catalog_snapshots(
         self,

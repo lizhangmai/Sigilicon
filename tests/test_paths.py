@@ -111,6 +111,25 @@ def test_project_context_rejects_unknown_path_field(tmp_path: Path) -> None:
         ProjectContext.from_project_root(tmp_path)
 
 
+@pytest.mark.parametrize("owner", ("", ".", "..", "../outside", "a/b", "a\\b"))
+def test_project_context_rejects_unsafe_manifest_owner(
+    tmp_path: Path,
+    owner: str,
+) -> None:
+    contract = tmp_path / "sigilicon.toml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'owner = "test"',
+            f'owner = "{owner}"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="project context ownership"):
+        ProjectContext.from_project_root(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("section", "unknown"),
     (
@@ -237,8 +256,8 @@ def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
     selected = project.owner("example")
     with pytest.raises(ValueError, match="does not contain owner"):
         project.scope(replace(selected, root=(tmp_path / "ip").resolve()))
-    with pytest.raises(ValueError, match="must stay below the project root"):
-        ProjectScope(scope.project, "example", tmp_path.parent / "outside")
+    with pytest.raises(TypeError):
+        ProjectScope(scope.project, "bogus", tmp_path)
 
 
 def test_project_bind_reuses_identity_and_checks_legacy_root(tmp_path: Path) -> None:

@@ -402,12 +402,16 @@ class ProjectContext:
         if raw.get("schema") != 1 or raw.get("contract_kind") != "sigilicon-project":
             raise ValueError(f"{contract}: invalid Sigilicon project context header")
         manifest_owner = raw.get("owner")
-        if (
-            raw.get("path_scope") != "repository"
-            or not isinstance(manifest_owner, str)
-            or not manifest_owner
+        if raw.get("path_scope") != "repository" or not isinstance(
+            manifest_owner, str
         ):
             raise ValueError(f"{contract}: invalid Sigilicon project context ownership")
+        try:
+            validate_artifact_component(manifest_owner, "project owner")
+        except ValueError as exc:
+            raise ValueError(
+                f"{contract}: invalid Sigilicon project context ownership: {exc}"
+            ) from exc
         _reject_unknown_fields(
             raw,
             {
@@ -486,21 +490,32 @@ class ProjectContext:
         return ArtifactLayout(self.artifact_root)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ProjectScope:
-    """Neutral runtime paths bound to one explicit project owner identity."""
+    """Neutral runtime paths bound by the repository ownership module."""
 
     project: ProjectContext
     owner: str
     owner_root: Path
 
-    def __post_init__(self) -> None:
-        owner = validate_artifact_component(self.owner, "project owner")
-        root = Path(self.owner_root).resolve()
-        if not root.is_relative_to(self.project.project_root):
+    @classmethod
+    def _from_cataloged_owner(
+        cls,
+        project: ProjectContext,
+        owner: str,
+        owner_root: Path,
+    ) -> "ProjectScope":
+        """Bind one owner already selected from the canonical project catalog."""
+
+        identity = validate_artifact_component(owner, "project owner")
+        root = Path(owner_root).resolve()
+        if not root.is_relative_to(project.project_root):
             raise ValueError("project owner root must stay below the project root")
-        object.__setattr__(self, "owner", owner)
-        object.__setattr__(self, "owner_root", root)
+        scope = object.__new__(cls)
+        object.__setattr__(scope, "project", project)
+        object.__setattr__(scope, "owner", identity)
+        object.__setattr__(scope, "owner_root", root)
+        return scope
 
 
 def discover_project_contract(anchor: Path | str | None = None) -> Path:
