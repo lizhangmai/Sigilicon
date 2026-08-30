@@ -11,11 +11,11 @@ from sigilicon.flow import (
     FlowExecutionError,
     InputArtifact,
     ResolvedCapability,
-    register_standard_asic_actions,
 )
+from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.paths import ProjectContext, ProjectScope
-from sigilicon.workflows import synopsys
+from sigilicon.workflows.synopsys import structural_link as synopsys
 
 
 def _manifest(

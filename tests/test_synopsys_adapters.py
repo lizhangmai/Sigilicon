@@ -24,8 +24,8 @@ from sigilicon.flow import (
     ResolvedCapability,
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
-    register_standard_asic_actions,
 )
+from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.workflows.synopsys import SynopsysDCAdapter
 
 

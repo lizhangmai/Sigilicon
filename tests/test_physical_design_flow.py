@@ -20,12 +20,14 @@ from sigilicon.flow import (
     FlowNode,
     FlowSpec,
     FlowTarget,
-    PHYSICAL_MATERIALIZATION_ACTION,
-    PHYSICAL_DESIGN_ACTION,
-    PHYSICAL_DESIGN_JOB_KIND,
     PolicyCheck,
     PolicySpec,
     ProducedArtifact,
+)
+from sigilicon.flow.physical_design import (
+    PHYSICAL_MATERIALIZATION_ACTION,
+    PHYSICAL_DESIGN_ACTION,
+    PHYSICAL_DESIGN_JOB_KIND,
     REFERENCE_PNR_ADAPTER,
     REFERENCE_MATERIALIZATION_ADAPTER,
 )

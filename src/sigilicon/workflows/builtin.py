@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib import import_module
+
 from sigilicon.flow.circuit_design import register_circuit_design_actions
 from sigilicon.flow.layout import register_layout_actions
 from sigilicon.flow.physical_design import register_physical_design_actions
@@ -26,23 +28,22 @@ from sigilicon.flow.native import (
 )
 
 
-def _synopsys_adapter(name: str) -> ToolAdapter:
-    from sigilicon.workflows.synopsys import (
-        SynopsysDCAdapter,
-        SynopsysFCAdapter,
-        SynopsysHSpiceAdapter,
-        SynopsysStructuralLinkAdapter,
-        SynopsysVCSAdapter,
-    )
+_SYNOPSYS_ADAPTERS = {
+    "dc": ("sigilicon.workflows.synopsys.dc", "SynopsysDCAdapter"),
+    "fc": ("sigilicon.workflows.synopsys.fc", "SynopsysFCAdapter"),
+    "hspice": ("sigilicon.workflows.synopsys.hspice", "SynopsysHSpiceAdapter"),
+    "structural-link": (
+        "sigilicon.workflows.synopsys.structural_link",
+        "SynopsysStructuralLinkAdapter",
+    ),
+    "vcs": ("sigilicon.workflows.synopsys.vcs", "SynopsysVCSAdapter"),
+}
 
-    factories = {
-        "dc": SynopsysDCAdapter,
-        "fc": SynopsysFCAdapter,
-        "hspice": SynopsysHSpiceAdapter,
-        "structural-link": SynopsysStructuralLinkAdapter,
-        "vcs": SynopsysVCSAdapter,
-    }
-    return factories[name]()
+
+def _synopsys_adapter(name: str) -> ToolAdapter:
+    module_name, class_name = _SYNOPSYS_ADAPTERS[name]
+    adapter_type = getattr(import_module(module_name), class_name)
+    return adapter_type()
 
 
 def _reference_physical_design_adapter() -> ToolAdapter:

@@ -21,8 +21,10 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
-    SourceAssetsAdapter,
     SourceMember,
+)
+from sigilicon.flow.source_assets import (
+    SourceAssetsAdapter,
     load_source_assets,
     source_assets_payload,
 )

@@ -21,6 +21,12 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
+    ProducedArtifact,
+    ResolvedCapability,
+    ResolvedPlatformAsset,
+    ResolvedPlatformAssetMember,
+)
+from sigilicon.flow.physical_design import (
     MATERIALIZED_GDS_KIND,
     MATERIALIZATION_RECEIPT_KIND,
     PHYSICAL_DESIGN_JOB_KIND,
@@ -28,10 +34,6 @@ from sigilicon.flow import (
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
     PHYSICAL_MATERIALIZATION_PLAN_KIND,
     OA_XSTREAM_MATERIALIZATION_ADAPTER,
-    ProducedArtifact,
-    ResolvedCapability,
-    ResolvedPlatformAsset,
-    ResolvedPlatformAssetMember,
     register_physical_design_actions,
 )
 from sigilicon.layout.materialization import (
