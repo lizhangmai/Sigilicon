@@ -56,7 +56,7 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.domain.design import load_design_spec
 from sigilicon.workflows.design_frontend import SourceAuthoredTopologyAdapter
-from sigilicon.workflows.design_artifacts import DesignArtifactInterface
+from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.cli.main import main as sigilicon_main
 
 
@@ -396,8 +396,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 
     validated = validate_design_candidate(candidate, (topology, problem, evidence))
     validate_design_decision(decision, candidate, (evidence,))
-    interface = DesignArtifactInterface()
-    via_interface = interface.validate_candidate(
+    via_interface = validate_candidate_records(
         candidate.canonical_json(),
         (
             topology.canonical_json(),

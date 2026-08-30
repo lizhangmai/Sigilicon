@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from sigilicon.cli.common import add_json_arg, die, emit_json
-from sigilicon.workflows.design_artifacts import DesignArtifactInterface
+from sigilicon.workflows.design_artifacts import validate_candidate_records
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -26,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        result = DesignArtifactInterface().validate_candidate(
+        result = validate_candidate_records(
             args.candidate.read_text(encoding="utf-8"),
             tuple(path.read_text(encoding="utf-8") for path in args.artifact),
         )

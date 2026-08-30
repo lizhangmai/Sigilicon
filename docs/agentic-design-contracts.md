@@ -140,9 +140,10 @@ Capability levels are cumulative only when explicitly granted:
 `AgenticReadInterface` is the shared application seam for `project.inspect`,
 `flow.plan`, `run.inspect`, and owner-bound `candidate.validate`. The read CLI and
 native MCP handlers call this Interface; the Candidate operation delegates to the
-same `DesignArtifactInterface` as the existing Candidate CLI. MCP accepts semantic
-identities or bounded canonical JSON only. Its tool list has no path, shell,
-environment, executor, cancellation, OA, or promotion input.
+same workflow-owned `validate_candidate_records` function as the existing
+Candidate CLI. MCP accepts semantic identities or bounded canonical JSON only. Its
+tool list has no path, shell, environment, executor, cancellation, OA, or promotion
+input.
 
 The local entry point is `sigilicon-mcp --project-root <root>`. Project selection is
 launcher configuration rather than a model-call argument, and cwd discovery is not

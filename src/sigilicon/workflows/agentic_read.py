@@ -25,10 +25,8 @@ from sigilicon.flow import (
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
-    ProjectFlowPlan,
-    resolve_project_flow_plan,
 )
-from sigilicon.workflows.design_artifacts import DesignArtifactInterface
+from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.workflows.design_campaign import (
     resolve_project_design_campaign,
 )
@@ -178,8 +176,10 @@ class AgenticReadInterface:
     ) -> dict[str, Any]:
         """Compile one catalog-selected Flow through the existing FlowEngine."""
 
-        resolved = self.resolve_flow_plan(
-            owner=owner,
+        resolved = ProjectFlow(
+            self.project,
+            owner,
+        ).plan(
             flow=flow,
             target=target,
             profile=profile,
@@ -205,38 +205,6 @@ class AgenticReadInterface:
             ],
             allowed_next_actions=["project.inspect", "review-plan"],
         )
-
-    def resolve_flow_plan(
-        self,
-        *,
-        owner: str,
-        flow: str,
-        target: str,
-        profile: str | None,
-    ) -> ProjectFlowPlan:
-        """Resolve one exact catalog plan for peer application Interfaces."""
-
-        flow_name = identifier(flow, "Flow identity")
-        target_name = identifier(target, "Flow target")
-        profile_name = (
-            None
-            if profile is None
-            else identifier(profile, "Execution Profile identity")
-        )
-        planned = ProjectFlow(
-            self.project,
-            owner,
-        ).plan(
-            flow=flow_name,
-            target=target_name,
-            profile=profile_name,
-        )
-        return planned
-
-    def resolve_plan_identity(self, plan_identity: str) -> ProjectFlowPlan:
-        """Recompile project catalogs and find one uniquely matching Plan identity."""
-
-        return resolve_project_flow_plan(self.project, plan_identity)
 
     def plan_campaign(self, *, campaign_json: str) -> dict[str, Any]:
         resolved = resolve_project_design_campaign(self.project, campaign_json)
@@ -382,7 +350,7 @@ class AgenticReadInterface:
         """Validate an immutable Candidate chain inside one cataloged owner."""
 
         selected_owner = self._owner(owner)
-        validation = DesignArtifactInterface().validate_candidate(
+        validation = validate_candidate_records(
             candidate_json,
             artifact_json,
             expected_owner=selected_owner.name,

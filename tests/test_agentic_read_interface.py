@@ -165,13 +165,6 @@ def test_project_inspection_reads_each_flow_catalog_once(
 
     assert reads == 1
 
-    reads = 0
-    resolved = interface.resolve_plan_identity("example:pipeline:all:offline")
-
-    assert resolved.plan_identity == "example:pipeline:all:offline"
-    assert reads == 1
-
-
 def test_project_rejects_flow_catalog_inventory_from_another_project(
     tmp_path: Path,
 ) -> None:

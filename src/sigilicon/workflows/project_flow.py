@@ -25,7 +25,7 @@ from sigilicon.flow import (
     parse_flow_catalog,
     resolve_catalog_selection,
 )
-from sigilicon.flow.model import SourceMember
+from sigilicon.flow.model import SourceMember, identifier
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
@@ -197,15 +197,22 @@ class ProjectFlow:
         target: str,
         profile: str | None = None,
     ) -> ProjectFlowPlan:
+        flow_name = identifier(flow, "Flow identity")
+        target_name = identifier(target, "Flow target")
+        profile_name = (
+            None
+            if profile is None
+            else identifier(profile, "Execution Profile identity")
+        )
         selection = resolve_catalog_selection(
             self.catalog(),
-            flow_id=flow,
-            profile_id=profile,
+            flow_id=flow_name,
+            profile_id=profile_name,
         )
         engine = self._engine()
         return self._bind(
             engine,
-            engine.plan(selection.spec, target, selection.profile),
+            engine.plan(selection.spec, target_name, selection.profile),
         )
 
     def preflight(

@@ -9,7 +9,7 @@ import sigilicon.domain.repository as repository_module
 from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.domain.repository import Project
 from sigilicon.flow import ExecutionEnvironment
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow import ProjectFlow, resolve_project_flow_plan
 
 from conftest import write_component_owner
 
@@ -153,7 +153,8 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
         return original_read_toml(path)
 
     monkeypatch.setattr(repository_module, "read_toml", counted_read_toml)
-    project_flow = ProjectFlow(Project.from_project_root(tmp_path), "example")
+    project = Project.from_project_root(tmp_path)
+    project_flow = ProjectFlow(project, "example")
 
     assert project_flow.catalog().owner == "example"
     assert catalog_reads == 1
@@ -162,6 +163,15 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     planned = project_flow.plan(flow="owner-flow", target="all")
 
     assert planned.plan_identity == "example:owner-flow:all:local"
+    assert catalog_reads == 1
+
+    catalog_reads = 0
+    resolved = resolve_project_flow_plan(
+        project,
+        "example:owner-flow:all:local",
+    )
+
+    assert resolved.plan_identity == "example:owner-flow:all:local"
     assert catalog_reads == 1
 
     catalog_reads = 0

@@ -20,6 +20,7 @@ from sigilicon.workflows.agentic_runs import (
     RUNNING_STATUSES,
 )
 from sigilicon.workflows.project import bind_agentic_read
+from sigilicon.workflows.project_flow import resolve_project_flow_plan
 
 
 def _now() -> str:
@@ -57,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         if request[field] != expected:
             raise ValueError("worker arguments disagree with the authorized request")
-    resolved = read.resolve_plan_identity(request["plan_identity"])
+    resolved = resolve_project_flow_plan(read.project, request["plan_identity"])
     plan = resolved.plan
     if (
         plan.spec.owner != request["owner"]
