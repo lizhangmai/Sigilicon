@@ -858,7 +858,6 @@ def test_project_configuration_reuses_ip_release_interface_documents(
     )
     report = inspect_project_configuration_sources(
         project,
-        owner_roots={"fixture": tmp_path / "ip/fixture"},
         catalog_inventory=catalogs,
         sources=sources,
     )

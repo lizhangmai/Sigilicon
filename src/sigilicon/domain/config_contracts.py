@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
@@ -248,7 +248,6 @@ class RepositorySourceLedger:
 def inspect_project_configuration_sources(
     context: Project,
     *,
-    owner_roots: Mapping[str, Path],
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     sources: RepositorySourceLedger,
 ) -> dict[str, Any]:
@@ -279,26 +278,48 @@ def inspect_project_configuration_sources(
         for _, path in context.catalog_paths
     )
 
-    resolved_owner_roots: dict[Path, str] = {}
-    for owner, directory in owner_roots.items():
-        owner_name = _text(owner, "configuration owner")
-        resolved = directory.resolve()
-        if not resolved.is_relative_to(root):
+    operation_documents = dict(sources.documents)
+    resolved_owner_roots = {
+        owner.root: owner.name for owner in context.owners
+    }
+    platform_catalog_path = context.catalog("platform")
+    platform_catalog_document = operation_documents.get(platform_catalog_path)
+    if platform_catalog_document is None:
+        platform_catalog_document = read_toml(platform_catalog_path)
+        operation_documents[platform_catalog_path] = platform_catalog_document
+    platforms = platform_catalog_document.get("platforms")
+    if not isinstance(platforms, Mapping):
+        raise ValueError("platform catalog platforms must be a table")
+    for key, value in platforms.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("platform catalog keys must be non-empty strings")
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"platforms.{key} must be a non-empty relative path")
+        relative = PurePosixPath(value)
+        if (
+            relative.is_absolute()
+            or "\\" in value
+            or relative.as_posix() != value
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
             raise ValueError(
-                f"configuration owner root escapes the project root: {directory}"
+                f"platforms.{key} must be a canonical relative path"
             )
-        previous = resolved_owner_roots.get(resolved)
-        if previous is not None and previous != owner_name:
+        manifest = platform_catalog_path.parent.joinpath(*relative.parts).resolve()
+        if not manifest.is_relative_to(root) or not manifest.is_file():
+            raise ValueError(f"platforms.{key} manifest is missing or unsafe")
+        document = operation_documents.get(manifest)
+        if document is None:
+            document = read_toml(manifest)
+            operation_documents[manifest] = document
+        owner = _text(document.get("owner"), f"{manifest}: owner")
+        platform_owner_root = manifest.parent
+        previous = resolved_owner_roots.get(platform_owner_root)
+        if previous is not None and previous != owner:
             raise ValueError(
-                f"configuration owner root has multiple owners: {resolved}"
+                "platform and component catalogs disagree on an owner root"
             )
-        resolved_owner_roots[resolved] = owner_name
-    missing_components = repository_owner_roots - set(resolved_owner_roots)
-    if missing_components:
-        raise ValueError(
-            "component roots lack a cataloged owner: "
-            f"{sorted(str(path) for path in missing_components)}"
-        )
+        resolved_owner_roots[platform_owner_root] = owner
 
     for path in (*exact_paths, *scan_roots, *resolved_owner_roots):
         resolved = path.resolve()
@@ -321,7 +342,6 @@ def inspect_project_configuration_sources(
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
     repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
     platform_root = context.catalog("platform").parent
-    operation_documents = dict(sources.documents)
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):

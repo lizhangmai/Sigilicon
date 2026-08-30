@@ -62,28 +62,6 @@ def _contract_entries(
     return result
 
 
-def _component_owner_root(context: Project, path: Path) -> Path:
-    return context.require_owner(path).root
-
-
-def _register_owner_root(
-    owner_roots: dict[str, Path],
-    *,
-    owner: str,
-    root: Path,
-) -> None:
-    previous = owner_roots.get(owner)
-    if previous is not None and previous != root:
-        raise ValueError(f"configuration owner {owner!r} has multiple roots")
-    for previous_owner, previous_root in owner_roots.items():
-        if previous_root == root and previous_owner != owner:
-            raise ValueError(
-                f"configuration root {root} has multiple owners: "
-                f"{previous_owner!r}, {owner!r}"
-            )
-    owner_roots[owner] = root
-
-
 def _architecture_source_documents(
     context: Project,
 ) -> Mapping[Path, Mapping[str, Any]]:
@@ -264,7 +242,6 @@ def inspect_repository_designs(
                 )
             layout_source_documents[source_path] = document
 
-    owner_roots: dict[str, Path] = {}
     components: dict[str, Any] = {}
     component_source_documents = {}
     integration_inventory = {}
@@ -289,11 +266,6 @@ def inspect_repository_designs(
             component_source_documents[graph_component.path] = (
                 graph_component.document
             )
-        _register_owner_root(
-            owner_roots,
-            owner=component.owner,
-            root=_component_owner_root(context, path),
-        )
         component_result: dict[str, Any] = {
             "contract": path.relative_to(root).as_posix(),
             "kind": component.kind,
@@ -326,11 +298,6 @@ def inspect_repository_designs(
     oa_assemblies: dict[str, Any] = {}
     for name, contract in release_inventory.items():
         path = contract.path
-        _register_owner_root(
-            owner_roots,
-            owner=contract.owner,
-            root=_component_owner_root(context, path),
-        )
         release_row = {
             "contract": path.relative_to(root).as_posix(),
             "default_maturity": contract.default_maturity,
@@ -347,11 +314,6 @@ def inspect_repository_designs(
 
     platforms: dict[str, Any] = {}
     for name, platform in platform_inventory.items():
-        _register_owner_root(
-            owner_roots,
-            owner=platform.owner,
-            root=platform.path.parent,
-        )
         platforms[name] = {
             "manifest": platform.path.relative_to(root).as_posix(),
             "owner": platform.owner,
@@ -413,7 +375,6 @@ def inspect_repository_designs(
     )
     configuration = inspect_project_configuration_sources(
         context,
-        owner_roots=owner_roots,
         catalog_inventory=flow_catalog_inventory,
         sources=source_ledger,
     )

@@ -197,8 +197,6 @@ def test_configuration_scanner_reuses_design_source_document(
 
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
 
-    owner_roots = {owner.name: owner.root for owner in project.owners}
-    owner_roots["test-platform"] = root / "configs/platform/testpdk"
     catalogs = project.flow_catalog_inventory()
     sources = RepositorySourceLedger.for_project(
         project,
@@ -206,7 +204,6 @@ def test_configuration_scanner_reuses_design_source_document(
     ).merge("design snapshot", spec.source_documents)
     report = inspect_project_configuration_sources(
         project,
-        owner_roots=owner_roots,
         catalog_inventory=catalogs,
         sources=sources,
     )

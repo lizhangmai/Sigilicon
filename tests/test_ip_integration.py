@@ -1204,10 +1204,6 @@ def test_configuration_scanner_reuses_ip_integration_source_documents(
     ).merge("IP integration snapshot", contract.source_documents)
     report = inspect_project_configuration_sources(
         project,
-        owner_roots={
-            owner.name: owner.root
-            for owner in project.owners
-        },
         catalog_inventory=catalogs,
         sources=sources,
     )

@@ -105,19 +105,9 @@ flow = [
     )
 
 
-def _owner_roots(root: Path) -> dict[str, Path]:
-    return {
-        "alpha": root / "ip/alpha",
-        "beta": root / "ip/beta",
-        "compute": root / "ip/compute",
-        "test": root / "ip/example",
-    }
-
-
 def _inspect(
     project: Project,
     *,
-    owner_roots: dict[str, Path],
     documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> dict[str, object]:
     catalogs = project.flow_catalog_inventory()
@@ -129,7 +119,6 @@ def _inspect(
         sources = sources.merge("test source snapshot", documents)
     return inspect_project_configuration_sources(
         project,
-        owner_roots=owner_roots,
         catalog_inventory=catalogs,
         sources=sources,
     )
@@ -150,10 +139,7 @@ owner = "alpha"
     )
     _write(tmp_path, "ip/beta/native.toml", "schema = 3\n")
 
-    report = _inspect(
-        Project.from_project_root(tmp_path),
-        owner_roots=_owner_roots(tmp_path),
-    )
+    report = _inspect(Project.from_project_root(tmp_path))
 
     assert report["passed"] is True
     assert report["contracts"] == report["documents"] - 1
@@ -233,7 +219,6 @@ owner = "beta"
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
     report = inspect_project_configuration_sources(
         context,
-        owner_roots=_owner_roots(tmp_path),
         catalog_inventory=catalogs,
         sources=ledger,
     )
@@ -246,7 +231,6 @@ owner = "beta"
     with pytest.raises(ValueError, match="another operation"):
         inspect_project_configuration_sources(
             Project.from_project_root(tmp_path),
-            owner_roots=_owner_roots(tmp_path),
             catalog_inventory=catalogs,
             sources=ledger,
         )
@@ -274,7 +258,6 @@ def test_project_configuration_reuses_validated_platform_source_documents(
 
     report = _inspect(
         context,
-        owner_roots={"test-platform": platform.path.parent},
         documents={catalog.path: catalog.document, **platform.source_documents},
     )
 
@@ -355,7 +338,6 @@ def test_project_configuration_reuses_oa_simulation_source_documents(
 
     report = _inspect(
         context,
-        owner_roots=_owner_roots(tmp_path),
         documents=simulation_documents,
     )
 
@@ -371,7 +353,6 @@ def test_project_configuration_rejects_partial_common_header(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="incomplete configuration header"):
         _inspect(
             Project.from_project_root(tmp_path),
-            owner_roots=_owner_roots(tmp_path),
         )
 
 
@@ -390,7 +371,6 @@ owner = "beta"
     with pytest.raises(ValueError, match="owner must be 'alpha'"):
         _inspect(
             Project.from_project_root(tmp_path),
-            owner_roots=_owner_roots(tmp_path),
         )
 
 
@@ -447,10 +427,7 @@ contracts = ["../../qualification.toml", "../z_contract.toml"]
     monkeypatch.setattr(tomllib, "load", counted_load)
 
     context = Project.from_project_root(tmp_path)
-    _inspect(
-        context,
-        owner_roots=_owner_roots(tmp_path),
-    )
+    _inspect(context)
 
     assert set(reads.values()) == {1}
 
