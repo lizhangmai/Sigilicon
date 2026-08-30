@@ -319,7 +319,7 @@ def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:
     assert registered.action("fake.owner-qualified").adapters == (
         "fixture-owner-qualification",
     )
-    assert registered.adapter("fixture-owner-qualification") is adapter
+    assert callable(registered.adapter("fixture-owner-qualification").run)
 
     registered.register_action(
         ActionContract(

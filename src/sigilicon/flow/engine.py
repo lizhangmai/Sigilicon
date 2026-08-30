@@ -23,6 +23,8 @@ from sigilicon.flow.model import (
     ActionArtifact,
     ActionContext,
     ActionContract,
+    AdapterResult,
+    AdapterResultError,
     AdapterExecution,
     ArtifactPort,
     CollectedActionResult,
@@ -884,15 +886,17 @@ class FlowEngine:
             result_status = "failed"
             error: str | None = None
             try:
-                diagnostics = adapter.validate_inputs(context)
-                if diagnostics:
-                    raise FlowExecutionError("; ".join(diagnostics))
-                adapter.prepare(context)
-                execution = adapter.execute(context)
+                adapter_result = adapter.run(context)
+                if not isinstance(adapter_result, AdapterResult):
+                    raise FlowExecutionError("Adapter returned an invalid result")
+                execution = adapter_result.execution
             except KeyboardInterrupt:
                 interrupted = True
                 execution = AdapterExecution("cancelled")
                 error = "interrupted"
+            except AdapterResultError as exc:
+                execution = exc.execution
+                error = str(exc)
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             else:
@@ -901,7 +905,8 @@ class FlowEngine:
                     error = f"Adapter execution ended with {execution.status}"
                 elif error is None:
                     try:
-                        collected = adapter.collect_result(context, execution)
+                        assert adapter_result.collected is not None
+                        collected = adapter_result.collected
                         artifacts = self._validate_collected(
                             context,
                             collected,

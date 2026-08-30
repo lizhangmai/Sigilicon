@@ -20,7 +20,7 @@ from sigilicon.workflows.agentic_runs import (
     RUNNING_STATUSES,
 )
 from sigilicon.workflows.project import bind_agentic_read
-from sigilicon.workflows.project_flow import resolve_project_flow_plan
+from sigilicon.workflows.project_flow import ProjectFlow, resolve_project_flow_plan
 
 
 def _now() -> str:
@@ -59,15 +59,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if request[field] != expected:
             raise ValueError("worker arguments disagree with the authorized request")
     resolved = resolve_project_flow_plan(read.project, request["plan_identity"])
-    plan = resolved.plan
     if (
-        plan.spec.owner != request["owner"]
-        or plan.spec.flow_id != request["flow"]
-        or plan.target.target_id != request["target"]
-        or plan.profile.profile_id != request["profile"]
-        or len(plan.nodes) != request["total_nodes"]
-        or canonical_json(resolved.engine.plan_record(plan))
-        != request["plan_record_json"]
+        resolved.owner != request["owner"]
+        or resolved.flow != request["flow"]
+        or resolved.target != request["target"]
+        or resolved.profile != request["profile"]
+        or resolved.node_count != request["total_nodes"]
+        or canonical_json(resolved.record) != request["plan_record_json"]
     ):
         raise ValueError("worker Flow Plan identity drift")
 
@@ -143,10 +141,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     terminal_status = "failed"
     error_code = None
     try:
-        flow_result = resolved.engine.run(
-            plan,
-            artifact_root=read.project.artifact_root,
-            environment=environment,
+        flow_result = ProjectFlow(read.project, resolved.owner).run(
+            resolved,
+            environment,
             run_id=request["run_id"],
             progress=progress,
         )

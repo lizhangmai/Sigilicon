@@ -21,6 +21,7 @@ from sigilicon.virtuoso import (
 
 LAYERS = {
     "root",
+    "project",
     "domain",
     "flow",
     "layout",
@@ -30,7 +31,8 @@ LAYERS = {
     "cli",
 }
 ALLOWED_DEPENDENCIES = {
-    "root": {"root"},
+    "root": {"project", "root"},
+    "project": {"domain", "project", "workflows", "root"},
     "domain": {"domain", "root"},
     "flow": {"flow", "root"},
     "layout": {"domain", "layout", "root"},

@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from sigilicon.flow.model import (
     ActionContext,
     ActionContract,
+    AdapterResult,
+    AdapterResultError,
     AdapterExecution,
     CollectedActionResult,
     FlowContractError,
+    FlowExecutionError,
     SourceMember,
     identifier,
 )
 
 
+@runtime_checkable
 class ToolAdapter(Protocol):
+    """A tool-specific implementation behind one complete invocation seam."""
+
+    def run(self, context: ActionContext) -> AdapterResult: ...
+
+
+@runtime_checkable
+class _LegacyToolAdapterProtocol(Protocol):
+    """Former interface accepted only while project Adapters migrate."""
+
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]: ...
 
     def prepare(self, context: ActionContext) -> None: ...
@@ -28,6 +41,62 @@ class ToolAdapter(Protocol):
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult: ...
+
+
+class _LegacyToolAdapter:
+    """Private migration adapter for the former four-operation interface."""
+
+    def __init__(self, implementation: _LegacyToolAdapterProtocol) -> None:
+        self._implementation = implementation
+
+    @property
+    def accepted_extensions(self) -> tuple[str, ...]:
+        value = getattr(self._implementation, "accepted_extensions", ())
+        return value if isinstance(value, tuple) else ()
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        validate_inputs = getattr(self._implementation, "validate_inputs")
+        prepare = getattr(self._implementation, "prepare")
+        execute = getattr(self._implementation, "execute")
+        collect_result = getattr(self._implementation, "collect_result")
+        diagnostics = validate_inputs(context)
+        if diagnostics:
+            raise FlowExecutionError("; ".join(diagnostics))
+        prepare(context)
+        execution = execute(context)
+        if not isinstance(execution, AdapterExecution):
+            raise FlowExecutionError("Adapter returned an invalid execution result")
+        if execution.status != "succeeded":
+            return AdapterResult(execution)
+        try:
+            collected = collect_result(context, execution)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            raise AdapterResultError(execution, exc) from exc
+        if not isinstance(collected, CollectedActionResult):
+            raise FlowExecutionError("Adapter returned an invalid collected result")
+        return AdapterResult(execution, collected)
+
+
+def _tool_adapter(
+    implementation: object,
+) -> ToolAdapter:
+    if isinstance(implementation, ToolAdapter) and callable(
+        getattr(implementation, "run", None)
+    ):
+        return implementation
+    if isinstance(implementation, _LegacyToolAdapterProtocol) and all(
+        callable(getattr(implementation, operation, None))
+        for operation in (
+            "validate_inputs",
+            "prepare",
+            "execute",
+            "collect_result",
+        )
+    ):
+        return _LegacyToolAdapter(implementation)
+    raise FlowContractError("Adapter must provide run(context)")
 
 
 class FlowRegistry:
@@ -61,21 +130,15 @@ class FlowRegistry:
             raise FlowContractError(f"Action {contract.kind!r} is already registered")
         self._actions[contract.kind] = contract
 
-    def register_adapter(self, name: str, adapter: ToolAdapter) -> None:
+    def register_adapter(
+        self,
+        name: str,
+        adapter: ToolAdapter,
+    ) -> None:
         identity = identifier(name, "Adapter name")
         if identity in self._adapters:
             raise FlowContractError(f"Adapter {identity!r} is already registered")
-        for operation in (
-            "validate_inputs",
-            "prepare",
-            "execute",
-            "collect_result",
-        ):
-            if not callable(getattr(adapter, operation, None)):
-                raise FlowContractError(
-                    f"Adapter {identity!r} has no {operation} operation"
-                )
-        self._adapters[identity] = adapter
+        self._adapters[identity] = _tool_adapter(adapter)
 
     def register_action_adapter(
         self,

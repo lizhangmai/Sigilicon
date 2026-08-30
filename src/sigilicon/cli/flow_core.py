@@ -161,17 +161,15 @@ def main(
                 target=args.target,
                 profile=args.profile,
             )
-            engine = resolved.engine
-            plan = resolved.plan
             if args.action == "plan":
                 emit_json(resolved.record)
                 return 0
             if args.action == "graph":
-                print(f'digraph "{plan.spec.flow_id}:{plan.target.target_id}" {{')
-                for planned in plan.nodes:
-                    print(f'  "{planned.node.node_id}";')
-                    for dependency in planned.dependencies:
-                        print(f'  "{dependency}" -> "{planned.node.node_id}";')
+                print(f'digraph "{resolved.flow}:{resolved.target}" {{')
+                for node, dependencies in resolved.graph:
+                    print(f'  "{node}";')
+                    for dependency in dependencies:
+                        print(f'  "{dependency}" -> "{node}";')
                 print("}")
                 return 0
             if args.action == "preflight":
@@ -181,7 +179,7 @@ def main(
                         args,
                     ),
                 )
-                emit_json(engine.preflight_record(plan, preflight))
+                emit_json(project.preflight_record(resolved, preflight))
                 return 0 if preflight.status == "ready" else 2
             environment = _execution_environment(
                 args,

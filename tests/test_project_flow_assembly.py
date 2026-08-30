@@ -163,6 +163,8 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     planned = project_flow.plan(flow="owner-flow", target="all")
 
     assert planned.plan_identity == "example:owner-flow:all:local"
+    assert not hasattr(planned, "engine")
+    assert not hasattr(planned, "plan")
     assert catalog_reads == 1
 
     catalog_reads = 0

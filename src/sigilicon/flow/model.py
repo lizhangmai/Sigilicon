@@ -890,6 +890,50 @@ class CollectedActionResult:
 
 
 @dataclass(frozen=True)
+class AdapterResult:
+    """One complete Adapter invocation returned across the Engine seam.
+
+    Backend execution and collected design evidence remain distinct facts, but
+    callers no longer coordinate a public prepare/execute/collect lifecycle.
+    """
+
+    execution: AdapterExecution
+    collected: CollectedActionResult | None = None
+
+    def __post_init__(self) -> None:
+        if self.execution.status == "succeeded" and self.collected is None:
+            raise FlowExecutionError(
+                "successful Adapter execution must include a collected result"
+            )
+        if self.execution.status != "succeeded" and self.collected is not None:
+            raise FlowExecutionError(
+                "unsuccessful Adapter execution cannot include a collected result"
+            )
+
+    @classmethod
+    def succeeded(
+        cls,
+        collected: CollectedActionResult | None = None,
+        *,
+        exit_code: int = 0,
+        details: Mapping[str, Any] | None = None,
+    ) -> "AdapterResult":
+        return cls(
+            AdapterExecution.succeeded(exit_code=exit_code, details=details),
+            collected or CollectedActionResult(),
+        )
+
+
+class AdapterResultError(FlowExecutionError):
+    """Evidence collection failed after a backend execution had completed."""
+
+    def __init__(self, execution: AdapterExecution, cause: Exception) -> None:
+        self.execution = execution
+        self.cause = cause
+        super().__init__(f"{type(cause).__name__}: {cause}")
+
+
+@dataclass(frozen=True)
 class ActionContext:
     node_id: str
     action: ActionContract

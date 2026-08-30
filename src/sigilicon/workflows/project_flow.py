@@ -139,17 +139,47 @@ def _project_workflow_registry(
 class ProjectFlowPlan:
     """One owner plan bound to its exact registry assembly."""
 
-    engine: FlowEngine = field(repr=False, compare=False)
-    plan: FlowPlan
-    _binding: object = field(repr=False, compare=False)
+    _engine: FlowEngine = field(repr=False, compare=False)
+    _plan: FlowPlan = field(repr=False)
+    _project: Project = field(repr=False, compare=False)
 
     @property
     def plan_identity(self) -> str:
-        return self.engine.plan_id(self.plan)
+        return self._engine.plan_id(self._plan)
 
     @property
     def record(self) -> dict[str, object]:
-        return self.engine.plan_record(self.plan)
+        return self._engine.plan_record(self._plan)
+
+    @property
+    def owner(self) -> str:
+        return self._plan.spec.owner
+
+    @property
+    def flow(self) -> str:
+        return self._plan.spec.flow_id
+
+    @property
+    def target(self) -> str:
+        return self._plan.target.target_id
+
+    @property
+    def profile(self) -> str:
+        return self._plan.profile.profile_id
+
+    @property
+    def node_count(self) -> int:
+        return len(self._plan.nodes)
+
+    @property
+    def execution_capabilities(self) -> tuple[str, ...]:
+        return tuple(node.execution_capability for node in self._plan.nodes)
+
+    @property
+    def graph(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return tuple(
+            (node.node.node_id, node.dependencies) for node in self._plan.nodes
+        )
 
 
 @dataclass(frozen=True)
@@ -164,12 +194,6 @@ class ProjectFlow:
 
     project: Project
     owner_name: str
-    _binding: object = field(
-        default_factory=object,
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     def __post_init__(self) -> None:
         owner = self.project.owner(self.owner_name)
@@ -220,7 +244,15 @@ class ProjectFlow:
         environment: ExecutionEnvironment,
     ) -> PreflightResult:
         self._require_owned_plan(planned)
-        return planned.engine.preflight(planned.plan, environment)
+        return planned._engine.preflight(planned._plan, environment)
+
+    def preflight_record(
+        self,
+        planned: ProjectFlowPlan,
+        result: PreflightResult,
+    ) -> dict[str, object]:
+        self._require_owned_plan(planned)
+        return planned._engine.preflight_record(planned._plan, result)
 
     def run(
         self,
@@ -231,8 +263,8 @@ class ProjectFlow:
         progress: Callable[[FlowProgress], None] | None = None,
     ) -> FlowResult:
         self._require_owned_plan(planned)
-        return planned.engine.run(
-            planned.plan,
+        return planned._engine.run(
+            planned._plan,
             artifact_root=self.project.artifact_root,
             environment=environment,
             run_id=run_id,
@@ -284,12 +316,12 @@ class ProjectFlow:
         )
 
     def _bind(self, engine: FlowEngine, plan: FlowPlan) -> ProjectFlowPlan:
-        return ProjectFlowPlan(engine, plan, self._binding)
+        return ProjectFlowPlan(engine, plan, self.project)
 
     def _require_owned_plan(self, planned: ProjectFlowPlan) -> None:
         if (
-            planned.plan.spec.owner != self.owner.name
-            or planned._binding is not self._binding
+            planned._plan.spec.owner != self.owner.name
+            or planned._project is not self.project
         ):
             raise ValueError(
                 "Flow plan does not belong to this exact project owner binding"

@@ -116,33 +116,32 @@ class AgenticExecutionInterface:
         required = tuple(
             sorted(
                 {
-                    AgenticExecutionCapability(node.execution_capability)
-                    for node in resolved.plan.nodes
+                    AgenticExecutionCapability(capability)
+                    for capability in resolved.execution_capabilities
                 },
                 key=lambda item: item.value,
             )
         )
-        if len(resolved.plan.nodes) > budget.maximum_nodes:
+        if resolved.node_count > budget.maximum_nodes:
             raise ValueError(
-                f"Flow Plan needs {len(resolved.plan.nodes)} nodes but the node budget "
+                f"Flow Plan needs {resolved.node_count} nodes but the node budget "
                 f"allows {budget.maximum_nodes}"
             )
         self.grant.authorize(
             plan_identity,
-            resolved.engine.plan_record(resolved.plan),
+            resolved.record,
             required,
             instant=datetime.now(timezone.utc),
         )
-        plan = resolved.plan
         run_id = (
-            f"flow-{plan.spec.owner}-{plan.spec.flow_id}-{plan.target.target_id}-"
-            f"{plan.profile.profile_id}-{self.grant.approval}-"
+            f"flow-{resolved.owner}-{resolved.flow}-{resolved.target}-"
+            f"{resolved.profile}-{self.grant.approval}-"
             f"{budget.maximum_seconds}-{budget.maximum_nodes}"
         )
         paths = self.store.paths(
-            owner=plan.spec.owner,
-            flow=plan.spec.flow_id,
-            target=plan.target.target_id,
+            owner=resolved.owner,
+            flow=resolved.flow,
+            target=resolved.target,
             run_id=run_id,
         )
         state_path = paths.role("control") / "state.json"
@@ -152,7 +151,7 @@ class AgenticExecutionInterface:
                 request["grant_identity"] != self.grant.identity
                 or request["plan_identity"] != plan_identity
                 or request["plan_record_json"]
-                != canonical_json(resolved.engine.plan_record(resolved.plan))
+                != canonical_json(resolved.record)
                 or request["grant_json"] != self.grant.canonical_json()
                 or request["environment_record_json"] != self.environment_record_json
                 or request["budget"] != asdict(budget)
@@ -166,19 +165,19 @@ class AgenticExecutionInterface:
             common = {
                 "schema": 1,
                 "project_id": self.read.project_id,
-                "owner": plan.spec.owner,
-                "flow": plan.spec.flow_id,
-                "target": plan.target.target_id,
-                "profile": plan.profile.profile_id,
+                "owner": resolved.owner,
+                "flow": resolved.flow,
+                "target": resolved.target,
+                "profile": resolved.profile,
                 "plan_identity": plan_identity,
-                "plan_record_json": canonical_json(resolved.engine.plan_record(plan)),
+                "plan_record_json": canonical_json(resolved.record),
                 "run_id": run_id,
                 "grant_identity": self.grant.identity,
                 "grant_json": self.grant.canonical_json(),
                 "required_capabilities": [item.value for item in required],
                 "budget": asdict(budget),
                 "submitted_at": submitted_at,
-                "total_nodes": len(plan.nodes),
+                "total_nodes": resolved.node_count,
             }
             request = {
                 **common,
@@ -205,11 +204,11 @@ class AgenticExecutionInterface:
                     "--project-root",
                     str(self.read.project.project_root),
                     "--owner",
-                    plan.spec.owner,
+                    resolved.owner,
                     "--flow",
-                    plan.spec.flow_id,
+                    resolved.flow,
                     "--target",
-                    plan.target.target_id,
+                    resolved.target,
                     "--run-id",
                     run_id,
                 ]

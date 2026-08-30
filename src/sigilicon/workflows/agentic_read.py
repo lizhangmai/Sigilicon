@@ -184,15 +184,14 @@ class AgenticReadInterface:
             target=target,
             profile=profile,
         )
-        plan = resolved.plan
-        record = resolved.engine.plan_record(plan)
+        record = resolved.record
         return self.response(
             operation="flow.plan",
             authority="plan",
             conclusion="planned",
             summary=(
-                f"Resolved {plan.spec.flow_id}/{plan.target.target_id} into "
-                f"{len(plan.nodes)} typed "
+                f"Resolved {resolved.flow}/{resolved.target} into "
+                f"{resolved.node_count} typed "
                 "nodes; no backend was executed."
             ),
             data={
@@ -201,7 +200,7 @@ class AgenticReadInterface:
             },
             resources=[
                 self.project_resource_uri,
-                self.owner_resource_uri(plan.spec.owner),
+                self.owner_resource_uri(resolved.owner),
             ],
             allowed_next_actions=["project.inspect", "review-plan"],
         )

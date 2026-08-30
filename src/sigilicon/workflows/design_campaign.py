@@ -61,6 +61,7 @@ from sigilicon.workflows.design_repair import (
     compile_design_repair,
 )
 from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow_internal import bind_project_flow_execution
 
 
 DESIGN_CAMPAIGN_ITERATION_EXTENSION = "design_campaign_iteration"
@@ -1571,9 +1572,10 @@ def resolve_project_design_campaign(
         target=source_baseline.target,
         profile=source_baseline.profile,
     )
+    baseline_execution = bind_project_flow_execution(baseline_plan)
     baseline = DesignCampaignAttempt(
         source_baseline.iteration_id,
-        baseline_plan.plan,
+        baseline_execution.plan,
         source_baseline.candidate,
         source_baseline.artifacts,
         source_baseline.stages,
@@ -1587,8 +1589,9 @@ def resolve_project_design_campaign(
             target=template.target,
             profile=template.profile,
         )
+        continuation_execution = bind_project_flow_execution(continuation_plan)
         continuation = DesignCampaignContinuation(
-            continuation_plan.plan,
+            continuation_execution.plan,
             template.candidate,
             template.artifacts,
             template.stages,
@@ -1605,7 +1608,7 @@ def resolve_project_design_campaign(
     )
     planned = ProjectDesignCampaignPlan(
         campaign,
-        baseline_plan.engine,
+        baseline_execution.engine,
         project.artifact_root,
     )
     _ = planned.record
