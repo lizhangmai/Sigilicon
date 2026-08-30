@@ -16,7 +16,6 @@ from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.flow import (
     ExecutionEnvironment,
     FlowCatalog,
-    FlowContractError,
     FlowEngine,
     FlowPlan,
     FlowProgress,
@@ -301,56 +300,24 @@ def resolve_project_flow_plan(
     project: Project,
     plan_identity: str,
 ) -> ProjectFlowPlan:
-    """Resolve one exact plan identity across the project's owner catalogs."""
+    """Resolve one exact plan identity through its selected project owner."""
 
     if not isinstance(plan_identity, str) or not plan_identity:
         raise ValueError("Flow Plan identity must be non-empty text")
-    inventory = project.flow_catalog_inventory()
-    matches: list[ProjectFlowPlan] = []
-    combinations = 0
-    for owner in project.owners:
-        snapshots = project.owner_flow_catalog_snapshots(owner, inventory=inventory)
-        if not snapshots:
-            continue
-        if len(snapshots) != 1:
-            raise ValueError(
-                f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
-            )
-        catalog = parse_flow_catalog(
-            snapshots[0].document,
-            snapshots[0].path,
-            owner_root=owner.root,
+    fields = plan_identity.split(":")
+    if len(fields) != 4:
+        raise ValueError(
+            "Flow Plan identity must be owner:flow:target:profile"
         )
-        project_flow = ProjectFlow(project, owner.name)
-        engine = project_flow._engine()
-        for entry in catalog.entries:
-            profiles = tuple(sorted({entry.default_profile, *entry.profiles}))
-            for profile in profiles:
-                selection = resolve_catalog_selection(
-                    catalog,
-                    flow_id=entry.flow_id,
-                    profile_id=profile,
-                )
-                for target in selection.spec.targets:
-                    combinations += 1
-                    if combinations > 10_000:
-                        raise ValueError(
-                            "project exposes too many executable Flow plans"
-                        )
-                    try:
-                        plan = engine.plan(
-                            selection.spec,
-                            target.target_id,
-                            selection.profile,
-                        )
-                    except FlowContractError:
-                        continue
-                    resolved = project_flow._bind(engine, plan)
-                    if resolved.plan_identity == plan_identity:
-                        matches.append(resolved)
-    if len(matches) != 1:
-        raise ValueError("Flow Plan identity is unknown or ambiguous in this project")
-    return matches[0]
+    owner, flow, target, profile = fields
+    resolved = ProjectFlow(project, owner).plan(
+        flow=flow,
+        target=target,
+        profile=profile,
+    )
+    if resolved.plan_identity != plan_identity:
+        raise ValueError("Flow Plan identity does not match its project plan")
+    return resolved
 
 
 __all__ = [

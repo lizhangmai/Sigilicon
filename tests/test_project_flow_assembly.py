@@ -190,6 +190,42 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     assert catalog_reads == 1
 
 
+def test_plan_identity_resolution_does_not_read_unrelated_owner_flows(
+    tmp_path: Path,
+) -> None:
+    source = _write_extension(tmp_path)
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"flow": _owner_flow_files(tmp_path, source)},
+    )
+    _declare_extension(tmp_path, "example", source)
+    _write_owner_flow(tmp_path)
+    unrelated_flow = tmp_path / "ip/unrelated/broken.toml"
+    unrelated_flow.parent.mkdir(parents=True)
+    unrelated_flow.write_text("not valid toml = [", encoding="utf-8")
+    write_component_owner(
+        tmp_path,
+        "unrelated",
+        filesets={"flow": ("ip/unrelated/broken.toml",)},
+    )
+    project = Project.from_project_root(tmp_path)
+
+    resolved = resolve_project_flow_plan(
+        project,
+        "example:owner-flow:all:local",
+    )
+
+    assert resolved.plan_identity == "example:owner-flow:all:local"
+    for identity in (
+        "",
+        "example:owner-flow:all",
+        "example:owner-flow:all:local:extra",
+    ):
+        with pytest.raises(ValueError, match="Flow Plan identity"):
+            resolve_project_flow_plan(project, identity)
+
+
 def test_project_extension_content_is_bound_to_plan_and_preflight(
     tmp_path: Path,
 ) -> None:
