@@ -22,6 +22,10 @@ _RESULT_STATUSES = frozenset({"valid", "failed", "partial", "uncertain"})
 _EXECUTION_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 _FLOW_PROGRESS_STATUSES = frozenset({"running", "accepted", "failed", "cancelled"})
 EXECUTION_CAPABILITIES = frozenset({"execute-derived", "mutate-workspace"})
+EVIDENCE_ROLES = frozenset(
+    {"diagnostic", "regression", "qualification", "signoff"}
+)
+EVIDENCE_LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
 
 
 class FlowContractError(ValueError):
@@ -30,6 +34,99 @@ class FlowContractError(ValueError):
 
 class FlowExecutionError(RuntimeError):
     """A planned Action could not produce a valid result."""
+
+
+@dataclass(frozen=True)
+class ActionConfiguration(Mapping[str, Any]):
+    """One Action-owned configuration compiled from its wire payload."""
+
+    action_kind: str
+    values: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        identifier(self.action_kind, "action configuration kind")
+        object.__setattr__(
+            self,
+            "values",
+            _portable_mapping(
+                self.values,
+                "Action configuration",
+                FlowContractError,
+            ),
+        )
+
+    def __getitem__(self, name: str) -> Any:
+        return self.values[name]
+
+    def __iter__(self):
+        return iter(self.values)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+
+@dataclass(frozen=True)
+class AdapterConfiguration(Mapping[str, Any]):
+    """One Adapter-owned configuration compiled from an Execution Profile."""
+
+    adapter: str
+    values: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        identifier(self.adapter, "Adapter configuration identity")
+        object.__setattr__(
+            self,
+            "values",
+            _portable_mapping(
+                self.values,
+                "Adapter configuration",
+                FlowContractError,
+            ),
+        )
+
+    def __getitem__(self, name: str) -> Any:
+        return self.values[name]
+
+    def __iter__(self):
+        return iter(self.values)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+
+@dataclass(frozen=True)
+class EvidenceEnvelope:
+    """Cross-domain evidence classification; domain payloads remain separate."""
+
+    role: str
+    level: str
+    scope: str
+
+    def __post_init__(self) -> None:
+        if self.role not in EVIDENCE_ROLES:
+            raise FlowContractError(f"unsupported evidence role: {self.role!r}")
+        if self.level not in EVIDENCE_LEVELS:
+            raise FlowContractError(f"unsupported evidence level: {self.level!r}")
+        _semantic_identity(self.scope, "evidence scope")
+
+    @classmethod
+    def from_action_config(
+        cls,
+        config: Mapping[str, Any],
+    ) -> "EvidenceEnvelope | None":
+        fields = ("evidence_role", "evidence_level", "evidence_scope")
+        present = tuple(name for name in fields if name in config)
+        if not present:
+            return None
+        if len(present) != len(fields):
+            missing = sorted(set(fields) - set(present))
+            raise FlowContractError(
+                f"evidence envelope is missing fields: {missing}"
+            )
+        values = tuple(config[name] for name in fields)
+        if any(not isinstance(value, str) for value in values):
+            raise FlowContractError("evidence envelope fields must be text")
+        return cls(*values)
 
 
 def identifier(value: str, label: str) -> str:
@@ -605,7 +702,9 @@ class FlowSpec:
 class PlannedNode:
     node: FlowNode
     adapter: str
-    adapter_config: Mapping[str, Any]
+    action_config: ActionConfiguration
+    adapter_config: AdapterConfiguration
+    evidence: EvidenceEnvelope | None
     required_capabilities: tuple[str, ...]
     platform_assets: tuple[PlatformAssetRequirement, ...]
     dependencies: tuple[str, ...]
@@ -942,8 +1041,8 @@ class ActionContext:
     output_root: Path
     log_root: Path
     inputs: Mapping[str, InputArtifact]
-    action_config: Mapping[str, Any]
-    adapter_config: Mapping[str, Any]
+    action_config: ActionConfiguration
+    adapter_config: AdapterConfiguration
     capabilities: Mapping[str, ResolvedCapability]
     platform_assets: Mapping[str, ResolvedPlatformAsset]
     source_assets: SourceAssets | None = None

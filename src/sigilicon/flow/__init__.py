@@ -28,9 +28,11 @@ from sigilicon.flow.environment import (
 from sigilicon.flow.fake import fake_profile, fake_registry
 from sigilicon.flow.model import (
     ActionArtifact,
+    ActionConfiguration,
     ActionContext,
     ActionContract,
     AdapterExecution,
+    AdapterConfiguration,
     AdapterResult,
     AdapterResultError,
     AdapterSelection,
@@ -39,6 +41,7 @@ from sigilicon.flow.model import (
     CollectedActionResult,
     ExecutionEnvironment,
     ExecutionProfile,
+    EvidenceEnvelope,
     FlowCatalog,
     FlowCatalogEntry,
     FlowContractError,
@@ -117,9 +120,11 @@ from sigilicon.flow.source_assets import (
 )
 __all__ = [
     "ActionArtifact",
+    "ActionConfiguration",
     "ActionContext",
     "ActionContract",
     "AdapterExecution",
+    "AdapterConfiguration",
     "AdapterResult",
     "AdapterResultError",
     "AdapterSelection",
@@ -134,6 +139,7 @@ __all__ = [
     "ExecutionEnvironment",
     "ExecutionEnvironmentContract",
     "ExecutionProfile",
+    "EvidenceEnvelope",
     "FlowCatalog",
     "FlowCatalogEntry",
     "FlowContractError",

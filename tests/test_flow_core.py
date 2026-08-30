@@ -10,12 +10,15 @@ from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
+    ActionConfiguration,
     AdapterExecution,
+    AdapterConfiguration,
     AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionProfile,
+    EvidenceEnvelope,
     FlowContractError,
     FlowEngine,
     FlowExecutionError,
@@ -343,6 +346,96 @@ def test_plan_rejects_an_unavailable_action_in_the_selected_target_closure() -> 
 
     with pytest.raises(FlowContractError, match="unknown Action"):
         FlowEngine(registered).plan(spec, "all", fake_profile())
+
+
+def test_plan_compiles_typed_config_and_evidence_envelope() -> None:
+    registered, *_ = registry()
+    spec = flow_spec()
+    source = spec.node("source")
+    typed_spec = FlowSpec(
+        owner=spec.owner,
+        flow_id=spec.flow_id,
+        nodes=(
+            FlowNode(
+                node_id=source.node_id,
+                action_kind=source.action_kind,
+                config={
+                    **source.config,
+                    "evidence_role": "diagnostic",
+                    "evidence_level": "l1",
+                    "evidence_scope": "source-contract",
+                },
+            ),
+            *spec.nodes[1:],
+        ),
+        targets=spec.targets,
+        policies=spec.policies,
+    )
+
+    plan = FlowEngine(registered).plan(
+        typed_spec,
+        "qualification",
+        fake_profile(),
+    )
+    planned = plan.planned_node("source")
+
+    assert isinstance(planned.action_config, ActionConfiguration)
+    assert planned.action_config.action_kind == "fake.source"
+    assert isinstance(planned.adapter_config, AdapterConfiguration)
+    assert planned.adapter_config.adapter == "fake-source"
+    assert planned.evidence == EvidenceEnvelope(
+        role="diagnostic",
+        level="l1",
+        scope="source-contract",
+    )
+    assert FlowEngine(registered).plan_record(plan)["nodes"][0]["evidence"] == {
+        "role": "diagnostic",
+        "level": "l1",
+        "scope": "source-contract",
+    }
+
+
+@pytest.mark.parametrize(
+    "config, message",
+    (
+        ({"evidence_role": "diagnostic"}, "missing fields"),
+        (
+            {
+                "evidence_role": "observation",
+                "evidence_level": "l1",
+                "evidence_scope": "source-contract",
+            },
+            "unsupported evidence role",
+        ),
+        (
+            {
+                "evidence_role": "diagnostic",
+                "evidence_level": "cell",
+                "evidence_scope": "source-contract",
+            },
+            "unsupported evidence level",
+        ),
+    ),
+)
+def test_plan_rejects_invalid_evidence_envelopes(
+    config: dict[str, str],
+    message: str,
+) -> None:
+    registered, *_ = registry()
+    spec = FlowSpec(
+        owner="example",
+        flow_id="invalid-evidence",
+        nodes=(FlowNode("source", "fake.source", {"text": "x", **config}),),
+        targets=(FlowTarget("all", ("source",)),),
+    )
+    profile = ExecutionProfile(
+        owner="example",
+        profile_id="fake",
+        selections=(AdapterSelection("fake.source", "fake-source"),),
+    )
+
+    with pytest.raises(FlowContractError, match=message):
+        FlowEngine(registered).plan(spec, "all", profile)
 
 
 def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:

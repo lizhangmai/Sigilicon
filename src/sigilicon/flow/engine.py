@@ -21,15 +21,18 @@ from sigilicon.artifacts import (
 from sigilicon.flow.environment import capability_available
 from sigilicon.flow.model import (
     ActionArtifact,
+    ActionConfiguration,
     ActionContext,
     ActionContract,
     AdapterResult,
     AdapterResultError,
+    AdapterConfiguration,
     AdapterExecution,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
     ExecutionProfile,
+    EvidenceEnvelope,
     FlowContractError,
     FlowExecutionError,
     FlowPlan,
@@ -81,6 +84,7 @@ _NODE_EXTENSION_RESERVED = frozenset(
         "dependencies",
         "bindings",
         "source_assets",
+        "evidence",
     }
 )
 _REQUEST_EXTENSION_RESERVED = frozenset(
@@ -96,6 +100,7 @@ _REQUEST_EXTENSION_RESERVED = frozenset(
         "execution_environment",
         "inputs",
         "source_assets",
+        "evidence",
     }
 )
 _RESERVED_EXTENSIONS = _NODE_EXTENSION_RESERVED | _REQUEST_EXTENSION_RESERVED
@@ -261,8 +266,8 @@ def _plan_payload(
             "id": item.node.node_id,
             "action": item.node.action_kind,
             "adapter": item.adapter,
-            "action_config": json_value(item.node.config),
-            "adapter_config": json_value(item.adapter_config),
+            "action_config": json_value(item.action_config.values),
+            "adapter_config": json_value(item.adapter_config.values),
             "required_capabilities": list(item.required_capabilities),
             "execution_capability": item.execution_capability,
             "platform_assets": [
@@ -277,6 +282,8 @@ def _plan_payload(
                 else source_assets_payload(item.source_assets)
             ),
         }
+        if item.evidence is not None:
+            value["evidence"] = json_value(item.evidence)
         value.update(json_value(item.node.extensions))
         return value
 
@@ -481,7 +488,15 @@ class FlowEngine:
                 PlannedNode(
                     node=node,
                     adapter=selection.adapter,
-                    adapter_config=selection.config,
+                    action_config=ActionConfiguration(
+                        node.action_kind,
+                        node.config,
+                    ),
+                    adapter_config=AdapterConfiguration(
+                        selection.adapter,
+                        selection.config,
+                    ),
+                    evidence=EvidenceEnvelope.from_action_config(node.config),
                     required_capabilities=tuple(
                         dict.fromkeys(
                             (
@@ -801,7 +816,7 @@ class FlowEngine:
                 output_root=output_root,
                 log_root=log_root,
                 inputs=MappingProxyType(inputs),
-                action_config=node.config,
+                action_config=planned.action_config,
                 adapter_config=planned.adapter_config,
                 capabilities=MappingProxyType(
                     {
@@ -827,8 +842,8 @@ class FlowEngine:
                 "action": node.action_kind,
                 "adapter": planned.adapter,
                 "operation_id": operation_record.operation_id,
-                "action_config": json_value(node.config),
-                "adapter_config": json_value(planned.adapter_config),
+                "action_config": json_value(planned.action_config.values),
+                "adapter_config": json_value(planned.adapter_config.values),
                 "execution_environment": environment_payload,
                 "inputs": {
                     role: self._artifact_payload(artifact, run_root)
@@ -840,6 +855,8 @@ class FlowEngine:
                     else source_assets_payload(planned.source_assets)
                 ),
             }
+            if planned.evidence is not None:
+                request["evidence"] = json_value(planned.evidence)
             request.update(json_value(node.extensions))
             atomic_write_json(input_root / "action_request.json", request)
             started = _utc_now()
