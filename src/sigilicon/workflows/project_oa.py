@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from sigilicon.domain.repository import Project
+from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.workflows.oa_check import check_oa_library
 from sigilicon.workflows.oa_library import (
     OALibraryRebuildPlan,
@@ -23,21 +23,23 @@ from sigilicon.workflows.oa_simulation import (
 
 @dataclass(frozen=True)
 class ProjectOaWorkflow:
-    """Own native OA planning, checking, rebuilding, and testbench execution."""
+    """Owner-bound native OA planning, checking, rebuilding, and execution."""
 
     project: Project
+    owner_name: str
+    _manifest: Path = field(init=False, repr=False)
 
-    @classmethod
-    def from_file(cls, project_contract: Path | str) -> "ProjectOaWorkflow":
-        return cls(Project.from_file(project_contract))
+    def __post_init__(self) -> None:
+        owner = self.project.owner(self.owner_name)
+        manifest = self.project.oa_assembly_for(owner.root)
+        if manifest is None:
+            raise ValueError(f"project owner {owner.name!r} has no OA assembly")
+        object.__setattr__(self, "owner_name", owner.name)
+        object.__setattr__(self, "_manifest", manifest)
 
-    def _manifest(self, value: Path | str) -> Path:
-        candidate = Path(value)
-        return (
-            candidate.resolve()
-            if candidate.is_absolute()
-            else (self.project.project_root / candidate).resolve()
-        )
+    @property
+    def owner(self) -> RepositoryOwner:
+        return self.project.owner(self.owner_name)
 
     @staticmethod
     def _testbench(
@@ -49,44 +51,34 @@ class ProjectOaWorkflow:
             raise ValueError(f"unknown OA testbench in assembly: {testbench}")
         return matches[0]
 
-    def plan(
-        self,
-        manifest: Path | str,
-        *,
-        library: str | None = None,
-    ) -> OALibraryRebuildPlan:
+    def plan(self) -> OALibraryRebuildPlan:
         return plan_oa_library_rebuild(
-            self._manifest(manifest),
+            self._manifest,
             project=self.project,
-            library=library,
         )
 
     def check(
         self,
-        manifest: Path | str,
         *,
-        library: str | None,
         client: Any,
         timeout: int = 300,
     ) -> dict[str, Any]:
         return check_oa_library(
-            self._manifest(manifest),
+            self._manifest,
             project=self.project,
-            library=library,
+            library=None,
             client=client,
             timeout=timeout,
         )
 
     def attest(
         self,
-        manifest: Path | str,
         *,
-        library: str | None,
         testbench: str,
         client: Any,
         timeout: int = 300,
     ) -> dict[str, object]:
-        plan = self.plan(manifest, library=library)
+        plan = self.plan()
         return attest_oa_testbench(
             plan,
             self._testbench(plan, testbench),
@@ -96,14 +88,12 @@ class ProjectOaWorkflow:
 
     def simulate(
         self,
-        manifest: Path | str,
         *,
-        library: str | None,
         testbench: str,
         client: Any,
         timeout: int = 600,
     ) -> OAMaestroRunResult:
-        plan = self.plan(manifest, library=library)
+        plan = self.plan()
         return run_oa_maestro_testbench(
             plan,
             self._testbench(plan, testbench),
@@ -113,9 +103,7 @@ class ProjectOaWorkflow:
 
     def rebuild(
         self,
-        manifest: Path | str,
         *,
-        library: str | None,
         client: Any,
         cell: str | None = None,
         testbench: str | None = None,
@@ -123,7 +111,7 @@ class ProjectOaWorkflow:
         report: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         return rebuild_oa_library(
-            self.plan(manifest, library=library),
+            self.plan(),
             client,
             cell=cell,
             testbench=testbench,

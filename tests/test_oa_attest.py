@@ -1,9 +1,30 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from sigilicon.cli import flow as flow_cli
 from sigilicon.cli.flow import _parser
+from conftest import write_component_owner
+
+
+def _write_oa_owner(root: Path) -> None:
+    manifest = root / "ip/fixture/configs/oa.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '''schema = 1
+contract_kind = "oa-assembly"
+path_scope = "owner"
+owner = "fixture"
+''',
+        encoding="utf-8",
+    )
+    write_component_owner(
+        root,
+        "fixture",
+        filesets={"oa_source": ("ip/fixture/configs/oa.toml",)},
+    )
 
 
 def test_attest_is_a_current_testbench_setup_check() -> None:
@@ -11,10 +32,8 @@ def test_attest_is_a_current_testbench_setup_check() -> None:
         [
             "oa",
             "attest",
-            "--manifest",
-            "ip/fixture_block/configs/oa.toml",
-            "--library",
-            "fixture_lib",
+            "--owner",
+            "fixture",
             "--testbench",
             "tb_main",
         ]
@@ -30,10 +49,8 @@ def test_simulation_has_no_temporary_work_retention_option() -> None:
         [
             "oa",
             "simulate",
-            "--manifest",
-            "ip/fixture_block/configs/oa.toml",
-            "--library",
-            "fixture_lib",
+            "--owner",
+            "fixture",
             "--testbench",
             "tb_main",
         ]
@@ -45,8 +62,8 @@ def test_simulation_has_no_temporary_work_retention_option() -> None:
             [
                 "oa",
                 "simulate",
-                "--manifest",
-                "ip/fixture_block/configs/oa.toml",
+                "--owner",
+                "fixture",
                 "--testbench",
                 "tb_main",
                 "--keep-work",
@@ -59,10 +76,8 @@ def test_rebuild_can_select_exactly_one_design_cell() -> None:
         [
             "oa",
             "rebuild",
-            "--manifest",
-            "ip/fixture_block/configs/oa.toml",
-            "--library",
-            "fixture_lib",
+            "--owner",
+            "fixture",
             "--cell",
             "FIXTURE_CELL",
         ]
@@ -76,6 +91,7 @@ def test_cli_attest_reports_current_check_without_prior_state(
     monkeypatch, capsys, tmp_path
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _write_oa_owner(tmp_path)
     payload = {
         "passed": True,
         "library": "fixture_lib",
@@ -94,10 +110,8 @@ def test_cli_attest_reports_current_check_without_prior_state(
             [
                 "oa",
                 "attest",
-                "--manifest",
-                "ip/fixture_block/configs/oa.toml",
-                "--library",
-                "fixture_lib",
+                "--owner",
+                "fixture",
                 "--testbench",
                 "tb_main",
             ],

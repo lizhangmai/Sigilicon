@@ -21,10 +21,8 @@ def test_oa_check_is_a_parser_action_with_no_mutating_arguments() -> None:
         [
             "oa",
             "check",
-            "--manifest",
-            "ip/fixture_block/configs/oa.toml",
-            "--library",
-            "fixture_lib",
+            "--owner",
+            "fixture",
         ]
     )
 
@@ -37,7 +35,7 @@ def test_oa_check_is_a_parser_action_with_no_mutating_arguments() -> None:
 def test_oa_check_has_no_alias_actions(retired_action: str) -> None:
     with pytest.raises(SystemExit):
         _parser().parse_args(
-            ["oa", retired_action, "--manifest", "ip/example/configs/oa.toml"]
+            ["oa", retired_action, "--owner", "fixture"]
         )
 
 

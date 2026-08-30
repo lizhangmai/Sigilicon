@@ -13,7 +13,6 @@ from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.native_diagnostics import NativeDiagnosticReport
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import TextSourceSnapshot
-from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
@@ -22,7 +21,6 @@ from sigilicon.workflows.oa_library import (
     OALibraryRebuildPlan,
     TestbenchRebuildStep,
     check_oa_parity,
-    plan_oa_library_rebuild,
 )
 from sigilicon.workflows.source_control import artifact_source_state
 
@@ -615,33 +613,6 @@ def run_oa_maestro_testbench(
     return _run_native_oa_maestro_testbench(
         plan,
         step,
-        client,
-        timeout=timeout,
-    )
-
-
-def run_named_oa_maestro_testbench(
-    manifest: Path,
-    *,
-    project: Project,
-    library: str,
-    testbench: str,
-    client: Any,
-    timeout: int = 600,
-) -> OAMaestroRunResult:
-    """Resolve and run one testbench through its source assembly contract."""
-
-    plan = plan_oa_library_rebuild(
-        manifest,
-        project=project,
-        library=library,
-    )
-    matches = [step for step in plan.testbenches if step.cell == testbench]
-    if len(matches) != 1:
-        raise ValueError(f"unknown OA testbench in assembly: {testbench}")
-    return run_oa_maestro_testbench(
-        plan,
-        matches[0],
         client,
         timeout=timeout,
     )

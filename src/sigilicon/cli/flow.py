@@ -195,13 +195,9 @@ def _parser() -> argparse.ArgumentParser:
     ):
         action_parser = oa_commands.add_parser(action, help=help_text)
         action_parser.add_argument(
-            "--manifest",
+            "--owner",
             required=True,
-            help="project-relative OA library contract",
-        )
-        action_parser.add_argument(
-            "--library",
-            help="assert the unique target library identity",
+            help="cataloged project owner with one canonical OA assembly",
         )
         add_json_arg(action_parser)
         if action in {"attest", "simulate"}:
@@ -468,7 +464,6 @@ def _run_oa(
     workflow: ProjectOaWorkflow,
     client_factory: Any,
 ) -> int:
-    manifest = Path(args.manifest)
     if args.action == "check":
         try:
             try:
@@ -479,8 +474,6 @@ def _run_oa(
                 # unavailable.
                 client = UnavailableBridge(exc)
             payload = workflow.check(
-                manifest,
-                library=args.library,
                 client=client,
                 timeout=args.timeout,
             )
@@ -493,22 +486,18 @@ def _run_oa(
         return 0 if bool(payload.get("passed")) else 1
     try:
         if args.action == "plan":
-            plan = workflow.plan(manifest, library=args.library)
+            plan = workflow.plan()
             payload = plan.as_dict()
         else:
             client = client_factory()
             if args.action == "attest":
                 payload = workflow.attest(
-                    manifest,
-                    library=args.library,
                     testbench=args.testbench,
                     client=client,
                     timeout=args.timeout,
                 )
             elif args.action == "simulate":
                 result = workflow.simulate(
-                    manifest,
-                    library=args.library,
                     testbench=args.testbench,
                     client=client,
                     timeout=args.timeout,
@@ -516,8 +505,6 @@ def _run_oa(
                 payload = result.as_dict()
             else:
                 payload = workflow.rebuild(
-                    manifest,
-                    library=args.library,
                     client=client,
                     cell=args.cell,
                     testbench=args.testbench,
@@ -581,9 +568,13 @@ def main(
     project_contract = discover_project_contract(__file__)
     project = load_project(project_contract)
     if args.domain == "oa":
+        try:
+            workflow = ProjectOaWorkflow(project, args.owner)
+        except ValueError as exc:
+            die(f"ERROR: {exc}")
         return _run_oa(
             args,
-            ProjectOaWorkflow(project),
+            workflow,
             client_factory,
         )
     if args.domain == "layout":
