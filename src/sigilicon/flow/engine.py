@@ -57,6 +57,7 @@ from sigilicon.flow.source_assets import (
     source_assets_payload,
     source_member_matches,
 )
+from sigilicon.flow.topology import resolve_target_topology
 from sigilicon.paths import (
     ArtifactExecutionPaths,
     ArtifactLayout,
@@ -409,10 +410,11 @@ class FlowEngine:
                 f"Flow owner {spec.owner!r}"
             )
         target = spec.target(target_id)
-        node_order = {node.node_id: index for index, node in enumerate(spec.nodes)}
-        dependencies: dict[str, tuple[str, ...]] = {}
+        target_topology = resolve_target_topology(spec, target_id)
+        dependencies = target_topology.dependencies
         source_assets: dict[str, Any] = {}
-        for node in spec.nodes:
+        for node_id in target_topology.nodes:
+            node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
             selection = profile.selection(node.action_kind)
             if selection.adapter not in contract.adapters:
@@ -459,43 +461,8 @@ class FlowEngine:
                     )
             for predecessor in node.order_after:
                 spec.node(predecessor)
-            dependencies[node.node_id] = tuple(
-                dict.fromkeys((*data_dependencies, *node.order_after))
-            )
-
-        selected: set[str] = set()
-        pending = list(target.goals)
-        while pending:
-            node_id = pending.pop()
-            spec.node(node_id)
-            if node_id in selected:
-                continue
-            selected.add(node_id)
-            pending.extend(dependencies[node_id])
-
-        remaining = {
-            node_id: {item for item in dependencies[node_id] if item in selected}
-            for node_id in selected
-        }
-        ready = sorted(
-            (node_id for node_id, values in remaining.items() if not values),
-            key=node_order.__getitem__,
-        )
-        topology: list[str] = []
-        while ready:
-            node_id = ready.pop(0)
-            topology.append(node_id)
-            for candidate in sorted(selected - set(topology), key=node_order.__getitem__):
-                if node_id in remaining[candidate]:
-                    remaining[candidate].remove(node_id)
-                    if not remaining[candidate] and candidate not in ready:
-                        ready.append(candidate)
-            ready.sort(key=node_order.__getitem__)
-        if len(topology) != len(selected):
-            cyclic = sorted(selected - set(topology), key=node_order.__getitem__)
-            raise FlowContractError(f"Flow contains a dependency cycle: {cyclic}")
         planned_items: list[PlannedNode] = []
-        for node_id in topology:
+        for node_id in target_topology.nodes:
             node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
             selection = profile.selection(node.action_kind)
@@ -541,13 +508,12 @@ class FlowEngine:
                 )
             )
         planned = tuple(planned_items)
-        topology_tuple = tuple(topology)
         return FlowPlan(
             spec=spec,
             profile=profile,
             target=target,
             nodes=planned,
-            topology=topology_tuple,
+            topology=target_topology.nodes,
         )
 
     def plan_record(self, plan: FlowPlan) -> dict[str, Any]:

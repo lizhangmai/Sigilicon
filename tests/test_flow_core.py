@@ -301,6 +301,50 @@ def test_plan_validates_typed_bindings_before_creating_a_run(tmp_path: Path) -> 
     assert not (tmp_path / "artifacts").exists()
 
 
+def test_plan_validates_only_the_selected_target_closure() -> None:
+    registered, *_ = registry()
+    spec = flow_spec()
+    spec = FlowSpec(
+        owner=spec.owner,
+        flow_id=spec.flow_id,
+        nodes=(
+            *spec.nodes,
+            FlowNode(
+                node_id="unselected-external-tool",
+                action_kind="unavailable.external-tool",
+            ),
+        ),
+        targets=spec.targets,
+        policies=spec.policies,
+    )
+
+    plan = FlowEngine(registered).plan(spec, "qualification", fake_profile())
+
+    assert plan.topology == ("source", "transform", "verify")
+    assert all(
+        node.node.action_kind != "unavailable.external-tool"
+        for node in plan.nodes
+    )
+
+
+def test_plan_rejects_an_unavailable_action_in_the_selected_target_closure() -> None:
+    registered, *_ = registry()
+    spec = FlowSpec(
+        owner="example",
+        flow_id="selected-external-tool",
+        nodes=(
+            FlowNode(
+                node_id="selected-external-tool",
+                action_kind="unavailable.external-tool",
+            ),
+        ),
+        targets=(FlowTarget("all", ("selected-external-tool",)),),
+    )
+
+    with pytest.raises(FlowContractError, match="unknown Action"):
+        FlowEngine(registered).plan(spec, "all", fake_profile())
+
+
 def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:
     registered = FlowRegistry()
     registered.register_action(
