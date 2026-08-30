@@ -22,6 +22,7 @@ from sigilicon.domain.config_contracts import (
 )
 from sigilicon.domain.ip_release import (
     OaMixedSignalIpInterface,
+    OaNativeIpInterface,
     RtlIpInterface,
     load_ip_contract,
     resolve_ip_contract,
@@ -264,6 +265,140 @@ contract = "ip/rtl_fixture/configs/release.toml"
     return contract
 
 
+def _native_oa_contract_fixture(root: Path) -> Path:
+    write_project_context(root)
+    owner = root / "ip/native_fixture"
+    configs = owner / "configs"
+    sources = owner / "sources"
+    configs.mkdir(parents=True)
+    sources.mkdir()
+    (configs / "oa.toml").write_text("name = 'native-lib'\n", encoding="utf-8")
+    (configs / "interface.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "native-fixture"
+
+[physical]
+library = "native-lib"
+cell = "NATIVE_TOP"
+port_count = 2
+canonical_port_contract = "ip/native_fixture/sources/design.toml"
+
+[behavior]
+result = "native circuit response"
+
+[supplies]
+domains = []
+''',
+        encoding="utf-8",
+    )
+    (sources / "design.toml").write_text(
+        '''[ports]
+order = ["IN", "OUT"]
+
+[ports.directions]
+IN = "input"
+OUT = "output"
+''',
+        encoding="utf-8",
+    )
+    (sources / "circuit.scs").write_text(
+        "subckt NATIVE_TOP IN OUT\nends NATIVE_TOP\n",
+        encoding="utf-8",
+    )
+    (configs / "ip.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "native-fixture"
+
+name = "native-fixture"
+kind = "hard-macro"
+
+[filesets]
+interface = ["ip/native_fixture/configs/interface.toml"]
+ports = ["ip/native_fixture/sources/design.toml"]
+circuit = ["ip/native_fixture/sources/circuit.scs"]
+''',
+        encoding="utf-8",
+    )
+    contract = configs / "release.toml"
+    contract.write_text(
+        '''schema = 1
+contract_kind = "ip-release"
+path_scope = "owner"
+owner = "native-fixture"
+
+name = "native-fixture"
+producer = "ip/native_fixture"
+component = "configs/ip.toml"
+default_maturity = "development"
+
+[[exports]]
+name = "native-top"
+[exports.oa]
+library = "native-lib"
+cell = "NATIVE_TOP"
+schematic_view = "schematic"
+layout_view = "layout"
+[exports.interface]
+kind = "oa-native"
+contract = "configs/interface.toml"
+[exports.maturity.development]
+required_roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
+[exports.maturity.implementation]
+required_roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
+[exports.maturity.signoff]
+required_roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
+
+[[collateral]]
+export = "native-top"
+role = "interface_contract"
+component = "native-fixture"
+fileset = "interface"
+package_path = "exports/native-top/interface.toml"
+format = "toml"
+
+[[collateral]]
+export = "native-top"
+role = "oa_port_contract"
+component = "native-fixture"
+fileset = "ports"
+package_path = "exports/native-top/design.toml"
+format = "toml"
+
+[[collateral]]
+export = "native-top"
+role = "circuit_netlist"
+component = "native-fixture"
+fileset = "circuit"
+package_path = "exports/native-top/circuit.scs"
+format = "spectre-source"
+capabilities = ["circuit_simulation"]
+
+[source]
+oa_assembly = "ip/native_fixture/configs/oa.toml"
+files = []
+''',
+        encoding="utf-8",
+    )
+    catalog = root / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8")
+        + '''
+[components.native-fixture]
+contract = "ip/native_fixture/configs/ip.toml"
+root = "ip/native_fixture"
+
+[targets.native-fixture]
+contract = "ip/native_fixture/configs/release.toml"
+''',
+        encoding="utf-8",
+    )
+    return contract
+
+
 def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> None:
     contract = load_ip_contract(_contract_fixture(tmp_path), project_root=tmp_path)
 
@@ -280,6 +415,95 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
         "interface_contract",
         "interface_contract",
     ]
+
+
+def test_native_oa_release_keeps_its_domain_interface_and_audits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    exported = contract.get_export("native-top")
+    assert isinstance(exported.interface, OaNativeIpInterface)
+
+    monkeypatch.setattr(
+        ip_packaging,
+        "_source_inputs",
+        lambda *_args, **_kwargs: (
+            "ip/native_fixture/configs/release.toml",
+        ),
+    )
+    monkeypatch.setattr(
+        ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+    )
+
+    plan = ip_packaging.plan_ip_release_contract(contract)
+
+    assert plan["missing_items"] == []
+    assert plan["exports"] == [
+        {
+            "name": "native-top",
+            "oa": {
+                "library": "native-lib",
+                "cell": "NATIVE_TOP",
+                "schematic_view": "schematic",
+                "layout_view": "layout",
+            },
+            "interface": {
+                "kind": "oa-native",
+                "contract": "ip/native_fixture/configs/interface.toml",
+            },
+            "maturity": {
+                "required_roles": [
+                    "interface_contract",
+                    "oa_port_contract",
+                    "circuit_netlist",
+                ],
+                "missing_items": [],
+            },
+            "availability": {
+                "simulation": True,
+                "synthesis": False,
+                "physical_implementation": False,
+            },
+        }
+    ]
+    assert plan["maturity_checks"][1] == {
+        "name": "development_interface_consistency:native-top",
+        "export": "native-top",
+        "passed": True,
+        "interface_kind": "oa-native",
+        "oa_library": "native-lib",
+        "oa_cell": "NATIVE_TOP",
+        "physical_port_count": 2,
+        "native_oa_port_contract_checked": True,
+    }
+
+    built = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    manifest = contract.project.artifact_root / built["manifest"]
+    assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
+        plan["exports"]
+    )
+
+
+def test_native_oa_release_rejects_circuit_port_order_drift(
+    tmp_path: Path,
+) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    (tmp_path / "ip/native_fixture/sources/circuit.scs").write_text(
+        "subckt NATIVE_TOP OUT IN\nends NATIVE_TOP\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="circuit pin order"):
+        ip_packaging._development_interface_check(
+            contract,
+            contract.get_export("native-top"),
+        )
 
 
 def test_rtl_release_plans_and_audits_without_oa_sources(

@@ -77,6 +77,18 @@ class OaMixedSignalIpInterface:
 
 
 @dataclass(frozen=True)
+class OaNativeIpInterface:
+    """A native OA circuit boundary without a synthesized transaction shell."""
+
+    kind: Literal["oa-native"]
+    contract: PurePosixPath
+    library: str
+    cell: str
+    schematic_view: str
+    layout_view: str
+
+
+@dataclass(frozen=True)
 class RtlIpInterface:
     kind: Literal["rtl"]
     contract: PurePosixPath
@@ -85,7 +97,8 @@ class RtlIpInterface:
     variant: str | None = None
 
 
-IpInterface = OaMixedSignalIpInterface | RtlIpInterface
+OaIpInterface = OaMixedSignalIpInterface | OaNativeIpInterface
+IpInterface = OaIpInterface | RtlIpInterface
 
 
 @dataclass(frozen=True)
@@ -221,32 +234,46 @@ def _parse_ip_contract(
             interface.get("contract"),
             f"exports[{index}].interface.contract",
         )
-        if interface_kind == "oa-mixed-signal":
+        if interface_kind in {"oa-mixed-signal", "oa-native"}:
             oa = _table(entry.get("oa"), f"exports[{index}].oa")
-            parsed_interface: IpInterface = OaMixedSignalIpInterface(
-                kind="oa-mixed-signal",
-                contract=interface_contract,
-                library=_string(
+            oa_identity = {
+                "contract": interface_contract,
+                "library": _string(
                     oa.get("library"), f"exports[{index}].oa.library"
                 ),
-                cell=_string(oa.get("cell"), f"exports[{index}].oa.cell"),
-                schematic_view=_string(
+                "cell": _string(oa.get("cell"), f"exports[{index}].oa.cell"),
+                "schematic_view": _string(
                     oa.get("schematic_view"),
                     f"exports[{index}].oa.schematic_view",
                 ),
-                layout_view=_string(
+                "layout_view": _string(
                     oa.get("layout_view"),
                     f"exports[{index}].oa.layout_view",
                 ),
-                physical=_string(
-                    interface.get("physical"),
-                    f"exports[{index}].interface.physical",
-                ),
-                logical=_string(
-                    interface.get("logical"),
-                    f"exports[{index}].interface.logical",
-                ),
-            )
+            }
+            if interface_kind == "oa-native":
+                if "physical" in interface or "logical" in interface:
+                    raise ValueError(
+                        f"exports[{index}] native OA interface cannot declare "
+                        "mixed-signal interface identities"
+                    )
+                parsed_interface = OaNativeIpInterface(
+                    kind="oa-native",
+                    **oa_identity,
+                )
+            else:
+                parsed_interface = OaMixedSignalIpInterface(
+                    kind="oa-mixed-signal",
+                    physical=_string(
+                        interface.get("physical"),
+                        f"exports[{index}].interface.physical",
+                    ),
+                    logical=_string(
+                        interface.get("logical"),
+                        f"exports[{index}].interface.logical",
+                    ),
+                    **oa_identity,
+                )
         elif interface_kind == "rtl":
             if "oa" in entry:
                 raise ValueError(
@@ -401,7 +428,9 @@ def _parse_ip_contract(
             collateral=tuple(collateral_by_export[name]),
             required_roles=MappingProxyType(dict(values["required_roles"])),
         )
-        if isinstance(exported.interface, OaMixedSignalIpInterface):
+        if isinstance(
+            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
+        ):
             oa_identity = (exported.interface.library, exported.interface.cell)
             if oa_identity in oa_identities:
                 raise ValueError(
@@ -442,7 +471,9 @@ def _parse_ip_contract(
     oa_exports = [
         exported
         for exported in exports
-        if isinstance(exported.interface, OaMixedSignalIpInterface)
+        if isinstance(
+            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
+        )
     ]
     oa_assembly_value = source.get("oa_assembly")
     if oa_exports:

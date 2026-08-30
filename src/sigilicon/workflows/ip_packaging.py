@@ -13,11 +13,13 @@ import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json, read_json_object, utc_now
+from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
     IpExport,
     OaMixedSignalIpInterface,
+    OaNativeIpInterface,
     RtlIpInterface,
     load_ip_contract,
     resolve_ip_contract,
@@ -274,6 +276,12 @@ def _development_interface_check_with_design_inventory(
 
     if isinstance(exported.interface, RtlIpInterface):
         return _rtl_development_interface_check(contract, exported)
+    if isinstance(exported.interface, OaNativeIpInterface):
+        return _native_oa_development_interface_check(
+            contract,
+            exported,
+            design_inventory=design_inventory,
+        )
 
     interface = exported.interface
     root = contract.project_root
@@ -398,6 +406,100 @@ def _development_interface_check_with_design_inventory(
     }
 
 
+def _native_oa_development_interface_check(
+    contract: IpContract,
+    exported: IpExport,
+    *,
+    design_inventory: Mapping[Path, DesignSpec] | None,
+) -> dict[str, Any]:
+    """Validate a native OA boundary without imposing a digital adapter schema."""
+
+    interface = exported.interface
+    if not isinstance(interface, OaNativeIpInterface):
+        raise TypeError("native OA validation requires a native OA export")
+    root = contract.project_root
+    producer = _project_path(root, Path(contract.producer), "IP producer")
+    interface_path = _project_path(
+        producer, Path(interface.contract), "interface contract"
+    )
+    raw = contract.interface_documents.get(interface_path)
+    if raw is None:
+        if contract.interface_documents:
+            raise ValueError("IP release interface snapshot is incomplete")
+        with interface_path.open("rb") as stream:
+            raw = tomllib.load(stream)
+    require_config_header(
+        raw,
+        interface_path,
+        contract_kind="ip-interface",
+        path_scope="owner",
+        owner=contract.owner,
+    )
+    physical = _table(raw.get("physical"), "physical")
+    _table(raw.get("behavior"), "behavior")
+    _table(raw.get("supplies"), "supplies")
+    if (
+        physical.get("library") != interface.library
+        or physical.get("cell") != interface.cell
+    ):
+        raise ValueError("native OA identity disagrees with the interface contract")
+    port_count = physical.get("port_count")
+    if isinstance(port_count, bool) or not isinstance(port_count, int) or port_count <= 0:
+        raise ValueError("physical.port_count must be a positive integer")
+
+    by_role = {item.role: item for item in exported.collateral}
+    required_roles = {
+        "interface_contract",
+        "oa_port_contract",
+        "circuit_netlist",
+    }
+    if not required_roles.issubset(by_role):
+        raise ValueError("native OA development interface roles are incomplete")
+    expected_contract = interface_path.relative_to(root).as_posix()
+    if by_role["interface_contract"].source.as_posix() != expected_contract:
+        raise ValueError("interface_contract source disagrees with the native OA interface")
+
+    port_contract_relative = safe_relative(
+        physical.get("canonical_port_contract"),
+        "physical.canonical_port_contract",
+    )
+    port_contract_path = _project_path(
+        root, Path(port_contract_relative), "OA port contract"
+    )
+    if not port_contract_path.is_relative_to(producer):
+        raise ValueError("OA port contract must stay inside the release producer")
+    if by_role["oa_port_contract"].source != port_contract_relative:
+        raise ValueError("oa_port_contract source disagrees with the native OA interface")
+    oa_document = _oa_port_contract_document(
+        contract,
+        port_contract_path,
+        design_inventory=design_inventory,
+    )
+    oa_ports = _oa_port_contract(oa_document)
+    if len(oa_ports) != port_count:
+        raise ValueError("OA port count disagrees with the native OA interface")
+
+    circuit_source = _project_path(
+        root,
+        Path(by_role["circuit_netlist"].source),
+        "canonical circuit netlist",
+    )
+    if not circuit_source.is_relative_to(producer):
+        raise ValueError("canonical circuit netlist must stay inside the release producer")
+    if subckt_ports(circuit_source, interface.cell) != tuple(oa_ports):
+        raise ValueError("canonical circuit pin order disagrees with the OA port contract")
+    return {
+        "name": f"development_interface_consistency:{exported.name}",
+        "export": exported.name,
+        "passed": True,
+        "interface_kind": interface.kind,
+        "oa_library": interface.library,
+        "oa_cell": interface.cell,
+        "physical_port_count": len(oa_ports),
+        "native_oa_port_contract_checked": True,
+    }
+
+
 def _rtl_development_interface_check(
     contract: IpContract, exported: IpExport
 ) -> dict[str, Any]:
@@ -505,7 +607,9 @@ def _source_inputs(
     oa_exports = [
         exported
         for exported in contract.exports
-        if isinstance(exported.interface, OaMixedSignalIpInterface)
+        if isinstance(
+            exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
+        )
     ]
     if not oa_exports:
         _python_import_closure(root, paths)
@@ -801,8 +905,8 @@ def _receipt_problems(
     by_role: Mapping[str, Any],
 ) -> list[str]:
     interface = exported.interface
-    if not isinstance(interface, OaMixedSignalIpInterface):
-        raise TypeError("OA signoff receipts require an OA mixed-signal export")
+    if not isinstance(interface, (OaMixedSignalIpInterface, OaNativeIpInterface)):
+        raise TypeError("OA signoff receipts require an OA export")
     item = by_role[role]
     source = _project_path(
         contract.project_root, Path(item.source), f"{role} source"
@@ -864,7 +968,9 @@ def _qualification_semantics(
     problems: list[str] = []
     for exported in contract.exports:
         interface = exported.interface
-        if not isinstance(interface, OaMixedSignalIpInterface):
+        if not isinstance(
+            interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
+        ):
             continue
         by_role = {item.role: item for item in exported.collateral}
         if level in {"implementation", "signoff"}:
@@ -947,6 +1053,24 @@ def _availability(
                 "synthesis",
                 "physical_implementation",
             )
+        }
+    if isinstance(exported.interface, OaNativeIpInterface):
+        circuit = next(
+            (
+                item
+                for item in exported.collateral
+                if item.role == "circuit_netlist"
+            ),
+            None,
+        )
+        circuit_capabilities = set(circuit.capabilities) if circuit else set()
+        return {
+            "simulation": collateral_passed
+            and bool({"simulation", "circuit_simulation"} & circuit_capabilities),
+            "synthesis": False,
+            "physical_implementation": collateral_passed
+            and level in {"implementation", "signoff"}
+            and set(_IMPLEMENTATION_ROLE_FORMATS).issubset(roles),
         }
     return {
         "simulation": "transaction_model" in roles,
@@ -1051,6 +1175,21 @@ def _export_interface_manifest(
                 "physical": interface.physical,
                 "logical": interface.logical,
                 "interfaces_are_distinct": interface.physical != interface.logical,
+            },
+        }
+    if isinstance(interface, OaNativeIpInterface):
+        return {
+            "oa": {
+                "library": interface.library,
+                "cell": interface.cell,
+                "schematic_view": interface.schematic_view,
+                "layout_view": interface.layout_view,
+            },
+            "interface": {
+                "kind": interface.kind,
+                "contract": (
+                    contract.producer / interface.contract
+                ).as_posix(),
             },
         }
     row = {
@@ -1364,6 +1503,7 @@ def build_ip_release(
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "ip_name": plan["ip_name"],
+                "owner": plan["owner"],
                 "release_id": plan["release_id"],
                 "source_commit": plan["source_commit"],
                 "source_files": plan["source_files"],
@@ -1533,6 +1673,102 @@ def _packaged_rtl_interface_check(
         )
 
 
+def _packaged_native_oa_interface_check(
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    *,
+    export_name: str,
+    exported: Mapping[str, Any],
+    interface: Mapping[str, Any],
+) -> None:
+    if set(interface) != {"kind", "contract"}:
+        raise RuntimeError(
+            f"packaged {export_name} native OA interface fields are invalid"
+        )
+    contract_source = interface.get("contract")
+    if not isinstance(contract_source, str) or not contract_source:
+        raise RuntimeError(
+            f"packaged {export_name} native OA interface identity is invalid"
+        )
+    try:
+        safe_relative(contract_source, f"exports.{export_name}.interface.contract")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    oa = exported.get("oa")
+    if not isinstance(oa, Mapping) or any(
+        not isinstance(oa.get(field), str) or not oa.get(field)
+        for field in ("library", "cell", "schematic_view", "layout_view")
+    ):
+        raise RuntimeError(
+            f"packaged {export_name} native OA identity is invalid"
+        )
+
+    contract_path = resolve_release_role(
+        manifest, manifest_path, "interface_contract", export=export_name
+    )
+    contract_view = release_role_view(
+        manifest, "interface_contract", export=export_name
+    )
+    if contract_view.get("source") != contract_source:
+        raise RuntimeError(
+            f"packaged {export_name} interface contract provenance drifted"
+        )
+    try:
+        with contract_path.open("rb") as stream:
+            raw: dict[str, Any] = tomllib.load(stream)
+        owner = manifest.get("owner")
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("release owner identity is missing")
+        require_config_header(
+            raw,
+            contract_path,
+            contract_kind="ip-interface",
+            path_scope="owner",
+            owner=owner,
+        )
+        physical = _table(raw.get("physical"), "physical")
+        _table(raw.get("behavior"), "behavior")
+        _table(raw.get("supplies"), "supplies")
+        if physical.get("library") != oa.get("library") or physical.get(
+            "cell"
+        ) != oa.get("cell"):
+            raise ValueError("native OA identity disagrees with its interface")
+        port_count = physical.get("port_count")
+        if (
+            isinstance(port_count, bool)
+            or not isinstance(port_count, int)
+            or port_count <= 0
+        ):
+            raise ValueError("physical.port_count must be a positive integer")
+        port_contract_source = safe_relative(
+            physical.get("canonical_port_contract"),
+            "physical.canonical_port_contract",
+        ).as_posix()
+        if release_role_view(
+            manifest, "oa_port_contract", export=export_name
+        ).get("source") != port_contract_source:
+            raise ValueError("OA port contract provenance drifted")
+        port_contract_path = resolve_release_role(
+            manifest, manifest_path, "oa_port_contract", export=export_name
+        )
+        with port_contract_path.open("rb") as stream:
+            expected_ports = _oa_port_contract(tomllib.load(stream))
+        if len(expected_ports) != port_count:
+            raise ValueError("OA port count disagrees with the interface")
+        circuit_path = resolve_release_role(
+            manifest, manifest_path, "circuit_netlist", export=export_name
+        )
+        circuit_ports = subckt_ports(circuit_path, str(oa["cell"]))
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(
+            f"packaged {export_name} native OA interface is invalid: {exc}"
+        ) from exc
+    if circuit_ports != tuple(expected_ports):
+        raise RuntimeError(
+            f"packaged {export_name} circuit pin order disagrees with its OA ports"
+        )
+
+
 def _packaged_interface_check(
     manifest: Mapping[str, Any], manifest_path: Path
 ) -> None:
@@ -1550,6 +1786,15 @@ def _packaged_interface_check(
                 manifest,
                 manifest_path,
                 export_name=export_name,
+                interface=interface,
+            )
+            continue
+        if interface_kind == "oa-native":
+            _packaged_native_oa_interface_check(
+                manifest,
+                manifest_path,
+                export_name=export_name,
+                exported=exported,
                 interface=interface,
             )
             continue
@@ -1722,7 +1967,7 @@ def _packaged_maturity_check(
             if "oa" in exported:
                 problems.append(f"{export_name}:unexpected-oa-identity")
             continue
-        if interface_kind not in {None, "oa-mixed-signal"}:
+        if interface_kind not in {None, "oa-mixed-signal", "oa-native"}:
             problems.append(f"{export_name}:interface-kind")
             continue
         oa = exported.get("oa")
@@ -1898,6 +2143,7 @@ def _audit_loaded_ip_release(
     manifest = audit_ip_release_manifest(release_root / "manifest.json")
     expected = {
         "ip_name": plan["ip_name"],
+        "owner": plan["owner"],
         "release_id": plan["release_id"],
         "source_commit": plan["source_commit"],
         "source_files": plan["source_files"],
