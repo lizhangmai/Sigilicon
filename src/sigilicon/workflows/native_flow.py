@@ -1,0 +1,246 @@
+"""Project-bound Adapters for native-OA and Xcelium typed Actions."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+import json
+from pathlib import Path
+from typing import Any
+
+from sigilicon.domain.repository import Project
+from sigilicon.flow import (
+    ActionContext,
+    AdapterResult,
+    CollectedActionResult,
+    FlowExecutionError,
+    ProducedArtifact,
+)
+from sigilicon.flow.native import (
+    NATIVE_OA_EVIDENCE_KIND,
+    NATIVE_OA_PLAN_KIND,
+    XCELIUM_EVIDENCE_KIND,
+)
+from sigilicon.virtuoso.client import get_client
+from sigilicon.workflows.project_oa import ProjectOaWorkflow
+from sigilicon.workflows.xcelium import run_xcelium_cell
+
+
+_EVIDENCE_ROLES = frozenset(
+    {"diagnostic", "regression", "qualification", "signoff"}
+)
+_EVIDENCE_LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
+
+
+def _require_bound_project(
+    context: ActionContext,
+    project: Project,
+    owner_name: str,
+) -> Project:
+    scope = context.require_project_scope()
+    owner = project.owner(owner_name)
+    if (
+        scope.owner != owner.name
+        or scope.owner_root != owner.root
+        or scope.project.project_root != project.project_root
+        or scope.project.artifact_root != project.artifact_root
+    ):
+        raise FlowExecutionError("Action project owner scope drift")
+    return project
+
+
+def _artifact_reference(path: Path, project: Project) -> str:
+    resolved = path.resolve()
+    for label, root in (
+        ("artifact", project.artifact_root),
+        ("project", project.project_root),
+    ):
+        if resolved.is_relative_to(root):
+            return f"{label}://{resolved.relative_to(root).as_posix()}"
+    raise FlowExecutionError("nested workflow artifact escaped project roots")
+
+
+def _text_config(context: ActionContext, name: str) -> str:
+    value = context.action_config.get(name)
+    if not isinstance(value, str) or not value:
+        raise FlowExecutionError(f"Action config {name!r} must be non-empty text")
+    return value
+
+
+def _evidence_metadata(context: ActionContext) -> dict[str, str]:
+    role = _text_config(context, "evidence_role")
+    level = _text_config(context, "evidence_level")
+    scope = _text_config(context, "evidence_scope")
+    if role not in _EVIDENCE_ROLES:
+        raise FlowExecutionError(f"unsupported evidence role: {role!r}")
+    if level not in _EVIDENCE_LEVELS:
+        raise FlowExecutionError(f"unsupported evidence level: {level!r}")
+    return {
+        "evidence_role": role,
+        "evidence_level": level,
+        "evidence_scope": scope,
+    }
+
+
+class NativeOaPlanAdapter:
+    def __init__(self, project: Project, owner: str) -> None:
+        self._project = project
+        self._owner = project.owner(owner).name
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        project = _require_bound_project(context, self._project, self._owner)
+        plan = ProjectOaWorkflow(project, self._owner).plan()
+        output = context.output_path("plan", "oa-assembly-plan.json")
+        output.write_text(
+            json.dumps(plan.as_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(
+                    ProducedArtifact("plan", NATIVE_OA_PLAN_KIND, output),
+                ),
+                facts={
+                    "source-plan-valid": True,
+                    "source-cell-count": len(plan.cells),
+                    "source-layout-count": len(plan.layouts),
+                    "source-testbench-count": len(plan.testbenches),
+                },
+            )
+        )
+
+
+class NativeOaSimulationAdapter:
+    def __init__(
+        self,
+        project: Project,
+        owner: str,
+        *,
+        client_factory: Callable[[], Any] = get_client,
+    ) -> None:
+        self._project = project
+        self._owner = project.owner(owner).name
+        self._client_factory = client_factory
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        project = _require_bound_project(context, self._project, self._owner)
+        workflow = ProjectOaWorkflow(project, self._owner)
+        plan = workflow.plan()
+        try:
+            bound_plan = json.loads(
+                context.input("plan").path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise FlowExecutionError(
+                f"cannot read bound OA assembly plan: {exc}"
+            ) from exc
+        if bound_plan != plan.as_dict():
+            raise FlowExecutionError("bound OA assembly plan drifted from owner source")
+        metadata = _evidence_metadata(context)
+        result = workflow.simulate(
+            testbench=_text_config(context, "testbench"),
+            client=self._client_factory(),
+            timeout=int(context.adapter_config.get("timeout_seconds", 600)),
+            plan=plan,
+            operation_id=context.operation_id,
+            bind_operation=context.bind_workspace_operation,
+            artifact_root=context.work_root / "native-maestro",
+        )
+        payload = result.as_dict()
+        payload.update(metadata)
+        payload["product_qualification_conclusion"] = False
+        for field, path in (
+            ("run_dir", result.run_dir),
+            ("manifest", result.manifest_path),
+            ("elaborated_netlist", result.elaborated_netlist),
+            ("result_database_export", result.result_database_export),
+            ("normalized_result_database", result.normalized_result_database),
+            ("run_summary", result.run_summary),
+        ):
+            payload[field] = _artifact_reference(path, project)
+        output = context.output_path("evidence", "maestro-evidence.json")
+        output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(
+                    ProducedArtifact(
+                        "evidence",
+                        NATIVE_OA_EVIDENCE_KIND,
+                        output,
+                    ),
+                ),
+                facts={
+                    "execution-completed": True,
+                    "native-evidence-status": result.evidence.status,
+                    "evidence-role": metadata["evidence_role"],
+                    "evidence-level": metadata["evidence_level"],
+                    "evidence-scope": metadata["evidence_scope"],
+                    "product-qualification-conclusion": False,
+                },
+                details={
+                    "nested_run_id": result.run_id,
+                    "product_qualification_conclusion": False,
+                },
+            )
+        )
+
+
+class XceliumVerificationAdapter:
+    def __init__(self, project: Project, owner: str) -> None:
+        self._project = project
+        self._owner = project.owner(owner).name
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        project = _require_bound_project(context, self._project, self._owner)
+        capability = context.capabilities["tool.cadence-xcelium"]
+        metadata = _evidence_metadata(context)
+        result = run_xcelium_cell(
+            Path(_text_config(context, "cell")),
+            project=project,
+            artifact_root=context.work_root / "native-xcelium",
+            xrun=capability.executable,
+            timeout=int(context.adapter_config.get("timeout_seconds", 600)),
+        )
+        payload = {
+            **result.plan.as_dict(),
+            "executed": True,
+            "returncode": result.returncode,
+            "passed": result.passed,
+            "run_id": result.run_id,
+            "run_dir": _artifact_reference(result.run_dir, project),
+            "manifest": _artifact_reference(result.manifest_path, project),
+            "run_summary": _artifact_reference(result.run_summary, project),
+            **metadata,
+            "product_qualification_conclusion": False,
+        }
+        output = context.output_path("evidence", "xcelium-evidence.json")
+        output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(
+                    ProducedArtifact(
+                        "evidence",
+                        XCELIUM_EVIDENCE_KIND,
+                        output,
+                    ),
+                ),
+                facts={
+                    "passed": result.passed,
+                    "simulator": result.plan.spec.simulator,
+                    "evidence-role": metadata["evidence_role"],
+                    "evidence-level": metadata["evidence_level"],
+                    "evidence-scope": metadata["evidence_scope"],
+                    "product-qualification-conclusion": False,
+                },
+                details={
+                    "nested_run_id": result.run_id,
+                    "product_qualification_conclusion": False,
+                },
+            )
+        )
+
+
+__all__ = [
+    "NativeOaPlanAdapter",
+    "NativeOaSimulationAdapter",
+    "XceliumVerificationAdapter",
+]

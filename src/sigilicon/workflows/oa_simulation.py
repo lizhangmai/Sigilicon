@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +13,7 @@ from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.native_diagnostics import NativeDiagnosticReport
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import TextSourceSnapshot
+from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
@@ -207,6 +208,9 @@ def _run_native_oa_maestro_testbench(
     client: Any,
     *,
     timeout: int,
+    operation_id: str | None = None,
+    bind_operation: Callable[[Any], None] | None = None,
+    artifact_root: Path | None = None,
 ) -> OAMaestroRunResult:
     owners = {
         cell.owner for cell in plan.source.cells if cell.cell == step.cell
@@ -216,8 +220,13 @@ def _run_native_oa_maestro_testbench(
             f"OA testbench {step.cell} does not resolve to one source owner"
         )
     project = plan.source.project
+    artifacts = (
+        project.artifacts
+        if artifact_root is None
+        else ArtifactLayout(artifact_root.resolve())
+    )
     record = ArtifactRecord.begin(
-        project.artifacts.execution(
+        artifacts.execution(
             owner=next(iter(owners)),
             target=step.cell,
             flow="oa-maestro",
@@ -236,12 +245,18 @@ def _run_native_oa_maestro_testbench(
         source=artifact_source_state(plan.source.project_root),
     )
     try:
+        operation_options: dict[str, Any] = {}
+        if operation_id is not None:
+            operation_options["operation_id"] = operation_id
+        if bind_operation is not None:
+            operation_options["bind_operation"] = bind_operation
         result = _run_native_oa_maestro_testbench_impl(
             plan,
             step,
             client,
             timeout=timeout,
             record=record,
+            **operation_options,
         )
         record.succeed(
             completion_evidence=(
@@ -275,6 +290,9 @@ def _registered_oa_maestro_operation(
     client: Any,
     workspace_root: Path,
     record: ArtifactRecord,
+    *,
+    operation_id: str | None = None,
+    bind_operation: Callable[[Any], None] | None = None,
 ) -> Iterator[Any]:
     """Bind the workspace safety lifecycle to the one managed run artifact."""
 
@@ -285,8 +303,12 @@ def _registered_oa_maestro_operation(
             workspace_root,
             "run-canonical-oa-maestro-native-rdb",
             policy=OperationPolicy.MAESTRO_RUN,
+            operation_id=operation_id,
         ) as operation:
-            operation.register_artifact(record)
+            if bind_operation is not None:
+                bind_operation(operation)
+            else:
+                operation.register_artifact(record)
             yield operation
     except BaseException as error:
         if record.status == "running":
@@ -312,6 +334,8 @@ def _run_native_oa_maestro_testbench_impl(
     *,
     timeout: int,
     record: ArtifactRecord,
+    operation_id: str | None = None,
+    bind_operation: Callable[[Any], None] | None = None,
 ) -> OAMaestroRunResult:
     """Run one source-owned setup and consume Cadence's read-only RDB API."""
 
@@ -347,6 +371,8 @@ def _run_native_oa_maestro_testbench_impl(
         client,
         project.workspace_root,
         record,
+        operation_id=operation_id,
+        bind_operation=bind_operation,
     ) as operation, operation.view_lease(
         plan.library,
         cells=(step.cell,),
@@ -600,6 +626,9 @@ def run_oa_maestro_testbench(
     client: Any,
     *,
     timeout: int = 600,
+    operation_id: str | None = None,
+    bind_operation: Callable[[Any], None] | None = None,
+    artifact_root: Path | None = None,
 ) -> OAMaestroRunResult:
     """Run one source-attested schema-3 OA Maestro view through native RDB."""
 
@@ -615,4 +644,7 @@ def run_oa_maestro_testbench(
         step,
         client,
         timeout=timeout,
+        operation_id=operation_id,
+        bind_operation=bind_operation,
+        artifact_root=artifact_root,
     )

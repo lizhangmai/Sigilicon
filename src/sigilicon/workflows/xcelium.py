@@ -10,6 +10,7 @@ from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
+from sigilicon.paths import ArtifactLayout
 from sigilicon.workflows.source_control import artifact_source_state
 
 
@@ -150,15 +151,18 @@ def run_xcelium_cell(
     """Run one verification cell through an isolated artifact work directory."""
 
     repository = project
-    if artifact_root is not None:
-        repository = repository.with_artifact_root(artifact_root)
     root = repository.project_root
     plan = plan_xcelium_cell(contract_path, project=repository)
     xrun_bin = find_xrun(xrun)
     source_state = artifact_source_state(root)
     run_id = new_identity()
+    artifacts = (
+        repository.artifacts
+        if artifact_root is None
+        else ArtifactLayout(artifact_root.resolve())
+    )
     attempt = ArtifactRecord.begin(
-        repository.artifacts.execution(
+        artifacts.execution(
             owner=plan.spec.owner,
             target=plan.spec.cell,
             flow="xcelium",
@@ -330,8 +334,6 @@ def run_xcelium_verification_cell(
     """Dispatch one typed Xcelium RTL or AMS execution adapter."""
 
     repository = project
-    if artifact_root is not None:
-        repository = repository.with_artifact_root(artifact_root)
     contract = _resolve_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() == "xcelium-ams":
@@ -340,12 +342,14 @@ def run_xcelium_verification_cell(
         return run_xcelium_ams_cell(
             contract,
             project=repository,
+            artifact_root=artifact_root,
             xrun=xrun,
             timeout=timeout,
         )
     return run_xcelium_cell(
         contract,
         project=repository,
+        artifact_root=artifact_root,
         xrun=xrun,
         timeout=timeout,
     )

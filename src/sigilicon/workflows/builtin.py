@@ -35,6 +35,9 @@ from sigilicon.workflows.physical_verification import (
 )
 from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
 from sigilicon.flow.circuit_design import PHYSICAL_DESIGN_OBSERVATION_ADAPTER
+from sigilicon.flow.native import (
+    register_native_actions,
+)
 from sigilicon.workflows.design_physical import PhysicalDesignObservationAdapter
 from sigilicon.workflows.synopsys import (
     SynopsysDCAdapter,
@@ -54,6 +57,7 @@ def build_flow_registry(
     register_physical_verification_actions(registry)
     register_post_layout_actions(registry)
     register_circuit_design_actions(registry)
+    register_native_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
     registry.register_adapter("synopsys-dc", SynopsysDCAdapter())
     registry.register_adapter("synopsys-fc", SynopsysFCAdapter())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import tempfile
@@ -12,6 +13,37 @@ from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.paths import ProjectContext
 from sigilicon.workflows import oa_simulation
+
+
+def test_flow_action_remains_the_only_workspace_operation_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registered: list[object] = []
+    bound: list[object] = []
+    operation = SimpleNamespace(
+        operation_id="a" * 32,
+        register_artifact=registered.append,
+    )
+
+    @contextmanager
+    def workspace_operation(*_args, **kwargs):
+        assert kwargs["operation_id"] == "a" * 32
+        yield operation
+
+    monkeypatch.setattr(oa_simulation, "workspace_operation", workspace_operation)
+
+    with oa_simulation._registered_oa_maestro_operation(
+        object(),
+        tmp_path,
+        SimpleNamespace(),
+        operation_id="a" * 32,
+        bind_operation=bound.append,
+    ) as selected:
+        assert selected is operation
+
+    assert bound == [operation]
+    assert registered == []
 
 
 def _write_project_context(root: Path) -> Path:

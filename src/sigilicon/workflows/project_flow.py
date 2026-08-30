@@ -25,9 +25,19 @@ from sigilicon.flow import (
     resolve_catalog_selection,
 )
 from sigilicon.flow.model import SourceMember, identifier
+from sigilicon.flow.native import (
+    NATIVE_OA_PLAN_ADAPTER,
+    NATIVE_OA_SIMULATION_ADAPTER,
+    XCELIUM_VERIFICATION_ADAPTER,
+)
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.native_flow import (
+    NativeOaPlanAdapter,
+    NativeOaSimulationAdapter,
+    XceliumVerificationAdapter,
+)
 
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
@@ -79,6 +89,18 @@ def _project_workflow_registry(
             f"Flow owner {owner.name!r} does not belong to the selected Project"
         )
     registry = build_flow_registry()
+    registry.register_adapter(
+        NATIVE_OA_PLAN_ADAPTER,
+        NativeOaPlanAdapter(project, owner.name),
+    )
+    registry.register_adapter(
+        NATIVE_OA_SIMULATION_ADAPTER,
+        NativeOaSimulationAdapter(project, owner.name),
+    )
+    registry.register_adapter(
+        XCELIUM_VERIFICATION_ADAPTER,
+        XceliumVerificationAdapter(project, owner.name),
+    )
     source = repository.flow_registry_extension(owner)
     if source is None:
         return registry
