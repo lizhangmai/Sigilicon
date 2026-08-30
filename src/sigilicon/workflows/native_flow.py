@@ -19,6 +19,7 @@ from sigilicon.flow.native import (
     NATIVE_OA_EVIDENCE_KIND,
     NATIVE_OA_PLAN_KIND,
     XCELIUM_EVIDENCE_KIND,
+    XCELIUM_AMS_EVIDENCE_KIND,
 )
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
@@ -26,6 +27,10 @@ from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
 from sigilicon.workflows.xcelium import execute_xcelium_cell, plan_xcelium_cell
+from sigilicon.workflows.xcelium_ams import (
+    execute_xcelium_ams_cell,
+    plan_xcelium_ams_cell,
+)
 
 
 _EVIDENCE_ROLES = frozenset(
@@ -249,8 +254,66 @@ class XceliumVerificationAdapter:
         )
 
 
+class XceliumAmsVerificationAdapter:
+    """Execute one owner-cataloged mixed-signal verification cell."""
+
+    def __init__(self, project: Project, owner: str) -> None:
+        self._project = project
+        self._owner = project.owner(owner).name
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        project = _require_bound_project(context, self._project, self._owner)
+        capability = context.capabilities["tool.cadence-xcelium"]
+        metadata = _evidence_metadata(context)
+        plan = plan_xcelium_ams_cell(
+            Path(_text_config(context, "cell")), project=project
+        )
+        result = execute_xcelium_ams_cell(
+            plan,
+            artifacts=FlowRunArtifacts(
+                context,
+                "evidence",
+                artifact_source_state(project.project_root),
+            ),
+            xrun=capability.executable,
+            timeout=int(context.adapter_config.get("timeout_seconds", 600)),
+        )
+        payload = {
+            **result.plan.as_dict(),
+            "executed": True,
+            "returncode": result.returncode,
+            "passed": result.passed,
+            "run_summary": _artifact_reference(result.run_summary, project),
+            **metadata,
+            "product_qualification_conclusion": False,
+        }
+        output = context.output_path("evidence", "xcelium-ams-evidence.json")
+        output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(
+                    ProducedArtifact(
+                        "evidence",
+                        XCELIUM_AMS_EVIDENCE_KIND,
+                        output,
+                    ),
+                ),
+                facts={
+                    "passed": result.passed,
+                    "simulator": result.plan.spec.simulator,
+                    "evidence-role": metadata["evidence_role"],
+                    "evidence-level": metadata["evidence_level"],
+                    "evidence-scope": metadata["evidence_scope"],
+                    "product-qualification-conclusion": False,
+                },
+                details={"product_qualification_conclusion": False},
+            )
+        )
+
+
 __all__ = [
     "NativeOaPlanAdapter",
     "NativeOaSimulationAdapter",
     "XceliumVerificationAdapter",
+    "XceliumAmsVerificationAdapter",
 ]

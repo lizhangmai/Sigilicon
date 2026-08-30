@@ -9,6 +9,11 @@ import sys
 from typing import Any
 
 from sigilicon.cli.common import add_json_arg, die, emit_json
+from sigilicon.flow import (
+    ExecutionEnvironment,
+    ResolvedCapability,
+    resolve_catalog_selection,
+)
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.design_targets import (
@@ -38,6 +43,7 @@ from sigilicon.workflows.layout_generation import (
 from sigilicon.workflows.layout_verification import execute_layout_verification_set
 from sigilicon.workflows.oa_check import UnavailableBridge
 from sigilicon.workflows.project import load_project
+from sigilicon.workflows.project_flow import ProjectFlow
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 
@@ -193,7 +199,7 @@ def _parser() -> argparse.ArgumentParser:
         ("attest", "run one read-only Cadence setup check"),
         (
             "simulate",
-            "compatibility run for an OA testbench not yet cataloged as a typed Flow",
+            "run the unique typed Flow target for a declared OA testbench",
         ),
     ):
         action_parser = oa_commands.add_parser(action, help=help_text)
@@ -219,7 +225,7 @@ def _parser() -> argparse.ArgumentParser:
                 "--testbench",
                 help="rebuild exactly one testbench's complete generated view set",
             )
-        if action != "plan":
+        if action not in {"plan", "simulate"}:
             action_parser.add_argument("--timeout", type=int, default=300)
 
     ip = domains.add_parser("ip", help="package and publish immutable custom IP")
@@ -491,6 +497,51 @@ def _run_oa(
         if args.action == "plan":
             plan = workflow.plan()
             payload = plan.as_dict()
+        elif args.action == "simulate":
+            project_flow = ProjectFlow(workflow.project, workflow.owner_name)
+            matches: list[tuple[str, str]] = []
+            catalog = project_flow.catalog()
+            for entry in catalog.entries:
+                selection = resolve_catalog_selection(
+                    catalog,
+                    flow_id=entry.flow_id,
+                )
+                node_ids = {
+                    node.node_id
+                    for node in selection.spec.nodes
+                    if node.action_kind == "native-oa.simulate"
+                    and node.config.get("testbench") == args.testbench
+                }
+                matches.extend(
+                    (entry.flow_id, target.target_id)
+                    for target in selection.spec.targets
+                    if len(target.goals) == 1 and target.goals[0] in node_ids
+                )
+            if len(matches) != 1:
+                raise ValueError(
+                    "OA testbench must resolve to exactly one cataloged typed "
+                    f"Flow target: {args.testbench!r} resolved {matches!r}"
+                )
+            flow_id, target_id = matches[0]
+            planned = project_flow.plan(flow=flow_id, target=target_id)
+            result = project_flow.run(
+                planned,
+                ExecutionEnvironment(
+                    capabilities={
+                        "tool.virtuoso-bridge": ResolvedCapability(
+                            "current-process:tool.virtuoso-bridge"
+                        ),
+                        "license.cadence-oa": ResolvedCapability(
+                            "current-process:license.cadence-oa"
+                        ),
+                    }
+                ),
+            )
+            payload = project_flow.read_result(
+                flow=result.flow_id,
+                target=result.target,
+                run_id=result.run_id,
+            )
         else:
             client = client_factory()
             if args.action == "attest":
@@ -499,13 +550,6 @@ def _run_oa(
                     client=client,
                     timeout=args.timeout,
                 )
-            elif args.action == "simulate":
-                result = workflow.simulate(
-                    testbench=args.testbench,
-                    client=client,
-                    timeout=args.timeout,
-                )
-                payload = result.as_dict()
             else:
                 payload = workflow.rebuild(
                     client=client,
@@ -545,11 +589,10 @@ def _run_oa(
             )
         elif args.action == "simulate":
             print(
-                f"OA Maestro run completed: {payload['library']}/"
-                f"{payload['testbench']} history={payload['history']} "
-                f"evidence={payload['evidence_status']}"
+                f"OA Maestro Flow completed: {payload['flow']}/"
+                f"{payload['target']} status={payload['status']}"
             )
-            print(f"managed artifact: {payload['run_dir']}")
+            print(f"managed run: {payload['run_id']}")
         else:
             if payload["passed"]:
                 print(
@@ -559,6 +602,8 @@ def _run_oa(
                 )
             else:
                 print(f"OA library {payload['library']} differs from canonical source")
+    if args.action == "simulate":
+        return 0 if payload.get("status") == "accepted" else 1
     return 0 if bool(payload.get("passed")) else 1
 
 def main(

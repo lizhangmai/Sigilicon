@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +58,7 @@ def test_simulation_has_no_temporary_work_retention_option() -> None:
     )
 
     assert not hasattr(args, "keep_work")
+    assert not hasattr(args, "timeout")
     with pytest.raises(SystemExit):
         _parser().parse_args(
             [
@@ -122,3 +124,77 @@ def test_cli_attest_reports_current_check_without_prior_state(
     output = capsys.readouterr().out
     assert "OA setup check passed: fixture_lib/tb_main" in output
     assert "manifest=" not in output
+
+
+def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_oa_owner(tmp_path)
+    node = SimpleNamespace(
+        node_id="simulate-main",
+        action_kind="native-oa.simulate",
+        config={"testbench": "tb_main"},
+    )
+    target = SimpleNamespace(target_id="tb-main-l2", goals=("simulate-main",))
+    selection = SimpleNamespace(
+        spec=SimpleNamespace(nodes=(node,), targets=(target,))
+    )
+    catalog = SimpleNamespace(entries=(SimpleNamespace(flow_id="native"),))
+    calls: list[tuple[str, str]] = []
+
+    class TypedFlow:
+        def __init__(self, _project, owner: str) -> None:
+            assert owner == "fixture"
+
+        def catalog(self):
+            return catalog
+
+        def plan(self, *, flow: str, target: str):
+            calls.append((flow, target))
+            return object()
+
+        def run(self, _planned, environment):
+            assert set(environment.capabilities) == {
+                "tool.virtuoso-bridge",
+                "license.cadence-oa",
+            }
+            return SimpleNamespace(flow_id="native", target="tb-main-l2", run_id="a" * 32)
+
+        def read_result(self, *, flow: str, target: str, run_id: str):
+            assert (flow, target, run_id) == ("native", "tb-main-l2", "a" * 32)
+            return {
+                "flow": flow,
+                "target": target,
+                "run_id": run_id,
+                "status": "accepted",
+            }
+
+    monkeypatch.setattr(flow_cli, "ProjectFlow", TypedFlow)
+    monkeypatch.setattr(
+        flow_cli,
+        "resolve_catalog_selection",
+        lambda *_args, **_kwargs: selection,
+    )
+    monkeypatch.setattr(
+        flow_cli.ProjectOaWorkflow,
+        "simulate",
+        lambda *_args, **_kwargs: pytest.fail("standalone lifecycle must not run"),
+    )
+
+    assert (
+        flow_cli.main(
+            [
+                "oa",
+                "simulate",
+                "--owner",
+                "fixture",
+                "--testbench",
+                "tb_main",
+            ],
+            client_factory=lambda: pytest.fail("CLI must not start a direct backend"),
+        )
+        == 0
+    )
+    assert calls == [("native", "tb-main-l2")]
+    assert "OA Maestro Flow completed: native/tb-main-l2" in capsys.readouterr().out

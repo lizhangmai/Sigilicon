@@ -64,9 +64,16 @@ _HSPICE_MODEL_ENVIRONMENT = {
     "rvt": "SIGILICON_STDCELL_RVT_SPICE",
     "hvt": "SIGILICON_STDCELL_HVT_SPICE",
     "lvt": "SIGILICON_STDCELL_LVT_SPICE",
+    "stdcell-12t-rvt": "SIGILICON_STDCELL_12T_RVT_SPICE",
 }
 _HSPICE_MEASUREMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_#]*\Z")
 _HSPICE_TARGET = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+_HSPICE_DIAGNOSTIC_ACTIONS = frozenset(
+    {
+        "asic.electrical-diagnostic",
+        "asic.electrical-model-variant-diagnostic",
+    }
+)
 _VCS_TARGETS = {
     "asic.rtl-simulation": frozenset({"rtl", "controller", "closed-loop"}),
     "asic.structural-elaboration": frozenset({"structural"}),
@@ -1356,6 +1363,7 @@ class SynopsysHSpiceAdapter:
         diagnostics: list[str] = []
         if context.action.kind not in {
             "asic.electrical-functional",
+            *_HSPICE_DIAGNOSTIC_ACTIONS,
             "asic.electrical-campaign",
         }:
             return (
@@ -1445,6 +1453,12 @@ class SynopsysHSpiceAdapter:
     ) -> CollectedActionResult:
         configuration = self._configuration(context)
         qualifiers = self._qualifiers(context)
+        if context.action.kind in _HSPICE_DIAGNOSTIC_ACTIONS:
+            return self._collect_diagnostic(
+                context,
+                configuration,
+                qualifiers,
+            )
         if context.action.kind == "asic.electrical-campaign":
             return self._collect_campaign(
                 context,
@@ -1510,6 +1524,50 @@ class SynopsysHSpiceAdapter:
             },
         )
 
+    def _collect_diagnostic(
+        self,
+        context: ActionContext,
+        configuration: Mapping[str, Any],
+        qualifiers: Mapping[str, Any],
+    ) -> CollectedActionResult:
+        evidence = context.output_path("evidence", "diagnostic.json")
+        atomic_write_json(
+            evidence,
+            {
+                "schema": 1,
+                "contract_kind": "electrical-diagnostic-evidence",
+                "kind": "evidence.electrical-diagnostic",
+                "target": configuration["target"],
+                "qualifiers": dict(qualifiers),
+                "tool_execution_completed": True,
+                "evidence_role": "diagnostic",
+                "product_qualification_conclusion": False,
+            },
+        )
+        return CollectedActionResult(
+            artifacts=(
+                ProducedArtifact(
+                    "evidence",
+                    "evidence.electrical-diagnostic",
+                    evidence,
+                    qualifiers=qualifiers,
+                ),
+            ),
+            facts={
+                "tool-execution-completed": True,
+                "evidence-role": "diagnostic",
+                "product-qualification-conclusion": False,
+            },
+            evidence=(
+                context.log_root / "stdout.log",
+                context.log_root / "stderr.log",
+            ),
+            details={
+                "target": configuration["target"],
+                "product_qualification_conclusion": False,
+            },
+        )
+
     def _collect_campaign(
         self,
         context: ActionContext,
@@ -1565,6 +1623,70 @@ class SynopsysHSpiceAdapter:
         )
 
     def _configuration(self, context: ActionContext) -> dict[str, Any]:
+        if context.action.kind in _HSPICE_DIAGNOSTIC_ACTIONS:
+            unknown_action = set(context.action_config) - {
+                "runner",
+                "target",
+                "model_section",
+            }
+            if unknown_action:
+                raise FlowExecutionError(
+                    "HSPICE diagnostic Action contains unknown configuration: "
+                    f"{sorted(unknown_action)}"
+                )
+            target = context.action_config.get("target")
+            if not isinstance(target, str) or _HSPICE_TARGET.fullmatch(target) is None:
+                raise FlowExecutionError(
+                    "HSPICE diagnostic Action requires a safe target"
+                )
+            if (
+                context.action.kind == "asic.electrical-model-variant-diagnostic"
+                and target != "core-variant-offset"
+            ):
+                raise FlowExecutionError(
+                    "HSPICE model-variant diagnostic requires "
+                    "target 'core-variant-offset'"
+                )
+            model_section = context.action_config.get("model_section")
+            if not isinstance(model_section, str) or not model_section:
+                raise FlowExecutionError(
+                    "HSPICE diagnostic Action requires a model_section"
+                )
+            unknown_adapter = set(context.adapter_config) - {
+                "timeout_seconds",
+                "runner_environment_prefix",
+                "runner_environment",
+            }
+            if unknown_adapter:
+                raise FlowExecutionError(
+                    "HSPICE diagnostic profile contains unknown configuration: "
+                    f"{sorted(unknown_adapter)}"
+                )
+            prefix = context.adapter_config.get("runner_environment_prefix")
+            if (
+                not isinstance(prefix, str)
+                or _ENVIRONMENT_PREFIX.fullmatch(prefix) is None
+            ):
+                raise FlowExecutionError(
+                    "HSPICE diagnostic Action requires a safe "
+                    "runner_environment_prefix"
+                )
+            return {
+                "target": target,
+                "model_section": model_section,
+                "runner_environment": self._runner_environment(
+                    context.adapter_config.get("runner_environment", {}),
+                    prefix=prefix,
+                ),
+                "timeout_seconds": self._timeout(
+                    context,
+                    allowed={
+                        "timeout_seconds",
+                        "runner_environment_prefix",
+                        "runner_environment",
+                    },
+                ),
+            }
         if context.action.kind == "asic.electrical-campaign":
             unknown_action = set(context.action_config) - {
                 "runner",
@@ -1728,8 +1850,13 @@ class SynopsysHSpiceAdapter:
         return result
 
     @staticmethod
-    def _timeout(context: ActionContext) -> int:
-        unknown_adapter = set(context.adapter_config) - {"timeout_seconds"}
+    def _timeout(
+        context: ActionContext,
+        *,
+        allowed: set[str] | None = None,
+    ) -> int:
+        allowed_keys = {"timeout_seconds"} if allowed is None else allowed
+        unknown_adapter = set(context.adapter_config) - allowed_keys
         if unknown_adapter:
             raise FlowExecutionError(
                 "HSPICE profile contains unknown configuration: "
@@ -1805,15 +1932,26 @@ class SynopsysHSpiceAdapter:
                 "Synopsys HSPICE requires a resolved HSPICE model set"
             )
         models: dict[str, Path] = {}
-        required_models = (
-            tuple(_HSPICE_MODEL_ENVIRONMENT)
-            if context.action.kind == "asic.electrical-campaign"
-            else tuple(
+        if context.action.kind == "asic.electrical-diagnostic":
+            required_models = tuple(
                 role
                 for role in _HSPICE_MODEL_ENVIRONMENT
-                if role != "mismatch-model"
+                if role != "stdcell-12t-rvt"
             )
-        )
+        elif context.action.kind == "asic.electrical-model-variant-diagnostic":
+            required_models = tuple(_HSPICE_MODEL_ENVIRONMENT)
+        elif context.action.kind == "asic.electrical-campaign":
+            required_models = tuple(
+                role
+                for role in _HSPICE_MODEL_ENVIRONMENT
+                if role != "stdcell-12t-rvt"
+            )
+        else:
+            required_models = tuple(
+                role
+                for role in _HSPICE_MODEL_ENVIRONMENT
+                if role not in {"mismatch-model", "stdcell-12t-rvt"}
+            )
         for role in required_models:
             member = asset.member(role)
             if member is None:

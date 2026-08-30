@@ -277,6 +277,79 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
     )
     registry.register_action(
         ActionContract(
+            kind="asic.electrical-diagnostic",
+            inputs=(
+                ArtifactPort("electrical-sources", "source-set.spice"),
+                ArtifactPort("decks", "source-set.spice-deck"),
+                ArtifactPort(
+                    "electrical-recipe",
+                    "recipe.electrical-simulation",
+                ),
+            ),
+            outputs=(
+                ArtifactPort("evidence", "evidence.electrical-diagnostic"),
+            ),
+            facts=(
+                "tool-execution-completed",
+                "evidence-role",
+                "product-qualification-conclusion",
+            ),
+            required_capabilities=("tool.synopsys-hspice",),
+            platform_assets=(
+                PlatformAssetRequirement(
+                    "hspice-models",
+                    "model.hspice-set",
+                    members=(
+                        "nominal-model",
+                        "mismatch-model",
+                        "rvt",
+                        "hvt",
+                        "lvt",
+                    ),
+                ),
+            ),
+            adapters=("synopsys-hspice",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
+            kind="asic.electrical-model-variant-diagnostic",
+            inputs=(
+                ArtifactPort("electrical-sources", "source-set.spice"),
+                ArtifactPort("decks", "source-set.spice-deck"),
+                ArtifactPort(
+                    "electrical-recipe",
+                    "recipe.electrical-simulation",
+                ),
+            ),
+            outputs=(
+                ArtifactPort("evidence", "evidence.electrical-diagnostic"),
+            ),
+            facts=(
+                "tool-execution-completed",
+                "evidence-role",
+                "product-qualification-conclusion",
+            ),
+            required_capabilities=("tool.synopsys-hspice",),
+            platform_assets=(
+                PlatformAssetRequirement(
+                    "hspice-models",
+                    "model.hspice-set",
+                    members=(
+                        "nominal-model",
+                        "mismatch-model",
+                        "rvt",
+                        "hvt",
+                        "lvt",
+                        "stdcell-12t-rvt",
+                    ),
+                ),
+            ),
+            adapters=("synopsys-hspice",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
             kind="asic.electrical-campaign",
             inputs=(
                 ArtifactPort("electrical-sources", "source-set.spice"),

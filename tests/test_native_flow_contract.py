@@ -27,6 +27,8 @@ from sigilicon.flow.native import (
     NATIVE_OA_PLAN_KIND,
     NATIVE_OA_SIMULATION_ACTION,
     NATIVE_OA_SIMULATION_ADAPTER,
+    XCELIUM_AMS_VERIFICATION_ACTION,
+    XCELIUM_AMS_VERIFICATION_ADAPTER,
     XCELIUM_VERIFICATION_ACTION,
     XCELIUM_VERIFICATION_ADAPTER,
 )
@@ -35,6 +37,7 @@ from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.native_flow import (
     NativeOaPlanAdapter,
     NativeOaSimulationAdapter,
+    XceliumAmsVerificationAdapter,
     XceliumVerificationAdapter,
 )
 
@@ -106,6 +109,7 @@ def test_native_adapters_keep_one_run_operation_and_require_project_binding() ->
         (NATIVE_OA_PLAN_ADAPTER, NativeOaPlanAdapter),
         (NATIVE_OA_SIMULATION_ADAPTER, NativeOaSimulationAdapter),
         (XCELIUM_VERIFICATION_ADAPTER, XceliumVerificationAdapter),
+        (XCELIUM_AMS_VERIFICATION_ADAPTER, XceliumAmsVerificationAdapter),
     ):
         assert not registry.has_adapter(name)
         assert callable(implementation.run)
@@ -367,3 +371,61 @@ def test_xcelium_action_declares_rtl_tool_and_evidence_contract() -> None:
         "product-qualification-conclusion",
     )
     assert action.output("evidence").kind == "evidence.xcelium-rtl-verification"
+
+
+def test_xcelium_ams_adapter_uses_same_flow_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project(tmp_path)
+    context = _context(
+        project,
+        XCELIUM_AMS_VERIFICATION_ACTION,
+        action_config=MappingProxyType(
+            {"cell": "ip/native/ams.toml", **_EVIDENCE_CONFIG}
+        ),
+        capabilities={
+            "tool.cadence-xcelium": ResolvedCapability("site.xcelium")
+        },
+    )
+    plan = SimpleNamespace(
+        spec=SimpleNamespace(simulator="xcelium-ams"),
+        as_dict=lambda: {"native_xcelium_ams_field": "preserved"},
+    )
+
+    def plan_cell(path: Path, *, project: Project):
+        assert path == Path("ip/native/ams.toml")
+        assert project is not None
+        return plan
+
+    def execute_cell(selected_plan, *, artifacts, xrun, timeout):
+        assert selected_plan is plan
+        assert xrun is None
+        assert timeout == 17
+        summary = artifacts.write_json("outputs", ("summary.json",), {"schema": 1})
+        return SimpleNamespace(
+            plan=plan,
+            returncode=0,
+            passed=True,
+            run_summary=summary,
+        )
+
+    monkeypatch.setattr(native_flow, "plan_xcelium_ams_cell", plan_cell)
+    monkeypatch.setattr(native_flow, "execute_xcelium_ams_cell", execute_cell)
+
+    result = XceliumAmsVerificationAdapter(project, "native-owner").run(context)
+
+    assert result.collected is not None
+    assert result.collected.facts["simulator"] == "xcelium-ams"
+    payload = json.loads(result.collected.artifacts[0].path.read_text(encoding="utf-8"))
+    assert payload["native_xcelium_ams_field"] == "preserved"
+    assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
+    assert not {"run_id", "run_dir", "manifest"} & payload.keys()
+
+
+def test_xcelium_ams_action_declares_mixed_signal_contract() -> None:
+    action = build_flow_registry().action(XCELIUM_AMS_VERIFICATION_ACTION)
+
+    assert action.kind == "verification.xcelium-ams"
+    assert action.required_capabilities == ("tool.cadence-xcelium",)
+    assert action.output("evidence").kind == "evidence.xcelium-ams-verification"

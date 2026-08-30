@@ -49,7 +49,7 @@ from pathlib import Path
 import sys
 
 target = sys.argv[1]
-assert target in {"smoke", "campaign"}
+assert target in {"smoke", "campaign", "diagnostic"}
 assert os.environ["SIGILICON_DESIGN_VARIANT"] == "fixture_variant"
 assert os.environ["SIGILICON_DESIGN_CORNER"] == "nominal"
 for name in (
@@ -69,6 +69,10 @@ mode = os.environ.get("SIGILICON_HSPICE_FIXTURE_MODE", "valid")
 if mode == "tool-failed":
     raise SystemExit(7)
 if mode == "missing":
+    raise SystemExit(0)
+if target == "diagnostic":
+    assert os.environ["FIXTURE_RUN_MODE"] == "managed"
+    assert Path(os.environ["SIGILICON_HSPICE_MISMATCH_MODEL"]).is_file()
     raise SystemExit(0)
 if target == "campaign":
     assert os.environ["FIXTURE_BATCH_SIZE"] == "2"
@@ -256,10 +260,34 @@ def _flow(
                 ),
                 policy="electrical-campaign-complete",
             ),
+            FlowNode(
+                "electrical-diagnostic",
+                "asic.electrical-diagnostic",
+                config={
+                    "runner": "run-hspice-fixture.py",
+                    "target": "diagnostic",
+                    "model_section": "MISMATCH",
+                },
+                bindings=(
+                    ArtifactBinding(
+                        "electrical-sources",
+                        "assets",
+                        "electrical-sources",
+                    ),
+                    ArtifactBinding("decks", "assets", "decks"),
+                    ArtifactBinding(
+                        "electrical-recipe",
+                        "assets",
+                        "electrical-recipe",
+                    ),
+                ),
+                policy="electrical-diagnostic-complete",
+            ),
         ),
         targets=(
             FlowTarget("electrical-regression", ("electrical-functional",)),
             FlowTarget("campaign", ("electrical-campaign",)),
+            FlowTarget("diagnostic", ("electrical-diagnostic",)),
         ),
         policies=(
             PolicySpec(
@@ -304,6 +332,29 @@ def _flow(
                     ),
                 ),
             ),
+            PolicySpec(
+                "electrical-diagnostic-complete",
+                (
+                    PolicyCheck(
+                        "tool-completed",
+                        "tool-execution-completed",
+                        "equals",
+                        True,
+                    ),
+                    PolicyCheck(
+                        "diagnostic-role",
+                        "evidence-role",
+                        "equals",
+                        "diagnostic",
+                    ),
+                    PolicyCheck(
+                        "not-qualification",
+                        "product-qualification-conclusion",
+                        "equals",
+                        False,
+                    ),
+                ),
+            ),
         ),
         owner_root=owner_root,
     )
@@ -328,6 +379,18 @@ def _flow(
                     "hspice-models": "fixture:hspice@nominal",
                 },
             ),
+            AdapterSelection(
+                "asic.electrical-diagnostic",
+                "synopsys-hspice",
+                config={
+                    "timeout_seconds": 30,
+                    "runner_environment_prefix": "FIXTURE_",
+                    "runner_environment": {"FIXTURE_RUN_MODE": "managed"},
+                },
+                platform_asset_identities={
+                    "hspice-models": "fixture:hspice@nominal",
+                },
+            ),
         ),
     )
     return spec, profile
@@ -335,7 +398,14 @@ def _flow(
 
 def _environment(tmp_path: Path, executable: Path) -> ExecutionEnvironment:
     members: list[ResolvedPlatformAssetMember] = []
-    for role in ("nominal-model", "mismatch-model", "rvt", "hvt", "lvt"):
+    for role in (
+        "nominal-model",
+        "mismatch-model",
+        "rvt",
+        "hvt",
+        "lvt",
+        "stdcell-12t-rvt",
+    ):
         model = tmp_path / f"models/{role}.sp"
         model.parent.mkdir(exist_ok=True)
         model.write_text(f"* {role} fixture\n", encoding="utf-8")
@@ -501,6 +571,25 @@ def test_managed_campaign_uses_owner_declared_summary_interface(
     assert summary["kind"] == "report.electrical-campaign"
     assert len(summary["observations"]) == 2
     assert str(tmp_path) not in json.dumps(summary)
+
+
+def test_managed_diagnostic_is_typed_nonqualification_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _run(tmp_path, monkeypatch, "valid", target="diagnostic")
+    diagnostic = result.nodes["electrical-diagnostic"]
+    evidence = json.loads(diagnostic.artifacts["evidence"].path.read_text())
+
+    assert result.status == "accepted"
+    assert diagnostic.facts == {
+        "tool-execution-completed": True,
+        "evidence-role": "diagnostic",
+        "product-qualification-conclusion": False,
+    }
+    assert evidence["target"] == "diagnostic"
+    assert evidence["tool_execution_completed"] is True
+    assert evidence["product_qualification_conclusion"] is False
 
 
 def test_campaign_rejects_framework_environment_override(

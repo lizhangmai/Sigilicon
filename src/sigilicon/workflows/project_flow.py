@@ -29,6 +29,7 @@ from sigilicon.flow.native import (
     NATIVE_OA_PLAN_ADAPTER,
     NATIVE_OA_SIMULATION_ADAPTER,
     XCELIUM_VERIFICATION_ADAPTER,
+    XCELIUM_AMS_VERIFICATION_ADAPTER,
 )
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
@@ -37,6 +38,7 @@ from sigilicon.workflows.native_flow import (
     NativeOaPlanAdapter,
     NativeOaSimulationAdapter,
     XceliumVerificationAdapter,
+    XceliumAmsVerificationAdapter,
 )
 
 
@@ -100,6 +102,10 @@ def _project_workflow_registry(
     registry.register_adapter(
         XCELIUM_VERIFICATION_ADAPTER,
         XceliumVerificationAdapter(project, owner.name),
+    )
+    registry.register_adapter(
+        XCELIUM_AMS_VERIFICATION_ADAPTER,
+        XceliumAmsVerificationAdapter(project, owner.name),
     )
     source = repository.flow_registry_extension(owner)
     if source is None:
