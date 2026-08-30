@@ -506,6 +506,83 @@ def test_native_oa_release_rejects_circuit_port_order_drift(
         )
 
 
+def test_native_oa_release_rejects_digital_interface_sections(
+    tmp_path: Path,
+) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    interface_path = tmp_path / "ip/native_fixture/configs/interface.toml"
+    interface_path.write_text(
+        interface_path.read_text(encoding="utf-8")
+        + '''
+[transaction_boundary]
+module = "forged"
+''',
+        encoding="utf-8",
+    )
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+
+    with pytest.raises(
+        ValueError, match="cannot declare digital transaction sections"
+    ):
+        ip_packaging._development_interface_check(
+            contract,
+            contract.get_export("native-top"),
+        )
+
+
+def test_native_oa_package_rejects_digital_interface_sections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _native_oa_contract_fixture(tmp_path)
+    contract = load_ip_contract(contract_path, project_root=tmp_path)
+    monkeypatch.setattr(
+        ip_packaging,
+        "_source_inputs",
+        lambda *_args, **_kwargs: (
+            "ip/native_fixture/configs/release.toml",
+        ),
+    )
+    monkeypatch.setattr(
+        ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+    )
+    built = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    manifest_path = contract.project.artifact_root / built["manifest"]
+    tampered_root = tmp_path / "tampered-native-release"
+    shutil.copytree(manifest_path.parent, tampered_root)
+    tampered_manifest = tampered_root / "manifest.json"
+    tampered_manifest.chmod(0o600)
+    manifest = json.loads(tampered_manifest.read_text(encoding="utf-8"))
+    interface_view = release_role_view(
+        manifest,
+        "interface_contract",
+        export="native-top",
+    )
+    interface_path = tampered_root / str(interface_view["path"])
+    interface_path.chmod(0o600)
+    interface_path.write_text(
+        interface_path.read_text(encoding="utf-8")
+        + '''
+[physical_macro]
+module = "forged"
+''',
+        encoding="utf-8",
+    )
+    interface_view["size"] = interface_path.stat().st_size
+    tampered_manifest.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RuntimeError, match="cannot declare digital transaction sections"
+    ):
+        ip_packaging.audit_ip_release_manifest(tampered_manifest)
+
+
 def test_rtl_release_plans_and_audits_without_oa_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

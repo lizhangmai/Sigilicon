@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
@@ -428,24 +428,13 @@ def _native_oa_development_interface_check(
             raise ValueError("IP release interface snapshot is incomplete")
         with interface_path.open("rb") as stream:
             raw = tomllib.load(stream)
-    require_config_header(
+    port_count, port_contract_relative = _native_oa_interface_contract(
         raw,
-        interface_path,
-        contract_kind="ip-interface",
-        path_scope="owner",
+        path=interface_path,
         owner=contract.owner,
+        library=interface.library,
+        cell=interface.cell,
     )
-    physical = _table(raw.get("physical"), "physical")
-    _table(raw.get("behavior"), "behavior")
-    _table(raw.get("supplies"), "supplies")
-    if (
-        physical.get("library") != interface.library
-        or physical.get("cell") != interface.cell
-    ):
-        raise ValueError("native OA identity disagrees with the interface contract")
-    port_count = physical.get("port_count")
-    if isinstance(port_count, bool) or not isinstance(port_count, int) or port_count <= 0:
-        raise ValueError("physical.port_count must be a positive integer")
 
     by_role = {item.role: item for item in exported.collateral}
     required_roles = {
@@ -459,10 +448,6 @@ def _native_oa_development_interface_check(
     if by_role["interface_contract"].source.as_posix() != expected_contract:
         raise ValueError("interface_contract source disagrees with the native OA interface")
 
-    port_contract_relative = safe_relative(
-        physical.get("canonical_port_contract"),
-        "physical.canonical_port_contract",
-    )
     port_contract_path = _project_path(
         root, Path(port_contract_relative), "OA port contract"
     )
@@ -498,6 +483,49 @@ def _native_oa_development_interface_check(
         "physical_port_count": len(oa_ports),
         "native_oa_port_contract_checked": True,
     }
+
+
+def _native_oa_interface_contract(
+    raw: Mapping[str, Any],
+    *,
+    path: Path,
+    owner: str,
+    library: str,
+    cell: str,
+) -> tuple[int, PurePosixPath]:
+    """Validate the source/package-stable native OA interface envelope."""
+
+    require_config_header(
+        raw,
+        path,
+        contract_kind="ip-interface",
+        path_scope="owner",
+        owner=owner,
+    )
+    digital_sections = {"physical_macro", "transaction_boundary"} & set(raw)
+    if digital_sections:
+        raise ValueError(
+            "native OA interface cannot declare digital transaction sections: "
+            f"{sorted(digital_sections)}"
+        )
+    physical = _table(raw.get("physical"), "physical")
+    _table(raw.get("behavior"), "behavior")
+    _table(raw.get("supplies"), "supplies")
+    if physical.get("library") != library or physical.get("cell") != cell:
+        raise ValueError("native OA identity disagrees with the interface contract")
+    port_count = physical.get("port_count")
+    if (
+        isinstance(port_count, bool)
+        or not isinstance(port_count, int)
+        or port_count <= 0
+    ):
+        raise ValueError("physical.port_count must be a positive integer")
+
+    port_contract_relative = safe_relative(
+        physical.get("canonical_port_contract"),
+        "physical.canonical_port_contract",
+    )
+    return port_count, port_contract_relative
 
 
 def _rtl_development_interface_check(
@@ -1719,31 +1747,14 @@ def _packaged_native_oa_interface_check(
         owner = manifest.get("owner")
         if not isinstance(owner, str) or not owner:
             raise ValueError("release owner identity is missing")
-        require_config_header(
+        port_count, port_contract_relative = _native_oa_interface_contract(
             raw,
-            contract_path,
-            contract_kind="ip-interface",
-            path_scope="owner",
+            path=contract_path,
             owner=owner,
+            library=str(oa["library"]),
+            cell=str(oa["cell"]),
         )
-        physical = _table(raw.get("physical"), "physical")
-        _table(raw.get("behavior"), "behavior")
-        _table(raw.get("supplies"), "supplies")
-        if physical.get("library") != oa.get("library") or physical.get(
-            "cell"
-        ) != oa.get("cell"):
-            raise ValueError("native OA identity disagrees with its interface")
-        port_count = physical.get("port_count")
-        if (
-            isinstance(port_count, bool)
-            or not isinstance(port_count, int)
-            or port_count <= 0
-        ):
-            raise ValueError("physical.port_count must be a positive integer")
-        port_contract_source = safe_relative(
-            physical.get("canonical_port_contract"),
-            "physical.canonical_port_contract",
-        ).as_posix()
+        port_contract_source = port_contract_relative.as_posix()
         if release_role_view(
             manifest, "oa_port_contract", export=export_name
         ).get("source") != port_contract_source:
