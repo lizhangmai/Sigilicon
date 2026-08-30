@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.domain.post_layout import PexStatus, pex_evidence_from_json
 from sigilicon.flow import (
     ActionContract,
@@ -153,7 +154,7 @@ def _contract_gds(plan) -> bytes:
     )
 
 
-class _PexInputsAdapter:
+class _PexInputsAdapter(StagedAdapterFixture):
     def __init__(self, *, corrupt_source: bool = False) -> None:
         self.corrupt_source = corrupt_source
         self.job = _job()

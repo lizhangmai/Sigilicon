@@ -6,6 +6,7 @@ import struct
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.flow import (
     ActionContract,
     AdapterExecution,
@@ -165,7 +166,7 @@ def _contract_gds(plan) -> bytes:
     )
 
 
-class _InputsAdapter:
+class _InputsAdapter(StagedAdapterFixture):
     def __init__(self, job, result, plan) -> None:
         self.job = job
         self.result = result
@@ -211,7 +212,7 @@ class _InputsAdapter:
         )
 
 
-class _ContractGdsMaterializer:
+class _ContractGdsMaterializer(StagedAdapterFixture):
     """Unregistered test Adapter proving execution semantics, not layout signoff."""
 
     def validate_inputs(self, context):

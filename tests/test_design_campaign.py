@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
     CIRCUIT_TOPOLOGY_KIND,
@@ -175,7 +176,7 @@ def _attempt_artifacts(
     return candidate, topology, evidence
 
 
-class AttemptAdapter:
+class AttemptAdapter(StagedAdapterFixture):
     def __init__(
         self,
         conclusion: EvidenceConclusion,

@@ -32,13 +32,14 @@ from sigilicon.flow import (
 from sigilicon.virtuoso.operation_journal import write_operation_incident
 
 from conftest import (
+    StagedAdapterFixture,
     write_component_owner,
     write_fake_flow_extension,
     write_project_context,
 )
 
 
-class SourceAdapter:
+class SourceAdapter(StagedAdapterFixture):
     def __init__(self) -> None:
         self.executions = 0
 
@@ -75,7 +76,7 @@ class SourceAdapter:
         )
 
 
-class TransformAdapter:
+class TransformAdapter(StagedAdapterFixture):
     def __init__(self) -> None:
         self.executions = 0
 
@@ -114,7 +115,7 @@ class TransformAdapter:
         )
 
 
-class VerifyAdapter:
+class VerifyAdapter(StagedAdapterFixture):
     def __init__(self) -> None:
         self.executions = 0
 
@@ -915,7 +916,7 @@ expected = true
     assert loaded.policy("accepted").checks[0].expected is True
 
 
-class TerminalAdapter:
+class TerminalAdapter(StagedAdapterFixture):
     def __init__(self, result_status: str | None = None) -> None:
         self.result_status = result_status
         self.executions = 0
@@ -1083,6 +1084,54 @@ def test_interruption_writes_cancelled_terminal_records(tmp_path: Path) -> None:
     assert result.nodes["later"].status == "blocked"
     assert payload["execution"]["status"] == "cancelled"
     assert payload["error"] == "interrupted"
+
+
+def test_progress_interruption_writes_cancelled_terminal_records(
+    tmp_path: Path,
+) -> None:
+    registered = FlowRegistry()
+    registered.register_action(
+        ActionContract(kind="fake.interrupt", adapters=("fake-interrupt",))
+    )
+    adapter = TerminalAdapter("valid")
+    registered.register_adapter("fake-interrupt", adapter)
+    spec = FlowSpec(
+        owner="example",
+        flow_id="progress-interrupted",
+        nodes=(FlowNode("interrupt", "fake.interrupt"),),
+        targets=(FlowTarget("all", ("interrupt",)),),
+    )
+    engine = FlowEngine(registered)
+    profile = ExecutionProfile(
+        "example",
+        "progress-interrupted",
+        (AdapterSelection("fake.interrupt", "fake-interrupt"),),
+    )
+
+    def interrupt_current_node(progress: FlowProgress) -> None:
+        if progress.current_node == "interrupt":
+            raise KeyboardInterrupt
+
+    result = engine.run(
+        engine.plan(spec, "all", profile),
+        artifact_root=tmp_path / "artifacts",
+        run_id="e" * 32,
+        progress=interrupt_current_node,
+    )
+
+    action_payload = json.loads(
+        (result.run_root / "outputs/interrupt/action_result.json").read_text()
+    )
+    flow_payload = json.loads(
+        (result.run_root / "outputs/flow_result.json").read_text()
+    )
+    assert adapter.executions == 0
+    assert result.status == "failed"
+    assert result.interrupted is True
+    assert action_payload["execution"]["status"] == "cancelled"
+    assert action_payload["error"] == "interrupted"
+    assert flow_payload["interrupted"] is True
+    assert flow_payload["nodes"]["interrupt"]["execution_status"] == "cancelled"
 
 
 def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) -> None:

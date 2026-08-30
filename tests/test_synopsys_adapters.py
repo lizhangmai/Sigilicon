@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 
+from conftest import StagedAdapterFixture
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
@@ -28,7 +29,7 @@ from sigilicon.flow import (
 from sigilicon.workflows.synopsys import SynopsysDCAdapter
 
 
-class SourceAssetsAdapter:
+class SourceAssetsAdapter(StagedAdapterFixture):
     def __init__(self, owner_root: Path) -> None:
         self.owner_root = owner_root
 

@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.domain.physical_verification import (
     PhysicalVerificationStatus,
     drc_evidence_from_json,
@@ -178,7 +179,7 @@ waiver_layers = []
 '''
 
 
-class _ReceiptBoundInputsAdapter:
+class _ReceiptBoundInputsAdapter(StagedAdapterFixture):
     """Creates upstream contract artifacts without claiming product closure."""
 
     def __init__(self, *, corrupt: str | None = None) -> None:

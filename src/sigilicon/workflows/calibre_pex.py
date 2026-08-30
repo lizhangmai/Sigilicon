@@ -25,9 +25,11 @@ from sigilicon.domain.post_layout import (
     pex_evidence_from_json,
 )
 from sigilicon.external_tools import owned_directory, owned_input_file, run_process_group
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
@@ -302,6 +304,15 @@ def _failed_evidence(
 class CalibreXrcPexAdapter:
     """Run the fixed Calibre xRC PHDB/PDB/formatter pipeline."""
 
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
     def _configuration(self, context: ActionContext) -> int:
         if context.action_config:
             raise FlowExecutionError("Calibre xRC PEX Action config must be empty")
@@ -341,7 +352,7 @@ class CalibreXrcPexAdapter:
         _support_manifest(support, content=False)
         return capability.identity, executable, deck, support
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         try:
             if context.action.kind != PEX_ACTION:
@@ -355,7 +366,7 @@ class CalibreXrcPexAdapter:
             diagnostics.append(str(exc))
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.output_root / "reports").mkdir()
 
     def _invoke(
@@ -513,7 +524,7 @@ class CalibreXrcPexAdapter:
             "Calibre xRC completed receipt-bound parasitic extraction",
         )
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         inputs = load_receipt_bound_layout_source_inputs(context, require_source=True)
         timeout = self._configuration(context)
         backend, executable, deck, support = self._resources(context)
@@ -571,7 +582,7 @@ class CalibreXrcPexAdapter:
         evidence_path.write_text(evidence.canonical_json(), encoding="utf-8")
         return AdapterExecution.succeeded(details=_facts(evidence))
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

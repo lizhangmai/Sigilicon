@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
@@ -179,7 +180,7 @@ def _state_budget_job() -> PhysicalDesignJob:
     )
 
 
-class _BenchmarkJobAdapter:
+class _BenchmarkJobAdapter(StagedAdapterFixture):
     def __init__(self, jobs: dict[str, PhysicalDesignJob]) -> None:
         self._jobs = jobs
 

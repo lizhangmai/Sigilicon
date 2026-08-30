@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.cli.flow_core import _execution_environment, _parser
 from sigilicon.flow import (
     ActionContext,
@@ -24,7 +25,7 @@ from sigilicon.flow import (
 )
 
 
-class PlanningAdapter:
+class PlanningAdapter(StagedAdapterFixture):
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return ()
 

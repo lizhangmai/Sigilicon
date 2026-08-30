@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
@@ -125,17 +127,26 @@ def _completion_facts(
 class ReferencePhysicalDesignAdapter:
     """Run pure P&R over one managed job and emit canonical typed artifacts."""
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         try:
             _read_job(context.input("job").path)
         except FlowExecutionError as exc:
             return (str(exc),)
         return ()
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         pass
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         job = _read_job(context.input("job").path)
         result = run(job)
         result_path = context.output_path("result", "physical-design-result.json")
@@ -151,7 +162,7 @@ class ReferencePhysicalDesignAdapter:
             )
         return AdapterExecution.succeeded(details=_completion_facts(job, result))
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
@@ -223,6 +234,15 @@ def _materialization_facts(plan: MaterializationPlan) -> dict[str, object]:
 class MaterializationPlanAdapter:
     """Compile typed P&R artifacts without writing a layout database."""
 
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
     def _inputs(
         self,
         context: ActionContext,
@@ -241,17 +261,17 @@ class MaterializationPlanAdapter:
             raise FlowExecutionError(f"invalid materialization target: {exc}") from exc
         return job, result, target
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         try:
             self._inputs(context)
         except FlowExecutionError as exc:
             return (str(exc),)
         return ()
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         pass
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         job, result, target = self._inputs(context)
         try:
             plan = compile_materialization_plan(job, result, target)
@@ -269,7 +289,7 @@ class MaterializationPlanAdapter:
         ).write_text(plan.acceptance.canonical_json(), encoding="utf-8")
         return AdapterExecution.succeeded(details=_materialization_facts(plan))
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

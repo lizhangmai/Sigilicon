@@ -18,6 +18,7 @@ from sigilicon.flow.circuit_design import (
     PHYSICAL_DESIGN_OBSERVATION_ADAPTER,
     register_circuit_design_actions,
 )
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.engine import FlowEngine
 from sigilicon.flow.environment import (
     ExecutionEnvironmentContract,
@@ -194,6 +195,7 @@ __all__ = [
     "SourceMember",
     "SourceAssetsAdapter",
     "ToolAdapter",
+    "complete_staged_run",
     "load_flow_contract",
     "load_execution_profile",
     "load_flow_catalog",

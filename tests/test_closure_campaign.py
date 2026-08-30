@@ -6,6 +6,7 @@ import struct
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.domain.physical_verification import (
     CheckedLayoutIdentity,
     CheckedSourceIdentity,
@@ -345,7 +346,7 @@ def _drc_repair_policy() -> ClosureRepairPolicy:
     )
 
 
-class _BenchmarkInputsAdapter:
+class _BenchmarkInputsAdapter(StagedAdapterFixture):
     def __init__(self, job: PhysicalDesignJob) -> None:
         self._job = job
 
@@ -494,7 +495,7 @@ def _benchmark_gds(plan) -> bytes:
     )
 
 
-class _BenchmarkLayoutAdapter:
+class _BenchmarkLayoutAdapter(StagedAdapterFixture):
     """Unregistered materialization contract fixture, never product evidence."""
 
     def __init__(
@@ -589,7 +590,7 @@ class _BenchmarkLayoutAdapter:
         return replace(collected, artifacts=artifacts)
 
 
-class _BenchmarkVerificationAdapter:
+class _BenchmarkVerificationAdapter(StagedAdapterFixture):
     """Test-only typed report fixture; it is never package-registered."""
 
     def _status(self, context: ActionContext) -> PhysicalVerificationStatus:
@@ -732,7 +733,7 @@ def _downstream_subject(context: ActionContext):
     )
 
 
-class _BenchmarkDownstreamAdapter:
+class _BenchmarkDownstreamAdapter(StagedAdapterFixture):
     """Test-only parsed downstream evidence; never package-registered."""
 
     def __init__(self, *, corrupt_layout_identity: bool = False) -> None:

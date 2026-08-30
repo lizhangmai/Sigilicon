@@ -11,9 +11,11 @@ from sigilicon.domain.physical_verification import (
     drc_evidence_from_json,
     lvs_evidence_from_json,
 )
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
@@ -40,12 +42,12 @@ _NON_CONCLUSIONS = {
 class ReceiptBoundVerificationSourceAdapter(SourceAssetsAdapter):
     """Snapshot checked source/policy and bind their exact content identities."""
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
-        collected = super().collect_result(context, execution)
+        collected = super()._collect_result(context, execution)
         if {artifact.role for artifact in collected.artifacts} != {
             "source",
             "verification-policy",
@@ -94,6 +96,15 @@ class ReceiptBoundVerificationSourceAdapter(SourceAssetsAdapter):
 
 class OfflinePhysicalVerificationAdapter:
     """Emit only non-conclusive evidence; never claim clean or violated layout."""
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
 
     def _status(self, context: ActionContext) -> PhysicalVerificationStatus:
         if context.action_config:
@@ -169,17 +180,17 @@ class OfflinePhysicalVerificationAdapter:
             f"{prefix}-completed": evidence.completion.proven,
         }
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         try:
             self._evidence(context)
         except (FlowExecutionError, ValueError, OSError) as exc:
             return (str(exc),)
         return ()
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         pass
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         evidence = self._evidence(context)
         context.output_path("evidence", "physical-verification-evidence.json").write_text(
             evidence.canonical_json(),
@@ -187,7 +198,7 @@ class OfflinePhysicalVerificationAdapter:
         )
         return AdapterExecution.succeeded(details=self._facts(evidence))
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

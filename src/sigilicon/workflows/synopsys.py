@@ -14,9 +14,11 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json
 from sigilicon.external_tools import run_process_group_capture
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
@@ -287,7 +289,16 @@ def _pinned_owner_runner(
 class SynopsysDCAdapter:
     """Run one owner recipe behind the typed ``asic.synthesis`` interface."""
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         if context.action.kind != "asic.synthesis":
             diagnostics.append("Synopsys DC Adapter requires asic.synthesis")
@@ -324,10 +335,10 @@ class SynopsysDCAdapter:
                     )
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.output_root / "tool").mkdir()
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         runner = self._pinned_runner(context)
         configuration = self._configuration(context)
         environment = os.environ.copy()
@@ -378,7 +389,7 @@ class SynopsysDCAdapter:
             {"runner": str(context.action_config["runner"])},
         )
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
@@ -559,7 +570,16 @@ class SynopsysDCAdapter:
 class SynopsysFCAdapter:
     """Run managed reference-library and place-and-route Action interfaces."""
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         if context.action.kind not in _FC_ACTIONS:
             return ("Synopsys FC Adapter received an unsupported Action",)
@@ -594,11 +614,11 @@ class SynopsysFCAdapter:
                     diagnostics.append(str(exc))
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.work_root / "tool").mkdir()
         (context.work_root / "inputs").mkdir()
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         node = self._node_configuration(context)
         configuration = self._configuration(context)
         qualifiers = self._qualifiers(context)
@@ -668,7 +688,7 @@ class SynopsysFCAdapter:
             },
         )
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
@@ -1102,7 +1122,16 @@ class SynopsysFCAdapter:
 class SynopsysVCSAdapter:
     """Run owner VCS recipes behind typed simulation Action interfaces."""
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         if context.action.kind not in _VCS_TARGETS:
             diagnostics.append("Synopsys VCS Adapter received an unsupported Action")
@@ -1134,10 +1163,10 @@ class SynopsysVCSAdapter:
                 diagnostics.append("VCS mapped-netlist input is unavailable")
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.output_root / "tool").mkdir()
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         target = self._target(context)
         runner = self._pinned_runner(context)
         configuration = self._configuration(context)
@@ -1193,7 +1222,7 @@ class SynopsysVCSAdapter:
             },
         )
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
@@ -1314,7 +1343,16 @@ class SynopsysVCSAdapter:
 class SynopsysHSpiceAdapter:
     """Run an owner-selected HSPICE regression or characterization campaign."""
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         if context.action.kind not in {
             "asic.electrical-functional",
@@ -1345,10 +1383,10 @@ class SynopsysHSpiceAdapter:
                 diagnostics.append(str(exc))
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.output_root / "tool").mkdir()
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         configuration = self._configuration(context)
         runner = self._pinned_runner(context)
         executable, models = self._execution_resources(context)
@@ -1400,7 +1438,7 @@ class SynopsysHSpiceAdapter:
             },
         )
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

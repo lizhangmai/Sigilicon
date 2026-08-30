@@ -17,10 +17,12 @@ from sigilicon.domain.platform import (
     OaLayerPurposeMapping,
     load_oa_materialization_mapping,
 )
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.environment import capability_available
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ResolvedPlatformAsset,
@@ -826,6 +828,15 @@ def _read_regular_bytes(source: Path, label: str) -> bytes:
 class OaXStreamMaterializationAdapter:
     """Materialize canonical plans through one managed OA target and XStream."""
 
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
     def __init__(
         self,
         *,
@@ -875,7 +886,7 @@ class OaXStreamMaterializationAdapter:
             xstream.executable,
         )
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         try:
             (
@@ -897,7 +908,7 @@ class OaXStreamMaterializationAdapter:
             diagnostics.append(str(exc))
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.log_root / "oa-xstream").mkdir()
 
     def _receipt(
@@ -1073,7 +1084,7 @@ class OaXStreamMaterializationAdapter:
             raise
         return layout_path, exported.exit_code
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         job, result, plan, target, configuration, assets = self._inputs(context)
         request = validate_materialization_request(job, result, plan, target)
         if not request.valid:
@@ -1210,7 +1221,7 @@ class OaXStreamMaterializationAdapter:
             details=materialization_execution_facts(receipt)
         )
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

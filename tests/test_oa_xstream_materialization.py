@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write_component_owner, write_project_context
+from conftest import StagedAdapterFixture, write_component_owner, write_project_context
 from sigilicon.flow import (
     ActionContract,
     AdapterExecution,
@@ -214,7 +214,7 @@ def _artifacts_with_via():
     return job, result, plan
 
 
-class _InputsAdapter:
+class _InputsAdapter(StagedAdapterFixture):
     def __init__(self, job, result, plan) -> None:
         self._values = (job, result, plan)
 

@@ -40,7 +40,7 @@ from sigilicon.domain.post_layout import (
 )
 from sigilicon.flow import (
     ActionContext,
-    AdapterExecution,
+    FlowExecutionError,
     InputArtifact,
 )
 from sigilicon.flow.circuit_design import PHYSICAL_DESIGN_OBSERVATION_ACTION
@@ -165,10 +165,10 @@ def test_real_physical_evidence_normalizes_to_candidate_bound_design_evidence(
     adapter = PhysicalDesignObservationAdapter()
     context = _context(tmp_path)
 
-    assert adapter.validate_inputs(context) == ()
-    execution = adapter.execute(context)
-    assert execution == AdapterExecution.succeeded()
-    result = adapter.collect_result(context, execution)
+    invocation = adapter.run(context)
+    assert invocation.execution.status == "succeeded"
+    assert invocation.collected is not None
+    result = invocation.collected
     values = {
         artifact.role: design_artifact_from_json(artifact.path.read_text(encoding="utf-8"))
         for artifact in result.artifacts
@@ -190,8 +190,9 @@ def test_offline_physical_evidence_stays_non_conclusive(tmp_path: Path) -> None:
     adapter = PhysicalDesignObservationAdapter()
     context = _context(tmp_path, offline=True)
 
-    adapter.execute(context)
-    result = adapter.collect_result(context, AdapterExecution.succeeded())
+    invocation = adapter.run(context)
+    assert invocation.collected is not None
+    result = invocation.collected
     values = {
         artifact.role: design_artifact_from_json(artifact.path.read_text(encoding="utf-8"))
         for artifact in result.artifacts
@@ -216,10 +217,12 @@ def test_physical_observation_rejects_qualification_authority_and_identity_drift
             ),
         }
     )
-    assert any("diagnostic or regression" in item for item in adapter.validate_inputs(privileged))
+    with pytest.raises(FlowExecutionError, match="diagnostic or regression"):
+        adapter.run(privileged)
 
     context.input("source").path.write_text("changed\n", encoding="utf-8")
-    assert any("source" in item for item in adapter.validate_inputs(context))
+    with pytest.raises(FlowExecutionError, match="source"):
+        adapter.run(context)
 
 
 def test_physical_observation_rejects_invalid_typed_evidence_conclusion(
@@ -236,4 +239,5 @@ def test_physical_observation_rejects_invalid_typed_evidence_conclusion(
         encoding="utf-8",
     )
 
-    assert any("violated DRC" in item for item in adapter.validate_inputs(context))
+    with pytest.raises(FlowExecutionError, match="violated DRC"):
+        adapter.run(context)

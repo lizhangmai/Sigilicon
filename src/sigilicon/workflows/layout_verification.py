@@ -42,9 +42,11 @@ from sigilicon.external_tools import (
     owned_input_file,
     run_process_group,
 )
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
@@ -959,6 +961,15 @@ def copy_regular_backend_output(source: Path, destination: Path, label: str) -> 
 class CalibrePhysicalVerificationAdapter:
     """Run receipt-bound GDSII DRC/LVS and project authoritative reports."""
 
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
     def _configuration(self, context: ActionContext) -> int:
         if context.action_config:
             raise FlowExecutionError(
@@ -998,7 +1009,7 @@ class CalibrePhysicalVerificationAdapter:
             )
         return capability.identity, executable, member.location
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         diagnostics: list[str] = []
         try:
             inputs = load_receipt_bound_verification_inputs(context)
@@ -1012,7 +1023,7 @@ class CalibrePhysicalVerificationAdapter:
             diagnostics.append(str(exc))
         return tuple(diagnostics)
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         (context.output_root / "reports").mkdir()
 
     def _invoke(
@@ -1164,7 +1175,7 @@ class CalibrePhysicalVerificationAdapter:
             )
         return evidence
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         inputs = load_receipt_bound_verification_inputs(context)
         timeout = self._configuration(context)
         backend, executable, deck = self._resources(context)
@@ -1235,7 +1246,7 @@ class CalibrePhysicalVerificationAdapter:
         evidence_path.write_text(evidence.canonical_json(), encoding="utf-8")
         return AdapterExecution.succeeded(details=_verification_facts(evidence))
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

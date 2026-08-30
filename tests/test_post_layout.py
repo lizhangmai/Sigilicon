@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.domain.physical_verification import (
     CheckedLayoutIdentity,
     CheckedSourceIdentity,
@@ -55,7 +56,7 @@ _SOURCE_ADAPTER = "fixture-post-layout-inputs"
 _PEX_ADAPTER = "fixture-pex"
 
 
-class _NoopAdapter:
+class _NoopAdapter(StagedAdapterFixture):
     def validate_inputs(self, context) -> tuple[str, ...]:
         return ()
 

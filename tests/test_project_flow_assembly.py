@@ -21,24 +21,15 @@ def _write_extension(
 ) -> Path:
     source = project_root / "ip/example/tools/flow_extension.py"
     source.parent.mkdir(parents=True, exist_ok=True)
-    body = '''from sigilicon.flow import ActionContract, AdapterExecution, CollectedActionResult
+    body = '''from sigilicon.flow import ActionContract, AdapterResult
 
 
 class QualificationAdapter:
-    def validate_inputs(self, context):
+    def run(self, context):
         scope = context.require_project_scope()
         if scope.owner != "example" or scope.owner_root.name != "example":
-            return ("wrong project owner scope",)
-        return ()
-
-    def prepare(self, context):
-        pass
-
-    def execute(self, context):
-        return AdapterExecution.succeeded()
-
-    def collect_result(self, context, execution):
-        return CollectedActionResult()
+            raise ValueError("wrong project owner scope")
+        return AdapterResult.succeeded()
 '''
     if register:
         body += '''

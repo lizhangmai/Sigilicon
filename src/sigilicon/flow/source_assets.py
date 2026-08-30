@@ -9,10 +9,12 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json, read_nofollow_text
 from sigilicon.external_tools import run_readonly_capture
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     ActionContract,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowContractError,
     FlowExecutionError,
@@ -280,7 +282,16 @@ def resolve_node_source_assets(
 class SourceAssetsAdapter:
     """Snapshot selected source below one managed Action directory."""
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
+
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         source = context.source_assets
         if source is None:
             return ("source-assets Action omitted its source selection",)
@@ -290,10 +301,10 @@ class SourceAssetsAdapter:
             else ("Git source changed after planning",)
         )
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         pass
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         source = context.source_assets
         if source is None:
             raise FlowExecutionError("source-assets Action has no source selection")
@@ -346,7 +357,7 @@ class SourceAssetsAdapter:
             raise FlowExecutionError("source member changed while creating the run snapshot")
         return AdapterExecution.succeeded()
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

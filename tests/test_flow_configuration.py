@@ -6,6 +6,7 @@ import tomllib
 
 import pytest
 
+from conftest import StagedAdapterFixture
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
@@ -33,7 +34,7 @@ from sigilicon.flow import (
 )
 
 
-class RequirementAdapter:
+class RequirementAdapter(StagedAdapterFixture):
     def __init__(self) -> None:
         self.executions = 0
         self.platform_location: Path | None = None

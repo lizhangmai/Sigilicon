@@ -8,7 +8,22 @@ from typing import Any
 
 import pytest
 
+from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.model import ActionContext, AdapterResult
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
+
+
+class StagedAdapterFixture:
+    """Keep test backend stages explicit while exercising the one-method seam."""
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self.validate_inputs,
+            prepare=self.prepare,
+            execute=self.execute,
+            collect_result=self.collect_result,
+        )
 
 
 def write_project_context(root: Path) -> Path:

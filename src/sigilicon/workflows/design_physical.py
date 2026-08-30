@@ -43,9 +43,11 @@ from sigilicon.domain.post_layout import (
     pex_evidence_from_json,
     pex_evidence_id,
 )
+from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
+    AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
@@ -109,6 +111,15 @@ class PhysicalDesignObservationAdapter:
     authoritative Calibre parsers remain responsible for clean/violation/extraction
     conclusions; this layer only binds those conclusions to one Candidate identity.
     """
+
+    def run(self, context: ActionContext) -> AdapterResult:
+        return complete_staged_run(
+            context,
+            validate_inputs=self._validate_inputs,
+            prepare=self._prepare,
+            execute=self._execute,
+            collect_result=self._collect_result,
+        )
 
     @staticmethod
     def _policy(context: ActionContext) -> tuple[EvidenceRole, EvidenceLevel, tuple[str, ...]]:
@@ -312,17 +323,17 @@ class PhysicalDesignObservationAdapter:
         validate_design_candidate(candidate, (topology, *evidence))
         return candidate, *evidence
 
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
+    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         try:
             self._compile(context)
         except (FlowExecutionError, OSError, TypeError, ValueError) as exc:
             return (str(exc),)
         return ()
 
-    def prepare(self, context: ActionContext) -> None:
+    def _prepare(self, context: ActionContext) -> None:
         self._compile(context)
 
-    def execute(self, context: ActionContext) -> AdapterExecution:
+    def _execute(self, context: ActionContext) -> AdapterExecution:
         values = self._compile(context)
         for role, value in zip(("candidate", "drc", "lvs", "pex"), values, strict=True):
             context.output_path(role, f"{role}.json").write_text(
@@ -331,7 +342,7 @@ class PhysicalDesignObservationAdapter:
             )
         return AdapterExecution.succeeded()
 
-    def collect_result(
+    def _collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,

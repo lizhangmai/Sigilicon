@@ -779,7 +779,6 @@ class FlowEngine:
         notify("running", 0, None)
         for planned in plan.nodes:
             node = planned.node
-            notify("running", len(outcomes), node.node_id)
             if interrupted:
                 outcomes[node.node_id] = NodeOutcome(
                     node_id=node.node_id,
@@ -886,6 +885,11 @@ class FlowEngine:
             result_status = "failed"
             error: str | None = None
             try:
+                # Announce the current node only after its managed invocation
+                # context exists and inside the same cancellation boundary as
+                # the Adapter. An interrupt raised by a progress observer must
+                # still produce the Action and Flow terminal records.
+                notify("running", len(outcomes), node.node_id)
                 adapter_result = adapter.run(context)
                 if not isinstance(adapter_result, AdapterResult):
                     raise FlowExecutionError("Adapter returned an invalid result")
