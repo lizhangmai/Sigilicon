@@ -30,8 +30,22 @@ def test_layout_wrappers_preserve_an_explicit_project(
 ) -> None:
     project = _project(tmp_path)
     spec_path = tmp_path / "ip/example/layout.toml"
-    spec = object()
-    plan = object()
+    spec = SimpleNamespace(
+        library="example",
+        cell="cell",
+        view="layout",
+        generator="test",
+        stage="placement_probe",
+        layout_pdk=SimpleNamespace(dbu_per_micron=1000),
+    )
+    plan = SimpleNamespace(
+        library="example",
+        cell="cell",
+        view="layout",
+        generator="test",
+        stage="placement_probe",
+        dbu_per_micron=1000,
+    )
     generation = object()
     verification = object()
     client = object()

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from sigilicon.domain.repository import Project
-from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.workflows.layout_generation import (
     LayoutGenerationResult,
@@ -33,7 +32,7 @@ class ProjectLayoutWorkflow:
 
     def plan(self, spec_path: Path) -> LayoutPlanningResult:
         spec = load_layout_spec(spec_path, project=self.project)
-        return LayoutPlanningResult(spec=spec, plan=build_layout_plan(spec))
+        return LayoutPlanningResult(spec)
 
     def generate(
         self,

@@ -12,6 +12,7 @@ from sigilicon.domain.netlist import (
     parse_spectre_pwl_sources,
 )
 from sigilicon.domain.oa_simulation import OASimulationSpec
+from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.virtuoso.ade import (
     create_oa_native_config_view,
     create_oa_native_maestro_view,
@@ -32,8 +33,8 @@ def _testbench_pdk(spec: OASimulationSpec) -> Any:
     return spec.native_setup.pdk
 
 
-def _native_setup_source(spec: OASimulationSpec) -> Path:
-    return spec.native_setup.source
+def _native_setup_source(spec: OASimulationSpec) -> TextSourceSnapshot:
+    return spec.native_setup.source_snapshot
 
 
 def _materialize_inline_pwl_tables(
@@ -67,7 +68,7 @@ def _materialize_inline_pwl_tables(
 
 def sync_oa_testbench(
     spec: OASimulationSpec,
-    canonical_source: Path,
+    canonical_source: Path | NetlistSnapshot,
     client: Any,
     *,
     overwrite: bool = False,
@@ -94,7 +95,7 @@ def sync_oa_testbench(
 
 def _sync_oa_testbench_impl(
     spec: OASimulationSpec,
-    canonical_source: Path,
+    canonical_source: Path | NetlistSnapshot,
     client: Any,
     *,
     overwrite: bool = False,
@@ -103,7 +104,11 @@ def _sync_oa_testbench_impl(
 ) -> None:
     """Materialize one testbench under its caller-owned temporary scope."""
 
-    snapshot = load_netlist_snapshot(canonical_source)
+    snapshot = (
+        canonical_source
+        if isinstance(canonical_source, NetlistSnapshot)
+        else load_netlist_snapshot(canonical_source)
+    )
     hierarchy = plan_hierarchy(snapshot, top=spec.cell)
     if hierarchy.ordered_cells != (spec.cell,):
         raise ValueError(
@@ -121,7 +126,7 @@ def _sync_oa_testbench_impl(
         ("spiceIn.devmap",),
         "devselect := resistor res\ndevselect := capacitor cap\n",
     )
-    measurement_source = _native_setup_source(spec)
+    setup_source = _native_setup_source(spec)
     project = spec.project
 
     with workspace_operation(
@@ -225,7 +230,7 @@ def _sync_oa_testbench_impl(
                 cell=spec.cell,
                 kind="skill",
                 view="measurement",
-                source=measurement_source,
+                source=setup_source,
                 log_dir=work.directory("logs", "measurement"),
                 work_dir=work.directory("work", "measurement"),
                 operation=operation,

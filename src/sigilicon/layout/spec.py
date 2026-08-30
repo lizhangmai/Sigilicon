@@ -256,6 +256,7 @@ def load_layout_spec(
     project_root: Path | None = None,
     oa_source: OALibrarySource | None = None,
     platform: PlatformSnapshot | None = None,
+    netlist_inventory: Mapping[Path, NetlistSnapshot] | None = None,
 ) -> LayoutSpec:
     spec_path = path.resolve()
     if project is None:
@@ -388,7 +389,15 @@ def load_layout_spec(
         source_netlist.relative_to(root)
     except ValueError as exc:
         raise ValueError("layout.source_netlist must stay below the project root") from exc
-    full_snapshot = load_netlist_snapshot(source_netlist)
+    full_snapshot = (
+        None
+        if netlist_inventory is None
+        else netlist_inventory.get(source_netlist)
+    )
+    if full_snapshot is None:
+        full_snapshot = load_netlist_snapshot(source_netlist)
+    if full_snapshot.source_path != source_netlist:
+        raise ValueError("layout netlist snapshot identity drift")
     source_snapshot = select_subckt_snapshot(full_snapshot, cell)
     dependency_values = layout.get("dependency_netlists", [])
     if not isinstance(dependency_values, list) or not all(
@@ -417,9 +426,19 @@ def load_layout_spec(
     # LVS hierarchy resolution needs every sibling definition in the declared
     # canonical file.  The resolver still emits only the closure reachable
     # from ``layout.cell``, so unreachable subckts are not promoted into source.
-    source_snapshots = (full_snapshot,) + tuple(
-        load_netlist_snapshot(dependency) for dependency in dependency_netlists
-    )
+    dependency_snapshots: list[NetlistSnapshot] = []
+    for dependency in dependency_netlists:
+        dependency_snapshot = (
+            None
+            if netlist_inventory is None
+            else netlist_inventory.get(dependency)
+        )
+        if dependency_snapshot is None:
+            dependency_snapshot = load_netlist_snapshot(dependency)
+        if dependency_snapshot.source_path != dependency:
+            raise ValueError("layout dependency netlist snapshot identity drift")
+        dependency_snapshots.append(dependency_snapshot)
+    source_snapshots = (full_snapshot, *dependency_snapshots)
 
     raw_ports = ports_table.get("order")
     if not isinstance(raw_ports, list) or not raw_ports:

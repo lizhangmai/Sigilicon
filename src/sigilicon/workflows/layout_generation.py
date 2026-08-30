@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +31,32 @@ class LayoutGenerationResult:
 
 @dataclass(frozen=True)
 class LayoutPlanningResult:
+    """A layout spec paired with the plan built from that exact object."""
+
     spec: LayoutSpec
-    plan: LayoutPlan
+    plan: LayoutPlan = field(init=False)
+
+    def __post_init__(self) -> None:
+        plan = build_layout_plan(self.spec)
+        identity = (
+            plan.library,
+            plan.cell,
+            plan.view,
+            plan.generator,
+            plan.stage,
+            plan.dbu_per_micron,
+        )
+        expected = (
+            self.spec.library,
+            self.spec.cell,
+            self.spec.view,
+            self.spec.generator,
+            self.spec.stage,
+            self.spec.layout_pdk.dbu_per_micron,
+        )
+        if identity != expected:
+            raise ValueError("layout plan identity differs from its source spec")
+        object.__setattr__(self, "plan", plan)
 
 
 def plan_layout_spec(
@@ -43,7 +67,7 @@ def plan_layout_spec(
 ) -> LayoutPlanningResult:
     repository = Project.bind(project=project, project_root=project_root)
     spec = load_layout_spec(spec_path, project=repository)
-    return LayoutPlanningResult(spec=spec, plan=build_layout_plan(spec))
+    return LayoutPlanningResult(spec)
 
 
 def execute_layout_generation_spec(
@@ -62,7 +86,7 @@ def execute_layout_generation_spec(
 
 
 def generate_layout(
-    spec: LayoutSpec,
+    spec: LayoutSpec | LayoutPlanningResult,
     client: Any,
     *,
     artifact_root: Path | None = None,
@@ -70,9 +94,16 @@ def generate_layout(
     timeout: int = 120,
     disposable: bool = False,
 ) -> LayoutGenerationResult:
+    planning = (
+        spec
+        if isinstance(spec, LayoutPlanningResult)
+        else LayoutPlanningResult(spec)
+    )
+    if isinstance(spec, LayoutPlanningResult) and not disposable:
+        raise ValueError("preplanned layout execution must be disposable")
     if not disposable:
         return _generate_layout_impl(
-            spec,
+            planning,
             client,
             artifact_root=artifact_root,
             overwrite=overwrite,
@@ -81,7 +112,7 @@ def generate_layout(
         )
     with DisposableWork.create(prefix="sigilicon-oa-layout-") as work:
         return _generate_layout_impl(
-            spec,
+            planning,
             client,
             artifact_root=artifact_root,
             overwrite=overwrite,
@@ -92,7 +123,7 @@ def generate_layout(
 
 
 def _generate_layout_impl(
-    spec: LayoutSpec,
+    planning: LayoutPlanningResult,
     client: Any,
     *,
     artifact_root: Path | None = None,
@@ -103,7 +134,8 @@ def _generate_layout_impl(
 ) -> LayoutGenerationResult:
     """Run layout generation under its caller-owned work scope."""
 
-    plan = build_layout_plan(spec)
+    spec = planning.spec
+    execution_plan = planning.plan
     project = (
         spec.project
         if artifact_root is None
@@ -129,59 +161,66 @@ def _generate_layout_impl(
             backend="laygo2+virtuoso-oa",
             source=artifact_source_state(spec.project_root),
         )
-    attempt.copy_file(
-        "inputs", ("layout.toml",), spec.path, label="canonical layout intent"
-    )
-    attempt.copy_file(
-        "inputs",
-        ("layout-generator.py",),
-        spec.generator_source,
-        label="design-owned layout generator source",
-    )
-    for index, dependency in enumerate(spec.generator_dependencies):
+    if not disposable:
+        attempt.copy_file(
+            "inputs", ("layout.toml",), spec.path, label="canonical layout intent"
+        )
         attempt.copy_file(
             "inputs",
-            ("layout-generator-dependencies", f"{index:02d}-{dependency.name}"),
-            dependency,
-            label="design-owned layout generator dependency",
+            ("layout-generator.py",),
+            spec.generator_source,
+            label="design-owned layout generator source",
         )
-    for index, (module, dependency) in enumerate(
-        zip(spec.generator_modules, spec.generator_module_sources, strict=True)
-    ):
-        attempt.copy_file(
-            "inputs",
-            ("layout-generator-modules", f"{index:02d}-{dependency.name}"),
-            dependency,
-            label=f"installed layout generator module {module}",
-        )
-    attempt.write_text(
-        "inputs",
-        ("canonical-subckt.scs",),
-        spec.source_snapshot.text,
-        label="selected canonical transistor source",
-    )
-    for index, snapshot in enumerate(spec.source_snapshots):
+        for index, dependency in enumerate(spec.generator_dependencies):
+            attempt.copy_file(
+                "inputs",
+                (
+                    "layout-generator-dependencies",
+                    f"{index:02d}-{dependency.name}",
+                ),
+                dependency,
+                label="design-owned layout generator dependency",
+            )
+        for index, (module, dependency) in enumerate(
+            zip(spec.generator_modules, spec.generator_module_sources, strict=True)
+        ):
+            attempt.copy_file(
+                "inputs",
+                ("layout-generator-modules", f"{index:02d}-{dependency.name}"),
+                dependency,
+                label=f"installed layout generator module {module}",
+            )
         attempt.write_text(
             "inputs",
-            ("canonical-source", f"{index:02d}-{snapshot.source_path.name}"),
-            snapshot.text,
-            label="exact canonical Spectre source",
+            ("canonical-subckt.scs",),
+            spec.source_snapshot.text,
+            label="selected canonical transistor source",
         )
-    attempt.write_json(
-        "inputs",
-        ("canonical-source", "provenance.json"),
-        {
-            "top": spec.cell,
-            "sources": [
-                snapshot.source_path.relative_to(spec.project_root).as_posix()
-                for snapshot in spec.source_snapshots
-            ],
-        },
-        label="canonical layout source provenance",
-    )
-    attempt.write_text(
-        "inputs", ("layout-plan.json",), plan.canonical_json(), label="stable layout plan"
-    )
+        for index, snapshot in enumerate(spec.source_snapshots):
+            attempt.write_text(
+                "inputs",
+                ("canonical-source", f"{index:02d}-{snapshot.source_path.name}"),
+                snapshot.text,
+                label="exact canonical Spectre source",
+            )
+        attempt.write_json(
+            "inputs",
+            ("canonical-source", "provenance.json"),
+            {
+                "top": spec.cell,
+                "sources": [
+                    snapshot.source_path.relative_to(spec.project_root).as_posix()
+                    for snapshot in spec.source_snapshots
+                ],
+            },
+            label="canonical layout source provenance",
+        )
+        attempt.write_text(
+            "inputs",
+            ("layout-plan.json",),
+            execution_plan.canonical_json(),
+            label="stable layout plan",
+        )
     operation = None
     oa_written = False
     failure_context = (
@@ -234,8 +273,8 @@ def _generate_layout_impl(
                     "cell": spec.cell,
                     "view": spec.view,
                     "library_path": str(library_path),
-                    "stage": plan.stage,
-                    "instance_count": len(plan.instances),
+                    "stage": execution_plan.stage,
+                    "instance_count": len(execution_plan.instances),
                     "oa_completion_confirmed": True,
                 },
                 label="OA layout generation completion proof",
@@ -243,8 +282,8 @@ def _generate_layout_impl(
             return attempt.succeed(
                 completion_evidence=(completion,),
                 details={
-                    "instance_count": len(plan.instances),
-                    "stage": plan.stage,
+                    "instance_count": len(execution_plan.instances),
+                    "stage": execution_plan.stage,
                 },
             )
 
@@ -257,7 +296,7 @@ def _generate_layout_impl(
         ):
             write_layout_plan(
                 client,
-                plan,
+                execution_plan,
                 operation=operation,
                 overwrite=overwrite,
                 timeout=timeout,
@@ -265,7 +304,7 @@ def _generate_layout_impl(
             oa_written = True
         validate_layout_plan(
             client,
-            plan,
+            execution_plan,
             operation=operation,
             timeout=timeout,
         )
@@ -274,5 +313,5 @@ def _generate_layout_impl(
     return LayoutGenerationResult(
         attempt_dir=attempt.paths.root if not disposable else None,
         manifest_path=attempt.paths.manifest if not disposable else None,
-        instance_count=len(plan.instances),
+        instance_count=len(execution_plan.instances),
     )

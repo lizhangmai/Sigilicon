@@ -12,6 +12,8 @@ import stat
 from types import MappingProxyType
 from typing import Iterable, Iterator, Mapping, Sequence
 
+from sigilicon.domain.source import TextSourceSnapshot
+
 
 @dataclass(frozen=True)
 class NetlistSnapshot:
@@ -278,11 +280,18 @@ def load_netlist_snapshot(netlist: Path) -> NetlistSnapshot:
             os.close(descriptor)
     finally:
         os.close(parent_fd)
-    text = payload.decode("utf-8")
-    interfaces = _parse_subckt_interfaces(text, source=source)
+    return parse_netlist_snapshot(
+        TextSourceSnapshot(source_path=source, text=payload.decode("utf-8"))
+    )
+
+
+def parse_netlist_snapshot(source: TextSourceSnapshot) -> NetlistSnapshot:
+    """Parse one caller-owned text snapshot without consulting its path."""
+
+    interfaces = _parse_subckt_interfaces(source.text, source=source.source_path)
     return NetlistSnapshot(
-        source_path=source,
-        text=text,
+        source_path=source.source_path,
+        text=source.text,
         interfaces=MappingProxyType(interfaces),
     )
 

@@ -7,9 +7,11 @@ from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Any, TypeVar
 
 from sigilicon.domain.netlist import (
+    NetlistSnapshot,
     NetlistSubcircuit,
     load_netlist_snapshot,
     parse_subcircuit_definitions,
@@ -31,7 +33,7 @@ from sigilicon.domain.platform import (
     resolve_platform_snapshot,
 )
 from sigilicon.domain.repository import Project
-from sigilicon.layout.generator import build_layout_plan
+from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.virtuoso.attestation import attest_native_setup
@@ -45,7 +47,10 @@ from sigilicon.workflows.design_lifecycle import (
     inspect_design,
     synchronize_design,
 )
-from sigilicon.workflows.layout_generation import generate_layout
+from sigilicon.workflows.layout_generation import (
+    LayoutPlanningResult,
+    generate_layout,
+)
 from sigilicon.workflows.oa_testbench import (
     sync_oa_testbench,
 )
@@ -77,9 +82,16 @@ class InstanceParameterExpectation:
 
 @dataclass(frozen=True)
 class LayoutRebuildStep:
-    spec: LayoutSpec
-    plan: LayoutPlan
+    planning: LayoutPlanningResult
     dependencies: tuple[tuple[str, str], ...]
+
+    @property
+    def spec(self) -> LayoutSpec:
+        return self.planning.spec
+
+    @property
+    def plan(self) -> LayoutPlan:
+        return self.planning.plan
 
 
 @dataclass(frozen=True)
@@ -87,14 +99,19 @@ class ViewRebuildStep:
     cell: str
     owner: str
     view: OACellViewSource
+    source_snapshot: TextSourceSnapshot | None = None
 
 
 @dataclass(frozen=True)
 class TestbenchRebuildStep:
     cell: str
-    canonical_source: Path
+    source_snapshot: NetlistSnapshot
     dependencies: tuple[str, ...]
     simulation: OASimulationSpec
+
+    @property
+    def canonical_source(self) -> Path:
+        return self.source_snapshot.source_path
 
 
 @dataclass(frozen=True)
@@ -263,17 +280,22 @@ def _override_inspection_library(
 
 def _load_definitions(
     source: OALibrarySource,
-) -> Mapping[str, NetlistSubcircuit]:
+) -> tuple[
+    Mapping[str, NetlistSubcircuit],
+    Mapping[Path, NetlistSnapshot],
+]:
     netlist_cells = tuple(
         cell
         for cell in source.cells
         if any(view.kind == "spectre_netlist" for view in cell.views)
     )
-    snapshots = tuple(
-        load_netlist_snapshot(path)
-        for path in dict.fromkeys(cell.canonical_source for cell in netlist_cells)
-    )
-    definitions = parse_subcircuit_definitions(snapshots)
+    snapshots = {
+        path: load_netlist_snapshot(path)
+        for path in dict.fromkeys(
+            cell.canonical_source for cell in netlist_cells
+        )
+    }
+    definitions = parse_subcircuit_definitions(tuple(snapshots.values()))
     declared = {cell.cell for cell in netlist_cells}
     discovered = set(definitions)
     if declared != discovered:
@@ -287,7 +309,7 @@ def _load_definitions(
             raise ValueError(
                 f"{cell.cell} canonical_source does not own its subckt definition"
             )
-    return definitions
+    return definitions, snapshots
 
 
 def _plan_designs(
@@ -295,6 +317,7 @@ def _plan_designs(
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
     platform: PlatformSnapshot,
+    netlist_snapshots: Mapping[Path, NetlistSnapshot] | None = None,
 ) -> tuple[DesignRebuildStep, ...]:
     inspections: list[DesignInspection] = []
     for cell in source.cells:
@@ -304,6 +327,11 @@ def _plan_designs(
             cell.design_spec,
             project=source.project,
             platform=platform,
+            netlist_snapshot=(
+                None
+                if netlist_snapshots is None
+                else netlist_snapshots.get(cell.canonical_source)
+            ),
         )
         if inspection.spec.library != source.name:
             raise ValueError(
@@ -436,6 +464,7 @@ def _instance_parameter_expectations(
 def _plan_testbenches(
     source: OALibrarySource,
     definitions: Mapping[str, NetlistSubcircuit],
+    netlist_snapshots: Mapping[Path, NetlistSnapshot],
     platform: PlatformSnapshot,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> tuple[TestbenchRebuildStep, ...]:
@@ -454,8 +483,9 @@ def _plan_testbenches(
             raise ValueError(
                 f"testbench {cell.cell} config and Maestro views must share one setup source"
             )
+        setup_source = next(iter(setup_sources))
         simulation = load_oa_simulation_spec(
-            next(iter(setup_sources)),
+            setup_source,
             project=source.project,
             platform=platform,
             architecture_source_documents=architecture_source_documents,
@@ -491,7 +521,7 @@ def _plan_testbenches(
         result.append(
             TestbenchRebuildStep(
                 cell=cell.cell,
-                canonical_source=cell.canonical_source,
+                source_snapshot=netlist_snapshots[cell.canonical_source],
                 dependencies=dependencies,
                 simulation=simulation,
             )
@@ -504,10 +534,11 @@ def _plan_layouts(
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
     platform: PlatformSnapshot,
+    netlist_snapshots: Mapping[Path, NetlistSnapshot] | None = None,
 ) -> tuple[LayoutRebuildStep, ...]:
     specs: list[LayoutSpec] = []
-    plans: dict[tuple[str, str], LayoutPlan] = {}
-    spec_by_key: dict[tuple[str, str], LayoutSpec] = {}
+    planning_by_key: dict[tuple[str, str], LayoutPlanningResult] = {}
+    netlist_inventory = dict(netlist_snapshots or {})
     for cell in source.cells:
         for spec_path in cell.layout_specs:
             spec = load_layout_spec(
@@ -515,7 +546,17 @@ def _plan_layouts(
                 project=source.project,
                 oa_source=source,
                 platform=platform,
+                netlist_inventory=netlist_inventory,
             )
+            for snapshot in spec.source_snapshots:
+                previous = netlist_inventory.setdefault(
+                    snapshot.source_path,
+                    snapshot,
+                )
+                if previous != snapshot:
+                    raise ValueError(
+                        "layout specs disagree on a shared netlist snapshot"
+                    )
             if spec.library != source.name:
                 raise ValueError(
                     f"layout spec library differs from {source.name}: {spec_path}"
@@ -527,12 +568,11 @@ def _plan_layouts(
             if library != spec.library:
                 spec = replace(spec, library=library)
             key = (spec.cell, spec.view)
-            if key in spec_by_key:
+            if key in planning_by_key:
                 raise ValueError(f"duplicate canonical layout rebuild view: {key}")
-            plan = build_layout_plan(spec)
+            planning = LayoutPlanningResult(spec)
             specs.append(spec)
-            spec_by_key[key] = spec
-            plans[key] = plan
+            planning_by_key[key] = planning
     keys = tuple((spec.cell, spec.view) for spec in specs)
     key_set = set(keys)
     dependencies: dict[tuple[str, str], set[tuple[str, str]]] = {
@@ -541,7 +581,7 @@ def _plan_layouts(
     primitive_masters = source.primitive_masters
     for spec in specs:
         key = (spec.cell, spec.view)
-        for instance in plans[key].instances:
+        for instance in planning_by_key[key].plan.instances:
             master = (instance.cell, instance.view)
             if instance.library != library:
                 continue
@@ -565,24 +605,49 @@ def _plan_layouts(
     order = _topological_order(keys, dependencies, label="layout rebuild")
     return tuple(
         LayoutRebuildStep(
-            spec=spec_by_key[key],
-            plan=plans[key],
+            planning=planning_by_key[key],
             dependencies=tuple(sorted(dependencies[key])),
         )
         for key in order
     )
 
 
-def _plan_views(source: OALibrarySource) -> tuple[ViewRebuildStep, ...]:
+def _plan_views(
+    source: OALibrarySource,
+    testbenches: tuple[TestbenchRebuildStep, ...] = (),
+) -> tuple[ViewRebuildStep, ...]:
     """Validate and order the complete explicit cell/view dependency graph."""
 
-    steps = tuple(
-        ViewRebuildStep(cell=cell.cell, owner=cell.owner, view=view)
-        for cell in source.cells
-        for view in cell.views
-    )
-    keys = tuple(OAViewReference(step.cell, step.view.name) for step in steps)
-    step_by_key = {key: step for key, step in zip(keys, steps, strict=True)}
+    setup_snapshots = {
+        step.simulation.native_setup.source: (
+            step.simulation.native_setup.source_snapshot
+        )
+        for step in testbenches
+    }
+    text_kinds = {"spectre_model", "veriloga", "system_verilog", "skill"}
+    text_snapshots = dict(setup_snapshots)
+    steps: list[ViewRebuildStep] = []
+    for cell in source.cells:
+        for view in cell.views:
+            source_snapshot = None
+            if view.kind in text_kinds:
+                source_snapshot = text_snapshots.get(view.source)
+                if source_snapshot is None:
+                    source_snapshot = load_text_source_snapshot(view.source)
+                    text_snapshots[view.source] = source_snapshot
+            steps.append(
+                ViewRebuildStep(
+                    cell=cell.cell,
+                    owner=cell.owner,
+                    view=view,
+                    source_snapshot=source_snapshot,
+                )
+            )
+    planned_steps = tuple(steps)
+    keys = tuple(OAViewReference(step.cell, step.view.name) for step in planned_steps)
+    step_by_key = {
+        key: step for key, step in zip(keys, planned_steps, strict=True)
+    }
     dependencies = {
         key: step_by_key[key].view.dependencies
         for key in keys
@@ -630,7 +695,7 @@ def plan_oa_library_rebuild(
         raise ValueError(
             f"OA assembly may materialize only its unique library {source.name}"
         )
-    definitions = _load_definitions(source)
+    definitions, netlist_snapshots = _load_definitions(source)
     if platform_inventory is None:
         platform_snapshot: PlatformSnapshot = load_platform(
             source.project,
@@ -651,19 +716,34 @@ def plan_oa_library_rebuild(
             source.pdk,
             snapshot=platform_snapshot,
         )
-    designs = _plan_designs(source, target_library, definitions, platform_snapshot)
-    layouts = _plan_layouts(source, target_library, definitions, platform_snapshot)
+    designs = _plan_designs(
+        source,
+        target_library,
+        definitions,
+        platform_snapshot,
+        netlist_snapshots=netlist_snapshots,
+    )
+    layouts = _plan_layouts(
+        source,
+        target_library,
+        definitions,
+        platform_snapshot,
+        netlist_snapshots=netlist_snapshots,
+    )
     testbenches = _plan_testbenches(
         source,
         definitions,
+        netlist_snapshots,
         platform_snapshot,
         architecture_source_documents,
     )
-    views = _plan_views(source)
-    expected_views = {
-        cell.cell: tuple(view.name for view in cell.views)
-        for cell in source.cells
-    }
+    views = _plan_views(source, testbenches)
+    expected_views = MappingProxyType(
+        {
+            cell.cell: tuple(view.name for view in cell.views)
+            for cell in source.cells
+        }
+    )
     return OALibraryRebuildPlan(
         source=source,
         library=target_library,
@@ -1136,6 +1216,8 @@ def rebuild_oa_library(
             and (target_cell is None or step.cell == target_cell)
         )
         for index, step in enumerate(text_steps, start=1):
+            if step.source_snapshot is None:
+                raise RuntimeError("OA text-view plan has no immutable source")
             identity = f"{plan.library}/{step.cell}/{step.view.name}"
             action = "refresh" if cell_view_exists(
                 client, plan.library, step.cell, step.view.name
@@ -1148,7 +1230,7 @@ def rebuild_oa_library(
                 cell=step.cell,
                 view=step.view.name,
                 kind=step.view.kind,
-                source=step.view.source,
+                source=step.source_snapshot,
                 overwrite=True,
                 timeout=timeout,
             )
@@ -1168,7 +1250,7 @@ def rebuild_oa_library(
             ) else "generate"
             emit(f"{prefix}: {action} {identity}")
             generate_layout(
-                step.spec,
+                step.planning,
                 client,
                 overwrite=True,
                 timeout=timeout,
@@ -1181,7 +1263,7 @@ def rebuild_oa_library(
         )
         sync_oa_testbench(
             step.simulation,
-            step.canonical_source,
+            step.source_snapshot,
             client,
             overwrite=True,
             timeout=timeout,

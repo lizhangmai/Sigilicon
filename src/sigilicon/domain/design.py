@@ -106,6 +106,7 @@ def load_design_spec(
     project: Project | None = None,
     project_root: Path | None = None,
     platform: PlatformSnapshot | None = None,
+    netlist_snapshot: NetlistSnapshot | None = None,
 ) -> DesignSpec:
     spec_path = path.resolve()
     if project is None:
@@ -198,8 +199,14 @@ def load_design_spec(
         raise ValueError("port names must be unique across inputs, outputs, and supplies")
     if len(order) != len(grouped) or set(order) != set(grouped):
         raise ValueError("ports.order must contain every grouped port exactly once")
-    netlist_snapshot = load_netlist_snapshot(source_netlist)
-    declared = subckt_ports(netlist_snapshot, cell)
+    selected_netlist = (
+        load_netlist_snapshot(source_netlist)
+        if netlist_snapshot is None
+        else netlist_snapshot
+    )
+    if selected_netlist.source_path != source_netlist:
+        raise ValueError("design netlist snapshot identity drift")
+    declared = subckt_ports(selected_netlist, cell)
     if declared != order:
         raise ValueError(f"ports.order {order} does not match {cell} declaration {declared}")
 
@@ -234,7 +241,7 @@ def load_design_spec(
         port_order=order,
         directions=directions,
         pdk=pdk,
-        netlist_snapshot=netlist_snapshot,
+        netlist_snapshot=selected_netlist,
         source_documents=MappingProxyType(
             {spec_path: freeze_toml_document(raw)}
         ),

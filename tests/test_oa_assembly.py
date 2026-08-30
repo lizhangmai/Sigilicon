@@ -14,7 +14,9 @@ from sigilicon.domain.oa_library import (
 )
 from sigilicon.domain.netlist import NetlistSubcircuit
 from sigilicon.domain.repository import Project
+from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.layout.ir import LayoutPlan
+from sigilicon.workflows.layout_generation import LayoutPlanningResult
 from sigilicon.workflows.oa_library import (
     _instance_parameter_expectations,
     _plan_layouts,
@@ -506,20 +508,32 @@ def test_oa_layout_plan_reuses_loaded_assembly_source(
         library="assembled",
         cell="CELL_A",
         view="layout",
+        generator="test",
+        stage="placement_probe",
         pdk=SimpleNamespace(key="testpdk"),
+        layout_pdk=SimpleNamespace(dbu_per_micron=1000),
+        source_snapshots=(),
     )
     calls: list[tuple[Path, object, object]] = []
 
     platform_snapshot = object()
 
-    def load_layout(path: Path, *, project, oa_source, platform):
+    def load_layout(
+        path: Path,
+        *,
+        project,
+        oa_source,
+        platform,
+        netlist_inventory,
+    ):
         assert platform is platform_snapshot
+        assert netlist_inventory == {}
         calls.append((path, project, oa_source))
         return spec
 
     monkeypatch.setattr("sigilicon.workflows.oa_library.load_layout_spec", load_layout)
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.build_layout_plan",
+        "sigilicon.workflows.layout_generation.build_layout_plan",
         lambda _spec: LayoutPlan(
             library="assembled",
             cell="CELL_A",
@@ -535,6 +549,36 @@ def test_oa_layout_plan_reuses_loaded_assembly_source(
 
     assert len(steps) == 1
     assert calls == [(layout_path, project, source)]
+
+
+def test_layout_planning_rejects_plan_identity_drift(monkeypatch) -> None:
+    spec = SimpleNamespace(
+        library="assembled",
+        cell="CELL_A",
+        view="layout",
+        generator="test",
+        stage="placement_probe",
+        layout_pdk=SimpleNamespace(dbu_per_micron=1000),
+    )
+    plan = LayoutPlan(
+        library="assembled",
+        cell="CELL_A",
+        view="layout",
+        stage="placement_probe",
+        generator="test",
+        dbu_per_micron=2000,
+        instances=(),
+    )
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.build_layout_plan",
+        lambda _spec: plan,
+    )
+
+    with pytest.raises(ValueError, match="differs from its source spec"):
+        LayoutPlanningResult(spec)
+    with pytest.raises(TypeError, match="unexpected keyword argument 'plan'"):
+        LayoutPlanningResult(spec=spec, plan=plan)
 
 
 def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
@@ -557,7 +601,7 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library._load_definitions",
-        lambda _source: {},
+        lambda _source: ({}, {}),
     )
 
     def load_project_platform(selected_project, key):
@@ -566,17 +610,18 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
         received.append(("load", platform))
         return platform
 
-    def plan_designs(_source, _library, _definitions, snapshot):
+    def plan_designs(_source, _library, _definitions, snapshot, **_kwargs):
         received.append(("design", snapshot))
         return ()
 
-    def plan_layouts(_source, _library, _definitions, snapshot):
+    def plan_layouts(_source, _library, _definitions, snapshot, **_kwargs):
         received.append(("layout", snapshot))
         return ()
 
     def plan_testbenches(
         _source,
         _definitions,
+        _netlist_snapshots,
         snapshot,
         architecture_source_documents,
     ):
@@ -602,7 +647,7 @@ def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library._plan_views",
-        lambda _source: (),
+        lambda *_args: (),
     )
 
     plan = plan_oa_library_rebuild(tmp_path / "oa.toml")
@@ -1291,7 +1336,7 @@ def test_rebuild_recreates_selected_testbench_view_set(
     step = SimpleNamespace(
         cell=cell,
         simulation=SimpleNamespace(),
-        canonical_source=Path("testbench.scs"),
+        source_snapshot=object(),
     )
     plan = SimpleNamespace(
         library="assembled",
@@ -1362,6 +1407,67 @@ def test_rebuild_refreshes_only_selected_design_cell(monkeypatch) -> None:
 
     assert rebuild_oa_library(plan, client, cell="CELL_B") == {"passed": True}
     assert rebuilt == ["CELL_B"]
+
+
+def test_rebuild_consumes_planned_text_and_layout_inputs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source_path = _write(tmp_path / "model.va", "module MODEL; endmodule\n")
+    source_snapshot = load_text_source_snapshot(source_path)
+    source_path.write_text("module DRIFTED; endmodule\n", encoding="utf-8")
+    layout_planning = object()
+    plan = SimpleNamespace(
+        library="assembled",
+        expected_views={"MODEL": ("veriloga", "layout")},
+        designs=(),
+        layouts=(
+            SimpleNamespace(
+                spec=SimpleNamespace(cell="MODEL", view="layout"),
+                planning=layout_planning,
+            ),
+        ),
+        testbenches=(),
+        views=(
+            SimpleNamespace(
+                cell="MODEL",
+                view=SimpleNamespace(name="veriloga", kind="veriloga"),
+                source_snapshot=source_snapshot,
+            ),
+        ),
+        source=SimpleNamespace(project=object(), project_root=tmp_path),
+    )
+    client = SimpleNamespace(
+        library=SimpleNamespace(list=lambda timeout: ["assembled"])
+    )
+    text_inputs: list[object] = []
+    layout_inputs: list[object] = []
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.list_cells",
+        lambda *_args, **_kwargs: {
+            "cells": [{"name": "MODEL", "views": []}]
+        },
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.cell_view_exists",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.sync_oa_text_view",
+        lambda *_args, **kwargs: text_inputs.append(kwargs["source"]),
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.generate_layout",
+        lambda planning, *_args, **_kwargs: layout_inputs.append(planning),
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.check_oa_parity",
+        lambda *_args, **_kwargs: {"passed": True},
+    )
+
+    assert rebuild_oa_library(plan, client, cell="MODEL") == {"passed": True}
+    assert [item.text for item in text_inputs] == ["module MODEL; endmodule\n"]
+    assert layout_inputs == [layout_planning]
 
 
 def test_full_rebuild_discards_undeclared_cache_without_history_gate(monkeypatch) -> None:

@@ -8,13 +8,14 @@ import re
 import shutil
 from typing import Any
 
+from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
-    owned_input_file,
     owned_output_file,
+    owned_sealed_input,
     run_process_group,
 )
 from sigilicon.virtuoso.capability import (
@@ -165,7 +166,7 @@ def _import_skill_view(
     library: str,
     cell: str,
     view: str,
-    source: Path,
+    source: TextSourceSnapshot,
     operation: Any,
     timeout: int,
 ) -> None:
@@ -173,13 +174,8 @@ def _import_skill_view(
 
     if view != "measurement":
         raise ValueError("SKILL measurement views must use the OA view name measurement")
-    with owned_input_file(source) as owned_source:
-        payload = os.pread(
-            owned_source.fd,
-            os.fstat(owned_source.fd).st_size,
-            0,
-        ).decode("utf-8")
-        skill = f'''let((fileObj viewObj port path complete attempt)
+    payload = source.text
+    skill = f'''let((fileObj viewObj port path complete attempt)
   fileObj = nil
   viewObj = nil
   port = nil
@@ -219,25 +215,25 @@ def _import_skill_view(
   unless(attempt && car(attempt) && complete
     error("SKILL OA view creation failed"))
   t)'''
-        result = require_bridge_confirmation(
+    result = require_bridge_confirmation(
+        operation,
+        f"create SKILL view {library}/{cell}/{view}",
+        lambda: dispatch_oa_mutation(
             operation,
-            f"create SKILL view {library}/{cell}/{view}",
-            lambda: dispatch_oa_mutation(
-                operation,
-                client,
-                library=library,
-                cell=cell,
-                phase=f"SKILL view creation {library}/{cell}/{view}",
-                callback=lambda: client.execute_skill(
-                    audit_cellview_delta_skill(
-                        skill,
-                        label=f"SKILL view creation {library}/{cell}/{view}",
-                        mutation_target=(library, (cell,)),
-                    ),
-                    timeout=timeout,
+            client,
+            library=library,
+            cell=cell,
+            phase=f"SKILL view creation {library}/{cell}/{view}",
+            callback=lambda: client.execute_skill(
+                audit_cellview_delta_skill(
+                    skill,
+                    label=f"SKILL view creation {library}/{cell}/{view}",
+                    mutation_target=(library, (cell,)),
                 ),
+                timeout=timeout,
             ),
-        )
+        ),
+    )
     if result.errors:
         raise RuntimeError(
             f"failed to create {library}/{cell}/{view}: {result.errors[0]}"
@@ -251,7 +247,7 @@ def import_oa_text_view(
     cell: str,
     kind: str,
     view: str,
-    source: Path,
+    source: Path | TextSourceSnapshot,
     log_dir: Path,
     work_dir: Path,
     operation: Any,
@@ -259,6 +255,11 @@ def import_oa_text_view(
 ) -> None:
     """Import one canonical model source without replacing an existing view."""
 
+    snapshot = (
+        source
+        if isinstance(source, TextSourceSnapshot)
+        else load_text_source_snapshot(source)
+    )
     if kind == "skill":
         require_oa_target_capability(
             operation,
@@ -272,7 +273,7 @@ def import_oa_text_view(
             library=library,
             cell=cell,
             view=view,
-            source=source,
+            source=snapshot,
             operation=operation,
             timeout=timeout,
         )
@@ -303,7 +304,10 @@ def import_oa_text_view(
         raise FileNotFoundError("cdsTextTo5x was not found in PATH or CDSHOME")
     library_path = operation.require_project_library_target(client, library)
     with (
-        owned_input_file(source) as owned_source,
+        owned_sealed_input(
+            snapshot.text.encode("utf-8"),
+            name=snapshot.source_path.name,
+        ) as owned_source,
         owned_directory(workdir) as owned_workdir,
         owned_directory(library_path) as owned_library,
         owned_directory(work_dir, create_missing=True) as owned_tool_work,

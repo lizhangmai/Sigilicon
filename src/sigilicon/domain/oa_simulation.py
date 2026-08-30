@@ -24,6 +24,7 @@ from sigilicon.domain.native_diagnostics import (
     load_owner_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import Project
+from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -90,10 +91,14 @@ class OANativeSetup:
     """Source-owned native ADE/Maestro setup materialized through SKILL."""
 
     pdk: PdkConfig
-    source: Path
+    source_snapshot: TextSourceSnapshot
     config_procedure: str
     maestro_procedure: str
     rdb_contract: OANativeRdbContract | None = None
+
+    @property
+    def source(self) -> Path:
+        return self.source_snapshot.source_path
 
 
 @dataclass(frozen=True)
@@ -392,11 +397,10 @@ def _load_native_rdb_contract(
 
 def _validate_native_rdb_contract_source(
     contract: OANativeRdbContract,
-    setup_source: Path,
+    setup_text: str,
 ) -> None:
     """Require the audit model to name identities actually declared by setup.il."""
 
-    setup_text = setup_source.read_text(encoding="utf-8")
     missing: list[str] = []
     diagnostic_scalar_names = set(contract.diagnostic_scalar_names)
     for name, signal in contract.waveform_outputs:
@@ -525,7 +529,8 @@ def _load_native_oa_simulation_spec(
     maestro_procedure = _identifier(
         setup.get("maestro_procedure"), "setup.maestro_procedure"
     )
-    setup_text = setup_source.read_text(encoding="utf-8")
+    setup_snapshot = load_text_source_snapshot(setup_source)
+    setup_text = setup_snapshot.text
     for field, procedure in (
         ("setup.config_procedure", config_procedure),
         ("setup.maestro_procedure", maestro_procedure),
@@ -545,7 +550,7 @@ def _load_native_oa_simulation_spec(
         else None
     )
     if rdb_contract is not None:
-        _validate_native_rdb_contract_source(rdb_contract, setup_source)
+        _validate_native_rdb_contract_source(rdb_contract, setup_text)
         _validate_native_rdb_platform_models(rdb_contract, pdk)
     source_documents = {spec_path: freeze_toml_document(raw)}
     if rdb_contract is not None:
@@ -560,7 +565,7 @@ def _load_native_oa_simulation_spec(
         simulator=simulator,
         native_setup=OANativeSetup(
             pdk=pdk,
-            source=setup_source,
+            source_snapshot=setup_snapshot,
             config_procedure=config_procedure,
             maestro_procedure=maestro_procedure,
             rdb_contract=rdb_contract,
@@ -645,7 +650,9 @@ def resolve_oa_simulation_spec(
     owner = project.require_owner(spec_path)
     setup_source_path = snapshot.native_setup.source
     if (
-        setup_source_path != setup_source_path.resolve()
+        not isinstance(snapshot.native_setup.source_snapshot, TextSourceSnapshot)
+        or snapshot.native_setup.source_snapshot.source_path != setup_source_path
+        or setup_source_path != setup_source_path.resolve()
         or not setup_source_path.is_file()
         or not setup_source_path.is_relative_to(spec_path.parent)
         or not setup_source_path.is_relative_to(owner.root)

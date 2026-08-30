@@ -16,7 +16,11 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticProcessor,
 )
 from sigilicon.domain.repository import Project
-from sigilicon.virtuoso.ade import _native_setup_entry_point
+from sigilicon.domain.source import TextSourceSnapshot
+from sigilicon.virtuoso.ade import (
+    _native_setup_entry_point,
+    _staged_native_setup_source,
+)
 from sigilicon.workflows.oa_simulation import _elaborated_netlist
 from conftest import write_component_owner, write_project_context, write_test_platform
 
@@ -266,7 +270,10 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
                 spec,
                 native_setup=replace(
                     spec.native_setup,
-                    source=spec_path.parent,
+                    source_snapshot=TextSourceSnapshot(
+                        source_path=spec_path.parent,
+                        text=spec.native_setup.source_snapshot.text,
+                    ),
                 ),
             ),
         )
@@ -692,10 +699,35 @@ def test_native_setup_entry_point_requires_the_declared_definition(tmp_path: Pat
         "procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)\n",
         encoding="utf-8",
     )
-    assert _native_setup_entry_point(source, declared="fixtureNativeConfig") == (
+    assert _native_setup_entry_point(
+        source.read_text(encoding="utf-8"),
+        declared="fixtureNativeConfig",
+    ) == (
         "fixtureNativeConfig"
     )
 
     source.write_text("procedure(fixturePilotConfig(lib cell dut refs) t)\n", encoding="utf-8")
     with pytest.raises(ValueError, match="does not define declared entry point"):
-        _native_setup_entry_point(source, declared="fixtureNativeConfig")
+        _native_setup_entry_point(
+            source.read_text(encoding="utf-8"),
+            declared="fixtureNativeConfig",
+        )
+
+
+def test_native_setup_adapter_stages_the_snapshot_bytes(tmp_path: Path) -> None:
+    source = tmp_path / "setup.il"
+    source.write_text("; planned\n", encoding="utf-8")
+    native_setup = SimpleNamespace(
+        source_snapshot=TextSourceSnapshot(
+            source_path=source.resolve(),
+            text="; planned\n",
+        )
+    )
+    source.write_text("; drifted\n", encoding="utf-8")
+
+    with _staged_native_setup_source(native_setup) as staged:
+        assert staged != source.resolve()
+        assert staged.read_text(encoding="utf-8") == "; planned\n"
+        assert staged.stat().st_mode & 0o222 == 0
+
+    assert not staged.exists()

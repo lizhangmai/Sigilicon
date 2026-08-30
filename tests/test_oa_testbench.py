@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
+from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.domain.oa_simulation import OANativeSetup, OASimulationSpec
 from sigilicon.domain.repository import Project
+from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.workflows.oa_testbench import _sync_oa_testbench_impl
 from conftest import write_project_context
 
@@ -55,28 +58,47 @@ def test_testbench_schematic_is_finalized_after_all_generated_views(
     setup.write_text("; source-owned setup\n", encoding="utf-8")
     canonical = tmp_path / "testbench.scs"
     canonical.write_text("subckt tb VSS\nends tb\n", encoding="utf-8")
-    spec = SimpleNamespace(
-        project=Project.from_project_root(project_root),
-        project_root=project_root,
+    project = Project.from_project_root(project_root)
+    setup_snapshot = TextSourceSnapshot(
+        source_path=setup.resolve(),
+        text=setup.read_text(encoding="utf-8"),
+    )
+    spec = OASimulationSpec(
+        path=(tmp_path / "simulation.toml").resolve(),
+        project=project,
         library="lib",
         cell="tb",
-        native_setup=SimpleNamespace(
-            source=setup,
+        dut="dut",
+        top_view="schematic",
+        simulator="spectre",
+        native_setup=OANativeSetup(
             pdk=SimpleNamespace(
                 oa=SimpleNamespace(reference_libraries=())
             ),
+            source_snapshot=setup_snapshot,
+            config_procedure="fixtureConfig",
+            maestro_procedure="fixtureMaestro",
         ),
     )
-    snapshot = SimpleNamespace()
+    snapshot = NetlistSnapshot(
+        source_path=canonical.resolve(),
+        text=canonical.read_text(encoding="utf-8"),
+        interfaces=MappingProxyType({"tb": ("VSS",)}),
+    )
     materialized = SimpleNamespace(path=canonical, open_fd=lambda: nullcontext(3))
     operation = _Operation(library_path)
     client = SimpleNamespace(
         library=SimpleNamespace(list=lambda timeout: ["lib"]),
     )
     events: list[str] = []
+    adapter_setup_texts: list[str] = []
+    measurement_texts: list[str] = []
 
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_testbench.load_netlist_snapshot", lambda _path: snapshot
+        "sigilicon.workflows.oa_testbench.load_netlist_snapshot",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("plan-owned netlist snapshot must not be reloaded")
+        ),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_testbench.plan_hierarchy",
@@ -104,11 +126,19 @@ def test_testbench_schematic_is_finalized_after_all_generated_views(
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_testbench.create_oa_native_config_view",
-        lambda *_args, **_kwargs: events.append("config"),
+        lambda _client, adapter_spec, **_kwargs: (
+            adapter_setup_texts.append(
+                adapter_spec.native_setup.source_snapshot.text
+            ),
+            events.append("config"),
+        ),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_testbench.import_oa_text_view",
-        lambda *_args, **_kwargs: events.append("measurement"),
+        lambda *_args, **kwargs: (
+            measurement_texts.append(kwargs["source"].text),
+            events.append("measurement"),
+        ),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_testbench.create_oa_native_maestro_view",
@@ -118,10 +148,11 @@ def test_testbench_schematic_is_finalized_after_all_generated_views(
         "sigilicon.workflows.oa_testbench.check_and_save_schematic",
         lambda *_args, **_kwargs: events.append("final-check-and-save"),
     )
+    setup.write_text("; changed after planning\n", encoding="utf-8")
 
     _sync_oa_testbench_impl(
         spec,
-        canonical,
+        snapshot,
         client,
         overwrite=False,
         _work=_Work(tmp_path / "work"),
@@ -135,3 +166,5 @@ def test_testbench_schematic_is_finalized_after_all_generated_views(
         "maestro",
         "final-check-and-save",
     ]
+    assert adapter_setup_texts == ["; source-owned setup\n"]
+    assert measurement_texts == ["; source-owned setup\n"]
