@@ -18,6 +18,7 @@ from sigilicon.flow import (
     CollectedActionResult,
     ExecutionEnvironment,
     ExecutionProfile,
+    FlowContractError,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -518,7 +519,7 @@ def _engine(root: Path | None, job, result, plan, adapter) -> FlowEngine:
     return FlowEngine(registry, project_scope=scope)
 
 
-def _plan(engine: FlowEngine):
+def _plan(engine: FlowEngine, owner_root: Path):
     spec = FlowSpec(
         owner="benchmark",
         flow_id="oa-xstream-materialization",
@@ -542,6 +543,7 @@ def _plan(engine: FlowEngine):
             ),
         ),
         targets=(FlowTarget("materialized", ("materialize",)),),
+        owner_root=owner_root,
     )
     profile = ExecutionProfile(
         "benchmark",
@@ -563,6 +565,27 @@ def _plan(engine: FlowEngine):
         ),
     )
     return engine.plan(spec, "materialized", profile)
+
+
+def test_flow_plan_scope_rejects_same_owner_from_another_project(
+    tmp_path: Path,
+) -> None:
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    write_project_context(project_a)
+    write_project_context(project_b)
+    write_component_owner(project_b, "benchmark", filesets={})
+    job, result, plan = _artifacts()
+    engine = _engine(
+        project_a,
+        job,
+        result,
+        plan,
+        OaXStreamMaterializationAdapter(_client_factory=lambda: None),
+    )
+
+    with pytest.raises(FlowContractError, match="owner root"):
+        _plan(engine, project_b / "ip/benchmark")
 
 
 def _receipt(flow_result):
@@ -599,7 +622,7 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="1" * 32,
@@ -637,7 +660,7 @@ def test_production_adapter_requires_explicit_project_scope(tmp_path: Path) -> N
     )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="9" * 32,
@@ -667,7 +690,7 @@ def test_repeated_materialization_canonicalizes_xstream_timestamps(
             _fake_xstream(timestamp),
         )
         flow_result = engine.run(
-            _plan(engine),
+            _plan(engine, tmp_path / "ip/benchmark"),
             artifact_root=tmp_path / "artifacts",
             environment=_environment(tmp_path, asset),
             run_id=str(index) * 32,
@@ -703,7 +726,7 @@ def test_flow_preflight_requires_backend_and_license_capabilities(
     capabilities.pop(missing)
 
     preflight = engine.preflight(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         ExecutionEnvironment(capabilities, environment.platform_assets),
     )
 
@@ -739,7 +762,7 @@ def test_adapter_preflight_requires_every_explicit_layout_asset(tmp_path: Path) 
     )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, incomplete),
         run_id="4" * 32,
@@ -775,7 +798,7 @@ def test_missing_managed_library_is_created_inside_managed_workspace(
         ),
     )
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="5" * 32,
@@ -810,7 +833,7 @@ def test_managed_library_symlink_is_rejected_before_bridge_connection(
     )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="c" * 32,
@@ -844,7 +867,7 @@ def test_unmapped_plan_feature_is_typed_unsupported_before_oa(
         OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="6" * 32,
@@ -877,7 +900,7 @@ def test_unmapped_master_is_typed_unsupported_before_oa(tmp_path: Path) -> None:
     )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="d" * 32,
@@ -930,7 +953,7 @@ blockage_purpose = "drawing"
     )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="e" * 32,
@@ -962,7 +985,7 @@ def test_diagnostic_plan_is_identity_rejected_before_oa(tmp_path: Path) -> None:
         OaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="7" * 32,
@@ -989,7 +1012,7 @@ def test_bridge_unavailability_is_not_execution_failure(tmp_path: Path) -> None:
         ),
     )
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id="8" * 32,
@@ -1045,7 +1068,7 @@ def test_attempted_backend_failures_never_publish_layout(
         )
 
     flow_result = engine.run(
-        _plan(engine),
+        _plan(engine, tmp_path / "ip/benchmark"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, asset),
         run_id={

@@ -234,11 +234,16 @@ class FlowEngine:
         target_id: str,
         profile: ExecutionProfile,
     ) -> FlowPlan:
-        if self._project_scope is not None and spec.owner != self._project_scope.owner:
-            raise FlowContractError(
-                f"Flow owner {spec.owner!r} does not match explicit project owner "
-                f"{self._project_scope.owner!r}"
-            )
+        if self._project_scope is not None:
+            if spec.owner != self._project_scope.owner:
+                raise FlowContractError(
+                    f"Flow owner {spec.owner!r} does not match explicit project owner "
+                    f"{self._project_scope.owner!r}"
+                )
+            if spec.owner_root != self._project_scope.owner_root:
+                raise FlowContractError(
+                    "Flow owner root does not match explicit project owner root"
+                )
         if profile.owner != spec.owner:
             raise FlowContractError(
                 f"Execution Profile owner {profile.owner!r} does not match "
