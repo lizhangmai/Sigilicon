@@ -12,7 +12,11 @@ from types import ModuleType
 from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.domain.repository import Project, RepositoryOwner
+from sigilicon.domain.repository import (
+    OwnerCatalogSnapshot,
+    Project,
+    RepositoryOwner,
+)
 from sigilicon.flow import (
     ExecutionEnvironment,
     FlowCatalog,
@@ -31,6 +35,10 @@ from sigilicon.flow.native import (
     XCELIUM_VERIFICATION_ADAPTER,
     XCELIUM_AMS_VERIFICATION_ADAPTER,
 )
+from sigilicon.flow.circuit_design import (
+    DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
+    DESIGN_SOURCE_CHECK_ADAPTER,
+)
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
@@ -39,6 +47,11 @@ from sigilicon.workflows.native_flow import (
     NativeOaSimulationAdapter,
     XceliumVerificationAdapter,
     XceliumAmsVerificationAdapter,
+)
+from sigilicon.workflows.design_flow import ProjectDesignTargetAdapter
+from sigilicon.workflows.design_targets import (
+    DesignTargetCatalog,
+    load_design_target_catalog,
 )
 
 
@@ -78,6 +91,10 @@ def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
 def _project_workflow_registry(
     project: Project,
     owner: RepositoryOwner,
+    catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
+    *,
+    design_catalog: DesignTargetCatalog | None = None,
+    intent_sources: tuple[SourceMember, ...] = (),
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
 
@@ -91,6 +108,8 @@ def _project_workflow_registry(
             f"Flow owner {owner.name!r} does not belong to the selected Project"
         )
     registry = build_flow_registry()
+    for record in intent_sources:
+        registry.bind_implementation_source(record)
     registry.register_adapter(
         NATIVE_OA_PLAN_ADAPTER,
         NativeOaPlanAdapter(project, owner.name),
@@ -106,6 +125,20 @@ def _project_workflow_registry(
     registry.register_adapter(
         XCELIUM_AMS_VERIFICATION_ADAPTER,
         XceliumAmsVerificationAdapter(project, owner.name),
+    )
+    design_adapter = ProjectDesignTargetAdapter(
+        project,
+        owner.name,
+        design_catalog
+        if design_catalog is not None
+        else load_design_target_catalog(
+            project, catalog_inventory=catalog_inventory
+        ),
+    )
+    registry.register_adapter(DESIGN_SOURCE_CHECK_ADAPTER, design_adapter)
+    registry.register_adapter(
+        DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
+        design_adapter,
     )
     source = repository.flow_registry_extension(owner)
     if source is None:
@@ -158,7 +191,16 @@ def _project_workflow_registry(
         stable_sources = False
     if not stable_sources:
         raise ValueError("owner Flow implementation changed during registry assembly")
+    intent_by_path = {record.path: record for record in intent_sources}
     for record in implementation_sources:
+        selected = intent_by_path.get(record.path)
+        if selected is not None:
+            if selected != record:
+                raise ValueError(
+                    f"design intent source conflicts with Flow implementation: "
+                    f"{record.path}"
+                )
+            continue
         registry.bind_implementation_source(record)
     return registry
 
@@ -234,7 +276,25 @@ class ProjectFlow:
     def catalog(self) -> FlowCatalog:
         """Load the owner's canonical typed Flow catalog."""
 
-        snapshot = self.project.owner_flow_catalog_snapshot(self.owner)
+        return self._catalog(
+            self.project.owner_flow_catalog_inventory(self.owner)
+        )
+
+    def _catalog(
+        self,
+        inventory: tuple[OwnerCatalogSnapshot, ...],
+    ) -> FlowCatalog:
+        snapshots = tuple(
+            snapshot
+            for snapshot in inventory
+            if snapshot.contract_kind == "flow-catalog"
+        )
+        if len(snapshots) != 1:
+            raise ValueError(
+                f"cataloged owner {self.owner.name!r} must select exactly one "
+                "Flow Catalog"
+            )
+        snapshot = snapshots[0]
         return parse_flow_catalog(
             snapshot.document,
             snapshot.path,
@@ -255,15 +315,45 @@ class ProjectFlow:
             if profile is None
             else identifier(profile, "Execution Profile identity")
         )
+        catalog_inventory = self.project.owner_flow_catalog_inventory(self.owner)
         selection = resolve_catalog_selection(
-            self.catalog(),
+            self._catalog(catalog_inventory),
             flow_id=flow_name,
             profile_id=profile_name,
         )
-        engine = self._engine()
+        engine = self._engine(catalog_inventory)
         return self._bind(
             engine,
             engine.plan(selection.spec, target_name, selection.profile),
+        )
+
+    def plan_design(
+        self,
+        catalog: DesignTargetCatalog,
+        *,
+        target: str,
+        mode: str,
+    ) -> ProjectFlowPlan:
+        """Compile one owner design intent into its exact typed Flow plan."""
+
+        if catalog.project is not self.project:
+            raise ValueError("design catalog does not belong to this exact Project")
+        selected_catalog = catalog.for_owner(self.owner.name)
+        selected_target = selected_catalog.get(target)
+        selected_mode = selected_target.get_mode(mode)
+        engine = self._engine(
+            selected_catalog.inventory,
+            design_catalog=selected_catalog,
+            intent_sources=selected_catalog.source_members_for(selected_target),
+        )
+        selection = resolve_catalog_selection(
+            self._catalog(selected_catalog.inventory),
+            flow_id=selected_mode.flow,
+            profile_id=None,
+        )
+        return self._bind(
+            engine,
+            engine.plan(selection.spec, selected_mode.target, selection.profile),
         )
 
     def preflight(
@@ -337,9 +427,21 @@ class ProjectFlow:
             run_id=run_id,
         )
 
-    def _engine(self) -> FlowEngine:
+    def _engine(
+        self,
+        catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
+        *,
+        design_catalog: DesignTargetCatalog | None = None,
+        intent_sources: tuple[SourceMember, ...] = (),
+    ) -> FlowEngine:
         return FlowEngine(
-            _project_workflow_registry(self.project, self.owner),
+            _project_workflow_registry(
+                self.project,
+                self.owner,
+                catalog_inventory,
+                design_catalog=design_catalog,
+                intent_sources=intent_sources,
+            ),
             project_scope=self.project.scope(self.owner),
         )
 

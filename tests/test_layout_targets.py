@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tomllib
 
 import pytest
+import sigilicon.domain.repository as repository_module
 
 from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
@@ -104,15 +104,15 @@ def test_layout_target_loader_reads_its_catalog_once(
         tmp_path / "ip/example/configs/flows/layout_targets.toml"
     ).resolve()
     reads = 0
-    original_load = tomllib.load
+    original_read = repository_module.read_toml_record
 
-    def counted_load(stream):
+    def counted_read(path):
         nonlocal reads
-        if Path(stream.name).resolve() == catalog_path:
+        if Path(path).resolve() == catalog_path:
             reads += 1
-        return original_load(stream)
+        return original_read(path)
 
-    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
     project = Project.from_project_root(tmp_path)
 
     catalog = load_layout_target_catalog(project=project)

@@ -445,15 +445,15 @@ values = ["fixture"]
     )
     catalog_paths = {path.resolve() for path in selected_sources}
     reads = {path: 0 for path in catalog_paths}
-    original_load = tomllib.load
+    original_read = repository_module.read_toml_record
 
-    def counted_load(stream):
-        path = Path(stream.name).resolve()
+    def counted_read(source):
+        path = Path(source).resolve()
         if path in reads:
             reads[path] += 1
-        return original_load(stream)
+        return original_read(source)
 
-    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
     monkeypatch.chdir(tmp_path)
 
     assert check_designs_main([]) == 0

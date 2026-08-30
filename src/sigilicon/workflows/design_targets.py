@@ -1,17 +1,19 @@
-"""Project-owned target catalog for design runner entrypoints."""
+"""Project-owned design intent catalog mapped onto typed Flow targets."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import re
+import stat
 import sys
 from typing import Mapping
 
+from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
+from sigilicon.flow.model import SourceMember
+from sigilicon.flow.source_assets import source_member_matches
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _MODULE_RE = re.compile(
@@ -23,7 +25,18 @@ _SPEC_ARGUMENTS = frozenset({"--spec", "--design"})
 _ROUTING_ARGUMENTS = frozenset({"--spec", "--design", "--mode"})
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _TARGET_FIELDS = frozenset(
-    {"description", "kind", "entrypoint", "spec_argument", "spec", "modes"}
+    {
+        "description",
+        "kind",
+        "entrypoint",
+        "spec_argument",
+        "spec",
+        "modes",
+        "routes",
+    }
+)
+_BOUND_RUNNER_BOOTSTRAP = (
+    "from sigilicon.workflows.design_runner import main;main()"
 )
 
 
@@ -31,6 +44,8 @@ _TARGET_FIELDS = frozenset(
 class DesignMode:
     name: str
     default_args: tuple[str, ...]
+    flow: str
+    target: str
 
 
 @dataclass(frozen=True)
@@ -46,6 +61,8 @@ class DesignTarget:
     spec: Path | None
     spec_relative: Path | None
     modes: tuple[DesignMode, ...]
+    catalog_member: SourceMember
+    source_members: tuple[SourceMember, ...]
 
     def get_mode(self, name: str) -> DesignMode:
         try:
@@ -79,12 +96,56 @@ class DesignTarget:
             *extra_args,
         )
 
+    def bound_command(
+        self,
+        mode_name: str,
+        *,
+        runner_path: str,
+        spec_path: str | None,
+        extra_args: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        """Execute the snapshotted runner/spec through already-held descriptors."""
+
+        mode = self.get_mode(mode_name)
+        _validate_runner_args(extra_args, f"extra arguments for {self.name}.{mode_name}")
+        if not runner_path:
+            raise ValueError("bound design runner path must be non-empty")
+        if self.spec_argument is None:
+            if spec_path is not None:
+                raise ValueError("spec path provided for a design target without a spec")
+            routing: tuple[str, ...] = ()
+            bound_spec = ("-", "-")
+        else:
+            if spec_path is None:
+                raise ValueError("bound design target requires its exact spec descriptor")
+            assert self.spec is not None
+            routing = (self.spec_argument, str(self.spec))
+            bound_spec = (spec_path, str(self.spec))
+        assert self.entrypoint_path is not None
+        package = "-" if self.kind == "script" else self.entrypoint.rpartition(".")[0]
+        return (
+            sys.executable,
+            "-c",
+            _BOUND_RUNNER_BOOTSTRAP,
+            runner_path,
+            str(self.entrypoint_path),
+            package,
+            *bound_spec,
+            *routing,
+            "--mode",
+            mode.name,
+            *mode.default_args,
+            *extra_args,
+        )
+
 
 @dataclass(frozen=True)
 class DesignTargetCatalog:
     paths: tuple[Path, ...]
     project: Project
     targets: tuple[DesignTarget, ...]
+    catalog_members: tuple[SourceMember, ...]
+    inventory: tuple[OwnerCatalogSnapshot, ...]
 
     @property
     def project_root(self) -> Path:
@@ -99,28 +160,53 @@ class DesignTargetCatalog:
                 f"unknown design target {name!r}; available targets: {available}"
             ) from exc
 
+    def source_members_for(self, target: DesignTarget) -> tuple[SourceMember, ...]:
+        """Return the exact route definition, runner and spec selected at plan time."""
 
-def execute_design_target(
-    target: DesignTarget,
-    mode: str,
-    extra_args: tuple[str, ...] = (),
+        if target not in self.targets:
+            raise ValueError("design target does not belong to this catalog")
+        return (target.catalog_member, *target.source_members)
+
+    def for_owner(self, owner: str) -> DesignTargetCatalog:
+        """Narrow a repository inventory to one exact owner binding."""
+
+        targets = tuple(target for target in self.targets if target.owner == owner)
+        inventory = tuple(item for item in self.inventory if item.owner == owner)
+        catalog_members = tuple(
+            member
+            for member in self.catalog_members
+            if any(member.location == item.path for item in inventory)
+        )
+        return DesignTargetCatalog(
+            tuple(member.location for member in catalog_members),
+            self.project,
+            targets,
+            catalog_members,
+            inventory,
+        )
+
+
+def _source_member(
+    path: Path,
     *,
-    process_executor: Callable[[str, list[str]], object] = os.execv,
-) -> int:
-    """Replace the dispatcher with the existing project-owned runner."""
-
-    command = target.command(mode, extra_args)
-    previous_directory = Path.cwd()
+    source_root: Path,
+    record_text: str | None = None,
+) -> SourceMember:
     try:
-        os.chdir(target.project_root)
-        process_executor(command[0], list(command))
-    except OSError as exc:
-        raise RuntimeError(
-            f"cannot execute design runner {target.entrypoint}: {exc}"
-        ) from exc
-    finally:
-        os.chdir(previous_directory)
-    return 0
+        source = read_nofollow_text(path) if record_text is None else record_text
+        executable = bool(
+            path.stat(follow_symlinks=False).st_mode
+            & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
+    except (OSError, RuntimeError, UnicodeError) as exc:
+        raise ValueError(f"cannot snapshot design source {path}: {exc}") from exc
+    return SourceMember(
+        path=path.relative_to(source_root).as_posix(),
+        source_root=source_root,
+        record_text=source,
+        executable=executable,
+        location=path,
+    )
 
 
 def _owned_module(
@@ -128,7 +214,7 @@ def _owned_module(
     owner: str,
     module: str,
     field: str,
-) -> None:
+) -> Path:
     module_path = Path(*module.split("."))
     candidates = (
         module_path.with_suffix(".py"),
@@ -142,7 +228,20 @@ def _owned_module(
             f"{field} must name a Sigilicon CLI or one unambiguous "
             "project-owned module"
         )
-    repository.resolve_owner_file(owner, existing[0].as_posix(), field)
+    source, _relative = repository.resolve_owner_file(
+        owner, existing[0].as_posix(), field
+    )
+    return source
+
+
+def _shared_module(module: str) -> tuple[Path, Path]:
+    if module not in _SHARED_MODULES:
+        raise ValueError(f"unsupported shared design runner module: {module}")
+    source_root = Path(__file__).resolve().parents[2]
+    source = source_root.joinpath(*module.split(".")).with_suffix(".py")
+    if not source.is_file():
+        raise ValueError(f"shared design runner source is missing: {module}")
+    return source, source_root
 
 
 def _validate_runner_args(value: tuple[str, ...], field: str) -> None:
@@ -154,9 +253,15 @@ def _validate_runner_args(value: tuple[str, ...], field: str) -> None:
             raise ValueError(f"{field} cannot override routing argument {option}")
 
 
-def _modes(value: object, field: str) -> tuple[DesignMode, ...]:
+def _modes(
+    value: object,
+    routes: object,
+    field: str,
+) -> tuple[DesignMode, ...]:
     if not isinstance(value, Mapping) or not value:
         raise ValueError(f"{field} must be a non-empty table")
+    if not isinstance(routes, Mapping) or set(routes) != set(value):
+        raise ValueError(f"{field.removesuffix('.modes')}.routes must map every mode")
     result: list[DesignMode] = []
     for name, raw_args in value.items():
         if not isinstance(name, str) or _NAME_RE.fullmatch(name) is None:
@@ -165,7 +270,20 @@ def _modes(value: object, field: str) -> tuple[DesignMode, ...]:
             raise ValueError(f"{field}.{name} must be a string array")
         arguments = tuple(raw_args)
         _validate_runner_args(arguments, f"{field}.{name}")
-        result.append(DesignMode(name, arguments))
+        route = routes[name]
+        if (
+            not isinstance(route, (list, tuple))
+            or len(route) != 2
+            or any(
+                not isinstance(item, str) or _NAME_RE.fullmatch(item) is None
+                for item in route
+            )
+        ):
+            raise ValueError(
+                f"{field.removesuffix('.modes')}.routes.{name} must be "
+                "[flow, target] identifiers"
+            )
+        result.append(DesignMode(name, arguments, route[0], route[1]))
     return tuple(result)
 
 
@@ -178,15 +296,27 @@ def load_design_target_catalog(
 
     repository = project
     root = repository.project_root
+    inventory = (
+        repository.flow_catalog_inventory()
+        if catalog_inventory is None
+        else catalog_inventory
+    )
     catalogs = repository.flow_catalog_snapshots(
         "design_targets",
-        inventory=catalog_inventory,
+        inventory=inventory,
     )
     targets: list[DesignTarget] = []
+    catalog_members: list[SourceMember] = []
     names: set[str] = set()
     for catalog in catalogs:
         owner = catalog.owner
         catalog_path = catalog.path
+        catalog_member = _source_member(
+            catalog_path,
+            source_root=root,
+            record_text=catalog.record_text,
+        )
+        catalog_members.append(catalog_member)
         raw = catalog.document
         require_config_header(
             raw,
@@ -223,6 +353,7 @@ def load_design_target_catalog(
                 raise ValueError(f"{field}.kind must be one of {sorted(_KINDS)}")
             entrypoint = row.get("entrypoint")
             entrypoint_path: Path | None = None
+            entrypoint_root = root
             if kind == "script":
                 entrypoint_path, entrypoint_relative = repository.resolve_owner_file(
                     owner, entrypoint, f"{field}.entrypoint"
@@ -232,8 +363,12 @@ def load_design_target_catalog(
                 entrypoint = entrypoint_relative.as_posix()
             elif not isinstance(entrypoint, str) or _MODULE_RE.fullmatch(entrypoint) is None:
                 raise ValueError(f"{field}.entrypoint must name a Python module")
-            elif entrypoint not in _SHARED_MODULES:
-                _owned_module(repository, owner, entrypoint, f"{field}.entrypoint")
+            elif entrypoint in _SHARED_MODULES:
+                entrypoint_path, entrypoint_root = _shared_module(entrypoint)
+            else:
+                entrypoint_path = _owned_module(
+                    repository, owner, entrypoint, f"{field}.entrypoint"
+                )
             spec_argument = row.get("spec_argument")
             spec_value = row.get("spec")
             spec: Path | None = None
@@ -248,6 +383,14 @@ def load_design_target_catalog(
                 spec, spec_relative = repository.resolve_owner_file(
                     owner, spec_value, f"{field}.spec"
                 )
+            source_members = [
+                _source_member(
+                    entrypoint_path,
+                    source_root=entrypoint_root,
+                )
+            ]
+            if spec is not None:
+                source_members.append(_source_member(spec, source_root=root))
             targets.append(
                 DesignTarget(
                     name=name,
@@ -260,11 +403,29 @@ def load_design_target_catalog(
                     spec_argument=spec_argument,
                     spec=spec,
                     spec_relative=spec_relative,
-                    modes=_modes(row.get("modes"), f"{field}.modes"),
+                    modes=_modes(
+                        row.get("modes"),
+                        row.get("routes"),
+                        f"{field}.modes",
+                    ),
+                    catalog_member=catalog_member,
+                    source_members=tuple(source_members),
                 )
             )
+    snapshots = (
+        *catalog_members,
+        *(member for target in targets for member in target.source_members),
+    )
+    try:
+        stable = all(source_member_matches(member) for member in snapshots)
+    except (OSError, RuntimeError, UnicodeError):
+        stable = False
+    if not stable:
+        raise ValueError("design source changed during catalog assembly")
     return DesignTargetCatalog(
         tuple(catalog.path for catalog in catalogs),
         repository,
         tuple(targets),
+        tuple(catalog_members),
+        tuple(inventory),
     )

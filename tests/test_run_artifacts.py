@@ -9,6 +9,11 @@ from sigilicon.flow import ActionContext
 from sigilicon.flow.native import NATIVE_OA_SIMULATION_ACTION
 from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
+from sigilicon.workflows.run_artifacts import (
+    managed_run_artifact_environment,
+    managed_run_artifacts_from_environment,
+    scoped_run_artifacts,
+)
 
 
 def _artifacts(tmp_path: Path) -> FlowRunArtifacts:
@@ -79,3 +84,29 @@ def test_flow_run_artifacts_reads_sources_without_following_symlinks(
         artifacts.copy_file("inputs", ("copied.bin",), alias)
 
     assert not artifacts.path("inputs", "copied.bin").exists()
+
+
+def test_managed_child_recovers_only_the_parent_action_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts = _artifacts(tmp_path)
+    environment = managed_run_artifact_environment(
+        artifacts.context,
+        "evidence",
+        {"project": {"commit": "fixture"}},
+    )
+    monkeypatch.setenv(
+        "SIGILICON_MANAGED_RUN_ARTIFACTS",
+        environment["SIGILICON_MANAGED_RUN_ARTIFACTS"],
+    )
+
+    recovered = managed_run_artifacts_from_environment()
+
+    assert recovered is not None
+    assert recovered.run_id == "run"
+    assert recovered.root == artifacts.context.run_root
+    scoped = scoped_run_artifacts(recovered, "measurement")
+    output = scoped.write_text("outputs", ("result.txt",), "managed\n")
+    assert output.is_relative_to(artifacts.context.output_root / "evidence")
+    assert not (artifacts.context.run_root / "run_manifest.json").exists()

@@ -134,16 +134,16 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     )
     _declare_extension(tmp_path, "example", source)
     catalog_path = _write_owner_flow(tmp_path).resolve()
-    original_read_toml = repository_module.read_toml
+    original_read_toml = repository_module.read_toml_record
     catalog_reads = 0
 
-    def counted_read_toml(path: Path) -> dict[str, object]:
+    def counted_read_toml(path: Path):
         nonlocal catalog_reads
         if Path(path).resolve() == catalog_path:
             catalog_reads += 1
         return original_read_toml(path)
 
-    monkeypatch.setattr(repository_module, "read_toml", counted_read_toml)
+    monkeypatch.setattr(repository_module, "read_toml_record", counted_read_toml)
     project = Project.from_project_root(tmp_path)
     project_flow = ProjectFlow(project, "example")
 

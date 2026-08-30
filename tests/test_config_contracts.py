@@ -183,6 +183,7 @@ owner = "beta"
         owner=component.owner,
         path=component.path,
         contract_kind="flow-catalog",
+        record_text="schema = 999\n",
         document=freeze_toml_document({"schema": 999}),
     )
     with pytest.raises(ValueError, match="disagrees with another source"):

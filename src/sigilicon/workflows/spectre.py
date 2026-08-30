@@ -28,6 +28,12 @@ from sigilicon.external_tools import (
 from sigilicon.paths import ProjectContext
 from sigilicon.virtuoso.operation_journal import write_operation_incident
 from sigilicon.workflows.source_control import artifact_source_state
+from sigilicon.workflows.run_artifacts import (
+    RunArtifacts,
+    StandaloneRunArtifacts,
+    managed_run_artifacts_from_environment,
+    scoped_run_artifacts,
+)
 from sigilicon.workflows.virtuoso_operations import export_project_netlist
 
 
@@ -140,7 +146,7 @@ def find_spectre(explicit: Path | None = None) -> Path:
 
 
 def run_spectre_deck(
-    record: ArtifactRecord,
+    record: RunArtifacts,
     *,
     render_deck: Callable[[Mapping[str, str]], str],
     inputs: Mapping[str, Path],
@@ -173,7 +179,7 @@ def run_spectre_deck(
         ):
             raise ValueError(f"invalid Spectre output name: {name!r}")
 
-    input_root = record.paths.role("inputs")
+    input_root = record.directory("inputs")
     canonical_paths: dict[str, str] = {}
     for key, path in inputs.items():
         if not key:
@@ -193,7 +199,7 @@ def run_spectre_deck(
     )
     canonical_deck.chmod(0o444)
     executable = find_spectre(spectre)
-    work_dir = record.paths.role("work")
+    work_dir = record.directory("work")
     completed = None
     invocation_deck: Path | None = None
     with owned_directory(work_dir) as owned_work, ExitStack() as resources:
@@ -375,7 +381,7 @@ def _terminalize_spectre_record(
 
 
 def _stage_inputs(
-    record: ArtifactRecord,
+    record: RunArtifacts,
     inputs: Sequence[StagedSpectreInput],
 ) -> Mapping[str, Path]:
     staged: dict[str, Path] = {}
@@ -388,6 +394,58 @@ def _stage_inputs(
             "inputs", item.components, item.source, label=item.label
         )
     return staged
+
+
+def _measurement_artifacts(
+    context: SpectreArtifactContext,
+    *,
+    kind: str,
+    artifact_root: Path | None,
+    artifacts: RunArtifacts | None,
+) -> tuple[RunArtifacts, ArtifactRecord | None]:
+    if artifacts is not None and artifact_root is not None:
+        raise ValueError("artifact_root and artifacts are mutually exclusive")
+    if artifacts is not None:
+        return artifacts, None
+    inherited = managed_run_artifacts_from_environment()
+    if inherited is not None:
+        if artifact_root is not None:
+            raise ValueError(
+                "explicit artifact_root conflicts with inherited managed Flow artifacts"
+            )
+        return (
+            scoped_run_artifacts(
+                inherited,
+                f"spectre-{new_identity()}",
+            ),
+            None,
+        )
+    project = (
+        context.project
+        if artifact_root is None
+        else context.project.with_artifact_root(artifact_root)
+    )
+    record = ArtifactRecord.begin(
+        project.artifacts.execution(
+            owner=context.library,
+            target=context.testbench,
+            flow="spectre",
+            variant=kind,
+            identity=new_identity(),
+            artifact_kind="standalone_simulation",
+            identity_kind="run_id",
+        ),
+        entities={
+            "library": context.library,
+            "cell": context.cell,
+            "testbench": context.testbench,
+        },
+        operation="direct-spectre-characterization",
+        backend="spectre",
+        source=artifact_source_state(context.project.project_root),
+    )
+    record.bind_operation(new_identity())
+    return StandaloneRunArtifacts(record), record
 
 
 def run_spectre_measurement(
@@ -406,75 +464,67 @@ def run_spectre_measurement(
     evaluate: Callable[[Any], Mapping[str, object]],
     timeout: int,
     artifact_root: Path | None = None,
+    artifacts: RunArtifacts | None = None,
     spectre: Path | None = None,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
 
     The caller defines its deck, parser, normalizer, and measurement decision;
-    this generic workflow creates the unique artifact, stages immutable inputs,
-    invokes the guarded Spectre runner, and terminalizes success/failure.
+    this generic workflow stages immutable inputs and invokes the guarded
+    Spectre runner.  A supplied or inherited ``RunArtifacts`` keeps the work
+    inside its parent Flow Action; otherwise the standalone wrapper owns the
+    lifecycle.
     """
 
-    project = (
-        context.project
-        if artifact_root is None
-        else context.project.with_artifact_root(artifact_root)
+    run_artifacts, standalone_record = _measurement_artifacts(
+        context,
+        kind=kind,
+        artifact_root=artifact_root,
+        artifacts=artifacts,
     )
-    record = ArtifactRecord.begin(
-        project.artifacts.execution(
-            owner=context.library,
-            target=context.testbench,
-            flow="spectre",
-            variant=kind,
-            identity=new_identity(),
-            artifact_kind="standalone_simulation",
-            identity_kind="run_id",
-        ),
-        entities={
-            "library": context.library,
-            "cell": context.cell,
-            "testbench": context.testbench,
-        },
-        operation="direct-spectre-characterization",
-        backend="spectre",
-        source=artifact_source_state(context.project.project_root),
-    )
-    record.bind_operation(new_identity())
     try:
-        staged = _stage_inputs(record, inputs)
-        record.write_json(
+        staged = _stage_inputs(run_artifacts, inputs)
+        run_artifacts.write_json(
             "inputs",
             ("external-input-references.json",),
             dict(external_input_references),
             label="attested external characterization inputs",
         )
         execution = run_spectre_deck(
-            record,
+            run_artifacts,
             render_deck=render,
             inputs=staged,
             output_names=(output_name,),
             timeout=timeout,
             spectre=spectre,
         )
-        raw = record.copy_file(
+        raw = run_artifacts.copy_file(
             "outputs", (raw_result_name,), execution.raw_outputs[output_name], label="raw Spectre direct-print data"
         )
         parsed = parse(read_nofollow_text(raw, errors="strict"))
-        normalized = record.write_text(
+        normalized = run_artifacts.write_text(
             "outputs", (normalized_name,), normalize(parsed), label="normalized direct-print curve data"
         )
         payload = dict(evaluate(parsed))
         payload.setdefault("contract_version", 1)
         payload.setdefault("condition", dict(condition))
-        measurements = record.write_json(
+        measurements = run_artifacts.write_json(
             "outputs", ("measurements.json",), payload, label="machine-verifiable measurement contract"
         )
-        record.add_file("work", record.paths.role("work"), label="native Spectre work directory")
+        run_artifacts.add_file(
+            "work",
+            run_artifacts.directory("work"),
+            label="native Spectre work directory",
+        )
         result = SpectreRunResult(
             kind=kind,
-            run_id=record.paths.identity,
-            run_dir=record.paths.root,
-            manifest_path=record.paths.manifest,
+            run_id=run_artifacts.run_id,
+            run_dir=run_artifacts.root,
+            manifest_path=(
+                standalone_record.paths.manifest
+                if standalone_record is not None
+                else run_artifacts.root / "run_manifest.json"
+            ),
             measurements=measurements,
             waveform=normalized,
             raw_curve=raw,
@@ -488,10 +538,20 @@ def run_spectre_measurement(
             "condition": dict(condition),
             "spectre": str(execution.executable),
         }
-        record.succeed(completion_evidence=(measurements,), details=details)
+        if standalone_record is not None:
+            standalone_record.succeed(
+                completion_evidence=(measurements,),
+                details=details,
+            )
         return result
     except BaseException as error:
-        _terminalize_spectre_record(project, record, error)
+        if standalone_record is not None:
+            project = (
+                context.project
+                if artifact_root is None
+                else context.project.with_artifact_root(artifact_root)
+            )
+            _terminalize_spectre_record(project, standalone_record, error)
         raise
 
 
@@ -507,6 +567,7 @@ def run_spectre_multi_measurement(
     evaluate: Callable[[Mapping[str, Path]], Mapping[str, object]],
     timeout: int,
     artifact_root: Path | None = None,
+    artifacts: RunArtifacts | None = None,
     spectre: Path | None = None,
 ) -> SpectreRunResult:
     """Run one Spectre deck with multiple declared raw-output files.
@@ -521,41 +582,22 @@ def run_spectre_multi_measurement(
         raise ValueError("multi-output Spectre measurement requires outputs")
     if len(set(outputs.values())) != len(outputs):
         raise ValueError("multi-output Spectre destinations must be unique")
-    project = (
-        context.project
-        if artifact_root is None
-        else context.project.with_artifact_root(artifact_root)
+    run_artifacts, standalone_record = _measurement_artifacts(
+        context,
+        kind=kind,
+        artifact_root=artifact_root,
+        artifacts=artifacts,
     )
-    record = ArtifactRecord.begin(
-        project.artifacts.execution(
-            owner=context.library,
-            target=context.testbench,
-            flow="spectre",
-            variant=kind,
-            identity=new_identity(),
-            artifact_kind="standalone_simulation",
-            identity_kind="run_id",
-        ),
-        entities={
-            "library": context.library,
-            "cell": context.cell,
-            "testbench": context.testbench,
-        },
-        operation="direct-spectre-characterization",
-        backend="spectre",
-        source=artifact_source_state(context.project.project_root),
-    )
-    record.bind_operation(new_identity())
     try:
-        staged = _stage_inputs(record, inputs)
-        record.write_json(
+        staged = _stage_inputs(run_artifacts, inputs)
+        run_artifacts.write_json(
             "inputs",
             ("external-input-references.json",),
             dict(external_input_references),
             label="attested external characterization inputs",
         )
         execution = run_spectre_deck(
-            record,
+            run_artifacts,
             render_deck=render,
             inputs=staged,
             output_names=tuple(outputs),
@@ -567,8 +609,8 @@ def run_spectre_multi_measurement(
             if not destination:
                 raise ValueError("multi-output result destination cannot be empty")
             if len(destination) > 1:
-                record.directory("outputs", *destination[:-1])
-            copied[tool_name] = record.copy_file(
+                run_artifacts.directory("outputs", *destination[:-1])
+            copied[tool_name] = run_artifacts.copy_file(
                 "outputs",
                 destination,
                 execution.raw_outputs[tool_name],
@@ -577,18 +619,26 @@ def run_spectre_multi_measurement(
         payload = dict(evaluate(copied))
         payload.setdefault("contract_version", 1)
         payload.setdefault("condition", dict(condition))
-        measurements = record.write_json(
+        measurements = run_artifacts.write_json(
             "outputs",
             ("measurements.json",),
             payload,
             label="machine-verifiable multi-analysis measurement contract",
         )
-        record.add_file("work", record.paths.role("work"), label="native Spectre work directory")
+        run_artifacts.add_file(
+            "work",
+            run_artifacts.directory("work"),
+            label="native Spectre work directory",
+        )
         result = SpectreRunResult(
             kind=kind,
-            run_id=record.paths.identity,
-            run_dir=record.paths.root,
-            manifest_path=record.paths.manifest,
+            run_id=run_artifacts.run_id,
+            run_dir=run_artifacts.root,
+            manifest_path=(
+                standalone_record.paths.manifest
+                if standalone_record is not None
+                else run_artifacts.root / "run_manifest.json"
+            ),
             measurements=measurements,
             waveform=None,
             raw_curve=None,
@@ -597,17 +647,24 @@ def run_spectre_multi_measurement(
         )
         if not result.passed:
             raise MeasurementContractFailure("machine measurement contract failed", result)
-        record.succeed(
-            completion_evidence=(measurements,),
-            details={
-                "kind": kind,
-                "condition": dict(condition),
-                "spectre": str(execution.executable),
-            },
-        )
+        if standalone_record is not None:
+            standalone_record.succeed(
+                completion_evidence=(measurements,),
+                details={
+                    "kind": kind,
+                    "condition": dict(condition),
+                    "spectre": str(execution.executable),
+                },
+            )
         return result
     except BaseException as error:
-        _terminalize_spectre_record(project, record, error)
+        if standalone_record is not None:
+            project = (
+                context.project
+                if artifact_root is None
+                else context.project.with_artifact_root(artifact_root)
+            )
+            _terminalize_spectre_record(project, standalone_record, error)
         raise
 
 

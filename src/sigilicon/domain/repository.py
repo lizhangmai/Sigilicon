@@ -12,6 +12,7 @@ from sigilicon.domain.config_contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
+    read_toml_record,
     require_config_header,
 )
 from sigilicon.paths import (
@@ -84,6 +85,7 @@ class OwnerCatalogSnapshot:
     owner: str
     path: Path
     contract_kind: str
+    record_text: str
     document: Mapping[str, Any]
 
 
@@ -585,7 +587,7 @@ class Project:
         for path in owner.files("flow"):
             if path.suffix != ".toml":
                 continue
-            raw = read_toml(path)
+            raw, record_text = read_toml_record(path)
             contract_kind = raw.get("contract_kind")
             if not isinstance(contract_kind, str) or not contract_kind:
                 continue
@@ -594,6 +596,7 @@ class Project:
                     owner=owner.name,
                     path=path,
                     contract_kind=contract_kind,
+                    record_text=record_text,
                     document=freeze_toml_document(raw),
                 )
             )
@@ -637,6 +640,7 @@ class Project:
             if (
                 not isinstance(snapshot.contract_kind, str)
                 or not snapshot.contract_kind
+                or not isinstance(snapshot.record_text, str)
             ):
                 raise ValueError(
                     f"invalid Flow source inventory kind: "

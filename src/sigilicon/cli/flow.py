@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Sequence
+import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -12,13 +14,13 @@ from sigilicon.cli.common import add_json_arg, die, emit_json
 from sigilicon.flow import (
     ExecutionEnvironment,
     ResolvedCapability,
+    load_execution_environment,
     resolve_catalog_selection,
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.design_targets import (
     DesignTarget,
-    execute_design_target,
     load_design_target_catalog,
 )
 from sigilicon.workflows.ip_integration import (
@@ -71,6 +73,9 @@ def _design_target_payload(target: DesignTarget) -> dict[str, object]:
             else None
         ),
         "modes": {mode.name: list(mode.default_args) for mode in target.modes},
+        "routes": {
+            mode.name: [mode.flow, mode.target] for mode in target.modes
+        },
     }
 
 
@@ -180,15 +185,19 @@ def _parser() -> argparse.ArgumentParser:
     add_json_arg(design_show)
 
     design_run = design_commands.add_parser(
-        "run", help="replace this process with the selected design runner"
+        "run", help="run the typed Flow target selected by one design mode"
     )
     design_run.add_argument("target")
     design_run.add_argument("mode")
+    design_run.add_argument("--environment", type=Path)
     design_run.add_argument(
-        "extra_args",
-        nargs=argparse.REMAINDER,
-        help="additional runner arguments, optionally following --",
+        "--capability",
+        action="append",
+        default=[],
+        metavar="NAME[=COMMAND]",
+        help="attest one current-process capability",
     )
+    design_run.add_argument("--run-id")
 
     oa = domains.add_parser("oa", help="assemble the unique OA library from canonical sources")
     oa_commands = oa.add_subparsers(dest="action", required=True)
@@ -424,7 +433,6 @@ def _run_layout(
 def _run_design(
     args: argparse.Namespace,
     project: Any,
-    process_executor: Callable[[str, list[str]], Any] | None,
 ) -> int:
     try:
         catalog = load_design_target_catalog(project=project)
@@ -451,21 +459,65 @@ def _run_design(
                 print(f"entrypoint: {target.entrypoint}")
                 spec = target.spec_relative.as_posix() if target.spec_relative else "-"
                 print(f"spec: {spec}")
-                print(f"modes: {', '.join(mode.name for mode in target.modes)}")
+                print(
+                    "modes: "
+                    + ", ".join(
+                        f"{mode.name}->{mode.flow}:{mode.target}"
+                        for mode in target.modes
+                    )
+                )
             return 0
-        extra_args = tuple(args.extra_args)
-        if extra_args[:1] == ("--",):
-            extra_args = extra_args[1:]
-        if process_executor is None:
-            return execute_design_target(target, args.mode, extra_args)
-        return execute_design_target(
-            target,
-            args.mode,
-            extra_args,
-            process_executor=process_executor,
+        target.get_mode(args.mode)
+        project_flow = ProjectFlow(project, target.owner)
+        planned = project_flow.plan_design(
+            catalog,
+            target=target.name,
+            mode=args.mode,
         )
+        result = project_flow.run(
+            planned,
+            _execution_environment(args),
+            run_id=args.run_id,
+        )
+        payload = project_flow.read_result(
+            flow=result.flow_id,
+            target=result.target,
+            run_id=result.run_id,
+        )
+        emit_json(payload)
+        return 0 if payload.get("status") == "accepted" else 1
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"ERROR: {exc}")
+
+
+def _execution_environment(args: argparse.Namespace) -> ExecutionEnvironment:
+    contract = getattr(args, "environment", None)
+    base = (
+        ExecutionEnvironment()
+        if contract is None
+        else load_execution_environment(contract)
+    )
+    capabilities = dict(base.capabilities)
+    for declaration in getattr(args, "capability", ()):
+        name, separator, command = declaration.partition("=")
+        if not name or (separator and not command) or name in capabilities:
+            raise ValueError(
+                "--capability must be unique NAME or NAME=COMMAND syntax"
+            )
+        executable = None
+        if separator:
+            resolved = shutil.which(command)
+            if resolved is None:
+                raise ValueError(f"capability command is unavailable: {command!r}")
+            executable = Path(os.path.abspath(resolved))
+        capabilities[name] = ResolvedCapability(
+            identity=f"current-process:{name}",
+            executable=executable,
+        )
+    return ExecutionEnvironment(
+        capabilities=capabilities,
+        platform_assets=base.platform_assets,
+    )
 
 
 def _run_oa(
@@ -610,7 +662,6 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     client_factory: Callable[[], Any] = get_client,
-    process_executor: Callable[[str, list[str]], Any] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     project_contract = discover_project_contract(__file__)
@@ -632,11 +683,7 @@ def main(
             client_factory,
         )
     if args.domain == "design":
-        return _run_design(
-            args,
-            project,
-            process_executor,
-        )
+        return _run_design(args, project)
     if args.domain == "ip":
         return _run_ip(args, project)
     raise AssertionError(f"unhandled flow domain: {args.domain}")

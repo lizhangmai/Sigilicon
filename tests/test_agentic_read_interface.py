@@ -150,7 +150,7 @@ def test_project_inspection_reads_each_flow_catalog_once(
 ) -> None:
     catalog = write_read_only_flow_project(tmp_path)
     interface = _read(tmp_path)
-    original = repository_module.read_toml
+    original = repository_module.read_toml_record
     reads = 0
 
     def counted(path: Path):
@@ -159,7 +159,7 @@ def test_project_inspection_reads_each_flow_catalog_once(
             reads += 1
         return original(path)
 
-    monkeypatch.setattr(repository_module, "read_toml", counted)
+    monkeypatch.setattr(repository_module, "read_toml_record", counted)
 
     interface.inspect_project(owner="example")
 
@@ -223,7 +223,7 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
         ExecutionEnvironment(),
         run_id="a" * 32,
     )
-    original = repository_module.read_toml
+    original = repository_module.read_toml_record
     catalog_reads = 0
 
     def counted(path: Path):
@@ -232,7 +232,7 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
             catalog_reads += 1
         return original(path)
 
-    monkeypatch.setattr(repository_module, "read_toml", counted)
+    monkeypatch.setattr(repository_module, "read_toml_record", counted)
     python_run = interface.inspect_run(
         owner="example",
         flow="pipeline",
