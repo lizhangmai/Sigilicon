@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from sigilicon.cli.flow_core import _execution_environment, _parser
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
@@ -239,3 +240,62 @@ executable = "relative/dc_shell"
     )
     with pytest.raises(FlowContractError, match="absolute current-site path"):
         load_execution_environment(contract)
+
+
+def test_flow_cli_resolves_explicit_current_process_capabilities(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "bin/xrun"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    args = _parser().parse_args(
+        [
+            "preflight",
+            "--owner",
+            "fixture",
+            "--flow",
+            "native",
+            "--target",
+            "diagnostic",
+            "--capability",
+            f"tool.cadence-xcelium={executable}",
+            "--capability",
+            "license.cadence-oa",
+        ]
+    )
+
+    environment = _execution_environment(args)
+
+    xcelium = environment.capabilities["tool.cadence-xcelium"]
+    assert xcelium.identity == "current-process:tool.cadence-xcelium"
+    assert xcelium.executable == executable
+    assert environment.capabilities["license.cadence-oa"].executable is None
+
+
+def test_flow_cli_capability_overlay_rejects_ambiguity_and_missing_commands(
+    tmp_path: Path,
+) -> None:
+    contract, paths = _write_environment(tmp_path)
+    base = [
+        "run",
+        "--owner",
+        "fixture",
+        "--flow",
+        "native",
+        "--target",
+        "diagnostic",
+        "--environment",
+        str(contract),
+    ]
+    duplicate = _parser().parse_args(
+        [*base, "--capability", f"tool.synopsys-dc={paths['executable']}"]
+    )
+    missing = _parser().parse_args(
+        [*base, "--capability", "tool.cadence-xcelium=missing-xrun-fixture"]
+    )
+
+    with pytest.raises(FlowContractError, match="duplicate current-site"):
+        _execution_environment(duplicate)
+    with pytest.raises(FlowContractError, match="command is unavailable"):
+        _execution_environment(missing)

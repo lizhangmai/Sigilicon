@@ -1,4 +1,8 @@
-"""Plan or execute one source-owned Xcelium RTL or AMS verification cell."""
+"""Compatibility CLI for an uncataloged Xcelium RTL or AMS verification cell.
+
+Cataloged owner targets use ``sigilicon flow`` so execution, policy, evidence,
+status, and cleanup share the typed Flow lifecycle.
+"""
 
 from __future__ import annotations
 

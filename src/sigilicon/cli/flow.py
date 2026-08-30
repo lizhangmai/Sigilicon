@@ -191,7 +191,10 @@ def _parser() -> argparse.ArgumentParser:
         ("check", "check current source/OA parity and live safety state"),
         ("rebuild", "rebuild source-declared OA objects from Git"),
         ("attest", "run one read-only Cadence setup check"),
-        ("simulate", "run a canonical OA testbench through its Maestro view"),
+        (
+            "simulate",
+            "compatibility run for an OA testbench not yet cataloged as a typed Flow",
+        ),
     ):
         action_parser = oa_commands.add_parser(action, help=help_text)
         action_parser.add_argument(

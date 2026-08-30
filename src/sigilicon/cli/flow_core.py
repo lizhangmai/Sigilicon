@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -14,6 +16,7 @@ from sigilicon.flow import (
     ExecutionEnvironment,
     ExecutionProfile,
     FlowExecutionError,
+    ResolvedCapability,
     load_execution_environment,
     resolve_catalog_selection,
 )
@@ -52,6 +55,16 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--profile")
         if name == "preflight":
             command.add_argument("--environment", type=Path)
+            command.add_argument(
+                "--capability",
+                action="append",
+                default=[],
+                metavar="NAME[=COMMAND]",
+                help=(
+                    "attest one current-process capability; resolve COMMAND "
+                    "from PATH when supplied"
+                ),
+            )
 
     run = commands.add_parser("run", help="execute a resolved Flow plan")
     run.add_argument("--project-root", type=Path)
@@ -60,6 +73,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--target", required=True)
     run.add_argument("--profile")
     run.add_argument("--environment", type=Path)
+    run.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        metavar="NAME[=COMMAND]",
+        help=(
+            "attest one current-process capability; resolve COMMAND from PATH "
+            "when supplied"
+        ),
+    )
     run.add_argument("--run-id")
 
     for name, help_text in (
@@ -102,10 +125,35 @@ def _execution_environment(
     args: argparse.Namespace,
 ) -> ExecutionEnvironment:
     contract = getattr(args, "environment", None)
-    return (
+    base = (
         ExecutionEnvironment()
         if contract is None
         else load_execution_environment(contract)
+    )
+    capabilities = dict(base.capabilities)
+    for declaration in getattr(args, "capability", ()):
+        name, separator, command = declaration.partition("=")
+        if not name or (separator and not command):
+            raise FlowContractError(
+                "--capability must use NAME or NAME=COMMAND syntax"
+            )
+        if name in capabilities:
+            raise FlowContractError(f"duplicate current-site capability: {name!r}")
+        executable = None
+        if separator:
+            resolved = shutil.which(command)
+            if resolved is None:
+                raise FlowContractError(
+                    f"capability command is unavailable: {command!r}"
+                )
+            executable = Path(os.path.abspath(resolved))
+        capabilities[name] = ResolvedCapability(
+            identity=f"current-process:{name}",
+            executable=executable,
+        )
+    return ExecutionEnvironment(
+        capabilities=capabilities,
+        platform_assets=base.platform_assets,
     )
 
 
