@@ -8,6 +8,7 @@ from types import MappingProxyType, SimpleNamespace
 import pytest
 
 from sigilicon.domain.oa_simulation import (
+    OANativeRdbContract,
     load_oa_simulation_spec,
     resolve_oa_simulation_spec,
 )
@@ -15,6 +16,7 @@ from sigilicon.domain.config_contracts import thaw_toml_document
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
+    NativeDiagnosticReport,
     load_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import Project
@@ -80,17 +82,10 @@ maestro_procedure = "fixtureNativeMaestro"
     (
         ("pass", (), None, "not_evaluated", ()),
         ("((\"overAll\" t))", (), None, "not_evaluated", ()),
-        ("fail", (), {"passed": True}, "fail", ("maestro-overall",)),
+        ("fail", (), True, "fail", ("maestro-overall",)),
         (None, ("pass", "pass"), None, "pass", ("maestro-outputs",)),
-        (None, ("undefined",), {"passed": True}, "pass", ("native-diagnostic",)),
-        (None, ("undefined",), {"passed": False}, "fail", ("native-diagnostic",)),
-        (
-            "((\"overAll\" t))",
-            ("undefined",),
-            {"contexts": [{"passed": False}]},
-            "inconclusive",
-            ("native-diagnostic",),
-        ),
+        (None, ("undefined",), True, "pass", ("native-diagnostic",)),
+        (None, ("undefined",), False, "fail", ("native-diagnostic",)),
         (None, ("undefined",), None, "not_evaluated", ()),
         ("unexpected", (), None, "inconclusive", ("maestro-overall",)),
     ),
@@ -98,14 +93,18 @@ maestro_procedure = "fixtureNativeMaestro"
 def test_oa_maestro_evidence_is_fail_closed(
     overall: object,
     outputs: tuple[str, ...],
-    diagnostic: dict[str, object] | None,
+    diagnostic: bool | None,
     status: str,
     sources: tuple[str, ...],
 ) -> None:
     evidence = evaluate_oa_maestro_evidence(
         overall_spec_status=overall,
         per_output_spec_status=outputs,
-        diagnostic_equivalence=diagnostic,
+        diagnostic_report=(
+            None
+            if diagnostic is None
+            else NativeDiagnosticReport({"passed": diagnostic})
+        ),
     )
 
     assert evidence.status == status
@@ -128,6 +127,39 @@ def test_native_diagnostic_processor_requires_an_explicit_verdict(
 
     with pytest.raises(ValueError, match="top-level passed boolean"):
         processor.reconstruct({}, object())
+
+
+def test_native_rdb_contract_returns_a_typed_diagnostic_report(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "passed": False,
+        "contexts": [{"passed": False}],
+    }
+    diagnostic = NativeDiagnosticContract("fixture", {}, ())
+    processor = NativeDiagnosticProcessor(
+        source=(tmp_path / "processor.py").resolve(),
+        implementation=SimpleNamespace(
+            reconstruct=lambda _result, _contract: payload
+        ),
+    )
+    contract = OANativeRdbContract(
+        path=(tmp_path / "native_rdb.toml").resolve(),
+        point_count=1,
+        corners=("tt",),
+        tests=("tran",),
+        waveform_outputs=(),
+        scalar_outputs=(),
+        diagnostic_equivalence=diagnostic,
+        diagnostic_processor=processor,
+    )
+
+    report = contract.reconstruct_diagnostic({"outputs": []})
+    payload["passed"] = True
+
+    assert isinstance(report, NativeDiagnosticReport)
+    assert report.passed is False
+    assert report.as_dict()["contexts"] == [{"passed": False}]
 
 
 def test_native_diagnostic_processor_forwards_optional_source_documents(

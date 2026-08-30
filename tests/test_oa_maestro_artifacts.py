@@ -126,7 +126,7 @@ def test_oa_maestro_writes_directly_to_configured_artifact_root(
             evidence=oa_simulation.evaluate_oa_maestro_evidence(
                 overall_spec_status="pass",
                 per_output_spec_status=("pass",),
-                diagnostic_equivalence=None,
+                diagnostic_report=None,
             ),
         )
 

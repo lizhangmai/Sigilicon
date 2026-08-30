@@ -20,6 +20,7 @@ from sigilicon.domain.platform import (
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
+    NativeDiagnosticReport,
     load_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import Project
@@ -90,6 +91,18 @@ class OANativeRdbContract:
             * len(self.tests)
             * len(self.scalar_outputs)
         )
+
+    def reconstruct_diagnostic(
+        self,
+        result: Mapping[str, object],
+    ) -> NativeDiagnosticReport | None:
+        """Apply this contract's owner processor to one normalized RDB result."""
+
+        if self.diagnostic_equivalence is None:
+            return None
+        if self.diagnostic_processor is None:
+            raise RuntimeError("native diagnostic contract has no owner processor")
+        return self.diagnostic_processor.reconstruct(result, self)
 
 
 @dataclass(frozen=True)

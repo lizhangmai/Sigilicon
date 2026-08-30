@@ -342,19 +342,3 @@ def read_native_maestro_rdb_export(
         expected_expression_count=expected_expression_count,
     )
     return result
-
-
-
-def reconstruct_native_diagnostic(
-    result: dict[str, Any],
-    contract: Any,
-) -> dict[str, Any] | None:
-    """Delegate product-owned diagnostic reconstruction to its typed processor."""
-
-    diagnostic = contract.diagnostic_equivalence
-    if diagnostic is None:
-        return None
-    processor = getattr(contract, "diagnostic_processor", None)
-    if processor is None:
-        raise RuntimeError("native diagnostic contract has no owner processor")
-    return dict(processor.reconstruct(result, contract))

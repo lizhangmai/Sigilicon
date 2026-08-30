@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,15 +10,13 @@ from typing import Any, Literal
 import uuid
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
+from sigilicon.domain.native_diagnostics import NativeDiagnosticReport
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
-from sigilicon.virtuoso.maestro_rdb import (
-    read_native_maestro_rdb_export,
-    reconstruct_native_diagnostic,
-)
+from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_library import (
     OALibraryRebuildPlan,
@@ -76,22 +74,14 @@ def evaluate_oa_maestro_evidence(
     *,
     overall_spec_status: object,
     per_output_spec_status: tuple[str, ...],
-    diagnostic_equivalence: Mapping[str, object] | None,
+    diagnostic_report: NativeDiagnosticReport | None,
 ) -> OAMaestroEvidence:
     """Evaluate official Maestro and owner diagnostic results without guessing."""
 
     overall = _spec_status(overall_spec_status)
     outputs = tuple(_spec_status(value) for value in per_output_spec_status)
-    diagnostic_value = (
-        None
-        if diagnostic_equivalence is None
-        else diagnostic_equivalence.get("passed")
-    )
     diagnostic_passed = (
-        diagnostic_value if isinstance(diagnostic_value, bool) else None
-    )
-    diagnostic_inconclusive = (
-        diagnostic_equivalence is not None and diagnostic_passed is None
+        None if diagnostic_report is None else diagnostic_report.passed
     )
 
     failed_sources: list[str] = []
@@ -104,9 +94,6 @@ def evaluate_oa_maestro_evidence(
     if failed_sources:
         status = "fail"
         sources = tuple(failed_sources)
-    elif diagnostic_inconclusive:
-        status = "inconclusive"
-        sources = ("native-diagnostic",)
     elif diagnostic_passed is True:
         status = "pass"
         sources = ("native-diagnostic",)
@@ -426,14 +413,13 @@ def _run_native_oa_maestro_testbench_impl(
             "outputs", ("maestro-rdb.tsv",), rdb_export
         )
         parsed = record.write_json("outputs", ("maestro-rdb.json",), parsed_results)
-        diagnostic_equivalence = reconstruct_native_diagnostic(
-            parsed_results,
-            rdb_contract,
-        )
+        diagnostic_report = rdb_contract.reconstruct_diagnostic(parsed_results)
         diagnostic_equivalence_path = None
-        if diagnostic_equivalence is not None:
+        if diagnostic_report is not None:
             diagnostic_equivalence_path = record.write_json(
-                "outputs", ("diagnostic-equivalence.json",), diagnostic_equivalence
+                "outputs",
+                ("diagnostic-equivalence.json",),
+                diagnostic_report.as_dict(),
             )
         record.write_json("outputs", ("oa-library-check.json",), oa_check)
         record.add_file(
@@ -447,7 +433,7 @@ def _run_native_oa_maestro_testbench_impl(
         evidence = evaluate_oa_maestro_evidence(
             overall_spec_status=parsed_results["overall_spec_status"],
             per_output_spec_status=per_output_spec_status,
-            diagnostic_equivalence=diagnostic_equivalence,
+            diagnostic_report=diagnostic_report,
         )
         run_summary = record.write_json(
             "outputs",

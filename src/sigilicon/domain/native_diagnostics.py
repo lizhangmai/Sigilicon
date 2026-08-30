@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 import sys
-from types import ModuleType
-from typing import Any, Collection, Mapping
+from types import MappingProxyType, ModuleType
+from typing import Any, Collection, Mapping, cast
 import uuid
 
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
@@ -47,6 +47,30 @@ class NativeDiagnosticContract:
     settings: Mapping[str, object]
     scalar_outputs: tuple[tuple[str, str], ...]
     support_sources: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class NativeDiagnosticReport:
+    """Owner diagnostic payload with a mandatory top-level verdict."""
+
+    payload: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        payload = MappingProxyType(dict(self.payload))
+        if not isinstance(payload.get("passed"), bool):
+            raise ValueError(
+                "native diagnostic reconstruction must return a top-level passed boolean"
+            )
+        object.__setattr__(self, "payload", payload)
+
+    @property
+    def passed(self) -> bool:
+        return cast(bool, self.payload["passed"])
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable owner report without weakening its verdict."""
+
+        return dict(self.payload)
 
 
 @dataclass(frozen=True)
@@ -104,15 +128,11 @@ class NativeDiagnosticProcessor:
         self,
         result: Mapping[str, object],
         contract: object,
-    ) -> Mapping[str, object]:
+    ) -> NativeDiagnosticReport:
         value = self.implementation.reconstruct(result, contract)
         if not isinstance(value, Mapping):
             raise TypeError("native diagnostic reconstruction must return a mapping")
-        if not isinstance(value.get("passed"), bool):
-            raise ValueError(
-                "native diagnostic reconstruction must return a top-level passed boolean"
-            )
-        return value
+        return NativeDiagnosticReport(value)
 
     def attestation_requirements(
         self, diagnostic: NativeDiagnosticContract, tests: Collection[str]
