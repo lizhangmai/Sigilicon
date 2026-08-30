@@ -10,7 +10,7 @@ import pytest
 import sigilicon.domain.config_contracts as config_contracts
 from conftest import write_project_context, write_test_layout_platform
 from sigilicon.domain.config_contracts import (
-    RepositorySourceLedger,
+    RepositorySourceInventory,
     inspect_project_configuration_sources,
 )
 from sigilicon.domain.repository import Project
@@ -372,10 +372,8 @@ def test_configuration_scanner_reuses_layout_source_document(
 
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
     catalogs = project.flow_catalog_inventory()
-    sources = RepositorySourceLedger.for_project(
-        project,
-        catalog_inventory=catalogs,
-    ).merge("layout snapshot", spec.source_documents)
+    sources = RepositorySourceInventory.for_project(project)
+    sources.verify("layout snapshot", spec.source_documents)
     report = inspect_project_configuration_sources(
         project,
         catalog_inventory=catalogs,

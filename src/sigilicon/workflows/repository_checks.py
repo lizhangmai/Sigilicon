@@ -9,7 +9,7 @@ from typing import Any
 
 from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import (
-    RepositorySourceLedger,
+    RepositorySourceInventory,
     freeze_toml_document,
     inspect_project_configuration_sources,
     read_toml,
@@ -155,6 +155,15 @@ def inspect_repository_designs(
         else Project.from_project_root(project)
     )
     root = context.project_root
+    source_inventory = RepositorySourceInventory.for_project(context)
+    flow_catalog_inventory = context.flow_catalog_inventory()
+    source_inventory.verify(
+        "owner flow catalog snapshot",
+        {
+            snapshot.path: snapshot.document
+            for snapshot in flow_catalog_inventory
+        },
+    )
     ip_catalog = context.ip_catalog_snapshot()
     ip_catalog_path = ip_catalog.path
     release_rows = ip_catalog.document.get("targets", {})
@@ -319,64 +328,61 @@ def inspect_repository_designs(
             "owner": platform.owner,
         }
 
-    flow_catalog_inventory = context.flow_catalog_inventory()
-    source_ledger = RepositorySourceLedger.for_project(
-        context,
-        catalog_inventory=flow_catalog_inventory,
-    ).merge(
+    source_inventory.verify(
         "component graph snapshot",
         component_source_documents,
     )
-    source_ledger = source_ledger.merge(
+    source_inventory.verify(
         "platform catalog snapshot",
         {platform_catalog.path: platform_catalog.document},
     )
     for platform in platform_inventory.values():
-        source_ledger = source_ledger.merge(
+        source_inventory.verify(
             "platform source snapshot",
             platform.source_documents,
         )
     for contract in release_inventory.values():
         if contract.document:
-            source_ledger = source_ledger.merge(
+            source_inventory.verify(
                 "IP release contract snapshot",
                 {contract.path: contract.document},
             )
-        source_ledger = source_ledger.merge(
+        source_inventory.verify(
             "IP release interface snapshot",
             contract.interface_documents,
         )
     for contract in integration_inventory.values():
-        source_ledger = source_ledger.merge(
+        source_inventory.verify(
             "IP integration source snapshot",
             contract.source_documents,
         )
     for source in oa_source_inventory.values():
-        source_ledger = source_ledger.merge(
+        source_inventory.verify(
             "OA source snapshot",
             source.source_documents,
         )
     for simulation in oa_simulation_inventory.values():
-        source_ledger = source_ledger.merge(
+        source_inventory.verify(
             "OA simulation snapshot",
             simulation.source_documents,
         )
     for design in oa_design_inventory.values():
-        source_ledger = source_ledger.merge(
+        source_inventory.verify(
             "design snapshot",
             design.source_documents,
         )
-    source_ledger = source_ledger.merge(
+    source_inventory.verify(
         "layout snapshot",
         layout_source_documents,
-    ).merge(
+    )
+    source_inventory.verify(
         "architecture source snapshot",
         architecture_source_documents,
     )
     configuration = inspect_project_configuration_sources(
         context,
         catalog_inventory=flow_catalog_inventory,
-        sources=source_ledger,
+        sources=source_inventory,
     )
 
     design_catalog = load_design_target_catalog(

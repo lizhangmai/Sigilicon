@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time
+import os
 from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
+
+from sigilicon.artifacts import read_nofollow_text
 
 if TYPE_CHECKING:
     from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
@@ -124,16 +127,79 @@ def read_toml(path: Path) -> dict[str, Any]:
     return value
 
 
-_REPOSITORY_SOURCE_LEDGER_AUTHORITY = object()
+_REPOSITORY_SOURCE_INVENTORY_AUTHORITY = object()
 
 
-class RepositorySourceLedger:
+def _repository_configuration_roots(project: Project) -> frozenset[Path]:
+    """Return the catalog-selected roots scanned by repository checks."""
+
+    return frozenset(
+        {
+            *(owner.root for owner in project.owners),
+            *(path.parent for _, path in project.catalog_paths),
+        }
+    )
+
+
+def _repository_configuration_paths(directory: Path) -> tuple[Path, ...]:
+    """Enumerate regular TOML sources while rejecting symlinked subtrees."""
+
+    if directory != directory.resolve() or not directory.is_dir():
+        raise ValueError(
+            f"configuration owner root is missing or unsafe: {directory}"
+        )
+    pending = [directory]
+    result: list[Path] = []
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as scanned:
+                entries = sorted(scanned, key=lambda entry: entry.name)
+        except OSError as exc:
+            raise ValueError(
+                f"cannot inspect configuration owner root {current}: {exc}"
+            ) from exc
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                if entry.is_symlink():
+                    if path.suffix == ".toml" or entry.is_dir():
+                        raise ValueError(
+                            f"configuration source path is a symlink: {path}"
+                        )
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                elif entry.is_file(follow_symlinks=False):
+                    if path.suffix == ".toml":
+                        result.append(path)
+                elif path.suffix == ".toml":
+                    raise ValueError(
+                        f"configuration source must be a regular file: {path}"
+                    )
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot inspect configuration source {path}: {exc}"
+                ) from exc
+    return tuple(result)
+
+
+def _read_frozen_toml(path: Path) -> Mapping[str, Any]:
+    """Capture one exact regular TOML source without following links."""
+
+    try:
+        value = tomllib.loads(read_nofollow_text(path))
+    except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"cannot read TOML {path}: {exc}") from exc
+    return freeze_toml_document(value)
+
+
+class RepositorySourceInventory:
     """Immutable source closure trusted by one repository scan operation.
 
-    The ledger knows no IP, OA, layout, or platform schema. The workflow that
-    owns those snapshots validates them first and contributes only their frozen
-    source documents. A partial ledger is valid; scanner misses continue to use
-    the existing filesystem fallback.
+    Construction captures every TOML below the catalog-selected scan roots.
+    Domain loaders may then verify their richer snapshots against this closed
+    inventory, but they cannot add sources discovered later in the operation.
     """
 
     __slots__ = ("_documents", "_project")
@@ -145,8 +211,8 @@ class RepositorySourceLedger:
         project: Project,
         documents: Mapping[Path, Mapping[str, Any]],
     ) -> None:
-        if _authority is not _REPOSITORY_SOURCE_LEDGER_AUTHORITY:
-            raise ValueError("repository source ledger must use its factory")
+        if _authority is not _REPOSITORY_SOURCE_INVENTORY_AUTHORITY:
+            raise ValueError("repository source inventory must use its factory")
         object.__setattr__(self, "_project", project)
         object.__setattr__(self, "_documents", MappingProxyType(dict(documents)))
 
@@ -154,38 +220,62 @@ class RepositorySourceLedger:
     def for_project(
         cls,
         project: Project,
-        *,
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...] = (),
-    ) -> RepositorySourceLedger:
-        """Seed one ledger with already-loaded project and owner catalogs."""
+    ) -> RepositorySourceInventory:
+        """Capture the complete configuration inventory for one operation."""
 
-        ledger = cls(
-            _authority=_REPOSITORY_SOURCE_LEDGER_AUTHORITY,
-            project=project,
-            documents={},
-        )
+        expected_documents: dict[Path, Mapping[str, Any]] = {}
+
+        def seed(label: str, path: Path, document: Mapping[str, Any]) -> None:
+            resolved = path.resolve()
+            if (
+                path != resolved
+                or not resolved.is_relative_to(project.project_root)
+                or not is_frozen_toml_document(document)
+            ):
+                raise ValueError(f"{label} source identity drift: {path}")
+            previous = expected_documents.get(resolved)
+            if previous is not None and previous != document:
+                raise ValueError(f"{label} disagrees with another source: {path}")
+            expected_documents[resolved] = document
+
         manifest_document = project.manifest_source_document()
         if manifest_document:
-            ledger = ledger.merge(
+            seed(
                 "project manifest snapshot",
-                {project.manifest_path: manifest_document},
+                project.manifest_path,
+                manifest_document,
             )
         for owner in project.owners:
-            ledger = ledger.merge(
+            seed(
                 "owner component snapshot",
-                {owner.component.path: owner.component.document},
+                owner.component.path,
+                owner.component.document,
             )
         ip_catalog = project.ip_catalog_snapshot()
-        ledger = ledger.merge(
+        seed(
             "IP catalog snapshot",
-            {ip_catalog.path: ip_catalog.document},
+            ip_catalog.path,
+            ip_catalog.document,
         )
-        for snapshot in catalog_inventory:
-            ledger = ledger.merge(
-                "owner flow catalog snapshot",
-                {snapshot.path: snapshot.document},
-            )
-        return ledger
+        paths = {
+            project.manifest_path,
+            *(path for _, path in project.catalog_paths),
+        }
+        for directory in _repository_configuration_roots(project):
+            paths.update(_repository_configuration_paths(directory))
+        documents: dict[Path, Mapping[str, Any]] = {}
+        for path in sorted(paths):
+            resolved = path.resolve()
+            if path != resolved or not resolved.is_relative_to(project.project_root):
+                raise ValueError(f"configuration source is unsafe: {path}")
+            documents[resolved] = _read_frozen_toml(resolved)
+        inventory = cls(
+            _authority=_REPOSITORY_SOURCE_INVENTORY_AUTHORITY,
+            project=project,
+            documents=documents,
+        )
+        inventory.verify("project source snapshot", expected_documents)
+        return inventory
 
     @property
     def project(self) -> Project:
@@ -196,64 +286,69 @@ class RepositorySourceLedger:
         return self._documents
 
     def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError("repository source ledger is immutable")
+        raise AttributeError("repository source inventory is immutable")
 
     def require_project(self, project: Project) -> None:
-        """Require the exact operation that created this ledger."""
+        """Require the exact operation that captured this inventory."""
 
         if project is not self.project:
-            raise ValueError("repository source ledger belongs to another operation")
+            raise ValueError("repository source inventory belongs to another operation")
 
-    def merge(
+    def verify(
         self,
         label: str,
         source_documents: Mapping[Path, Mapping[str, Any]],
-    ) -> RepositorySourceLedger:
-        """Return a ledger extended by one validated domain source set."""
+    ) -> None:
+        """Require domain snapshots to match the captured source inventory."""
 
         if not isinstance(label, str) or not label:
-            raise ValueError("repository source ledger label must be non-empty")
+            raise ValueError("repository source inventory label must be non-empty")
         if not isinstance(source_documents, Mapping):
             raise TypeError("repository source documents must be a mapping")
-        root = self.project.project_root
-        merged = dict(self.documents)
         for path, document in source_documents.items():
             if (
                 not isinstance(path, Path)
                 or path != path.resolve()
-                or not path.is_relative_to(root)
-                or not path.is_file()
+                or not path.is_relative_to(self.project.project_root)
+                or path.suffix != ".toml"
             ):
                 raise ValueError(f"{label} source path identity drift: {path}")
             if not is_frozen_toml_document(document):
                 raise ValueError(f"{label} source document must be frozen: {path}")
-            previous = merged.get(path)
-            if previous is not None and previous != document:
+            previous = self.documents.get(path)
+            if previous is None:
+                raise ValueError(
+                    f"{label} source is outside the captured inventory: {path}"
+                )
+            if previous != document:
                 raise ValueError(f"{label} disagrees with another source: {path}")
-            merged[path] = document
-        return RepositorySourceLedger(
-            _authority=_REPOSITORY_SOURCE_LEDGER_AUTHORITY,
-            project=self.project,
-            documents=merged,
-        )
 
-    def resolve(self, path: Path) -> Mapping[str, Any] | None:
-        """Return one exact seeded document without filesystem fallback."""
+    def resolve(self, path: Path) -> Mapping[str, Any]:
+        """Return one captured document or reject an inventory miss."""
 
         if not isinstance(path, Path) or path != path.resolve():
-            raise ValueError("repository source ledger lookup must be resolved")
-        return self.documents.get(path)
+            raise ValueError("repository source inventory lookup must be resolved")
+        try:
+            return self.documents[path]
+        except KeyError as exc:
+            raise ValueError(
+                f"configuration source is outside the captured inventory: {path}"
+            ) from exc
 
 
 def inspect_project_configuration_sources(
     context: Project,
     *,
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
-    sources: RepositorySourceLedger,
+    sources: RepositorySourceInventory,
 ) -> dict[str, Any]:
-    """Scan configuration envelopes from one operation-owned source ledger."""
+    """Inspect configuration envelopes from one closed source inventory."""
 
     sources.require_project(context)
+    sources.verify(
+        "owner flow catalog snapshot",
+        {snapshot.path: snapshot.document for snapshot in catalog_inventory},
+    )
     root = context.project_root.resolve()
     project_contract = context.manifest_path
     repository_owner = context.manifest_owner
@@ -272,21 +367,13 @@ def inspect_project_configuration_sources(
         *(snapshot.path for snapshot in layout_catalogs),
     }
     repository_owner_roots = {owner.root for owner in context.owners}
-    scan_roots = set(repository_owner_roots)
-    scan_roots.update(
-        path.parent
-        for _, path in context.catalog_paths
-    )
+    scan_roots = _repository_configuration_roots(context)
 
-    operation_documents = dict(sources.documents)
     resolved_owner_roots = {
         owner.root: owner.name for owner in context.owners
     }
     platform_catalog_path = context.catalog("platform")
-    platform_catalog_document = operation_documents.get(platform_catalog_path)
-    if platform_catalog_document is None:
-        platform_catalog_document = read_toml(platform_catalog_path)
-        operation_documents[platform_catalog_path] = platform_catalog_document
+    platform_catalog_document = sources.resolve(platform_catalog_path)
     platforms = platform_catalog_document.get("platforms")
     if not isinstance(platforms, Mapping):
         raise ValueError("platform catalog platforms must be a table")
@@ -306,12 +393,9 @@ def inspect_project_configuration_sources(
                 f"platforms.{key} must be a canonical relative path"
             )
         manifest = platform_catalog_path.parent.joinpath(*relative.parts).resolve()
-        if not manifest.is_relative_to(root) or not manifest.is_file():
+        if not manifest.is_relative_to(root):
             raise ValueError(f"platforms.{key} manifest is missing or unsafe")
-        document = operation_documents.get(manifest)
-        if document is None:
-            document = read_toml(manifest)
-            operation_documents[manifest] = document
+        document = sources.resolve(manifest)
         owner = _text(document.get("owner"), f"{manifest}: owner")
         platform_owner_root = manifest.parent
         previous = resolved_owner_roots.get(platform_owner_root)
@@ -325,16 +409,13 @@ def inspect_project_configuration_sources(
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"configuration source escapes the project root: {path}")
-    for path in exact_paths:
-        if not path.is_file():
-            raise ValueError(f"configuration source is missing: {path}")
-    for directory in scan_roots:
-        if not directory.is_dir():
-            raise ValueError(f"configuration owner root is missing: {directory}")
-
-    documents = set(exact_paths)
-    for directory in scan_roots:
-        documents.update(path for path in directory.rglob("*.toml") if path.is_file())
+    documents = set(sources.documents)
+    missing_exact = exact_paths - documents
+    if missing_exact:
+        raise ValueError(
+            "configuration source inventory omitted selected contracts: "
+            f"{sorted(missing_exact)}"
+        )
 
     contract_kinds: set[str] = set()
     owners: set[str] = set()
@@ -347,11 +428,6 @@ def inspect_project_configuration_sources(
         if not resolved.is_relative_to(root):
             raise ValueError(f"configuration source escapes the project root: {path}")
         raw = sources.resolve(resolved)
-        if raw is None:
-            raw = operation_documents.get(resolved)
-        if raw is None:
-            raw = read_toml(resolved)
-            operation_documents[resolved] = raw
         present = envelope_fields & raw.keys()
         if not present:
             native_documents += 1
@@ -397,10 +473,13 @@ def inspect_project_configuration_sources(
                 resolved,
                 raw,
                 project=context,
-                contract_documents=operation_documents,
+                contract_documents=sources.documents,
             )
             for source_path, document in spec.source_documents.items():
-                operation_documents.setdefault(source_path, document)
+                sources.verify(
+                    "verification cell snapshot",
+                    {source_path: document},
+                )
         contract_kinds.add(header.contract_kind)
         owners.add(header.owner)
 

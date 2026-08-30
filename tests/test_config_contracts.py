@@ -7,7 +7,7 @@ import pytest
 import sigilicon.domain.config_contracts as config_contracts
 from conftest import write_project_context, write_test_platform
 from sigilicon.domain.config_contracts import (
-    RepositorySourceLedger,
+    RepositorySourceInventory,
     freeze_toml_document,
     inspect_project_configuration_sources,
     require_config_header,
@@ -110,13 +110,10 @@ def _inspect(
     *,
     documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> dict[str, object]:
+    sources = RepositorySourceInventory.for_project(project)
     catalogs = project.flow_catalog_inventory()
-    sources = RepositorySourceLedger.for_project(
-        project,
-        catalog_inventory=catalogs,
-    )
     if documents:
-        sources = sources.merge("test source snapshot", documents)
+        sources.verify("test source snapshot", documents)
     return inspect_project_configuration_sources(
         project,
         catalog_inventory=catalogs,
@@ -148,7 +145,7 @@ owner = "alpha"
     assert "ip/alpha" in report["roots"]
 
 
-def test_repository_source_ledger_is_operation_bound_and_partial(
+def test_repository_source_inventory_is_operation_bound_and_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -174,14 +171,12 @@ owner = "beta"
 ''',
     )
     context = Project.from_project_root(tmp_path)
+    inventory = RepositorySourceInventory.for_project(context)
     catalogs = context.flow_catalog_inventory()
     seeded_document = freeze_toml_document(
         tomllib.loads(seeded.read_text(encoding="utf-8"))
     )
-    ledger = RepositorySourceLedger.for_project(
-        context,
-        catalog_inventory=catalogs,
-    ).merge("seeded fixture", {seeded: seeded_document})
+    inventory.verify("seeded fixture", {seeded: seeded_document})
 
     component = context.owners[0].component
     conflicting_catalog = OwnerCatalogSnapshot(
@@ -191,22 +186,36 @@ owner = "beta"
         document=freeze_toml_document({"schema": 999}),
     )
     with pytest.raises(ValueError, match="disagrees with another source"):
-        RepositorySourceLedger.for_project(
-            context,
-            catalog_inventory=(*catalogs, conflicting_catalog),
+        inventory.verify(
+            "conflicting owner catalog snapshot",
+            {conflicting_catalog.path: conflicting_catalog.document},
         )
 
-    assert ledger.resolve(seeded) is seeded_document
-    assert ledger.resolve(fallback) is None
+    assert inventory.resolve(seeded) == seeded_document
+    assert inventory.resolve(fallback)["contract_kind"] == "fallback-contract"
     with pytest.raises(AttributeError, match="immutable"):
-        ledger._documents = {}
+        inventory._documents = {}
     with pytest.raises(ValueError, match="must be frozen"):
-        ledger.merge("mutable fixture", {seeded: {"schema": 1}})
+        inventory.verify("mutable fixture", {seeded: {"schema": 1}})
     with pytest.raises(ValueError, match="disagrees with another source"):
-        ledger.merge(
+        inventory.verify(
             "conflicting fixture",
             {seeded: freeze_toml_document({"schema": 2})},
         )
+
+    late = (tmp_path / "ip/alpha/late.toml").resolve()
+    _write(
+        tmp_path,
+        late.relative_to(tmp_path).as_posix(),
+        '''schema = 1
+contract_kind = "late-contract"
+path_scope = "owner"
+owner = "alpha"
+''',
+    )
+    with pytest.raises(ValueError, match="outside the captured inventory"):
+        inventory.resolve(late)
+    fallback.write_text("not valid TOML = [\n", encoding="utf-8")
 
     reads: list[Path] = []
     original_read_toml = config_contracts.read_toml
@@ -220,19 +229,20 @@ owner = "beta"
     report = inspect_project_configuration_sources(
         context,
         catalog_inventory=catalogs,
-        sources=ledger,
+        sources=inventory,
     )
 
     assert report["passed"] is True
     assert "seeded-contract" in report["contract_kinds"]
     assert "fallback-contract" in report["contract_kinds"]
+    assert "late-contract" not in report["contract_kinds"]
     assert seeded not in reads
-    assert fallback in reads
+    assert fallback not in reads
     with pytest.raises(ValueError, match="another operation"):
         inspect_project_configuration_sources(
             Project.from_project_root(tmp_path),
             catalog_inventory=catalogs,
-            sources=ledger,
+            sources=inventory,
         )
 
 
@@ -265,6 +275,38 @@ def test_project_configuration_reuses_validated_platform_source_documents(
     assert report["native_documents"] == 1
     assert platform_reads == []
 
+
+def test_repository_source_inventory_rejects_symlinked_toml(
+    tmp_path: Path,
+) -> None:
+    _write_selected_catalogs(tmp_path)
+    target = tmp_path / "unowned.toml"
+    target.write_text("schema = 3\n", encoding="utf-8")
+    link = tmp_path / "ip/alpha/linked.toml"
+    link.symlink_to(target)
+    context = Project.from_project_root(tmp_path)
+
+    with pytest.raises(ValueError, match="is a symlink"):
+        RepositorySourceInventory.for_project(context)
+
+
+def test_repository_source_inventory_rejects_symlinked_directory(
+    tmp_path: Path,
+) -> None:
+    _write_selected_catalogs(tmp_path)
+    target = tmp_path / "unowned-configs"
+    target.mkdir()
+    (target / "hidden.toml").write_text("schema = 3\n", encoding="utf-8")
+    (tmp_path / "ip/alpha/linked-configs").symlink_to(
+        target,
+        target_is_directory=True,
+    )
+    context = Project.from_project_root(tmp_path)
+
+    with pytest.raises(ValueError, match="is a symlink"):
+        RepositorySourceInventory.for_project(context)
+
+
 def test_project_configuration_reuses_oa_simulation_source_documents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,7 +323,23 @@ def test_project_configuration_reuses_oa_simulation_source_documents(
     _write(
         tmp_path,
         simulation_path.relative_to(tmp_path).as_posix(),
-        "schema = 3\n",
+        '''schema = 3
+
+[testbench]
+library = "fixture"
+cell = "tb_fixture"
+dut = "dut"
+source_view = "schematic"
+simulator = "spectre"
+
+[platform]
+pdk = "testpdk"
+
+[setup]
+source = "setup.il"
+config_procedure = "fixtureConfig"
+maestro_procedure = "fixtureMaestro"
+''',
     )
     _write(
         tmp_path,
@@ -344,7 +402,7 @@ def test_project_configuration_reuses_oa_simulation_source_documents(
     assert report["passed"] is True
     assert report["native_documents"] == 3
     assert reads == []
-    assert non_oa_reads == 1
+    assert non_oa_reads == 0
 
 def test_project_configuration_rejects_partial_common_header(tmp_path: Path) -> None:
     _write_selected_catalogs(tmp_path)
@@ -415,16 +473,16 @@ simulator = "xcelium"
 contracts = ["../../qualification.toml", "../z_contract.toml"]
 """,
     )
-    original_load = tomllib.load
+    original_read = config_contracts.read_nofollow_text
     reads = {path.resolve(): 0 for path in (cell, *declared_contracts)}
 
-    def counted_load(stream):
-        path = Path(stream.name).resolve()
+    def counted_read(path: Path):
+        path = path.resolve()
         if path in reads:
             reads[path] += 1
-        return original_load(stream)
+        return original_read(path)
 
-    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.setattr(config_contracts, "read_nofollow_text", counted_read)
 
     context = Project.from_project_root(tmp_path)
     _inspect(context)

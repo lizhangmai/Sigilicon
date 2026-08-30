@@ -685,7 +685,7 @@ contract = "ip/fixture/internal/component.toml"
     observed_oa_inventories: list[object] = []
     observed_oa_plan_inventories: list[object] = []
     observed_architecture_inventories: list[object] = []
-    observed_source_ledgers: list[object] = []
+    observed_source_inventories: list[object] = []
     oa_source_reads: list[Path] = []
     oa_document_reads = 0
     architecture_reads = 0
@@ -786,7 +786,7 @@ contract = "ip/fixture/internal/component.toml"
     )
 
     def inspect_sources(*args, sources, **kwargs):
-        observed_source_ledgers.append(sources)
+        observed_source_inventories.append(sources)
         reads_before_scan = dependency_reads
         result = original_inspect_sources(*args, sources=sources, **kwargs)
         assert dependency_reads == reads_before_scan
@@ -848,9 +848,9 @@ contract = "ip/fixture/internal/component.toml"
     assert set(observed_oa_plan_inventories[0]) == set(oa_source_reads)
     assert len(observed_architecture_inventories) == 1
     assert set(observed_architecture_inventories[0]) == {architecture.resolve()}
-    assert len(observed_source_ledgers) == 1
-    ledger = observed_source_ledgers[0]
-    assert ledger.project.project_root == tmp_path.resolve()
+    assert len(observed_source_inventories) == 1
+    source_inventory = observed_source_inventories[0]
+    assert source_inventory.project.project_root == tmp_path.resolve()
     assert {
         planned_simulation_path.resolve(),
         planned_design_path.resolve(),
@@ -859,7 +859,7 @@ contract = "ip/fixture/internal/component.toml"
         dependency.resolve(),
         *platform_sources,
         *oa_source_reads,
-    } <= set(ledger.documents)
+    } <= set(source_inventory.documents)
     assert architecture_reads == 1
     assert dependency_reads >= 1
     assert oa_document_reads == 0

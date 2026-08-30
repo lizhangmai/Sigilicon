@@ -16,7 +16,7 @@ import sigilicon.domain.oa_simulation as oa_simulation_domain
 import sigilicon.domain.platform as platform_domain
 import sigilicon.workflows.ip_packaging as ip_packaging
 from sigilicon.domain.config_contracts import (
-    RepositorySourceLedger,
+    RepositorySourceInventory,
     freeze_toml_document,
     inspect_project_configuration_sources,
 )
@@ -926,10 +926,8 @@ def test_project_configuration_reuses_ip_release_interface_documents(
 
     project = contract.project
     catalogs = project.flow_catalog_inventory()
-    sources = RepositorySourceLedger.for_project(
-        project,
-        catalog_inventory=catalogs,
-    ).merge(
+    sources = RepositorySourceInventory.for_project(project)
+    sources.verify(
         "IP release snapshot",
         {contract.path: contract.document, **contract.interface_documents},
     )

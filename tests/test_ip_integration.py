@@ -21,7 +21,7 @@ from sigilicon.domain.ip_integration import (
     resolve_ip_integration_contract,
 )
 from sigilicon.domain.config_contracts import (
-    RepositorySourceLedger,
+    RepositorySourceInventory,
     inspect_project_configuration_sources,
 )
 from sigilicon.domain.repository import Project
@@ -1198,10 +1198,8 @@ def test_configuration_scanner_reuses_ip_integration_source_documents(
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
 
     catalogs = project.flow_catalog_inventory()
-    sources = RepositorySourceLedger.for_project(
-        project,
-        catalog_inventory=catalogs,
-    ).merge("IP integration snapshot", contract.source_documents)
+    sources = RepositorySourceInventory.for_project(project)
+    sources.verify("IP integration snapshot", contract.source_documents)
     report = inspect_project_configuration_sources(
         project,
         catalog_inventory=catalogs,
