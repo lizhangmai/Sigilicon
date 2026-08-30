@@ -1,4 +1,4 @@
-"""Artifact workspace seam shared by standalone and Flow-managed execution."""
+"""Artifact workspace seam owned by one parent Flow execution."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from sigilicon.artifacts import (
-    ArtifactRecord,
     copy_immutable_file,
     ensure_nofollow_directory,
     read_nofollow_text,
@@ -64,71 +63,6 @@ class RunArtifacts(Protocol):
         *,
         label: str | None = None,
     ) -> object: ...
-
-
-@dataclass(frozen=True)
-class StandaloneRunArtifacts:
-    """RunArtifacts Adapter backed by one standalone ArtifactRecord."""
-
-    record: ArtifactRecord
-
-    @property
-    def run_id(self) -> str:
-        return self.record.paths.identity
-
-    @property
-    def root(self) -> Path:
-        return self.record.paths.root
-
-    @property
-    def source(self) -> Mapping[str, Any]:
-        value = self.record.manifest.get("source")
-        return value if isinstance(value, Mapping) else {}
-
-    def path(self, role: str, *components: str) -> Path:
-        return self.record.path(role, *components)
-
-    def directory(self, role: str, *components: str) -> Path:
-        return self.record.directory(role, *components)
-
-    def write_text(
-        self,
-        role: str,
-        components: Sequence[str],
-        value: str,
-        *,
-        label: str | None = None,
-    ) -> Path:
-        return self.record.write_text(role, components, value, label=label)
-
-    def write_json(
-        self,
-        role: str,
-        components: Sequence[str],
-        value: Mapping[str, Any],
-        *,
-        label: str | None = None,
-    ) -> Path:
-        return self.record.write_json(role, components, value, label=label)
-
-    def copy_file(
-        self,
-        role: str,
-        components: Sequence[str],
-        source: Path,
-        *,
-        label: str | None = None,
-    ) -> Path:
-        return self.record.copy_file(role, components, source, label=label)
-
-    def add_file(
-        self,
-        role: str,
-        path: Path,
-        *,
-        label: str | None = None,
-    ) -> object:
-        return self.record.add_file(role, path, label=label)
 
 
 @dataclass(frozen=True)
@@ -372,7 +306,7 @@ def managed_run_artifact_environment(
 
 
 def managed_run_artifacts_from_environment() -> DirectoryRunArtifacts | None:
-    """Recover a parent Action's directories, or report standalone mode."""
+    """Recover a parent Action's directories when called from a managed child."""
 
     value = os.environ.get(_MANAGED_ARTIFACT_CONTEXT)
     if value is None:
@@ -461,7 +395,6 @@ __all__ = [
     "DirectoryRunArtifacts",
     "FlowRunArtifacts",
     "RunArtifacts",
-    "StandaloneRunArtifacts",
     "managed_run_artifact_environment",
     "managed_run_artifacts_from_environment",
     "scoped_run_artifacts",

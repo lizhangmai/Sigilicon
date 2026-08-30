@@ -69,10 +69,6 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
         "evidence",
         {"project": {"commit": "fixture"}},
     )
-    monkeypatch.setenv(
-        "SIGILICON_MANAGED_RUN_ARTIFACTS",
-        environment["SIGILICON_MANAGED_RUN_ARTIFACTS"],
-    )
     source = tmp_path / "source.scs"
     source.write_text("simulator lang=spectre\n", encoding="utf-8")
 
@@ -105,12 +101,13 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
         timeout=10,
     )
     context = SpectreArtifactContext(project, "example", "cell", "testbench")
-    with pytest.raises(ValueError, match="artifact_root conflicts"):
-        run_spectre_measurement(
-            context,
-            artifact_root=tmp_path / "standalone",
-            **measurement,
-        )
+    with pytest.raises(RuntimeError, match="require artifacts owned by a parent Flow"):
+        run_spectre_measurement(context, **measurement)
+
+    monkeypatch.setenv(
+        "SIGILICON_MANAGED_RUN_ARTIFACTS",
+        environment["SIGILICON_MANAGED_RUN_ARTIFACTS"],
+    )
     result = run_spectre_measurement(context, **measurement)
 
     assert result.run_id == "run"
