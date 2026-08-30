@@ -93,16 +93,10 @@ class ProjectOaWorkflow:
         client: Any,
         timeout: int = 600,
         plan: OALibraryRebuildPlan | None = None,
-        operation_id: str | None = None,
-        bind_operation: Callable[[Any], None] | None = None,
         artifact_root: Path | None = None,
     ) -> OAMaestroRunResult:
         selected_plan = self.plan() if plan is None else plan
         operation_options: dict[str, Any] = {}
-        if operation_id is not None:
-            operation_options["operation_id"] = operation_id
-        if bind_operation is not None:
-            operation_options["bind_operation"] = bind_operation
         if artifact_root is not None:
             operation_options["artifact_root"] = artifact_root
         return run_oa_maestro_testbench(

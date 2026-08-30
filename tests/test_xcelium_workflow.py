@@ -168,8 +168,10 @@ def test_xcelium_run_reuses_project_and_writes_managed_artifact(
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
-    def capture(command, *, cwd, before_spawn, **_kwargs):
+    def capture(command, *, cwd, before_spawn, **kwargs):
         assert command[0] == str(xrun)
+        assert str(cwd).startswith("/proc/") and "/fd/" in str(cwd)
+        assert len(kwargs["pass_fds"]) == 2
         before_spawn()
         (cwd / "xrun.log").write_text("fixture Xcelium log\n", encoding="utf-8")
         return subprocess.CompletedProcess(

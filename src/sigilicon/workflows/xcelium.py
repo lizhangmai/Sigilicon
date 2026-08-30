@@ -9,8 +9,14 @@ from pathlib import Path
 from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
-from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
+from sigilicon.external_tools import (
+    find_xrun,
+    owned_directory,
+    run_process_group_capture,
+    xrun_env,
+)
 from sigilicon.paths import ArtifactLayout
+from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
 
 
@@ -56,13 +62,10 @@ class XceliumCellPlan:
 
 
 @dataclass(frozen=True)
-class XceliumCellRun:
-    """Completed managed Xcelium invocation."""
+class XceliumCellExecution:
+    """Tool result written into an execution lifecycle owned by the caller."""
 
     plan: XceliumCellPlan
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
     run_summary: Path
     returncode: int
     passed: bool
@@ -75,6 +78,15 @@ class XceliumCellRun:
         """Combined simulator output available to owner-specific result parsers."""
 
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
+
+
+@dataclass(frozen=True)
+class XceliumCellRun(XceliumCellExecution):
+    """Completed standalone Xcelium invocation and its persistent identity."""
+
+    run_id: str
+    run_dir: Path
+    manifest_path: Path
 
 
 def _resolve_contract(path: Path, *, project: Project) -> Path:
@@ -140,6 +152,119 @@ def plan_xcelium_cell(
     )
 
 
+def execute_xcelium_cell(
+    plan: XceliumCellPlan,
+    *,
+    artifacts: RunArtifacts,
+    xrun: Path | None = None,
+    timeout: int = 600,
+) -> XceliumCellExecution:
+    """Execute a resolved cell without creating or completing a run record."""
+
+    xrun_bin = find_xrun(xrun)
+    artifacts.write_json(
+        "inputs",
+        ("source-manifest.json",),
+        {"schema": 1, "plan": plan.as_dict()},
+        label="Xcelium source plan",
+    )
+    work_dir = artifacts.directory("work")
+    xcelium_dir = artifacts.directory("work", "xcelium.d")
+    with owned_directory(work_dir) as owned_work, owned_directory(
+        xcelium_dir
+    ) as owned_xcelium:
+        command = [
+            str(xrun_bin),
+            "-64bit",
+            "-sv",
+            "-timescale",
+            "1ns/1ps",
+            "-xmlibdirname",
+            owned_xcelium.child_path,
+            "-log",
+            owned_work.child_file("xrun.log"),
+            *(str(path) for path in plan.sources),
+        ]
+
+        def validate_spawn() -> None:
+            owned_work.require_visible()
+            owned_xcelium.require_visible()
+            for source_input in plan.spec.source_inputs:
+                if not source_input.is_file():
+                    raise FileNotFoundError(
+                        f"Xcelium source input disappeared: {source_input}"
+                    )
+
+        completed = run_process_group_capture(
+            command,
+            cwd=Path(owned_work.child_path),
+            env=xrun_env(xrun_bin),
+            timeout=timeout,
+            before_spawn=validate_spawn,
+            pass_fds=(owned_work.fd, owned_xcelium.fd),
+        )
+    stdout_path = artifacts.write_text(
+        "logs", ("xrun.stdout.log",), completed.stdout, label="Xcelium stdout"
+    )
+    stderr_path = artifacts.write_text(
+        "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
+    )
+    native_log = work_dir / "xrun.log"
+    native_output = (
+        native_log.read_text(encoding="utf-8", errors="replace")
+        if native_log.is_file()
+        else ""
+    )
+    native_log_path = (
+        artifacts.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
+        if native_log.is_file()
+        else None
+    )
+    success_marker_evidence = [
+        source
+        for source, output in (
+            ("stdout", completed.stdout),
+            ("native_log", native_output),
+        )
+        if plan.spec.success_marker in output
+    ]
+    success_marker_seen = bool(success_marker_evidence)
+    passed = completed.returncode == 0 and success_marker_seen
+    summary = {
+        "schema": 1,
+        "cell": plan.spec.cell,
+        "dut": plan.spec.dut,
+        "xrun": str(xrun_bin),
+        "command": command,
+        "returncode": completed.returncode,
+        "success_marker": plan.spec.success_marker,
+        "success_marker_seen": success_marker_seen,
+        "success_marker_evidence": success_marker_evidence,
+        "passed": passed,
+        "logs": {
+            "stdout": str(stdout_path.relative_to(artifacts.root)),
+            "stderr": str(stderr_path.relative_to(artifacts.root)),
+            "native": (
+                str(native_log_path.relative_to(artifacts.root))
+                if native_log_path is not None
+                else None
+            ),
+        },
+    }
+    summary_path = artifacts.write_json(
+        "outputs", ("summary.json",), summary, label="Xcelium completion summary"
+    )
+    return XceliumCellExecution(
+        plan=plan,
+        run_summary=summary_path,
+        returncode=completed.returncode,
+        passed=passed,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        native_log=native_output,
+    )
+
+
 def run_xcelium_cell(
     contract_path: Path,
     *,
@@ -148,26 +273,22 @@ def run_xcelium_cell(
     xrun: Path | None = None,
     timeout: int = 600,
 ) -> XceliumCellRun:
-    """Run one verification cell through an isolated artifact work directory."""
+    """Run one verification cell through a standalone managed lifecycle."""
 
     repository = project
-    root = repository.project_root
     plan = plan_xcelium_cell(contract_path, project=repository)
-    xrun_bin = find_xrun(xrun)
-    source_state = artifact_source_state(root)
-    run_id = new_identity()
-    artifacts = (
+    layout = (
         repository.artifacts
         if artifact_root is None
         else ArtifactLayout(artifact_root.resolve())
     )
     attempt = ArtifactRecord.begin(
-        artifacts.execution(
+        layout.execution(
             owner=plan.spec.owner,
             target=plan.spec.cell,
             flow="xcelium",
             variant=plan.spec.simulator,
-            identity=run_id,
+            identity=new_identity(),
             artifact_kind="standalone_simulation",
             identity_kind="run_id",
         ),
@@ -178,106 +299,23 @@ def run_xcelium_cell(
         },
         operation="simulate",
         backend="xcelium-rtl-cell",
-        source=source_state,
+        source=artifact_source_state(repository.project_root),
     )
-
     try:
         attempt.bind_operation(new_identity())
-        attempt.write_json(
-            "inputs",
-            ("source-manifest.json",),
-            {
-                "schema": 1,
-                "plan": plan.as_dict(),
-            },
-            label="Xcelium source plan",
-        )
-        work_dir = attempt.directory("work")
-        xcelium_dir = attempt.directory("work", "xcelium.d")
-        command = [
-            str(xrun_bin),
-            "-64bit",
-            "-sv",
-            "-timescale",
-            "1ns/1ps",
-            "-xmlibdirname",
-            str(xcelium_dir),
-            "-log",
-            str(work_dir / "xrun.log"),
-            *(str(path) for path in plan.sources),
-        ]
-
-        def validate_spawn() -> None:
-            for source_input in plan.spec.source_inputs:
-                if not source_input.is_file():
-                    raise FileNotFoundError(
-                        f"Xcelium source input disappeared: {source_input}"
-                    )
-
-        completed = run_process_group_capture(
-            command,
-            cwd=work_dir,
-            env=xrun_env(xrun_bin),
+        execution = execute_xcelium_cell(
+            plan,
+            artifacts=StandaloneRunArtifacts(attempt),
+            xrun=xrun,
             timeout=timeout,
-            before_spawn=validate_spawn,
         )
-        stdout_path = attempt.write_text(
-            "logs", ("xrun.stdout.log",), completed.stdout, label="Xcelium stdout"
-        )
-        stderr_path = attempt.write_text(
-            "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
-        )
-        native_log = work_dir / "xrun.log"
-        native_output = (
-            native_log.read_text(encoding="utf-8", errors="replace")
-            if native_log.is_file()
-            else ""
-        )
-        native_log_path = (
-            attempt.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
-            if native_log.is_file()
-            else None
-        )
-        success_marker_evidence = [
-            source
-            for source, output in (
-                ("stdout", completed.stdout),
-                ("native_log", native_output),
-            )
-            if plan.spec.success_marker in output
-        ]
-        success_marker_seen = bool(success_marker_evidence)
-        passed = completed.returncode == 0 and success_marker_seen
-        summary = {
-            "schema": 1,
-            "cell": plan.spec.cell,
-            "dut": plan.spec.dut,
-            "xrun": str(xrun_bin),
-            "command": command,
-            "returncode": completed.returncode,
-            "success_marker": plan.spec.success_marker,
-            "success_marker_seen": success_marker_seen,
-            "success_marker_evidence": success_marker_evidence,
-            "passed": passed,
-            "logs": {
-                "stdout": str(stdout_path.relative_to(attempt.paths.root)),
-                "stderr": str(stderr_path.relative_to(attempt.paths.root)),
-                "native": (
-                    str(native_log_path.relative_to(attempt.paths.root))
-                    if native_log_path is not None
-                    else None
-                ),
-            },
-        }
-        summary_path = attempt.write_json(
-            "outputs", ("summary.json",), summary, label="Xcelium completion summary"
-        )
-        if completed.returncode != 0:
+        summary = json.loads(execution.run_summary.read_text(encoding="utf-8"))
+        if execution.returncode != 0:
             error = RuntimeError(
-                f"xrun failed for {plan.spec.cell} with exit code {completed.returncode}"
+                f"xrun failed for {plan.spec.cell} with exit code {execution.returncode}"
             )
             attempt.fail(error, details={"summary": summary})
-        elif not success_marker_seen:
+        elif not execution.passed:
             error = RuntimeError(
                 f"Xcelium verification cell {plan.spec.cell} did not emit its "
                 f"success marker: {plan.spec.success_marker!r}"
@@ -285,20 +323,20 @@ def run_xcelium_cell(
             attempt.fail(error, details={"summary": summary})
         else:
             attempt.succeed(
-                completion_evidence=(summary_path,),
+                completion_evidence=(execution.run_summary,),
                 details={"product_qualification_conclusion": False},
             )
         return XceliumCellRun(
-            plan=plan,
+            plan=execution.plan,
+            run_summary=execution.run_summary,
+            returncode=execution.returncode,
+            passed=execution.passed,
+            stdout=execution.stdout,
+            stderr=execution.stderr,
+            native_log=execution.native_log,
             run_id=attempt.paths.identity,
             run_dir=attempt.paths.root,
             manifest_path=attempt.paths.manifest,
-            run_summary=summary_path,
-            returncode=completed.returncode,
-            passed=passed,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            native_log=native_output,
         )
     except BaseException as error:
         if attempt.status == "running":

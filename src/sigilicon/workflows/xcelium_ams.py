@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,7 +16,13 @@ from sigilicon.domain.ip_integration import (
 from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platform
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
-from sigilicon.external_tools import find_xrun, run_process_group_capture, xrun_env
+from sigilicon.external_tools import (
+    find_xrun,
+    owned_directory,
+    run_process_group_capture,
+    xrun_env,
+)
+from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
 from sigilicon.workflows.ip_integration import check_ip_integration
 from sigilicon.workflows.source_control import artifact_source_state
 
@@ -116,13 +123,10 @@ class XceliumAmsCellPlan:
 
 
 @dataclass(frozen=True)
-class XceliumAmsCellRun:
-    """Completed managed Xcelium AMS invocation."""
+class XceliumAmsCellExecution:
+    """AMS result written into an execution lifecycle owned by the caller."""
 
     plan: XceliumAmsCellPlan
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
     run_summary: Path
     returncode: int
     passed: bool
@@ -131,12 +135,21 @@ class XceliumAmsCellRun:
     native_log: str
 
     @property
-    def manifest(self) -> Path:
-        return self.manifest_path
-
-    @property
     def evidence_output(self) -> str:
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
+
+
+@dataclass(frozen=True)
+class XceliumAmsCellRun(XceliumAmsCellExecution):
+    """Completed standalone Xcelium AMS invocation."""
+
+    run_id: str
+    run_dir: Path
+    manifest_path: Path
+
+    @property
+    def manifest(self) -> Path:
+        return self.manifest_path
 
 
 def _resolve_contract(path: Path, *, project: Project) -> Path:
@@ -280,78 +293,51 @@ def plan_xcelium_ams_cell(
     )
 
 
-def run_xcelium_ams_cell(
-    contract_path: Path,
+def execute_xcelium_ams_cell(
+    plan: XceliumAmsCellPlan,
     *,
-    project: Project,
-    artifact_root: Path | None = None,
+    artifacts: RunArtifacts,
     xrun: Path | None = None,
     timeout: int = 600,
-) -> XceliumAmsCellRun:
-    """Run one locked native-OA circuit through an isolated AMS work directory."""
+) -> XceliumAmsCellExecution:
+    """Execute a resolved AMS cell without creating or completing a run record."""
 
-    repository = project
-    if artifact_root is not None:
-        repository = repository.with_artifact_root(artifact_root)
-    root = repository.project_root
-    plan = plan_xcelium_ams_cell(contract_path, project=repository)
     xrun_bin = find_xrun(xrun)
-    source_state = artifact_source_state(root)
-    run_id = new_identity()
-    attempt = ArtifactRecord.begin(
-        repository.artifacts.execution(
-            owner=plan.spec.owner,
-            target=plan.spec.cell,
-            flow="xcelium-ams",
-            variant=f"{plan.platform.key}-{plan.model_set.name}",
-            identity=run_id,
-            artifact_kind="standalone_simulation",
-            identity_kind="run_id",
-        ),
-        entities={
-            "library": plan.spec.owner,
-            "cell": plan.spec.dut,
-            "testbench": plan.spec.cell,
-        },
-        operation="simulate",
-        backend="xcelium-ams-cell",
-        source=source_state,
+    artifacts.write_json(
+        "inputs",
+        ("source-manifest.json",),
+        {"schema": 1, "plan": plan.as_dict()},
+        label="Xcelium AMS source plan",
     )
-
-    try:
-        attempt.bind_operation(new_identity())
-        attempt.write_json(
+    staged_circuit = artifacts.copy_file(
+        "inputs",
+        ("release", plan.circuit_netlist.name),
+        plan.circuit_netlist,
+        label="Locked native circuit role",
+    )
+    staged_models = {
+        path: artifacts.copy_file(
             "inputs",
-            ("source-manifest.json",),
-            {"schema": 1, "plan": plan.as_dict()},
-            label="Xcelium AMS source plan",
+            ("pdk", path.name),
+            path,
+            label=f"Platform model input {path.name}",
         )
-        staged_circuit = attempt.copy_file(
-            "inputs",
-            ("release", plan.circuit_netlist.name),
-            plan.circuit_netlist,
-            label="Locked native circuit role",
-        )
-        staged_models = {
-            path: attempt.copy_file(
-                "inputs",
-                ("pdk", path.name),
-                path,
-                label=f"Platform model input {path.name}",
-            )
-            for path in plan.model_set.files
-        }
-        control = attempt.write_text(
-            "inputs",
-            ("ams_control.scs",),
-            plan.render_ams_control(
-                circuit_netlist=staged_circuit,
-                model_file=staged_models[plan.model_set.file],
-            ),
-            label="Generated Xcelium AMS control",
-        )
-        work_dir = attempt.directory("work")
-        xcelium_dir = attempt.directory("work", "xcelium.d")
+        for path in plan.model_set.files
+    }
+    control = artifacts.write_text(
+        "inputs",
+        ("ams_control.scs",),
+        plan.render_ams_control(
+            circuit_netlist=staged_circuit,
+            model_file=staged_models[plan.model_set.file],
+        ),
+        label="Generated Xcelium AMS control",
+    )
+    work_dir = artifacts.directory("work")
+    xcelium_dir = artifacts.directory("work", "xcelium.d")
+    with owned_directory(work_dir) as owned_work, owned_directory(
+        xcelium_dir
+    ) as owned_xcelium:
         command = [
             str(xrun_bin),
             "-64bit",
@@ -360,14 +346,16 @@ def run_xcelium_ams_cell(
             "-access",
             "+rwc",
             "-xmlibdirname",
-            str(xcelium_dir),
+            owned_xcelium.child_path,
             "-log",
-            str(work_dir / "xrun.log"),
+            owned_work.child_file("xrun.log"),
             *(str(path) for path in plan.sources),
             str(control),
         ]
 
         def validate_spawn() -> None:
+            owned_work.require_visible()
+            owned_xcelium.require_visible()
             required = (
                 *plan.spec.source_inputs,
                 *plan.platform.source_paths,
@@ -386,71 +374,125 @@ def run_xcelium_ams_cell(
 
         completed = run_process_group_capture(
             command,
-            cwd=work_dir,
+            cwd=Path(owned_work.child_path),
             env=xrun_env(xrun_bin),
             timeout=timeout,
             before_spawn=validate_spawn,
+            pass_fds=(owned_work.fd, owned_xcelium.fd),
         )
-        stdout_path = attempt.write_text(
-            "logs", ("xrun.stdout.log",), completed.stdout, label="Xcelium stdout"
+    stdout_path = artifacts.write_text(
+        "logs", ("xrun.stdout.log",), completed.stdout, label="Xcelium stdout"
+    )
+    stderr_path = artifacts.write_text(
+        "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
+    )
+    native_log = work_dir / "xrun.log"
+    native_output = (
+        native_log.read_text(encoding="utf-8", errors="replace")
+        if native_log.is_file()
+        else ""
+    )
+    native_log_path = (
+        artifacts.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
+        if native_log.is_file()
+        else None
+    )
+    evidence = [
+        source
+        for source, output in (
+            ("stdout", completed.stdout),
+            ("native_log", native_output),
         )
-        stderr_path = attempt.write_text(
-            "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
+        if plan.spec.success_marker in output
+    ]
+    marker_seen = bool(evidence)
+    passed = completed.returncode == 0 and marker_seen
+    summary = {
+        "schema": 1,
+        "cell": plan.spec.cell,
+        "dut": plan.spec.dut,
+        "xrun": str(xrun_bin),
+        "command": command,
+        "returncode": completed.returncode,
+        "success_marker": plan.spec.success_marker,
+        "success_marker_seen": marker_seen,
+        "success_marker_evidence": evidence,
+        "passed": passed,
+        "evidence_role": "migration_regression",
+        "product_qualification_conclusion": False,
+        "logs": {
+            "stdout": str(stdout_path.relative_to(artifacts.root)),
+            "stderr": str(stderr_path.relative_to(artifacts.root)),
+            "native": (
+                str(native_log_path.relative_to(artifacts.root))
+                if native_log_path is not None
+                else None
+            ),
+        },
+    }
+    summary_path = artifacts.write_json(
+        "outputs", ("summary.json",), summary, label="Xcelium AMS completion summary"
+    )
+    return XceliumAmsCellExecution(
+        plan=plan,
+        run_summary=summary_path,
+        returncode=completed.returncode,
+        passed=passed,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        native_log=native_output,
+    )
+
+
+def run_xcelium_ams_cell(
+    contract_path: Path,
+    *,
+    project: Project,
+    artifact_root: Path | None = None,
+    xrun: Path | None = None,
+    timeout: int = 600,
+) -> XceliumAmsCellRun:
+    """Run one locked native-OA circuit through a standalone lifecycle."""
+
+    repository = project
+    if artifact_root is not None:
+        repository = repository.with_artifact_root(artifact_root)
+    plan = plan_xcelium_ams_cell(contract_path, project=repository)
+    attempt = ArtifactRecord.begin(
+        repository.artifacts.execution(
+            owner=plan.spec.owner,
+            target=plan.spec.cell,
+            flow="xcelium-ams",
+            variant=f"{plan.platform.key}-{plan.model_set.name}",
+            identity=new_identity(),
+            artifact_kind="standalone_simulation",
+            identity_kind="run_id",
+        ),
+        entities={
+            "library": plan.spec.owner,
+            "cell": plan.spec.dut,
+            "testbench": plan.spec.cell,
+        },
+        operation="simulate",
+        backend="xcelium-ams-cell",
+        source=artifact_source_state(repository.project_root),
+    )
+    try:
+        attempt.bind_operation(new_identity())
+        execution = execute_xcelium_ams_cell(
+            plan,
+            artifacts=StandaloneRunArtifacts(attempt),
+            xrun=xrun,
+            timeout=timeout,
         )
-        native_log = work_dir / "xrun.log"
-        native_output = (
-            native_log.read_text(encoding="utf-8", errors="replace")
-            if native_log.is_file()
-            else ""
-        )
-        native_log_path = (
-            attempt.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
-            if native_log.is_file()
-            else None
-        )
-        evidence = [
-            source
-            for source, output in (
-                ("stdout", completed.stdout),
-                ("native_log", native_output),
-            )
-            if plan.spec.success_marker in output
-        ]
-        marker_seen = bool(evidence)
-        passed = completed.returncode == 0 and marker_seen
-        summary = {
-            "schema": 1,
-            "cell": plan.spec.cell,
-            "dut": plan.spec.dut,
-            "xrun": str(xrun_bin),
-            "command": command,
-            "returncode": completed.returncode,
-            "success_marker": plan.spec.success_marker,
-            "success_marker_seen": marker_seen,
-            "success_marker_evidence": evidence,
-            "passed": passed,
-            "evidence_role": "migration_regression",
-            "product_qualification_conclusion": False,
-            "logs": {
-                "stdout": str(stdout_path.relative_to(attempt.paths.root)),
-                "stderr": str(stderr_path.relative_to(attempt.paths.root)),
-                "native": (
-                    str(native_log_path.relative_to(attempt.paths.root))
-                    if native_log_path is not None
-                    else None
-                ),
-            },
-        }
-        summary_path = attempt.write_json(
-            "outputs", ("summary.json",), summary, label="Xcelium AMS completion summary"
-        )
-        if completed.returncode != 0:
+        summary = json.loads(execution.run_summary.read_text(encoding="utf-8"))
+        if execution.returncode != 0:
             error = RuntimeError(
                 f"xrun AMS failed for {plan.spec.cell} with exit code "
-                f"{completed.returncode}"
+                f"{execution.returncode}"
             )
             attempt.fail(error, details={"summary": summary})
-        elif not marker_seen:
+        elif not execution.passed:
             error = RuntimeError(
                 f"Xcelium AMS verification cell {plan.spec.cell} did not emit its "
                 f"success marker: {plan.spec.success_marker!r}"
@@ -458,23 +500,23 @@ def run_xcelium_ams_cell(
             attempt.fail(error, details={"summary": summary})
         else:
             attempt.succeed(
-                completion_evidence=(summary_path,),
+                completion_evidence=(execution.run_summary,),
                 details={
                     "evidence_role": "migration_regression",
                     "product_qualification_conclusion": False,
                 },
             )
         return XceliumAmsCellRun(
-            plan=plan,
+            plan=execution.plan,
+            run_summary=execution.run_summary,
+            returncode=execution.returncode,
+            passed=execution.passed,
+            stdout=execution.stdout,
+            stderr=execution.stderr,
+            native_log=execution.native_log,
             run_id=attempt.paths.identity,
             run_dir=attempt.paths.root,
             manifest_path=attempt.paths.manifest,
-            run_summary=summary_path,
-            returncode=completed.returncode,
-            passed=passed,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            native_log=native_output,
         )
     except BaseException as error:
         if attempt.status == "running":

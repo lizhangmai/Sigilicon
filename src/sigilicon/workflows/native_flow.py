@@ -22,7 +22,10 @@ from sigilicon.flow.native import (
 )
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
-from sigilicon.workflows.xcelium import run_xcelium_cell
+from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
+from sigilicon.workflows.run_artifacts import FlowRunArtifacts
+from sigilicon.workflows.source_control import artifact_source_state
+from sigilicon.workflows.xcelium import execute_xcelium_cell, plan_xcelium_cell
 
 
 _EVIDENCE_ROLES = frozenset(
@@ -136,21 +139,31 @@ class NativeOaSimulationAdapter:
         if bound_plan != plan.as_dict():
             raise FlowExecutionError("bound OA assembly plan drifted from owner source")
         metadata = _evidence_metadata(context)
-        result = workflow.simulate(
-            testbench=_text_config(context, "testbench"),
-            client=self._client_factory(),
-            timeout=int(context.adapter_config.get("timeout_seconds", 600)),
-            plan=plan,
+        testbench = _text_config(context, "testbench")
+        matches = tuple(step for step in plan.testbenches if step.cell == testbench)
+        if len(matches) != 1:
+            raise FlowExecutionError(
+                f"unknown OA testbench in assembly: {testbench}"
+            )
+        if context.operation_id is None:
+            raise FlowExecutionError("native OA simulation has no managed operation")
+        result = execute_oa_maestro_testbench(
+            plan,
+            matches[0],
+            self._client_factory(),
+            artifacts=FlowRunArtifacts(
+                context,
+                "evidence",
+                artifact_source_state(project.project_root),
+            ),
             operation_id=context.operation_id,
             bind_operation=context.bind_workspace_operation,
-            artifact_root=context.work_root / "native-maestro",
+            timeout=int(context.adapter_config.get("timeout_seconds", 600)),
         )
         payload = result.as_dict()
         payload.update(metadata)
         payload["product_qualification_conclusion"] = False
         for field, path in (
-            ("run_dir", result.run_dir),
-            ("manifest", result.manifest_path),
             ("elaborated_netlist", result.elaborated_netlist),
             ("result_database_export", result.result_database_export),
             ("normalized_result_database", result.normalized_result_database),
@@ -176,10 +189,7 @@ class NativeOaSimulationAdapter:
                     "evidence-scope": metadata["evidence_scope"],
                     "product-qualification-conclusion": False,
                 },
-                details={
-                    "nested_run_id": result.run_id,
-                    "product_qualification_conclusion": False,
-                },
+                details={"product_qualification_conclusion": False},
             )
         )
 
@@ -193,10 +203,16 @@ class XceliumVerificationAdapter:
         project = _require_bound_project(context, self._project, self._owner)
         capability = context.capabilities["tool.cadence-xcelium"]
         metadata = _evidence_metadata(context)
-        result = run_xcelium_cell(
-            Path(_text_config(context, "cell")),
-            project=project,
-            artifact_root=context.work_root / "native-xcelium",
+        plan = plan_xcelium_cell(
+            Path(_text_config(context, "cell")), project=project
+        )
+        result = execute_xcelium_cell(
+            plan,
+            artifacts=FlowRunArtifacts(
+                context,
+                "evidence",
+                artifact_source_state(project.project_root),
+            ),
             xrun=capability.executable,
             timeout=int(context.adapter_config.get("timeout_seconds", 600)),
         )
@@ -205,9 +221,6 @@ class XceliumVerificationAdapter:
             "executed": True,
             "returncode": result.returncode,
             "passed": result.passed,
-            "run_id": result.run_id,
-            "run_dir": _artifact_reference(result.run_dir, project),
-            "manifest": _artifact_reference(result.manifest_path, project),
             "run_summary": _artifact_reference(result.run_summary, project),
             **metadata,
             "product_qualification_conclusion": False,
@@ -231,10 +244,7 @@ class XceliumVerificationAdapter:
                     "evidence-scope": metadata["evidence_scope"],
                     "product-qualification-conclusion": False,
                 },
-                details={
-                    "nested_run_id": result.run_id,
-                    "product_qualification_conclusion": False,
-                },
+                details={"product_qualification_conclusion": False},
             )
         )
 

@@ -166,6 +166,7 @@ def _write_exclusive_bytes(path: Path, payload: bytes) -> None:
     absolute = Path(os.path.abspath(path))
     parent_fd = _open_nofollow_directory(absolute.parent, create_missing=True)
     descriptor: int | None = None
+    created = False
     completed = False
     try:
         descriptor = os.open(
@@ -178,6 +179,7 @@ def _write_exclusive_bytes(path: Path, payload: bytes) -> None:
             0o644,
             dir_fd=parent_fd,
         )
+        created = True
         remaining = memoryview(payload)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -198,7 +200,7 @@ def _write_exclusive_bytes(path: Path, payload: bytes) -> None:
     finally:
         if descriptor is not None:
             os.close(descriptor)
-        if not completed:
+        if created and not completed:
             try:
                 os.unlink(absolute.name, dir_fd=parent_fd)
             except FileNotFoundError:
@@ -265,6 +267,23 @@ def read_json_object(path: Path, label: str) -> dict[str, Any]:
 
 def read_nofollow_text(path: Path, *, errors: str = "strict") -> str:
     return _read_nofollow_bytes(path).decode("utf-8", errors=errors)
+
+
+def ensure_nofollow_directory(path: Path) -> Path:
+    """Create/open one directory chain while rejecting symlink components."""
+
+    absolute = Path(os.path.abspath(path))
+    descriptor = _open_nofollow_directory(absolute, create_missing=True)
+    os.close(descriptor)
+    return absolute
+
+
+def copy_immutable_file(source: Path, destination: Path) -> Path:
+    """Copy one stable regular file to a new nofollow artifact path."""
+
+    target = Path(os.path.abspath(destination))
+    _write_exclusive_bytes(target, _read_nofollow_bytes(Path(source)))
+    return target
 
 
 def write_immutable_text(path: Path, value: str) -> None:

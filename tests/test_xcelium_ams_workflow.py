@@ -202,7 +202,9 @@ def test_xcelium_ams_run_stages_inputs_and_records_regression(
     xrun = _write(tmp_path / "tools/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
-    def capture(command, *, cwd, before_spawn, **_kwargs):
+    def capture(command, *, cwd, before_spawn, **kwargs):
+        assert str(cwd).startswith("/proc/") and "/fd/" in str(cwd)
+        assert len(kwargs["pass_fds"]) == 2
         before_spawn()
         control = Path(command[-1]).read_text(encoding="utf-8")
         assert "/inputs/release/circuit.scs" in control

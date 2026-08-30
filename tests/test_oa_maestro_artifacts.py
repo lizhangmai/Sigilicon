@@ -36,7 +36,6 @@ def test_flow_action_remains_the_only_workspace_operation_record(
     with oa_simulation._registered_oa_maestro_operation(
         object(),
         tmp_path,
-        SimpleNamespace(),
         operation_id="a" * 32,
         bind_operation=bound.append,
     ) as selected:
@@ -44,6 +43,39 @@ def test_flow_action_remains_the_only_workspace_operation_record(
 
     assert bound == [operation]
     assert registered == []
+
+
+def test_registered_oa_operation_reports_workspace_uncertainty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reasons: list[str] = []
+    operation = SimpleNamespace(
+        operation_id="a" * 32,
+        uncertain_reason=None,
+    )
+
+    @contextmanager
+    def workspace_operation(*_args, **_kwargs):
+        try:
+            yield operation
+        except BaseException:
+            operation.uncertain_reason = "workspace identity changed"
+            raise
+
+    monkeypatch.setattr(oa_simulation, "workspace_operation", workspace_operation)
+
+    with pytest.raises(RuntimeError, match="fixture failure"):
+        with oa_simulation._registered_oa_maestro_operation(
+            object(),
+            tmp_path,
+            operation_id="a" * 32,
+            bind_operation=lambda _operation: None,
+            record_uncertainty=reasons.append,
+        ):
+            raise RuntimeError("fixture failure")
+
+    assert reasons == ["workspace identity changed"]
 
 
 def _write_project_context(root: Path) -> Path:
@@ -128,25 +160,38 @@ def test_oa_maestro_writes_directly_to_configured_artifact_root(
         ),
     )
 
-    def run_impl(_plan, _step, _client, *, timeout, record):
+    def run_impl(
+        _plan,
+        _step,
+        _client,
+        *,
+        timeout,
+        artifacts,
+        operation_id,
+        bind_operation,
+        record_uncertainty,
+    ):
         assert timeout == 17
-        assert record.paths.root.is_relative_to(artifact_root)
-        result_export = record.write_text(
+        assert callable(record_uncertainty)
+        assert artifacts.root.is_relative_to(artifact_root)
+        operation = SimpleNamespace(
+            operation_id=operation_id,
+            register_artifact=lambda record: record.bind_operation(operation_id),
+        )
+        bind_operation(operation)
+        result_export = artifacts.write_text(
             "outputs", ("maestro-rdb.tsv",), "fixture\n"
         )
-        normalized = record.write_json(
+        normalized = artifacts.write_json(
             "outputs", ("maestro-rdb.json",), {"passed": True}
         )
-        summary = record.write_json(
+        summary = artifacts.write_json(
             "outputs", ("run-summary.json",), {"simulation_completed": True}
         )
-        elaborated_netlist = record.write_text(
+        elaborated_netlist = artifacts.write_text(
             "outputs", ("elaborated-netlist.vams",), "module fixture; endmodule\n"
         )
-        return oa_simulation.OAMaestroRunResult(
-            run_id=record.paths.identity,
-            run_dir=record.paths.root,
-            manifest_path=record.paths.manifest,
+        return oa_simulation.OAMaestroExecutionResult(
             library="fixture_lib",
             testbench="tb_fixture",
             history="Interactive.1",
@@ -215,6 +260,35 @@ def test_oa_maestro_records_failure_in_configured_artifact_root(
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert manifest["details"]["error"] == "fixture failure"
+
+
+def test_oa_maestro_preserves_workspace_uncertainty_in_standalone_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact_root = _write_project_context(tmp_path)
+    plan, step = _oa_plan(tmp_path)
+
+    def uncertain_impl(*_args, record_uncertainty, **_kwargs):
+        record_uncertainty("bridge cleanup could not prove workspace state")
+        raise RuntimeError("fixture cleanup failure")
+
+    monkeypatch.setattr(
+        oa_simulation,
+        "_run_native_oa_maestro_testbench_impl",
+        uncertain_impl,
+    )
+
+    with pytest.raises(RuntimeError, match="fixture cleanup failure"):
+        oa_simulation.run_oa_maestro_testbench(plan, step, object())
+
+    manifests = tuple(artifact_root.rglob("manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["status"] == "uncertain"
+    assert manifest["uncertain_reason"] == (
+        "bridge cleanup could not prove workspace state"
+    )
 
 
 def test_oa_maestro_records_only_plan_owned_source_bytes(tmp_path: Path) -> None:

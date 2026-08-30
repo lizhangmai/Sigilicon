@@ -161,7 +161,7 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
     plan = SimpleNamespace(
         cells=(object(),),
         layouts=(object(),),
-        testbenches=(object(),),
+        testbenches=(SimpleNamespace(cell="tb_fixture"),),
         as_dict=lambda: {"native_plan": "fixture"},
     )
     bound_operations: list[object] = []
@@ -173,24 +173,6 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
 
         def plan(self):
             return plan
-
-        def simulate(self, **kwargs):
-            assert kwargs["plan"] is plan
-            assert kwargs["artifact_root"] == simulation.work_root / "native-maestro"
-            operation = SimpleNamespace(operation_id="a" * 32)
-            kwargs["bind_operation"](operation)
-            nested = kwargs["artifact_root"] / "runs/native-owner/tb/oa/native/run"
-            return SimpleNamespace(
-                run_id="nested-maestro",
-                run_dir=nested,
-                manifest_path=nested / "manifest.json",
-                elaborated_netlist=nested / "outputs/netlist.scs",
-                result_database_export=nested / "outputs/rdb.tsv",
-                normalized_result_database=nested / "outputs/rdb.json",
-                run_summary=nested / "outputs/summary.json",
-                evidence=SimpleNamespace(status="not_evaluated"),
-                as_dict=lambda: {"native_maestro_field": "preserved"},
-            )
 
     monkeypatch.setattr(native_flow, "ProjectOaWorkflow", Workflow)
 
@@ -220,6 +202,39 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
         },
         bound_operations=bound_operations,
     )
+
+    def execute(
+        selected_plan,
+        step,
+        _client,
+        *,
+        artifacts,
+        operation_id,
+        bind_operation,
+        timeout,
+    ):
+        assert selected_plan is plan
+        assert step.cell == "tb_fixture"
+        assert operation_id == "a" * 32
+        assert timeout == 17
+        operation = SimpleNamespace(operation_id=operation_id)
+        bind_operation(operation)
+        elaborated = artifacts.write_text(
+            "outputs", ("netlist.scs",), "simulator lang=spectre\n"
+        )
+        rdb_export = artifacts.write_text("outputs", ("rdb.tsv",), "fixture\n")
+        normalized = artifacts.write_json("outputs", ("rdb.json",), {"schema": 1})
+        summary = artifacts.write_json("outputs", ("summary.json",), {"schema": 1})
+        return SimpleNamespace(
+            elaborated_netlist=elaborated,
+            result_database_export=rdb_export,
+            normalized_result_database=normalized,
+            run_summary=summary,
+            evidence=SimpleNamespace(status="not_evaluated"),
+            as_dict=lambda: {"native_maestro_field": "preserved"},
+        )
+
+    monkeypatch.setattr(native_flow, "execute_oa_maestro_testbench", execute)
     result = NativeOaSimulationAdapter(
         project,
         "native-owner",
@@ -238,7 +253,9 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
     }
     payload = json.loads(result.collected.artifacts[0].path.read_text(encoding="utf-8"))
     assert payload["native_maestro_field"] == "preserved"
-    assert payload["run_dir"].startswith("artifact://fixture-flow-run/work/")
+    assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
+    assert not {"run_id", "run_dir", "manifest"} & payload.keys()
+    assert "nested_run_id" not in result.collected.details
     assert payload["product_qualification_conclusion"] is False
 
 
@@ -299,26 +316,30 @@ def test_xcelium_adapter_preserves_native_payload_and_owner_evidence_role(
             "tool.cadence-xcelium": ResolvedCapability("site.xcelium")
         },
     )
-    nested = context.work_root / "native-xcelium/runs/native/tb/xcelium/run"
     plan = SimpleNamespace(
         spec=SimpleNamespace(simulator="xcelium"),
         as_dict=lambda: {"native_xcelium_field": "preserved"},
     )
 
-    def run_cell(_path: Path, **kwargs):
-        assert kwargs["project"] is project
-        assert kwargs["artifact_root"] == context.work_root / "native-xcelium"
+    def plan_cell(path: Path, *, project: Project):
+        assert path == Path("ip/native/cell.toml")
+        assert project is not None
+        return plan
+
+    def execute_cell(selected_plan, *, artifacts, xrun, timeout):
+        assert selected_plan is plan
+        assert xrun is None
+        assert timeout == 17
+        summary = artifacts.write_json("outputs", ("summary.json",), {"schema": 1})
         return SimpleNamespace(
             plan=plan,
             returncode=0,
             passed=True,
-            run_id="nested-xcelium",
-            run_dir=nested,
-            manifest_path=nested / "manifest.json",
-            run_summary=nested / "outputs/summary.json",
+            run_summary=summary,
         )
 
-    monkeypatch.setattr(native_flow, "run_xcelium_cell", run_cell)
+    monkeypatch.setattr(native_flow, "plan_xcelium_cell", plan_cell)
+    monkeypatch.setattr(native_flow, "execute_xcelium_cell", execute_cell)
 
     result = XceliumVerificationAdapter(project, "native-owner").run(context)
 
@@ -327,7 +348,9 @@ def test_xcelium_adapter_preserves_native_payload_and_owner_evidence_role(
     assert result.collected.facts["evidence-level"] == "l2"
     payload = json.loads(result.collected.artifacts[0].path.read_text(encoding="utf-8"))
     assert payload["native_xcelium_field"] == "preserved"
-    assert payload["run_dir"].startswith("artifact://fixture-flow-run/work/")
+    assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
+    assert not {"run_id", "run_dir", "manifest"} & payload.keys()
+    assert "nested_run_id" not in result.collected.details
 
 
 def test_xcelium_action_declares_rtl_tool_and_evidence_contract() -> None:

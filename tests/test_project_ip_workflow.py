@@ -61,7 +61,6 @@ def test_project_oa_simulation_uses_its_bound_owner_assembly(
     plan = SimpleNamespace(testbenches=(step,))
     result = object()
     planned: list[tuple[Path, Project]] = []
-    bound: list[object] = []
 
     def plan_rebuild(path: Path, *, project: Project) -> object:
         planned.append((path, project))
@@ -73,15 +72,11 @@ def test_project_oa_simulation_uses_its_bound_owner_assembly(
         client: object,
         *,
         timeout: int,
-        operation_id: str,
-        bind_operation: object,
         artifact_root: Path,
     ) -> object:
         assert selected_plan is plan
         assert selected_step is step
         assert timeout == 17
-        assert operation_id == "a" * 32
-        assert bind_operation == bound.append
         assert artifact_root == tmp_path / "flow-work"
         return result
 
@@ -93,8 +88,6 @@ def test_project_oa_simulation_uses_its_bound_owner_assembly(
             testbench="tb_fixture",
             client=object(),
             timeout=17,
-            operation_id="a" * 32,
-            bind_operation=bound.append,
             artifact_root=tmp_path / "flow-work",
         )
         is result

@@ -23,6 +23,7 @@ from sigilicon.workflows.oa_library import (
     TestbenchRebuildStep,
     check_oa_parity,
 )
+from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
 
 
@@ -119,12 +120,9 @@ def evaluate_oa_maestro_evidence(
 
 
 @dataclass(frozen=True)
-class OAMaestroRunResult:
-    """Completed managed OA Maestro run and its persistent result identity."""
+class OAMaestroExecutionResult:
+    """Maestro result written into an execution lifecycle owned by the caller."""
 
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
     library: str
     testbench: str
     history: str
@@ -140,7 +138,7 @@ class OAMaestroRunResult:
         return self.evidence.passed
 
     def as_dict(self) -> dict[str, object]:
-        """Return the canonical CLI and owner-runner result envelope."""
+        """Return domain evidence without inventing another run identity."""
 
         return {
             "passed": self.passed,
@@ -151,15 +149,29 @@ class OAMaestroRunResult:
             "library": self.library,
             "testbench": self.testbench,
             "history": self.history,
-            "run_id": self.run_id,
-            "run_dir": str(self.run_dir),
-            "manifest": str(self.manifest_path),
             "elaborated_netlist": str(self.elaborated_netlist),
             "result_database_export": str(self.result_database_export),
             "normalized_result_database": str(self.normalized_result_database),
             "run_summary": str(self.run_summary),
             "scalar_output_count": self.scalar_output_count,
             "product_qualification_conclusion": False,
+        }
+
+
+@dataclass(frozen=True)
+class OAMaestroRunResult(OAMaestroExecutionResult):
+    """Completed standalone OA Maestro run and its persistent identity."""
+
+    run_id: str
+    run_dir: Path
+    manifest_path: Path
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            **super().as_dict(),
+            "run_id": self.run_id,
+            "run_dir": str(self.run_dir),
+            "manifest": str(self.manifest_path),
         }
 
 
@@ -208,8 +220,6 @@ def _run_native_oa_maestro_testbench(
     client: Any,
     *,
     timeout: int,
-    operation_id: str | None = None,
-    bind_operation: Callable[[Any], None] | None = None,
     artifact_root: Path | None = None,
 ) -> OAMaestroRunResult:
     owners = {
@@ -244,39 +254,58 @@ def _run_native_oa_maestro_testbench(
         backend="virtuoso-maestro-spectre",
         source=artifact_source_state(plan.source.project_root),
     )
+    uncertainty: list[str] = []
     try:
-        operation_options: dict[str, Any] = {}
-        if operation_id is not None:
-            operation_options["operation_id"] = operation_id
-        if bind_operation is not None:
-            operation_options["bind_operation"] = bind_operation
-        result = _run_native_oa_maestro_testbench_impl(
+        selected_operation_id = new_identity()
+
+        def bind_standalone(operation: Any) -> None:
+            operation.register_artifact(record)
+
+        execution = execute_oa_maestro_testbench(
             plan,
             step,
             client,
             timeout=timeout,
-            record=record,
-            **operation_options,
+            artifacts=StandaloneRunArtifacts(record),
+            operation_id=selected_operation_id,
+            bind_operation=bind_standalone,
+            record_uncertainty=uncertainty.append,
         )
         record.succeed(
             completion_evidence=(
-                result.run_summary,
-                result.normalized_result_database,
+                execution.run_summary,
+                execution.normalized_result_database,
             ),
             details={
-                "history": result.history,
+                "history": execution.history,
                 "execution_status": "completed",
-                "evidence_status": result.evidence.status,
+                "evidence_status": execution.evidence.status,
                 "elaborated_netlist": str(
-                    result.elaborated_netlist.relative_to(result.run_dir)
+                    execution.elaborated_netlist.relative_to(record.paths.root)
                 ),
             },
         )
-        return result
+        return OAMaestroRunResult(
+            library=execution.library,
+            testbench=execution.testbench,
+            history=execution.history,
+            elaborated_netlist=execution.elaborated_netlist,
+            result_database_export=execution.result_database_export,
+            normalized_result_database=execution.normalized_result_database,
+            run_summary=execution.run_summary,
+            scalar_output_count=execution.scalar_output_count,
+            evidence=execution.evidence,
+            run_id=record.paths.identity,
+            run_dir=record.paths.root,
+            manifest_path=record.paths.manifest,
+        )
     except BaseException as error:
         if record.status == "running":
             try:
-                record.fail(error)
+                record.fail(
+                    error,
+                    uncertain_reason=(uncertainty[-1] if uncertainty else None),
+                )
             except Exception as record_error:
                 error.add_note(
                     "could not record OA Maestro artifact failure: "
@@ -289,12 +318,12 @@ def _run_native_oa_maestro_testbench(
 def _registered_oa_maestro_operation(
     client: Any,
     workspace_root: Path,
-    record: ArtifactRecord,
     *,
-    operation_id: str | None = None,
-    bind_operation: Callable[[Any], None] | None = None,
+    operation_id: str,
+    bind_operation: Callable[[Any], None],
+    record_uncertainty: Callable[[str], None] | None = None,
 ) -> Iterator[Any]:
-    """Bind the workspace safety lifecycle to the one managed run artifact."""
+    """Bind the workspace safety lifecycle to its caller-owned run record."""
 
     operation = None
     try:
@@ -305,25 +334,12 @@ def _registered_oa_maestro_operation(
             policy=OperationPolicy.MAESTRO_RUN,
             operation_id=operation_id,
         ) as operation:
-            if bind_operation is not None:
-                bind_operation(operation)
-            else:
-                operation.register_artifact(record)
+            bind_operation(operation)
             yield operation
-    except BaseException as error:
-        if record.status == "running":
-            try:
-                record.fail(
-                    error,
-                    uncertain_reason=(
-                        operation.uncertain_reason if operation is not None else None
-                    ),
-                )
-            except Exception as record_error:
-                error.add_note(
-                    "could not record OA Maestro workspace failure: "
-                    f"{record_error}"
-                )
+    except BaseException:
+        reason = getattr(operation, "uncertain_reason", None)
+        if isinstance(reason, str) and reason and record_uncertainty is not None:
+            record_uncertainty(reason)
         raise
 
 
@@ -333,10 +349,11 @@ def _run_native_oa_maestro_testbench_impl(
     client: Any,
     *,
     timeout: int,
-    record: ArtifactRecord,
-    operation_id: str | None = None,
-    bind_operation: Callable[[Any], None] | None = None,
-) -> OAMaestroRunResult:
+    artifacts: RunArtifacts,
+    operation_id: str,
+    bind_operation: Callable[[Any], None],
+    record_uncertainty: Callable[[str], None] | None = None,
+) -> OAMaestroExecutionResult:
     """Run one source-owned setup and consume Cadence's read-only RDB API."""
 
     spec = step.simulation
@@ -362,17 +379,17 @@ def _run_native_oa_maestro_testbench_impl(
         raise RuntimeError(
             f"OA testbench parity check failed: {oa_check}"
         )
-    _record_native_oa_maestro_inputs(record, step)
+    _record_native_oa_maestro_inputs(artifacts, step)
     parsed_results: dict[str, Any] | None = None
-    rdb_export = record.path("work", "maestro-rdb.tsv")
+    rdb_export = artifacts.path("work", "maestro-rdb.tsv")
     project = plan.source.project
 
     with _registered_oa_maestro_operation(
         client,
         project.workspace_root,
-        record,
         operation_id=operation_id,
         bind_operation=bind_operation,
+        record_uncertainty=record_uncertainty,
     ) as operation, operation.view_lease(
         plan.library,
         cells=(step.cell,),
@@ -384,7 +401,7 @@ def _run_native_oa_maestro_testbench_impl(
             operation=operation,
             timeout=min(timeout, 300),
         )
-        record.write_json(
+        artifacts.write_json(
             "outputs",
             ("setup-semantic-attestation.json",),
             setup_attestation,
@@ -409,8 +426,8 @@ def _run_native_oa_maestro_testbench_impl(
             library=plan.library,
             cell=step.cell,
             variables={},
-            work_dir=record.paths.role("work"),
-            worker_log=record.path("work", "virtuoso.log"),
+            work_dir=artifacts.directory("work"),
+            worker_log=artifacts.path("work", "virtuoso.log"),
             nonce=nonce,
             timeout=timeout,
             operation=operation,
@@ -420,9 +437,9 @@ def _run_native_oa_maestro_testbench_impl(
         if parsed_results is None:
             raise RuntimeError("Maestro completed without an official RDB result")
         final_netlist = _elaborated_netlist(
-            record.paths.role("work"), result.history
+            artifacts.directory("work"), result.history
         )
-        elaborated_netlist = record.copy_file(
+        elaborated_netlist = artifacts.copy_file(
             "outputs",
             (
                 "elaborated-netlist.vams"
@@ -432,23 +449,23 @@ def _run_native_oa_maestro_testbench_impl(
             final_netlist,
             label="final Cadence elaborated netlist",
         )
-        record.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
-        result_export = record.copy_file(
+        artifacts.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
+        result_export = artifacts.copy_file(
             "outputs", ("maestro-rdb.tsv",), rdb_export
         )
-        parsed = record.write_json("outputs", ("maestro-rdb.json",), parsed_results)
+        parsed = artifacts.write_json("outputs", ("maestro-rdb.json",), parsed_results)
         diagnostic_report = rdb_contract.reconstruct_diagnostic(parsed_results)
         diagnostic_equivalence_path = None
         if diagnostic_report is not None:
-            diagnostic_equivalence_path = record.write_json(
+            diagnostic_equivalence_path = artifacts.write_json(
                 "outputs",
                 ("diagnostic-equivalence.json",),
                 diagnostic_report.as_dict(),
             )
-        record.write_json("outputs", ("oa-library-check.json",), oa_check)
-        record.add_file(
+        artifacts.write_json("outputs", ("oa-library-check.json",), oa_check)
+        artifacts.add_file(
             "work",
-            record.paths.role("work"),
+            artifacts.directory("work"),
             label="native Maestro work directory",
         )
         per_output_spec_status = tuple(
@@ -459,16 +476,16 @@ def _run_native_oa_maestro_testbench_impl(
             per_output_spec_status=per_output_spec_status,
             diagnostic_report=diagnostic_report,
         )
-        run_summary = record.write_json(
+        run_summary = artifacts.write_json(
             "outputs",
             ("run-summary.json",),
             {
-                "run_id": record.paths.identity,
+                "run_id": artifacts.run_id,
                 "library": plan.library,
                 "testbench": step.cell,
                 "view": "maestro",
                 "history": result.history,
-                "source": record.manifest["source"],
+                "source": dict(artifacts.source),
                 "expected_rdb_identity": {
                     "point_count": rdb_contract.point_count,
                     "corners": list(rdb_contract.corners),
@@ -481,7 +498,7 @@ def _run_native_oa_maestro_testbench_impl(
                     None
                     if diagnostic_equivalence_path is None
                     else str(
-                        diagnostic_equivalence_path.relative_to(record.paths.root)
+                        diagnostic_equivalence_path.relative_to(artifacts.root)
                     )
                 ),
                 "diagnostic_kind": (
@@ -491,7 +508,7 @@ def _run_native_oa_maestro_testbench_impl(
                 ),
                 "diagnostic_scalar_count": len(rdb_contract.diagnostic_scalar_names),
                 "elaborated_netlist": str(
-                    elaborated_netlist.relative_to(record.paths.root)
+                    elaborated_netlist.relative_to(artifacts.root)
                 ),
                 "result_source": "Cadence maeReadResDB/point->outputs",
                 "point_count": parsed_results["point_count"],
@@ -519,10 +536,7 @@ def _run_native_oa_maestro_testbench_impl(
             },
         )
 
-    return OAMaestroRunResult(
-        run_id=record.paths.identity,
-        run_dir=record.paths.root,
-        manifest_path=record.paths.manifest,
+    return OAMaestroExecutionResult(
         library=plan.library,
         testbench=step.cell,
         history=result.history,
@@ -536,7 +550,7 @@ def _run_native_oa_maestro_testbench_impl(
 
 
 def _record_native_oa_maestro_inputs(
-    record: ArtifactRecord,
+    record: RunArtifacts,
     step: TestbenchRebuildStep,
 ) -> None:
     """Persist the exact plan-owned sources consumed by one Maestro run."""
@@ -620,14 +634,44 @@ def _validate_native_oa_maestro_inputs(step: TestbenchRebuildStep) -> None:
         raise ValueError("native Maestro support source snapshot identity drift")
 
 
+def execute_oa_maestro_testbench(
+    plan: OALibraryRebuildPlan,
+    step: TestbenchRebuildStep,
+    client: Any,
+    *,
+    artifacts: RunArtifacts,
+    operation_id: str,
+    bind_operation: Callable[[Any], None],
+    record_uncertainty: Callable[[str], None] | None = None,
+    timeout: int = 600,
+) -> OAMaestroExecutionResult:
+    """Execute one resolved Maestro view inside a caller-owned run lifecycle."""
+
+    if step not in plan.testbenches:
+        raise ValueError("testbench is not part of the selected OA assembly plan")
+    if step.simulation.native_setup is None:
+        raise ValueError(
+            f"OA testbench {step.cell} is not a schema-3 native simulation contract"
+        )
+    _validate_native_oa_maestro_inputs(step)
+    return _run_native_oa_maestro_testbench_impl(
+        plan,
+        step,
+        client,
+        timeout=timeout,
+        artifacts=artifacts,
+        operation_id=operation_id,
+        bind_operation=bind_operation,
+        record_uncertainty=record_uncertainty,
+    )
+
+
 def run_oa_maestro_testbench(
     plan: OALibraryRebuildPlan,
     step: TestbenchRebuildStep,
     client: Any,
     *,
     timeout: int = 600,
-    operation_id: str | None = None,
-    bind_operation: Callable[[Any], None] | None = None,
     artifact_root: Path | None = None,
 ) -> OAMaestroRunResult:
     """Run one source-attested schema-3 OA Maestro view through native RDB."""
@@ -644,7 +688,5 @@ def run_oa_maestro_testbench(
         step,
         client,
         timeout=timeout,
-        operation_id=operation_id,
-        bind_operation=bind_operation,
         artifact_root=artifact_root,
     )
