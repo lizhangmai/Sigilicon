@@ -40,6 +40,20 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
     )
     registry.register_action(
         ActionContract(
+            kind="design.structural-link-assets",
+            outputs=(
+                ArtifactPort("rtl-sources", "source-set.systemverilog"),
+                ArtifactPort(
+                    "structural-link-recipe",
+                    "recipe.structural-link",
+                ),
+            ),
+            adapters=("source-assets",),
+            resolves_source_assets=True,
+        )
+    )
+    registry.register_action(
+        ActionContract(
             kind="asic.rtl-simulation",
             inputs=(
                 ArtifactPort("rtl-sources", "source-set.systemverilog"),
@@ -96,6 +110,44 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ),
             ),
             adapters=("synopsys-dc",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
+            kind="asic.structural-link",
+            inputs=(
+                ArtifactPort("rtl-sources", "source-set.systemverilog"),
+                ArtifactPort(
+                    "structural-link-recipe",
+                    "recipe.structural-link",
+                ),
+            ),
+            outputs=(
+                ArtifactPort(
+                    "compiled-macro-library",
+                    "library.synopsys-db",
+                ),
+                ArtifactPort("checkpoint", "checkpoint.synopsys-ddc"),
+                ArtifactPort("structural-report", "report.structure"),
+                ArtifactPort("evidence", "evidence.tool-execution"),
+            ),
+            facts=(
+                "passed",
+                "evidence-role",
+                "evidence-level",
+                "evidence-scope",
+                "product-qualification-conclusion",
+                "macro-instance-count",
+                "unresolved-reference-count",
+                "timing-characterized",
+                "power-characterized",
+                "area-characterized",
+            ),
+            required_capabilities=(
+                "tool.synopsys-library-compiler",
+                "tool.synopsys-dc",
+            ),
+            adapters=("synopsys-structural-link",),
         )
     )
     registry.register_action(

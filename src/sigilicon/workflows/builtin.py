@@ -44,6 +44,7 @@ from sigilicon.workflows.synopsys import (
     SynopsysDCAdapter,
     SynopsysFCAdapter,
     SynopsysHSpiceAdapter,
+    SynopsysStructuralLinkAdapter,
     SynopsysVCSAdapter,
 )
 
@@ -64,6 +65,10 @@ def build_flow_registry(
     registry.register_adapter("synopsys-dc", SynopsysDCAdapter())
     registry.register_adapter("synopsys-fc", SynopsysFCAdapter())
     registry.register_adapter("synopsys-hspice", SynopsysHSpiceAdapter())
+    registry.register_adapter(
+        "synopsys-structural-link",
+        SynopsysStructuralLinkAdapter(),
+    )
     registry.register_adapter("synopsys-vcs", SynopsysVCSAdapter())
     registry.register_adapter(
         REFERENCE_PNR_ADAPTER,
