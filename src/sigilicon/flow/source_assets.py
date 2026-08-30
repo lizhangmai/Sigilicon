@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 import tomllib
 from typing import Any, Mapping
@@ -49,14 +49,15 @@ def _text(value: object, label: str) -> str:
 
 def _owner_path(root: Path, value: object, label: str) -> tuple[str, Path]:
     text = _text(value, label)
-    relative = Path(text)
+    relative = PurePosixPath(text)
     if (
         relative.is_absolute()
         or "\\" in text
+        or relative.as_posix() != text
         or any(part in {"", ".", ".."} for part in relative.parts)
     ):
         raise FlowContractError(f"{label} must stay within the explicit owner root")
-    resolved = (root / relative).resolve(strict=False)
+    resolved = root.joinpath(*relative.parts).resolve(strict=False)
     if not resolved.is_relative_to(root):
         raise FlowContractError(f"{label} escaped the explicit owner root")
     return relative.as_posix(), resolved
@@ -69,9 +70,7 @@ def _git(root: Path, *args: str) -> bytes:
             cwd=root,
         )
     except Exception as exc:
-        raise FlowContractError(
-            f"source owner is not a readable Git checkout: {root}"
-        ) from exc
+        raise FlowContractError("source owner is not a readable Git checkout") from exc
 
 
 def git_source(root: Path) -> GitSource:
@@ -95,7 +94,12 @@ def git_source(root: Path) -> GitSource:
         ).split(b"\0")
         if item
     )
-    return GitSource(commit=commit, changes=changes, repository_root=repository_root)
+    return GitSource(
+        commit=commit,
+        changes=changes,
+        repository_root=repository_root,
+        scope_root=owner_root,
+    )
 
 
 def source_assets_payload(source: SourceAssets) -> dict[str, Any]:
@@ -155,7 +159,7 @@ def load_source_assets(
         with contract.open("rb") as stream:
             raw: dict[str, Any] = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise FlowContractError(f"cannot read Source Assets {contract}: {exc}") from exc
+        raise FlowContractError("cannot read Source Assets contract") from exc
     _reject_unknown(
         raw,
         _HEADER_FIELDS | {"name", "qualifiers", "artifacts"},
@@ -208,6 +212,7 @@ def load_source_assets(
             members.append(
                 SourceMember(
                     path=relative,
+                    source_root=root,
                     record_text=record_text,
                     executable=bool(
                         location.stat(follow_symlinks=False).st_mode

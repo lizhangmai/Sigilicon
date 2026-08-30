@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import stat
@@ -21,8 +22,11 @@ from sigilicon.flow import (
     FlowSpec,
     FlowTarget,
     SourceAssetsAdapter,
+    SourceMember,
     load_source_assets,
+    source_assets_payload,
 )
+from sigilicon.flow.source_assets import git_source
 
 
 def _git(owner_root: Path, *args: str) -> str:
@@ -197,7 +201,6 @@ def test_source_assets_loader_rejects_non_current_schema_and_owner_escape(
             owner_root=owner_root,
             expected_owner="fixture",
         )
-
     assets.write_text(
         '''schema = 1
 contract_kind = "source-assets"
@@ -220,3 +223,70 @@ members = ["../outside.sv"]
             owner_root=owner_root,
             expected_owner="fixture",
         )
+
+
+def test_source_assets_bind_git_and_members_to_one_source_root(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    foreign_root = tmp_path / "foreign"
+    (owner_root / "rtl").mkdir(parents=True)
+    (foreign_root / "rtl").mkdir(parents=True)
+    for root in (owner_root, foreign_root):
+        (root / "rtl/a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+        (root / "rtl/b.sv").write_text("module b; endmodule\n", encoding="utf-8")
+    (owner_root / "constraints.sdc").write_text("set_max_area 0\n", encoding="utf-8")
+    assets = _write_assets(owner_root)
+    _commit_fixture(owner_root)
+    source = load_source_assets(
+        assets,
+        owner_root=owner_root,
+        expected_owner="fixture",
+    )
+    member = source.artifact("rtl-sources").members[0]
+
+    with pytest.raises(FlowContractError, match="location disagrees"):
+        replace(member, location=foreign_root / member.path)
+    foreign_member = replace(
+        member,
+        source_root=foreign_root,
+        location=foreign_root / member.path,
+    )
+    foreign_artifact = replace(
+        source.artifact("rtl-sources"),
+        members=(foreign_member,),
+    )
+    remaining = tuple(
+        artifact
+        for artifact in source.artifacts
+        if artifact.role != foreign_artifact.role
+    )
+    with pytest.raises(FlowContractError, match="member root disagrees"):
+        replace(source, artifacts=(foreign_artifact, *remaining))
+    with pytest.raises(FlowContractError, match="Git source scope disagrees"):
+        replace(source, owner_root=foreign_root)
+
+    assert str(owner_root.resolve()) not in repr(source)
+    assert str(owner_root.resolve()) not in repr(source.git)
+    assert str(owner_root.resolve()) not in repr(member)
+    assert str(owner_root.resolve()) not in json.dumps(source_assets_payload(source))
+
+
+def test_git_source_identity_includes_its_checkout_scope(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    left = repository / "left"
+    right = repository / "right"
+    left.mkdir(parents=True)
+    right.mkdir()
+    (left / "source.txt").write_text("left\n", encoding="utf-8")
+    (right / "source.txt").write_text("right\n", encoding="utf-8")
+    _commit_fixture(repository)
+
+    left_source = git_source(left)
+    right_source = git_source(right)
+
+    assert left_source.commit == right_source.commit
+    assert left_source.changes == right_source.changes == ()
+    assert left_source.repository_root == right_source.repository_root
+    assert left_source.scope_root != right_source.scope_root
+    assert left_source != right_source

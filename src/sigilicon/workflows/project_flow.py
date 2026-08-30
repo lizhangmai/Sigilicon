@@ -52,6 +52,7 @@ def _load_extension(source: Path, record_text: str) -> ModuleType:
 def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
     return SourceMember(
         path=source.relative_to(project_root).as_posix(),
+        source_root=project_root,
         record_text=read_nofollow_text(source),
         executable=bool(
             source.stat(follow_symlinks=False).st_mode

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -155,29 +155,39 @@ class PlatformAssetRequirement:
 
 @dataclass(frozen=True)
 class SourceMember:
-    """One owner-relative member selected from the current Git checkout."""
+    """One scope-relative member selected from the current Git checkout."""
 
     path: str
+    source_root: Path = field(repr=False)
     record_text: str = field(repr=False)
     executable: bool
     location: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        relative = Path(self.path)
+        relative = PurePosixPath(self.path)
         if (
             not self.path
             or relative.is_absolute()
             or "\\" in self.path
+            or relative.as_posix() != self.path
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise FlowContractError(
-                f"source member must be owner-relative: {self.path!r}"
+                f"source member must be scope-relative: {self.path!r}"
             )
         if not isinstance(self.record_text, str):
             raise FlowContractError("source member record must be exact UTF-8 text")
         if not isinstance(self.executable, bool):
             raise FlowContractError("source member executable flag must be boolean")
-        object.__setattr__(self, "location", Path(self.location).resolve())
+        root = Path(self.source_root).resolve()
+        location = Path(self.location).resolve()
+        expected = root.joinpath(*relative.parts).resolve(strict=False)
+        if location != expected or not location.is_relative_to(root):
+            raise FlowContractError(
+                "source member location disagrees with its source root"
+            )
+        object.__setattr__(self, "source_root", root)
+        object.__setattr__(self, "location", location)
 
 
 @dataclass(frozen=True)
@@ -223,12 +233,18 @@ class GitSource:
 
     commit: str
     changes: tuple[str, ...]
-    repository_root: Path = field(repr=False, compare=False)
+    repository_root: Path = field(repr=False)
+    scope_root: Path = field(repr=False)
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{40,64}", self.commit) is None:
             raise FlowContractError("Git source commit is invalid")
-        object.__setattr__(self, "repository_root", Path(self.repository_root).resolve())
+        repository_root = Path(self.repository_root).resolve()
+        scope_root = Path(self.scope_root).resolve()
+        if not scope_root.is_relative_to(repository_root):
+            raise FlowContractError("Git source scope is outside its repository")
+        object.__setattr__(self, "repository_root", repository_root)
+        object.__setattr__(self, "scope_root", scope_root)
 
     @property
     def dirty(self) -> bool:
@@ -243,7 +259,7 @@ class SourceAssets:
     name: str
     git: GitSource
     artifacts: tuple[SourceArtifact, ...]
-    owner_root: Path = field(repr=False, compare=False)
+    owner_root: Path = field(repr=False)
 
     def __post_init__(self) -> None:
         owner_identity(self.owner, "source assets owner")
@@ -254,7 +270,20 @@ class SourceAssets:
         )
         if not self.artifacts:
             raise FlowContractError("source assets declare no artifacts")
-        object.__setattr__(self, "owner_root", Path(self.owner_root).resolve())
+        owner_root = Path(self.owner_root).resolve()
+        if self.git.scope_root != owner_root:
+            raise FlowContractError(
+                "Git source scope disagrees with the Source Assets owner root"
+            )
+        if any(
+            member.source_root != owner_root
+            for artifact in self.artifacts
+            for member in artifact.members
+        ):
+            raise FlowContractError(
+                "source member root disagrees with the Source Assets owner root"
+            )
+        object.__setattr__(self, "owner_root", owner_root)
 
     def artifact(self, role: str) -> SourceArtifact:
         try:
