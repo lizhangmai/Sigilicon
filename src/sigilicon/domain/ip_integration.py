@@ -332,6 +332,10 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
             raise ValueError(
                 f"{label}.interface.kind is unsupported: {interface_kind!r}"
             )
+    if isinstance(interface, OaNativeReleaseInterfaceReference) and role_modules:
+        raise ValueError(
+            f"{label}.role_modules are invalid for an oa-native interface"
+        )
     return IpReleaseDependency(
         export=export,
         required_maturity=maturity,

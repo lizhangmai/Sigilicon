@@ -155,6 +155,7 @@ def _interface_reference_matches(
         oa = exported.get("oa")
         return (
             interface.get("kind") == "oa-native"
+            and set(interface) == {"kind", "contract"}
             and isinstance(oa, Mapping)
             and all(
                 oa.get(field) == value

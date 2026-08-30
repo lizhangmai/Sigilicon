@@ -1103,7 +1103,14 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
 
 @pytest.mark.parametrize(
     "field",
-    ("kind", "library", "cell", "schematic_view", "layout_view"),
+    (
+        "kind",
+        "library",
+        "cell",
+        "schematic_view",
+        "layout_view",
+        "mixed-interface-field",
+    ),
 )
 def test_native_oa_planner_rejects_provider_interface_identity_drift(
     tmp_path: Path,
@@ -1145,6 +1152,8 @@ def test_native_oa_planner_rejects_provider_interface_identity_drift(
     }
     if field == "kind":
         interface[field] = "rtl"
+    elif field == "mixed-interface-field":
+        interface["logical"] = "forged"
     else:
         oa[field] = "drifted"
     monkeypatch.setattr(
@@ -1209,6 +1218,32 @@ def test_native_oa_release_dependency_rejects_mixed_interface_fields(
     )
 
     with pytest.raises(ValueError, match=message):
+        load_ip_integration_contract(contract_path, project_root=project_root)
+
+
+def test_native_oa_release_dependency_rejects_role_modules(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    _select_native_oa_dependency(
+        contract_path,
+        artifact_root=artifact_root,
+        manifest=manifest,
+    )
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            '[component.release.interface]',
+            '[component.release.role_modules]\n'
+            'circuit_netlist = "provider_module"\n\n'
+            '[component.release.interface]',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="role_modules.*oa-native"):
         load_ip_integration_contract(contract_path, project_root=project_root)
 
 
