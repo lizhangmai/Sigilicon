@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.artifacts import load_manifest
+from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.paths import ProjectContext
 from sigilicon.workflows import oa_simulation
 
@@ -34,14 +36,37 @@ artifact_root = "configured-artifacts"
 def _oa_plan(root: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
     canonical_source = root / "testbench.scs"
     canonical_source.write_text("simulator lang=spectre\n", encoding="utf-8")
-    native_setup = SimpleNamespace(rdb_contract=object())
+    simulation_source = root / "simulation.toml"
+    simulation_source.write_text("schema = 3\n", encoding="utf-8")
+    setup_source = root / "setup.il"
+    setup_source.write_text("; setup\n", encoding="utf-8")
+    rdb_source = root / "native_rdb.toml"
+    rdb_source.write_text("schema = 2\n", encoding="utf-8")
+    rdb_contract = SimpleNamespace(
+        path=rdb_source.resolve(),
+        source_snapshot=load_text_source_snapshot(rdb_source),
+        support_sources=(),
+        support_source_snapshots=(),
+    )
+    native_setup = SimpleNamespace(
+        source=setup_source.resolve(),
+        source_snapshot=load_text_source_snapshot(setup_source),
+        rdb_contract=rdb_contract,
+    )
     simulation = SimpleNamespace(
+        path=simulation_source.resolve(),
+        source_snapshot=load_text_source_snapshot(simulation_source),
         native_setup=native_setup,
         dut="fixture_dut",
     )
     step = SimpleNamespace(
         cell="tb_fixture",
-        canonical_source=canonical_source,
+        canonical_source=canonical_source.resolve(),
+        source_snapshot=NetlistSnapshot(
+            source_path=canonical_source.resolve(),
+            text=canonical_source.read_text(encoding="utf-8"),
+            interfaces={},
+        ),
         simulation=simulation,
     )
     source = SimpleNamespace(
@@ -152,3 +177,91 @@ def test_oa_maestro_records_failure_in_configured_artifact_root(
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert manifest["details"]["error"] == "fixture failure"
+
+
+def test_oa_maestro_records_only_plan_owned_source_bytes(tmp_path: Path) -> None:
+    paths = {
+        name: tmp_path / name
+        for name in (
+            "simulation.toml",
+            "setup.il",
+            "native_rdb.toml",
+            "testbench.scs",
+            "diagnostic.py",
+        )
+    }
+    for name, path in paths.items():
+        path.write_text(f"planned {name}\n", encoding="utf-8")
+    snapshots = {
+        name: load_text_source_snapshot(path)
+        for name, path in paths.items()
+        if name != "testbench.scs"
+    }
+    netlist = NetlistSnapshot(
+        source_path=paths["testbench.scs"].resolve(),
+        text=paths["testbench.scs"].read_text(encoding="utf-8"),
+        interfaces={},
+    )
+    rdb_contract = SimpleNamespace(
+        path=paths["native_rdb.toml"].resolve(),
+        source_snapshot=snapshots["native_rdb.toml"],
+        support_source_snapshots=(snapshots["diagnostic.py"],),
+        support_sources=(paths["diagnostic.py"].resolve(),),
+    )
+    step = SimpleNamespace(
+        canonical_source=paths["testbench.scs"].resolve(),
+        source_snapshot=netlist,
+        simulation=SimpleNamespace(
+            path=paths["simulation.toml"].resolve(),
+            source_snapshot=snapshots["simulation.toml"],
+            native_setup=SimpleNamespace(
+                source=paths["setup.il"].resolve(),
+                source_snapshot=snapshots["setup.il"],
+                rdb_contract=rdb_contract,
+            ),
+        ),
+    )
+    for path in paths.values():
+        path.write_text("changed after planning\n", encoding="utf-8")
+
+    recorded: dict[str, str] = {}
+
+    class Record:
+        def write_text(self, _role, relative, value, **_kwargs):
+            recorded["/".join(relative)] = value
+
+    oa_simulation._record_native_oa_maestro_inputs(Record(), step)
+
+    assert recorded == {
+        "simulation.toml": "planned simulation.toml\n",
+        "setup.il": "planned setup.il\n",
+        "native_rdb.toml": "planned native_rdb.toml\n",
+        "testbench.scs": "planned testbench.scs\n",
+        "support/01-diagnostic.py": "planned diagnostic.py\n",
+    }
+
+
+def test_oa_maestro_rejects_a_source_less_manual_contract() -> None:
+    simulation_path = Path("/tmp/source-less-simulation.toml")
+    step = SimpleNamespace(
+        cell="tb_fixture",
+        canonical_source=Path("/tmp/source-less-testbench.scs"),
+        source_snapshot=SimpleNamespace(text="testbench\n"),
+        simulation=SimpleNamespace(
+            path=simulation_path,
+            source_snapshot=None,
+            native_setup=SimpleNamespace(
+                source=Path("/tmp/source-less-setup.il"),
+                source_snapshot=SimpleNamespace(text="setup\n"),
+                rdb_contract=SimpleNamespace(
+                    source_snapshot=None,
+                    support_source_snapshots=(),
+                    support_sources=(),
+                ),
+            ),
+        ),
+    )
+
+    plan = SimpleNamespace(testbenches=(step,))
+    with pytest.raises(ValueError, match="no simulation source snapshot"):
+        oa_simulation.run_oa_maestro_testbench(plan, step, object())

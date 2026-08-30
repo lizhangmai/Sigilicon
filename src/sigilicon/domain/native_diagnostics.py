@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import importlib.util
 import inspect
 from pathlib import Path
+import sys
 from types import ModuleType
 from typing import Any, Collection, Mapping
 import uuid
 
 from sigilicon.domain.repository import Project
+from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 
 
 _REQUIRED_CALLABLES = (
@@ -39,6 +40,14 @@ class NativeDiagnosticProcessor:
 
     source: Path
     implementation: ModuleType
+    source_snapshot: TextSourceSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.source_snapshot is not None
+            and self.source_snapshot.source_path != self.source
+        ):
+            raise ValueError("native diagnostic processor source identity drift")
 
     def load_contract(
         self,
@@ -104,19 +113,30 @@ def load_native_diagnostic_processor(source: Path) -> NativeDiagnosticProcessor:
     """Load one processor explicitly selected by its native RDB contract."""
 
     source = source.resolve()
-    spec = importlib.util.spec_from_file_location(
-        f"_sigilicon_project_native_diagnostics_{uuid.uuid4().hex}", source
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load native diagnostic processor: {source}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    snapshot = load_text_source_snapshot(source)
+    module_name = f"_sigilicon_project_native_diagnostics_{uuid.uuid4().hex}"
+    module = ModuleType(module_name)
+    module.__file__ = str(source)
+    module.__package__ = ""
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        exec(compile(snapshot.text, str(source), "exec"), module.__dict__)
+    finally:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
     missing = [name for name in _REQUIRED_CALLABLES if not callable(getattr(module, name, None))]
     if missing:
         raise RuntimeError(
             f"native diagnostic processor {source} lacks callables: {', '.join(missing)}"
         )
-    return NativeDiagnosticProcessor(source=source, implementation=module)
+    return NativeDiagnosticProcessor(
+        source=source,
+        implementation=module,
+        source_snapshot=snapshot,
+    )
 
 
 def load_owner_native_diagnostic_processor(

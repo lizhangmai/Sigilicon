@@ -10,6 +10,8 @@ from typing import Any
 import uuid
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
+from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.domain.repository import Project
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
@@ -218,19 +220,7 @@ def _run_native_oa_maestro_testbench_impl(
         raise RuntimeError(
             f"OA testbench parity check failed: {oa_check}"
         )
-    record.copy_file("inputs", ("simulation.toml",), spec.path)
-    record.copy_file("inputs", ("setup.il",), native_setup.source)
-    record.copy_file("inputs", ("native_rdb.toml",), rdb_contract.path)
-    record.copy_file("inputs", ("cell.toml",), spec.path.parent / "cell.toml")
-    for index, source in enumerate(
-        (rdb_contract.path, *rdb_contract.support_sources)
-    ):
-        if index:
-            record.copy_file(
-                "inputs",
-                ("support", f"{index:02d}-{source.name}"),
-                source,
-            )
+    _record_native_oa_maestro_inputs(record, step)
     parsed_results: dict[str, Any] | None = None
     rdb_export = record.path("work", "maestro-rdb.tsv")
     project = plan.source.project
@@ -389,6 +379,91 @@ def _run_native_oa_maestro_testbench_impl(
     )
 
 
+def _record_native_oa_maestro_inputs(
+    record: ArtifactRecord,
+    step: TestbenchRebuildStep,
+) -> None:
+    """Persist the exact plan-owned sources consumed by one Maestro run."""
+
+    _validate_native_oa_maestro_inputs(step)
+    spec = step.simulation
+    native_setup = spec.native_setup
+    rdb_contract = native_setup.rdb_contract
+    assert isinstance(spec.source_snapshot, TextSourceSnapshot)
+    assert rdb_contract is not None
+    assert isinstance(rdb_contract.source_snapshot, TextSourceSnapshot)
+    support_snapshots = rdb_contract.support_source_snapshots
+    if tuple(source.source_path for source in support_snapshots) != (
+        rdb_contract.support_sources
+    ):
+        raise ValueError("native Maestro support source snapshot identity drift")
+    record.write_text(
+        "inputs",
+        ("simulation.toml",),
+        spec.source_snapshot.text,
+        label="exact native simulation contract",
+    )
+    record.write_text(
+        "inputs",
+        ("setup.il",),
+        native_setup.source_snapshot.text,
+        label="exact native ADE/Maestro setup",
+    )
+    record.write_text(
+        "inputs",
+        ("native_rdb.toml",),
+        rdb_contract.source_snapshot.text,
+        label="exact native RDB identity contract",
+    )
+    record.write_text(
+        "inputs",
+        ("testbench.scs",),
+        step.source_snapshot.text,
+        label="exact canonical testbench netlist",
+    )
+    for index, source in enumerate(support_snapshots, start=1):
+        record.write_text(
+            "inputs",
+            ("support", f"{index:02d}-{source.source_path.name}"),
+            source.text,
+            label="exact native diagnostic support source",
+        )
+
+
+def _validate_native_oa_maestro_inputs(step: TestbenchRebuildStep) -> None:
+    """Require a complete, identity-bound source inventory before OA access."""
+
+    spec = step.simulation
+    native_setup = spec.native_setup
+    rdb_contract = native_setup.rdb_contract
+    if not isinstance(spec.source_snapshot, TextSourceSnapshot):
+        raise ValueError("native Maestro plan has no simulation source snapshot")
+    if spec.source_snapshot.source_path != spec.path:
+        raise ValueError("native Maestro simulation source snapshot identity drift")
+    if not isinstance(native_setup.source_snapshot, TextSourceSnapshot):
+        raise ValueError("native Maestro plan has no setup source snapshot")
+    if native_setup.source_snapshot.source_path != native_setup.source:
+        raise ValueError("native Maestro setup source snapshot identity drift")
+    if rdb_contract is None:
+        raise ValueError("native Maestro plan has no RDB contract")
+    if not isinstance(rdb_contract.source_snapshot, TextSourceSnapshot):
+        raise ValueError("native Maestro plan has no RDB source snapshot")
+    if rdb_contract.source_snapshot.source_path != rdb_contract.path:
+        raise ValueError("native Maestro RDB source snapshot identity drift")
+    if not isinstance(step.source_snapshot, NetlistSnapshot):
+        raise ValueError("native Maestro plan has no testbench netlist snapshot")
+    if step.source_snapshot.source_path != step.canonical_source:
+        raise ValueError("native Maestro testbench snapshot identity drift")
+    support_snapshots = rdb_contract.support_source_snapshots
+    if any(
+        not isinstance(source, TextSourceSnapshot)
+        for source in support_snapshots
+    ) or tuple(source.source_path for source in support_snapshots) != (
+        rdb_contract.support_sources
+    ):
+        raise ValueError("native Maestro support source snapshot identity drift")
+
+
 def run_oa_maestro_testbench(
     plan: OALibraryRebuildPlan,
     step: TestbenchRebuildStep,
@@ -404,6 +479,7 @@ def run_oa_maestro_testbench(
         raise ValueError(
             f"OA testbench {step.cell} is not a schema-3 native simulation contract"
         )
+    _validate_native_oa_maestro_inputs(step)
     return _run_native_oa_maestro_testbench(
         plan,
         step,

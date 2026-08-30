@@ -194,6 +194,18 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
     )
     with pytest.raises(TypeError):
         spec.source_documents[spec_path.resolve()]["schema"] = 2
+    with pytest.raises(ValueError, match="source document drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=project,
+            snapshot=replace(
+                spec,
+                source_snapshot=TextSourceSnapshot(
+                    source_path=spec_path.resolve(),
+                    text=spec.source_snapshot.text.replace("schema = 3", "schema = 2"),
+                ),
+            ),
+        )
     with pytest.raises(ValueError, match="snapshot identity drift"):
         resolve_oa_simulation_spec(
             spec_path,
@@ -257,6 +269,10 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
             snapshot=replace(
                 spec,
                 path=unowned.resolve(),
+                source_snapshot=TextSourceSnapshot(
+                    source_path=unowned.resolve(),
+                    text=unowned.read_text(encoding="utf-8"),
+                ),
                 source_documents={
                     unowned.resolve(): spec.source_documents[spec_path.resolve()]
                 },
@@ -367,9 +383,34 @@ expression = "value(VT(\\"/OUT\\") 1u)"
         spec_path.resolve(),
         contract.path,
     }
+    assert spec.source_snapshot is not None
+    assert spec.source_snapshot.source_path == spec_path.resolve()
+    assert contract.source_snapshot is not None
+    assert contract.source_snapshot.source_path == contract.path
     assert spec.source_documents[contract.path] is contract.source_document
     with pytest.raises(TypeError):
         contract.source_document["schema"] = 1
+    with pytest.raises(ValueError, match="native RDB document drift"):
+        resolve_oa_simulation_spec(
+            spec_path,
+            project=spec.project,
+            snapshot=replace(
+                spec,
+                native_setup=replace(
+                    spec.native_setup,
+                    rdb_contract=replace(
+                        contract,
+                        source_snapshot=TextSourceSnapshot(
+                            source_path=contract.path,
+                            text=contract.source_snapshot.text.replace(
+                                "schema = 2",
+                                "schema = 1",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
     with pytest.raises(ValueError, match="native RDB document drift"):
         resolve_oa_simulation_spec(
             spec_path,
@@ -500,8 +541,20 @@ kind = "fixture"
     assert contract is not None
     assert contract.diagnostic_processor is not None
     assert contract.diagnostic_processor.source == processor.resolve()
+    assert contract.diagnostic_processor.source_snapshot is not None
+    assert (
+        contract.diagnostic_processor.source_snapshot.text
+        == processor.read_text(encoding="utf-8")
+    )
     assert contract.diagnostic_scalar_names == ("diag_value",)
     assert processor.resolve() in contract.support_sources
+    assert tuple(
+        snapshot.source_path for snapshot in contract.support_source_snapshots
+    ) == contract.support_sources
+    assert (
+        contract.support_source_snapshots[0]
+        is contract.diagnostic_processor.source_snapshot
+    )
     assert owner_processor.resolve() not in contract.support_sources
     with pytest.raises(ValueError, match="architecture source inventory"):
         load_oa_simulation_spec(

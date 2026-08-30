@@ -29,6 +29,8 @@ from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapsho
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
 @dataclass(frozen=True)
 class OANativeRdbContract:
     """Independent identity model used to audit a native Maestro RDB."""
@@ -44,6 +46,11 @@ class OANativeRdbContract:
     diagnostic_processor: NativeDiagnosticProcessor | None = None
     source_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
+    )
+    source_snapshot: TextSourceSnapshot | None = field(default=None, repr=False)
+    support_source_snapshots: tuple[TextSourceSnapshot, ...] = field(
+        default=(),
+        repr=False,
     )
 
     @property
@@ -117,6 +124,7 @@ class OASimulationSpec:
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    source_snapshot: TextSourceSnapshot | None = field(default=None, repr=False)
 
     @property
     def project_root(self) -> Path:
@@ -171,9 +179,9 @@ def _load_native_rdb_contract(
     """
 
     try:
-        with path.open("rb") as stream:
-            raw = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        source_snapshot = load_text_source_snapshot(path)
+        raw = tomllib.loads(source_snapshot.text)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError, RuntimeError) as exc:
         raise ValueError(f"cannot read native RDB contract {path}: {exc}") from exc
     if set(raw) - {
         "schema",
@@ -381,6 +389,32 @@ def _load_native_rdb_contract(
         raise ValueError(
             "native RDB contract waveform and scalar names must be disjoint"
         )
+    support_source_snapshots: list[TextSourceSnapshot] = []
+    support_sources = (
+        ()
+        if diagnostic_equivalence is None
+        else diagnostic_equivalence.support_sources
+    )
+    for source in support_sources:
+        if (
+            source != source.resolve()
+            or not source.is_relative_to(owner_root.resolve())
+            or not source.is_file()
+        ):
+            raise ValueError(
+                "native RDB diagnostic support source must stay inside its owner"
+            )
+        processor_snapshot = (
+            None
+            if diagnostic_processor is None
+            else diagnostic_processor.source_snapshot
+        )
+        support_source_snapshots.append(
+            processor_snapshot
+            if processor_snapshot is not None
+            and processor_snapshot.source_path == source
+            else load_text_source_snapshot(source)
+        )
     return OANativeRdbContract(
         path=path.resolve(),
         point_count=point_count,
@@ -392,6 +426,8 @@ def _load_native_rdb_contract(
         diagnostic_equivalence=diagnostic_equivalence,
         diagnostic_processor=diagnostic_processor,
         source_document=freeze_toml_document(raw),
+        source_snapshot=source_snapshot,
+        support_source_snapshots=tuple(support_source_snapshots),
     )
 
 
@@ -468,6 +504,7 @@ def _load_native_oa_simulation_spec(
     context: Project,
     owner_root: Path,
     raw: Mapping[str, Any],
+    source_snapshot: TextSourceSnapshot,
     default_diagnostic_processor: NativeDiagnosticProcessor | None,
     platform_snapshot: PlatformSnapshot | None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
@@ -571,6 +608,7 @@ def _load_native_oa_simulation_spec(
             rdb_contract=rdb_contract,
         ),
         source_documents=MappingProxyType(source_documents),
+        source_snapshot=source_snapshot,
     )
 
 
@@ -602,9 +640,9 @@ def load_oa_simulation_spec(
     owner = context.require_owner(spec_path)
     owner_root = owner.root
     try:
-        with spec_path.open("rb") as stream:
-            raw = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        source_snapshot = load_text_source_snapshot(spec_path)
+        raw = tomllib.loads(source_snapshot.text)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError, RuntimeError) as exc:
         raise ValueError(f"cannot read OA simulation spec {spec_path}: {exc}") from exc
     if raw.get("schema") != 3:
         raise ValueError("OA simulation schema must be exactly 3")
@@ -614,6 +652,7 @@ def load_oa_simulation_spec(
         context=context,
         owner_root=owner_root,
         raw=raw,
+        source_snapshot=source_snapshot,
         default_diagnostic_processor=load_owner_native_diagnostic_processor(
             context,
             owner_path=spec_path,
@@ -643,6 +682,8 @@ def resolve_oa_simulation_spec(
     if (
         snapshot.project is not project
         or snapshot.path != spec_path
+        or not isinstance(snapshot.source_snapshot, TextSourceSnapshot)
+        or snapshot.source_snapshot.source_path != spec_path
         or not spec_path.is_relative_to(root)
         or not spec_path.is_file()
     ):
@@ -681,12 +722,17 @@ def resolve_oa_simulation_spec(
     ):
         raise ValueError("OA simulation snapshot source document identity drift")
     simulation_document = snapshot.source_documents[spec_path]
+    try:
+        simulation_source_document = tomllib.loads(snapshot.source_snapshot.text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError("OA simulation snapshot source document drift") from exc
     testbench = simulation_document.get("testbench")
     platform = simulation_document.get("platform")
     setup = simulation_document.get("setup")
     setup_source = None if not isinstance(setup, Mapping) else setup.get("source")
     if (
-        set(simulation_document) != {"schema", "testbench", "platform", "setup"}
+        simulation_source_document != simulation_document
+        or set(simulation_document) != {"schema", "testbench", "platform", "setup"}
         or simulation_document.get("schema") != snapshot.contract_schema
         or testbench
         != {
@@ -709,10 +755,33 @@ def resolve_oa_simulation_spec(
     ):
         raise ValueError("OA simulation snapshot source document drift")
     if rdb_contract is not None:
-        if not is_frozen_toml_document(rdb_contract.source_document) or (
-            snapshot.source_documents[rdb_contract.path]
-            != rdb_contract.source_document
-            or rdb_contract.source_document.get("schema") != 2
+        support_snapshots = rdb_contract.support_source_snapshots
+        if not isinstance(rdb_contract.source_snapshot, TextSourceSnapshot):
+            raise ValueError("OA simulation snapshot native RDB document drift")
+        try:
+            rdb_source_document = tomllib.loads(rdb_contract.source_snapshot.text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(
+                "OA simulation snapshot native RDB document drift"
+            ) from exc
+        if (
+            rdb_contract.source_snapshot.source_path != rdb_contract.path
+            or any(
+                not isinstance(source, TextSourceSnapshot)
+                or not source.source_path.is_relative_to(owner.root)
+                for source in support_snapshots
+            )
+            or tuple(
+                source.source_path for source in support_snapshots
+            )
+            != rdb_contract.support_sources
+            or rdb_source_document != rdb_contract.source_document
+            or not is_frozen_toml_document(rdb_contract.source_document)
+            or (
+                snapshot.source_documents[rdb_contract.path]
+                != rdb_contract.source_document
+                or rdb_contract.source_document.get("schema") != 2
+            )
         ):
             raise ValueError("OA simulation snapshot native RDB document drift")
     return snapshot
