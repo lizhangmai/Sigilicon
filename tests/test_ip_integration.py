@@ -15,6 +15,8 @@ import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
+    OaNativePhysicalBinding,
+    OaNativeReleaseInterfaceReference,
     OaReleaseInterfaceReference,
     RtlReleaseInterfaceReference,
     load_ip_integration_contract,
@@ -276,6 +278,134 @@ validator = "test_ip_integration:_fixture_architecture_validator"
     )
     physical = variant_source.index("[physical_binding]")
     variant.write_text(variant_source[:physical], encoding="utf-8")
+
+
+def _select_native_oa_dependency(
+    contract: Path,
+    *,
+    artifact_root: Path,
+    manifest: str,
+) -> Path:
+    source = contract.read_text(encoding="utf-8")
+    source = source.replace(
+        '''[component.release]
+export = "macro"
+required_maturity = "development"
+logical_interface = "fixture_model:transaction-1-port"
+physical_interface = "fixture_macro:oa-1-pin"
+roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
+
+[component.release.role_modules]
+transaction_model = "fixture_model"
+integration_adapter = "fixture_shell"
+physical_blackbox = "fixture_macro"
+''',
+        '''[component.release]
+export = "macro"
+required_maturity = "development"
+roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
+
+[component.release.interface]
+kind = "oa-native"
+library = "fixture"
+cell = "fixture_macro"
+schematic_view = "schematic"
+layout_view = "layout"
+''',
+    )
+    contract.write_text(source, encoding="utf-8")
+
+    variant = contract.parent / "variants/default.toml"
+    variant_source = variant.read_text(encoding="utf-8")
+    variant_source = variant_source.replace(
+        'fixture-ip = ["transaction_model"]',
+        'fixture-ip = ["circuit_netlist"]',
+    ).replace(
+        '''[physical_binding]
+dependency = "fixture-ip"
+transaction_module = "fixture_model"
+physical_shell_module = "fixture_shell"
+adapter_module = "fixture_adapter"
+raw_macro_module = "fixture_macro"
+status = "blocked"
+blockers = ["implementation_release_missing"]
+''',
+        '''[physical_binding]
+kind = "oa-native"
+dependency = "fixture-ip"
+transaction_module = "demo_transaction_model"
+adapter_module = "demo_native_oa_adapter"
+status = "blocked"
+blockers = ["implementation_release_missing"]
+''',
+    )
+    variant.write_text(variant_source, encoding="utf-8")
+
+    manifest_path = artifact_root / manifest
+    release_root = manifest_path.parent
+    interface_path = release_root / "interfaces/interface.toml"
+    interface_path.write_text(
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "fixture"
+
+[physical]
+library = "fixture"
+cell = "fixture_macro"
+port_count = 1
+canonical_port_contract = "ip/fixture/configs/ports.toml"
+
+[behavior]
+result = "native circuit response"
+
+[supplies]
+domains = []
+''',
+        encoding="utf-8",
+    )
+    for stale in (
+        release_root / "rtl/fixture_macro.sv",
+        release_root / "rtl/fixture_model.sv",
+        release_root / "rtl/fixture_shell.sv",
+    ):
+        stale.unlink()
+    (release_root / "rtl").rmdir()
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["owner"] = "fixture"
+    exported = payload["exports"][0]
+    exported["oa"] = {
+        "library": "fixture",
+        "cell": "fixture_macro",
+        "schematic_view": "schematic",
+        "layout_view": "layout",
+    }
+    exported["interface"] = {
+        "kind": "oa-native",
+        "contract": "ip/fixture/configs/interface.toml",
+    }
+    selected_roles = {
+        "interface_contract": "ip/fixture/configs/interface.toml",
+        "oa_port_contract": "ip/fixture/configs/ports.toml",
+        "circuit_netlist": "ip/fixture/circuit.scs",
+    }
+    exported["maturity"]["required_roles"] = list(selected_roles)
+    payload["views"] = [
+        view
+        for view in payload["views"]
+        if view["role"] in selected_roles
+    ]
+    for view in payload["views"]:
+        view["source"] = selected_roles[view["role"]]
+        view["size"] = (release_root / view["path"]).stat().st_size
+        if view["role"] == "circuit_netlist":
+            view["format"] = "spectre-source"
+    manifest_path.write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Path:
@@ -860,6 +990,323 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
             project=Project.from_project_root(project_root).with_artifact_root(
                 artifact_root
             ),
+            variant_name="default",
+        )
+
+
+def test_native_oa_release_dependency_is_typed_planned_and_consumed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    _select_native_oa_dependency(
+        contract_path,
+        artifact_root=artifact_root,
+        manifest=manifest,
+    )
+    project = Project.from_project_root(project_root).with_artifact_root(
+        artifact_root
+    )
+
+    contract = load_ip_integration_contract(contract_path, project=project)
+    release = contract.release_dependencies[0].release
+    assert release is not None
+    assert isinstance(release.interface, OaNativeReleaseInterfaceReference)
+    assert release.interface.library == "fixture"
+    assert release.role_modules == {}
+    binding = contract.get_variant("default").physical_binding
+    assert isinstance(binding, OaNativePhysicalBinding)
+    assert binding.transaction_module == "demo_transaction_model"
+    assert not hasattr(binding, "physical_shell_module")
+
+    producer_path = project_root / "ip/fixture/configs/release.toml"
+    producer = SimpleNamespace(
+        name="fixture-ip",
+        path=producer_path,
+        project=project,
+    )
+    monkeypatch.setattr(
+        ip_integration,
+        "ip_catalog_contract_path",
+        lambda *_args, **_kwargs: producer_path,
+    )
+    monkeypatch.setattr(
+        ip_integration,
+        "plan_ip_release_contract",
+        lambda *_args, **_kwargs: {
+            "contract": "ip/fixture/configs/release.toml",
+            "release_id": release_id,
+            "exports": [
+                {
+                    "name": "macro",
+                    "oa": {
+                        "library": "fixture",
+                        "cell": "fixture_macro",
+                        "schematic_view": "schematic",
+                        "layout_view": "layout",
+                    },
+                    "interface": {
+                        "kind": "oa-native",
+                        "contract": "ip/fixture/configs/interface.toml",
+                    },
+                }
+            ],
+            "collateral": [
+                {"export": "macro", "role": role}
+                for role in release.roles
+            ],
+        },
+    )
+
+    plan = plan_ip_integration(
+        contract_path,
+        project=project,
+        release_inventory={"fixture-ip": producer},
+    )
+    assert plan["dependencies"][0]["release"]["interface"] == {
+        "kind": "oa-native",
+        "library": "fixture",
+        "cell": "fixture_macro",
+        "schematic_view": "schematic",
+        "layout_view": "layout",
+    }
+    assert plan["dependencies"][0]["release"]["roles"] == [
+        "interface_contract",
+        "oa_port_contract",
+        "circuit_netlist",
+    ]
+    assert plan["variants"][0]["physical_binding"] == {
+        "kind": "oa-native",
+        "dependency": "fixture-ip",
+        "transaction_module": "demo_transaction_model",
+        "adapter_module": "demo_native_oa_adapter",
+        "status": "blocked",
+        "blockers": ["implementation_release_missing"],
+    }
+
+    result = check_ip_integration(
+        contract_path,
+        project=project,
+        variant_name="default",
+    )
+    assert result["passed"] is True
+    assert result["dependency_releases"][0]["roles"] == {
+        "circuit_netlist": (
+            "exports/fixture-ip/package/development-fixture/"
+            "circuit/fixture_macro.scs"
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("kind", "library", "cell", "schematic_view", "layout_view"),
+)
+def test_native_oa_planner_rejects_provider_interface_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    _select_native_oa_dependency(
+        contract_path,
+        artifact_root=artifact_root,
+        manifest=manifest,
+    )
+    project = Project.from_project_root(project_root).with_artifact_root(
+        artifact_root
+    )
+    producer_path = project_root / "ip/fixture/configs/release.toml"
+    producer = SimpleNamespace(
+        name="fixture-ip",
+        path=producer_path,
+        project=project,
+    )
+    monkeypatch.setattr(
+        ip_integration,
+        "ip_catalog_contract_path",
+        lambda *_args, **_kwargs: producer_path,
+    )
+    oa = {
+        "library": "fixture",
+        "cell": "fixture_macro",
+        "schematic_view": "schematic",
+        "layout_view": "layout",
+    }
+    interface = {
+        "kind": "oa-native",
+        "contract": "ip/fixture/configs/interface.toml",
+    }
+    if field == "kind":
+        interface[field] = "rtl"
+    else:
+        oa[field] = "drifted"
+    monkeypatch.setattr(
+        ip_integration,
+        "plan_ip_release_contract",
+        lambda *_args, **_kwargs: {
+            "contract": "ip/fixture/configs/release.toml",
+            "release_id": release_id,
+            "exports": [
+                {
+                    "name": "macro",
+                    "oa": oa,
+                    "interface": interface,
+                }
+            ],
+            "collateral": [
+                {"export": "macro", "role": role}
+                for role in (
+                    "interface_contract",
+                    "oa_port_contract",
+                    "circuit_netlist",
+                )
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match="interface does not match"):
+        plan_ip_integration(
+            contract_path,
+            project=project,
+            release_inventory={"fixture-ip": producer},
+        )
+
+
+@pytest.mark.parametrize(
+    ("injected", "message"),
+    (
+        ('logical = "forged"', "native OA fields are invalid"),
+        ('module = "forged"', "native OA fields are invalid"),
+    ),
+)
+def test_native_oa_release_dependency_rejects_mixed_interface_fields(
+    tmp_path: Path,
+    injected: str,
+    message: str,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    _select_native_oa_dependency(
+        contract_path,
+        artifact_root=artifact_root,
+        manifest=manifest,
+    )
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            'layout_view = "layout"',
+            f'layout_view = "layout"\n{injected}',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_ip_integration_contract(contract_path, project_root=project_root)
+
+
+def test_native_oa_binding_rejects_transaction_shell_fields(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    _select_native_oa_dependency(
+        contract_path,
+        artifact_root=artifact_root,
+        manifest=manifest,
+    )
+    variant = contract_path.parent / "variants/default.toml"
+    variant.write_text(
+        variant.read_text(encoding="utf-8").replace(
+            'adapter_module = "demo_native_oa_adapter"',
+            'adapter_module = "demo_native_oa_adapter"\n'
+            'physical_shell_module = "provider_shell"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="native OA physical binding fields"):
+        load_ip_integration_contract(contract_path, project_root=project_root)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    (
+        ("lock-identity", "lock identity"),
+        ("lock-maturity", "lock maturity"),
+        ("dirty-source", "dirty source"),
+        ("provider-drift", "provider owner"),
+        ("role-unavailable", "unavailable for simulation"),
+        ("unsafe-role-path", "view path is unsafe"),
+    ),
+)
+def test_native_oa_locked_release_retains_fail_closed_safeguards(
+    tmp_path: Path,
+    case: str,
+    message: str,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract_path = _write_ip_fixture(project_root, release_id, manifest)
+    manifest_path = _select_native_oa_dependency(
+        contract_path,
+        artifact_root=artifact_root,
+        manifest=manifest,
+    )
+    lock_path = contract_path.parent / "dependency.lock.toml"
+    if case == "lock-identity":
+        lock_path.write_text(
+            lock_path.read_text(encoding="utf-8").replace(
+                f'release_id = "{release_id}"',
+                'release_id = "drifted"',
+            ),
+            encoding="utf-8",
+        )
+    elif case == "lock-maturity":
+        lock_path.write_text(
+            lock_path.read_text(encoding="utf-8").replace(
+                'maturity = "development"',
+                'maturity = "implementation"',
+            ),
+            encoding="utf-8",
+        )
+    else:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if case == "dirty-source":
+            payload["source"]["dirty"] = True
+            payload["provenance"]["working_tree_dirty"] = True
+        elif case == "provider-drift":
+            payload["provenance"]["producer"] = "ip/other-owner"
+        elif case == "role-unavailable":
+            payload["exports"][0]["availability"]["simulation"] = False
+        elif case == "unsafe-role-path":
+            next(
+                view
+                for view in payload["views"]
+                if view["role"] == "circuit_netlist"
+            )["path"] = "../fixture_macro.scs"
+        else:  # pragma: no cover - parametrization is closed above
+            raise AssertionError(case)
+        manifest_path.write_text(
+            json.dumps(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        check_ip_integration(
+            contract_path,
+            project_root=project_root,
+            artifact_root=artifact_root,
             variant_name="default",
         )
 

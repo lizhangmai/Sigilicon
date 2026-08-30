@@ -51,13 +51,26 @@ class OaReleaseInterfaceReference:
 
 
 @dataclass(frozen=True)
+class OaNativeReleaseInterfaceReference:
+    """Exact native OA boundary selected from a producer release."""
+
+    kind: Literal["oa-native"]
+    library: str
+    cell: str
+    schematic_view: str
+    layout_view: str
+
+
+@dataclass(frozen=True)
 class RtlReleaseInterfaceReference:
     kind: Literal["rtl"]
     module: str
 
 
 ReleaseInterfaceReference = (
-    OaReleaseInterfaceReference | RtlReleaseInterfaceReference
+    OaReleaseInterfaceReference
+    | OaNativeReleaseInterfaceReference
+    | RtlReleaseInterfaceReference
 )
 
 
@@ -89,6 +102,8 @@ class IpIntegrationFileset:
 
 @dataclass(frozen=True)
 class IpPhysicalBinding:
+    """Legacy mixed-signal transaction-shell binding."""
+
     dependency: str
     transaction_module: str
     physical_shell_module: str
@@ -96,6 +111,26 @@ class IpPhysicalBinding:
     raw_macro_module: str
     status: str
     blockers: tuple[str, ...]
+    kind: Literal["oa-mixed-signal"] = field(
+        default="oa-mixed-signal",
+        init=False,
+    )
+
+
+@dataclass(frozen=True)
+class OaNativePhysicalBinding:
+    """Consumer-owned transaction adapter bound to a native OA dependency."""
+
+    kind: Literal["oa-native"]
+    dependency: str
+    transaction_module: str
+    adapter_module: str
+    status: str
+    blockers: tuple[str, ...]
+
+
+OaMixedSignalPhysicalBinding = IpPhysicalBinding
+PhysicalBinding = IpPhysicalBinding | OaNativePhysicalBinding
 
 
 @dataclass(frozen=True)
@@ -104,7 +139,7 @@ class IpOperatingVariant:
     path: Path
     default_fileset: str
     filesets: Mapping[str, IpIntegrationFileset]
-    physical_binding: IpPhysicalBinding | None
+    physical_binding: PhysicalBinding | None
     architecture_validator: str | None
     source_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({}),
@@ -248,6 +283,37 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
                 physical_interface=_string(
                     interface_table.get("physical"),
                     f"{label}.interface.physical",
+                ),
+            )
+        elif interface_kind == "oa-native":
+            expected_fields = {
+                "kind",
+                "library",
+                "cell",
+                "schematic_view",
+                "layout_view",
+            }
+            if set(interface_table) != expected_fields:
+                raise ValueError(
+                    f"{label}.interface native OA fields are invalid"
+                )
+            interface = OaNativeReleaseInterfaceReference(
+                kind="oa-native",
+                library=_string(
+                    interface_table.get("library"),
+                    f"{label}.interface.library",
+                ),
+                cell=_string(
+                    interface_table.get("cell"),
+                    f"{label}.interface.cell",
+                ),
+                schematic_view=_string(
+                    interface_table.get("schematic_view"),
+                    f"{label}.interface.schematic_view",
+                ),
+                layout_view=_string(
+                    interface_table.get("layout_view"),
+                    f"{label}.interface.layout_view",
                 ),
             )
         elif interface_kind == "rtl":
@@ -452,7 +518,7 @@ def _operating_variant(
                 f"variant {name} architecture validator must be module:function"
             )
 
-    physical_binding: IpPhysicalBinding | None = None
+    physical_binding: PhysicalBinding | None = None
     if raw.get("physical_binding") is not None:
         binding = _table(raw["physical_binding"], f"variant {name}.physical_binding")
         dependency_name = _string(
@@ -479,39 +545,95 @@ def _operating_variant(
                 f"variant {name} blocked physical binding must have blockers and "
                 "ready binding must not"
             )
-        physical_binding = IpPhysicalBinding(
-            dependency=dependency_name,
-            transaction_module=_string(
-                binding.get("transaction_module"),
-                f"variant {name}.physical_binding.transaction_module",
-            ),
-            physical_shell_module=_string(
-                binding.get("physical_shell_module"),
-                f"variant {name}.physical_binding.physical_shell_module",
-            ),
-            adapter_module=_string(
-                binding.get("adapter_module"),
-                f"variant {name}.physical_binding.adapter_module",
-            ),
-            raw_macro_module=_string(
-                binding.get("raw_macro_module"),
-                f"variant {name}.physical_binding.raw_macro_module",
-            ),
-            status=status,
-            blockers=tuple(blockers_raw),
-        )
-        expected_modules = {
-            "transaction_model": physical_binding.transaction_module,
-            "integration_adapter": physical_binding.physical_shell_module,
-            "physical_blackbox": physical_binding.raw_macro_module,
-        }
         assert dependency.release is not None
-        if any(
-            dependency.release.role_modules.get(role) != module
-            for role, module in expected_modules.items()
-        ):
+        binding_kind = binding.get("kind", "oa-mixed-signal")
+        common_fields = {
+            "dependency",
+            "transaction_module",
+            "adapter_module",
+            "status",
+            "blockers",
+        }
+        if binding_kind == "oa-native":
+            if set(binding) != common_fields | {"kind"}:
+                raise ValueError(
+                    f"variant {name} native OA physical binding fields are invalid"
+                )
+            if not isinstance(
+                dependency.release.interface, OaNativeReleaseInterfaceReference
+            ):
+                raise ValueError(
+                    f"variant {name} native OA physical binding requires an "
+                    "oa-native release interface"
+                )
+            physical_binding = OaNativePhysicalBinding(
+                kind="oa-native",
+                dependency=dependency_name,
+                transaction_module=_string(
+                    binding.get("transaction_module"),
+                    f"variant {name}.physical_binding.transaction_module",
+                ),
+                adapter_module=_string(
+                    binding.get("adapter_module"),
+                    f"variant {name}.physical_binding.adapter_module",
+                ),
+                status=status,
+                blockers=tuple(blockers_raw),
+            )
+        elif binding_kind == "oa-mixed-signal":
+            legacy_fields = common_fields | {
+                "physical_shell_module",
+                "raw_macro_module",
+            }
+            allowed_fields = legacy_fields | ({"kind"} if "kind" in binding else set())
+            if set(binding) != allowed_fields:
+                raise ValueError(
+                    f"variant {name} mixed-signal physical binding fields are invalid"
+                )
+            if not isinstance(
+                dependency.release.interface, OaReleaseInterfaceReference
+            ):
+                raise ValueError(
+                    f"variant {name} mixed-signal physical binding requires an "
+                    "oa-mixed-signal release interface"
+                )
+            physical_binding = IpPhysicalBinding(
+                dependency=dependency_name,
+                transaction_module=_string(
+                    binding.get("transaction_module"),
+                    f"variant {name}.physical_binding.transaction_module",
+                ),
+                physical_shell_module=_string(
+                    binding.get("physical_shell_module"),
+                    f"variant {name}.physical_binding.physical_shell_module",
+                ),
+                adapter_module=_string(
+                    binding.get("adapter_module"),
+                    f"variant {name}.physical_binding.adapter_module",
+                ),
+                raw_macro_module=_string(
+                    binding.get("raw_macro_module"),
+                    f"variant {name}.physical_binding.raw_macro_module",
+                ),
+                status=status,
+                blockers=tuple(blockers_raw),
+            )
+            expected_modules = {
+                "transaction_model": physical_binding.transaction_module,
+                "integration_adapter": physical_binding.physical_shell_module,
+                "physical_blackbox": physical_binding.raw_macro_module,
+            }
+            if any(
+                dependency.release.role_modules.get(role) != module
+                for role, module in expected_modules.items()
+            ):
+                raise ValueError(
+                    f"variant {name} physical binding disagrees with dependency modules"
+                )
+        else:
             raise ValueError(
-                f"variant {name} physical binding disagrees with dependency modules"
+                f"variant {name} physical binding kind is unsupported: "
+                f"{binding_kind!r}"
             )
 
     return IpOperatingVariant(

@@ -14,6 +14,9 @@ from sigilicon.domain.ip_integration import (
     IpOperatingVariant,
     IpReleaseDependency,
     LockedIpRelease,
+    OaMixedSignalPhysicalBinding,
+    OaNativePhysicalBinding,
+    OaNativeReleaseInterfaceReference,
     OaReleaseInterfaceReference,
     RtlReleaseInterfaceReference,
     load_ip_dependency_lock,
@@ -124,6 +127,14 @@ def _interface_reference_row(release: IpReleaseDependency) -> dict[str, str]:
             "logical": interface.logical_interface,
             "physical": interface.physical_interface,
         }
+    if isinstance(interface, OaNativeReleaseInterfaceReference):
+        return {
+            "kind": interface.kind,
+            "library": interface.library,
+            "cell": interface.cell,
+            "schematic_view": interface.schematic_view,
+            "layout_view": interface.layout_view,
+        }
     return {"kind": interface.kind, "module": interface.module}
 
 
@@ -139,6 +150,17 @@ def _interface_reference_matches(
             interface.get(field) == value
             for field, value in expected.items()
             if field != "kind"
+        )
+    if isinstance(release.interface, OaNativeReleaseInterfaceReference):
+        oa = exported.get("oa")
+        return (
+            interface.get("kind") == "oa-native"
+            and isinstance(oa, Mapping)
+            and all(
+                oa.get(field) == value
+                for field, value in expected.items()
+                if field != "kind"
+            )
         )
     return all(interface.get(field) == value for field, value in expected.items())
 
@@ -266,15 +288,24 @@ def _binding_plan(variant: IpOperatingVariant) -> dict[str, Any] | None:
     binding = variant.physical_binding
     if binding is None:
         return None
-    return {
+    row = {
+        "kind": binding.kind,
         "dependency": binding.dependency,
         "transaction_module": binding.transaction_module,
-        "physical_shell_module": binding.physical_shell_module,
         "adapter_module": binding.adapter_module,
-        "raw_macro_module": binding.raw_macro_module,
         "status": binding.status,
         "blockers": list(binding.blockers),
     }
+    if isinstance(binding, OaMixedSignalPhysicalBinding):
+        row.update(
+            {
+                "physical_shell_module": binding.physical_shell_module,
+                "raw_macro_module": binding.raw_macro_module,
+            }
+        )
+    else:
+        assert isinstance(binding, OaNativePhysicalBinding)
+    return row
 
 
 def _variant_source_plan(
