@@ -1241,6 +1241,32 @@ def test_component_catalog_lookup_ignores_an_unselected_malformed_section(
     assert selected == project_root / "ip/leaf/configs/ip.toml"
 
 
+def test_ip_catalog_never_selects_an_uncataloged_project_file(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_source_component_fixture(project_root)
+    rogue = project_root / "misc/release.toml"
+    rogue.parent.mkdir()
+    rogue.write_text("schema = 1\n", encoding="utf-8")
+    catalog = project_root / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            "[targets]\n",
+            '[targets.rogue]\ncontract = "misc/release.toml"\n',
+        ),
+        encoding="utf-8",
+    )
+    project = Project.from_project_root(project_root)
+
+    with pytest.raises(ValueError, match="no cataloged owner"):
+        ip_catalog_contract_path(
+            None,
+            "rogue",
+            project=project,
+        )
+
+
 def test_declaring_release_capability_does_not_implicitly_consume_it(
     tmp_path: Path,
 ) -> None:
@@ -1287,13 +1313,107 @@ def test_ip_integration_rejects_a_lock_outside_the_project(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="inside the project root"):
+    with pytest.raises(ValueError, match="inside its owner root"):
         check_ip_integration(
             contract,
             project_root=project_root,
             artifact_root=artifact_root,
             variant_name="default",
             lock_path=external_lock,
+        )
+
+
+def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract = _write_ip_fixture(project_root, release_id, manifest)
+    foreign_lock = project_root / "ip/fixture/configs/demo.lock.toml"
+    foreign_lock.write_text(
+        (contract.parent / "dependency.lock.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="stay inside owner 'demo' root"):
+        check_ip_integration(
+            contract,
+            project_root=project_root,
+            artifact_root=artifact_root,
+            variant_name="default",
+            lock_path=foreign_lock,
+        )
+
+
+def test_ip_integration_declared_sources_stay_inside_the_owner(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract = _write_ip_fixture(project_root, release_id, manifest)
+    owner_configs = contract.parent
+    foreign_configs = project_root / "ip/fixture/configs"
+    cases = (
+        (
+            'dependency_lock = "ip/demo/configs/dependency.lock.toml"',
+            'dependency_lock = "ip/fixture/configs/dependency.lock.toml"',
+            owner_configs / "dependency.lock.toml",
+            foreign_configs / "dependency.lock.toml",
+            "dependency_lock",
+        ),
+        (
+            'default = "ip/demo/configs/variants/default.toml"',
+            'default = "ip/fixture/configs/default.toml"',
+            owner_configs / "variants/default.toml",
+            foreign_configs / "default.toml",
+            "variants.default",
+        ),
+    )
+    original = contract.read_text(encoding="utf-8")
+    for old, new, source, foreign, field in cases:
+        foreign.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        contract.write_text(original.replace(old, new), encoding="utf-8")
+        with pytest.raises(ValueError, match=field):
+            load_ip_integration_contract(
+                contract,
+                project=Project.from_project_root(project_root),
+            )
+
+
+def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract = _write_ip_fixture(project_root, release_id, manifest)
+    variant = contract.parent / "variants/default.toml"
+    foreign_filelist = project_root / "ip/fixture/configs/simulation.f"
+    foreign_filelist.write_text("ip/demo/rtl/top.sv\n", encoding="utf-8")
+    variant_source = variant.read_text(encoding="utf-8")
+    variant.write_text(
+        variant_source.replace(
+            'filelist = "ip/demo/rtl/simulation.f"',
+            'filelist = "ip/fixture/configs/simulation.f"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="filelist.*inside owner 'demo' root"):
+        ip_integration.plan_ip_integration_fileset(
+            contract,
+            project_root=project_root,
+            variant_name="default",
+        )
+
+    variant.write_text(variant_source, encoding="utf-8")
+    (project_root / "ip/demo/rtl/simulation.f").write_text(
+        "ip/demo/rtl//top.sv\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="safe project-relative path"):
+        ip_integration.plan_ip_integration_fileset(
+            contract,
+            project_root=project_root,
+            variant_name="default",
         )
 
 

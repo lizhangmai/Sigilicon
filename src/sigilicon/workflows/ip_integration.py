@@ -24,6 +24,7 @@ from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
     load_ip_contract,
+    safe_relative,
 )
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
@@ -70,16 +71,14 @@ def ip_catalog_contract_path(
     entry = entries.get(target)
     if not isinstance(entry, Mapping) or not isinstance(entry.get("contract"), str):
         raise KeyError(f"unknown IP {section[:-1]}: {target}")
-    project_root = repository.project_root
-    relative = Path(entry["contract"])
-    path = (project_root / relative).resolve()
-    if (
-        relative.is_absolute()
-        or ".." in relative.parts
-        or not path.is_relative_to(project_root)
-        or not path.is_file()
-    ):
-        raise FileNotFoundError(f"IP catalog contract is missing or unsafe: {relative}")
+    relative = safe_relative(entry["contract"], f"IP catalog {section}.{target}")
+    candidate = repository.project_root.joinpath(*relative.parts).resolve()
+    owner = repository.require_owner(candidate)
+    path, _ = repository.resolve_owner_file(
+        owner,
+        relative.as_posix(),
+        f"IP catalog {section}.{target}",
+    )
     return path
 
 
@@ -218,12 +217,13 @@ def _filelist(
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        relative = Path(line)
-        source = (root / relative).resolve()
+        try:
+            relative = safe_relative(line, "IP filelist source")
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        source = root.joinpath(*relative.parts).resolve()
         if (
-            relative.is_absolute()
-            or ".." in relative.parts
-            or not source.is_file()
+            not source.is_file()
             or source not in allowed
         ):
             raise RuntimeError(
@@ -241,16 +241,19 @@ def _fileset_source_plan(
     variant: IpOperatingVariant,
     fileset_name: str,
 ) -> dict[str, Any]:
-    root = contract.project_root
     fileset = variant.get_fileset(fileset_name)
-    filelist_path = (root / Path(fileset.filelist)).resolve()
-    if not filelist_path.is_relative_to(root):
-        raise FileNotFoundError(f"IP filelist escapes the project root: {fileset.filelist}")
+    filelist_path, filelist_relative = contract.project.resolve_owner_file(
+        contract.owner,
+        fileset.filelist.as_posix(),
+        f"variant {variant.name}.filesets.{fileset.name}.filelist",
+    )
     sources = _filelist(filelist_path, contract, variant, fileset.name)
     return {
         "name": fileset.name,
-        "filelist": filelist_path.relative_to(root).as_posix(),
-        "sources": [path.relative_to(root).as_posix() for path in sources],
+        "filelist": filelist_relative.as_posix(),
+        "sources": [
+            path.relative_to(contract.project_root).as_posix() for path in sources
+        ],
         "dependency_roles": {
             name: list(roles) for name, roles in fileset.dependency_roles.items()
         },

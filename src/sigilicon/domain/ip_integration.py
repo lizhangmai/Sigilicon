@@ -43,19 +43,6 @@ def _string(value: object, label: str) -> str:
     return value
 
 
-def _project_relative(
-    value: object,
-    label: str,
-    *,
-    project_root: Path,
-) -> tuple[PurePosixPath, Path]:
-    relative = safe_relative(value, label)
-    resolved = (project_root / Path(relative)).resolve()
-    if not resolved.is_relative_to(project_root):
-        raise ValueError(f"{label} escapes the project root")
-    return PurePosixPath(resolved.relative_to(project_root).as_posix()), resolved
-
-
 @dataclass(frozen=True)
 class OaReleaseInterfaceReference:
     kind: Literal["oa-mixed-signal"]
@@ -292,8 +279,7 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
 def _implementation_profiles(
     raw: Mapping[str, Any],
     *,
-    project_root: Path,
-    owner_root: Path,
+    project: Project,
     owner: str,
     source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> tuple[Mapping[str, PurePosixPath], Mapping[Path, Mapping[str, Any]]]:
@@ -302,15 +288,11 @@ def _implementation_profiles(
     documents: dict[Path, Mapping[str, Any]] = {}
     for name, value in values.items():
         name = _string(name, "implementation profile name")
-        relative, path = _project_relative(
+        path, relative = project.resolve_owner_file(
+            owner,
             value,
             f"implementation.{name}",
-            project_root=project_root,
         )
-        if not path.is_file():
-            raise FileNotFoundError(f"IP implementation profile is missing: {relative}")
-        if not path.is_relative_to(owner_root):
-            raise ValueError("IP implementation profile must stay inside its owner")
         if source_documents is None:
             with path.open("rb") as stream:
                 profile: Mapping[str, Any] = tomllib.load(stream)
@@ -619,10 +601,10 @@ def load_ip_integration_contract(
     lock_value = raw.get("dependency_lock")
     dependency_lock: PurePosixPath | None = None
     if lock_value is not None:
-        dependency_lock, _ = _project_relative(
+        _, dependency_lock = repository.resolve_owner_file(
+            cataloged_owner,
             lock_value,
             "dependency_lock",
-            project_root=root,
         )
 
     variants_raw = _table(raw.get("variants"), "variants")
@@ -635,15 +617,11 @@ def load_ip_integration_contract(
     source_documents: dict[Path, Mapping[str, Any]] = {}
     for name, value in variants_raw.items():
         name = _string(name, "variant name")
-        _, variant_path = _project_relative(
+        variant_path, _ = repository.resolve_owner_file(
+            cataloged_owner,
             value,
             f"variants.{name}",
-            project_root=root,
         )
-        if not variant_path.is_file():
-            raise FileNotFoundError(f"IP operating variant is missing: {variant_path}")
-        if not variant_path.is_relative_to(cataloged_owner.root):
-            raise ValueError("IP operating variant must stay inside its owner")
         variant_document = None
         if variant_source_documents is not None:
             variant_document = variant_source_documents.get(variant_path)
@@ -672,8 +650,7 @@ def load_ip_integration_contract(
 
     implementation_profiles, implementation_documents = _implementation_profiles(
         raw,
-        project_root=root,
-        owner_root=cataloged_owner.root,
+        project=repository,
         owner=component.owner,
     )
     source_documents.update(implementation_documents)
@@ -763,24 +740,22 @@ def resolve_ip_integration_contract(
     dependency_lock = (
         None
         if lock_value is None
-        else _project_relative(
+        else project.resolve_owner_file(
+            owner,
             lock_value,
             "dependency_lock",
-            project_root=root,
-        )[0]
+        )[1]
     )
     variants_raw = _table(raw.get("variants"), "variants")
     variants: list[IpOperatingVariant] = []
     expected_paths: set[Path] = set()
     for name, value in variants_raw.items():
         name = _string(name, "variant name")
-        _, variant_path = _project_relative(
+        variant_path, _ = project.resolve_owner_file(
+            owner,
             value,
             f"variants.{name}",
-            project_root=root,
         )
-        if not variant_path.is_relative_to(owner.root):
-            raise ValueError("IP operating variant must stay inside its owner")
         expected_paths.add(variant_path)
         document = snapshot.source_documents.get(variant_path)
         if not isinstance(document, Mapping):
@@ -797,8 +772,7 @@ def resolve_ip_integration_contract(
         )
     implementation_profiles, implementation_documents = _implementation_profiles(
         raw,
-        project_root=root,
-        owner_root=owner.root,
+        project=project,
         owner=component.owner,
         source_documents=snapshot.source_documents,
     )
@@ -828,10 +802,17 @@ def load_ip_dependency_lock(
     path: Path, *, contract: IpIntegrationContract
 ) -> IpDependencyLock:
     lock_path = path.resolve()
-    if not lock_path.is_relative_to(contract.project_root):
-        raise ValueError("IP dependency lock must be inside the project root")
-    if not lock_path.is_file():
-        raise FileNotFoundError(f"IP dependency lock is missing: {lock_path}")
+    try:
+        relative = lock_path.relative_to(contract.project_root).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            "IP dependency lock must stay inside its owner root"
+        ) from exc
+    lock_path, _ = contract.project.resolve_owner_file(
+        contract.owner,
+        relative,
+        "IP dependency lock",
+    )
     with lock_path.open("rb") as stream:
         raw: dict[str, Any] = tomllib.load(stream)
     require_config_header(
