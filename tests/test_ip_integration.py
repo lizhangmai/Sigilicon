@@ -1899,7 +1899,7 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
         )
 
 
-def test_ip_integration_keeps_physical_readiness_separate_from_source_planning(
+def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "project"
@@ -1915,6 +1915,21 @@ def test_ip_integration_keeps_physical_readiness_separate_from_source_planning(
         encoding="utf-8",
     )
 
+    with pytest.raises(RuntimeError, match="unavailable for synthesis"):
+        check_ip_integration(
+            contract,
+            project_root=project_root,
+            artifact_root=artifact_root,
+            variant_name="default",
+        )
+
+    variant.write_text(
+        variant.read_text(encoding="utf-8").replace(
+            'required_capability = "synthesis"',
+            'required_capability = "physical_implementation"',
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(RuntimeError, match="physical binding is blocked"):
         check_ip_integration(
             contract,

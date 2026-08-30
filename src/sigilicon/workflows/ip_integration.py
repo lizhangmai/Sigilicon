@@ -615,7 +615,7 @@ def check_ip_integration(
     fileset = variant.get_fileset(fileset_name)
     binding = variant.physical_binding
     if (
-        fileset.required_capability in {"synthesis", "physical_implementation"}
+        fileset.required_capability == "physical_implementation"
         and binding is not None
         and binding.status != "ready"
     ):
