@@ -19,7 +19,6 @@ from sigilicon.domain.repository import (
     RepositoryOwner,
 )
 from sigilicon.flow import (
-    FlowEngine,
     parse_flow_catalog,
     resolve_catalog_selection,
 )
@@ -31,12 +30,7 @@ from sigilicon.workflows.project_flow import (
 )
 from sigilicon.workflows.design_artifacts import DesignArtifactInterface
 from sigilicon.workflows.design_campaign import (
-    DesignCampaign,
-    DesignCampaignAttempt,
-    DesignCampaignContinuation,
-    DesignCampaignRunner,
-    DesignCampaignSpec,
-    design_campaign_spec_from_json,
+    resolve_project_design_campaign,
 )
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.design_promotion import (
@@ -84,15 +78,6 @@ def _public_value(value: Any, *, field: str | None = None) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     raise ValueError("record contains a non-portable public value")
-
-
-@dataclass(frozen=True)
-class ResolvedAgenticCampaignPlan:
-    engine: FlowEngine
-    campaign: DesignCampaign
-    campaign_identity: str
-    plan_record: dict[str, Any]
-    source: DesignCampaignSpec
 
 
 @dataclass(frozen=True)
@@ -253,70 +238,8 @@ class AgenticReadInterface:
 
         return resolve_project_flow_plan(self.project, plan_identity)
 
-    def resolve_campaign_plan(
-        self,
-        campaign_json: str,
-    ) -> ResolvedAgenticCampaignPlan:
-        """Compile strict semantic Flow selectors into one bounded Campaign."""
-
-        source = design_campaign_spec_from_json(campaign_json)
-        self._owner(source.owner)
-        source_baseline = source.baseline
-        resolved = self.resolve_flow_plan(
-            owner=source.owner,
-            flow=source_baseline.flow,
-            target=source_baseline.target,
-            profile=source_baseline.profile,
-        )
-        engine = resolved.engine
-        baseline = DesignCampaignAttempt(
-            source_baseline.iteration_id,
-            resolved.plan,
-            source_baseline.candidate,
-            source_baseline.artifacts,
-            source_baseline.stages,
-            None,
-        )
-        continuation = None
-        if source.continuation is not None:
-            template = source.continuation
-            resolved = self.resolve_flow_plan(
-                owner=source.owner,
-                flow=template.flow,
-                target=template.target,
-                profile=template.profile,
-            )
-            continuation = DesignCampaignContinuation(
-                resolved.plan,
-                template.candidate,
-                template.artifacts,
-                template.stages,
-                template.proposal_node,
-                template.repair_policy,
-            )
-        campaign = DesignCampaign(
-            source.owner,
-            source.campaign_id,
-            baseline,
-            source.budget,
-            source.scope,
-            continuation,
-        )
-        runner = DesignCampaignRunner(
-            engine,
-            artifact_root=self.project.artifact_root,
-        )
-        record = runner.plan_record(campaign)
-        return ResolvedAgenticCampaignPlan(
-            engine,
-            campaign,
-            runner.campaign_identity(campaign),
-            record,
-            source,
-        )
-
     def plan_campaign(self, *, campaign_json: str) -> dict[str, Any]:
-        resolved = self.resolve_campaign_plan(campaign_json)
+        resolved = resolve_project_design_campaign(self.project, campaign_json)
         campaign = resolved.campaign
         return self.response(
             operation="campaign.plan",
@@ -327,8 +250,8 @@ class AgenticReadInterface:
                 "one explicit baseline attempt; no backend was executed."
             ),
             data={
-                "campaign_identity": resolved.campaign_identity,
-                "plan": resolved.plan_record,
+                "campaign_identity": resolved.identity,
+                "plan": resolved.record,
             },
             resources=[
                 self.project_resource_uri,
@@ -666,5 +589,4 @@ class AgenticReadInterface:
 __all__ = [
     "AgenticReadInterface",
     "READ_RESULT_KIND",
-    "ResolvedAgenticCampaignPlan",
 ]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import json
 from pathlib import Path
@@ -39,6 +39,7 @@ from sigilicon.domain.circuit_design import (
     validate_design_candidate,
     validate_design_decision,
 )
+from sigilicon.domain.repository import Project
 from sigilicon.flow import (
     ExecutionEnvironment,
     FlowContractError,
@@ -59,6 +60,7 @@ from sigilicon.workflows.design_repair import (
     attribute_design_failure,
     compile_design_repair,
 )
+from sigilicon.workflows.project_flow import ProjectFlow
 
 
 DESIGN_CAMPAIGN_ITERATION_EXTENSION = "design_campaign_iteration"
@@ -1524,6 +1526,92 @@ class DesignCampaignRunner:
             f"Design Campaign stopped with {termination.value}",
         )
 
+
+@dataclass(frozen=True)
+class ProjectDesignCampaignPlan:
+    """One semantic Campaign compiled against one exact Project."""
+
+    campaign: DesignCampaign
+    _engine: FlowEngine = field(repr=False, compare=False)
+    _artifact_root: Path = field(repr=False, compare=False)
+
+    @property
+    def identity(self) -> str:
+        return self.runner().campaign_identity(self.campaign)
+
+    @property
+    def record(self) -> dict[str, object]:
+        return self.runner().plan_record(self.campaign)
+
+    def runner(
+        self,
+        *,
+        environment: ExecutionEnvironment | None = None,
+        execution_context_identity: str = "default-execution-context",
+    ) -> DesignCampaignRunner:
+        return DesignCampaignRunner(
+            self._engine,
+            artifact_root=self._artifact_root,
+            environment=environment,
+            execution_context_identity=execution_context_identity,
+        )
+
+
+def resolve_project_design_campaign(
+    project: Project,
+    campaign_json: str,
+) -> ProjectDesignCampaignPlan:
+    """Compile portable Campaign selectors through project-owned Flow catalogs."""
+
+    source = design_campaign_spec_from_json(campaign_json)
+    project_flow = ProjectFlow(project, source.owner)
+    source_baseline = source.baseline
+    baseline_plan = project_flow.plan(
+        flow=source_baseline.flow,
+        target=source_baseline.target,
+        profile=source_baseline.profile,
+    )
+    baseline = DesignCampaignAttempt(
+        source_baseline.iteration_id,
+        baseline_plan.plan,
+        source_baseline.candidate,
+        source_baseline.artifacts,
+        source_baseline.stages,
+        None,
+    )
+    continuation = None
+    if source.continuation is not None:
+        template = source.continuation
+        continuation_plan = project_flow.plan(
+            flow=template.flow,
+            target=template.target,
+            profile=template.profile,
+        )
+        continuation = DesignCampaignContinuation(
+            continuation_plan.plan,
+            template.candidate,
+            template.artifacts,
+            template.stages,
+            template.proposal_node,
+            template.repair_policy,
+        )
+    campaign = DesignCampaign(
+        source.owner,
+        source.campaign_id,
+        baseline,
+        source.budget,
+        source.scope,
+        continuation,
+    )
+    planned = ProjectDesignCampaignPlan(
+        campaign,
+        baseline_plan.engine,
+        project.artifact_root,
+    )
+    _ = planned.record
+    return planned
+
+
 __all__ = [
     "DesignArtifactBinding",
     "DesignCampaign",
@@ -1544,7 +1632,9 @@ __all__ = [
     "DesignStageAssessment",
     "DesignStageBinding",
     "DesignStageStatus",
+    "ProjectDesignCampaignPlan",
     "design_campaign_result_from_json",
     "design_campaign_spec_from_json",
     "design_campaign_state_from_json",
+    "resolve_project_design_campaign",
 ]

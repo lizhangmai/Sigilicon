@@ -27,9 +27,12 @@ from sigilicon.flow import (
 )
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_campaign import (
+    DesignCampaign,
     DesignCampaignPhase,
     DesignCampaignResult,
     DesignCampaignRunner,
+    ProjectDesignCampaignPlan,
+    resolve_project_design_campaign,
 )
 from sigilicon.workflows.design_repair import design_repair_proposal_from_json
 from sigilicon.workflows.agentic_campaigns import (
@@ -257,13 +260,16 @@ class AgenticExecutionInterface:
         if starting:
             if campaign_json is None or campaign_identity is None:
                 raise ValueError("campaign.run start requires Campaign JSON and identity")
-            resolved = self.read.resolve_campaign_plan(campaign_json)
-            if campaign_identity != resolved.campaign_identity:
+            resolved = resolve_project_design_campaign(
+                self.read.project,
+                campaign_json,
+            )
+            if campaign_identity != resolved.identity:
                 raise ValueError("Design Campaign identity drift")
             required = self._campaign_capabilities(resolved.campaign)
             self.grant.authorize(
                 campaign_identity,
-                resolved.plan_record,
+                resolved.record,
                 required,
                 instant=datetime.now(timezone.utc),
             )
@@ -297,7 +303,7 @@ class AgenticExecutionInterface:
                 "required_capabilities": [item.value for item in required],
                 "environment_identity": self.environment_identity,
                 "environment_record_json": self.environment_record_json,
-                "campaign_plan_record_json": canonical_json(resolved.plan_record),
+                "campaign_plan_record_json": canonical_json(resolved.record),
                 "submitted_at": (
                     _now()
                     if stored_request is None
@@ -329,17 +335,20 @@ class AgenticExecutionInterface:
                 != self.environment_record_json
             ):
                 raise ValueError("Design Campaign Run belongs to a different grant")
-            resolved = self.read.resolve_campaign_plan(located.campaign_json)
+            resolved = resolve_project_design_campaign(
+                self.read.project,
+                located.campaign_json,
+            )
             if (
-                located.request["campaign_identity"] != resolved.campaign_identity
+                located.request["campaign_identity"] != resolved.identity
                 or located.request["campaign_plan_record_json"]
-                != canonical_json(resolved.plan_record)
+                != canonical_json(resolved.record)
             ):
                 raise ValueError("Design Campaign persisted plan record drift")
             required = self._campaign_capabilities(resolved.campaign)
             self.grant.authorize(
-                resolved.campaign_identity,
-                resolved.plan_record,
+                resolved.identity,
+                resolved.record,
                 required,
                 instant=datetime.now(timezone.utc),
             )
@@ -380,7 +389,7 @@ class AgenticExecutionInterface:
             data={
                 "management": {
                     "run_id": selected_run_id,
-                    "campaign_identity": resolved.campaign_identity,
+                    "campaign_identity": resolved.identity,
                     "grant_identity": self.grant.identity,
                     "status": (
                         state.phase.value
@@ -407,7 +416,9 @@ class AgenticExecutionInterface:
         )
 
     @staticmethod
-    def _campaign_capabilities(campaign: object) -> tuple[AgenticExecutionCapability, ...]:
+    def _campaign_capabilities(
+        campaign: DesignCampaign,
+    ) -> tuple[AgenticExecutionCapability, ...]:
         plans = [campaign.baseline.plan]
         if campaign.continuation is not None:
             plans.append(campaign.continuation.plan)
@@ -422,10 +433,11 @@ class AgenticExecutionInterface:
             )
         )
 
-    def _campaign_runner(self, resolved: object) -> DesignCampaignRunner:
-        return DesignCampaignRunner(
-            resolved.engine,
-            artifact_root=self.read.project.artifact_root,
+    def _campaign_runner(
+        self,
+        resolved: ProjectDesignCampaignPlan,
+    ) -> DesignCampaignRunner:
+        return resolved.runner(
             environment=self.execution_environment,
             execution_context_identity=(
                 f"{self.grant.approval}-{self.environment_identity}"
