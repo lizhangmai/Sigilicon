@@ -10,7 +10,7 @@ from typing import Mapping
 
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
-from sigilicon.flow.model import SourceMember
+from sigilicon.flow.model import EVIDENCE_LEVELS, EVIDENCE_ROLES, SourceMember, identifier
 from sigilicon.flow.source_assets import (
     snapshot_source_member,
     source_member_matches,
@@ -47,6 +47,10 @@ class DesignMode:
     default_args: tuple[str, ...]
     flow: str
     target: str
+    action_kind: str | None = None
+    evidence_role: str | None = None
+    evidence_level: str | None = None
+    evidence_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -241,11 +245,45 @@ def _modes(
     if not isinstance(routes, Mapping) or set(routes) != set(value):
         raise ValueError(f"{field.removesuffix('.modes')}.routes must map every mode")
     result: list[DesignMode] = []
-    for name, raw_args in value.items():
+    for name, raw_mode in value.items():
         if not isinstance(name, str) or _NAME_RE.fullmatch(name) is None:
             raise ValueError(f"{field} mode names must match {_NAME_RE.pattern!r}")
+        action_kind = None
+        evidence_role = None
+        evidence_level = None
+        evidence_scope = None
+        if isinstance(raw_mode, Mapping):
+            unknown = set(raw_mode) - {
+                "args",
+                "action",
+                "evidence_role",
+                "evidence_level",
+                "evidence_scope",
+            }
+            if unknown:
+                raise ValueError(
+                    f"{field}.{name} contains unknown fields: {sorted(unknown)}"
+                )
+            raw_args = raw_mode.get("args", [])
+            action_kind = raw_mode.get("action")
+            evidence_role = raw_mode.get("evidence_role", "diagnostic")
+            evidence_level = raw_mode.get("evidence_level")
+            evidence_scope = raw_mode.get("evidence_scope")
+            if not isinstance(action_kind, str):
+                raise ValueError(f"{field}.{name}.action must be text")
+            identifier(action_kind, f"{field}.{name}.action")
+            if evidence_role not in EVIDENCE_ROLES:
+                raise ValueError(f"{field}.{name}.evidence_role is unsupported")
+            if evidence_level not in EVIDENCE_LEVELS:
+                raise ValueError(f"{field}.{name}.evidence_level is unsupported")
+            if evidence_scope is not None and (
+                not isinstance(evidence_scope, str) or not evidence_scope
+            ):
+                raise ValueError(f"{field}.{name}.evidence_scope must be text")
+        else:
+            raw_args = raw_mode
         if not isinstance(raw_args, (list, tuple)):
-            raise ValueError(f"{field}.{name} must be a string array")
+            raise ValueError(f"{field}.{name}.args must be a string array")
         arguments = tuple(raw_args)
         _validate_runner_args(arguments, f"{field}.{name}")
         route = routes[name]
@@ -261,7 +299,18 @@ def _modes(
                 f"{field.removesuffix('.modes')}.routes.{name} must be "
                 "[flow, target] identifiers"
             )
-        result.append(DesignMode(name, arguments, route[0], route[1]))
+        result.append(
+            DesignMode(
+                name,
+                arguments,
+                route[0],
+                route[1],
+                action_kind,
+                evidence_role,
+                evidence_level,
+                evidence_scope,
+            )
+        )
     return tuple(result)
 
 

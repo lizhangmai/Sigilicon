@@ -7,6 +7,14 @@ import sigilicon.domain.repository as repository_module
 
 from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
+from sigilicon.flow import (
+    FlowNode,
+    FlowSpec,
+    LayoutCatalogExpansion,
+    PolicyCheck,
+    PolicySpec,
+)
+from sigilicon.workflows.catalog_flow import compile_layout_catalog_flow
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
 from conftest import write_component_owner
@@ -138,6 +146,38 @@ def test_layout_catalog_preserves_project_identity(tmp_path: Path) -> None:
     catalog = load_layout_target_catalog(project=project)
 
     assert catalog.project is project
+
+
+def test_layout_catalog_routes_compile_to_ordinary_flow_nodes(tmp_path: Path) -> None:
+    _catalog_project(tmp_path)
+    project = Project.from_project_root(tmp_path)
+    catalog = load_layout_target_catalog(project).for_owner("example")
+    source = FlowSpec(
+        owner="example",
+        flow_id="layout-validation",
+        nodes=(),
+        targets=(),
+        policies=(
+            PolicySpec("generated", (PolicyCheck("passed", "passed", "exists"),)),
+            PolicySpec("verified", (PolicyCheck("passed", "passed", "exists"),)),
+        ),
+        catalog_expansion=LayoutCatalogExpansion("generated", "verified"),
+        owner_root=tmp_path / "ip/example",
+    )
+
+    compiled = compile_layout_catalog_flow(source, catalog)
+
+    assert source.nodes == ()
+    assert all(isinstance(node, FlowNode) for node in compiled.nodes)
+    assert tuple(node.node_id for node in compiled.nodes) == (
+        "leaf-generate",
+        "leaf-verify-drc",
+        "leaf-verify-lvs",
+    )
+    assert compiled.target("leaf-verify-all").goals == (
+        "leaf-verify-drc",
+        "leaf-verify-lvs",
+    )
 
 
 def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:

@@ -20,11 +20,13 @@ from sigilicon.domain.repository import (
 )
 from sigilicon.flow import (
     ExecutionEnvironment,
+    DesignCatalogExpansion,
     FlowCatalog,
     FlowEngine,
     FlowPlan,
     FlowProgress,
     FlowResult,
+    LayoutCatalogExpansion,
     PreflightResult,
     parse_flow_catalog,
     resolve_catalog_selection,
@@ -47,6 +49,10 @@ from sigilicon.flow.layout import (
 from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.catalog_flow import (
+    compile_design_catalog_flow,
+    compile_layout_catalog_flow,
+)
 from sigilicon.workflows.design_targets import (
     DesignTargetCatalog,
     load_design_target_catalog,
@@ -517,6 +523,46 @@ class ProjectFlow:
             flow_id=request.flow,
             profile_id=request.profile,
         )
+        if isinstance(selection.spec.catalog_expansion, DesignCatalogExpansion):
+            catalog = load_design_target_catalog(
+                self.project,
+                catalog_inventory=catalog_inventory,
+            ).for_owner(self.owner.name)
+            matches = [
+                DesignRunSelection(target.name, mode.name)
+                for target in catalog.targets
+                for mode in target.modes
+                if mode.flow == request.flow and mode.target == request.target
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"expanded design Flow target {request.target!r} resolved "
+                    f"{matches!r}"
+                )
+            if request.profile not in {None, selection.profile.profile_id}:
+                raise ValueError("expanded design route profile drift")
+            return self._plan_design(matches[0])
+        if isinstance(selection.spec.catalog_expansion, LayoutCatalogExpansion):
+            from sigilicon.workflows.layout_targets import load_layout_target_catalog
+
+            catalog = load_layout_target_catalog(
+                self.project,
+                catalog_inventory=catalog_inventory,
+            ).for_owner(self.owner.name)
+            matches = [
+                LayoutRunSelection(target.name, route.operation)
+                for target in catalog.targets
+                for route in target.routes
+                if route.flow == request.flow and route.target == request.target
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"expanded layout Flow target {request.target!r} resolved "
+                    f"{matches!r}"
+                )
+            if request.profile not in {None, selection.profile.profile_id}:
+                raise ValueError("expanded layout route profile drift")
+            return self._plan_layout(matches[0])
         engine = self._engine(catalog_inventory)
         return self._bind(
             engine,
@@ -541,9 +587,17 @@ class ProjectFlow:
             flow_id=selected_mode.flow,
             profile_id=None,
         )
+        spec = (
+            compile_design_catalog_flow(selection.spec, selected_catalog)
+            if isinstance(
+                selection.spec.catalog_expansion,
+                DesignCatalogExpansion,
+            )
+            else selection.spec
+        )
         return self._bind(
             engine,
-            engine.plan(selection.spec, selected_mode.target, selection.profile),
+            engine.plan(spec, selected_mode.target, selection.profile),
         )
 
     def _plan_layout(self, request: LayoutRunSelection) -> ProjectFlowPlan:
@@ -582,9 +636,17 @@ class ProjectFlow:
             flow_id=route.flow,
             profile_id=None,
         )
+        spec = (
+            compile_layout_catalog_flow(selection.spec, selected_catalog)
+            if isinstance(
+                selection.spec.catalog_expansion,
+                LayoutCatalogExpansion,
+            )
+            else selection.spec
+        )
         return self._bind(
             engine,
-            engine.plan(selection.spec, route.target, selection.profile),
+            engine.plan(spec, route.target, selection.profile),
         )
 
     def _plan_oa_simulation(
@@ -682,13 +744,12 @@ class ProjectFlow:
     ) -> dict[str, Any]:
         """Read one persisted result selected through this owner's catalog."""
 
-        selection = resolve_catalog_selection(self.catalog(), flow_id=flow)
-        selected_target = selection.spec.target(target)
+        planned = self.plan(RunRequest.flow(flow, target))
         return FlowEngine(FlowRegistry()).read_run_result(
             artifact_root=self.project.artifact_root,
             owner=self.owner.name,
-            flow_id=selection.spec.flow_id,
-            target=selected_target.target_id,
+            flow_id=planned.flow,
+            target=planned.target,
             run_id=run_id,
         )
 
@@ -701,13 +762,12 @@ class ProjectFlow:
     ) -> None:
         """Remove one manifest-owned result selected through this owner."""
 
-        selection = resolve_catalog_selection(self.catalog(), flow_id=flow)
-        selected_target = selection.spec.target(target)
+        planned = self.plan(RunRequest.flow(flow, target))
         FlowEngine(FlowRegistry()).clean_run(
             artifact_root=self.project.artifact_root,
             owner=self.owner.name,
-            flow_id=selection.spec.flow_id,
-            target=selected_target.target_id,
+            flow_id=planned.flow,
+            target=planned.target,
             run_id=run_id,
         )
 

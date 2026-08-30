@@ -11,6 +11,7 @@ from sigilicon.flow.model import (
     AdapterSelection,
     ArtifactBinding,
     CatalogSelection,
+    DesignCatalogExpansion,
     ExecutionProfile,
     FlowCatalog,
     FlowCatalogEntry,
@@ -18,6 +19,7 @@ from sigilicon.flow.model import (
     FlowNode,
     FlowSpec,
     FlowTarget,
+    LayoutCatalogExpansion,
     PolicyCheck,
     PolicySpec,
 )
@@ -90,7 +92,7 @@ def load_flow_contract(path: Path, *, owner_root: Path | None = None) -> FlowSpe
         raise FlowContractError(f"cannot read Flow contract {contract}: {exc}") from exc
     _reject_unknown(
         raw,
-        _HEADER_FIELDS | {"name", "nodes", "targets", "policies"},
+        _HEADER_FIELDS | {"name", "nodes", "targets", "policies", "expand"},
         str(contract),
     )
     if raw.get("schema") != 1:
@@ -100,7 +102,58 @@ def load_flow_contract(path: Path, *, owner_root: Path | None = None) -> FlowSpe
     if raw.get("path_scope") != "owner":
         raise FlowContractError("Flow path_scope must be 'owner'")
 
-    nodes_raw = raw.get("nodes")
+    expansion_raw = raw.get("expand")
+    expansion = None
+    if expansion_raw is not None:
+        expansion_table = _table(expansion_raw, "Flow expand")
+        kind = expansion_table.get("kind")
+        if kind == "design-target-routes":
+            _reject_unknown(
+                expansion_table,
+                {"kind", "policy", "evidence_role"},
+                "Flow expand",
+            )
+            expansion = DesignCatalogExpansion(
+                policy=_text(expansion_table.get("policy"), "Flow expand policy"),
+                evidence_role=_text(
+                    expansion_table.get("evidence_role", "diagnostic"),
+                    "Flow expand evidence_role",
+                ),
+            )
+        elif kind == "layout-target-routes":
+            _reject_unknown(
+                expansion_table,
+                {
+                    "kind",
+                    "generation_policy",
+                    "verification_policy",
+                    "evidence_role",
+                    "evidence_level",
+                },
+                "Flow expand",
+            )
+            expansion = LayoutCatalogExpansion(
+                generation_policy=_text(
+                    expansion_table.get("generation_policy"),
+                    "Flow expand generation_policy",
+                ),
+                verification_policy=_text(
+                    expansion_table.get("verification_policy"),
+                    "Flow expand verification_policy",
+                ),
+                evidence_role=_text(
+                    expansion_table.get("evidence_role", "regression"),
+                    "Flow expand evidence_role",
+                ),
+                evidence_level=_text(
+                    expansion_table.get("evidence_level", "l1"),
+                    "Flow expand evidence_level",
+                ),
+            )
+        else:
+            raise FlowContractError(f"unsupported Flow expansion kind: {kind!r}")
+
+    nodes_raw = raw.get("nodes", [])
     if not isinstance(nodes_raw, list):
         raise FlowContractError("Flow nodes must be an array of tables")
     nodes: list[FlowNode] = []
@@ -155,7 +208,7 @@ def load_flow_contract(path: Path, *, owner_root: Path | None = None) -> FlowSpe
             )
         )
 
-    targets_raw = raw.get("targets")
+    targets_raw = raw.get("targets", [])
     if not isinstance(targets_raw, list):
         raise FlowContractError("Flow targets must be an array of tables")
     targets: list[FlowTarget] = []
@@ -210,6 +263,7 @@ def load_flow_contract(path: Path, *, owner_root: Path | None = None) -> FlowSpe
         nodes=tuple(nodes),
         targets=tuple(targets),
         policies=tuple(policies),
+        catalog_expansion=expansion,
         owner_root=resolved_owner_root,
     )
 

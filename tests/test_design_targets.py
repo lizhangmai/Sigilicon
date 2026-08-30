@@ -40,8 +40,8 @@ entrypoint = "ip/example/leaf/run.py"
 spec_argument = "--spec"
 spec = "ip/example/leaf/design.toml"
 [targets.leaf.modes]
-topology = []
-sync = ["--overwrite"]
+topology = { action = "circuit-design.source-check", evidence_level = "l0" }
+sync = { args = ["--overwrite"], action = "circuit-design.source-check", evidence_level = "l0" }
 [targets.leaf.routes]
 topology = ["design-checks", "leaf-topology"]
 sync = ["design-checks", "leaf-sync"]
@@ -72,25 +72,10 @@ path_scope = "owner"
 owner = "example"
 name = "design-checks"
 
-[[nodes]]
-id = "leaf-topology"
-action = "circuit-design.source-check"
-config = { target = "leaf", mode = "topology", evidence_role = "diagnostic", evidence_level = "l0", evidence_scope = "leaf-topology" }
+[expand]
+kind = "design-target-routes"
 policy = "passed"
-
-[[nodes]]
-id = "leaf-sync"
-action = "circuit-design.source-check"
-config = { target = "leaf", mode = "sync", evidence_role = "diagnostic", evidence_level = "l0", evidence_scope = "leaf-sync" }
-policy = "passed"
-
-[[targets]]
-name = "leaf-topology"
-goals = ["leaf-topology"]
-
-[[targets]]
-name = "leaf-sync"
-goals = ["leaf-sync"]
+evidence_role = "diagnostic"
 
 [[policies]]
 id = "passed"

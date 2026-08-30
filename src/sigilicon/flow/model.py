@@ -656,12 +656,53 @@ class FlowTarget:
 
 
 @dataclass(frozen=True)
+class DesignCatalogExpansion:
+    """Compile design target routes into ordinary Flow nodes and targets."""
+
+    policy: str
+    evidence_role: str = "diagnostic"
+
+    def __post_init__(self) -> None:
+        identifier(self.policy, "design catalog expansion policy")
+        if self.evidence_role not in EVIDENCE_ROLES:
+            raise FlowContractError(
+                f"unsupported evidence role: {self.evidence_role!r}"
+            )
+
+
+@dataclass(frozen=True)
+class LayoutCatalogExpansion:
+    """Compile layout target routes into ordinary Flow nodes and targets."""
+
+    generation_policy: str
+    verification_policy: str
+    evidence_role: str = "regression"
+    evidence_level: str = "l1"
+
+    def __post_init__(self) -> None:
+        identifier(self.generation_policy, "layout generation policy")
+        identifier(self.verification_policy, "layout verification policy")
+        if self.evidence_role not in EVIDENCE_ROLES:
+            raise FlowContractError(
+                f"unsupported evidence role: {self.evidence_role!r}"
+            )
+        if self.evidence_level not in EVIDENCE_LEVELS:
+            raise FlowContractError(
+                f"unsupported evidence level: {self.evidence_level!r}"
+            )
+
+
+CatalogExpansion = DesignCatalogExpansion | LayoutCatalogExpansion
+
+
+@dataclass(frozen=True)
 class FlowSpec:
     owner: str
     flow_id: str
     nodes: tuple[FlowNode, ...]
     targets: tuple[FlowTarget, ...]
     policies: tuple[PolicySpec, ...] = ()
+    catalog_expansion: CatalogExpansion | None = None
     owner_root: Path | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -670,10 +711,15 @@ class FlowSpec:
         _unique(tuple(node.node_id for node in self.nodes), "Flow nodes")
         _unique(tuple(target.target_id for target in self.targets), "Flow targets")
         _unique(tuple(policy.policy_id for policy in self.policies), "Flow policies")
-        if not self.nodes:
-            raise FlowContractError("Flow must declare at least one node")
-        if not self.targets:
-            raise FlowContractError("Flow must declare at least one target")
+        if self.catalog_expansion is None:
+            if not self.nodes:
+                raise FlowContractError("Flow must declare at least one node")
+            if not self.targets:
+                raise FlowContractError("Flow must declare at least one target")
+        elif self.nodes or self.targets:
+            raise FlowContractError(
+                "catalog-expanded Flow cannot also declare nodes or targets"
+            )
         if self.owner_root is not None:
             object.__setattr__(self, "owner_root", Path(self.owner_root).resolve())
 
