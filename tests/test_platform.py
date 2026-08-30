@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -17,8 +18,10 @@ from sigilicon.domain.platform import (
     load_platform_inventory,
     PlatformInventory,
     resolve_platform,
+    resolve_platform_catalog,
     resolve_platform_snapshot,
 )
+from sigilicon.domain.config_contracts import thaw_toml_document
 from sigilicon.domain.repository import RepositoryContext
 
 
@@ -84,6 +87,118 @@ def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> N
         )
 
 
+def test_platform_resolvers_reject_mutable_snapshot_documents(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = RepositoryContext.from_project_root(tmp_path)
+    snapshot = load_platform(project, "testpdk")
+    catalog = load_platform_catalog(project)
+
+    with pytest.raises(ValueError, match="catalog document identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(
+                snapshot,
+                catalog_document=thaw_toml_document(snapshot.catalog_document),
+            ),
+        )
+    mutable_documents = MappingProxyType(
+        {
+            path: thaw_toml_document(document)
+            for path, document in snapshot.source_documents.items()
+        }
+    )
+    with pytest.raises(ValueError, match="source document identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(snapshot, source_documents=mutable_documents),
+        )
+    with pytest.raises(ValueError, match="catalog snapshot immutable"):
+        resolve_platform_catalog(
+            project,
+            snapshot=replace(
+                catalog,
+                document=thaw_toml_document(catalog.document),
+            ),
+        )
+    with pytest.raises(ValueError, match="catalog snapshot immutable"):
+        resolve_platform_catalog(
+            project,
+            snapshot=replace(catalog, manifests=dict(catalog.manifests)),
+        )
+
+
+def test_platform_resolver_rejects_mutable_typed_mappings(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_layout_platform(tmp_path)
+    layout_contract = tmp_path / "configs/platform/testpdk/layout.toml"
+    layout_contract.write_text(
+        layout_contract.read_text(encoding="utf-8")
+        + '''
+[oa_materialization.layers.routing1]
+layer = "M1"
+drawing_purpose = "drawing"
+pin_purpose = "pin"
+blockage_purpose = "drawing"
+
+[oa_materialization.vias]
+routing1_routing2 = "M2_M1c"
+''',
+        encoding="utf-8",
+    )
+    project = RepositoryContext.from_project_root(tmp_path)
+    snapshot = load_platform(project, "testpdk")
+
+    with pytest.raises(ValueError, match="typed mapping identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(
+                snapshot,
+                simulation=replace(
+                    snapshot.simulation,
+                    model_sets=dict(snapshot.simulation.model_sets),
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="typed mapping identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(
+                snapshot,
+                oa=replace(
+                    snapshot.oa,
+                    primitive_subcircuits=dict(
+                        snapshot.oa.primitive_subcircuits
+                    ),
+                ),
+            ),
+        )
+    assert snapshot.layout is not None
+    assert snapshot.layout.oa_materialization is not None
+    forged_materialization = replace(
+        snapshot.layout.oa_materialization,
+        layers=dict(snapshot.layout.oa_materialization.layers),
+    )
+    with pytest.raises(ValueError, match="typed mapping identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            snapshot=replace(
+                snapshot,
+                layout=replace(
+                    snapshot.layout,
+                    oa_materialization=forged_materialization,
+                ),
+            ),
+        )
+
+
 def test_operation_platform_inventory_uses_one_validated_platform_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -107,6 +222,30 @@ def test_operation_platform_inventory_uses_one_validated_platform_set(
             project=project,
             catalog=inventory.catalog,
             platforms={},
+        )
+    with pytest.raises(ValueError, match="catalog snapshot immutable"):
+        PlatformInventory(
+            _authority=platform_domain._PLATFORM_INVENTORY_AUTHORITY,
+            project=project,
+            catalog=replace(
+                inventory.catalog,
+                document=thaw_toml_document(inventory.catalog.document),
+            ),
+            platforms=inventory.platforms,
+        )
+    with pytest.raises(ValueError, match="catalog document identity drift"):
+        PlatformInventory(
+            _authority=platform_domain._PLATFORM_INVENTORY_AUTHORITY,
+            project=project,
+            catalog=inventory.catalog,
+            platforms={
+                "testpdk": replace(
+                    platform,
+                    catalog_document=thaw_toml_document(
+                        platform.catalog_document
+                    ),
+                )
+            },
         )
     with pytest.raises(TypeError, match="dataclass"):
         replace(inventory, platforms={})

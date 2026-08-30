@@ -21,6 +21,7 @@ from sigilicon.domain.repository import Project
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _PLATFORM_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 @dataclass(frozen=True)
@@ -177,10 +178,12 @@ class PlatformInventory(Mapping[str, PdkConfig]):
             or catalog.path != project.catalog("platform")
         ):
             raise ValueError("platform inventory catalog identity drift")
+        _validate_immutable_platform_catalog(catalog)
         selected = dict(platforms)
         if set(selected) != set(catalog.manifests):
             raise ValueError("platform inventory does not cover its complete catalog")
         for key, platform in selected.items():
+            _validate_immutable_platform_snapshot(platform)
             if (
                 platform.key != key
                 or platform.path != catalog.manifest(key)
@@ -188,10 +191,6 @@ class PlatformInventory(Mapping[str, PdkConfig]):
                 or not platform.source_paths
                 or platform.source_paths[0] != catalog.path
                 or set(platform.source_documents) != set(platform.source_paths[1:])
-                or any(
-                    not is_frozen_toml_document(document)
-                    for document in platform.source_documents.values()
-                )
             ):
                 raise ValueError("platform inventory identity drift")
         object.__setattr__(self, "_project", project)
@@ -254,6 +253,44 @@ class PlatformInventory(Mapping[str, PdkConfig]):
 PlatformSnapshot = PdkConfig | PlatformInventory
 
 
+def _validate_immutable_platform_catalog(
+    snapshot: PlatformCatalogSnapshot,
+) -> None:
+    if not isinstance(snapshot.manifests, _MAPPING_PROXY_TYPE) or not (
+        is_frozen_toml_document(snapshot.document)
+    ):
+        raise ValueError("platform catalog snapshot immutable identity drift")
+
+
+def _validate_immutable_platform_snapshot(snapshot: PdkConfig) -> None:
+    if not is_frozen_toml_document(snapshot.catalog_document):
+        raise ValueError("platform snapshot catalog document identity drift")
+    if not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE) or any(
+        not is_frozen_toml_document(document)
+        for document in snapshot.source_documents.values()
+    ):
+        raise ValueError("platform snapshot source document identity drift")
+    typed_mappings: list[Mapping[str, object]] = [
+        snapshot.simulation.model_sets,
+        snapshot.oa.primitive_subcircuits,
+    ]
+    if (
+        snapshot.layout is not None
+        and snapshot.layout.oa_materialization is not None
+    ):
+        typed_mappings.extend(
+            (
+                snapshot.layout.oa_materialization.layers,
+                snapshot.layout.oa_materialization.vias,
+            )
+        )
+    if any(
+        not isinstance(mapping, _MAPPING_PROXY_TYPE)
+        for mapping in typed_mappings
+    ):
+        raise ValueError("platform snapshot typed mapping identity drift")
+
+
 def resolve_platform(
     context: Project,
     key: str,
@@ -268,6 +305,7 @@ def resolve_platform(
         raise ValueError(
             f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
         )
+    _validate_immutable_platform_snapshot(snapshot)
     root = context.project_root
     catalog_path = context.catalog("platform")
     if (
@@ -477,6 +515,7 @@ def resolve_platform_catalog(
 
     if snapshot is None:
         return load_platform_catalog(context)
+    _validate_immutable_platform_catalog(snapshot)
     validated = parse_platform_catalog(context, snapshot.document)
     if (
         snapshot.project_root != validated.project_root
