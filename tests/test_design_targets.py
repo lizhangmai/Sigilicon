@@ -12,7 +12,7 @@ from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
 from sigilicon.flow import ExecutionEnvironment, FlowExecutionError
 from sigilicon.workflows.design_targets import load_design_target_catalog
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
 
 from conftest import write_component_owner
 
@@ -222,12 +222,7 @@ def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) ->
     _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
     workflow = ProjectFlow(project, "example")
-    catalog = load_design_target_catalog(project)
-    planned = workflow.plan_design(
-        catalog,
-        target="leaf",
-        mode="topology",
-    )
+    planned = workflow.plan(RunRequest.design("leaf", "topology"))
 
     result = workflow.run(
         planned,
@@ -564,8 +559,9 @@ def test_design_cli_runs_the_cataloged_typed_flow_route(
         def __init__(self, project, owner):
             events.append(("init", project.project_root, owner))
 
-        def plan_design(self, catalog, *, target, mode):
-            events.append(("plan-design", catalog.get(target).name, mode))
+        def plan(self, request):
+            selection = request.selection
+            events.append(("plan-design", selection.target, selection.mode))
             return "planned"
 
         def run(self, planned, environment, *, run_id):

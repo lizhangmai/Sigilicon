@@ -9,7 +9,12 @@ import sigilicon.domain.repository as repository_module
 from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.domain.repository import Project
 from sigilicon.flow import ExecutionEnvironment
-from sigilicon.workflows.project_flow import ProjectFlow, resolve_project_flow_plan
+from sigilicon.workflows.project_flow import (
+    FlowRunSelection,
+    ProjectFlow,
+    RunRequest,
+    resolve_project_flow_plan,
+)
 
 from conftest import write_component_owner
 
@@ -151,12 +156,18 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     assert catalog_reads == 1
 
     catalog_reads = 0
-    planned = project_flow.plan(flow="owner-flow", target="all")
+    request = RunRequest.flow("owner-flow", "all")
+    assert request.selection == FlowRunSelection("owner-flow", "all")
+    assert RunRequest.oa_simulation("tb_NATIVE").selection.testbench == "tb_NATIVE"
+    planned = project_flow.plan(request)
 
     assert planned.plan_identity == "example:owner-flow:all:local"
     assert not hasattr(planned, "engine")
     assert not hasattr(planned, "plan")
     assert catalog_reads == 1
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        project_flow.plan(request, flow="owner-flow", target="all")
 
     catalog_reads = 0
     resolved = resolve_project_flow_plan(

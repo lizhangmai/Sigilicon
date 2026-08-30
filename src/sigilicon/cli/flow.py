@@ -15,7 +15,6 @@ from sigilicon.flow import (
     ExecutionEnvironment,
     ResolvedCapability,
     load_execution_environment,
-    resolve_catalog_selection,
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
@@ -44,7 +43,7 @@ from sigilicon.workflows.layout_generation import (
 from sigilicon.workflows.layout_verification import find_calibre, find_xstream
 from sigilicon.workflows.oa_check import UnavailableBridge
 from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 
@@ -420,10 +419,8 @@ def _run_layout(
             target.owner,
             client_factory=client_factory,
         )
-        planned = project_flow.plan_layout(
-            catalog,
-            target=target.name,
-            operation=operation,
+        planned = project_flow.plan(
+            RunRequest.layout(target.name, operation),
         )
         environment = _layout_execution_environment(
             args,
@@ -521,10 +518,8 @@ def _run_design(
             return 0
         target.get_mode(args.mode)
         project_flow = ProjectFlow(project, target.owner)
-        planned = project_flow.plan_design(
-            catalog,
-            target=target.name,
-            mode=args.mode,
+        planned = project_flow.plan(
+            RunRequest.design(target.name, args.mode),
         )
         result = project_flow.run(
             planned,
@@ -603,31 +598,9 @@ def _run_oa(
             payload = plan.as_dict()
         elif args.action == "simulate":
             project_flow = ProjectFlow(workflow.project, workflow.owner_name)
-            matches: list[tuple[str, str]] = []
-            catalog = project_flow.catalog()
-            for entry in catalog.entries:
-                selection = resolve_catalog_selection(
-                    catalog,
-                    flow_id=entry.flow_id,
-                )
-                node_ids = {
-                    node.node_id
-                    for node in selection.spec.nodes
-                    if node.action_kind == "native-oa.simulate"
-                    and node.config.get("testbench") == args.testbench
-                }
-                matches.extend(
-                    (entry.flow_id, target.target_id)
-                    for target in selection.spec.targets
-                    if len(target.goals) == 1 and target.goals[0] in node_ids
-                )
-            if len(matches) != 1:
-                raise ValueError(
-                    "OA testbench must resolve to exactly one cataloged typed "
-                    f"Flow target: {args.testbench!r} resolved {matches!r}"
-                )
-            flow_id, target_id = matches[0]
-            planned = project_flow.plan(flow=flow_id, target=target_id)
+            planned = project_flow.plan(
+                RunRequest.oa_simulation(args.testbench),
+            )
             result = project_flow.run(
                 planned,
                 ExecutionEnvironment(

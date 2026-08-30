@@ -131,27 +131,14 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     _write_oa_owner(tmp_path)
-    node = SimpleNamespace(
-        node_id="simulate-main",
-        action_kind="native-oa.simulate",
-        config={"testbench": "tb_main"},
-    )
-    target = SimpleNamespace(target_id="tb-main-l2", goals=("simulate-main",))
-    selection = SimpleNamespace(
-        spec=SimpleNamespace(nodes=(node,), targets=(target,))
-    )
-    catalog = SimpleNamespace(entries=(SimpleNamespace(flow_id="native"),))
-    calls: list[tuple[str, str]] = []
+    calls: list[str] = []
 
     class TypedFlow:
         def __init__(self, _project, owner: str) -> None:
             assert owner == "fixture"
 
-        def catalog(self):
-            return catalog
-
-        def plan(self, *, flow: str, target: str):
-            calls.append((flow, target))
+        def plan(self, request):
+            calls.append(request.selection.testbench)
             return object()
 
         def run(self, _planned, environment):
@@ -171,11 +158,6 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
             }
 
     monkeypatch.setattr(flow_cli, "ProjectFlow", TypedFlow)
-    monkeypatch.setattr(
-        flow_cli,
-        "resolve_catalog_selection",
-        lambda *_args, **_kwargs: selection,
-    )
     assert not hasattr(flow_cli.ProjectOaWorkflow, "simulate")
 
     assert (
@@ -192,5 +174,5 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
         )
         == 0
     )
-    assert calls == [("native", "tb-main-l2")]
+    assert calls == ["tb_main"]
     assert "OA Maestro Flow completed: native/tb-main-l2" in capsys.readouterr().out

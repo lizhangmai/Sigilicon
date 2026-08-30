@@ -22,7 +22,7 @@ from sigilicon.flow import (
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -205,9 +205,7 @@ def main(
         if args.action in {"plan", "graph", "preflight", "run"}:
             project = _project_flow(args)
             resolved = project.plan(
-                flow=args.flow,
-                target=args.target,
-                profile=args.profile,
+                RunRequest.flow(args.flow, args.target, args.profile),
             )
             if args.action == "plan":
                 emit_json(resolved.record)

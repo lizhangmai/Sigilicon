@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
+import re
 import stat
 import sys
 from types import ModuleType
@@ -55,6 +56,105 @@ from sigilicon.workflows.layout_targets import LayoutTargetCatalog
 
 if TYPE_CHECKING:
     from sigilicon.virtuoso.client import VirtuosoClient
+
+
+@dataclass(frozen=True)
+class FlowRunSelection:
+    flow: str
+    target: str
+    profile: str | None = None
+
+    def __post_init__(self) -> None:
+        identifier(self.flow, "Flow identity")
+        identifier(self.target, "Flow target")
+        if self.profile is not None:
+            identifier(self.profile, "Execution Profile identity")
+
+
+@dataclass(frozen=True)
+class DesignRunSelection:
+    target: str
+    mode: str
+
+    def __post_init__(self) -> None:
+        identifier(self.target, "design target")
+        identifier(self.mode, "design mode")
+
+
+@dataclass(frozen=True)
+class LayoutRunSelection:
+    target: str
+    operation: str
+
+    def __post_init__(self) -> None:
+        identifier(self.target, "layout target")
+        if self.operation not in {
+            "generate",
+            "verify-drc",
+            "verify-lvs",
+            "verify-all",
+        }:
+            raise ValueError(f"unsupported layout operation: {self.operation!r}")
+
+
+@dataclass(frozen=True)
+class OaSimulationSelection:
+    testbench: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.testbench, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", self.testbench) is None
+        ):
+            raise ValueError(f"invalid OA simulation testbench: {self.testbench!r}")
+
+
+RunSelection = (
+    FlowRunSelection
+    | DesignRunSelection
+    | LayoutRunSelection
+    | OaSimulationSelection
+)
+
+
+@dataclass(frozen=True)
+class RunRequest:
+    """One typed project operation compiled through the canonical Flow seam."""
+
+    selection: RunSelection
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.selection,
+            (
+                FlowRunSelection,
+                DesignRunSelection,
+                LayoutRunSelection,
+                OaSimulationSelection,
+            ),
+        ):
+            raise ValueError("RunRequest selection must be a typed selection")
+
+    @classmethod
+    def flow(
+        cls,
+        flow: str,
+        target: str,
+        profile: str | None = None,
+    ) -> RunRequest:
+        return cls(FlowRunSelection(flow, target, profile))
+
+    @classmethod
+    def design(cls, target: str, mode: str) -> RunRequest:
+        return cls(DesignRunSelection(target, mode))
+
+    @classmethod
+    def layout(cls, target: str, operation: str) -> RunRequest:
+        return cls(LayoutRunSelection(target, operation))
+
+    @classmethod
+    def oa_simulation(cls, testbench: str) -> RunRequest:
+        return cls(OaSimulationSelection(testbench))
 
 
 def _default_client_factory() -> VirtuosoClient:
@@ -373,44 +473,64 @@ class ProjectFlow:
 
     def plan(
         self,
+        request: RunRequest | None = None,
         *,
-        flow: str,
-        target: str,
+        flow: str | None = None,
+        target: str | None = None,
         profile: str | None = None,
     ) -> ProjectFlowPlan:
-        flow_name = identifier(flow, "Flow identity")
-        target_name = identifier(target, "Flow target")
-        profile_name = (
-            None
-            if profile is None
-            else identifier(profile, "Execution Profile identity")
+        """Compile a typed request; keyword arguments are a compatibility facade."""
+
+        if request is None:
+            if flow is None or target is None:
+                raise ValueError("Flow planning requires a RunRequest")
+            request = RunRequest.flow(flow, target, profile)
+        elif flow is not None or target is not None or profile is not None:
+            raise ValueError("RunRequest cannot be combined with legacy Flow fields")
+        if not isinstance(request, RunRequest):
+            raise ValueError("ProjectFlow.plan requires a RunRequest")
+
+        selection = request.selection
+        if isinstance(selection, FlowRunSelection):
+            return self._plan_flow(selection)
+        if isinstance(selection, DesignRunSelection):
+            return self._plan_design(selection)
+        if isinstance(selection, LayoutRunSelection):
+            return self._plan_layout(selection)
+        if isinstance(selection, OaSimulationSelection):
+            return self._plan_oa_simulation(selection)
+        raise AssertionError("unhandled typed RunRequest")
+
+    def _plan_flow(
+        self,
+        request: FlowRunSelection,
+        *,
+        catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
+    ) -> ProjectFlowPlan:
+        catalog_inventory = (
+            self.project.owner_flow_catalog_inventory(self.owner)
+            if catalog_inventory is None
+            else catalog_inventory
         )
-        catalog_inventory = self.project.owner_flow_catalog_inventory(self.owner)
         selection = resolve_catalog_selection(
             self._catalog(catalog_inventory),
-            flow_id=flow_name,
-            profile_id=profile_name,
+            flow_id=request.flow,
+            profile_id=request.profile,
         )
         engine = self._engine(catalog_inventory)
         return self._bind(
             engine,
-            engine.plan(selection.spec, target_name, selection.profile),
+            engine.plan(selection.spec, request.target, selection.profile),
         )
 
-    def plan_design(
-        self,
-        catalog: DesignTargetCatalog,
-        *,
-        target: str,
-        mode: str,
-    ) -> ProjectFlowPlan:
-        """Compile one owner design intent into its exact typed Flow plan."""
-
-        if catalog.project is not self.project:
-            raise ValueError("design catalog does not belong to this exact Project")
-        selected_catalog = catalog.for_owner(self.owner.name)
-        selected_target = selected_catalog.get(target)
-        selected_mode = selected_target.get_mode(mode)
+    def _plan_design(self, request: DesignRunSelection) -> ProjectFlowPlan:
+        inventory = self.project.owner_flow_catalog_inventory(self.owner)
+        selected_catalog = load_design_target_catalog(
+            self.project,
+            catalog_inventory=inventory,
+        ).for_owner(self.owner.name)
+        selected_target = selected_catalog.get(request.target)
+        selected_mode = selected_target.get_mode(request.mode)
         engine = self._engine(
             selected_catalog.inventory,
             design_catalog=selected_catalog,
@@ -426,32 +546,28 @@ class ProjectFlow:
             engine.plan(selection.spec, selected_mode.target, selection.profile),
         )
 
-    def plan_layout(
-        self,
-        catalog: LayoutTargetCatalog,
-        *,
-        target: str,
-        operation: str,
-    ) -> ProjectFlowPlan:
-        """Compile one owner layout intent into its exact typed Flow plan."""
+    def _plan_layout(self, request: LayoutRunSelection) -> ProjectFlowPlan:
+        from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
+        from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
-        if catalog.project is not self.project:
-            raise ValueError("layout catalog does not belong to this exact Project")
-        selected_catalog = catalog.for_owner(self.owner.name)
-        selected_target = selected_catalog.get(target)
-        route = selected_target.get_route(operation)
+        inventory = self.project.owner_flow_catalog_inventory(self.owner)
+        selected_catalog = load_layout_target_catalog(
+            self.project,
+            catalog_inventory=inventory,
+        ).for_owner(self.owner.name)
+        selected_target = selected_catalog.get(request.target)
+        route = selected_target.get_route(request.operation)
         planning = plan_layout_spec(selected_target.spec, project=self.project)
         intent_sources = selected_catalog.source_members_for(
-            selected_target, planning
+            selected_target,
+            planning,
         )
-        from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
-
         adapter = ProjectLayoutTargetAdapter(
             self.project,
             self.owner.name,
             selected_catalog,
             target=selected_target.name,
-            operation=operation,
+            operation=request.operation,
             planning=planning,
             client_factory=self.client_factory,
             sources=intent_sources,
@@ -470,6 +586,59 @@ class ProjectFlow:
             engine,
             engine.plan(selection.spec, route.target, selection.profile),
         )
+
+    def _plan_oa_simulation(
+        self,
+        request: OaSimulationSelection,
+    ) -> ProjectFlowPlan:
+        inventory = self.project.owner_flow_catalog_inventory(self.owner)
+        catalog = self._catalog(inventory)
+        matches: list[FlowRunSelection] = []
+        for entry in catalog.entries:
+            selection = resolve_catalog_selection(catalog, flow_id=entry.flow_id)
+            node_ids = {
+                node.node_id
+                for node in selection.spec.nodes
+                if node.action_kind == "native-oa.simulate"
+                and node.config.get("testbench") == request.testbench
+            }
+            matches.extend(
+                FlowRunSelection(entry.flow_id, target.target_id)
+                for target in selection.spec.targets
+                if len(target.goals) == 1 and target.goals[0] in node_ids
+            )
+        if len(matches) != 1:
+            raise ValueError(
+                "OA testbench must resolve to exactly one cataloged typed "
+                f"Flow target: {request.testbench!r} resolved {matches!r}"
+            )
+        return self._plan_flow(matches[0], catalog_inventory=inventory)
+
+    def plan_design(
+        self,
+        catalog: DesignTargetCatalog,
+        *,
+        target: str,
+        mode: str,
+    ) -> ProjectFlowPlan:
+        """Compile one owner design intent into its exact typed Flow plan."""
+
+        if catalog.project is not self.project:
+            raise ValueError("design catalog does not belong to this exact Project")
+        return self.plan(RunRequest.design(target, mode))
+
+    def plan_layout(
+        self,
+        catalog: LayoutTargetCatalog,
+        *,
+        target: str,
+        operation: str,
+    ) -> ProjectFlowPlan:
+        """Compile one owner layout intent into its exact typed Flow plan."""
+
+        if catalog.project is not self.project:
+            raise ValueError("layout catalog does not belong to this exact Project")
+        return self.plan(RunRequest.layout(target, operation))
 
     def preflight(
         self,
@@ -590,9 +759,7 @@ def resolve_project_flow_plan(
         )
     owner, flow, target, profile = fields
     resolved = ProjectFlow(project, owner).plan(
-        flow=flow,
-        target=target,
-        profile=profile,
+        RunRequest.flow(flow, target, profile),
     )
     if resolved.plan_identity != plan_identity:
         raise ValueError("Flow Plan identity does not match its project plan")
@@ -600,7 +767,12 @@ def resolve_project_flow_plan(
 
 
 __all__ = [
+    "DesignRunSelection",
+    "FlowRunSelection",
+    "LayoutRunSelection",
+    "OaSimulationSelection",
     "ProjectFlow",
     "ProjectFlowPlan",
+    "RunRequest",
     "resolve_project_flow_plan",
 ]

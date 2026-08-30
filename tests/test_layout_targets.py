@@ -272,11 +272,11 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
             assert client_factory() is client
             self.operation = ""
 
-        def plan_layout(self, catalog, *, target, operation):
-            assert catalog.project is canonical_project
-            assert target == "leaf"
-            self.operation = operation
-            events.append((operation, canonical_project, client))
+        def plan(self, request):
+            selection = request.selection
+            assert selection.target == "leaf"
+            self.operation = selection.operation
+            events.append((selection.operation, canonical_project, client))
             return object()
 
         def run(self, planned, environment, *, run_id=None):
