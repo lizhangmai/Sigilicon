@@ -127,6 +127,18 @@ def test_workspace_rejects_wrong_virtuoso_workdir(tmp_path) -> None:
             pytest.fail("wrong workspace must not acquire the operation lock")
 
 
+def test_workspace_accepts_caller_owned_operation_identity(tmp_path) -> None:
+    operation_id = "a" * 32
+
+    with workspace_operation(
+        Client(tmp_path),
+        tmp_path,
+        "bound-operation",
+        operation_id=operation_id,
+    ) as operation:
+        assert operation.operation_id == operation_id
+
+
 def test_view_lease_preserves_unowned_new_hidden_read_view(
     monkeypatch, tmp_path, workspace_factory
 ) -> None:

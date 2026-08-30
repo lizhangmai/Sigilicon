@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 import uuid
 
 from sigilicon.external_tools import process_group_cleanup_uncertainty
+from sigilicon.paths import validate_artifact_id
 from sigilicon.virtuoso.capability import (
     WorkspaceAuthority,
     _WorkspaceCapability,
@@ -85,6 +86,7 @@ class WorkspaceOperation:
     _artifact_records: list[Any] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
+        validate_artifact_id(self.operation_id, "workspace operation id")
         _bind_workspace_capability(self._workspace_capability, self)
 
     def require_root_identity(self) -> None:
@@ -118,11 +120,11 @@ class WorkspaceOperation:
         return commit
 
     def register_artifact(self, record: Any) -> None:
-        """Associate one run/attempt so any safety incident is back-linked."""
+        """Associate one persisted execution so any incident is back-linked."""
 
         if self._artifact_records:
             raise RuntimeError(
-                "one workspace operation may own only one run/attempt artifact"
+                "one workspace operation may own only one execution record"
             )
         record.bind_operation(self.operation_id)
         self._artifact_records.append(record)
@@ -384,7 +386,7 @@ class WorkspaceOperation:
             return
         if not self._artifact_records:
             # An operation incident is not a free-standing log: the artifact
-            # contract requires an owning run/attempt manifest.  Artifactless
+            # contract requires an owning persisted execution.  Artifactless
             # interactive/read operations report their exception directly.
             return
         self.require_root_identity()
@@ -1020,6 +1022,7 @@ def workspace_operation(
     policy: OperationPolicy = OperationPolicy.DIRECT_MUTATION,
     acquire_flow_lock: bool = True,
     record_incident: bool = True,
+    operation_id: str | None = None,
 ) -> Iterator[WorkspaceOperation]:
     """Require local, correctly rooted, session-free automation.
 
@@ -1062,6 +1065,11 @@ def workspace_operation(
             policy=policy,
             _workspace_capability=capability,
             _root_identity=(root_metadata.st_dev, root_metadata.st_ino),
+            operation_id=(
+                uuid.uuid4().hex
+                if operation_id is None
+                else validate_artifact_id(operation_id, "workspace operation id")
+            ),
         )
         try:
             try:

@@ -38,6 +38,8 @@ def write_operation_incident(
     incident_paths.create()
     incident_path = incident_paths.incident
     payload = {
+        "schema": 1,
+        "contract_kind": "workspace-operation-incident",
         "operation_id": operation_id,
         "name": name,
         "policy": policy,

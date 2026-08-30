@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -10,7 +11,13 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 import uuid
 
-from sigilicon.artifacts import atomic_write_json, read_json_object, read_nofollow_text
+from sigilicon.artifacts import (
+    atomic_write_json,
+    load_operation_incident,
+    new_identity,
+    read_json_object,
+    read_nofollow_text,
+)
 from sigilicon.flow.environment import capability_available
 from sigilicon.flow.model import (
     ActionArtifact,
@@ -48,7 +55,13 @@ from sigilicon.flow.source_assets import (
     source_assets_payload,
     source_member_matches,
 )
-from sigilicon.paths import ArtifactLayout, ProjectScope
+from sigilicon.paths import (
+    ArtifactExecutionPaths,
+    ArtifactLayout,
+    ProjectScope,
+    operation_incident_reference,
+    validate_artifact_id,
+)
 
 
 _NODE_EXTENSION_RESERVED = frozenset(
@@ -74,6 +87,7 @@ _REQUEST_EXTENSION_RESERVED = frozenset(
         "node",
         "action",
         "adapter",
+        "operation_id",
         "action_config",
         "adapter_config",
         "execution_environment",
@@ -86,6 +100,149 @@ _RESERVED_EXTENSIONS = _NODE_EXTENSION_RESERVED | _REQUEST_EXTENSION_RESERVED
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class _FlowActionOperationRecord:
+    """Durable Action identity and optional workspace-incident backlink."""
+
+    paths: ArtifactExecutionPaths
+    path: Path
+    run_id: str
+    node_id: str
+    operation_id: str
+    incident_reference: str | None = None
+    bound: bool = False
+
+    def __post_init__(self) -> None:
+        validate_artifact_id(self.operation_id, "Action operation id")
+
+    def _persist(self) -> None:
+        atomic_write_json(
+            self.path,
+            {
+                "schema": 1,
+                "contract_kind": "flow-action-operation",
+                "run_id": self.run_id,
+                "node": self.node_id,
+                "operation_id": self.operation_id,
+                "incident_reference": self.incident_reference,
+            },
+        )
+
+    def bind_operation(self, operation_id: str) -> None:
+        identity = validate_artifact_id(operation_id, "operation id")
+        if identity != self.operation_id:
+            raise RuntimeError("Flow Action belongs to a different workspace operation")
+        self.bound = True
+        self._persist()
+
+    def bind_workspace_operation(self, operation: Any) -> None:
+        if getattr(operation, "operation_id", None) != self.operation_id:
+            raise FlowExecutionError("workspace operation identity drift")
+        operation.register_artifact(self)
+
+    def attach_incident(self, incident_path: Path) -> None:
+        if not self.bound:
+            raise RuntimeError("Flow Action is not bound to a workspace operation")
+        root = self.paths.artifact_root.resolve()
+        incident = Path(incident_path).absolute()
+        expected = root / operation_incident_reference(self.operation_id)
+        if incident != expected:
+            raise RuntimeError("Flow Action incident is outside its artifact root")
+        load_operation_incident(incident, self.operation_id)
+        reference = incident.relative_to(root).as_posix()
+        if self.incident_reference not in {None, reference}:
+            raise RuntimeError("Flow Action already refers to another incident")
+        self.incident_reference = reference
+        self._persist()
+
+
+def _validate_persisted_action_operation(
+    paths: ArtifactExecutionPaths,
+    *,
+    artifact_root: Path,
+    run_id: str,
+    node_id: str,
+    status: str,
+    operation_id: str | None,
+    incident_reference: str | None,
+) -> str | None:
+    """Close the run/action/workspace identity chain during restore."""
+
+    if (status == "blocked") != (operation_id is None):
+        raise FlowExecutionError("persisted Flow Action operation identity drift")
+    if operation_id is None:
+        if incident_reference is not None:
+            raise FlowExecutionError("blocked Flow Action cannot own an incident")
+        return None
+    try:
+        identity = validate_artifact_id(operation_id, "Action operation id")
+        expected_incident = operation_incident_reference(identity)
+    except ValueError as exc:
+        raise FlowExecutionError(str(exc)) from exc
+    if incident_reference is not None:
+        incident_relative = Path(incident_reference)
+        incident_path = artifact_root / incident_relative
+        if incident_relative != expected_incident:
+            raise FlowExecutionError("persisted Flow incident reference drift")
+        try:
+            load_operation_incident(incident_path, identity)
+        except RuntimeError as exc:
+            raise FlowExecutionError(str(exc)) from exc
+    try:
+        action_request = read_json_object(
+            paths.role("inputs") / node_id / "action_request.json",
+            "Flow Action Request",
+        )
+        action_result = read_json_object(
+            paths.role("outputs") / node_id / "action_result.json",
+            "Flow Action Result",
+        )
+    except (OSError, RuntimeError) as exc:
+        raise FlowExecutionError(str(exc)) from exc
+    if (
+        action_request.get("schema") != 2
+        or action_request.get("contract_kind") != "action-request"
+        or action_request.get("node") != node_id
+        or action_request.get("operation_id") != identity
+        or action_result.get("schema") != 2
+        or action_result.get("contract_kind") != "action-result"
+        or action_result.get("node") != node_id
+        or action_result.get("operation_id") != identity
+        or action_result.get("incident_reference") != incident_reference
+    ):
+        raise FlowExecutionError("persisted Flow Action record identity drift")
+    operation_path = paths.role("inputs") / node_id / "operation.json"
+    if operation_path.is_file():
+        try:
+            operation_record = read_json_object(
+                operation_path,
+                "Flow Action Operation",
+            )
+        except (OSError, RuntimeError) as exc:
+            raise FlowExecutionError(str(exc)) from exc
+        if set(operation_record) != {
+            "schema",
+            "contract_kind",
+            "run_id",
+            "node",
+            "operation_id",
+            "incident_reference",
+        } or operation_record != {
+            "schema": 1,
+            "contract_kind": "flow-action-operation",
+            "run_id": run_id,
+            "node": node_id,
+            "operation_id": identity,
+            "incident_reference": incident_reference,
+        }:
+            raise FlowExecutionError("persisted Flow Action operation drift")
+    elif incident_reference is not None:
+        raise FlowExecutionError(
+            "persisted Flow incident has no workspace operation record"
+        )
+    return identity
 
 
 def _plan_payload(
@@ -663,6 +820,13 @@ class FlowEngine:
             work_root.mkdir()
             output_root.mkdir()
             log_root.mkdir()
+            operation_record = _FlowActionOperationRecord(
+                paths=run_paths,
+                path=input_root / "operation.json",
+                run_id=identity,
+                node_id=node.node_id,
+                operation_id=new_identity(),
+            )
             context = ActionContext(
                 node_id=node.node_id,
                 action=action,
@@ -685,13 +849,18 @@ class FlowEngine:
                 source_assets=planned.source_assets,
                 extensions=node.extensions,
                 project_scope=self._project_scope,
+                operation_id=operation_record.operation_id,
+                _bind_workspace_operation=(
+                    operation_record.bind_workspace_operation
+                ),
             )
             request = {
-                "schema": 1,
+                "schema": 2,
                 "contract_kind": "action-request",
                 "node": node.node_id,
                 "action": node.action_kind,
                 "adapter": planned.adapter,
+                "operation_id": operation_record.operation_id,
                 "action_config": json_value(node.config),
                 "adapter_config": json_value(planned.adapter_config),
                 "execution_environment": environment_payload,
@@ -768,9 +937,11 @@ class FlowEngine:
                         error = f"{type(exc).__name__}: {exc}"
             finished = _utc_now()
             action_result = {
-                "schema": 1,
+                "schema": 2,
                 "contract_kind": "action-result",
                 "node": node.node_id,
+                "operation_id": operation_record.operation_id,
+                "incident_reference": operation_record.incident_reference,
                 "result_status": result_status,
                 "execution": {
                     "status": execution.status,
@@ -817,6 +988,8 @@ class FlowEngine:
                 artifacts=MappingProxyType(dict(artifacts)),
                 facts=MappingProxyType(dict(facts)),
                 reason=error,
+                operation_id=operation_record.operation_id,
+                incident_reference=operation_record.incident_reference,
             )
             outcomes[node.node_id] = outcome
             notify("running", len(outcomes), None)
@@ -826,7 +999,7 @@ class FlowEngine:
             else "failed"
         )
         flow_payload = {
-            "schema": 1,
+            "schema": 2,
             "contract_kind": "flow-result",
             "owner": plan.spec.owner,
             "flow": plan.spec.flow_id,
@@ -1016,9 +1189,12 @@ class FlowEngine:
             )
         except (OSError, RuntimeError) as exc:
             raise FlowExecutionError(str(exc)) from exc
+        if result.get("schema") != 2:
+            raise FlowExecutionError(
+                f"unsupported persisted Flow Result schema: {result.get('schema')!r}"
+            )
         if (
-            result.get("schema") != 1
-            or result.get("contract_kind") != "flow-result"
+            result.get("contract_kind") != "flow-result"
             or result.get("owner") != owner_id
             or result.get("flow") != flow_identity
             or result.get("target") != target_identity
@@ -1088,12 +1264,15 @@ class FlowEngine:
         self._validate_run_inventory(run_root, manifest)
         if resolved_plan != self.plan_record(plan):
             raise FlowExecutionError("persisted resolved Flow Plan record drift")
+        if record.get("schema") != 2:
+            raise FlowExecutionError(
+                f"unsupported persisted Flow Result schema: {record.get('schema')!r}"
+            )
         if set(record) != {
             "schema", "contract_kind", "owner", "flow", "target", "run_id",
             "status", "interrupted", "topology", "nodes",
         } or (
-            record["schema"] != 1
-            or record["contract_kind"] != "flow-result"
+            record["contract_kind"] != "flow-result"
             or record["owner"] != plan.spec.owner
             or record["flow"] != plan.spec.flow_id
             or record["target"] != plan.target.target_id
@@ -1111,7 +1290,8 @@ class FlowEngine:
             raw = record["nodes"][node_id]
             if not isinstance(raw, dict) or set(raw) != {
                 "status", "execution_status", "result_status", "policy_status",
-                "reason", "artifacts", "facts",
+                "reason", "artifacts", "facts", "operation_id",
+                "incident_reference",
             }:
                 raise FlowExecutionError("persisted Flow node fields drift")
             if (
@@ -1120,10 +1300,27 @@ class FlowEngine:
                 or raw["result_status"] not in {None, "valid", "failed", "partial", "uncertain"}
                 or raw["policy_status"] not in {None, "accepted", "rejected", "not-evaluated"}
                 or (raw["reason"] is not None and not isinstance(raw["reason"], str))
+                or (
+                    raw["operation_id"] is not None
+                    and not isinstance(raw["operation_id"], str)
+                )
+                or (
+                    raw["incident_reference"] is not None
+                    and not isinstance(raw["incident_reference"], str)
+                )
                 or not isinstance(raw["artifacts"], dict)
                 or not isinstance(raw["facts"], dict)
             ):
                 raise FlowExecutionError("persisted Flow node value drift")
+            operation_id = _validate_persisted_action_operation(
+                run_paths,
+                artifact_root=store_root,
+                run_id=identity,
+                node_id=node_id,
+                status=raw["status"],
+                operation_id=raw["operation_id"],
+                incident_reference=raw["incident_reference"],
+            )
             artifacts: dict[str, ActionArtifact] = {}
             contract = self._registry.action(plan.spec.node(node_id).action_kind)
             for role, payload in raw["artifacts"].items():
@@ -1165,14 +1362,16 @@ class FlowEngine:
                     payload["qualifiers"],
                 )
             outcomes[node_id] = NodeOutcome(
-                node_id,
-                raw["status"],
-                raw["execution_status"],
-                raw["result_status"],
-                raw["policy_status"],
-                MappingProxyType(artifacts),
-                MappingProxyType(dict(raw["facts"])),
-                raw["reason"],
+                node_id=node_id,
+                status=raw["status"],
+                execution_status=raw["execution_status"],
+                result_status=raw["result_status"],
+                policy_status=raw["policy_status"],
+                artifacts=MappingProxyType(artifacts),
+                facts=MappingProxyType(dict(raw["facts"])),
+                reason=raw["reason"],
+                operation_id=operation_id,
+                incident_reference=raw["incident_reference"],
             )
         return FlowResult(
             plan.spec.owner,
@@ -1435,6 +1634,8 @@ class FlowEngine:
             "result_status": outcome.result_status,
             "policy_status": outcome.policy_status,
             "reason": outcome.reason,
+            "operation_id": outcome.operation_id,
+            "incident_reference": outcome.incident_reference,
             "artifacts": {
                 role: self._artifact_payload(artifact, run_root)
                 for role, artifact in sorted(outcome.artifacts.items())

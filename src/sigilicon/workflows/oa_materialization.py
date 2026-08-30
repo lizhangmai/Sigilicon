@@ -965,7 +965,9 @@ class OaXStreamMaterializationAdapter:
             project.workspace_root,
             f"materialize {target.library}/{target.cell}/{target.view}",
             policy=OperationPolicy.DIRECT_MUTATION,
+            operation_id=context.operation_id,
         ) as operation:
+            context.bind_workspace_operation(operation)
             with operation.mutation_scope(
                 target.library,
                 cells=None,

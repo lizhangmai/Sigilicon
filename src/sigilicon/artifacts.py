@@ -507,6 +507,70 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return validate_manifest(read_json_object(path, "artifact manifest"))
 
 
+def load_operation_incident(path: Path, operation_id: str) -> dict[str, Any]:
+    """Read one nofollow operation incident and verify its exact identity."""
+
+    identity = validate_artifact_id(operation_id, "operation id")
+    value = read_json_object(path, "operation incident")
+    required = {
+        "schema",
+        "contract_kind",
+        "operation_id",
+        "name",
+        "policy",
+        "status",
+        "workspace_root",
+        "recorded_at",
+        "error_type",
+        "error",
+        "uncertain_reason",
+        "view_snapshots",
+        "ownership_scopes",
+    }
+    if set(value) != required:
+        raise ArtifactManifestError("operation incident fields are invalid")
+    if (
+        value["schema"] != 1
+        or value["contract_kind"] != "workspace-operation-incident"
+        or value["operation_id"] != identity
+        or value["status"] not in {"failed", "uncertain"}
+        or any(
+            not isinstance(value[field], str) or not value[field]
+            for field in (
+                "name",
+                "policy",
+                "workspace_root",
+                "recorded_at",
+                "error_type",
+            )
+        )
+        or not isinstance(value["error"], str)
+        or not isinstance(value["view_snapshots"], list)
+        or not isinstance(value["ownership_scopes"], list)
+        or any(
+            not isinstance(item, dict)
+            for field in ("view_snapshots", "ownership_scopes")
+            for item in value[field]
+        )
+    ):
+        raise ArtifactManifestError("operation incident identity is invalid")
+    try:
+        datetime.fromisoformat(value["recorded_at"])
+    except ValueError as exc:
+        raise ArtifactManifestError(
+            "operation incident recorded_at is not an ISO timestamp"
+        ) from exc
+    uncertain_reason = value["uncertain_reason"]
+    if (
+        value["status"] == "uncertain"
+        and (not isinstance(uncertain_reason, str) or not uncertain_reason)
+    ) or (value["status"] == "failed" and uncertain_reason is not None):
+        raise ArtifactManifestError(
+            "operation incident uncertainty does not match its status"
+        )
+    return value
+
+
 @dataclass
 class ArtifactRecord:
     """Mutable handle to one immutable-identity run or attempt manifest."""
@@ -795,12 +859,16 @@ class ArtifactRecord:
         """Atomically link a safety incident without changing terminal status."""
 
         with self._lock:
+            operation_id = self.manifest.get("operation_id")
+            if not isinstance(operation_id, str):
+                raise RuntimeError("artifact has no bound operation identity")
             root = self.paths.artifact_root.resolve()
             incident = _resolved_artifact_member(
                 root, Path(incident_path), "operation incident"
             )
             if not incident.is_file():
                 raise RuntimeError(f"operation incident is outside artifacts: {incident}")
+            load_operation_incident(incident, operation_id)
             reference = incident.relative_to(root).as_posix()
             existing = self.manifest.get("incident_reference")
             if existing not in {None, reference}:

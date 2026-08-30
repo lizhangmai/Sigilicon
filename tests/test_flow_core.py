@@ -29,6 +29,7 @@ from sigilicon.flow import (
     fake_profile,
     load_flow_contract,
 )
+from sigilicon.virtuoso.operation_journal import write_operation_incident
 
 
 class SourceAdapter:
@@ -352,10 +353,20 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     assert (result.run_root / "inputs/preflight.json").is_file()
     assert (result.run_root / "outputs/flow_result.json").is_file()
     assert (result.run_root / "run_manifest.json").is_file()
+    operation_ids = set()
     for node in plan.topology:
-        assert (result.run_root / "inputs" / node / "action_request.json").is_file()
-        assert (result.run_root / "outputs" / node / "action_result.json").is_file()
+        request_path = result.run_root / "inputs" / node / "action_request.json"
+        result_path = result.run_root / "outputs" / node / "action_result.json"
+        assert request_path.is_file()
+        assert result_path.is_file()
         assert (result.run_root / "outputs" / node / "policy_receipt.json").is_file()
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        action_result = json.loads(result_path.read_text(encoding="utf-8"))
+        assert request["operation_id"] == action_result["operation_id"]
+        assert result.nodes[node].operation_id == request["operation_id"]
+        assert action_result["incident_reference"] is None
+        operation_ids.add(request["operation_id"])
+    assert len(operation_ids) == len(plan.topology)
 
     encoded_root = str(result.run_root).encode()
     for record in result.run_root.rglob("*.json"):
@@ -367,6 +378,124 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
         run_id="a" * 32,
     )
     assert restored == result
+
+
+@pytest.mark.parametrize("tamper", (None, "wrong-identity", "symlink"))
+def test_flow_action_backlinks_a_workspace_incident(
+    tmp_path: Path,
+    tamper: str | None,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class IncidentOperation:
+        def __init__(self, operation_id: str) -> None:
+            self.operation_id = operation_id
+
+        def register_artifact(self, record) -> None:
+            record.bind_operation(self.operation_id)
+            incident = write_operation_incident(
+                workspace_root=workspace,
+                artifact_root=record.paths.artifact_root,
+                operation_id=self.operation_id,
+                name="fixture workspace failure",
+                policy="direct-mutation",
+                status="failed",
+                error=RuntimeError("fixture workspace failure"),
+                uncertain_reason=None,
+                view_snapshots=(),
+                ownership_scopes=(),
+            )
+            record.attach_incident(incident)
+
+    class IncidentAdapter(SourceAdapter):
+        def execute(self, context: ActionContext) -> AdapterExecution:
+            assert context.operation_id is not None
+            context.bind_workspace_operation(IncidentOperation(context.operation_id))
+            raise RuntimeError("fixture workspace failure")
+
+    adapter = IncidentAdapter()
+    registered = FlowRegistry()
+    registered.register_action(
+        ActionContract(
+            "fake.incident",
+            outputs=(ArtifactPort("source", "text.plain"),),
+            adapters=("fake-incident",),
+        )
+    )
+    registered.register_adapter("fake-incident", adapter)
+    engine = FlowEngine(registered)
+    plan = engine.plan(
+        FlowSpec(
+            "example",
+            "incident-flow",
+            (FlowNode("source", "fake.incident", {"text": "unused"}),),
+            (FlowTarget("all", ("source",)),),
+        ),
+        "all",
+        ExecutionProfile(
+            "example",
+            "incident",
+            (AdapterSelection("fake.incident", "fake-incident"),),
+        ),
+    )
+
+    result = engine.run(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        run_id="b" * 32,
+    )
+
+    outcome = result.nodes["source"]
+    assert outcome.status == "failed"
+    assert outcome.operation_id is not None
+    assert outcome.incident_reference == (
+        f"system/operations/{outcome.operation_id}/incident.json"
+    )
+    action_result = json.loads(
+        (result.run_root / "outputs/source/action_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert action_result["incident_reference"] == outcome.incident_reference
+    operation = json.loads(
+        (result.run_root / "inputs/source/operation.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert operation == {
+        "contract_kind": "flow-action-operation",
+        "incident_reference": outcome.incident_reference,
+        "node": "source",
+        "operation_id": outcome.operation_id,
+        "run_id": result.run_id,
+        "schema": 1,
+    }
+    incident_path = tmp_path / "artifacts" / str(outcome.incident_reference)
+    if tamper == "wrong-identity":
+        incident = json.loads(incident_path.read_text(encoding="utf-8"))
+        incident["operation_id"] = "c" * 32
+        incident_path.write_text(
+            json.dumps(incident, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    elif tamper == "symlink":
+        saved = incident_path.with_name("saved-incident.json")
+        incident_path.rename(saved)
+        incident_path.symlink_to(saved.name)
+    if tamper is None:
+        assert engine.restore_result(
+            plan,
+            artifact_root=tmp_path / "artifacts",
+            run_id=result.run_id,
+        ) == result
+    else:
+        with pytest.raises(FlowExecutionError, match="operation incident"):
+            engine.restore_result(
+                plan,
+                artifact_root=tmp_path / "artifacts",
+                run_id=result.run_id,
+            )
 
 
 def test_flow_passes_declared_extensions_without_interpreting_the_payload(
@@ -516,6 +645,57 @@ def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path
             artifact_root=tmp_path / "artifacts",
             run_id="record-restore",
         )
+
+
+def test_restore_rejects_action_operation_record_drift(tmp_path: Path) -> None:
+    registered, *_ = registry()
+    engine = FlowEngine(registered)
+    plan = engine.plan(flow_spec(), "qualification", fake_profile())
+    result = engine.run(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        run_id="operation-restore",
+    )
+    request_path = result.run_root / "inputs/source/action_request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["operation_id"] = "c" * 32
+    request_path.write_text(
+        json.dumps(request, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FlowExecutionError, match="Action record identity drift"):
+        engine.restore_result(
+            plan,
+            artifact_root=tmp_path / "artifacts",
+            run_id=result.run_id,
+        )
+
+
+def test_restore_rejects_legacy_flow_result_schema(tmp_path: Path) -> None:
+    registered, *_ = registry()
+    engine = FlowEngine(registered)
+    plan = engine.plan(flow_spec(), "qualification", fake_profile())
+    result = engine.run(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        run_id="legacy-result",
+    )
+    result_path = result.run_root / "outputs/flow_result.json"
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["schema"] = 1
+    result_path.write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FlowExecutionError, match="unsupported.*schema"):
+        engine.restore_result(
+            plan,
+            artifact_root=tmp_path / "artifacts",
+            run_id=result.run_id,
+        )
+
 
 def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
     tmp_path: Path,

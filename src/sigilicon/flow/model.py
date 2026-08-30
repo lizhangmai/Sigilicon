@@ -8,10 +8,10 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from sigilicon.identifiers import RUN_ID_PATTERN
-from sigilicon.paths import ProjectScope
+from sigilicon.paths import ProjectScope, validate_artifact_id
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
@@ -905,6 +905,29 @@ class ActionContext:
     source_assets: SourceAssets | None = None
     extensions: Mapping[str, Any] = field(default_factory=dict)
     project_scope: ProjectScope | None = None
+    operation_id: str | None = None
+    _bind_workspace_operation: Callable[[Any], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.operation_id is not None:
+            validate_artifact_id(self.operation_id, "Action operation id")
+
+    def bind_workspace_operation(self, operation: Any) -> None:
+        """Attach one real workspace safety boundary to this Action record."""
+
+        if self.operation_id is None or self._bind_workspace_operation is None:
+            raise FlowExecutionError(
+                f"Action {self.node_id!r} has no managed operation record"
+            )
+        if getattr(operation, "operation_id", None) != self.operation_id:
+            raise FlowExecutionError(
+                f"Action {self.node_id!r} workspace operation identity drift"
+            )
+        self._bind_workspace_operation(operation)
 
     def require_project_scope(self) -> ProjectScope:
         if self.project_scope is None:
@@ -951,6 +974,8 @@ class NodeOutcome:
     artifacts: Mapping[str, ActionArtifact]
     facts: Mapping[str, Any]
     reason: str | None = None
+    operation_id: str | None = None
+    incident_reference: str | None = None
 
 
 @dataclass(frozen=True)

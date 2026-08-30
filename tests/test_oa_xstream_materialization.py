@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+import json
 from pathlib import Path
 import struct
 from types import SimpleNamespace
@@ -283,6 +284,12 @@ class _Client:
 
 
 class _Operation:
+    def __init__(self, operation_id: str) -> None:
+        self.operation_id = operation_id
+
+    def register_artifact(self, record) -> None:
+        record.bind_operation(self.operation_id)
+
     @contextmanager
     def view_lease(self, *_args, **_kwargs):
         yield
@@ -297,8 +304,8 @@ class _Operation:
 
 def _patch_workspace(monkeypatch) -> None:
     @contextmanager
-    def operation(*_args, **_kwargs):
-        yield _Operation()
+    def operation(*_args, operation_id, **_kwargs):
+        yield _Operation(operation_id)
 
     monkeypatch.setattr(
         "sigilicon.workflows.oa_materialization.workspace_operation",
@@ -634,6 +641,15 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     assert receipt.materialized
     assert receipt.layout is not None
     assert receipt.layout.run_id == "1" * 32
+    operation = json.loads(
+        (flow_result.run_root / "inputs/materialize/operation.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert operation["operation_id"] == (
+        flow_result.nodes["materialize"].operation_id
+    )
+    assert operation["incident_reference"] is None
     write_source = next(source for source in client.sources if "dbCreatePath" in source)
     assert "dbCreateTerm" in write_source
     assert "sigiliconJobIdentity" in write_source
