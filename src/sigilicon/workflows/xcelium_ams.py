@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.ip_integration import (
     OaNativeReleaseInterfaceReference,
     load_ip_integration_contract,
@@ -22,9 +20,8 @@ from sigilicon.external_tools import (
     run_process_group_capture,
     xrun_env,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.ip_integration import check_ip_integration
-from sigilicon.workflows.source_control import artifact_source_state
 
 
 _AMS_HDL_SUFFIXES = frozenset({".sv", ".v", ".vams", ".va"})
@@ -137,19 +134,6 @@ class XceliumAmsCellExecution:
     @property
     def evidence_output(self) -> str:
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
-
-
-@dataclass(frozen=True)
-class XceliumAmsCellRun(XceliumAmsCellExecution):
-    """Completed standalone Xcelium AMS invocation."""
-
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
-
-    @property
-    def manifest(self) -> Path:
-        return self.manifest_path
 
 
 def _resolve_contract(path: Path, *, project: Project) -> Path:
@@ -442,83 +426,3 @@ def execute_xcelium_ams_cell(
         stderr=completed.stderr,
         native_log=native_output,
     )
-
-
-def run_xcelium_ams_cell(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    xrun: Path | None = None,
-    timeout: int = 600,
-) -> XceliumAmsCellRun:
-    """Run one locked native-OA circuit through a standalone lifecycle."""
-
-    repository = project
-    if artifact_root is not None:
-        repository = repository.with_artifact_root(artifact_root)
-    plan = plan_xcelium_ams_cell(contract_path, project=repository)
-    attempt = ArtifactRecord.begin(
-        repository.artifacts.execution(
-            owner=plan.spec.owner,
-            target=plan.spec.cell,
-            flow="xcelium-ams",
-            variant=f"{plan.platform.key}-{plan.model_set.name}",
-            identity=new_identity(),
-            artifact_kind="standalone_simulation",
-            identity_kind="run_id",
-        ),
-        entities={
-            "library": plan.spec.owner,
-            "cell": plan.spec.dut,
-            "testbench": plan.spec.cell,
-        },
-        operation="simulate",
-        backend="xcelium-ams-cell",
-        source=artifact_source_state(repository.project_root),
-    )
-    try:
-        attempt.bind_operation(new_identity())
-        execution = execute_xcelium_ams_cell(
-            plan,
-            artifacts=StandaloneRunArtifacts(attempt),
-            xrun=xrun,
-            timeout=timeout,
-        )
-        summary = json.loads(execution.run_summary.read_text(encoding="utf-8"))
-        if execution.returncode != 0:
-            error = RuntimeError(
-                f"xrun AMS failed for {plan.spec.cell} with exit code "
-                f"{execution.returncode}"
-            )
-            attempt.fail(error, details={"summary": summary})
-        elif not execution.passed:
-            error = RuntimeError(
-                f"Xcelium AMS verification cell {plan.spec.cell} did not emit its "
-                f"success marker: {plan.spec.success_marker!r}"
-            )
-            attempt.fail(error, details={"summary": summary})
-        else:
-            attempt.succeed(
-                completion_evidence=(execution.run_summary,),
-                details={
-                    "evidence_role": "migration_regression",
-                    "product_qualification_conclusion": False,
-                },
-            )
-        return XceliumAmsCellRun(
-            plan=execution.plan,
-            run_summary=execution.run_summary,
-            returncode=execution.returncode,
-            passed=execution.passed,
-            stdout=execution.stdout,
-            stderr=execution.stderr,
-            native_log=execution.native_log,
-            run_id=attempt.paths.identity,
-            run_dir=attempt.paths.root,
-            manifest_path=attempt.paths.manifest,
-        )
-    except BaseException as error:
-        if attempt.status == "running":
-            attempt.fail(error)
-        raise

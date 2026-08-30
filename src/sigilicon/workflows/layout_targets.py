@@ -5,13 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import stat
 from typing import TYPE_CHECKING, Mapping
 
-from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
 from sigilicon.flow.model import SourceMember
+from sigilicon.flow.source_assets import snapshot_source_member
 
 if TYPE_CHECKING:
     from sigilicon.workflows.layout_generation import LayoutPlanningResult
@@ -129,7 +128,13 @@ class LayoutTargetCatalog:
         members = [catalog_member]
         for path in sorted(paths):
             source_root = _source_root(path, self.project.project_root)
-            members.append(_source_member(path, source_root=source_root))
+            members.append(
+                snapshot_source_member(
+                    path,
+                    source_root=source_root,
+                    source_label="layout",
+                )
+            )
         unique: dict[tuple[Path, str], SourceMember] = {}
         for member in members:
             unique[(member.source_root, member.path)] = member
@@ -186,30 +191,6 @@ def _source_root(path: Path, project_root: Path) -> Path:
     raise ValueError(f"layout source is outside project and Sigilicon roots: {resolved}")
 
 
-def _source_member(
-    path: Path,
-    *,
-    source_root: Path,
-    record_text: str | None = None,
-) -> SourceMember:
-    resolved = path.resolve()
-    try:
-        text = read_nofollow_text(resolved) if record_text is None else record_text
-        executable = bool(
-            resolved.stat(follow_symlinks=False).st_mode
-            & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        )
-    except (OSError, RuntimeError, UnicodeError) as exc:
-        raise ValueError(f"cannot snapshot layout source {resolved}: {exc}") from exc
-    return SourceMember(
-        path=resolved.relative_to(source_root).as_posix(),
-        source_root=source_root,
-        record_text=text,
-        executable=executable,
-        location=resolved,
-    )
-
-
 def load_layout_target_catalog(
     project: Project,
     *,
@@ -234,10 +215,11 @@ def load_layout_target_catalog(
     for catalog in catalogs:
         owner = catalog.owner
         catalog_path = catalog.path
-        catalog_member = _source_member(
+        catalog_member = snapshot_source_member(
             catalog_path,
             source_root=root,
             record_text=catalog.record_text,
+            source_label="layout",
         )
         catalog_members.append(catalog_member)
         raw = catalog.document

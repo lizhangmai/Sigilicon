@@ -50,10 +50,16 @@ def test_internal_oa_adapters_have_no_standalone_module_entrypoint() -> None:
         "import_netlist.py",
         "generate_symbol.py",
         "set_params.py",
-        "generate_layout.py",
     ):
         source = (root / module).read_text(encoding="utf-8")
         assert 'if __name__ == "__main__":' not in source
+
+
+def test_legacy_engineering_execution_cli_modules_are_removed() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "sigilicon" / "cli"
+
+    for module in ("generate_layout.py", "verify_layout.py", "xcelium.py"):
+        assert not (root / module).exists()
 
 
 def test_close_cell_workflow_enters_workspace_and_project_library_policy(

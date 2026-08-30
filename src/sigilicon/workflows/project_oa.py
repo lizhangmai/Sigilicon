@@ -15,10 +15,6 @@ from sigilicon.workflows.oa_library import (
     plan_oa_library_rebuild,
     rebuild_oa_library,
 )
-from sigilicon.workflows.oa_simulation import (
-    OAMaestroRunResult,
-    run_oa_maestro_testbench,
-)
 
 
 @dataclass(frozen=True)
@@ -84,27 +80,6 @@ class ProjectOaWorkflow:
             self._testbench(plan, testbench),
             client,
             timeout=timeout,
-        )
-
-    def simulate(
-        self,
-        *,
-        testbench: str,
-        client: Any,
-        timeout: int = 600,
-        plan: OALibraryRebuildPlan | None = None,
-        artifact_root: Path | None = None,
-    ) -> OAMaestroRunResult:
-        selected_plan = self.plan() if plan is None else plan
-        operation_options: dict[str, Any] = {}
-        if artifact_root is not None:
-            operation_options["artifact_root"] = artifact_root
-        return run_oa_maestro_testbench(
-            selected_plan,
-            self._testbench(selected_plan, testbench),
-            client,
-            timeout=timeout,
-            **operation_options,
         )
 
     def rebuild(

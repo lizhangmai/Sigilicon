@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import json
 from pathlib import Path
-import tempfile
 from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.artifacts import load_manifest
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import load_text_source_snapshot
-from sigilicon.paths import ProjectContext
 from sigilicon.workflows import oa_simulation
+
+
+def test_oa_maestro_execution_requires_a_caller_owned_run() -> None:
+    assert not hasattr(oa_simulation, "run_oa_maestro_testbench")
 
 
 def test_flow_action_remains_the_only_workspace_operation_record(
@@ -76,219 +76,6 @@ def test_registered_oa_operation_reports_workspace_uncertainty(
             raise RuntimeError("fixture failure")
 
     assert reasons == ["workspace identity changed"]
-
-
-def _write_project_context(root: Path) -> Path:
-    artifact_root = root / "configured-artifacts"
-    (root / "sigilicon.toml").write_text(
-        '''schema = 1
-contract_kind = "sigilicon-project"
-path_scope = "repository"
-owner = "fixture"
-
-[paths]
-project_root = "."
-workspace_root = "virtuoso"
-artifact_root = "configured-artifacts"
-''',
-        encoding="utf-8",
-    )
-    (root / "virtuoso").mkdir()
-    return artifact_root
-
-
-def _oa_plan(root: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
-    canonical_source = root / "testbench.scs"
-    canonical_source.write_text("simulator lang=spectre\n", encoding="utf-8")
-    simulation_source = root / "simulation.toml"
-    simulation_source.write_text("schema = 3\n", encoding="utf-8")
-    setup_source = root / "setup.il"
-    setup_source.write_text("; setup\n", encoding="utf-8")
-    rdb_source = root / "native_rdb.toml"
-    rdb_source.write_text("schema = 2\n", encoding="utf-8")
-    rdb_contract = SimpleNamespace(
-        path=rdb_source.resolve(),
-        source_snapshot=load_text_source_snapshot(rdb_source),
-        support_sources=(),
-        support_source_snapshots=(),
-    )
-    native_setup = SimpleNamespace(
-        source=setup_source.resolve(),
-        source_snapshot=load_text_source_snapshot(setup_source),
-        rdb_contract=rdb_contract,
-    )
-    simulation = SimpleNamespace(
-        path=simulation_source.resolve(),
-        source_snapshot=load_text_source_snapshot(simulation_source),
-        native_setup=native_setup,
-        dut="fixture_dut",
-    )
-    step = SimpleNamespace(
-        cell="tb_fixture",
-        canonical_source=canonical_source.resolve(),
-        source_snapshot=NetlistSnapshot(
-            source_path=canonical_source.resolve(),
-            text=canonical_source.read_text(encoding="utf-8"),
-            interfaces={},
-        ),
-        simulation=simulation,
-    )
-    source = SimpleNamespace(
-        project=ProjectContext.from_project_root(root),
-        project_root=root,
-        cells=(SimpleNamespace(cell=step.cell, owner="fixture-owner"),),
-    )
-    plan = SimpleNamespace(
-        source=source,
-        library="fixture_lib",
-        testbenches=(step,),
-    )
-    return plan, step
-
-
-def test_oa_maestro_writes_directly_to_configured_artifact_root(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    artifact_root = _write_project_context(tmp_path)
-    plan, step = _oa_plan(tmp_path)
-    monkeypatch.setattr(
-        tempfile,
-        "mkdtemp",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("OA Maestro must not allocate temporary work")
-        ),
-    )
-
-    def run_impl(
-        _plan,
-        _step,
-        _client,
-        *,
-        timeout,
-        artifacts,
-        operation_id,
-        bind_operation,
-        record_uncertainty,
-    ):
-        assert timeout == 17
-        assert callable(record_uncertainty)
-        assert artifacts.root.is_relative_to(artifact_root)
-        operation = SimpleNamespace(
-            operation_id=operation_id,
-            register_artifact=lambda record: record.bind_operation(operation_id),
-        )
-        bind_operation(operation)
-        result_export = artifacts.write_text(
-            "outputs", ("maestro-rdb.tsv",), "fixture\n"
-        )
-        normalized = artifacts.write_json(
-            "outputs", ("maestro-rdb.json",), {"passed": True}
-        )
-        summary = artifacts.write_json(
-            "outputs", ("run-summary.json",), {"simulation_completed": True}
-        )
-        elaborated_netlist = artifacts.write_text(
-            "outputs", ("elaborated-netlist.vams",), "module fixture; endmodule\n"
-        )
-        return oa_simulation.OAMaestroExecutionResult(
-            library="fixture_lib",
-            testbench="tb_fixture",
-            history="Interactive.1",
-            elaborated_netlist=elaborated_netlist,
-            result_database_export=result_export,
-            normalized_result_database=normalized,
-            run_summary=summary,
-            scalar_output_count=1,
-            evidence=oa_simulation.evaluate_oa_maestro_evidence(
-                overall_spec_status="pass",
-                per_output_spec_status=("pass",),
-                diagnostic_report=None,
-            ),
-        )
-
-    monkeypatch.setattr(
-        oa_simulation,
-        "_run_native_oa_maestro_testbench_impl",
-        run_impl,
-    )
-
-    result = oa_simulation.run_oa_maestro_testbench(
-        plan,
-        step,
-        object(),
-        timeout=17,
-    )
-
-    assert result.run_dir.is_relative_to(artifact_root)
-    assert result.run_dir.parent == (
-        artifact_root
-        / "runs"
-        / "fixture-owner"
-        / "tb_fixture"
-        / "oa-maestro"
-        / "native-rdb"
-    )
-    manifest = load_manifest(result.manifest_path)
-    assert manifest["status"] == "succeeded"
-    assert manifest["artifact_kind"] == "oa_maestro_simulation"
-    assert manifest["run_id"] == result.run_id
-    assert manifest["completion_evidence"] == [
-        "outputs/run-summary.json",
-        "outputs/maestro-rdb.json",
-    ]
-    assert manifest["details"]["evidence_status"] == "pass"
-
-
-def test_oa_maestro_records_failure_in_configured_artifact_root(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    artifact_root = _write_project_context(tmp_path)
-    plan, step = _oa_plan(tmp_path)
-    monkeypatch.setattr(
-        oa_simulation,
-        "_run_native_oa_maestro_testbench_impl",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("fixture failure")),
-    )
-
-    with pytest.raises(RuntimeError, match="fixture failure"):
-        oa_simulation.run_oa_maestro_testbench(plan, step, object())
-
-    manifests = tuple(artifact_root.rglob("manifest.json"))
-    assert len(manifests) == 1
-    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    assert manifest["status"] == "failed"
-    assert manifest["details"]["error"] == "fixture failure"
-
-
-def test_oa_maestro_preserves_workspace_uncertainty_in_standalone_manifest(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    artifact_root = _write_project_context(tmp_path)
-    plan, step = _oa_plan(tmp_path)
-
-    def uncertain_impl(*_args, record_uncertainty, **_kwargs):
-        record_uncertainty("bridge cleanup could not prove workspace state")
-        raise RuntimeError("fixture cleanup failure")
-
-    monkeypatch.setattr(
-        oa_simulation,
-        "_run_native_oa_maestro_testbench_impl",
-        uncertain_impl,
-    )
-
-    with pytest.raises(RuntimeError, match="fixture cleanup failure"):
-        oa_simulation.run_oa_maestro_testbench(plan, step, object())
-
-    manifests = tuple(artifact_root.rglob("manifest.json"))
-    assert len(manifests) == 1
-    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    assert manifest["status"] == "uncertain"
-    assert manifest["uncertain_reason"] == (
-        "bridge cleanup could not prove workspace state"
-    )
 
 
 def test_oa_maestro_records_only_plan_owned_source_bytes(tmp_path: Path) -> None:
@@ -376,4 +163,11 @@ def test_oa_maestro_rejects_a_source_less_manual_contract() -> None:
 
     plan = SimpleNamespace(testbenches=(step,))
     with pytest.raises(ValueError, match="no simulation source snapshot"):
-        oa_simulation.run_oa_maestro_testbench(plan, step, object())
+        oa_simulation.execute_oa_maestro_testbench(
+            plan,
+            step,
+            object(),
+            artifacts=object(),
+            operation_id="a" * 32,
+            bind_operation=lambda _operation: None,
+        )

@@ -6,17 +6,21 @@ import subprocess
 
 import pytest
 
-from sigilicon.artifacts import load_manifest
-from sigilicon.cli.xcelium import _display_path
 from sigilicon.domain.repository import Project
 import sigilicon.domain.repository as repository_module
 from sigilicon.workflows import xcelium
+from sigilicon.workflows.run_artifacts import DirectoryRunArtifacts
 from sigilicon.workflows.xcelium import (
+    execute_xcelium_cell,
     plan_xcelium_cell,
-    run_xcelium_cell,
 )
 
 from conftest import write_component_owner
+
+
+def test_xcelium_execution_requires_a_caller_owned_run() -> None:
+    assert not hasattr(xcelium, "run_xcelium_cell")
+    assert not hasattr(xcelium, "run_xcelium_verification_cell")
 
 
 def _write(path: Path, text: str) -> Path:
@@ -25,15 +29,17 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def test_xcelium_cli_paths_support_external_artifact_roots(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    local = project_root / "build/run/manifest.json"
-    external = tmp_path / "external/run/manifest.json"
-
-    assert _display_path(local, project_root=project_root) == (
-        "build/run/manifest.json"
+def _run_artifacts(root: Path) -> DirectoryRunArtifacts:
+    run = root / "run"
+    return DirectoryRunArtifacts(
+        run_id="managed-run",
+        root=run,
+        input_root=run / "work/action/inputs",
+        work_root=run / "work/action/tool",
+        output_root=run / "outputs/action/evidence",
+        log_root=run / "logs/action",
+        source={},
     )
-    assert _display_path(external, project_root=project_root) == str(external)
 
 
 def _verification_project(root: Path) -> Path:
@@ -159,7 +165,7 @@ def test_xcelium_plan_validates_declared_contract_header(tmp_path: Path) -> None
         )
 
 
-def test_xcelium_run_reuses_project_and_writes_managed_artifact(
+def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -179,24 +185,24 @@ def test_xcelium_run_reuses_project_and_writes_managed_artifact(
         )
 
     monkeypatch.setattr(xcelium, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium, "new_identity", lambda: "3" * 32)
-
-    result = run_xcelium_cell(contract, project=project, xrun=xrun, timeout=17)
+    plan = plan_xcelium_cell(contract, project=project)
+    artifacts = _run_artifacts(tmp_path)
+    result = execute_xcelium_cell(
+        plan,
+        artifacts=artifacts,
+        xrun=xrun,
+        timeout=17,
+    )
 
     assert result.returncode == 0
     assert result.passed
     assert result.plan.spec.project is project
-    assert result.run_id == "3" * 32
-    assert result.run_dir == result.manifest_path.parent
-    assert result.run_summary == result.run_dir / "outputs/summary.json"
-    manifest = load_manifest(result.manifest_path)
-    assert manifest["status"] == "succeeded"
-    assert manifest["operation_id"] == "3" * 32
-    assert manifest["entities"]["library"] == "demo"
-    assert manifest["completion_evidence"] == ["outputs/summary.json"]
+    assert result.run_summary == artifacts.path("outputs", "summary.json")
+    summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
+    assert summary["success_marker_seen"] is True
 
 
-def test_xcelium_run_fails_artifact_when_success_marker_is_absent(
+def test_xcelium_execution_reports_absent_success_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -210,19 +216,19 @@ def test_xcelium_run_fails_artifact_when_success_marker_is_absent(
         return subprocess.CompletedProcess(command, 0, "FAIL fixture assertion\n", "")
 
     monkeypatch.setattr(xcelium, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium, "new_identity", lambda: "4" * 32)
-
-    result = run_xcelium_cell(contract, project=project, xrun=xrun)
+    result = execute_xcelium_cell(
+        plan_xcelium_cell(contract, project=project),
+        artifacts=_run_artifacts(tmp_path),
+        xrun=xrun,
+    )
 
     assert result.returncode == 0
     assert not result.passed
-    manifest = load_manifest(result.manifest_path)
-    assert manifest["status"] == "failed"
-    assert manifest["operation_id"] == "4" * 32
-    assert manifest["details"]["summary"]["success_marker_seen"] is False
+    summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
+    assert summary["success_marker_seen"] is False
 
 
-def test_xcelium_run_accepts_success_marker_from_native_log(
+def test_xcelium_execution_accepts_success_marker_from_native_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,14 +246,13 @@ def test_xcelium_run_accepts_success_marker_from_native_log(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(xcelium, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium, "new_identity", lambda: "5" * 32)
-
-    result = run_xcelium_cell(contract, project=project, xrun=xrun)
+    result = execute_xcelium_cell(
+        plan_xcelium_cell(contract, project=project),
+        artifacts=_run_artifacts(tmp_path),
+        xrun=xrun,
+    )
 
     assert result.passed
     assert "TB_DEMO_SUMMARY failures=0" in result.evidence_output
-    manifest = load_manifest(result.manifest_path)
-    assert manifest["status"] == "succeeded"
-    assert manifest["operation_id"] == "5" * 32
     summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
     assert summary["success_marker_evidence"] == ["native_log"]

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.domain.repository import Project
-from sigilicon.workflows import ip_integration, project_oa
+from sigilicon.workflows import ip_integration
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 from conftest import write_component_owner, write_project_context
@@ -49,50 +49,6 @@ def test_project_oa_workflow_requires_one_owner_assembly(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="has no OA assembly"):
         ProjectOaWorkflow(project, "rtl-only")
-
-
-def test_project_oa_simulation_uses_its_bound_owner_assembly(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project, _component = _project(tmp_path)
-    workflow = ProjectOaWorkflow(project, "fixture")
-    step = SimpleNamespace(cell="tb_fixture")
-    plan = SimpleNamespace(testbenches=(step,))
-    result = object()
-    planned: list[tuple[Path, Project]] = []
-
-    def plan_rebuild(path: Path, *, project: Project) -> object:
-        planned.append((path, project))
-        return plan
-
-    def run_testbench(
-        selected_plan: object,
-        selected_step: object,
-        client: object,
-        *,
-        timeout: int,
-        artifact_root: Path,
-    ) -> object:
-        assert selected_plan is plan
-        assert selected_step is step
-        assert timeout == 17
-        assert artifact_root == tmp_path / "flow-work"
-        return result
-
-    monkeypatch.setattr(project_oa, "plan_oa_library_rebuild", plan_rebuild)
-    monkeypatch.setattr(project_oa, "run_oa_maestro_testbench", run_testbench)
-
-    assert (
-        workflow.simulate(
-            testbench="tb_fixture",
-            client=object(),
-            timeout=17,
-            artifact_root=tmp_path / "flow-work",
-        )
-        is result
-    )
-    assert planned == [(tmp_path / "ip/fixture/configs/oa.toml", project)]
 
 
 def test_project_ip_catalog_reuses_bound_project(

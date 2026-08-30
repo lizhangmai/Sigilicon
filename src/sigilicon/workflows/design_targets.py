@@ -5,15 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import stat
 import sys
 from typing import Mapping
 
-from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.config_contracts import require_config_header
 from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
 from sigilicon.flow.model import SourceMember
-from sigilicon.flow.source_assets import source_member_matches
+from sigilicon.flow.source_assets import (
+    snapshot_source_member,
+    source_member_matches,
+)
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _MODULE_RE = re.compile(
@@ -186,29 +187,6 @@ class DesignTargetCatalog:
         )
 
 
-def _source_member(
-    path: Path,
-    *,
-    source_root: Path,
-    record_text: str | None = None,
-) -> SourceMember:
-    try:
-        source = read_nofollow_text(path) if record_text is None else record_text
-        executable = bool(
-            path.stat(follow_symlinks=False).st_mode
-            & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        )
-    except (OSError, RuntimeError, UnicodeError) as exc:
-        raise ValueError(f"cannot snapshot design source {path}: {exc}") from exc
-    return SourceMember(
-        path=path.relative_to(source_root).as_posix(),
-        source_root=source_root,
-        record_text=source,
-        executable=executable,
-        location=path,
-    )
-
-
 def _owned_module(
     repository: Project,
     owner: str,
@@ -311,10 +289,11 @@ def load_design_target_catalog(
     for catalog in catalogs:
         owner = catalog.owner
         catalog_path = catalog.path
-        catalog_member = _source_member(
+        catalog_member = snapshot_source_member(
             catalog_path,
             source_root=root,
             record_text=catalog.record_text,
+            source_label="design",
         )
         catalog_members.append(catalog_member)
         raw = catalog.document
@@ -384,13 +363,20 @@ def load_design_target_catalog(
                     owner, spec_value, f"{field}.spec"
                 )
             source_members = [
-                _source_member(
+                snapshot_source_member(
                     entrypoint_path,
                     source_root=entrypoint_root,
+                    source_label="design",
                 )
             ]
             if spec is not None:
-                source_members.append(_source_member(spec, source_root=root))
+                source_members.append(
+                    snapshot_source_member(
+                        spec,
+                        source_root=root,
+                        source_label="design",
+                    )
+                )
             targets.append(
                 DesignTarget(
                     name=name,

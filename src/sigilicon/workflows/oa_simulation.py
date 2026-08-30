@@ -9,11 +9,9 @@ from pathlib import Path
 from typing import Any, Literal
 import uuid
 
-from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.native_diagnostics import NativeDiagnosticReport
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import TextSourceSnapshot
-from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
@@ -23,8 +21,7 @@ from sigilicon.workflows.oa_library import (
     TestbenchRebuildStep,
     check_oa_parity,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
-from sigilicon.workflows.source_control import artifact_source_state
+from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 @dataclass(frozen=True)
@@ -158,23 +155,6 @@ class OAMaestroExecutionResult:
         }
 
 
-@dataclass(frozen=True)
-class OAMaestroRunResult(OAMaestroExecutionResult):
-    """Completed standalone OA Maestro run and its persistent identity."""
-
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            **super().as_dict(),
-            "run_id": self.run_id,
-            "run_dir": str(self.run_dir),
-            "manifest": str(self.manifest_path),
-        }
-
-
 def _elaborated_netlist(work_dir: Path, history: str) -> Path:
     """Return the final netlist from the completed Maestro history."""
 
@@ -212,106 +192,6 @@ def _elaborated_netlist(work_dir: Path, history: str) -> Path:
             f"{history}: {[str(path) for path in candidates]}"
         )
     return netlists[0]
-
-
-def _run_native_oa_maestro_testbench(
-    plan: OALibraryRebuildPlan,
-    step: TestbenchRebuildStep,
-    client: Any,
-    *,
-    timeout: int,
-    artifact_root: Path | None = None,
-) -> OAMaestroRunResult:
-    owners = {
-        cell.owner for cell in plan.source.cells if cell.cell == step.cell
-    }
-    if len(owners) != 1:
-        raise ValueError(
-            f"OA testbench {step.cell} does not resolve to one source owner"
-        )
-    project = plan.source.project
-    artifacts = (
-        project.artifacts
-        if artifact_root is None
-        else ArtifactLayout(artifact_root.resolve())
-    )
-    record = ArtifactRecord.begin(
-        artifacts.execution(
-            owner=next(iter(owners)),
-            target=step.cell,
-            flow="oa-maestro",
-            variant="native-rdb",
-            identity=new_identity(),
-            artifact_kind="oa_maestro_simulation",
-            identity_kind="run_id",
-        ),
-        entities={
-            "library": plan.library,
-            "cell": step.simulation.dut,
-            "testbench": step.cell,
-        },
-        operation="canonical-oa-maestro-native-rdb",
-        backend="virtuoso-maestro-spectre",
-        source=artifact_source_state(plan.source.project_root),
-    )
-    uncertainty: list[str] = []
-    try:
-        selected_operation_id = new_identity()
-
-        def bind_standalone(operation: Any) -> None:
-            operation.register_artifact(record)
-
-        execution = execute_oa_maestro_testbench(
-            plan,
-            step,
-            client,
-            timeout=timeout,
-            artifacts=StandaloneRunArtifacts(record),
-            operation_id=selected_operation_id,
-            bind_operation=bind_standalone,
-            record_uncertainty=uncertainty.append,
-        )
-        record.succeed(
-            completion_evidence=(
-                execution.run_summary,
-                execution.normalized_result_database,
-            ),
-            details={
-                "history": execution.history,
-                "execution_status": "completed",
-                "evidence_status": execution.evidence.status,
-                "elaborated_netlist": str(
-                    execution.elaborated_netlist.relative_to(record.paths.root)
-                ),
-            },
-        )
-        return OAMaestroRunResult(
-            library=execution.library,
-            testbench=execution.testbench,
-            history=execution.history,
-            elaborated_netlist=execution.elaborated_netlist,
-            result_database_export=execution.result_database_export,
-            normalized_result_database=execution.normalized_result_database,
-            run_summary=execution.run_summary,
-            scalar_output_count=execution.scalar_output_count,
-            evidence=execution.evidence,
-            run_id=record.paths.identity,
-            run_dir=record.paths.root,
-            manifest_path=record.paths.manifest,
-        )
-    except BaseException as error:
-        if record.status == "running":
-            try:
-                record.fail(
-                    error,
-                    uncertain_reason=(uncertainty[-1] if uncertainty else None),
-                )
-            except Exception as record_error:
-                error.add_note(
-                    "could not record OA Maestro artifact failure: "
-                    f"{record_error}"
-                )
-        raise
 
 
 @contextmanager
@@ -663,30 +543,4 @@ def execute_oa_maestro_testbench(
         operation_id=operation_id,
         bind_operation=bind_operation,
         record_uncertainty=record_uncertainty,
-    )
-
-
-def run_oa_maestro_testbench(
-    plan: OALibraryRebuildPlan,
-    step: TestbenchRebuildStep,
-    client: Any,
-    *,
-    timeout: int = 600,
-    artifact_root: Path | None = None,
-) -> OAMaestroRunResult:
-    """Run one source-attested schema-3 OA Maestro view through native RDB."""
-
-    if step not in plan.testbenches:
-        raise ValueError("testbench is not part of the selected OA assembly plan")
-    if step.simulation.native_setup is None:
-        raise ValueError(
-            f"OA testbench {step.cell} is not a schema-3 native simulation contract"
-        )
-    _validate_native_oa_maestro_inputs(step)
-    return _run_native_oa_maestro_testbench(
-        plan,
-        step,
-        client,
-        timeout=timeout,
-        artifact_root=artifact_root,
     )

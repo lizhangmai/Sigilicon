@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
 
-from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
@@ -15,9 +13,7 @@ from sigilicon.external_tools import (
     run_process_group_capture,
     xrun_env,
 )
-from sigilicon.paths import ArtifactLayout
-from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
-from sigilicon.workflows.source_control import artifact_source_state
+from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 _HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
@@ -78,15 +74,6 @@ class XceliumCellExecution:
         """Combined simulator output available to owner-specific result parsers."""
 
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
-
-
-@dataclass(frozen=True)
-class XceliumCellRun(XceliumCellExecution):
-    """Completed standalone Xcelium invocation and its persistent identity."""
-
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
 
 
 def _resolve_contract(path: Path, *, project: Project) -> Path:
@@ -262,132 +249,4 @@ def execute_xcelium_cell(
         stdout=completed.stdout,
         stderr=completed.stderr,
         native_log=native_output,
-    )
-
-
-def run_xcelium_cell(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    xrun: Path | None = None,
-    timeout: int = 600,
-) -> XceliumCellRun:
-    """Run one verification cell through a standalone managed lifecycle."""
-
-    repository = project
-    plan = plan_xcelium_cell(contract_path, project=repository)
-    layout = (
-        repository.artifacts
-        if artifact_root is None
-        else ArtifactLayout(artifact_root.resolve())
-    )
-    attempt = ArtifactRecord.begin(
-        layout.execution(
-            owner=plan.spec.owner,
-            target=plan.spec.cell,
-            flow="xcelium",
-            variant=plan.spec.simulator,
-            identity=new_identity(),
-            artifact_kind="standalone_simulation",
-            identity_kind="run_id",
-        ),
-        entities={
-            "library": plan.spec.owner,
-            "cell": plan.spec.dut,
-            "testbench": plan.spec.cell,
-        },
-        operation="simulate",
-        backend="xcelium-rtl-cell",
-        source=artifact_source_state(repository.project_root),
-    )
-    try:
-        attempt.bind_operation(new_identity())
-        execution = execute_xcelium_cell(
-            plan,
-            artifacts=StandaloneRunArtifacts(attempt),
-            xrun=xrun,
-            timeout=timeout,
-        )
-        summary = json.loads(execution.run_summary.read_text(encoding="utf-8"))
-        if execution.returncode != 0:
-            error = RuntimeError(
-                f"xrun failed for {plan.spec.cell} with exit code {execution.returncode}"
-            )
-            attempt.fail(error, details={"summary": summary})
-        elif not execution.passed:
-            error = RuntimeError(
-                f"Xcelium verification cell {plan.spec.cell} did not emit its "
-                f"success marker: {plan.spec.success_marker!r}"
-            )
-            attempt.fail(error, details={"summary": summary})
-        else:
-            attempt.succeed(
-                completion_evidence=(execution.run_summary,),
-                details={"product_qualification_conclusion": False},
-            )
-        return XceliumCellRun(
-            plan=execution.plan,
-            run_summary=execution.run_summary,
-            returncode=execution.returncode,
-            passed=execution.passed,
-            stdout=execution.stdout,
-            stderr=execution.stderr,
-            native_log=execution.native_log,
-            run_id=attempt.paths.identity,
-            run_dir=attempt.paths.root,
-            manifest_path=attempt.paths.manifest,
-        )
-    except BaseException as error:
-        if attempt.status == "running":
-            attempt.fail(error)
-        raise
-
-
-def plan_xcelium_verification_cell(
-    contract_path: Path,
-    *,
-    project: Project,
-):
-    """Dispatch one typed Xcelium verification cell without flattening its mode."""
-
-    repository = project
-    contract = _resolve_contract(contract_path, project=repository)
-    spec = load_verification_cell(contract, project=repository)
-    if spec.simulator.lower() == "xcelium-ams":
-        from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
-
-        return plan_xcelium_ams_cell(contract, project=repository)
-    return plan_xcelium_cell(contract, project=repository)
-
-
-def run_xcelium_verification_cell(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    xrun: Path | None = None,
-    timeout: int = 600,
-):
-    """Dispatch one typed Xcelium RTL or AMS execution adapter."""
-
-    repository = project
-    contract = _resolve_contract(contract_path, project=repository)
-    spec = load_verification_cell(contract, project=repository)
-    if spec.simulator.lower() == "xcelium-ams":
-        from sigilicon.workflows.xcelium_ams import run_xcelium_ams_cell
-
-        return run_xcelium_ams_cell(
-            contract,
-            project=repository,
-            artifact_root=artifact_root,
-            xrun=xrun,
-            timeout=timeout,
-        )
-    return run_xcelium_cell(
-        contract,
-        project=repository,
-        artifact_root=artifact_root,
-        xrun=xrun,
-        timeout=timeout,
     )

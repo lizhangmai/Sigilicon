@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -11,12 +11,7 @@ import shutil
 import stat
 from typing import Any, Mapping, Sequence
 
-from sigilicon.artifacts import (
-    ArtifactRecord,
-    atomic_write_json,
-    new_identity,
-    read_nofollow_text,
-)
+from sigilicon.artifacts import atomic_write_json, read_nofollow_text
 from sigilicon.canonical import canonical_json
 from sigilicon.domain.netlist import render_canonical_cdl, resolve_netlist_hierarchy
 from sigilicon.domain.physical_verification import (
@@ -36,7 +31,6 @@ from sigilicon.domain.physical_verification import (
     load_physical_verification_policy,
     lvs_evidence_from_json,
 )
-from sigilicon.domain.repository import Project
 from sigilicon.external_tools import (
     owned_directory,
     owned_input_file,
@@ -65,13 +59,12 @@ from sigilicon.layout.materialization_execution import (
     materialization_receipt_id,
     validate_receipt_bound_layout,
 )
-from sigilicon.layout.spec import LayoutSpec, load_layout_spec
+from sigilicon.layout.spec import LayoutSpec
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.virtuoso.xstream import XStreamExportRequest, run_xstream_export
-from sigilicon.workflows.source_control import artifact_source_state
 from sigilicon.workflows.layout_generation import LayoutPlanningResult
-from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 _DRC_RESULT = re.compile(
@@ -1332,16 +1325,15 @@ def verify_layout(
     client: Any,
     *,
     check: str,
-    artifact_root: Path | None = None,
+    artifacts: RunArtifacts,
     xstream_timeout: int = 120,
     calibre_timeout: int = 600,
     xstream: Path | None = None,
     calibre: Path | None = None,
-    artifacts: RunArtifacts | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
 ) -> LayoutVerificationResult:
-    """Verify one already-planned layout under a standalone or Flow run."""
+    """Verify one already-planned layout inside its caller-owned Flow run."""
 
     if check not in {"drc", "lvs"}:
         raise ValueError("layout verification check must be drc or lvs")
@@ -1359,113 +1351,23 @@ def verify_layout(
         )
     if plan.stage != "routed":
         raise ValueError("physical verification requires a routed layout plan")
-    if artifacts is not None and artifact_root is not None:
-        raise ValueError("managed layout artifacts cannot override their run scope")
-    project = (
-        layout_spec.project
-        if artifact_root is None
-        else layout_spec.project.with_artifact_root(artifact_root)
-    )
-    record: ArtifactRecord | None = None
-    if artifacts is None:
-        record = ArtifactRecord.begin(
-            project.artifacts.execution(
-                owner=layout_spec.library,
-                target=layout_spec.cell,
-                flow="physical-verification",
-                variant=f"{layout_spec.view}-{check}",
-                identity=new_identity(),
-                artifact_kind="physical_verification",
-                identity_kind="run_id",
-            ),
-            entities={
-                "library": layout_spec.library,
-                "cell": layout_spec.cell,
-                "view": layout_spec.view,
-                "check": check,
-            },
-            operation=f"calibre-{check}",
-            backend="xstream+calibre",
-            source=artifact_source_state(layout_spec.project_root),
-        )
-        run: RunArtifacts = StandaloneRunArtifacts(record)
-    else:
-        run = artifacts
-    if record is not None:
-        run.copy_file(
-            "inputs", ("layout.toml",), layout_spec.path,
-            label="canonical layout intent",
-        )
-        run.copy_file(
-            "inputs", ("oa-assembly.toml",), layout_spec.oa_assembly_manifest,
-            label="owner OA assembly and primitive closure",
-        )
-        run.copy_file(
-            "inputs",
-            ("physical-verification.toml",),
-            layout_spec.physical_verification.path,
-            label="owner physical-verification policy",
-        )
-        run.copy_file(
-            "inputs", ("layout-generator.py",), layout_spec.generator_source,
-            label="design-owned layout generator source",
-        )
-        for index, dependency in enumerate(layout_spec.generator_dependencies):
-            run.copy_file(
-                "inputs",
-                ("layout-generator-dependencies", f"{index:02d}-{dependency.name}"),
-                dependency,
-                label="design-owned layout generator dependency",
-            )
-        for index, (module, dependency) in enumerate(
-            zip(
-                layout_spec.generator_modules,
-                layout_spec.generator_module_sources,
-                strict=True,
-            )
-        ):
-            run.copy_file(
-                "inputs",
-                ("layout-generator-modules", f"{index:02d}-{dependency.name}"),
-                dependency,
-                label=f"installed layout generator module {module}",
-            )
+    run = artifacts
     run.write_text(
         "inputs", ("layout-plan.json",), plan.canonical_json(),
         label="generated layout plan",
     )
     xstream_executable = find_xstream(xstream or layout_spec.layout_pdk.xstream_bin)
     calibre_executable = find_calibre(calibre or layout_spec.layout_pdk.calibre_bin)
-    completed_stages: list[str] = []
-    operation = None
     outcome: dict[str, object] | None = None
     typed_evidence: PhysicalVerificationEvidence | None = None
     evidence_path: Path | None = None
-    library_path: Path | None = None
     deferred = None
-    failure_context = (
-        record.failure_boundary(
-            uncertainty=lambda: operation.uncertain_reason if operation else None,
-            partial_failure=lambda: (
-                {
-                    "completed_stages": list(completed_stages),
-                    "failed_stage": "physical-verification",
-                    "cell": layout_spec.cell,
-                    "view": layout_spec.view,
-                    "check": check,
-                }
-                if completed_stages
-                else None
-            ),
-        )
-        if record is not None
-        else nullcontext()
-    )
+    if not callable(bind_operation):
+        raise RuntimeError("managed layout verification requires operation binding")
     with (
-        failure_context,
         workspace_operation(
             client,
-            project.workspace_root,
+            layout_spec.project.workspace_root,
             f"verify-layout-{check}",
             policy=OperationPolicy.READ_ONLY,
             operation_id=operation_id,
@@ -1476,13 +1378,8 @@ def verify_layout(
             views=((layout_spec.cell, layout_spec.view),),
         ),
     ):
-        if record is not None:
-            operation.register_artifact(record)
-        else:
-            if not callable(bind_operation):
-                raise RuntimeError("managed layout verification requires operation binding")
-            bind_operation(operation)
-        library_path = operation.require_project_library_target(
+        bind_operation(operation)
+        operation.require_project_library_target(
             client, layout_spec.library
         )
         info = client.library.get(layout_spec.library, timeout=30)
@@ -1493,14 +1390,12 @@ def verify_layout(
                 f"{layout_spec.pdk.oa.technology_library!r}"
             )
         validate_layout_plan(client, plan, operation=operation, timeout=60)
-        completed_stages.append("oa-content-validation")
         gds = _run_xstream(
             run,
             layout_spec,
             xstream=xstream_executable,
             timeout=xstream_timeout,
         )
-        completed_stages.append("xstream-export")
         outcome = _run_calibre(
             run,
             layout_spec,
@@ -1510,7 +1405,6 @@ def verify_layout(
             gds=gds,
             timeout=calibre_timeout,
         )
-        completed_stages.append(f"calibre-{check}")
         layout_identity = CheckedLayoutIdentity(
             artifact_identity=f"{run.run_id}:layout:gdsii",
             plan_identity=f"{layout_spec.library}:{layout_spec.cell}:layout-plan",
@@ -1561,15 +1455,7 @@ def verify_layout(
                 "oa_content_confirmed": True,
                 **outcome,
             }
-            if record is not None:
-                completion_payload.update(
-                    {
-                        "library_path": str(library_path),
-                        "xstream": str(xstream_executable),
-                        "calibre": str(calibre_executable),
-                    }
-                )
-            completion = run.write_json(
+            run.write_json(
                 "outputs", ("completion.json",), completion_payload,
                 label="physical verification completion proof",
             )
@@ -1577,12 +1463,7 @@ def verify_layout(
                 "outputs", ("typed-evidence.json",), typed_evidence.canonical_json(),
                 label="typed physical verification evidence",
             )
-            if record is None:
-                return evidence_path
-            return record.succeed(
-                completion_evidence=(completion, evidence_path),
-                details=outcome,
-            )
+            return evidence_path
 
         deferred = operation.defer_commit(commit)
     if (
@@ -1598,58 +1479,8 @@ def verify_layout(
         passed=bool(outcome["passed"]),
         run_id=run.run_id,
         run_dir=run.root,
-        manifest_path=(
-            record.paths.manifest
-            if record is not None
-            else run.root / "run_manifest.json"
-        ),
+        manifest_path=run.root / "run_manifest.json",
         details=outcome,
         evidence=typed_evidence,
         evidence_path=evidence_path,
-    )
-
-
-def execute_layout_verification_spec(
-    spec_path: Path,
-    client: Any,
-    *,
-    project: Project,
-    check: str,
-    xstream_timeout: int = 120,
-    calibre_timeout: int = 600,
-) -> tuple[LayoutSpec, LayoutVerificationResult]:
-    spec = load_layout_spec(spec_path, project=project)
-    return spec, verify_layout(
-        spec,
-        client,
-        check=check,
-        xstream_timeout=xstream_timeout,
-        calibre_timeout=calibre_timeout,
-    )
-
-
-def execute_layout_verification_set(
-    spec_path: Path,
-    client: Any,
-    *,
-    project: Project,
-    checks: tuple[str, ...],
-    xstream_timeout: int = 120,
-    calibre_timeout: int = 600,
-) -> tuple[tuple[LayoutSpec, LayoutVerificationResult], ...]:
-    """Load one layout identity and execute its requested verification set."""
-
-    spec = load_layout_spec(spec_path, project=project)
-    return tuple(
-        (
-            spec,
-            verify_layout(
-                spec,
-                client,
-                check=check,
-                xstream_timeout=xstream_timeout,
-                calibre_timeout=calibre_timeout,
-            ),
-        )
-        for check in checks
     )

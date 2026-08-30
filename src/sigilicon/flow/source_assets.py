@@ -145,6 +145,38 @@ def source_member_matches(member: SourceMember) -> bool:
     )
 
 
+def snapshot_source_member(
+    path: Path,
+    *,
+    source_root: Path,
+    record_text: str | None = None,
+    source_label: str = "source",
+) -> SourceMember:
+    """Snapshot one UTF-8 source file with its execution bit and source root."""
+
+    resolved = path.resolve()
+    root = source_root.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"{source_label} source is outside its root: {resolved}")
+    try:
+        text = read_nofollow_text(resolved) if record_text is None else record_text
+        executable = bool(
+            resolved.stat(follow_symlinks=False).st_mode
+            & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
+    except (OSError, RuntimeError, UnicodeError) as exc:
+        raise ValueError(
+            f"cannot snapshot {source_label} source {resolved}: {exc}"
+        ) from exc
+    return SourceMember(
+        path=resolved.relative_to(root).as_posix(),
+        source_root=root,
+        record_text=text,
+        executable=executable,
+        location=resolved,
+    )
+
+
 def load_source_assets(
     path: Path,
     *,
@@ -394,4 +426,5 @@ __all__ = [
     "resolve_node_source_assets",
     "source_assets_payload",
     "source_member_matches",
+    "snapshot_source_member",
 ]

@@ -7,7 +7,6 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
-from sigilicon.artifacts import load_manifest
 from sigilicon.domain.ip_integration import (
     IpIntegrationDependency,
     IpReleaseDependency,
@@ -15,18 +14,36 @@ from sigilicon.domain.ip_integration import (
 )
 from sigilicon.domain.repository import Project
 from sigilicon.workflows import xcelium_ams
+from sigilicon.workflows.run_artifacts import DirectoryRunArtifacts
 from sigilicon.workflows.xcelium_ams import (
+    execute_xcelium_ams_cell,
     plan_xcelium_ams_cell,
-    run_xcelium_ams_cell,
 )
 
 from conftest import write_component_owner, write_test_platform
+
+
+def test_xcelium_ams_execution_requires_a_caller_owned_run() -> None:
+    assert not hasattr(xcelium_ams, "run_xcelium_ams_cell")
 
 
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _run_artifacts(root: Path) -> DirectoryRunArtifacts:
+    run = root / "run"
+    return DirectoryRunArtifacts(
+        run_id="managed-run",
+        root=run,
+        input_root=run / "work/action/inputs",
+        work_root=run / "work/action/tool",
+        output_root=run / "outputs/action/evidence",
+        log_root=run / "logs/action",
+        source={},
+    )
 
 
 def _ams_project(root: Path) -> tuple[Path, Path]:
@@ -192,7 +209,7 @@ def test_xcelium_ams_plan_rejects_spectre_compile_input(
         plan_xcelium_ams_cell(contract, project=Project.from_project_root(tmp_path))
 
 
-def test_xcelium_ams_run_stages_inputs_and_records_regression(
+def test_xcelium_ams_execution_stages_inputs_and_records_regression(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,29 +234,21 @@ def test_xcelium_ams_run_stages_inputs_and_records_regression(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(xcelium_ams, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium_ams, "new_identity", lambda: "6" * 32)
     monkeypatch.setattr(xcelium_ams, "xrun_env", lambda _xrun: {})
 
-    result = run_xcelium_ams_cell(
-        contract,
-        project=project,
+    result = execute_xcelium_ams_cell(
+        plan_xcelium_ams_cell(contract, project=project),
+        artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
     )
 
     assert result.passed
-    manifest = load_manifest(result.manifest_path)
-    assert manifest["status"] == "succeeded"
-    assert manifest["backend"] == "xcelium-ams-cell"
-    assert manifest["details"] == {
-        "evidence_role": "migration_regression",
-        "product_qualification_conclusion": False,
-    }
     summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
     assert summary["success_marker_evidence"] == ["native_log"]
     assert summary["product_qualification_conclusion"] is False
 
 
-def test_xcelium_ams_run_fails_without_success_marker(
+def test_xcelium_ams_execution_reports_missing_success_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,14 +262,15 @@ def test_xcelium_ams_run_fails_without_success_marker(
         return subprocess.CompletedProcess(command, 0, "FAIL transaction\n", "")
 
     monkeypatch.setattr(xcelium_ams, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium_ams, "new_identity", lambda: "7" * 32)
     monkeypatch.setattr(xcelium_ams, "xrun_env", lambda _xrun: {})
 
-    result = run_xcelium_ams_cell(
-        contract,
-        project=Project.from_project_root(tmp_path),
+    project = Project.from_project_root(tmp_path)
+    result = execute_xcelium_ams_cell(
+        plan_xcelium_ams_cell(contract, project=project),
+        artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
     )
 
     assert not result.passed
-    assert load_manifest(result.manifest_path)["status"] == "failed"
+    summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
+    assert summary["success_marker_seen"] is False

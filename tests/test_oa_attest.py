@@ -176,11 +176,7 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
         "resolve_catalog_selection",
         lambda *_args, **_kwargs: selection,
     )
-    monkeypatch.setattr(
-        flow_cli.ProjectOaWorkflow,
-        "simulate",
-        lambda *_args, **_kwargs: pytest.fail("standalone lifecycle must not run"),
-    )
+    assert not hasattr(flow_cli.ProjectOaWorkflow, "simulate")
 
     assert (
         flow_cli.main(

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
@@ -19,8 +17,7 @@ from sigilicon.virtuoso.layout_generation import (
     write_layout_plan,
 )
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.run_artifacts import RunArtifacts, StandaloneRunArtifacts
-from sigilicon.workflows.source_control import artifact_source_state
+from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 @dataclass(frozen=True)
@@ -70,22 +67,10 @@ def plan_layout_spec(
     return LayoutPlanningResult(spec)
 
 
-def execute_layout_generation_spec(
-    spec_path: Path,
-    client: Any,
-    *,
-    project: Project,
-    timeout: int = 120,
-) -> tuple[LayoutSpec, LayoutGenerationResult]:
-    spec = load_layout_spec(spec_path, project=project)
-    return spec, generate_layout(spec, client, timeout=timeout)
-
-
 def generate_layout(
     spec: LayoutSpec | LayoutPlanningResult,
     client: Any,
     *,
-    artifact_root: Path | None = None,
     overwrite: bool = False,
     timeout: int = 120,
     disposable: bool = False,
@@ -98,19 +83,14 @@ def generate_layout(
         if isinstance(spec, LayoutPlanningResult)
         else LayoutPlanningResult(spec)
     )
-    if (
-        isinstance(spec, LayoutPlanningResult)
-        and not disposable
-        and artifacts is None
-    ):
-        raise ValueError("preplanned layout execution must be disposable")
-    if artifacts is not None and (artifact_root is not None or disposable):
-        raise ValueError("managed layout artifacts cannot override their run scope")
+    if not disposable and artifacts is None:
+        raise ValueError("persistent layout generation requires Flow-owned artifacts")
+    if artifacts is not None and disposable:
+        raise ValueError("disposable layout generation cannot persist run artifacts")
     if not disposable:
         return _generate_layout_impl(
             planning,
             client,
-            artifact_root=artifact_root,
             overwrite=overwrite,
             timeout=timeout,
             disposable=False,
@@ -122,7 +102,6 @@ def generate_layout(
         return _generate_layout_impl(
             planning,
             client,
-            artifact_root=artifact_root,
             overwrite=overwrite,
             timeout=timeout,
             disposable=True,
@@ -134,7 +113,6 @@ def _generate_layout_impl(
     planning: LayoutPlanningResult,
     client: Any,
     *,
-    artifact_root: Path | None = None,
     overwrite: bool = False,
     timeout: int = 120,
     disposable: bool = False,
@@ -147,65 +125,14 @@ def _generate_layout_impl(
 
     spec = planning.spec
     execution_plan = planning.plan
-    project = (
-        spec.project
-        if artifact_root is None
-        else spec.project.with_artifact_root(artifact_root)
-    )
-    record: ArtifactRecord | None = None
     if disposable:
         if _disposable_work is None:
             raise RuntimeError("disposable layout generation requires a work scope")
         attempt: Any = _disposable_work
-    elif artifacts is not None:
-        attempt = artifacts
     else:
-        record = ArtifactRecord.begin(
-            project.artifacts.execution(
-                owner=spec.library,
-                target=spec.cell,
-                flow="layout-generation",
-                variant=spec.view,
-                identity=new_identity(),
-                artifact_kind="layout_generation",
-                identity_kind="attempt_id",
-            ),
-            entities={"library": spec.library, "cell": spec.cell, "view": spec.view},
-            operation="generate-layout",
-            backend="laygo2+virtuoso-oa",
-            source=artifact_source_state(spec.project_root),
-        )
-        attempt = StandaloneRunArtifacts(record)
+        assert artifacts is not None
+        attempt = artifacts
     if not disposable:
-        if artifacts is None:
-            attempt.copy_file(
-                "inputs", ("layout.toml",), spec.path, label="canonical layout intent"
-            )
-            attempt.copy_file(
-                "inputs",
-                ("layout-generator.py",),
-                spec.generator_source,
-                label="design-owned layout generator source",
-            )
-            for index, dependency in enumerate(spec.generator_dependencies):
-                attempt.copy_file(
-                    "inputs",
-                    (
-                        "layout-generator-dependencies",
-                        f"{index:02d}-{dependency.name}",
-                    ),
-                    dependency,
-                    label="design-owned layout generator dependency",
-                )
-            for index, (module, dependency) in enumerate(
-                zip(spec.generator_modules, spec.generator_module_sources, strict=True)
-            ):
-                attempt.copy_file(
-                    "inputs",
-                    ("layout-generator-modules", f"{index:02d}-{dependency.name}"),
-                    dependency,
-                    label=f"installed layout generator module {module}",
-                )
         attempt.write_text(
             "inputs",
             ("canonical-subckt.scs",),
@@ -237,30 +164,10 @@ def _generate_layout_impl(
             execution_plan.canonical_json(),
             label="stable layout plan",
         )
-    operation = None
-    oa_written = False
-    failure_context = (
-        record.failure_boundary(
-            uncertainty=lambda: operation.uncertain_reason if operation else None,
-            partial_failure=lambda: (
-                {
-                    "completed_stages": ["oa-write"],
-                    "failed_stage": "oa-validation-or-workspace-audit",
-                    "cell": spec.cell,
-                    "view": spec.view,
-                }
-                if oa_written
-                else None
-            ),
-        )
-        if record is not None
-        else nullcontext()
-    )
     with (
-        failure_context,
         workspace_operation(
             client,
-            project.workspace_root,
+            spec.project.workspace_root,
             "generate-layout",
             policy=OperationPolicy.DIRECT_MUTATION,
             operation_id=operation_id,
@@ -271,13 +178,11 @@ def _generate_layout_impl(
             views=((spec.cell, spec.view),),
         ),
     ):
-        if record is not None:
-            operation.register_artifact(record)
-        elif not disposable:
+        if not disposable:
             if not callable(bind_operation):
                 raise RuntimeError("managed layout generation requires operation binding")
             bind_operation(operation)
-        library_path = operation.require_project_library_target(client, spec.library)
+        operation.require_project_library_target(client, spec.library)
         info = client.library.get(spec.library, timeout=30)
         if str(info.technology_library or "") != spec.pdk.oa.technology_library:
             raise RuntimeError(
@@ -294,23 +199,13 @@ def _generate_layout_impl(
                 "instance_count": len(execution_plan.instances),
                 "oa_completion_confirmed": True,
             }
-            if record is not None:
-                completion_payload["library_path"] = str(library_path)
             completion = attempt.write_json(
                 "outputs",
                 ("completion.json",),
                 completion_payload,
                 label="OA layout generation completion proof",
             )
-            if record is None:
-                return completion
-            return record.succeed(
-                completion_evidence=(completion,),
-                details={
-                    "instance_count": len(execution_plan.instances),
-                    "stage": execution_plan.stage,
-                },
-            )
+            return completion
 
         deferred = operation.defer_commit(commit) if not disposable else None
         with operation.mutation_scope(
@@ -326,7 +221,6 @@ def _generate_layout_impl(
                 overwrite=overwrite,
                 timeout=timeout,
             )
-            oa_written = True
         validate_layout_plan(
             client,
             execution_plan,
@@ -340,15 +234,7 @@ def _generate_layout_impl(
     )
     return LayoutGenerationResult(
         attempt_dir=attempt.root if not disposable else None,
-        manifest_path=(
-            None
-            if disposable
-            else (
-                record.paths.manifest
-                if record is not None
-                else attempt.root / "run_manifest.json"
-            )
-        ),
+        manifest_path=None if disposable else attempt.root / "run_manifest.json",
         instance_count=len(execution_plan.instances),
         completion_path=completion_path,
     )
