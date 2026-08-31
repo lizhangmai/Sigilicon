@@ -36,15 +36,14 @@ from sigilicon.domain.post_layout import (
     qualification_evidence_id,
 )
 from sigilicon.flow import (
+    ActionBinding,
     ActionContext,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowSpec,
@@ -1009,10 +1008,10 @@ def _flow(
             ),
         ),
     ]
-    selections = [
-        AdapterSelection(_BENCHMARK_INPUT_ACTION, _BENCHMARK_INPUT_ADAPTER),
-        AdapterSelection(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
-        AdapterSelection(
+    action_bindings = [
+        ActionBinding(_BENCHMARK_INPUT_ACTION, _BENCHMARK_INPUT_ADAPTER),
+        ActionBinding(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
+        ActionBinding(
             PHYSICAL_MATERIALIZATION_ACTION,
             REFERENCE_MATERIALIZATION_ADAPTER,
         ),
@@ -1074,14 +1073,14 @@ def _flow(
                 ),
             )
         )
-        selections.extend(
+        action_bindings.extend(
             (
-                AdapterSelection(
+                ActionBinding(
                     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
                     _BENCHMARK_LAYOUT_ADAPTER,
                 ),
-                AdapterSelection(DRC_ACTION, _BENCHMARK_DRC_ADAPTER),
-                AdapterSelection(LVS_ACTION, _BENCHMARK_LVS_ADAPTER),
+                ActionBinding(DRC_ACTION, _BENCHMARK_DRC_ADAPTER),
+                ActionBinding(LVS_ACTION, _BENCHMARK_LVS_ADAPTER),
             )
         )
         goals = ("drc", "lvs")
@@ -1145,20 +1144,20 @@ def _flow(
                 ),
             )
         )
-        selections.extend(
+        action_bindings.extend(
             (
-                AdapterSelection(
+                ActionBinding(
                     PEX_ACTION,
                     _BENCHMARK_PEX_ADAPTER,
-                    platform_asset_identities={
+                    platform_assets={
                         "physical-pex": "benchmark.pex-assets"
                     },
                 ),
-                AdapterSelection(
+                ActionBinding(
                     POST_LAYOUT_ACTION,
                     _BENCHMARK_POST_LAYOUT_ADAPTER,
                 ),
-                AdapterSelection(
+                ActionBinding(
                     PHYSICAL_QUALIFICATION_ACTION,
                     _BENCHMARK_QUALIFICATION_ADAPTER,
                 ),
@@ -1182,16 +1181,13 @@ def _flow(
     spec = FlowSpec(
         owner="benchmark",
         flow_id="typed-closure-campaign",
+        recipe_id="typed-closure-campaign-recipe",
         nodes=tuple(nodes),
         targets=(FlowTarget("closure", goals),),
-    )
-    profile = ExecutionProfile(
-        "benchmark",
-        "reference-benchmark",
-        tuple(selections),
+        action_bindings=tuple(action_bindings),
     )
     engine = FlowEngine(registry)
-    return engine, engine.plan(spec, "closure", profile), bindings
+    return engine, engine.plan(spec, "closure"), bindings
 
 
 def _campaign(
@@ -1259,6 +1255,8 @@ def test_public_dbu_campaign_closes_full_receipt_bound_graph_deterministically(
     assert first.closed
     assert first.final_quality.closed
     assert first.iterations[0].flow_status == "accepted"
+    assert first.iterations[0].provenance.target == "closure"
+    assert first.iterations[0].provenance.operation == "typed-closure-campaign"
     assert {item.label for item in first.iterations[0].provenance.artifacts} == {
         "closure-evidence",
         "drc",

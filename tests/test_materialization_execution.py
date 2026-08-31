@@ -8,14 +8,13 @@ import pytest
 
 from conftest import StagedAdapterFixture
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -306,6 +305,7 @@ def _plan(engine: FlowEngine, *, outcome: str = "materialized"):
     spec = FlowSpec(
         owner="benchmark",
         flow_id="materialization-contract",
+        recipe_id="materialization-contract-recipe",
         nodes=(
             FlowNode("inputs", _INPUT_ACTION),
             FlowNode(
@@ -326,20 +326,16 @@ def _plan(engine: FlowEngine, *, outcome: str = "materialized"):
             ),
         ),
         targets=(FlowTarget("materialized", ("materialize",)),),
-    )
-    profile = ExecutionProfile(
-        "benchmark",
-        "contract-fixture",
-        (
-            AdapterSelection(_INPUT_ACTION, _INPUT_ADAPTER),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding(_INPUT_ACTION, _INPUT_ADAPTER),
+            ActionBinding(
                 PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
                 _MATERIALIZER,
                 config={"outcome": outcome},
             ),
         ),
     )
-    return engine.plan(spec, "materialized", profile)
+    return engine.plan(spec, "materialized")
 
 
 def _environment(tmp_path: Path) -> ExecutionEnvironment:

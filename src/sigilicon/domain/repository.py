@@ -78,8 +78,8 @@ class RepositoryFlowExtension:
 
 
 @dataclass(frozen=True)
-class OwnerCatalogSnapshot:
-    """One owner-selected Flow source read for a caller-owned operation."""
+class OwnerTargetSnapshot:
+    """One owner-selected configuration source read for an operation."""
 
     owner: str
     path: Path
@@ -225,6 +225,25 @@ class Project:
                 raise ValueError(
                     f"{ip_catalog}: component {name!r} identity disagrees with its contract"
                 )
+            if component.target_catalog is not None:
+                target_catalog = project.project_root.joinpath(
+                    *component.target_catalog.parts
+                )
+                resolved_target_catalog = target_catalog.resolve()
+                if target_catalog != resolved_target_catalog:
+                    raise ValueError(
+                        f"{component.path}: target_catalog must not be a symlink"
+                    )
+                if not resolved_target_catalog.is_relative_to(owner_root):
+                    raise ValueError(
+                        f"{component.path}: target_catalog must stay inside its "
+                        f"owner root: {component.target_catalog}"
+                    )
+                if not resolved_target_catalog.is_file():
+                    raise FileNotFoundError(
+                        f"{component.path}: target_catalog is missing: "
+                        f"{component.target_catalog}"
+                    )
             owned_sources = [
                 path
                 for files in component.filesets.values()
@@ -529,6 +548,62 @@ class Project:
             raise ValueError(f"{field} does not exist inside its owner root")
         return resolved, relative
 
+    def owner_target_catalog(
+        self,
+        owner: RepositoryOwner | str,
+    ) -> OwnerTargetSnapshot:
+        """Read the one explicitly selected target catalog for an owner.
+
+        Target catalogs are selected by the owner component contract rather than
+        discovered by scanning a fileset.  The configured path is project
+        relative, while the target catalog's own entries use owner-relative
+        paths.  Both the catalog path and every parent directory must be
+        canonical regular filesystem objects so a symlink cannot alter the
+        selected source after project assembly.
+        """
+
+        selected = self.owner(owner) if isinstance(owner, str) else owner
+        if selected not in self.owners:
+            raise ValueError(
+                f"repository does not contain owner {selected.name!r}"
+            )
+        relative = selected.component.target_catalog
+        if relative is None:
+            raise ValueError(
+                f"cataloged owner {selected.name!r} has no target_catalog"
+            )
+        configured = self.project_root.joinpath(*relative.parts)
+        resolved = configured.resolve()
+        if configured != resolved:
+            raise ValueError(
+                f"target_catalog for owner {selected.name!r} must not be a symlink"
+            )
+        if not resolved.is_relative_to(selected.root):
+            raise ValueError(
+                f"target_catalog for owner {selected.name!r} must stay inside "
+                "its owner root"
+            )
+        if not resolved.is_file():
+            raise FileNotFoundError(
+                f"target_catalog for owner {selected.name!r} does not exist: "
+                f"{relative}"
+            )
+        raw, record_text = read_toml_record(resolved)
+        require_config_header(
+            raw,
+            resolved,
+            contract_kind="owner-targets",
+            path_scope="owner",
+            owner=selected.name,
+        )
+        return OwnerTargetSnapshot(
+            owner=selected.name,
+            path=resolved,
+            contract_kind="owner-targets",
+            record_text=record_text,
+            document=freeze_toml_document(raw),
+        )
+
     def scope(self, owner: RepositoryOwner | str) -> ProjectScope:
         """Bind one cataloged owner to this project's explicit runtime paths."""
 
@@ -543,143 +618,6 @@ class Project:
             selected.root,
         )
 
-    def owner_flow_catalog_snapshots(
-        self,
-        owner: RepositoryOwner,
-        *,
-        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
-    ) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Read and classify one owner's canonical Flow catalogs once."""
-
-        if owner not in self.owners:
-            raise ValueError(f"repository does not contain owner {owner.name!r}")
-        source = (
-            self.owner_flow_catalog_inventory(owner)
-            if inventory is None
-            else self._validate_flow_catalog_inventory(inventory)
-        )
-        result = tuple(
-            snapshot
-            for snapshot in source
-            if snapshot.owner == owner.name
-            and snapshot.contract_kind == "flow-catalog"
-        )
-        for snapshot in result:
-            require_config_header(
-                snapshot.document,
-                snapshot.path,
-                contract_kind="flow-catalog",
-                path_scope="owner",
-                owner=owner.name,
-            )
-        return tuple(sorted(result, key=lambda item: item.path))
-
-    def owner_flow_catalog_inventory(
-        self,
-        owner: RepositoryOwner,
-    ) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Read one owner's selected Flow TOML sources once."""
-
-        if owner not in self.owners:
-            raise ValueError(f"repository does not contain owner {owner.name!r}")
-        result: list[OwnerCatalogSnapshot] = []
-        for path in owner.files("flow"):
-            if path.suffix != ".toml":
-                continue
-            raw, record_text = read_toml_record(path)
-            contract_kind = raw.get("contract_kind")
-            if not isinstance(contract_kind, str) or not contract_kind:
-                continue
-            result.append(
-                OwnerCatalogSnapshot(
-                    owner=owner.name,
-                    path=path,
-                    contract_kind=contract_kind,
-                    record_text=record_text,
-                    document=freeze_toml_document(raw),
-                )
-            )
-        return tuple(sorted(result, key=lambda item: item.path))
-
-    def flow_catalog_inventory(self) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Read every owner-selected Flow TOML source once."""
-
-        return tuple(
-            snapshot
-            for owner in self.owners
-            for snapshot in self.owner_flow_catalog_inventory(owner)
-        )
-
-    def _validate_flow_catalog_inventory(
-        self,
-        inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Prove that a reused inventory belongs to this exact Project."""
-
-        result = tuple(inventory)
-        seen: set[tuple[str, Path]] = set()
-        for snapshot in result:
-            owner = self.owner(snapshot.owner)
-            identity = (owner.name, snapshot.path)
-            if identity in seen:
-                raise ValueError(
-                    f"duplicate Flow catalog inventory path: {snapshot.path}"
-                )
-            seen.add(identity)
-            if (
-                snapshot.path != snapshot.path.resolve()
-                or not snapshot.path.is_file()
-                or snapshot.path not in owner.files("flow")
-                or not snapshot.path.is_relative_to(self.project_root)
-            ):
-                raise ValueError(
-                    f"Flow catalog inventory path does not belong to the current "
-                    f"Project owner {owner.name!r}: {snapshot.path}"
-                )
-            if (
-                not isinstance(snapshot.contract_kind, str)
-                or not snapshot.contract_kind
-                or not isinstance(snapshot.record_text, str)
-            ):
-                raise ValueError(
-                    f"invalid Flow source inventory kind: "
-                    f"{snapshot.contract_kind!r}"
-                )
-            if (
-                not is_frozen_toml_document(snapshot.document)
-                or snapshot.document.get("contract_kind") != snapshot.contract_kind
-            ):
-                raise ValueError(
-                    f"Flow catalog inventory identity drift: {snapshot.path}"
-                )
-        return result
-
-    def owner_flow_catalogs(self, owner: RepositoryOwner) -> tuple[Path, ...]:
-        """Return path identities for one owner's typed Flow catalogs."""
-
-        return tuple(
-            snapshot.path
-            for snapshot in self.owner_flow_catalog_snapshots(owner)
-        )
-
-    def owner_flow_catalog_snapshot(
-        self,
-        owner: RepositoryOwner,
-    ) -> OwnerCatalogSnapshot:
-        """Select one owner's unique typed Flow catalog snapshot."""
-
-        matches = self.owner_flow_catalog_snapshots(owner)
-        if len(matches) != 1:
-            raise ValueError(
-                f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
-            )
-        return matches[0]
-
-    def owner_flow_catalog(self, owner: RepositoryOwner) -> Path:
-        """Select the unique typed Flow catalog for one owner."""
-
-        return self.owner_flow_catalog_snapshot(owner).path
-
     def flow_registry_extension(self, owner: RepositoryOwner) -> Path | None:
         """Return the explicitly assembled registry source for one owner."""
 
@@ -693,40 +631,6 @@ class Project:
             ),
             None,
         )
-
-    def flow_catalog_snapshots(
-        self,
-        kind: str,
-        *,
-        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
-    ) -> tuple[OwnerCatalogSnapshot, ...]:
-        """Read and classify selected design or layout target catalogs once."""
-
-        expected = {
-            "design_targets": "flow-design-registry",
-            "layout_targets": "flow-layout-registry",
-        }.get(kind)
-        if expected is None:
-            raise ValueError(f"unsupported flow catalog kind: {kind!r}")
-        source = (
-            self.flow_catalog_inventory()
-            if inventory is None
-            else self._validate_flow_catalog_inventory(inventory)
-        )
-        result = tuple(
-            snapshot
-            for snapshot in source
-            if snapshot.contract_kind == expected
-        )
-        for snapshot in result:
-            require_config_header(
-                snapshot.document,
-                snapshot.path,
-                contract_kind=expected,
-                path_scope="owner",
-                owner=snapshot.owner,
-            )
-        return tuple(sorted(result, key=lambda item: (item.owner, item.path)))
 
     def owner_file(self, path: Path | str, fileset: str) -> Path | None:
         owner = self.require_owner(path)

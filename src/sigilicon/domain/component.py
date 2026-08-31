@@ -49,6 +49,7 @@ class ComponentContract:
     filesets: Mapping[str, tuple[PurePosixPath, ...]]
     components: tuple[ComponentDependency, ...]
     document: Mapping[str, Any] = field(repr=False, compare=False)
+    target_catalog: PurePosixPath | None = None
 
 
 def parse_component_contract(
@@ -114,6 +115,13 @@ def parse_component_contract(
             )
         )
 
+    target_catalog_value = document.get("target_catalog")
+    target_catalog = (
+        None
+        if target_catalog_value is None
+        else safe_relative(target_catalog_value, "target_catalog")
+    )
+
     result = ComponentContract(
         path=contract_path,
         project_root=root,
@@ -123,6 +131,7 @@ def parse_component_contract(
         public_interface=public_interface,
         filesets=MappingProxyType(filesets),
         components=tuple(dependencies),
+        target_catalog=target_catalog,
         document=freeze_toml_document(document),
     )
     referenced = [path for values in result.filesets.values() for path in values]
@@ -133,6 +142,17 @@ def parse_component_contract(
         resolved = (root / Path(relative)).resolve()
         if not resolved.is_relative_to(root) or not resolved.is_file():
             raise FileNotFoundError(f"component input is missing: {relative}")
+    if result.target_catalog is not None:
+        if result.target_catalog.suffix != ".toml":
+            raise ValueError("target_catalog must name a TOML file")
+        target_catalog = root.joinpath(*result.target_catalog.parts)
+        resolved = target_catalog.resolve()
+        if target_catalog != resolved:
+            raise ValueError("target_catalog must not be a symlink")
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            raise FileNotFoundError(
+                f"component target catalog is missing: {result.target_catalog}"
+            )
     return result
 
 

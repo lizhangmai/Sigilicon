@@ -9,14 +9,13 @@ import pytest
 from conftest import StagedAdapterFixture
 from sigilicon.domain.post_layout import PexStatus, pex_evidence_from_json
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowSpec,
@@ -378,9 +377,10 @@ def _registry(*, corrupt_source: bool = False):
 
 def _flow():
     spec = FlowSpec(
-        "benchmark",
-        "receipt-bound-pex",
-        (
+        owner="benchmark",
+        flow_id="receipt-bound-pex",
+        recipe_id="receipt-bound-pex-recipe",
+        nodes=(
             FlowNode("inputs", _INPUT_ACTION),
             FlowNode(
                 "pex",
@@ -392,29 +392,25 @@ def _flow():
                 ),
             ),
         ),
-        (FlowTarget("pex", ("pex",)),),
-    )
-    profile = ExecutionProfile(
-        "benchmark",
-        "calibre-xrc",
-        (
-            AdapterSelection(_INPUT_ACTION, _INPUT_ADAPTER),
-            AdapterSelection(
+        targets=(FlowTarget("pex", ("pex",)),),
+        action_bindings=(
+            ActionBinding(_INPUT_ACTION, _INPUT_ADAPTER),
+            ActionBinding(
                 PEX_ACTION,
                 CALIBRE_XRC_PEX_ADAPTER,
-                platform_asset_identities={"physical-pex": "benchmark.calibre-xrc"},
+                platform_assets={"physical-pex": "benchmark.calibre-xrc"},
             ),
         ),
     )
-    return spec, profile
+    return spec
 
 
 def _run(tmp_path: Path, monkeypatch, fake: _FakeXrc, *, run_id: str = "1" * 32):
     monkeypatch.setattr("sigilicon.workflows.calibre_pex.run_process_group", fake)
     engine = FlowEngine(_registry())
-    spec, profile = _flow()
+    spec = _flow()
     return engine.run(
-        engine.plan(spec, "pex", profile),
+        engine.plan(spec, "pex"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path),
         run_id=run_id,
@@ -478,9 +474,9 @@ def test_calibre_xrc_identity_drift_fails_before_tool(
     fake = _FakeXrc()
     monkeypatch.setattr("sigilicon.workflows.calibre_pex.run_process_group", fake)
     engine = FlowEngine(_registry(corrupt_source=True))
-    spec, profile = _flow()
+    spec = _flow()
     result = engine.run(
-        engine.plan(spec, "pex", profile),
+        engine.plan(spec, "pex"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path),
         run_id="d" * 32,
@@ -497,9 +493,9 @@ def test_calibre_xrc_rejects_symlinked_support_tree_before_tool(
     fake = _FakeXrc()
     monkeypatch.setattr("sigilicon.workflows.calibre_pex.run_process_group", fake)
     engine = FlowEngine(_registry())
-    spec, profile = _flow()
+    spec = _flow()
     result = engine.run(
-        engine.plan(spec, "pex", profile),
+        engine.plan(spec, "pex"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path, symlink_support=True),
         run_id="e" * 32,

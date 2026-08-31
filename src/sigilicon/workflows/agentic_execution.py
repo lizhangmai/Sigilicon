@@ -105,7 +105,7 @@ class AgenticExecutionInterface:
         )
         self._active: dict[str, ManagedBackgroundProcess] = {}
 
-    def run_flow(
+    def run_target(
         self,
         *,
         plan_identity: str,
@@ -124,7 +124,7 @@ class AgenticExecutionInterface:
         )
         if resolved.node_count > budget.maximum_nodes:
             raise ValueError(
-                f"Flow Plan needs {resolved.node_count} nodes but the node budget "
+                f"Target operation Plan needs {resolved.node_count} nodes but the node budget "
                 f"allows {budget.maximum_nodes}"
             )
         self.grant.authorize(
@@ -134,14 +134,14 @@ class AgenticExecutionInterface:
             instant=datetime.now(timezone.utc),
         )
         run_id = (
-            f"flow-{resolved.owner}-{resolved.flow}-{resolved.target}-"
-            f"{resolved.profile}-{self.grant.approval}-"
+            f"target-{resolved.owner}-{resolved.target}-{resolved.operation}-"
+            f"{self.grant.approval}-"
             f"{budget.maximum_seconds}-{budget.maximum_nodes}"
         )
         paths = self.store.paths(
             owner=resolved.owner,
-            flow=resolved.flow,
             target=resolved.target,
+            operation=resolved.operation,
             run_id=run_id,
         )
         state_path = paths.role("control") / "state.json"
@@ -156,7 +156,7 @@ class AgenticExecutionInterface:
                 or request["environment_record_json"] != self.environment_record_json
                 or request["budget"] != asdict(budget)
             ):
-                raise ValueError("idempotent Flow Run identity drift")
+                raise ValueError("idempotent Target Run identity drift")
         else:
             stored_request = self.store.read_request_if_present(paths)
             submitted_at = (
@@ -166,9 +166,8 @@ class AgenticExecutionInterface:
                 "schema": 1,
                 "project_id": self.read.project_id,
                 "owner": resolved.owner,
-                "flow": resolved.flow,
                 "target": resolved.target,
-                "profile": resolved.profile,
+                "operation": resolved.operation,
                 "plan_identity": plan_identity,
                 "plan_record_json": canonical_json(resolved.record),
                 "run_id": run_id,
@@ -205,10 +204,10 @@ class AgenticExecutionInterface:
                     str(self.read.project.project_root),
                     "--owner",
                     resolved.owner,
-                    "--flow",
-                    resolved.flow,
                     "--target",
                     resolved.target,
+                    "--operation",
+                    resolved.operation,
                     "--run-id",
                     run_id,
                 ]
@@ -236,7 +235,7 @@ class AgenticExecutionInterface:
                 raise
         if wait:
             self.wait_run(run_id)
-        return self._operation_response(run_id, operation="flow.run")
+        return self._operation_response(run_id, operation="target.run")
 
     def run_campaign(
         self,
@@ -518,10 +517,10 @@ class AgenticExecutionInterface:
                 return
             if state["status"] not in RUNNING_STATUSES:
                 raise ValueError(
-                    f"managed Flow Run became {state['status']!r} before running"
+                    f"managed Target Run became {state['status']!r} before running"
                 )
             if time.monotonic() >= deadline:
-                raise ValueError("managed Flow Run did not start before the timeout")
+                raise ValueError("managed Target Run did not start before the timeout")
             time.sleep(0.02)
 
     def wait_run(self, run_id: str) -> dict[str, Any]:
@@ -532,7 +531,7 @@ class AgenticExecutionInterface:
             self._reconcile(run_id, located.paths)
             state = self.store.read_state(located.paths)
             if time.monotonic() >= deadline:
-                raise ValueError("managed Flow Run did not reach a terminal artifact")
+                raise ValueError("managed Target Run did not reach a terminal artifact")
             if state["status"] in RUNNING_STATUSES or run_id in self._active:
                 time.sleep(0.02)
         return self.inspect_run(run_id=run_id)
@@ -543,8 +542,8 @@ class AgenticExecutionInterface:
         state = self.store.read_state(located.paths)
         return self.read.inspect_run(
             owner=state["owner"],
-            flow=state["flow"],
             target=state["target"],
+            operation=state["operation"],
             run_id=state["run_id"],
         )
 
@@ -552,9 +551,9 @@ class AgenticExecutionInterface:
         located = self.store.locate(run_id)
         request = self.store.read_request(located.paths)
         if request["principal"] != self.grant.principal:
-            raise ValueError("managed Flow Run belongs to a different principal")
+            raise ValueError("managed Target Run belongs to a different principal")
         if request["grant_identity"] != self.grant.identity:
-            raise ValueError("managed Flow Run belongs to a different execution grant")
+            raise ValueError("managed Target Run belongs to a different execution grant")
         self.grant.authorize(
             request["plan_identity"],
             json.loads(request["plan_record_json"]),
@@ -575,22 +574,22 @@ class AgenticExecutionInterface:
             self._reconcile(run_id, located.paths)
             state = self.store.read_state(located.paths)
         if state["status"] not in {"cancelled", "budget-exhausted"}:
-            raise ValueError(f"managed Flow Run is already {state['status']!r}")
+            raise ValueError(f"managed Target Run is already {state['status']!r}")
         return self._operation_response(run_id, operation="run.cancel")
 
     def _operation_response(self, run_id: str, *, operation: str) -> dict[str, Any]:
         payload = self.inspect_run(run_id=run_id)
         payload = dict(payload)
         payload["operation"] = operation
-        if operation == "flow.run" and payload["data"]["management"]["status"] in RUNNING_STATUSES:
+        if operation == "target.run" and payload["data"]["management"]["status"] in RUNNING_STATUSES:
             payload["conclusion"] = "submitted"
             payload["summary"] = (
-                f"Submitted managed Flow Run {run_id}; inspect or cancel its durable identity."
+                f"Submitted managed Target Run {run_id}; inspect or cancel its durable identity."
             )
         elif operation == "run.cancel":
             payload["conclusion"] = payload["data"]["management"]["status"]
             payload["summary"] = (
-                f"Managed Flow Run {run_id} reached terminal cancellation state."
+                f"Managed Target Run {run_id} reached terminal cancellation state."
             )
         return payload
 
@@ -640,8 +639,8 @@ class AgenticExecutionInterface:
                 "contract_kind": AGENTIC_RUN_AUDIT_KIND,
                 "project_id": request["project_id"],
                 "owner": request["owner"],
-                "flow": request["flow"],
                 "target": request["target"],
+                "operation": request["operation"],
                 "run_id": request["run_id"],
                 "plan_identity": request["plan_identity"],
                 "grant_identity": request["grant_identity"],
@@ -655,7 +654,7 @@ class AgenticExecutionInterface:
                 "started_at": terminal["started_at"],
                 "finished_at": terminal["finished_at"],
                 "terminal_status": terminal["status"],
-                "flow_status": None,
+                "result_status": None,
                 "error_code": error_code,
             },
         )

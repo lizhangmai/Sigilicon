@@ -1,481 +1,341 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-import sigilicon.domain.repository as repository_module
 
-from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.domain.repository import Project
-from sigilicon.flow import ExecutionEnvironment, FlowEngine, FlowRegistry
+from sigilicon.flow import (
+    ActionContract,
+    AdapterResult,
+    CollectedActionResult,
+    ExecutionEnvironment,
+    FlowExecutionError,
+    FlowRegistry,
+    SourceMember,
+)
+from sigilicon.flow.circuit_design import (
+    DESIGN_ACTION_PLAN,
+    DESIGN_SOURCE_CHECK_ACTION,
+)
+from sigilicon.flow.source_assets import snapshot_source_member
+from sigilicon.workflows import design_flow
+from sigilicon.workflows import project_runner as project_runner_module
 from sigilicon.workflows.project_runner import (
-    FlowExecution,
-    FlowRunSelection,
+    ProjectExecution,
     ProjectRunner,
-    RunRequest,
     resolve_project_execution,
 )
 
-from conftest import write_component_owner
+from conftest import write_component_owner, write_project_context
 
 
-def _write_extension(
-    project_root: Path,
-    *,
-    register: bool = True,
-) -> Path:
-    source = project_root / "ip/example/tools/flow_extension.py"
-    source.parent.mkdir(parents=True, exist_ok=True)
-    body = '''from sigilicon.flow import ActionContract, AdapterResult
-
-
-class QualificationAdapter:
-    def run(self, context):
-        scope = context.require_project_scope()
-        if scope.owner != "example" or scope.owner_root.name != "example":
-            raise ValueError("wrong project owner scope")
-        return AdapterResult.succeeded()
-'''
-    if register:
-        body += '''
-
-def register_flow_adapters(registry, owner_root):
-    assert owner_root.name == "example"
-    registry.register_action(
-        ActionContract(
-            kind="example.owner-check",
-            adapters=("example-owner-check",),
-        )
-    )
-    registry.register_adapter("example-owner-check", QualificationAdapter())
-    registry.register_action_adapter(
-        "asic.electrical-qualification",
-        "example-electrical-qualification",
-        QualificationAdapter(),
-    )
-'''
-    source.write_text(body, encoding="utf-8")
-    return source
-
-
-def _declare_extension(project_root: Path, owner: str, source: Path) -> None:
-    contract = project_root / "sigilicon.toml"
-    contract.write_text(
-        contract.read_text(encoding="utf-8")
-        + f'''\n[flow.registry_extensions]\n{owner} = "{source.relative_to(project_root).as_posix()}"\n''',
-        encoding="utf-8",
-    )
-
-
-def _write_owner_flow(project_root: Path, owner: str = "example") -> Path:
-    owner_root = project_root / f"ip/{owner}"
-    (owner_root / "flow.toml").write_text(
-        f'''schema = 1
-contract_kind = "flow"
+_RECIPE = """schema = 1
+contract_kind = "execution-recipe"
 path_scope = "owner"
-owner = "{owner}"
-name = "owner-flow"
+owner = "example"
+name = "smoke-recipe"
+
+[actions."circuit-design.source-check"]
+adapter = "fake-source-check"
 
 [[nodes]]
 id = "check"
-action = "example.owner-check"
+action = "circuit-design.source-check"
+config = { target = "smoke", mode = "check" }
 
-[[targets]]
-name = "all"
+[[nodes]]
+id = "audit"
+action = "circuit-design.source-check"
+config = { target = "smoke", mode = "audit" }
+"""
+
+_TARGETS = """schema = 1
+contract_kind = "owner-targets"
+path_scope = "owner"
+owner = "example"
+
+[targets.smoke]
+description = "Offline smoke target"
+
+[targets.smoke.operations.check]
+recipe = "configs/smoke.toml"
 goals = ["check"]
-''',
-        encoding="utf-8",
-    )
-    (owner_root / "profile.toml").write_text(
-        f'''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "{owner}"
-name = "local"
 
-[actions."example.owner-check"]
-adapter = "example-owner-check"
-''',
-        encoding="utf-8",
-    )
-    catalog = owner_root / "catalog.toml"
-    catalog.write_text(
-        f'''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "{owner}"
-
-[flows.owner-flow]
-contract = "flow.toml"
-default_profile = "local"
-
-[flows.owner-flow.profiles]
-local = "profile.toml"
-''',
-        encoding="utf-8",
-    )
-    return catalog
+[targets.smoke.operations.all]
+recipe = "configs/smoke.toml"
+goals = ["check", "audit"]
+"""
 
 
-def _owner_flow_files(project_root: Path, source: Path, owner: str = "example") -> tuple[str, ...]:
-    return (
-        source.relative_to(project_root).as_posix(),
-        f"ip/{owner}/catalog.toml",
-        f"ip/{owner}/flow.toml",
-        f"ip/{owner}/profile.toml",
-    )
+def _write_project(root: Path) -> tuple[Project, Path, Path, Path]:
+    """Create one owner target catalog and one owner execution recipe."""
 
+    write_project_context(root)
+    owner_root = root / "ip/example"
+    flow_root = owner_root / "configs"
+    flow_root.mkdir(parents=True, exist_ok=True)
+    recipe = flow_root / "smoke.toml"
+    recipe.write_text(_RECIPE, encoding="utf-8")
+    targets = flow_root / "targets.toml"
+    targets.write_text(_TARGETS, encoding="utf-8")
+    implementation = owner_root / "implementation.py"
+    implementation.write_text("VALUE = 1\n", encoding="utf-8")
 
-def test_project_runner_reads_its_canonical_catalog_once_per_operation(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _write_extension(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-    catalog_path = _write_owner_flow(tmp_path).resolve()
-    original_read_toml = repository_module.read_toml_record
-    catalog_reads = 0
-
-    def counted_read_toml(path: Path):
-        nonlocal catalog_reads
-        if Path(path).resolve() == catalog_path:
-            catalog_reads += 1
-        return original_read_toml(path)
-
-    monkeypatch.setattr(repository_module, "read_toml_record", counted_read_toml)
-    project = Project.from_project_root(tmp_path)
-    project_runner = ProjectRunner(project, "example")
-
-    assert project_runner.catalog().owner == "example"
-    assert catalog_reads == 1
-
-    catalog_reads = 0
-    request = RunRequest.flow("owner-flow", "all")
-    assert request.selection == FlowRunSelection("owner-flow", "all")
-    assert RunRequest.oa_simulation("tb_NATIVE").selection.testbench == "tb_NATIVE"
-    planned = project_runner.plan(request)
-
-    assert planned.plan_identity == "example:owner-flow:all:local"
-    assert not hasattr(planned, "engine")
-    assert not hasattr(planned, "plan")
-    assert catalog_reads == 1
-
-    with pytest.raises(ValueError, match="requires a RunRequest"):
-        project_runner.plan("owner-flow")  # type: ignore[arg-type]
-
-    catalog_reads = 0
-    resolved = resolve_project_execution(
-        project,
-        "example:owner-flow:all:local",
-    )
-
-    assert resolved.plan_identity == "example:owner-flow:all:local"
-    assert catalog_reads == 1
-
-    catalog_reads = 0
-    assert flow_cli_main(
-        [
-            "show",
-            "--project-root",
-            str(tmp_path),
-            "--owner",
-            "example",
-            "--flow",
-            "owner-flow",
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out)["flow"] == "owner-flow"
-    assert catalog_reads == 1
-
-
-def test_plan_identity_resolution_does_not_read_unrelated_owner_flows(
-    tmp_path: Path,
-) -> None:
-    source = _write_extension(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-    _write_owner_flow(tmp_path)
-    unrelated_flow = tmp_path / "ip/unrelated/broken.toml"
-    unrelated_flow.parent.mkdir(parents=True)
-    unrelated_flow.write_text("not valid toml = [", encoding="utf-8")
-    write_component_owner(
-        tmp_path,
-        "unrelated",
-        filesets={"flow": ("ip/unrelated/broken.toml",)},
-    )
-    project = Project.from_project_root(tmp_path)
-
-    resolved = resolve_project_execution(
-        project,
-        "example:owner-flow:all:local",
-    )
-
-    assert resolved.plan_identity == "example:owner-flow:all:local"
-    for identity in (
-        "",
-        "example:owner-flow:all",
-        "example:owner-flow:all:local:extra",
-    ):
-        with pytest.raises(ValueError, match="Flow Plan identity"):
-            resolve_project_execution(project, identity)
-
-
-def test_project_extension_content_is_bound_to_plan_and_preflight(
-    tmp_path: Path,
-) -> None:
-    source = _write_extension(tmp_path)
-    _write_owner_flow(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-    project = Project.from_project_root(tmp_path)
-    project_runner = ProjectRunner(project, "example")
-    planned = project_runner.plan(RunRequest.flow("owner-flow", "all"))
-
-    approved_record = planned.record
-    source_record = approved_record["implementation_sources"][0]
-    assert source_record["path"] == "ip/example/tools/flow_extension.py"
-    assert len(source_record["sha256"]) == 64
-    assert planned.preflight(ExecutionEnvironment()).status == "ready"
-
-    source.write_text(source.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
-
-    preflight = planned.preflight(ExecutionEnvironment())
-    assert preflight.status == "blocked"
-    assert preflight.checks[0].requirement_kind == "implementation-source"
-    assert preflight.checks[0].status == "changed"
-
-    replanned = ProjectRunner(project, "example").plan(
-        RunRequest.flow("owner-flow", "all"),
-    )
-    assert replanned.record != approved_record
-
-
-def test_project_extension_binds_python_helpers_from_other_owner_filesets(
-    tmp_path: Path,
-) -> None:
-    source = _write_extension(tmp_path)
-    helper = tmp_path / "ip/example/tools/helper.py"
-    helper.write_text("VALUE = 1\n", encoding="utf-8")
-    _write_owner_flow(tmp_path)
-    write_component_owner(
-        tmp_path,
+    component = write_component_owner(
+        root,
         "example",
         filesets={
-            "flow": _owner_flow_files(tmp_path, source),
-            "support": (helper.relative_to(tmp_path).as_posix(),),
+            "flow": (
+                "ip/example/configs/targets.toml",
+                "ip/example/configs/smoke.toml",
+            ),
+            "support": ("ip/example/implementation.py",),
         },
     )
-    _declare_extension(tmp_path, "example", source)
-    project = Project.from_project_root(tmp_path)
-    project_runner = ProjectRunner(project, "example")
-    planned = project_runner.plan(RunRequest.flow("owner-flow", "all"))
-
-    paths = {
-        item["path"] for item in planned.record["implementation_sources"]
-    }
-    assert helper.relative_to(tmp_path).as_posix() in paths
-
-    helper.write_text("VALUE = 2\n", encoding="utf-8")
-    assert planned.preflight(ExecutionEnvironment()).status == "blocked"
-
-
-def test_project_runner_hides_owner_paths_and_registry_assembly(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    source = _write_extension(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={
-            "flow": _owner_flow_files(tmp_path, source)
-        },
-    )
-    _declare_extension(tmp_path, "example", source)
-    _write_owner_flow(tmp_path)
-
-    project_runner = ProjectRunner(Project.from_project_root(tmp_path), "example")
-    planned = project_runner.plan(RunRequest.flow("owner-flow", "all"))
-
-    assert planned.plan_identity == "example:owner-flow:all:local"
-    assert planned.record["nodes"][0]["adapter"] == "example-owner-check"
-    assert str(tmp_path.resolve()) not in json.dumps(planned.record)
-    assert planned.preflight(ExecutionEnvironment()).status == "ready"
-    result = flow_cli_main(
-        [
-            "plan",
-            "--owner",
-            "example",
-            "--flow",
-            "owner-flow",
-            "--target",
-            "all",
-            "--project-root",
-            str(tmp_path),
-        ]
-    )
-
-    assert result == 0
-    assert json.loads(capsys.readouterr().out) == planned.record
-
-    result = flow_cli_main(
-        [
-            "run",
-            "--owner",
-            "example",
-            "--flow",
-            "owner-flow",
-            "--target",
-            "all",
-            "--project-root",
-            str(tmp_path),
-            "--run-id",
-            "2" * 32,
-        ]
-    )
-
-    assert result == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "accepted"
-    assert planned.restore_result("2" * 32).status == "accepted"
-    assert planned.read_result("2" * 32)["status"] == "accepted"
-    planned.clean("2" * 32)
-    assert not tuple((tmp_path / "artifacts").rglob("flow_result.json"))
-
-
-def test_flow_execution_rejects_public_or_mismatched_construction(
-    tmp_path: Path,
-) -> None:
-    source = _write_extension(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-    _write_owner_flow(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    planned = ProjectRunner(project, "example").plan(
-        RunRequest.flow("owner-flow", "all")
-    )
-
-    with pytest.raises(TypeError):
-        FlowExecution(None, None, None)  # type: ignore[call-arg]
-    with pytest.raises(ValueError, match="binding disagree"):
-        FlowExecution._bind(FlowEngine(FlowRegistry()), planned._plan, project)
-
-
-def test_semantic_flow_cli_discovers_and_parses_the_project_once(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _write_extension(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-    _write_owner_flow(tmp_path)
-    contract = (tmp_path / "sigilicon.toml").resolve()
-    original = repository_module.read_toml
-    manifest_reads = 0
-
-    def counted(path: Path):
-        nonlocal manifest_reads
-        if path.resolve() == contract:
-            manifest_reads += 1
-        return original(path)
-
-    monkeypatch.setattr(repository_module, "read_toml", counted)
-    monkeypatch.chdir(tmp_path)
-
-    result = flow_cli_main(
-        [
-            "plan",
-            "--owner",
-            "example",
-            "--flow",
-            "owner-flow",
-            "--target",
-            "all",
-        ]
-    )
-
-    assert result == 0
-    assert json.loads(capsys.readouterr().out)["owner"] == "example"
-    assert manifest_reads == 1
-
-
-def test_project_runner_registry_requires_the_single_extension_interface(
-    tmp_path: Path,
-) -> None:
-    source = _write_extension(tmp_path, register=False)
-    _write_owner_flow(tmp_path)
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-
-    project = Project.from_project_root(tmp_path)
-    with pytest.raises(ValueError, match="register_flow_adapters"):
-        ProjectRunner(project, "example").plan(
-            RunRequest.flow("owner-flow", "all")
-        )
-
-
-def test_project_runner_registry_reports_registration_failure_as_contract_error(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    source = _write_extension(tmp_path)
-    source.write_text(
-        source.read_text(encoding="utf-8").replace(
-            "def register_flow_adapters(registry, owner_root):",
-            "def register_flow_adapters(registry, owner_root):\n    raise RuntimeError('broken owner registration')",
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            "\n[filesets]\n",
+            '\ntarget_catalog = "ip/example/configs/targets.toml"\n\n[filesets]\n',
         ),
         encoding="utf-8",
     )
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={"flow": _owner_flow_files(tmp_path, source)},
-    )
-    _declare_extension(tmp_path, "example", source)
-    _write_owner_flow(tmp_path)
+    return Project.from_project_root(root), targets, recipe, implementation
 
-    result = flow_cli_main(
-        [
-            "plan",
-            "--owner",
-            "example",
-            "--flow",
-            "owner-flow",
-            "--target",
-            "all",
-            "--project-root",
-            str(tmp_path),
-        ]
+
+class _SimpleDesignPlan:
+    def __init__(self, source_members: tuple[SourceMember, ...]) -> None:
+        self.source_members = source_members
+
+    def as_dict(self) -> dict[str, object]:
+        return {"planned": True}
+
+
+class _SimpleActionAdapter:
+    def run(self, context):
+        context.require_action_plan(DESIGN_ACTION_PLAN, _SimpleDesignPlan)
+        return AdapterResult.succeeded(
+            CollectedActionResult(facts={"passed": True})
+        )
+
+
+def _install_simple_design_seam(
+    monkeypatch: pytest.MonkeyPatch,
+    project: Project,
+    implementation: Path,
+) -> None:
+    """Use a fake typed design Action while exercising ProjectRunner itself."""
+
+    implementation_member = snapshot_source_member(
+        implementation,
+        source_root=project.project_root,
+        source_label="fixture implementation",
     )
 
-    assert result == 2
-    error = capsys.readouterr().err
-    assert "cannot register Flow extension" in error
-    assert "Sigilicon defect" not in error
+    def plan_design_action(
+        selected_project: Project,
+        owner: str,
+        config,
+    ) -> _SimpleDesignPlan:
+        assert selected_project is project
+        assert owner == "example"
+        assert config["target"] == "smoke"
+        return _SimpleDesignPlan((implementation_member,))
+
+    monkeypatch.setattr(design_flow, "plan_design_action", plan_design_action)
+
+    def registry(
+        selected_project: Project,
+        owner,
+        **_kwargs,
+    ) -> FlowRegistry:
+        assert selected_project is project
+        assert owner.name == "example"
+        result = FlowRegistry()
+        result.register_action(
+            ActionContract(
+                kind=DESIGN_SOURCE_CHECK_ACTION,
+                facts=("passed",),
+                adapters=("fake-source-check",),
+                plan_input_kind=DESIGN_ACTION_PLAN,
+            )
+        )
+        result.register_adapter(
+            "fake-source-check",
+            _SimpleActionAdapter(),
+        )
+        return result
+
+    monkeypatch.setattr(project_runner_module, "_project_workflow_registry", registry)
+
+
+def test_project_runner_targets_describe_and_plan_use_owner_operation_interface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, _targets, _recipe, implementation = _write_project(tmp_path)
+    _install_simple_design_seam(monkeypatch, project, implementation)
+    runner = ProjectRunner(project, "example")
+
+    assert runner.targets() == (
+        {
+            "name": "smoke",
+            "description": "Offline smoke target",
+            "operations": ("check", "all"),
+        },
+    )
+    assert runner.describe("smoke") == {
+        "name": "smoke",
+        "description": "Offline smoke target",
+        "operations": ("check", "all"),
+    }
+    assert runner.describe("smoke", "check") == {
+        "schema": 1,
+        "contract_kind": "target-operation-summary",
+        "owner": "example",
+        "target": "smoke",
+        "operation": "check",
+        "recipe": "smoke-recipe",
+        "nodes": ("check", "audit"),
+        "policies": (),
+    }
+
+    execution = runner.plan("smoke", "check")
+
+    assert isinstance(execution, ProjectExecution)
+    assert execution.owner == "example"
+    assert execution.target == "smoke"
+    assert execution.operation == "check"
+    assert execution.recipe == "smoke-recipe"
+    assert execution.plan_identity == "example:smoke:check"
+    assert execution.node_count == 1
+    assert execution.graph == (("check", ()),)
+
+
+def test_project_execution_owns_preflight_run_restore_read_and_clean_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, _targets, _recipe, implementation = _write_project(tmp_path)
+    _install_simple_design_seam(monkeypatch, project, implementation)
+    execution = ProjectRunner(project, "example").plan("smoke", "all")
+    environment = ExecutionEnvironment()
+
+    assert execution.execution_capabilities == (
+        "execute-derived",
+        "execute-derived",
+    )
+    preflight = execution.preflight(environment)
+    assert preflight.status == "ready"
+    assert all(check.status == "available" for check in preflight.checks)
+
+    progress = []
+    run_id = "a" * 32
+    result = execution.run(
+        environment,
+        run_id=run_id,
+        progress=progress.append,
+    )
+
+    assert result.status == "accepted"
+    assert result.owner == "example"
+    assert result.flow_id == "smoke"
+    assert result.target == "all"
+    assert set(result.nodes) == {"check", "audit"}
+    assert [item.status for item in progress][0] == "running"
+    assert progress[-1].status == "accepted"
+    assert execution.read_result(run_id)["status"] == "accepted"
+
+    restored = execution.restore_result(run_id)
+    assert restored.status == "accepted"
+    assert restored.run_id == run_id
+    assert set(restored.nodes) == {"check", "audit"}
+
+    execution.clean(run_id)
+    assert not result.run_root.exists()
+    with pytest.raises(FlowExecutionError):
+        execution.read_result(run_id)
+
+
+def test_project_execution_identity_is_owner_target_operation_without_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, _targets, _recipe, implementation = _write_project(tmp_path)
+    _install_simple_design_seam(monkeypatch, project, implementation)
+
+    resolved = resolve_project_execution(project, "example:smoke:check")
+
+    assert resolved.plan_identity == "example:smoke:check"
+    assert resolved.owner == "example"
+    assert resolved.target == "smoke"
+    assert resolved.operation == "check"
+
+    for identity in (
+        "example:smoke:check:extra",
+        "example:smoke:unknown",
+        "other:smoke:check",
+    ):
+        with pytest.raises(ValueError):
+            resolve_project_execution(project, identity)
+
+
+def test_project_runner_retains_exact_target_and_recipe_sources_for_preflight_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, targets, recipe, implementation = _write_project(tmp_path)
+    _install_simple_design_seam(monkeypatch, project, implementation)
+    execution = ProjectRunner(project, "example").plan("smoke", "check")
+
+    source_identity = {
+        (source["scope"], source["path"])
+        for source in execution.record["source_members"]
+    }
+    assert source_identity == {
+        ("project", "ip/example/configs/targets.toml"),
+        ("project", "ip/example/configs/smoke.toml"),
+    }
+    action_plan = execution.record["nodes"][0]["action_plan"]
+    assert {
+        (source["scope"], source["path"])
+        for source in action_plan["sources"]
+    } == {("project", "ip/example/implementation.py")}
+
+    for source in (targets, recipe):
+        original = source.read_text(encoding="utf-8")
+        source.write_text(original + "\n# source drift\n", encoding="utf-8")
+        try:
+            preflight = execution.preflight(ExecutionEnvironment())
+            assert preflight.status == "blocked"
+            assert any(
+                check.requirement_kind == "target-source"
+                and check.status == "changed"
+                for check in preflight.checks
+            )
+        finally:
+            source.write_text(original, encoding="utf-8")
+
+
+def test_project_runner_has_no_legacy_request_flow_execution_or_profile_catalog_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, _targets, _recipe, implementation = _write_project(tmp_path)
+    _install_simple_design_seam(monkeypatch, project, implementation)
+    runner = ProjectRunner(project, "example")
+    execution = runner.plan("smoke", "check")
+
+    assert set(project_runner_module.__all__) == {
+        "ProjectRunner",
+        "ProjectExecution",
+        "resolve_project_execution",
+    }
+    assert not hasattr(project_runner_module, "RunRequest")
+    assert not hasattr(project_runner_module, "FlowExecution")
+    assert not hasattr(ProjectRunner, "catalog")
+    assert not hasattr(ProjectRunner, "profile")
+    assert not hasattr(execution, "flow")
+    assert not hasattr(execution, "profile")
+    assert not hasattr(execution, "plan")
+    assert not hasattr(execution, "engine")

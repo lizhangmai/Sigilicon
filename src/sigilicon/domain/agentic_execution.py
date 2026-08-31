@@ -125,7 +125,7 @@ class AgenticExecutionGrant:
         *,
         instant: datetime,
     ) -> None:
-        bounded_identity(plan_identity, "Flow Plan")
+        bounded_identity(plan_identity, "Target Operation Plan")
         if not self.valid_at(instant):
             raise ValueError("execution grant has expired")
         approval = next(
@@ -133,9 +133,9 @@ class AgenticExecutionGrant:
             None,
         )
         if approval is None:
-            raise ValueError("Flow Plan identity is not approved by the execution grant")
+            raise ValueError("Target Operation Plan identity is not approved by the execution grant")
         if canonical_json(plan_record) != approval.plan_record_json:
-            raise ValueError("Flow Plan record changed after execution approval")
+            raise ValueError("Target Operation Plan record changed after execution approval")
         missing = tuple(item for item in required if item not in self.capabilities)
         if missing:
             raise ValueError(

@@ -63,19 +63,15 @@ _PROJECT_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_FLOW_INPUT_SCHEMA: dict[str, Any] = {
+_TARGET_OPERATION_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
-        "flow": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
         "target": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
-        "profile": {
-            "type": ["string", "null"],
-            "pattern": f"^{_IDENTIFIER_PATTERN}$",
-        },
+        "operation": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
     },
-    "required": ["owner", "flow", "target"],
+    "required": ["owner", "target", "operation"],
     "additionalProperties": False,
 }
 
@@ -84,11 +80,11 @@ _RUN_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "owner": {"type": "string", "pattern": f"^{_OWNER_PATTERN}$"},
-        "flow": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
         "target": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
+        "operation": {"type": "string", "pattern": f"^{_IDENTIFIER_PATTERN}$"},
         "run_id": {"type": "string", "pattern": f"^{RUN_ID_PATTERN}$"},
     },
-    "required": ["owner", "flow", "target", "run_id"],
+    "required": ["owner", "target", "operation", "run_id"],
     "additionalProperties": False,
 }
 
@@ -138,7 +134,7 @@ _CAMPAIGN_PLAN_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_FLOW_RUN_INPUT_SCHEMA: dict[str, Any] = {
+_TARGET_RUN_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
@@ -207,8 +203,8 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
             name="project.inspect",
             title="Inspect Sigilicon project",
             description=(
-                "Validate the bound project's canonical owner catalogs and summarize "
-                "source, targets, and declared Flows. Runtime capabilities and product "
+                "Validate the bound project's canonical owners and summarize "
+                "source and owner targets. Runtime capabilities and product "
                 "qualification remain not evaluated."
             ),
             inputSchema=_PROJECT_INPUT_SCHEMA,
@@ -216,21 +212,21 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
             annotations=annotations,
         ),
         types.Tool(
-            name="flow.plan",
-            title="Plan cataloged Sigilicon Flow",
+            name="target.plan",
+            title="Plan Sigilicon target operation",
             description=(
-                "Resolve one owner catalog Flow through FlowEngine without executing "
-                "a backend or writing artifacts."
+                "Resolve one owner target and operation through FlowEngine without "
+                "executing a backend or writing artifacts."
             ),
-            inputSchema=_FLOW_INPUT_SCHEMA,
+            inputSchema=_TARGET_OPERATION_INPUT_SCHEMA,
             outputSchema=_RESPONSE_SCHEMA,
             annotations=annotations,
         ),
         types.Tool(
             name="run.inspect",
-            title="Inspect Sigilicon Flow result",
+            title="Inspect Sigilicon target-operation result",
             description=(
-                "Read one identity-matched persisted Flow result from the bound "
+                "Read one identity-matched persisted target-operation result from the bound "
                 "artifact root without adding qualification authority."
             ),
             inputSchema=_RUN_INPUT_SCHEMA,
@@ -252,7 +248,7 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
             name="campaign.plan",
             title="Plan bounded Sigilicon Design Campaign",
             description=(
-                "Compile strict catalog Flow selectors, typed output bindings, budgets, "
+                "Compile strict target-operation selectors, typed output bindings, budgets, "
                 "repair lineage, and stop conditions without executing a backend."
             ),
             inputSchema=_CAMPAIGN_PLAN_INPUT_SCHEMA,
@@ -281,19 +277,19 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
         tools.extend(
             (
                 types.Tool(
-                    name="flow.run",
-                    title="Run approved Sigilicon Flow Plan",
+                    name="target.run",
+                    title="Run approved Sigilicon Target Operation Plan",
                     description=(
                         "Submit one exact launcher-approved Plan with a bounded node/time "
                         "budget. No command, path, environment, or Adapter selector is accepted."
                     ),
-                    inputSchema=_FLOW_RUN_INPUT_SCHEMA,
+                    inputSchema=_TARGET_RUN_INPUT_SCHEMA,
                     outputSchema=_RESPONSE_SCHEMA,
                     annotations=execute_annotations,
                 ),
                 types.Tool(
                     name="run.cancel",
-                    title="Cancel managed Sigilicon Flow Run",
+                    title="Cancel managed Sigilicon Target Run",
                     description=(
                         "Cooperatively cancel one exact principal-bound managed run and "
                         "return its immutable terminal state."
@@ -437,28 +433,27 @@ def create_server(
                 payload = interface.inspect_project(
                     owner=_optional_text(arguments, "owner")
                 )
-            elif operation == "flow.plan":
+            elif operation == "target.plan":
                 arguments = _strict_arguments(
                     params.arguments,
-                    allowed=frozenset({"owner", "flow", "target", "profile"}),
-                    required=frozenset({"owner", "flow", "target"}),
+                    allowed=frozenset({"owner", "target", "operation"}),
+                    required=frozenset({"owner", "target", "operation"}),
                 )
-                payload = interface.plan_flow(
+                payload = interface.plan_target(
                     owner=_required_text(arguments, "owner"),
-                    flow=_required_text(arguments, "flow"),
                     target=_required_text(arguments, "target"),
-                    profile=_optional_text(arguments, "profile"),
+                    operation=_required_text(arguments, "operation"),
                 )
             elif operation == "run.inspect":
                 arguments = _strict_arguments(
                     params.arguments,
-                    allowed=frozenset({"owner", "flow", "target", "run_id"}),
-                    required=frozenset({"owner", "flow", "target", "run_id"}),
+                    allowed=frozenset({"owner", "target", "operation", "run_id"}),
+                    required=frozenset({"owner", "target", "operation", "run_id"}),
                 )
                 payload = interface.inspect_run(
                     owner=_required_text(arguments, "owner"),
-                    flow=_required_text(arguments, "flow"),
                     target=_required_text(arguments, "target"),
+                    operation=_required_text(arguments, "operation"),
                     run_id=_required_text(arguments, "run_id"),
                 )
             elif operation == "candidate.validate":
@@ -537,7 +532,7 @@ def create_server(
                     decision_json=_required_text(arguments, "decision"),
                     request_json=_required_text(arguments, "request"),
                 )
-            elif operation == "flow.run" and execution is not None:
+            elif operation == "target.run" and execution is not None:
                 arguments = _strict_arguments(
                     params.arguments,
                     allowed=frozenset({"plan_identity", "budget"}),
@@ -555,7 +550,7 @@ def create_server(
                     maximum_seconds=budget_value.get("maximum_seconds"),
                     maximum_nodes=budget_value.get("maximum_nodes"),
                 )
-                payload = execution.run_flow(
+                payload = execution.run_target(
                     plan_identity=_required_text(arguments, "plan_identity"),
                     budget=budget,
                     wait=False,
@@ -674,17 +669,17 @@ def create_server(
         return types.ListResourceTemplatesResult(
             resourceTemplates=[
                 types.ResourceTemplate(
-                    name="owner-catalog",
-                    title="Cataloged owner projection",
-                    uriTemplate="sigilicon://owners/{owner}/catalog",
-                    description="One exact owner selected from the bound project catalog.",
+                    name="owner-targets",
+                    title="Owner target projection",
+                    uriTemplate="sigilicon://owners/{owner}/targets",
+                    description="One exact owner and its target operations from the bound project.",
                     mimeType="application/json",
                 ),
                 types.ResourceTemplate(
-                    name="flow-run-result",
-                    title="Persisted Flow result",
+                    name="target-operation-run-result",
+                    title="Persisted target-operation result",
                     uriTemplate=(
-                        "sigilicon://runs/{owner}/{flow}/{target}/{run_id}/manifest"
+                        "sigilicon://runs/{owner}/{target}/{operation}/{run_id}/manifest"
                     ),
                     description="One identity-matched result in the bound artifact root.",
                     mimeType="application/json",
@@ -703,7 +698,7 @@ def create_server(
             return _json_resource(uri, interface.inspect_project(owner=None))
         segments = _resource_segments(uri)
         try:
-            if len(segments) == 3 and segments[0] == "owners" and segments[2] == "catalog":
+            if len(segments) == 3 and segments[0] == "owners" and segments[2] == "targets":
                 payload = interface.inspect_project(owner=segments[1])
             elif (
                 len(segments) == 6
@@ -712,8 +707,8 @@ def create_server(
             ):
                 payload = interface.inspect_run(
                     owner=segments[1],
-                    flow=segments[2],
-                    target=segments[3],
+                    target=segments[2],
+                    operation=segments[3],
                     run_id=segments[4],
                 )
             else:

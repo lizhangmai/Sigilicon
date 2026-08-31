@@ -1,699 +1,312 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 import sys
-from types import SimpleNamespace
+from typing import Any
 
 import pytest
-import sigilicon.domain.repository as repository_module
 
-from sigilicon.cli import flow as flow_cli
-from sigilicon.cli.flow_core import main as flow_core_cli_main
-from sigilicon.domain.repository import Project
-from sigilicon.flow import ExecutionEnvironment, FlowExecutionError
-from sigilicon.workflows.agentic_read import AgenticReadInterface
-from sigilicon.workflows.design_targets import load_design_target_catalog
-from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
+from sigilicon.flow import (
+    ActionConfiguration,
+    ActionContext,
+    ActionPlan,
+    ActionContract,
+    AdapterConfiguration,
+    ArtifactPort,
+    EvidenceEnvelope,
+    FlowExecutionError,
+)
+from sigilicon.flow.circuit_design import (
+    DESIGN_ACTION_PLAN,
+    DESIGN_SOURCE_CHECK_ACTION,
+)
+from sigilicon.workflows import design_flow
+from sigilicon.workflows.design_flow import (
+    DesignActionPlan,
+    DesignTargetAdapter,
+    plan_design_action,
+)
 
-from conftest import write_component_owner
+
+@dataclass(frozen=True)
+class _Owner:
+    name: str
+    root: Path
 
 
-def _catalog_project(tmp_path: Path) -> tuple[Path, Path]:
-    flow_root = tmp_path / "ip/example/configs/flows"
-    flow_root.mkdir(parents=True)
-    design = tmp_path / "ip/example/leaf"
-    design.mkdir(parents=True)
-    runner = design / "run.py"
-    runner.write_text("print('{\"passed\": true}')\n", encoding="utf-8")
-    spec = design / "design.toml"
-    spec.write_text("# delegated design spec\n", encoding="utf-8")
-    (flow_root / "design_targets.toml").write_text(
-        '''
-schema = 1
-contract_kind = "flow-design-registry"
-path_scope = "owner"
-owner = "example"
+class _Project:
+    """Small project seam for direct planner tests."""
 
-[targets.leaf]
-description = "Test leaf"
-kind = "script"
-entrypoint = "ip/example/leaf/run.py"
-spec_argument = "--spec"
-spec = "ip/example/leaf/design.toml"
-[targets.leaf.modes]
-topology = { action = "circuit-design.source-check", evidence_level = "l0" }
-sync = { args = ["--overwrite"], action = "circuit-design.source-check", evidence_level = "l0" }
-[targets.leaf.routes]
-topology = ["design-checks", "leaf-topology"]
-sync = ["design-checks", "leaf-sync"]
-''',
+    def __init__(self, root: Path, owner: str = "example") -> None:
+        self.project_root = root.resolve()
+        self._owner = _Owner(owner, (self.project_root / "ip" / owner).resolve())
+        self.owners = (self._owner,)
+
+    def owner(self, name: str) -> _Owner:
+        if name != self._owner.name:
+            raise ValueError(f"unknown owner: {name}")
+        return self._owner
+
+    def resolve_owner_file(
+        self,
+        owner: _Owner,
+        value: object,
+        field: str,
+    ) -> tuple[Path, PurePosixPath]:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} must be a path")
+        relative = PurePosixPath(value)
+        resolved = self.project_root.joinpath(*relative.parts).resolve()
+        if not resolved.is_file() or not resolved.is_relative_to(owner.root):
+            raise ValueError(f"{field} is outside the owner")
+        return resolved, relative
+
+
+def _project(tmp_path: Path) -> tuple[_Project, Path, Path]:
+    root = tmp_path.resolve()
+    source = root / "ip/example/dv/run.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import json\nprint(json.dumps({'passed': True}))\n",
         encoding="utf-8",
     )
-    (flow_root / "catalog.toml").write_text(
-        '''
-schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-
-[flows.design-checks]
-contract = "configs/flows/design_checks.toml"
-default_profile = "design-checks"
-
-[flows.design-checks.profiles]
-design-checks = "configs/flows/design_profile.toml"
-alternate = "configs/flows/alternate_design_profile.toml"
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "design_checks.toml").write_text(
-        '''
-schema = 1
-contract_kind = "flow"
-path_scope = "owner"
-owner = "example"
-name = "design-checks"
-
-[expand]
-kind = "design-target-routes"
-policy = "passed"
-evidence_role = "diagnostic"
-
-[[policies]]
-id = "passed"
-
-[[policies.checks]]
-id = "passed"
-fact = "passed"
-operator = "equals"
-expected = true
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "design_profile.toml").write_text(
-        '''
-schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "design-checks"
-
-[actions."circuit-design.source-check"]
-adapter = "project-design-source-check"
-
-[actions."circuit-design.source-check".config]
-timeout_seconds = 30
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "alternate_design_profile.toml").write_text(
-        '''
-schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "alternate"
-
-[actions."circuit-design.source-check"]
-adapter = "project-design-source-check"
-
-[actions."circuit-design.source-check".config]
-timeout_seconds = 45
-''',
-        encoding="utf-8",
-    )
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={
-            "flow": (
-                "ip/example/configs/flows/design_targets.toml",
-                "ip/example/configs/flows/catalog.toml",
-                "ip/example/configs/flows/design_checks.toml",
-                "ip/example/configs/flows/design_profile.toml",
-                "ip/example/configs/flows/alternate_design_profile.toml",
-            ),
-        },
-    )
-    return runner.resolve(), spec.resolve()
+    spec = root / "ip/example/dv/design.toml"
+    spec.write_text("name = 'fixture'\n", encoding="utf-8")
+    return _Project(root), source, spec
 
 
-def test_design_target_catalog_can_start_empty(tmp_path: Path) -> None:
-    flows = tmp_path / "ip/example/configs/flows"
-    flows.mkdir(parents=True)
-    (flows / "design_targets.toml").write_text(
-        "schema = 1\ncontract_kind = \"flow-design-registry\"\npath_scope = \"owner\"\nowner = \"example\"\n\n[targets]\n",
-        encoding="utf-8",
-    )
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={
-            "flow": ("ip/example/configs/flows/design_targets.toml",),
-        },
-    )
-
-    catalog = load_design_target_catalog(Project.from_project_root(tmp_path))
-
-    assert catalog.paths == ((flows / "design_targets.toml").resolve(),)
-    assert catalog.targets == ()
-
-
-def test_design_target_catalog_is_an_optional_project_domain(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    project = Project.from_project_root(tmp_path)
-
-    catalog = load_design_target_catalog(project=project)
-
-    assert catalog.project is project
-    assert catalog.paths == ()
-    assert catalog.targets == ()
-
-    monkeypatch.chdir(tmp_path)
-    assert flow_cli.main(["design", "list", "--json"]) == 0
-    assert capsys.readouterr().out == "[]\n"
-
-
-def test_design_target_catalog_binds_explicit_project(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-
-    catalog = load_design_target_catalog(project=project)
-
-    assert catalog.project is project
-    assert catalog.project_root == tmp_path
-
-
-def test_design_target_loader_reads_its_catalog_once(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = (
-        tmp_path / "ip/example/configs/flows/design_targets.toml"
-    ).resolve()
-    reads = 0
-    original_read = repository_module.read_toml_record
-
-    def counted_read(path):
-        nonlocal reads
-        if Path(path).resolve() == catalog_path:
-            reads += 1
-        return original_read(path)
-
-    monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
-    project = Project.from_project_root(tmp_path)
-
-    catalog = load_design_target_catalog(project=project)
-
-    assert len(catalog.targets) == 1
-    assert reads == 1
-
-
-def test_design_catalog_preserves_project_identity(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_file(tmp_path / "sigilicon.toml")
-
-    catalog = load_design_target_catalog(project=project)
-
-    assert catalog.project is project
-
-
-def test_expanded_design_flow_read_interfaces_show_compiled_routes(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    workflow = ProjectRunner(project, "example")
-
-    summary = workflow.describe(flow="design-checks")
-
-    assert summary["nodes"] == ["leaf-topology", "leaf-sync"]
-    assert summary["targets"] == ["leaf-topology", "leaf-sync"]
-    alternate = workflow.plan(
-        RunRequest.flow(
-            "design-checks",
-            "leaf-topology",
-            "alternate",
+def _config(source: Path, spec: Path | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "target": "leaf",
+        "mode": "topology",
+        "kind": "script",
+        "entrypoint": source.relative_to(source.parents[3]).as_posix(),
+        "evidence_role": "diagnostic",
+        "evidence_level": "l0",
+        "evidence_scope": "leaf-topology",
+    }
+    if spec is not None:
+        project_root = source.parents[3]
+        result.update(
+            {
+                "spec_argument": "--spec",
+                "spec": spec.relative_to(project_root).as_posix(),
+            }
         )
+    return result
+
+
+def test_plan_design_action_snapshots_runner_spec_and_binds_command(
+    tmp_path: Path,
+) -> None:
+    project, source, spec = _project(tmp_path)
+
+    config = _config(source, spec)
+    config["default_args"] = ["--overwrite"]
+    plan = plan_design_action(project, "example", config)
+
+    assert isinstance(plan, DesignActionPlan)
+    assert plan.target == "leaf"
+    assert plan.mode == "topology"
+    assert plan.entrypoint == "ip/example/dv/run.py"
+    assert tuple(member.path for member in plan.source_members) == (
+        "ip/example/dv/run.py",
+        "ip/example/dv/design.toml",
     )
-    assert alternate.profile == "alternate"
-    assert alternate.record["nodes"][0]["adapter_config"] == {
-        "timeout_seconds": 45,
+    assert plan.source_members[0].record_text == source.read_text(encoding="utf-8")
+    assert plan.source_members[1].record_text == spec.read_text(encoding="utf-8")
+    assert plan.as_dict() == {
+        "target": "leaf",
+        "mode": "topology",
+        "kind": "script",
+        "entrypoint": "ip/example/dv/run.py",
+        "spec_argument": "--spec",
+        "spec": "ip/example/dv/design.toml",
+        "default_args": ["--overwrite"],
+        "evidence_role": "diagnostic",
+        "evidence_level": "l0",
+        "evidence_scope": "leaf-topology",
     }
-    assert flow_core_cli_main(
-        [
-            "show",
-            "--project-root",
-            str(tmp_path),
-            "--owner",
-            "example",
-            "--flow",
-            "design-checks",
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == summary
 
-    inspected = AgenticReadInterface(project).inspect_project(owner="example")
-    assert inspected["data"]["owners"][0]["flows"] == [
-        {
-            "default_profile": "design-checks",
-            "name": "design-checks",
-            "profiles": ["alternate", "design-checks"],
-            "targets": ["leaf-sync", "leaf-topology"],
-        }
-    ]
-
-
-def test_expanded_design_plan_reuses_one_owner_source_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    watched = {
-        (tmp_path / "ip/example/configs/flows/catalog.toml").resolve(),
-        (tmp_path / "ip/example/configs/flows/design_targets.toml").resolve(),
-    }
-    reads = {path: 0 for path in watched}
-    original_read = repository_module.read_toml_record
-
-    def counted_read(path):
-        resolved = Path(path).resolve()
-        if resolved in reads:
-            reads[resolved] += 1
-        return original_read(path)
-
-    monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
-
-    planned = ProjectRunner(project, "example").plan(
-        RunRequest.flow("design-checks", "leaf-topology", "alternate")
+    command = plan.bound_command(
+        runner_path="/sealed/runner",
+        spec_path="/sealed/spec",
     )
-
-    assert planned.profile == "alternate"
-    assert set(reads.values()) == {1}
-
-
-def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    workflow = ProjectRunner(project, "example")
-    planned = workflow.plan(RunRequest.design("leaf", "topology"))
-
-    result = planned.run(
-        ExecutionEnvironment(),
-        run_id="design-flow-fixture",
-    )
-    payload = planned.read_result(result.run_id)
-
-    assert payload["status"] == "accepted"
-    assert payload["nodes"]["leaf-topology"]["facts"]["passed"] is True
-    assert {
-        source["path"]
-        for source in planned.record["nodes"][0]["action_plan"]["sources"]
-    } == {
-        "ip/example/configs/flows/design_targets.toml",
-        "ip/example/leaf/design.toml",
-        "ip/example/leaf/run.py",
-    }
-    assert list(result.run_root.rglob("run_manifest.json")) == [
-        result.run_root / "run_manifest.json"
-    ]
-
-
-def test_project_design_action_consumes_the_plan_validated_evidence_envelope(
-    tmp_path: Path,
-) -> None:
-    _catalog_project(tmp_path)
-    catalog = tmp_path / "ip/example/configs/flows/design_targets.toml"
-    catalog.write_text(
-        catalog.read_text(encoding="utf-8").replace(
-            'topology = { action = "circuit-design.source-check", '
-            'evidence_level = "l0" }',
-            'topology = { action = "circuit-design.source-check", '
-            'evidence_role = "qualification", evidence_level = "l0" }',
-        ),
-        encoding="utf-8",
-    )
-    project = Project.from_project_root(tmp_path)
-    workflow = ProjectRunner(project, "example")
-    planned = workflow.plan(RunRequest.design("leaf", "topology"))
-
-    result = planned.run(
-        ExecutionEnvironment(),
-        run_id="design-evidence-envelope-fixture",
-    )
-
-    assert planned.record["nodes"][0]["evidence"]["role"] == "qualification"
-    assert result.nodes["leaf-topology"].facts["evidence-role"] == "qualification"
-
-
-def test_project_design_action_rejects_exact_route_source_drift(tmp_path: Path) -> None:
-    runner, _spec = _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    workflow = ProjectRunner(project, "example")
-    planned = workflow.plan(RunRequest.design("leaf", "topology"))
-    runner.write_text("print('{\"passed\": false}')\n", encoding="utf-8")
-
-    with pytest.raises(FlowExecutionError, match="preflight is blocked"):
-        planned.run(
-            ExecutionEnvironment(),
-            run_id="design-source-drift-fixture",
-        )
-
-
-def test_project_design_action_preserves_valid_failed_diagnostic(
-    tmp_path: Path,
-) -> None:
-    runner, _spec = _catalog_project(tmp_path)
-    runner.write_text(
-        "print('{\"passed\": false, \"reason\": \"fixture\", "
-        "\"manifest\": \"/private/run_manifest.json\"}')\n"
-        "raise SystemExit(1)\n",
-        encoding="utf-8",
-    )
-    project = Project.from_project_root(tmp_path)
-    workflow = ProjectRunner(project, "example")
-    planned = workflow.plan(RunRequest.design("leaf", "topology"))
-
-    result = planned.run(
-        ExecutionEnvironment(),
-        run_id="design-failed-diagnostic-fixture",
-    )
-
-    outcome = result.nodes["leaf-topology"]
-    assert result.status == "failed"
-    assert outcome.execution_status == "succeeded"
-    assert outcome.result_status == "valid"
-    assert outcome.facts["passed"] is False
-    assert outcome.facts["execution-completed"] is True
-    assert outcome.facts["process-returncode"] == 1
-    payload = json.loads(
-        outcome.artifacts["evidence"].path.read_text(encoding="utf-8")
-    )
-    assert payload["runner_result"]["reason"] == "fixture"
-    assert "manifest" not in payload["runner_result"]
-    assert "/private/run_manifest.json" not in json.dumps(payload)
-    assert payload["process_returncode"] == 1
-
-
-def test_design_catalog_owner_must_match_project_runner(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
-    catalog_path.write_text(
-        catalog_path.read_text(encoding="utf-8").replace(
-            'owner = "example"', 'owner = "different-owner"'
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="owner must be 'example'"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_design_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
-    source = catalog_path.read_text(encoding="utf-8")
-    catalog_path.write_text(
-        source.replace("[targets.leaf]", 'unexpected = "root"\n\n[targets.leaf]'),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="catalog contains unknown fields"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        source.replace(
-            'description = "Test leaf"',
-            'description = "Test leaf"\nunexpected = "row"',
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="targets.leaf contains unknown fields"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_design_catalog_rejects_unsafe_entrypoints_and_routing_overrides(
-    tmp_path: Path,
-) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-design-registry"
-path_scope = "owner"
-owner = "example"
-
-[targets.escape]
-description = "Unsafe"
-kind = "script"
-entrypoint = "../run.py"
-spec_argument = "--spec"
-spec = "ip/example/leaf/design.toml"
-[targets.escape.modes]
-topology = {}
-[targets.escape.routes]
-topology = ["design-checks", "escape-topology"]
-''',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="canonical project-relative path"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-design-registry"
-path_scope = "owner"
-owner = "example"
-
-[targets.leaf]
-description = "Routing override"
-kind = "script"
-entrypoint = "ip/example/leaf/run.py"
-spec_argument = "--spec"
-spec = "ip/example/leaf/design.toml"
-[targets.leaf.modes]
-topology = { args = ["--mode", "sync"] }
-[targets.leaf.routes]
-topology = ["design-checks", "leaf-topology"]
-''',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="cannot override routing argument --mode"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_design_catalog_routes_dv_owned_modules_without_script_wrappers(
-    tmp_path: Path,
-) -> None:
-    _catalog_project(tmp_path)
-    module = tmp_path / "ip/example/dv/transaction.py"
-    module.parent.mkdir(parents=True)
-    module.write_text("raise SystemExit(0)\n", encoding="utf-8")
-    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-design-registry"
-path_scope = "owner"
-owner = "example"
-
-[targets.dv-check]
-description = "DV-owned entrypoint"
-kind = "module"
-entrypoint = "ip.example.dv.transaction"
-[targets.dv-check.modes]
-contract = {}
-[targets.dv-check.routes]
-contract = ["design-checks", "dv-contract"]
-''',
-        encoding="utf-8",
-    )
-    target = load_design_target_catalog(Project.from_project_root(tmp_path)).get("dv-check")
-    assert target.command("contract") == (
+    assert command[:3] == (
         sys.executable,
-        "-m",
-        "ip.example.dv.transaction",
+        "-c",
+        "from sigilicon.workflows.design_runner import main;main()",
+    )
+    assert command[3:9] == (
+        "/sealed/runner",
+        str(source.resolve()),
+        "-",
+        "/sealed/spec",
+        str(spec.resolve()),
+        "--spec",
+    )
+    assert command[9:] == (
+        str(spec.resolve()),
         "--mode",
-        "contract",
+        "topology",
+        "--overwrite",
     )
 
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-design-registry"
-path_scope = "owner"
-owner = "example"
 
-[targets.external]
-description = "Unowned module"
-kind = "module"
-entrypoint = "unowned.runner"
-[targets.external.modes]
-contract = {}
-[targets.external.routes]
-contract = ["design-checks", "external-contract"]
-''',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="project-owned module"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-design-registry"
-path_scope = "owner"
-owner = "example"
-
-[targets.future-cli]
-description = "Undeclared shared CLI"
-kind = "module"
-entrypoint = "sigilicon.cli.future_command"
-[targets.future-cli.modes]
-contract = {}
-[targets.future-cli.routes]
-contract = ["design-checks", "future-contract"]
-''',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="project-owned module"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_design_catalog_cannot_route_through_another_owner(
+def test_plan_design_action_requires_direct_recipe_fields_and_safe_args(
     tmp_path: Path,
 ) -> None:
-    _catalog_project(tmp_path)
-    neighbor = tmp_path / "ip/neighbor"
-    neighbor.mkdir(parents=True)
-    (neighbor / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
-    (neighbor / "design.toml").write_text("# neighbor spec\n", encoding="utf-8")
-    write_component_owner(tmp_path, "neighbor", filesets={})
-    catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
-    original = catalog_path.read_text(encoding="utf-8")
+    project, source, _spec = _project(tmp_path)
+    config = _config(source)
 
-    catalog_path.write_text(
-        original.replace(
-            'entrypoint = "ip/example/leaf/run.py"',
-            'entrypoint = "ip/neighbor/run.py"',
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="owner 'example' root"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        original.replace(
-            'spec = "ip/example/leaf/design.toml"',
-            'spec = "ip/neighbor/design.toml"',
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="owner 'example' root"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        original.replace('kind = "script"', 'kind = "module"').replace(
-            'entrypoint = "ip/example/leaf/run.py"',
-            'entrypoint = "ip.neighbor.run"',
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="owner 'example' root"):
-        load_design_target_catalog(Project.from_project_root(tmp_path))
+    with pytest.raises(ValueError, match="unknown configuration"):
+        plan_design_action(project, "example", {**config, "description": "legacy"})
+    with pytest.raises(ValueError, match="missing configuration"):
+        plan_design_action(project, "example", {key: value for key, value in config.items() if key != "evidence_scope"})
+    with pytest.raises(ValueError, match="cannot override routing"):
+        plan_design_action(project, "example", {**config, "default_args": ["--mode=sync"]})
+    with pytest.raises(ValueError, match="configured together"):
+        plan_design_action(project, "example", {**config, "spec_argument": "--spec"})
+    with pytest.raises(ValueError, match="canonical project-relative"):
+        plan_design_action(project, "example", {**config, "entrypoint": "../dv/run.py"})
 
 
-def test_design_cli_lists_targets_without_executing_a_runner(
+def test_plan_design_action_rejects_source_drift_during_snapshot(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _catalog_project(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        Project,
-        "from_project_root",
-        classmethod(
-            lambda cls, root: pytest.fail(
-                "design CLI must pass its already-loaded Project to the catalog"
-            )
-        ),
-    )
-    events: list[object] = []
+    project, source, _spec = _project(tmp_path)
+    monkeypatch.setattr(design_flow, "source_member_matches", lambda _member: False)
 
-    assert (
-        flow_cli.main(["design", "list"])
-        == 0
-    )
-
-    assert capsys.readouterr().out == (
-        "leaf\ttopology,sync\tip/example/leaf/design.toml\n"
-    )
-    assert events == []
+    with pytest.raises(ValueError, match="source changed during planning"):
+        plan_design_action(project, "example", _config(source))
 
 
-def test_design_cli_runs_the_cataloged_typed_flow_route(
-    monkeypatch: pytest.MonkeyPatch,
+def test_plan_design_action_accepts_owner_module_and_one_shared_module(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _runner, _spec = _catalog_project(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    events: list[object] = []
+    project, _source, _spec = _project(tmp_path)
+    module = tmp_path / "ip/example/dv/transaction.py"
+    module.write_text("print('{\"passed\": true}')\n", encoding="utf-8")
+    owner_config = _config(module)
+    owner_config.update(
+        {
+            "kind": "module",
+            "entrypoint": "ip.example.dv.transaction",
+        }
+    )
+    owner_plan = plan_design_action(project, "example", owner_config)
+    assert owner_plan.kind == "module"
+    assert owner_plan.source_members[0].location == module.resolve()
+    assert owner_plan.source_members[0].scope == "project"
 
-    class FakeProjectRunner:
-        def __init__(self, project, owner):
-            events.append(("init", project.project_root, owner))
+    shared_config = _config(module)
+    shared_config.update(
+        {
+            "kind": "module",
+            "entrypoint": "sigilicon.cli.design_lifecycle",
+        }
+    )
+    shared_plan = plan_design_action(project, "example", shared_config)
+    assert shared_plan.source_members[0].scope == "sigilicon-package"
+    assert shared_plan.source_members[0].path == "sigilicon/cli/design_lifecycle.py"
+    assert shared_plan.bound_command(
+        runner_path="/sealed/runner",
+        spec_path=None,
+    )[5] == "sigilicon.cli"
 
-        def plan(self, request):
-            selection = request.selection
-            events.append(("plan-design", selection.target, selection.mode))
-            class Execution:
-                def run(self, environment, *, run_id):
-                    events.append(("run", environment, run_id))
-                    return SimpleNamespace(run_id="fixture-run")
-
-                def read_result(self, run_id):
-                    events.append(("read", run_id))
-                    return {"status": "accepted", "run_id": run_id}
-
-            return Execution()
-
-    monkeypatch.setattr(flow_cli, "ProjectRunner", FakeProjectRunner)
-
-    assert (
-        flow_cli.main(
-            ["design", "run", "leaf", "sync", "--run-id", "fixture-run"],
+    with pytest.raises(ValueError, match="project-owned module"):
+        plan_design_action(
+            project,
+            "example",
+            {**shared_config, "entrypoint": "sigilicon.cli.future_command"},
         )
-        == 0
+
+
+def test_plan_design_action_rejects_symlinked_owner_source(tmp_path: Path) -> None:
+    project, source, _spec = _project(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    source.unlink()
+    source.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="outside the owner"):
+        plan_design_action(project, "example", _config(source))
+
+
+def _adapter_context(tmp_path: Path) -> tuple[ActionContext, Path]:
+    project, source, spec = _project(tmp_path)
+    plan = plan_design_action(project, "example", _config(source, spec))
+    action = ActionContract(
+        kind=DESIGN_SOURCE_CHECK_ACTION,
+        outputs=(ArtifactPort("evidence", "evidence.design-source-check"),),
+        facts=(
+            "passed",
+            "execution-completed",
+            "process-returncode",
+            "evidence-role",
+            "evidence-level",
+            "evidence-scope",
+            "product-qualification-conclusion",
+        ),
+        adapters=("project-design-source-check",),
+        plan_input_kind=DESIGN_ACTION_PLAN,
     )
-    assert events[0] == ("init", tmp_path.resolve(), "example")
-    assert events[1] == ("plan-design", "leaf", "sync")
-    assert events[2][0] == "run"
-    assert events[2][2] == "fixture-run"
-    assert events[3] == ("read", "fixture-run")
-    assert '"status": "accepted"' in capsys.readouterr().out
+    action_plan = ActionPlan(
+        DESIGN_ACTION_PLAN,
+        plan,
+        plan.as_dict(),
+        plan.source_members,
+    )
+    config = ActionConfiguration(DESIGN_SOURCE_CHECK_ACTION, plan.as_dict())
+    return (
+        ActionContext(
+            node_id="leaf-topology",
+            action=action,
+            run_root=tmp_path / "run",
+            work_root=tmp_path / "run/work",
+            output_root=tmp_path / "run/output",
+            log_root=tmp_path / "run/logs",
+            inputs={},
+            action_config=config,
+            adapter_config=AdapterConfiguration(
+                "project-design-source-check",
+                {"timeout_seconds": 30},
+            ),
+            capabilities={},
+            platform_assets={},
+            action_plan=action_plan,
+            evidence=EvidenceEnvelope.from_action_config(plan.as_dict()),
+        ),
+        source,
+    )
 
 
-def test_design_cli_rejects_unknown_modes_and_extra_routing_arguments(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _catalog_project(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit):
-        flow_cli.main(["design", "run", "leaf", "missing"])
-    assert "does not support mode 'missing'" in capsys.readouterr().err
+def test_design_adapter_consumes_typed_plan_and_exact_closure(tmp_path: Path) -> None:
+    context, source = _adapter_context(tmp_path)
 
-    with pytest.raises(SystemExit):
-        flow_cli.main(["design", "run", "leaf", "topology", "--mode=sync"])
-    assert "unrecognized arguments" in capsys.readouterr().err
+    result = DesignTargetAdapter().run(context)
+
+    assert result.collected is not None
+    assert result.collected.facts["passed"] is True
+    evidence = (
+        context.output_root / "evidence" / "design-evidence.json"
+    ).read_text(encoding="utf-8")
+    assert '"contract_kind": "design-action-evidence"' in evidence
+    assert source.read_text(encoding="utf-8") in (context.action_plan.sources[0].record_text if context.action_plan else "")
+
+
+def test_design_adapter_rejects_plan_or_config_drift(tmp_path: Path) -> None:
+    context, _source = _adapter_context(tmp_path)
+    assert context.action_plan is not None
+    drifted = dict(context.action_config.values)
+    drifted["mode"] = "analysis"
+    object.__setattr__(
+        context,
+        "action_config",
+        ActionConfiguration(DESIGN_SOURCE_CHECK_ACTION, drifted),
+    )
+
+    with pytest.raises(FlowExecutionError, match="configuration drift"):
+        DesignTargetAdapter().run(context)

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import tomllib
 from typing import Any, Mapping
@@ -13,7 +14,7 @@ from sigilicon.domain.config_contracts import (
     require_config_header,
 )
 from sigilicon.domain.platform import load_platform, load_platform_catalog
-from sigilicon.domain.repository import OwnerCatalogSnapshot, Project
+from sigilicon.domain.repository import Project
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -59,17 +60,32 @@ root = "ip/example"
     )
     _write(
         root,
-        "ip/example/configs/flows/design_targets.toml",
-        header.format(kind="flow-design-registry")
-        .replace('path_scope = "repository"', 'path_scope = "owner"')
-        + "\n[targets]\n",
+        "ip/example/configs/flows/recipe.toml",
+        '''schema = 1
+contract_kind = "execution-recipe"
+path_scope = "owner"
+owner = "example"
+name = "example-check"
+actions = {}
+nodes = []
+policies = []
+''',
     )
     _write(
         root,
-        "ip/example/configs/flows/layout_targets.toml",
-        header.format(kind="flow-layout-registry")
-        .replace('path_scope = "repository"', 'path_scope = "owner"')
-        + "\n[targets]\n",
+        "ip/example/configs/targets.toml",
+        '''schema = 1
+contract_kind = "owner-targets"
+path_scope = "owner"
+owner = "example"
+
+[targets.example]
+description = "Example target"
+
+[targets.example.operations.check]
+recipe = "configs/flows/recipe.toml"
+goals = ["check"]
+''',
     )
     for owner in ("alpha", "beta", "compute"):
         _write(
@@ -92,14 +108,15 @@ source = ["ip/{owner}/component.toml"]
         '''schema = 1
 contract_kind = "ip-component"
 path_scope = "owner"
-owner = "test"
+owner = "example"
 name = "example"
 kind = "rtl-ip"
 
+target_catalog = "ip/example/configs/targets.toml"
+
 [filesets]
 flow = [
-  "ip/example/configs/flows/design_targets.toml",
-  "ip/example/configs/flows/layout_targets.toml",
+  "ip/example/configs/flows/recipe.toml",
 ]
 ''',
     )
@@ -111,12 +128,16 @@ def _inspect(
     documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> dict[str, object]:
     sources = RepositorySourceInventory.for_project(project)
-    catalogs = project.flow_catalog_inventory()
+    catalogs = tuple(
+        project.owner_target_catalog(owner)
+        for owner in project.owners
+        if owner.component.target_catalog is not None
+    )
     if documents:
         sources.verify("test source snapshot", documents)
     return inspect_project_configuration_sources(
         project,
-        catalog_inventory=catalogs,
+        target_catalog_inventory=catalogs,
         sources=sources,
     )
 
@@ -172,18 +193,16 @@ owner = "beta"
     )
     context = Project.from_project_root(tmp_path)
     inventory = RepositorySourceInventory.for_project(context)
-    catalogs = context.flow_catalog_inventory()
+    catalogs = (
+        context.owner_target_catalog("example"),
+    )
     seeded_document = freeze_toml_document(
         tomllib.loads(seeded.read_text(encoding="utf-8"))
     )
     inventory.verify("seeded fixture", {seeded: seeded_document})
 
-    component = context.owners[0].component
-    conflicting_catalog = OwnerCatalogSnapshot(
-        owner=component.owner,
-        path=component.path,
-        contract_kind="flow-catalog",
-        record_text="schema = 999\n",
+    conflicting_catalog = replace(
+        catalogs[0],
         document=freeze_toml_document({"schema": 999}),
     )
     with pytest.raises(ValueError, match="disagrees with another source"):
@@ -229,7 +248,7 @@ owner = "alpha"
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
     report = inspect_project_configuration_sources(
         context,
-        catalog_inventory=catalogs,
+        target_catalog_inventory=catalogs,
         sources=inventory,
     )
 
@@ -242,7 +261,7 @@ owner = "alpha"
     with pytest.raises(ValueError, match="another operation"):
         inspect_project_configuration_sources(
             Project.from_project_root(tmp_path),
-            catalog_inventory=catalogs,
+            target_catalog_inventory=catalogs,
             sources=inventory,
         )
 

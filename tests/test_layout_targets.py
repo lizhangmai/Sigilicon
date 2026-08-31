@@ -1,535 +1,307 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
-import sigilicon.domain.repository as repository_module
 
-from sigilicon.cli import flow as flow_cli
 from sigilicon.domain.repository import Project
-from sigilicon.flow import (
-    FlowNode,
-    FlowSpec,
-    LayoutCatalogExpansion,
-    PolicyCheck,
-    PolicySpec,
-)
-from sigilicon.flow.source_assets import source_member_matches
-from sigilicon.workflows.catalog_flow import compile_layout_catalog_flow
-from sigilicon.workflows.layout_targets import load_layout_target_catalog
-from sigilicon.workflows.project_runner import ProjectRunner
+from sigilicon.flow import ActionPlan, FlowExecutionError
+from sigilicon.flow.layout import LAYOUT_ACTION_PLAN
+from sigilicon.flow.source_assets import snapshot_source_member
+from sigilicon.workflows import layout_flow
+from sigilicon.workflows.layout_generation import LayoutPlanningResult
 
-from conftest import write_component_owner
+from conftest import write_component_owner, write_project_context
 
 
-def _catalog_project(
+def _project_with_layout_spec(tmp_path: Path) -> tuple[Project, Path]:
+    write_project_context(tmp_path)
+    owner_root = tmp_path / "ip/example"
+    owner_root.mkdir(parents=True, exist_ok=True)
+    spec = owner_root / "leaf.toml"
+    spec.write_text("# direct layout node fixture\n", encoding="utf-8")
+    write_component_owner(tmp_path, "example", filesets={})
+    return Project.from_project_root(tmp_path), spec.resolve()
+
+
+def _retained_planning(project: Project, spec: Path) -> LayoutPlanningResult:
+    """Build the smallest typed planning double without running a layout tool."""
+
+    package_source = Path(layout_flow.__file__).resolve()
+    planning = object.__new__(LayoutPlanningResult)
+    object.__setattr__(
+        planning,
+        "spec",
+        SimpleNamespace(
+            path=spec,
+            project=project,
+            project_root=project.project_root,
+            library="fixture_library",
+            cell="fixture_cell",
+            view="layout",
+        ),
+    )
+    object.__setattr__(
+        planning,
+        "source_records",
+        MappingProxyType(
+            {
+                spec: spec.read_text(encoding="utf-8"),
+                package_source: package_source.read_text(encoding="utf-8"),
+            }
+        ),
+    )
+    object.__setattr__(
+        planning,
+        "plan",
+        SimpleNamespace(
+            canonical_json=lambda: '{"library":"fixture_library"}\n'
+        ),
+    )
+    return planning
+
+
+def _planned_action(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     *,
-    actions: str = '"check", "generate", "verify"',
-) -> Path:
-    routes = ""
-    if "generate" in actions:
-        routes += 'routes.generate = ["layout-validation", "leaf-generate"]\n'
-    if "verify" in actions:
-        routes += (
-            'routes.verify-drc = ["layout-validation", "leaf-verify-drc"]\n'
-            'routes.verify-lvs = ["layout-validation", "leaf-verify-lvs"]\n'
-            'routes.verify-all = ["layout-validation", "leaf-verify-all"]\n'
-        )
-    flow_root = tmp_path / "ip/example/configs/flows"
-    flow_root.mkdir(parents=True)
-    (tmp_path / "ip/example").mkdir(parents=True, exist_ok=True)
-    spec = tmp_path / "ip/example/leaf.toml"
-    spec.write_text("# delegated layout spec\n", encoding="utf-8")
-    (flow_root / "layout_targets.toml").write_text(
-        f'''
-schema = 1
-contract_kind = "flow-layout-registry"
-path_scope = "owner"
-owner = "example"
+    config: dict[str, str],
+) -> tuple[Project, Path, layout_flow.LayoutActionPlan]:
+    project, spec = _project_with_layout_spec(tmp_path)
+    planning = _retained_planning(project, spec)
+    calls: list[tuple[Path, Project]] = []
 
-[targets.leaf]
-description = "Test leaf"
-spec = "ip/example/leaf.toml"
-actions = [{actions}]
-{routes}
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "catalog.toml").write_text(
-        '''
-schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
+    def fake_plan(path: Path, *, project: Project) -> LayoutPlanningResult:
+        calls.append((path, project))
+        return planning
 
-[flows.layout-validation]
-contract = "configs/flows/layout_validation.toml"
-default_profile = "layout-validation"
-
-[flows.layout-validation.profiles]
-layout-validation = "configs/flows/layout_profile.toml"
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "layout_validation.toml").write_text(
-        '''
-schema = 1
-contract_kind = "flow"
-path_scope = "owner"
-owner = "example"
-name = "layout-validation"
-
-[expand]
-kind = "layout-target-routes"
-generation_policy = "generated"
-verification_policy = "verified"
-evidence_role = "regression"
-evidence_level = "l1"
-
-[[policies]]
-id = "generated"
-[[policies.checks]]
-id = "passed"
-fact = "passed"
-operator = "equals"
-expected = true
-
-[[policies]]
-id = "verified"
-[[policies.checks]]
-id = "passed"
-fact = "passed"
-operator = "equals"
-expected = true
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "layout_profile.toml").write_text(
-        '''
-schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "layout-validation"
-
-[actions."custom-layout.generate"]
-adapter = "project-layout-generation"
-
-[actions."custom-layout.verify"]
-adapter = "project-layout-verification"
-''',
-        encoding="utf-8",
-    )
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={
-            "flow": (
-                "ip/example/configs/flows/layout_targets.toml",
-                "ip/example/configs/flows/catalog.toml",
-                "ip/example/configs/flows/layout_validation.toml",
-                "ip/example/configs/flows/layout_profile.toml",
-            ),
-        },
-    )
-    return spec
+    monkeypatch.setattr(layout_flow, "plan_layout_spec", fake_plan)
+    action = layout_flow.plan_layout_action(project, "example", config)
+    assert calls == [(spec, project)]
+    return project, spec, action
 
 
-def test_layout_target_catalog_can_start_empty(tmp_path: Path) -> None:
-    flows = tmp_path / "ip/example/configs/flows"
-    flows.mkdir(parents=True)
-    (flows / "layout_targets.toml").write_text(
-        "schema = 1\ncontract_kind = \"flow-layout-registry\"\npath_scope = \"owner\"\nowner = \"example\"\n\n[targets]\n",
-        encoding="utf-8",
-    )
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={
-            "flow": ("ip/example/configs/flows/layout_targets.toml",),
-        },
-    )
-
-    catalog = load_layout_target_catalog(Project.from_project_root(tmp_path))
-
-    assert catalog.paths == ((flows / "layout_targets.toml").resolve(),)
-    assert catalog.targets == ()
-
-
-def test_layout_target_catalog_is_an_optional_project_domain(
+def test_plan_layout_action_plans_a_direct_recipe_node_and_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    project = Project.from_project_root(tmp_path)
+    project, spec, action = _planned_action(
+        tmp_path,
+        monkeypatch,
+        config={
+            "target": "leaf",
+            "operation": "generate",
+            "spec": "ip/example/leaf.toml",
+        },
+    )
 
-    catalog = load_layout_target_catalog(project=project)
-
-    assert catalog.project is project
-    assert catalog.paths == ()
-    assert catalog.targets == ()
-
-    monkeypatch.chdir(tmp_path)
-    assert flow_cli.main(["layout", "list", "--json"], client_factory=object) == 0
-    assert capsys.readouterr().out == "[]\n"
-
-
-def test_layout_target_catalog_binds_explicit_project(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-
-    catalog = load_layout_target_catalog(project=project)
-
-    assert catalog.project is project
-    assert catalog.project_root == tmp_path
-
-
-def test_layout_target_loader_reads_its_catalog_once(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = (
-        tmp_path / "ip/example/configs/flows/layout_targets.toml"
-    ).resolve()
-    reads = 0
-    original_read = repository_module.read_toml_record
-
-    def counted_read(path):
-        nonlocal reads
-        if Path(path).resolve() == catalog_path:
-            reads += 1
-        return original_read(path)
-
-    monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
-    project = Project.from_project_root(tmp_path)
-
-    catalog = load_layout_target_catalog(project=project)
-
-    assert len(catalog.targets) == 1
-    assert reads == 1
-
-
-def test_layout_catalog_preserves_project_identity(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_file(tmp_path / "sigilicon.toml")
-
-    catalog = load_layout_target_catalog(project=project)
-
-    assert catalog.project is project
-
-
-def test_layout_action_sources_include_platform_catalog_and_detect_drift(
-    tmp_path: Path,
-) -> None:
-    _catalog_project(tmp_path)
-    platform_catalog = tmp_path / "configs/platform/catalog.toml"
-    platform_catalog.parent.mkdir(parents=True, exist_ok=True)
-    platform_catalog.write_text("platform = 'fixture'\n", encoding="utf-8")
-    project = Project.from_project_root(tmp_path)
-    catalog = load_layout_target_catalog(project).for_owner("example")
-    target = catalog.get("leaf")
-    source_records = {
-        target.spec.resolve(): target.spec.read_text(encoding="utf-8"),
-        platform_catalog.resolve(): platform_catalog.read_text(encoding="utf-8"),
+    assert action.target == "leaf"
+    assert action.operation == "generate"
+    assert action.spec == "ip/example/leaf.toml"
+    assert action.planning.spec.project is project
+    assert {member.scope for member in action.source_members} == {
+        "project",
+        "sigilicon-package",
     }
-    planning = SimpleNamespace(
-        spec=SimpleNamespace(
-            path=target.spec,
-            source_documents=(target.spec,),
-            pdk=SimpleNamespace(source_paths=(platform_catalog,)),
-            generator_source=target.spec,
-            generator_dependencies=(),
-            generator_module_sources=(),
-            source_snapshots=(),
-            oa_assembly_manifest=None,
-            physical_verification=None,
-        ),
-        source_records=source_records,
-    )
-
-    members = catalog.source_members_for(target, planning)
-    platform_member = next(
-        member for member in members if member.location == platform_catalog.resolve()
-    )
-
-    assert platform_member.scope == "project"
-    assert source_member_matches(platform_member)
-    platform_catalog.write_text("platform = 'changed'\n", encoding="utf-8")
-    assert not source_member_matches(platform_member)
+    assert {
+        member.location for member in action.source_members
+    } == set(action.planning.source_records)
+    assert action.as_dict() == {
+        "target": "leaf",
+        "operation": "generate",
+        "spec": "ip/example/leaf.toml",
+        "layout": {"library": "fixture_library"},
+    }
+    assert spec in {member.location for member in action.source_members}
 
 
-def test_expanded_layout_flow_description_shows_compiled_routes(
+def test_plan_layout_action_requires_verification_node_metadata(
     tmp_path: Path,
 ) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-
-    summary = ProjectRunner(project, "example").describe(
-        flow="layout-validation"
-    )
-
-    assert summary["nodes"] == [
-        "leaf-generate",
-        "leaf-verify-drc",
-        "leaf-verify-lvs",
-    ]
-    assert summary["targets"] == [
-        "leaf-generate",
-        "leaf-verify-drc",
-        "leaf-verify-lvs",
-        "leaf-verify-all",
-    ]
-
-
-def test_layout_catalog_routes_compile_to_ordinary_flow_nodes(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    catalog = load_layout_target_catalog(project).for_owner("example")
-    source = FlowSpec(
-        owner="example",
-        flow_id="layout-validation",
-        nodes=(),
-        targets=(),
-        policies=(
-            PolicySpec("generated", (PolicyCheck("passed", "passed", "exists"),)),
-            PolicySpec("verified", (PolicyCheck("passed", "passed", "exists"),)),
-        ),
-        catalog_expansion=LayoutCatalogExpansion("generated", "verified"),
-        owner_root=tmp_path / "ip/example",
-    )
-
-    compiled = compile_layout_catalog_flow(source, catalog)
-
-    assert source.nodes == ()
-    assert all(isinstance(node, FlowNode) for node in compiled.nodes)
-    assert tuple(node.node_id for node in compiled.nodes) == (
-        "leaf-generate",
-        "leaf-verify-drc",
-        "leaf-verify-lvs",
-    )
-    assert compiled.target("leaf-verify-all").goals == (
-        "leaf-verify-drc",
-        "leaf-verify-lvs",
-    )
-
-
-def test_layout_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = tmp_path / "ip/example/configs/flows/layout_targets.toml"
-    source = catalog_path.read_text(encoding="utf-8")
-    catalog_path.write_text(
-        source.replace("[targets.leaf]", 'unexpected = "root"\n\n[targets.leaf]'),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="catalog contains unknown fields"):
-        load_layout_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        source.replace(
-            'description = "Test leaf"',
-            'description = "Test leaf"\nunexpected = "row"',
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="targets.leaf contains unknown fields"):
-        load_layout_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_layout_catalog_rejects_unsafe_specs_and_invalid_actions(tmp_path: Path) -> None:
-    _catalog_project(tmp_path)
-    catalog_path = tmp_path / "ip/example/configs/flows/layout_targets.toml"
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-layout-registry"
-path_scope = "owner"
-owner = "example"
-
-[targets.escape]
-description = "Unsafe"
-spec = "../outside.toml"
-actions = ["check"]
-''',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="canonical project-relative path"):
-        load_layout_target_catalog(Project.from_project_root(tmp_path))
-
-    catalog_path.write_text(
-        '''
-schema = 1
-contract_kind = "flow-layout-registry"
-path_scope = "owner"
-owner = "example"
-
-[targets.leaf]
-description = "Bad action"
-spec = "ip/example/leaf.toml"
-actions = ["check", "publish"]
-''',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="must contain only"):
-        load_layout_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_layout_catalog_cannot_route_to_another_owner_spec(
-    tmp_path: Path,
-) -> None:
-    _catalog_project(tmp_path)
-    neighbor = tmp_path / "ip/neighbor"
-    neighbor.mkdir(parents=True)
-    (neighbor / "layout.toml").write_text("# neighbor spec\n", encoding="utf-8")
-    write_component_owner(tmp_path, "neighbor", filesets={})
-    catalog_path = tmp_path / "ip/example/configs/flows/layout_targets.toml"
-    catalog_path.write_text(
-        catalog_path.read_text(encoding="utf-8").replace(
-            'spec = "ip/example/leaf.toml"',
-            'spec = "ip/neighbor/layout.toml"',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="owner 'example' root"):
-        load_layout_target_catalog(Project.from_project_root(tmp_path))
-
-
-def test_layout_cli_lists_targets_without_opening_a_tool_client(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _catalog_project(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        Project,
-        "from_project_root",
-        classmethod(
-            lambda cls, root: pytest.fail(
-                "layout CLI must pass its already-loaded Project to the catalog"
-            )
-        ),
-    )
-
-    assert flow_cli.main(["layout", "list"], client_factory=object) == 0
-
-    assert capsys.readouterr().out == "leaf\tcheck,generate,verify\tip/example/leaf.toml\n"
-
-
-def test_layout_cli_runs_the_project_bound_layout_workflow(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    spec = _catalog_project(tmp_path).resolve()
-    canonical_project = Project.from_project_root(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        Project,
-        "from_file",
-        classmethod(lambda cls, path: canonical_project),
-    )
-    events: list[tuple[str, Project, object | None]] = []
-    plan = type("Plan", (), {"canonical_json": lambda self: '{"plan":true}\n'})()
-    client = object()
-
-    def preview(path: Path, *, project: Project) -> object:
-        assert path == spec
-        events.append(("check", project, None))
-        return type("Preview", (), {"plan": plan})()
-
-    class FakeProjectRunner:
-        def __init__(self, project, owner, *, client_factory):
-            assert project is canonical_project
-            assert owner == "example"
-            assert client_factory() is client
-            self.operation = ""
-
-        def plan(self, request):
-            selection = request.selection
-            assert selection.target == "leaf"
-            self.operation = selection.operation
-            events.append((selection.operation, canonical_project, client))
-            operation = self.operation
-
-            class Execution:
-                def run(self, environment, *, run_id=None):
-                    assert environment is not None
-                    assert run_id is None
-                    return type("Result", (), {"run_id": "test-run"})()
-
-                def read_result(self, run_id):
-                    assert run_id == "test-run"
-                    return {
-                        "status": "accepted",
-                        "target": f"leaf-{operation}",
-                    }
-
-            return Execution()
-
-    monkeypatch.setattr(flow_cli, "plan_layout_spec", preview)
-    monkeypatch.setattr(flow_cli, "ProjectRunner", FakeProjectRunner)
-    monkeypatch.setattr(
-        flow_cli,
-        "_layout_execution_environment",
-        lambda args, **kwargs: object(),
-    )
-
-    assert (
-        flow_cli.main(
-            ["layout", "check", "leaf"],
-            client_factory=lambda: pytest.fail("layout check must not open a client"),
+    _project_with_layout_spec(tmp_path)
+    with pytest.raises(ValueError, match="configuration fields"):
+        layout_flow.plan_layout_action(
+            Project.from_project_root(tmp_path),
+            "example",
+            {
+                "target": "leaf",
+                "operation": "verify-drc",
+                "spec": "ip/example/leaf.toml",
+                "check": "drc",
+            },
         )
-        == 0
-    )
-    assert (
-        flow_cli.main(
-            ["layout", "generate", "leaf"],
-            client_factory=lambda: client,
+
+    with pytest.raises(ValueError, match="one of"):
+        layout_flow.plan_layout_action(
+            Project.from_project_root(tmp_path),
+            "example",
+            {
+                "target": "leaf",
+                "operation": "verify-all",
+                "spec": "ip/example/leaf.toml",
+            },
         )
-        == 0
-    )
-    assert (
-        flow_cli.main(
-            [
-                "layout",
-                "verify",
-                "leaf",
-                "--check",
-                "lvs",
-            ],
-            client_factory=lambda: client,
-        )
-        == 0
-    )
-
-    assert [kind for kind, _project, _client in events] == [
-        "check",
-        "generate",
-        "verify-lvs",
-    ]
-    assert all(
-        project is canonical_project for _kind, project, _client in events
-    )
-    output = capsys.readouterr().out
-    assert '{"plan":true}\n' in output
-    assert '"status": "accepted"' in output
-    assert '"target": "leaf-verify-lvs"' in output
 
 
-def test_layout_cli_refuses_an_action_not_enabled_for_the_target(
-    monkeypatch: pytest.MonkeyPatch,
+def test_plan_layout_action_accepts_only_owner_relative_specs(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _catalog_project(tmp_path, actions='"check", "generate"')
-    monkeypatch.chdir(tmp_path)
+    project, _ = _project_with_layout_spec(tmp_path)
+    outside = tmp_path / "outside.toml"
+    outside.write_text("outside\n", encoding="utf-8")
 
-    with pytest.raises(SystemExit) as raised:
-        flow_cli.main(["layout", "verify", "leaf"], client_factory=object)
+    with pytest.raises(ValueError, match="inside owner"):
+        layout_flow.plan_layout_action(
+            project,
+            "example",
+            {
+                "target": "leaf",
+                "operation": "generate",
+                "spec": "outside.toml",
+            },
+        )
 
-    assert raised.value.code == 1
-    assert "does not support 'verify'" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="canonical project-relative"):
+        layout_flow.plan_layout_action(
+            project,
+            "example",
+            {
+                "target": "leaf",
+                "operation": "generate",
+                "spec": "ip\\example\\leaf.toml",
+            },
+        )
+
+
+def test_layout_action_plan_rejects_source_closure_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, spec, action = _planned_action(
+        tmp_path,
+        monkeypatch,
+        config={
+            "target": "leaf",
+            "operation": "generate",
+            "spec": "ip/example/leaf.toml",
+        },
+    )
+    records = dict(action.planning.source_records)
+    records[spec] = "different\n"
+    object.__setattr__(action.planning, "source_records", records)
+
+    with pytest.raises(ValueError, match="source closure"):
+        layout_flow.LayoutActionPlan(
+            target=action.target,
+            operation=action.operation,
+            spec=action.spec,
+            planning=action.planning,
+            source_members=action.source_members,
+        )
+
+
+def test_layout_adapter_validates_direct_node_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _project, _spec, action = _planned_action(
+        tmp_path,
+        monkeypatch,
+        config={
+            "target": "leaf",
+            "operation": "generate",
+            "spec": "ip/example/leaf.toml",
+        },
+    )
+    context = SimpleNamespace(
+        action_config={
+            "target": "leaf",
+            "operation": "generate",
+            "spec": "ip/example/leaf.toml",
+        }
+    )
+
+    layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+
+    context.action_config["operation"] = "verify-drc"
+    with pytest.raises(FlowExecutionError, match="operation drift"):
+        layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+
+
+def test_layout_adapter_validates_verification_evidence_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _project, _spec, action = _planned_action(
+        tmp_path,
+        monkeypatch,
+        config={
+            "target": "leaf",
+            "operation": "verify-drc",
+            "spec": "ip/example/leaf.toml",
+            "check": "drc",
+            "evidence_role": "regression",
+            "evidence_level": "l1",
+            "evidence_scope": "fixture",
+        },
+    )
+    context = SimpleNamespace(
+        action_config={
+            "target": "leaf",
+            "operation": "verify-drc",
+            "spec": "ip/example/leaf.toml",
+            "check": "drc",
+            "evidence_role": "regression",
+            "evidence_level": "l1",
+            "evidence_scope": "fixture",
+        },
+        require_evidence=lambda: SimpleNamespace(
+            role="regression",
+            level="l1",
+            scope="fixture",
+        ),
+    )
+
+    layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+
+    context.action_config["evidence_scope"] = "different"
+    with pytest.raises(FlowExecutionError, match="evidence envelope"):
+        layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+
+
+def test_layout_adapter_accepts_project_recipe_source_merge_and_detects_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, spec, action = _planned_action(
+        tmp_path,
+        monkeypatch,
+        config={
+            "target": "leaf",
+            "operation": "generate",
+            "spec": "ip/example/leaf.toml",
+        },
+    )
+    recipe_source = project.project_root / "ip/example/recipe.toml"
+    recipe_source.write_text("recipe = true\n", encoding="utf-8")
+    extra = snapshot_source_member(
+        recipe_source,
+        source_root=project.project_root,
+        record_text=recipe_source.read_text(encoding="utf-8"),
+        source_label="layout recipe",
+    )
+    context = SimpleNamespace(
+        action_plan=ActionPlan(
+            LAYOUT_ACTION_PLAN,
+            action,
+            action.as_dict(),
+            (*action.source_members, extra),
+        )
+    )
+
+    layout_flow.LayoutActionAdapter._validate_source_closure(context, action)
+
+    spec.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(FlowExecutionError, match="source changed"):
+        layout_flow.LayoutActionAdapter._validate_source_closure(context, action)

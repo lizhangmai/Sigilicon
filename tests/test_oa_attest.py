@@ -7,6 +7,7 @@ import pytest
 
 from sigilicon.cli import flow as flow_cli
 from sigilicon.cli.flow import _parser
+from sigilicon.cli.main import main as sigilicon_cli_main
 from conftest import write_component_owner
 
 
@@ -52,11 +53,16 @@ def test_simulation_has_no_temporary_work_retention_option() -> None:
             "simulate",
             "--owner",
             "fixture",
-            "--testbench",
-            "tb_main",
+            "--target",
+            "tb-main",
+            "--operation",
+            "electrical",
         ]
     )
 
+    assert args.target == "tb-main"
+    assert args.operation == "electrical"
+    assert not hasattr(args, "testbench")
     assert not hasattr(args, "keep_work")
     assert not hasattr(args, "timeout")
     with pytest.raises(SystemExit):
@@ -66,9 +72,22 @@ def test_simulation_has_no_temporary_work_retention_option() -> None:
                 "simulate",
                 "--owner",
                 "fixture",
+                "--target",
+                "tb-main",
+                "--operation",
+                "electrical",
+                "--keep-work",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        _parser().parse_args(
+            [
+                "oa",
+                "simulate",
+                "--owner",
+                "fixture",
                 "--testbench",
                 "tb_main",
-                "--keep-work",
             ]
         )
 
@@ -87,6 +106,14 @@ def test_rebuild_can_select_exactly_one_design_cell() -> None:
 
     assert args.cell == "FIXTURE_CELL"
     assert args.testbench is None
+
+
+@pytest.mark.parametrize("retired_domain", ("design", "layout"))
+def test_top_level_cli_rejects_retired_domains(retired_domain: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        sigilicon_cli_main([retired_domain])
+
+    assert error.value.code == 2
 
 
 def test_cli_attest_reports_current_check_without_prior_state(
@@ -131,14 +158,14 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     _write_oa_owner(tmp_path)
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
 
     class TypedFlow:
         def __init__(self, _project, owner: str) -> None:
             assert owner == "fixture"
 
-        def plan(self, request):
-            calls.append(request.selection.testbench)
+        def plan(self, target: str, operation: str):
+            calls.append((target, operation))
             class Execution:
                 def run(self, environment):
                     assert set(environment.capabilities) == {
@@ -168,12 +195,14 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
                 "simulate",
                 "--owner",
                 "fixture",
-                "--testbench",
-                "tb_main",
+                "--target",
+                "tb-main",
+                "--operation",
+                "electrical",
             ],
             client_factory=lambda: pytest.fail("CLI must not start a direct backend"),
         )
         == 0
     )
-    assert calls == ["tb_main"]
+    assert calls == [("tb-main", "electrical")]
     assert "OA Maestro Flow completed: native/tb-main-l2" in capsys.readouterr().out

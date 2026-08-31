@@ -19,9 +19,9 @@ from sigilicon.identifiers import bounded_identity
 from sigilicon.paths import ArtifactExecutionPaths, ArtifactLayout
 
 
-AGENTIC_RUN_REQUEST_KIND = "agentic-flow-run-request"
-AGENTIC_RUN_STATE_KIND = "agentic-flow-run-state"
-AGENTIC_RUN_AUDIT_KIND = "agentic-flow-run-audit"
+AGENTIC_RUN_REQUEST_KIND = "agentic-target-run-request"
+AGENTIC_RUN_STATE_KIND = "agentic-target-run-state"
+AGENTIC_RUN_AUDIT_KIND = "agentic-target-run-audit"
 RUNNING_STATUSES = frozenset({"queued", "running"})
 TERMINAL_STATUSES = frozenset(
     {"accepted", "failed", "cancelled", "budget-exhausted", "uncertain"}
@@ -32,9 +32,8 @@ _STATE_FIELDS = {
     "contract_kind",
     "project_id",
     "owner",
-    "flow",
     "target",
-    "profile",
+    "operation",
     "plan_identity",
     "plan_record_json",
     "run_id",
@@ -70,8 +69,8 @@ _AUDIT_FIELDS = {
     "contract_kind",
     "project_id",
     "owner",
-    "flow",
     "target",
+    "operation",
     "run_id",
     "plan_identity",
     "grant_identity",
@@ -85,7 +84,7 @@ _AUDIT_FIELDS = {
     "started_at",
     "finished_at",
     "terminal_status",
-    "flow_status",
+    "result_status",
     "error_code",
 }
 
@@ -151,11 +150,10 @@ def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
         raise ValueError(f"agentic run record kind must be {expected_kind!r}")
     bounded_identity(value.get("project_id"), "agentic project")
     owner_identity(value.get("owner"), "agentic run owner")
-    identifier(value.get("flow"), "agentic run Flow")
     identifier(value.get("target"), "agentic run target")
-    identifier(value.get("profile"), "agentic run profile")
-    bounded_identity(value.get("plan_identity"), "agentic Flow Plan")
-    _canonical_record(value.get("plan_record_json"), "agentic Flow Plan record")
+    identifier(value.get("operation"), "agentic run operation")
+    bounded_identity(value.get("plan_identity"), "agentic Target Operation Plan")
+    _canonical_record(value.get("plan_record_json"), "agentic Target Operation Plan record")
     run_identity(value.get("run_id"))
     bounded_identity(value.get("grant_identity"), "agentic execution grant")
     _canonical_record(value.get("grant_json"), "agentic execution grant record")
@@ -202,10 +200,10 @@ def _validate_audit(value: Mapping[str, Any]) -> None:
         raise ValueError(f"agentic run audit kind must be {AGENTIC_RUN_AUDIT_KIND!r}")
     bounded_identity(value.get("project_id"), "agentic project")
     owner_identity(value.get("owner"), "agentic run owner")
-    identifier(value.get("flow"), "agentic run Flow")
     identifier(value.get("target"), "agentic run target")
+    identifier(value.get("operation"), "agentic run operation")
     run_identity(value.get("run_id"))
-    bounded_identity(value.get("plan_identity"), "agentic Flow Plan")
+    bounded_identity(value.get("plan_identity"), "agentic Target Operation Plan")
     bounded_identity(value.get("grant_identity"), "agentic execution grant")
     for field in ("principal", "role", "approval", "environment_identity"):
         identifier(value.get(field), f"agentic run {field}")
@@ -217,16 +215,16 @@ def _validate_audit(value: Mapping[str, Any]) -> None:
     if value.get("terminal_status") not in TERMINAL_STATUSES:
         raise ValueError("agentic run audit terminal status is invalid")
     terminal_status = value["terminal_status"]
-    flow_status = value.get("flow_status")
-    valid_flow_statuses = {
+    result_status = value.get("result_status")
+    valid_result_statuses = {
         "accepted": {"accepted"},
         "failed": {None, "failed"},
         "cancelled": {None, "failed"},
         "budget-exhausted": {None, "accepted", "failed"},
         "uncertain": {None},
     }
-    if flow_status not in valid_flow_statuses[terminal_status]:
-        raise ValueError("agentic run audit Flow status is invalid")
+    if result_status not in valid_result_statuses[terminal_status]:
+        raise ValueError("agentic run audit result status is invalid")
     error = value.get("error_code")
     if error is not None:
         identifier(error, "agentic run audit error code")
@@ -251,13 +249,13 @@ class AgenticRunStore:
         self,
         *,
         owner: str,
-        flow: str,
         target: str,
+        operation: str,
         run_id: str,
     ) -> ArtifactExecutionPaths:
         return ArtifactLayout(self.artifact_root).agentic_execution(
             owner=owner,
-            flow=flow,
+            flow=operation,
             target=target,
             identity=run_id,
         )
@@ -269,8 +267,8 @@ class AgenticRunStore:
     ) -> None:
         expected = self.paths(
             owner=record["owner"],
-            flow=record["flow"],
             target=record["target"],
+            operation=record["operation"],
             run_id=record["run_id"],
         )
         if paths != expected:
@@ -378,9 +376,9 @@ class AgenticRunStore:
 
     def locate(self, run_id: str) -> LocatedAgenticRun:
         identity = run_identity(run_id)
-        root = self.artifact_root / "system" / "agentic-flow-runs"
+        root = self.artifact_root / "system" / "agentic-target-runs"
         if not root.is_dir() or root.is_symlink():
-            raise ValueError(f"unknown managed Flow Run: {identity}")
+            raise ValueError(f"unknown managed Target Run: {identity}")
 
         def child_directories(parent: Path) -> tuple[Path, ...]:
             try:
@@ -396,15 +394,20 @@ class AgenticRunStore:
         matches: list[Path] = []
         for owner in child_directories(root):
             for target in child_directories(owner):
-                for flow in child_directories(target):
-                    for candidate in child_directories(flow):
+                for operation in child_directories(target):
+                    for candidate in child_directories(operation):
                         if candidate.name == identity:
                             matches.append(candidate)
         if len(matches) != 1:
-            raise ValueError(f"unknown or ambiguous managed Flow Run: {identity}")
+            raise ValueError(f"unknown or ambiguous managed Target Run: {identity}")
         relative = matches[0].relative_to(root)
-        owner, target, flow, _identity = relative.parts
-        paths = self.paths(owner=owner, target=target, flow=flow, run_id=identity)
+        owner, target, operation, _identity = relative.parts
+        paths = self.paths(
+            owner=owner,
+            target=target,
+            operation=operation,
+            run_id=identity,
+        )
         request = self.read_request(paths)
         state = self.read_state(paths)
         shared = (_STATE_FIELDS & _REQUEST_FIELDS) - {"contract_kind"}

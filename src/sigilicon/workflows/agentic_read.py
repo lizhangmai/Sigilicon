@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from pathlib import Path
 import re
 from typing import Any
 
@@ -14,25 +13,19 @@ from sigilicon.domain.circuit_design import (
     design_decision_from_json,
 )
 from sigilicon.domain.repository import (
-    OwnerCatalogSnapshot,
     Project,
     RepositoryOwner,
 )
 from sigilicon.flow.model import identifier, owner_identity, run_identity
-from sigilicon.workflows.project_runner import (
-    ProjectRunner,
-    RunRequest,
-)
+from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.workflows.design_campaign import (
     resolve_project_design_campaign,
 )
-from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.design_promotion import (
     compile_promotion_plan,
     promotion_request_from_json,
 )
-from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.source_control import inspect_source_state
 from sigilicon.workflows.agentic_runs import AgenticRunStore, RUNNING_STATUSES
 
@@ -77,7 +70,7 @@ def _public_value(value: Any, *, field: str | None = None) -> Any:
 
 @dataclass(frozen=True)
 class AgenticReadInterface:
-    """Resolve only cataloged project identities through existing domain Modules."""
+    """Resolve project-owned target operations through the planning Module."""
 
     project: Project
     project_id: str = field(init=False)
@@ -91,23 +84,23 @@ class AgenticReadInterface:
 
     def owner_resource_uri(self, owner: str) -> str:
         selected = self._owner(owner)
-        return f"sigilicon://owners/{selected.name}/catalog"
+        return f"sigilicon://owners/{selected.name}/targets"
 
     def run_resource_uri(
         self,
         *,
         owner: str,
-        flow: str,
         target: str,
+        operation: str,
         run_id: str,
     ) -> str:
         owner_name = owner_identity(owner, "project owner")
-        flow_name = identifier(flow, "Flow identity")
-        target_name = identifier(target, "Flow target")
+        target_name = identifier(target, "project target")
+        operation_name = identifier(operation, "target operation")
         identity = run_identity(run_id)
         return (
-            f"sigilicon://runs/{owner_name}/{flow_name}/"
-            f"{target_name}/{identity}/manifest"
+            f"sigilicon://runs/{owner_name}/{target_name}/"
+            f"{operation_name}/{identity}/manifest"
         )
 
     def inspect_project(self, *, owner: str | None) -> dict[str, Any]:
@@ -118,16 +111,8 @@ class AgenticReadInterface:
             if owner is None
             else (self._owner(owner),)
         )
-        catalog_inventory = self.project.flow_catalog_inventory()
-        design_targets = self._design_targets(catalog_inventory)
-        layout_targets = self._layout_targets(catalog_inventory)
         owners = [
-            self._owner_payload(
-                item,
-                design_targets,
-                layout_targets,
-                catalog_inventory,
-            )
+            self._owner_payload(item)
             for item in selected
         ]
         source = inspect_source_state(self.project.project_root)
@@ -138,7 +123,7 @@ class AgenticReadInterface:
             authority="source-contract",
             conclusion="valid",
             summary=(
-                f"Validated {len(owners)} cataloged owner"
+                f"Validated {len(owners)} project owner"
                 f"{'s' if len(owners) != 1 else ''}; runtime capability "
                 "availability and product qualification were not evaluated."
             ),
@@ -148,7 +133,6 @@ class AgenticReadInterface:
                     "dirty": source.working_tree_dirty,
                     "repository_available": source.repository_available,
                 },
-                "catalogs": [name for name, _path in self.project.catalog_paths],
                 "owners": owners,
                 "runtime_capabilities": {
                     "status": "not-evaluated",
@@ -160,32 +144,29 @@ class AgenticReadInterface:
                 },
             },
             resources=resources,
-            allowed_next_actions=["flow.plan", "run.inspect"],
+            allowed_next_actions=["target.plan", "run.inspect"],
         )
 
-    def plan_flow(
+    def plan_target(
         self,
         *,
         owner: str,
-        flow: str,
         target: str,
-        profile: str | None,
+        operation: str,
     ) -> dict[str, Any]:
-        """Compile one catalog-selected Flow through the existing FlowEngine."""
+        """Compile one owner target operation without executing a backend."""
 
         resolved = ProjectRunner(
             self.project,
             owner,
-        ).plan(
-            RunRequest.flow(flow, target, profile),
-        )
+        ).plan(target, operation)
         record = resolved.record
         return self.response(
-            operation="flow.plan",
+            operation="target.plan",
             authority="plan",
             conclusion="planned",
             summary=(
-                f"Resolved {resolved.flow}/{resolved.target} into "
+                f"Resolved {resolved.target}/{resolved.operation} into "
                 f"{resolved.node_count} typed "
                 "nodes; no backend was executed."
             ),
@@ -226,28 +207,26 @@ class AgenticReadInterface:
         self,
         *,
         owner: str,
-        flow: str,
         target: str,
+        operation: str,
         run_id: str,
     ) -> dict[str, Any]:
-        """Read one exact persisted Flow result after resolving its owner contract."""
+        """Read one exact persisted target-operation result."""
 
         selected_owner = self._owner(owner)
-        flow_name = identifier(flow, "Flow identity")
-        target_name = identifier(target, "Flow target")
+        target_name = identifier(target, "project target")
+        operation_name = identifier(operation, "target operation")
         identity = run_identity(run_id)
         project_runner = ProjectRunner(self.project, selected_owner.name)
-        execution = project_runner.plan(
-            RunRequest.flow(flow_name, target_name),
-        )
+        execution = project_runner.plan(target_name, operation_name)
         managed = AgenticRunStore(
             self.project.artifact_root,
             self.project_id,
         )
         managed_paths = managed.paths(
             owner=selected_owner.name,
-            flow=flow_name,
             target=target_name,
+            operation=operation_name,
             run_id=identity,
         )
         state_path = managed_paths.role("control") / "state.json"
@@ -255,11 +234,11 @@ class AgenticReadInterface:
             state = managed.read_state(managed_paths)
             if (
                 state["owner"] != selected_owner.name
-                or state["flow"] != flow_name
                 or state["target"] != target_name
+                or state["operation"] != operation_name
                 or state["run_id"] != identity
             ):
-                raise ValueError("managed Flow Run identity drift")
+                raise ValueError("managed target-operation run identity drift")
             result: dict[str, Any] | None = None
             try:
                 result = execution.read_result(identity)
@@ -268,8 +247,8 @@ class AgenticReadInterface:
                     raise
             resource = self.run_resource_uri(
                 owner=selected_owner.name,
-                flow=flow_name,
                 target=target_name,
+                operation=operation_name,
                 run_id=identity,
             )
             return self.response(
@@ -277,7 +256,7 @@ class AgenticReadInterface:
                 authority=(
                     "managed-run-state"
                     if result is None
-                    else "recorded-flow-result"
+                    else "recorded-target-operation-result"
                 ),
                 conclusion=(
                     "in-progress"
@@ -285,7 +264,7 @@ class AgenticReadInterface:
                     else state["status"]
                 ),
                 summary=(
-                    f"Managed Flow Run {identity} is {state['status']!r}; "
+                    f"Managed target operation run {identity} is {state['status']!r}; "
                     "no additional qualification claim was made."
                 ),
                 data={
@@ -306,16 +285,16 @@ class AgenticReadInterface:
         result = execution.read_result(identity)
         resource = self.run_resource_uri(
             owner=selected_owner.name,
-            flow=flow_name,
             target=target_name,
+            operation=operation_name,
             run_id=identity,
         )
         return self.response(
             operation="run.inspect",
-            authority="recorded-flow-result",
+            authority="recorded-target-operation-result",
             conclusion="recorded",
             summary=(
-                f"Read the identity-matched Flow result with status "
+                f"Read the identity-matched target-operation result with status "
                 f"{result.get('status', 'unknown')!r}; no qualification claim was added."
             ),
             data={
@@ -336,7 +315,7 @@ class AgenticReadInterface:
         candidate_json: str,
         artifact_json: tuple[str, ...],
     ) -> dict[str, Any]:
-        """Validate an immutable Candidate chain inside one cataloged owner."""
+        """Validate an immutable Candidate chain inside one project owner."""
 
         selected_owner = self._owner(owner)
         validation = validate_candidate_records(
@@ -412,65 +391,22 @@ class AgenticReadInterface:
     def _owner(self, name: str) -> RepositoryOwner:
         return self.project.owner(name)
 
-    def _flows(
-        self,
-        owner: RepositoryOwner,
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> list[dict[str, Any]]:
-        owner_inventory = tuple(
-            snapshot
-            for snapshot in catalog_inventory
-            if snapshot.owner == owner.name
-        )
-        snapshots = self.project.owner_flow_catalog_snapshots(
-            owner,
-            inventory=owner_inventory,
-        )
-        if not snapshots:
+    def _targets(self, owner: RepositoryOwner) -> list[dict[str, Any]]:
+        if owner.component.target_catalog is None:
             return []
-        if len(snapshots) != 1:
-            raise ValueError(
-                f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
-            )
-        project_runner = ProjectRunner(self.project, owner.name)
-        descriptions = project_runner.catalog_descriptions(
-            inventory=owner_inventory,
-        )
-        flows = [
+        descriptions = ProjectRunner(self.project, owner.name).targets()
+        return [
             {
                 "name": description["name"],
-                "default_profile": description["default_profile"],
-                "profiles": list(description["profiles"]),
-                "targets": sorted(description["summary"]["targets"]),
+                "description": description["description"],
+                "operations": list(description["operations"]),
             }
             for description in descriptions
         ]
-        return sorted(flows, key=lambda item: item["name"])
-
-    def _design_targets(
-        self,
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> tuple[Any, ...]:
-        return load_design_target_catalog(
-            project=self.project,
-            catalog_inventory=catalog_inventory,
-        ).targets
-
-    def _layout_targets(
-        self,
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> tuple[Any, ...]:
-        return load_layout_target_catalog(
-            project=self.project,
-            catalog_inventory=catalog_inventory,
-        ).targets
 
     def _owner_payload(
         self,
         owner: RepositoryOwner,
-        design_targets: tuple[Any, ...],
-        layout_targets: tuple[Any, ...],
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     ) -> dict[str, Any]:
         root = self.project.project_root
         component = owner.component
@@ -488,31 +424,7 @@ class AgenticReadInterface:
                 {"name": name, "member_count": len(members)}
                 for name, members in sorted(component.filesets.items())
             ],
-            "flows": self._flows(owner, catalog_inventory),
-            "design_targets": [
-                {
-                    "name": target.name,
-                    "description": target.description,
-                    "spec": (
-                        None
-                        if target.spec_relative is None
-                        else target.spec_relative.as_posix()
-                    ),
-                    "modes": [mode.name for mode in target.modes],
-                }
-                for target in design_targets
-                if target.owner == owner.name
-            ],
-            "layout_targets": [
-                {
-                    "name": target.name,
-                    "description": target.description,
-                    "spec": target.spec_relative.as_posix(),
-                    "actions": list(target.actions),
-                }
-                for target in layout_targets
-                if target.owner == owner.name
-            ],
+            "targets": self._targets(owner),
         }
 
     def response(

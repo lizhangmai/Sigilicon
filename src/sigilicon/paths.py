@@ -289,7 +289,7 @@ class ArtifactLayout:
         namespace = (
             self.root
             / "system"
-            / "agentic-flow-runs"
+            / "agentic-target-runs"
             / owner_name
             / target_name
             / flow_name
@@ -298,7 +298,7 @@ class ArtifactLayout:
             artifact_root=self.root,
             namespace_root=namespace,
             root=namespace / run_id,
-            artifact_kind="agentic-flow-run",
+            artifact_kind="agentic-target-run",
             identity_kind="run_id",
             identity=run_id,
             roles=("control", "audit"),

@@ -1,8 +1,10 @@
-"""Pure target-closure resolution for Flow specifications.
+"""Pure target-closure resolution for compiled Flow specifications.
 
 Topology is structural: artifact bindings and explicit ordering edges are enough
-to determine which nodes belong to a target.  Action and Adapter semantics are
-validated only after this closure has been selected.
+to determine which nodes belong to a target.  Operation recipes do not own
+targets; the repository target catalog compiles one target into a FlowSpec
+before this module is called.  Action and Adapter semantics are validated only
+after this closure has been selected.
 """
 
 from __future__ import annotations

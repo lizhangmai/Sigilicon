@@ -8,12 +8,11 @@ import pytest
 
 from sigilicon.domain.repository import Project
 from sigilicon.flow import (
+    ActionBinding,
     ActionContext,
     ActionPlan,
     AdapterResult,
-    AdapterSelection,
     ArtifactBinding,
-    ExecutionProfile,
     EvidenceEnvelope,
     FlowEngine,
     FlowExecutionError,
@@ -149,9 +148,10 @@ def test_native_oa_vertical_slice_plans_as_one_typed_dag(tmp_path: Path) -> None
     registry.register_adapter(NATIVE_OA_SIMULATION_ADAPTER, _PlanningAdapter())
     engine = FlowEngine(registry)
     spec = FlowSpec(
-        "native-owner",
-        "native-oa-l1",
-        (
+        owner="native-owner",
+        flow_id="native-oa-l1",
+        recipe_id="native-oa-l1-recipe",
+        nodes=(
             FlowNode("oa-plan", NATIVE_OA_PLAN_ACTION),
             FlowNode(
                 "simulate",
@@ -161,14 +161,10 @@ def test_native_oa_vertical_slice_plans_as_one_typed_dag(tmp_path: Path) -> None
                 order_after=("oa-plan",),
             ),
         ),
-        (FlowTarget("simulation", ("simulate",)),),
-    )
-    profile = ExecutionProfile(
-        "native-owner",
-        "cadence",
-        (
-            AdapterSelection(NATIVE_OA_PLAN_ACTION, NATIVE_OA_PLAN_ADAPTER),
-            AdapterSelection(
+        targets=(FlowTarget("simulation", ("simulate",)),),
+        action_bindings=(
+            ActionBinding(NATIVE_OA_PLAN_ACTION, NATIVE_OA_PLAN_ADAPTER),
+            ActionBinding(
                 NATIVE_OA_SIMULATION_ACTION,
                 NATIVE_OA_SIMULATION_ADAPTER,
             ),
@@ -184,7 +180,6 @@ def test_native_oa_vertical_slice_plans_as_one_typed_dag(tmp_path: Path) -> None
     plan = engine.plan(
         spec,
         "simulation",
-        profile,
         action_plans={"oa-plan": typed, "simulate": typed},
     )
 

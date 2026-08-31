@@ -6,15 +6,14 @@ import pytest
 
 from sigilicon.flow import (
     ActionContext,
+    ActionBinding,
     ActionContract,
     AdapterExecution,
     AdapterResult,
     AdapterResultError,
-    AdapterSelection,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowContractError,
     FlowExecutionError,
@@ -84,19 +83,16 @@ def test_engine_consumes_one_complete_adapter_result(tmp_path: Path) -> None:
     registry.register_adapter("single-method", SingleMethodAdapter())
     engine = FlowEngine(registry)
     spec = FlowSpec(
-        "test-owner",
-        "adapter-interface",
-        (FlowNode("complete", "test.complete"),),
-        (FlowTarget("all", ("complete",)),),
-    )
-    profile = ExecutionProfile(
-        "test-owner",
-        "local",
-        (AdapterSelection("test.complete", "single-method"),),
+        owner="test-owner",
+        flow_id="adapter-interface",
+        recipe_id="adapter-interface-recipe",
+        nodes=(FlowNode("complete", "test.complete"),),
+        targets=(FlowTarget("all", ("complete",)),),
+        action_bindings=(ActionBinding("test.complete", "single-method"),),
     )
 
     result = engine.run(
-        engine.plan(spec, "all", profile),
+        engine.plan(spec, "all"),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
         run_id="a" * 32,
@@ -181,19 +177,16 @@ def test_direct_adapter_preserves_successful_execution_on_collection_failure(
     registry.register_adapter("direct", CollectionFailureAdapter())
     engine = FlowEngine(registry)
     spec = FlowSpec(
-        "test-owner",
-        "adapter-collection-failure",
-        (FlowNode("failure", "test.collection-failure"),),
-        (FlowTarget("all", ("failure",)),),
-    )
-    profile = ExecutionProfile(
-        "test-owner",
-        "local",
-        (AdapterSelection("test.collection-failure", "direct"),),
+        owner="test-owner",
+        flow_id="adapter-collection-failure",
+        recipe_id="adapter-collection-failure-recipe",
+        nodes=(FlowNode("failure", "test.collection-failure"),),
+        targets=(FlowTarget("all", ("failure",)),),
+        action_bindings=(ActionBinding("test.collection-failure", "direct"),),
     )
 
     result = engine.run(
-        engine.plan(spec, "all", profile),
+        engine.plan(spec, "all"),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
         run_id="b" * 32,

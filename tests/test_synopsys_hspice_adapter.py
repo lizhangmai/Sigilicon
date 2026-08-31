@@ -7,12 +7,11 @@ import subprocess
 import pytest
 
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -184,7 +183,7 @@ def _flow(
     owner_root: Path,
     *,
     runner_environment: object | None = None,
-) -> tuple[FlowSpec, ExecutionProfile]:
+) -> FlowSpec:
     campaign_environment = (
         {"FIXTURE_BATCH_SIZE": 2, "FIXTURE_RUN_MODE": "managed"}
         if runner_environment is None
@@ -193,6 +192,7 @@ def _flow(
     spec = FlowSpec(
         owner="fixture-owner",
         flow_id="hspice-managed",
+        recipe_id="hspice-managed-recipe",
         nodes=(
             FlowNode(
                 "assets",
@@ -357,29 +357,25 @@ def _flow(
             ),
         ),
         owner_root=owner_root,
-    )
-    profile = ExecutionProfile(
-        owner="fixture-owner",
-        profile_id="hspice-fixture",
-        selections=(
-            AdapterSelection("design.hspice-fixture", "source-assets"),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding("design.hspice-fixture", "source-assets"),
+            ActionBinding(
                 "asic.electrical-functional",
                 "synopsys-hspice",
                 config={"timeout_seconds": 30},
-                platform_asset_identities={
+                platform_assets={
                     "hspice-models": "fixture:hspice@nominal",
                 },
             ),
-            AdapterSelection(
+            ActionBinding(
                 "asic.electrical-campaign",
                 "synopsys-hspice",
                 config={"timeout_seconds": 30},
-                platform_asset_identities={
+                platform_assets={
                     "hspice-models": "fixture:hspice@nominal",
                 },
             ),
-            AdapterSelection(
+            ActionBinding(
                 "asic.electrical-diagnostic",
                 "synopsys-hspice",
                 config={
@@ -387,13 +383,13 @@ def _flow(
                     "runner_environment_prefix": "FIXTURE_",
                     "runner_environment": {"FIXTURE_RUN_MODE": "managed"},
                 },
-                platform_asset_identities={
+                platform_assets={
                     "hspice-models": "fixture:hspice@nominal",
                 },
             ),
         ),
     )
-    return spec, profile
+    return spec
 
 
 def _environment(tmp_path: Path, executable: Path) -> ExecutionEnvironment:
@@ -444,7 +440,7 @@ def _run(
     owner_root = tmp_path / "owner"
     owner_root.mkdir()
     _write_owner(owner_root)
-    spec, profile = _flow(
+    spec = _flow(
         owner_root,
         runner_environment=runner_environment,
     )
@@ -452,7 +448,7 @@ def _run(
     environment = _environment(tmp_path, owner_root / "run-hspice-fixture.py")
     monkeypatch.setenv("SIGILICON_HSPICE_FIXTURE_MODE", mode)
     return engine.run(
-        engine.plan(spec, target, profile),
+        engine.plan(spec, target),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="1" * 32,
@@ -524,7 +520,7 @@ def test_hspice_preflight_rejects_wrong_model_identity(tmp_path: Path) -> None:
     owner_root = tmp_path / "owner"
     owner_root.mkdir()
     _write_owner(owner_root)
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     engine = FlowEngine(_registry(owner_root))
     environment = _environment(tmp_path, owner_root / "run-hspice-fixture.py")
     wrong_asset = ResolvedPlatformAsset(
@@ -539,7 +535,7 @@ def test_hspice_preflight_rejects_wrong_model_identity(tmp_path: Path) -> None:
     )
 
     preflight = engine.preflight(
-        engine.plan(spec, "electrical-regression", profile),
+        engine.plan(spec, "electrical-regression"),
         wrong_environment,
     )
 

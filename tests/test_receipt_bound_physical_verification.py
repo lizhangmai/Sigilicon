@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import struct
 import subprocess
@@ -13,14 +14,13 @@ from sigilicon.domain.physical_verification import (
     lvs_evidence_from_json,
 )
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowExecutionError,
     FlowNode,
@@ -350,6 +350,7 @@ def _flow(adapter: str = CALIBRE_PHYSICAL_VERIFICATION_ADAPTER):
     spec = FlowSpec(
         owner="benchmark",
         flow_id="receipt-bound-verification",
+        recipe_id="receipt-bound-verification-recipe",
         nodes=(
             FlowNode("inputs", _INPUT_ACTION),
             FlowNode("drc", DRC_ACTION, bindings=bindings),
@@ -363,17 +364,13 @@ def _flow(adapter: str = CALIBRE_PHYSICAL_VERIFICATION_ADAPTER):
             ),
         ),
         targets=(FlowTarget("verification", ("drc", "lvs")),),
-    )
-    profile = ExecutionProfile(
-        "benchmark",
-        "receipt-bound",
-        (
-            AdapterSelection(_INPUT_ACTION, _INPUT_ADAPTER),
-            AdapterSelection(DRC_ACTION, adapter),
-            AdapterSelection(LVS_ACTION, adapter),
+        action_bindings=(
+            ActionBinding(_INPUT_ACTION, _INPUT_ADAPTER),
+            ActionBinding(DRC_ACTION, adapter),
+            ActionBinding(LVS_ACTION, adapter),
         ),
     )
-    return spec, profile
+    return spec
 
 
 def _drc_deck() -> str:
@@ -490,10 +487,10 @@ def _run(
         fake,
     )
     registry = _registry(corrupt=corrupt)
-    spec, profile = _flow()
+    spec = _flow()
     engine = FlowEngine(registry)
     return engine.run(
-        engine.plan(spec, "verification", profile),
+        engine.plan(spec, "verification"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path),
         run_id=run_id,
@@ -602,10 +599,10 @@ def test_receipt_or_layout_identity_corruption_fails_before_calibre(
         forbidden,
     )
     registry = _registry(corrupt=corrupt)
-    spec, profile = _flow()
+    spec = _flow()
     engine = FlowEngine(registry)
     result = engine.run(
-        engine.plan(spec, "verification", profile),
+        engine.plan(spec, "verification"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path),
         run_id={
@@ -627,10 +624,10 @@ def test_receipt_or_layout_identity_corruption_fails_before_calibre(
 
 def test_preflight_requires_real_calibre_and_deck_assets(tmp_path: Path) -> None:
     registry = _registry()
-    spec, profile = _flow()
+    spec = _flow()
     engine = FlowEngine(registry)
     preflight = engine.preflight(
-        engine.plan(spec, "verification", profile),
+        engine.plan(spec, "verification"),
         ExecutionEnvironment(),
     )
 
@@ -653,10 +650,10 @@ def test_runtime_backend_unavailable_is_typed_without_a_false_conclusion(
         unavailable,
     )
     registry = _registry()
-    spec, profile = _flow()
+    spec = _flow()
     engine = FlowEngine(registry)
     result = engine.run(
-        engine.plan(spec, "verification", profile),
+        engine.plan(spec, "verification"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path),
         run_id="f" * 32,
@@ -689,18 +686,17 @@ def test_offline_adapter_is_unregistered_and_cannot_claim_clean(
     }
 
     registry = _registry(offline=True)
-    spec, _ = _flow(OFFLINE_PHYSICAL_VERIFICATION_ADAPTER)
-    profile = ExecutionProfile(
-        "benchmark",
-        "offline",
-        (
-            AdapterSelection(_INPUT_ACTION, _INPUT_ADAPTER),
-            AdapterSelection(
+    spec = _flow(OFFLINE_PHYSICAL_VERIFICATION_ADAPTER)
+    spec = replace(
+        spec,
+        action_bindings=(
+            ActionBinding(_INPUT_ACTION, _INPUT_ADAPTER),
+            ActionBinding(
                 DRC_ACTION,
                 OFFLINE_PHYSICAL_VERIFICATION_ADAPTER,
                 config={"outcome": "clean"},
             ),
-            AdapterSelection(
+            ActionBinding(
                 LVS_ACTION,
                 OFFLINE_PHYSICAL_VERIFICATION_ADAPTER,
                 config={"outcome": "clean"},
@@ -709,7 +705,7 @@ def test_offline_adapter_is_unregistered_and_cannot_claim_clean(
     )
     engine = FlowEngine(registry)
     result = engine.run(
-        engine.plan(spec, "verification", profile),
+        engine.plan(spec, "verification"),
         artifact_root=tmp_path / "artifacts",
         environment=_environment(tmp_path),
         run_id="d" * 32,

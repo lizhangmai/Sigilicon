@@ -1,4 +1,16 @@
-"""Stateless Adapter for explicitly planned source and electrical checks."""
+"""Plan and execute one direct, source-bound design Action.
+
+Design execution is intentionally a small seam:
+
+* :func:`plan_design_action` resolves the owner-authored execution recipe
+  node, validates its source boundary, and snapshots the exact runner/spec
+  closure.
+* :class:`DesignTargetAdapter` consumes that typed plan.  It never discovers
+  a catalog or reconstructs a target from persisted configuration.
+
+The class name is kept for the registered Adapter seam, but it no longer
+depends on a target registry or a mode registry.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +19,11 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import stat
-from typing import Any
+import sys
+from typing import Any, Mapping
 
 from sigilicon.external_tools import (
     cadence_subprocess_env,
@@ -30,45 +44,361 @@ from sigilicon.flow.circuit_design import (
     DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
     DESIGN_SOURCE_CHECK_ACTION,
 )
-from sigilicon.flow.source_assets import source_member_matches
+from sigilicon.flow.model import EVIDENCE_LEVELS, EVIDENCE_ROLES
 from sigilicon.flow.serialization import json_value
-from sigilicon.workflows.design_targets import (
-    DesignMode,
-    DesignTarget,
+from sigilicon.flow.source_assets import (
+    snapshot_source_member,
+    source_member_matches,
 )
 from sigilicon.workflows.run_artifacts import (
     FlowRunArtifacts,
     managed_run_artifact_environment,
 )
-from sigilicon.workflows.source_control import (
-    artifact_source_state,
+from sigilicon.workflows.source_control import artifact_source_state
+
+
+_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+_MODULE_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z"
+)
+_SHARED_MODULES = frozenset({"sigilicon.cli.design_lifecycle"})
+_KINDS = frozenset({"script", "module"})
+_SPEC_ARGUMENTS = frozenset({"--spec", "--design"})
+_ROUTING_ARGUMENTS = frozenset({"--spec", "--design", "--mode"})
+_PLAN_FIELDS = frozenset(
+    {
+        "target",
+        "mode",
+        "kind",
+        "entrypoint",
+        "spec_argument",
+        "spec",
+        "default_args",
+        "evidence_role",
+        "evidence_level",
+        "evidence_scope",
+    }
+)
+_REQUIRED_PLAN_FIELDS = frozenset(
+    {
+        "target",
+        "mode",
+        "kind",
+        "entrypoint",
+        "evidence_role",
+        "evidence_level",
+        "evidence_scope",
+    }
+)
+_BOUND_RUNNER_BOOTSTRAP = (
+    "from sigilicon.workflows.design_runner import main;main()"
 )
 
 
 @dataclass(frozen=True)
 class DesignActionPlan:
-    """One selected design target/mode with explicit source members."""
+    """One direct design Action bound to an exact source closure.
 
-    target: DesignTarget
-    mode: DesignMode
+    ``source_members`` contains exactly the runner and, when configured, the
+    spec.  It deliberately contains no secondary selection record.  The
+    surrounding :class:`sigilicon.flow.model.ActionPlan` should use this tuple
+    as its ``sources`` value and ``as_dict()`` as its persisted ``record``.
+    """
+
+    owner: str
+    project_root: Path
+    target: str
+    mode: str
+    kind: str
+    entrypoint: str
+    entrypoint_path: Path
+    spec_argument: str | None
+    spec: Path | None
+    spec_relative: PurePosixPath | None
+    default_args: tuple[str, ...]
+    evidence_role: str
+    evidence_level: str
+    evidence_scope: str
+    source_members: tuple[SourceMember, ...]
+
+    def __post_init__(self) -> None:
+        _name(self.target, "design Action target")
+        _name(self.mode, "design Action mode")
+        if not isinstance(self.owner, str) or not self.owner:
+            raise ValueError("design Action owner must be non-empty text")
+        if not isinstance(self.kind, str) or self.kind not in _KINDS:
+            raise ValueError(
+                f"design Action kind must be one of {sorted(_KINDS)}"
+            )
+
+        project_root = Path(self.project_root).resolve()
+        entrypoint_path = Path(self.entrypoint_path).resolve()
+        if not isinstance(self.entrypoint, str) or not self.entrypoint:
+            raise ValueError("design Action entrypoint must be non-empty text")
+        if self.kind == "script":
+            _canonical_relative(self.entrypoint, "design Action entrypoint")
+            if entrypoint_path.suffix != ".py":
+                raise ValueError("script entrypoint must be a Python script")
+        elif _MODULE_RE.fullmatch(self.entrypoint) is None:
+            raise ValueError("module entrypoint must name a Python module")
+
+        if self.spec_argument is None:
+            if self.spec is not None or self.spec_relative is not None:
+                raise ValueError(
+                    "design Action spec and spec_argument must be configured together"
+                )
+        else:
+            if (
+                not isinstance(self.spec_argument, str)
+                or self.spec_argument not in _SPEC_ARGUMENTS
+            ):
+                raise ValueError(
+                    f"design Action spec_argument must be one of "
+                    f"{sorted(_SPEC_ARGUMENTS)}"
+                )
+            if self.spec is None or self.spec_relative is None:
+                raise ValueError(
+                    "design Action spec and spec_argument must be configured together"
+                )
+            if not isinstance(self.spec_relative, PurePosixPath):
+                object.__setattr__(
+                    self,
+                    "spec_relative",
+                    PurePosixPath(self.spec_relative),
+                )
+        if self.spec is not None:
+            spec = Path(self.spec).resolve()
+            if spec == entrypoint_path:
+                raise ValueError("design Action runner and spec must be distinct files")
+            object.__setattr__(self, "spec", spec)
+
+        default_args = tuple(self.default_args)
+        _validate_runner_args(default_args, "design Action default_args")
+        object.__setattr__(self, "default_args", default_args)
+        _evidence(self.evidence_role, self.evidence_level, self.evidence_scope)
+
+        members = tuple(self.source_members)
+        if not members or any(not isinstance(member, SourceMember) for member in members):
+            raise ValueError(
+                "design Action source_members must be non-empty SourceMember values"
+            )
+        identities = tuple(
+            (member.scope, member.source_root, member.path) for member in members
+        )
+        if len(identities) != len(set(identities)):
+            raise ValueError("design Action source_members contain duplicates")
+        if not any(member.location == entrypoint_path for member in members):
+            raise ValueError("design Action source_members omit the entrypoint")
+        if self.spec is not None and not any(
+            member.location == self.spec for member in members
+        ):
+            raise ValueError("design Action source_members omit the spec")
+
+        object.__setattr__(self, "project_root", project_root)
+        object.__setattr__(self, "entrypoint_path", entrypoint_path)
+        object.__setattr__(self, "source_members", members)
 
     def as_dict(self) -> dict[str, object]:
+        """Return the portable direct node configuration projection."""
+
         return {
-            "target": self.target.name,
-            "mode": self.mode.name,
-            "kind": self.target.kind,
-            "entrypoint": self.target.entrypoint,
+            "target": self.target,
+            "mode": self.mode,
+            "kind": self.kind,
+            "entrypoint": self.entrypoint,
+            "spec_argument": self.spec_argument,
             "spec": (
                 None
-                if self.target.spec_relative is None
-                else self.target.spec_relative.as_posix()
+                if self.spec_relative is None
+                else self.spec_relative.as_posix()
             ),
-            "default_args": list(self.mode.default_args),
+            "default_args": list(self.default_args),
+            "evidence_role": self.evidence_role,
+            "evidence_level": self.evidence_level,
+            "evidence_scope": self.evidence_scope,
         }
+
+    def bound_command(
+        self,
+        *,
+        runner_path: str | Path,
+        spec_path: str | Path | None,
+        extra_args: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        """Execute this plan through already-held immutable runner/spec files."""
+
+        if not isinstance(runner_path, (str, Path)) or not str(runner_path):
+            raise ValueError("bound design runner path must be non-empty")
+        extra_args = tuple(extra_args)
+        _validate_runner_args(extra_args, "design Action extra_args")
+        if self.spec_argument is None:
+            if spec_path is not None:
+                raise ValueError("spec path provided for a design Action without a spec")
+            bound_spec = ("-", "-")
+            routing: tuple[str, ...] = ()
+        else:
+            if spec_path is None or not str(spec_path):
+                raise ValueError("bound design Action requires its exact spec descriptor")
+            assert self.spec is not None
+            bound_spec = (str(spec_path), str(self.spec))
+            routing = (self.spec_argument, str(self.spec))
+        package = "-" if self.kind == "script" else self.entrypoint.rpartition(".")[0]
+        return (
+            sys.executable,
+            "-c",
+            _BOUND_RUNNER_BOOTSTRAP,
+            str(runner_path),
+            str(self.entrypoint_path),
+            package,
+            *bound_spec,
+            *routing,
+            "--mode",
+            self.mode,
+            *self.default_args,
+            *extra_args,
+        )
+
+
+def plan_design_action(
+    project: Any,
+    owner: Any,
+    config: Mapping[str, Any],
+) -> DesignActionPlan:
+    """Resolve one execution-recipe design node into a typed source-bound plan.
+
+    ``entrypoint`` and ``spec`` are canonical project-relative paths for
+    project-owned sources.  A module entrypoint may additionally be the one
+    explicitly shared Sigilicon lifecycle module.  No secondary registry or
+    repository scan participates in this operation.
+    """
+
+    if not isinstance(config, Mapping):
+        raise ValueError("design Action config must be a mapping")
+    unknown = set(config) - _PLAN_FIELDS
+    if unknown:
+        raise ValueError(
+            f"design Action contains unknown configuration: {sorted(unknown)}"
+        )
+    missing = _REQUIRED_PLAN_FIELDS - set(config)
+    if missing:
+        raise ValueError(
+            f"design Action is missing configuration: {sorted(missing)}"
+        )
+
+    selected_owner = project.owner(owner) if isinstance(owner, str) else owner
+    if selected_owner not in project.owners:
+        raise ValueError(
+            f"repository does not contain owner {selected_owner.name!r}"
+        )
+    target = _name(config["target"], "design Action target")
+    mode = _name(config["mode"], "design Action mode")
+    kind = config["kind"]
+    if not isinstance(kind, str) or kind not in _KINDS:
+        raise ValueError(f"design Action kind must be one of {sorted(_KINDS)}")
+    entrypoint_value = config["entrypoint"]
+    if kind == "script":
+        entrypoint_path, entrypoint_relative = _owned_file(
+            project,
+            selected_owner,
+            entrypoint_value,
+            "design Action entrypoint",
+        )
+        if entrypoint_path.suffix != ".py":
+            raise ValueError("design Action script entrypoint must be a Python script")
+        entrypoint = entrypoint_relative.as_posix()
+        entrypoint_root = project.project_root
+        entrypoint_scope = "project"
+    else:
+        if (
+            not isinstance(entrypoint_value, str)
+            or _MODULE_RE.fullmatch(entrypoint_value) is None
+        ):
+            raise ValueError("design Action module entrypoint must name a Python module")
+        entrypoint = entrypoint_value
+        entrypoint_path, entrypoint_root, entrypoint_scope = _module_source(
+            project,
+            selected_owner,
+            entrypoint,
+        )
+
+    spec_argument = config.get("spec_argument")
+    spec_value = config.get("spec")
+    if (spec_argument is None) != (spec_value is None):
+        raise ValueError(
+            "design Action spec_argument and spec must be configured together"
+        )
+    spec: Path | None = None
+    spec_relative: PurePosixPath | None = None
+    if spec_argument is not None:
+        if (
+            not isinstance(spec_argument, str)
+            or spec_argument not in _SPEC_ARGUMENTS
+        ):
+            raise ValueError(
+                f"design Action spec_argument must be one of {sorted(_SPEC_ARGUMENTS)}"
+            )
+        spec, spec_relative = _owned_file(
+            project,
+            selected_owner,
+            spec_value,
+            "design Action spec",
+        )
+
+    raw_default_args = config.get("default_args", [])
+    if not isinstance(raw_default_args, (list, tuple)):
+        raise ValueError("design Action default_args must be a string array")
+    default_args = tuple(raw_default_args)
+    _validate_runner_args(default_args, "design Action default_args")
+
+    evidence_role = _text(config["evidence_role"], "design Action evidence_role")
+    evidence_level = _text(config["evidence_level"], "design Action evidence_level")
+    evidence_scope = _text(config["evidence_scope"], "design Action evidence_scope")
+    _evidence(evidence_role, evidence_level, evidence_scope)
+
+    source_members = [
+        snapshot_source_member(
+            entrypoint_path,
+            source_root=entrypoint_root,
+            scope=entrypoint_scope,
+            source_label="design Action entrypoint",
+        )
+    ]
+    if spec is not None:
+        source_members.append(
+            snapshot_source_member(
+                spec,
+                source_root=project.project_root,
+                scope="project",
+                source_label="design Action spec",
+            )
+        )
+    try:
+        stable = all(source_member_matches(member) for member in source_members)
+    except (OSError, RuntimeError, UnicodeError):
+        stable = False
+    if not stable:
+        raise ValueError("design Action source changed during planning")
+    return DesignActionPlan(
+        owner=selected_owner.name,
+        project_root=project.project_root,
+        target=target,
+        mode=mode,
+        kind=kind,
+        entrypoint=entrypoint,
+        entrypoint_path=entrypoint_path,
+        spec_argument=spec_argument,
+        spec=spec,
+        spec_relative=spec_relative,
+        default_args=default_args,
+        evidence_role=evidence_role,
+        evidence_level=evidence_level,
+        evidence_scope=evidence_scope,
+        source_members=tuple(source_members),
+    )
 
 
 class DesignTargetAdapter:
-    """Run one owner-declared command inside its current Flow Action."""
+    """Execute one typed direct design Action without planning again."""
 
     def run(self, context: ActionContext) -> AdapterResult:
         selected = context.require_action_plan(
@@ -76,47 +406,11 @@ class DesignTargetAdapter:
             DesignActionPlan,
         )
         assert context.action_plan is not None
-        target = selected.target
-        mode = selected.mode
-        scope = context.require_project_scope()
-        project = scope.project
-        if (
-            scope.owner != target.owner
-            or scope.project.project_root != target.project_root
-        ):
-            raise FlowExecutionError("design Action Plan project owner scope drift")
-        if json_value(context.action_plan.record) != selected.as_dict():
-            raise FlowExecutionError("typed design Action Plan record drift")
-        allowed = {
-            "target",
-            "mode",
-            "evidence_role",
-            "evidence_level",
-            "evidence_scope",
-        }
-        unknown = set(context.action_config) - allowed
-        if unknown:
-            raise FlowExecutionError(
-                f"design Action contains unknown configuration: {sorted(unknown)}"
-            )
-        target_name = self._text(context, "target")
-        mode_name = self._text(context, "mode")
+        self._validate_context(context, selected)
         evidence = context.require_evidence()
-        evidence_role = evidence.role
-        evidence_level = evidence.level
-        evidence_scope = evidence.scope
-        if target_name != target.name or mode_name != mode.name:
-            raise FlowExecutionError("design Action target or mode drift")
-        route_sources = context.action_plan.sources
-        expected_sources = (target.catalog_member, *target.source_members)
-        provided = {
-            member.location: member.record_text
-            for member in route_sources
-        }
-        if any(
-            provided.get(member.location) != member.record_text
-            for member in expected_sources
-        ):
+
+        route_sources = tuple(context.action_plan.sources)
+        if not self._source_closure_matches(route_sources, selected.source_members):
             raise FlowExecutionError("typed design Action Plan source closure drift")
         if not self._sources_match(route_sources):
             raise FlowExecutionError("owner design source changed after Flow planning")
@@ -146,10 +440,11 @@ class DesignTargetAdapter:
             or timeout <= 0
         ):
             raise FlowExecutionError(
-                "design Action profile requires one positive timeout_seconds"
+                "design Adapter configuration requires one positive timeout_seconds"
             )
-        source = artifact_source_state(project.project_root)
-        source["design_route"] = [
+
+        source = artifact_source_state(selected.project_root)
+        source["design_action"] = [
             {
                 "path": member.path,
                 "sha256": hashlib.sha256(
@@ -163,18 +458,15 @@ class DesignTargetAdapter:
             environment.update(
                 managed_run_artifact_environment(context, "evidence", source)
             )
-        runner_member = next(
-            member
-            for member in target.source_members
-            if member.location == target.entrypoint_path
+        runner_member = self._member_at(
+            selected.source_members,
+            selected.entrypoint_path,
+            "entrypoint",
         )
-        spec_member = next(
-            (
-                member
-                for member in target.source_members
-                if target.spec is not None and member.location == target.spec
-            ),
-            None,
+        spec_member = (
+            None
+            if selected.spec is None
+            else self._member_at(selected.source_members, selected.spec, "spec")
         )
         with ExitStack() as stack:
             runner_source = stack.enter_context(
@@ -215,15 +507,14 @@ class DesignTargetAdapter:
             if sealed_spec is not None:
                 pass_fds = (*pass_fds, sealed_spec.fd)
             completed = run_process_group_capture(
-                target.bound_command(
-                    mode.name,
+                selected.bound_command(
                     runner_path=sealed_runner.child_path,
                     spec_path=(
                         None if sealed_spec is None else sealed_spec.child_path
                     ),
                     extra_args=extra_args,
                 ),
-                cwd=project.project_root,
+                cwd=selected.project_root,
                 env=environment,
                 timeout=timeout,
                 pass_fds=pass_fds,
@@ -258,20 +549,20 @@ class DesignTargetAdapter:
         runner_result = self._runner_result(payload)
         result_payload = {
             "schema": 1,
-            "contract_kind": "design-target-evidence",
-            "owner": target.owner,
-            "target": target.name,
-            "mode": mode.name,
+            "contract_kind": "design-action-evidence",
+            "owner": selected.owner,
+            "target": selected.target,
+            "mode": selected.mode,
             "runner_result": runner_result,
             "process_returncode": completed.returncode,
             "source": source,
-            "evidence_role": evidence_role,
-            "evidence_level": evidence_level,
-            "evidence_scope": evidence_scope,
+            "evidence_role": evidence.role,
+            "evidence_level": evidence.level,
+            "evidence_scope": evidence.scope,
             "product_qualification_conclusion": False,
         }
-        evidence = context.output_path("evidence", "design-evidence.json")
-        evidence.write_text(
+        evidence_path = context.output_path("evidence", "design-evidence.json")
+        evidence_path.write_text(
             json.dumps(result_payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
@@ -281,26 +572,78 @@ class DesignTargetAdapter:
                     ProducedArtifact(
                         "evidence",
                         context.action.output("evidence").kind,
-                        evidence,
+                        evidence_path,
                     ),
                 ),
                 facts={
                     "passed": payload["passed"],
                     "execution-completed": True,
                     "process-returncode": completed.returncode,
-                    "evidence-role": evidence_role,
-                    "evidence-level": evidence_level,
-                    "evidence-scope": evidence_scope,
+                    "evidence-role": evidence.role,
+                    "evidence-level": evidence.level,
+                    "evidence-scope": evidence.scope,
                     "product-qualification-conclusion": False,
                 },
                 evidence=(stdout, stderr),
                 details={
-                    "target": target.name,
-                    "mode": mode.name,
+                    "target": selected.target,
+                    "mode": selected.mode,
                     "process_returncode": completed.returncode,
                     "product_qualification_conclusion": False,
                 },
             )
+        )
+
+    @staticmethod
+    def _validate_context(
+        context: ActionContext,
+        selected: DesignActionPlan,
+    ) -> None:
+        assert context.action_plan is not None
+        expected = selected.as_dict()
+        record = json_value(context.action_plan.record)
+        if isinstance(record, dict):
+            for field in ("spec_argument", "spec", "default_args"):
+                record.setdefault(field, expected[field])
+        if record != expected:
+            raise FlowExecutionError("typed design Action Plan record drift")
+        actual = json_value(context.action_config.values)
+        if not isinstance(actual, dict):
+            raise FlowExecutionError("design Action configuration is not portable")
+        expected = selected.as_dict()
+        for field in ("spec_argument", "spec", "default_args"):
+            actual.setdefault(field, expected[field])
+        if actual != expected:
+            raise FlowExecutionError("design Action configuration drift")
+        scope = context.project_scope
+        if scope is not None and (
+            scope.owner != selected.owner
+            or scope.project.project_root != selected.project_root
+        ):
+            raise FlowExecutionError("design Action Plan project owner scope drift")
+        evidence = context.require_evidence()
+        if (
+            evidence.role != selected.evidence_role
+            or evidence.level != selected.evidence_level
+            or evidence.scope != selected.evidence_scope
+        ):
+            raise FlowExecutionError("design Action evidence envelope drift")
+
+    @staticmethod
+    def _source_closure_matches(
+        actual: tuple[SourceMember, ...],
+        expected: tuple[SourceMember, ...],
+    ) -> bool:
+        if len(actual) != len(expected):
+            return False
+        return all(
+            left.scope == right.scope
+            and left.source_root == right.source_root
+            and left.path == right.path
+            and left.location == right.location
+            and left.record_text == right.record_text
+            and left.executable == right.executable
+            for left, right in zip(actual, expected)
         )
 
     @staticmethod
@@ -345,11 +688,118 @@ class DesignTargetAdapter:
         return result
 
     @staticmethod
-    def _text(context: ActionContext, field: str) -> str:
-        value = context.action_config.get(field)
-        if not isinstance(value, str) or not value:
-            raise FlowExecutionError(f"design Action {field} must be non-empty text")
-        return value
+    def _member_at(
+        members: tuple[SourceMember, ...],
+        location: Path,
+        label: str,
+    ) -> SourceMember:
+        matches = tuple(member for member in members if member.location == location)
+        if len(matches) != 1:
+            raise FlowExecutionError(
+                f"typed design Action Plan has no unique {label} source"
+            )
+        return matches[0]
 
 
-__all__ = ["DesignActionPlan", "DesignTargetAdapter"]
+def _name(value: object, label: str) -> str:
+    if not isinstance(value, str) or _NAME_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must match {_NAME_RE.pattern!r}")
+    return value
+
+
+def _text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be non-empty text")
+    return value
+
+
+def _evidence(role: str, level: str, scope: str) -> None:
+    if not isinstance(role, str) or role not in EVIDENCE_ROLES:
+        raise ValueError(f"unsupported design Action evidence_role: {role!r}")
+    if not isinstance(level, str) or level not in EVIDENCE_LEVELS:
+        raise ValueError(f"unsupported design Action evidence_level: {level!r}")
+    if (
+        not isinstance(scope, str)
+        or not scope
+        or "\n" in scope
+        or "\r" in scope
+        or Path(scope).is_absolute()
+        or re.match(r"[A-Za-z]:[\\/]", scope)
+    ):
+        raise ValueError("design Action evidence_scope must be a relative identity")
+
+
+def _canonical_relative(value: object, label: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty project-relative path")
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or "\\" in value
+        or relative.as_posix() != value
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError(f"{label} must be a canonical project-relative path")
+    return relative
+
+
+def _owned_file(
+    project: Any,
+    owner: Any,
+    value: object,
+    label: str,
+) -> tuple[Path, PurePosixPath]:
+    relative = _canonical_relative(value, label)
+    resolved, canonical = project.resolve_owner_file(owner, relative.as_posix(), label)
+    configured = project.project_root.joinpath(*relative.parts)
+    if configured != resolved:
+        raise ValueError(f"{label} must not traverse a symlink")
+    return resolved, canonical
+
+
+def _module_source(
+    project: Any,
+    owner: Any,
+    module: str,
+) -> tuple[Path, Path, str]:
+    if module in _SHARED_MODULES:
+        source_root = Path(__file__).resolve().parents[2]
+        source = source_root.joinpath(*module.split(".")).with_suffix(".py")
+        if source != source.resolve() or not source.is_file():
+            raise ValueError(f"shared design runner source is missing: {module}")
+        return source, source_root, "sigilicon-package"
+
+    module_path = Path(*module.split("."))
+    candidates = (
+        module_path.with_suffix(".py"),
+        module_path / "__main__.py",
+    )
+    existing = tuple(
+        path
+        for path in candidates
+        if (project.project_root / path).is_file()
+    )
+    if len(existing) != 1:
+        raise ValueError(
+            "design Action module entrypoint must name one unambiguous "
+            "project-owned module"
+        )
+    source, _relative = _owned_file(
+        project,
+        owner,
+        existing[0].as_posix(),
+        "design Action entrypoint",
+    )
+    return source, project.project_root, "project"
+
+
+def _validate_runner_args(value: tuple[str, ...], field: str) -> None:
+    for argument in value:
+        if not isinstance(argument, str) or not argument:
+            raise ValueError(f"{field} must contain non-empty strings")
+        option = argument.split("=", 1)[0]
+        if option in _ROUTING_ARGUMENTS:
+            raise ValueError(f"{field} cannot override routing argument {option}")
+
+
+__all__ = ["DesignActionPlan", "DesignTargetAdapter", "plan_design_action"]

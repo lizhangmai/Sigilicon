@@ -5,12 +5,11 @@ from pathlib import Path
 import subprocess
 
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -142,7 +141,7 @@ def _registry(owner_root: Path) -> FlowRegistry:
     return registry
 
 
-def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
+def _flow(owner_root: Path) -> FlowSpec:
     recipe = ArtifactBinding(
         "simulation-recipe",
         "assets",
@@ -151,6 +150,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
     spec = FlowSpec(
         owner="fixture",
         flow_id="vcs-managed",
+        recipe_id="vcs-managed-recipe",
         nodes=(
             FlowNode(
                 "assets",
@@ -195,31 +195,27 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
             FlowTarget("structural", ("structural",)),
             FlowTarget("gate", ("gate",)),
         ),
-        owner_root=owner_root,
-    )
-    profile = ExecutionProfile(
-        owner="fixture",
-        profile_id="vcs-fixture",
-        selections=(
-            AdapterSelection("design.vcs-fixture", "source-assets"),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding("design.vcs-fixture", "source-assets"),
+            ActionBinding(
                 "asic.rtl-simulation",
                 "synopsys-vcs",
                 config={"timeout_seconds": 30},
             ),
-            AdapterSelection(
+            ActionBinding(
                 "asic.structural-elaboration",
                 "synopsys-vcs",
                 config={"timeout_seconds": 30},
             ),
-            AdapterSelection(
+            ActionBinding(
                 "asic.gate-simulation",
                 "synopsys-vcs",
                 config={"timeout_seconds": 30},
             ),
         ),
+        owner_root=owner_root,
     )
-    return spec, profile
+    return spec
 
 
 def _environment(tmp_path: Path, executable: Path) -> ExecutionEnvironment:
@@ -258,13 +254,13 @@ def test_synopsys_vcs_adapter_manages_rtl_structural_and_gate_inputs(
     owner_root = tmp_path / "owner"
     owner_root.mkdir()
     _write_owner(owner_root)
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     engine = FlowEngine(_registry(owner_root))
     environment = _environment(tmp_path, owner_root / "run-vcs-fixture.py")
 
     for index, target in enumerate(("rtl", "structural", "gate"), start=1):
         result = engine.run(
-            engine.plan(spec, target, profile),
+            engine.plan(spec, target),
             artifact_root=tmp_path / "artifacts",
             environment=environment,
             run_id=str(index) * 32,

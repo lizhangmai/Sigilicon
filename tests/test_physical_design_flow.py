@@ -9,14 +9,13 @@ import pytest
 from conftest import StagedAdapterFixture
 from sigilicon.flow import (
     ActionContext,
+    ActionBinding,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowSpec,
@@ -236,6 +235,7 @@ def _run_flow(
     spec = FlowSpec(
         owner="benchmark",
         flow_id="physical-design-flow",
+        recipe_id="physical-design-flow-recipe",
         nodes=(
             FlowNode(
                 "job",
@@ -294,21 +294,17 @@ def _run_flow(
                 ),
             ),
         ),
-    )
-    profile = ExecutionProfile(
-        "benchmark",
-        "reference",
-        (
-            AdapterSelection("benchmark.physical-job", "benchmark-job"),
-            AdapterSelection(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding("benchmark.physical-job", "benchmark-job"),
+            ActionBinding(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
+            ActionBinding(
                 PHYSICAL_MATERIALIZATION_ACTION,
                 REFERENCE_MATERIALIZATION_ADAPTER,
             ),
         ),
     )
     engine = FlowEngine(registry)
-    plan = engine.plan(spec, "closure", profile)
+    plan = engine.plan(spec, "closure")
     return engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",

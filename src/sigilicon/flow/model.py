@@ -68,7 +68,7 @@ class ActionConfiguration(Mapping[str, Any]):
 
 @dataclass(frozen=True)
 class AdapterConfiguration(Mapping[str, Any]):
-    """One Adapter-owned configuration compiled from an Execution Profile."""
+    """One Adapter-owned configuration compiled from an Action binding."""
 
     adapter: str
     values: Mapping[str, Any]
@@ -306,7 +306,14 @@ class ActionPlan:
 
     def __post_init__(self) -> None:
         identifier(self.kind, "Action Plan kind")
-        sources = tuple(self.sources)
+        if isinstance(self.sources, (str, bytes)):
+            raise FlowContractError("Action Plan sources must be a SourceMember tuple")
+        try:
+            sources = tuple(self.sources)
+        except TypeError as exc:
+            raise FlowContractError(
+                "Action Plan sources must be a SourceMember tuple"
+            ) from exc
         if any(not isinstance(member, SourceMember) for member in sources):
             raise FlowContractError("Action Plan sources must be SourceMember values")
         if not sources:
@@ -536,31 +543,48 @@ class ArtifactBinding:
 
 
 @dataclass(frozen=True)
-class AdapterSelection:
-    """One tool selection and its private configuration in an ExecutionProfile."""
+class ActionBinding:
+    """Owner-selected Adapter binding for one Action kind in a Flow recipe.
+
+    The binding is part of the Flow intent that is compiled for execution.  It
+    is deliberately not a separate selection object: the selected Adapter, additional
+    capabilities, platform identities and Adapter configuration are one
+    source-owned decision at the Flow interface.
+    """
 
     action_kind: str
     adapter: str
     config: Mapping[str, Any] = field(default_factory=dict)
-    required_capabilities: tuple[str, ...] = ()
-    platform_asset_identities: Mapping[str, str] = field(default_factory=dict)
+    requires: tuple[str, ...] = ()
+    platform_assets: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        identifier(self.action_kind, "profile Action kind")
-        identifier(self.adapter, "profile Adapter")
-        for capability in self.required_capabilities:
-            identifier(capability, "profile required capability")
-        _unique(self.required_capabilities, "profile required capabilities")
+        identifier(self.action_kind, "Action binding kind")
+        identifier(self.adapter, "Action binding Adapter")
+        if isinstance(self.requires, (str, bytes)):
+            raise FlowContractError("Action binding requires must be a string tuple")
+        try:
+            requires = tuple(self.requires)
+        except TypeError as exc:
+            raise FlowContractError(
+                "Action binding requires must be a string tuple"
+            ) from exc
+        for capability in requires:
+            identifier(capability, "Action binding capability")
+        _unique(requires, "Action binding capabilities")
+        object.__setattr__(self, "requires", requires)
         identities: dict[str, str] = {}
-        for role, identity in self.platform_asset_identities.items():
-            identifier(role, "profile platform asset role")
+        if not isinstance(self.platform_assets, Mapping):
+            raise FlowContractError("Action binding platform assets must be a mapping")
+        for role, identity in self.platform_assets.items():
+            identifier(role, "Action binding platform asset role")
             identities[role] = _semantic_identity(
                 identity,
-                "profile platform asset identity",
+                "Action binding platform asset identity",
             )
         object.__setattr__(
             self,
-            "platform_asset_identities",
+            "platform_assets",
             MappingProxyType(identities),
         )
         object.__setattr__(
@@ -568,93 +592,10 @@ class AdapterSelection:
             "config",
             _portable_mapping(
                 self.config,
-                "Adapter configuration",
+                "Action binding configuration",
                 FlowContractError,
             ),
         )
-
-
-@dataclass(frozen=True)
-class ExecutionProfile:
-    """Owner-selected Adapter bindings kept separate from Flow intent."""
-
-    owner: str
-    profile_id: str
-    selections: tuple[AdapterSelection, ...]
-
-    def __post_init__(self) -> None:
-        owner_identity(self.owner, "Execution Profile owner")
-        identifier(self.profile_id, "Execution Profile identity")
-        _unique(
-            tuple(selection.action_kind for selection in self.selections),
-            "Execution Profile Action selections",
-        )
-        if not self.selections:
-            raise FlowContractError(
-                "Execution Profile must declare at least one Adapter selection"
-            )
-
-    def selection(self, action_kind: str) -> AdapterSelection:
-        try:
-            return next(
-                selection
-                for selection in self.selections
-                if selection.action_kind == action_kind
-            )
-        except StopIteration as exc:
-            raise FlowContractError(
-                f"Execution Profile {self.profile_id!r} has no selection for "
-                f"Action {action_kind!r}"
-            ) from exc
-
-
-@dataclass(frozen=True)
-class FlowCatalogEntry:
-    flow_id: str
-    contract: Path
-    default_profile: str
-    profiles: Mapping[str, Path]
-
-    def __post_init__(self) -> None:
-        identifier(self.flow_id, "Flow Catalog entry")
-        identifier(self.default_profile, "default Execution Profile")
-        for profile_id in self.profiles:
-            identifier(profile_id, "cataloged Execution Profile")
-        if self.default_profile not in self.profiles:
-            raise FlowContractError(
-                f"Flow {self.flow_id!r} default profile is not cataloged"
-            )
-        object.__setattr__(self, "contract", Path(self.contract))
-        object.__setattr__(
-            self,
-            "profiles",
-            MappingProxyType(
-                {name: Path(path) for name, path in self.profiles.items()}
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class FlowCatalog:
-    owner: str
-    owner_root: Path
-    entries: tuple[FlowCatalogEntry, ...]
-
-    def __post_init__(self) -> None:
-        owner_identity(self.owner, "Flow Catalog owner")
-        _unique(
-            tuple(entry.flow_id for entry in self.entries),
-            "Flow Catalog entries",
-        )
-        if not self.entries:
-            raise FlowContractError("Flow Catalog must declare at least one Flow")
-        object.__setattr__(self, "owner_root", Path(self.owner_root).resolve())
-
-    def entry(self, flow_id: str) -> FlowCatalogEntry:
-        try:
-            return next(entry for entry in self.entries if entry.flow_id == flow_id)
-        except StopIteration as exc:
-            raise FlowContractError(f"unknown cataloged Flow: {flow_id!r}") from exc
 
 
 @dataclass(frozen=True)
@@ -708,69 +649,134 @@ class FlowTarget:
 
 
 @dataclass(frozen=True)
-class DesignCatalogExpansion:
-    """Compile design target routes into ordinary Flow nodes and targets."""
+class ExecutionRecipe:
+    """Owner-owned executable recipe without target selection.
 
-    policy: str
-    evidence_role: str = "diagnostic"
+    An owner target catalog selects an operation and supplies its goals.  This
+    recipe contains only the operation graph, policies and Action bindings;
+    target selection is intentionally compiled into :class:`FlowSpec` later.
+    """
 
-    def __post_init__(self) -> None:
-        identifier(self.policy, "design catalog expansion policy")
-        if self.evidence_role not in EVIDENCE_ROLES:
-            raise FlowContractError(
-                f"unsupported evidence role: {self.evidence_role!r}"
-            )
-
-
-@dataclass(frozen=True)
-class LayoutCatalogExpansion:
-    """Compile layout target routes into ordinary Flow nodes and targets."""
-
-    generation_policy: str
-    verification_policy: str
-    evidence_role: str = "regression"
-    evidence_level: str = "l1"
+    owner: str
+    recipe_id: str
+    nodes: tuple[FlowNode, ...]
+    policies: tuple[PolicySpec, ...] = ()
+    action_bindings: tuple[ActionBinding, ...] = ()
+    owner_root: Path | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        identifier(self.generation_policy, "layout generation policy")
-        identifier(self.verification_policy, "layout verification policy")
-        if self.evidence_role not in EVIDENCE_ROLES:
+        owner_identity(self.owner, "Execution Recipe owner")
+        identifier(self.recipe_id, "Execution Recipe identity")
+        object.__setattr__(self, "nodes", tuple(self.nodes))
+        object.__setattr__(self, "policies", tuple(self.policies))
+        object.__setattr__(self, "action_bindings", tuple(self.action_bindings))
+        _unique(tuple(node.node_id for node in self.nodes), "Execution Recipe nodes")
+        _unique(
+            tuple(policy.policy_id for policy in self.policies),
+            "Execution Recipe policies",
+        )
+        _unique(
+            tuple(binding.action_kind for binding in self.action_bindings),
+            "Execution Recipe Action bindings",
+        )
+        if not self.nodes:
+            raise FlowContractError("Execution Recipe must declare at least one node")
+        if not self.action_bindings:
             raise FlowContractError(
-                f"unsupported evidence role: {self.evidence_role!r}"
+                "Execution Recipe must declare at least one Action binding"
             )
-        if self.evidence_level not in EVIDENCE_LEVELS:
+        bound_actions = {binding.action_kind for binding in self.action_bindings}
+        node_actions = {node.action_kind for node in self.nodes}
+        missing = sorted(node_actions - bound_actions)
+        if missing:
             raise FlowContractError(
-                f"unsupported evidence level: {self.evidence_level!r}"
+                "Execution Recipe is missing Action bindings: "
+                f"{missing}"
             )
+        if self.owner_root is not None:
+            object.__setattr__(self, "owner_root", Path(self.owner_root).resolve())
 
+    def node(self, node_id: str) -> FlowNode:
+        try:
+            return next(node for node in self.nodes if node.node_id == node_id)
+        except StopIteration as exc:
+            raise FlowContractError(f"unknown Execution Recipe node: {node_id!r}") from exc
 
-CatalogExpansion = DesignCatalogExpansion | LayoutCatalogExpansion
+    def policy(self, policy_id: str) -> PolicySpec:
+        try:
+            return next(
+                policy for policy in self.policies if policy.policy_id == policy_id
+            )
+        except StopIteration as exc:
+            raise FlowContractError(
+                f"unknown Execution Recipe policy: {policy_id!r}"
+            ) from exc
+
+    def action_binding(self, action_kind: str) -> ActionBinding:
+        try:
+            return next(
+                binding
+                for binding in self.action_bindings
+                if binding.action_kind == action_kind
+            )
+        except StopIteration as exc:
+            raise FlowContractError(
+                f"Execution Recipe {self.recipe_id!r} has no Action binding for "
+                f"{action_kind!r}"
+            ) from exc
 
 
 @dataclass(frozen=True)
 class FlowSpec:
     owner: str
     flow_id: str
+    recipe_id: str
     nodes: tuple[FlowNode, ...]
     targets: tuple[FlowTarget, ...]
     policies: tuple[PolicySpec, ...] = ()
-    catalog_expansion: CatalogExpansion | None = None
+    action_bindings: tuple[ActionBinding, ...] = ()
+    source_members: tuple[SourceMember, ...] = ()
     owner_root: Path | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         owner_identity(self.owner, "Flow owner")
         identifier(self.flow_id, "Flow identity")
+        identifier(self.recipe_id, "Flow recipe identity")
+        object.__setattr__(self, "nodes", tuple(self.nodes))
+        object.__setattr__(self, "targets", tuple(self.targets))
+        object.__setattr__(self, "policies", tuple(self.policies))
+        object.__setattr__(self, "action_bindings", tuple(self.action_bindings))
+        object.__setattr__(self, "source_members", tuple(self.source_members))
         _unique(tuple(node.node_id for node in self.nodes), "Flow nodes")
         _unique(tuple(target.target_id for target in self.targets), "Flow targets")
         _unique(tuple(policy.policy_id for policy in self.policies), "Flow policies")
-        if self.catalog_expansion is None:
-            if not self.nodes:
-                raise FlowContractError("Flow must declare at least one node")
-            if not self.targets:
-                raise FlowContractError("Flow must declare at least one target")
-        elif self.nodes or self.targets:
+        _unique(
+            tuple(binding.action_kind for binding in self.action_bindings),
+            "Flow Action bindings",
+        )
+        if any(
+            not isinstance(member, SourceMember) for member in self.source_members
+        ):
+            raise FlowContractError("Flow source members must be SourceMember values")
+        source_identities = tuple(
+            (member.scope, member.source_root, member.path)
+            for member in self.source_members
+        )
+        if len(source_identities) != len(set(source_identities)):
+            raise FlowContractError("duplicate Flow source members")
+        if not self.nodes:
+            raise FlowContractError("Flow must declare at least one node")
+        if not self.targets:
+            raise FlowContractError("Flow must declare at least one target")
+        if not self.action_bindings:
+            raise FlowContractError("Flow must declare Action bindings")
+        bound_actions = {binding.action_kind for binding in self.action_bindings}
+        node_actions = {node.action_kind for node in self.nodes}
+        missing = sorted(node_actions - bound_actions)
+        if missing:
             raise FlowContractError(
-                "catalog-expanded Flow cannot also declare nodes or targets"
+                "Flow is missing Action bindings: "
+                f"{missing}"
             )
         if self.owner_root is not None:
             object.__setattr__(self, "owner_root", Path(self.owner_root).resolve())
@@ -786,6 +792,18 @@ class FlowSpec:
             return next(target for target in self.targets if target.target_id == target_id)
         except StopIteration as exc:
             raise FlowContractError(f"unknown Flow target: {target_id!r}") from exc
+
+    def action_binding(self, action_kind: str) -> ActionBinding:
+        try:
+            return next(
+                binding
+                for binding in self.action_bindings
+                if binding.action_kind == action_kind
+            )
+        except StopIteration as exc:
+            raise FlowContractError(
+                f"Flow {self.flow_id!r} has no Action binding for {action_kind!r}"
+            ) from exc
 
     def policy(self, policy_id: str) -> PolicySpec:
         try:
@@ -818,7 +836,6 @@ class PlannedNode:
 @dataclass(frozen=True)
 class FlowPlan:
     spec: FlowSpec
-    profile: ExecutionProfile
     target: FlowTarget
     nodes: tuple[PlannedNode, ...]
     topology: tuple[str, ...]
@@ -859,12 +876,6 @@ class PolicySpec:
         _unique(tuple(check.check_id for check in self.checks), "policy checks")
         if not self.checks:
             raise FlowContractError("Policy must declare at least one check")
-
-
-@dataclass(frozen=True)
-class CatalogSelection:
-    spec: FlowSpec
-    profile: ExecutionProfile
 
 
 @dataclass(frozen=True)

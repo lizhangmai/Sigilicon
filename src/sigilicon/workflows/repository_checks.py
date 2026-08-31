@@ -20,9 +20,8 @@ from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platform_inventory
 from sigilicon.domain.repository import Project
+from sigilicon.domain.targets import load_owner_target_catalog
 from sigilicon.layout.spec import resolve_layout_spec
-from sigilicon.workflows.design_targets import load_design_target_catalog
-from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
 from sigilicon.workflows.ip_integration import plan_ip_integration_contract
 
@@ -143,12 +142,16 @@ def inspect_repository_designs(
     context = project
     root = context.project_root
     source_inventory = RepositorySourceInventory.for_project(context)
-    flow_catalog_inventory = context.flow_catalog_inventory()
+    target_catalog_inventory = tuple(
+        context.owner_target_catalog(owner)
+        for owner in context.owners
+        if owner.component.target_catalog is not None
+    )
     source_inventory.verify(
-        "owner flow catalog snapshot",
+        "owner target catalog snapshot",
         {
             snapshot.path: snapshot.document
-            for snapshot in flow_catalog_inventory
+            for snapshot in target_catalog_inventory
         },
     )
     ip_catalog = context.ip_catalog_snapshot()
@@ -368,47 +371,43 @@ def inspect_repository_designs(
     )
     configuration = inspect_project_configuration_sources(
         context,
-        catalog_inventory=flow_catalog_inventory,
+        target_catalog_inventory=target_catalog_inventory,
         sources=source_inventory,
     )
 
-    design_catalog = load_design_target_catalog(
-        project=context,
-        catalog_inventory=flow_catalog_inventory,
-    )
-    designs = {
-        target.name: {
-            "owner": target.owner,
-            "entrypoint": target.entrypoint,
-            "modes": [mode.name for mode in target.modes],
-        }
-        for target in design_catalog.targets
+    targets: dict[str, Any] = {}
+    snapshots_by_owner = {
+        snapshot.owner: snapshot for snapshot in target_catalog_inventory
     }
-
-    layout_catalog = load_layout_target_catalog(
-        project=context,
-        catalog_inventory=flow_catalog_inventory,
-    )
-    layout_targets = {
-        target.name: {
-            "owner": target.owner,
-            "spec": target.spec_relative.as_posix(),
-            "actions": list(target.actions),
+    for owner in context.owners:
+        if owner.component.target_catalog is None:
+            continue
+        catalog = load_owner_target_catalog(
+            context,
+            owner,
+            catalog_snapshot=snapshots_by_owner[owner.name],
+        )
+        targets[owner.name] = {
+            target.name: {
+                "description": target.description,
+                "operations": {
+                    operation.name: {
+                        "recipe": operation.recipe.as_posix(),
+                        "goals": list(operation.goals),
+                    }
+                    for operation in target.operations.values()
+                },
+            }
+            for target in catalog.targets.values()
         }
-        for target in layout_catalog.targets
-    }
 
     catalogs = {
         "ip": ip_catalog_path.relative_to(root).as_posix(),
         "platform": platform_catalog_path.relative_to(root).as_posix(),
-        "design_targets": [
-            path.relative_to(root).as_posix()
-            for path in design_catalog.paths
-        ],
-        "layout_targets": [
-            path.relative_to(root).as_posix()
-            for path in layout_catalog.paths
-        ],
+        "target_catalogs": {
+            owner: snapshot.path.relative_to(root).as_posix()
+            for owner, snapshot in sorted(snapshots_by_owner.items())
+        },
     }
     return {
         "passed": True,
@@ -417,8 +416,7 @@ def inspect_repository_designs(
         "catalogs": catalogs,
         "components": components,
         "ip_releases": ip_releases,
-        "designs": designs,
-        "layout_targets": layout_targets,
+        "targets": targets,
         "oa_assemblies": oa_assemblies,
         "platforms": platforms,
     }

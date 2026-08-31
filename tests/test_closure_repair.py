@@ -86,9 +86,8 @@ def _provenance(job: PhysicalDesignJob):
         "round-0",
         "0" * 32,
         "source-fixture",
-        "repair-flow",
         "closure",
-        "contract",
+        "repair-flow",
         (
             CampaignArtifactIdentity(
                 "job",

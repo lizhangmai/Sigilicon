@@ -172,11 +172,11 @@ class SynopsysVCSAdapter:
         unknown = set(context.adapter_config) - {"timeout_seconds"}
         if unknown:
             raise FlowExecutionError(
-                f"VCS profile contains unknown configuration: {sorted(unknown)}"
+                f"VCS Adapter contains unknown configuration: {sorted(unknown)}"
             )
         timeout = context.adapter_config.get("timeout_seconds")
         if not isinstance(timeout, int) or timeout <= 0:
-            raise FlowExecutionError("VCS profile requires a positive timeout_seconds")
+            raise FlowExecutionError("VCS Adapter requires a positive timeout_seconds")
         return {"timeout_seconds": timeout}
 
     def _pinned_runner(self, context: ActionContext) -> Path:
@@ -243,5 +243,4 @@ class SynopsysVCSAdapter:
                 )
             models[role] = member.location
         return executable, models
-
 

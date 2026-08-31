@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Sequence
-import os
 from pathlib import Path
-import shutil
 import sys
 from typing import Any
 
@@ -14,14 +12,9 @@ from sigilicon.cli.common import add_json_arg, die, emit_json
 from sigilicon.flow import (
     ExecutionEnvironment,
     ResolvedCapability,
-    load_execution_environment,
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
-from sigilicon.workflows.design_targets import (
-    DesignTarget,
-    load_design_target_catalog,
-)
 from sigilicon.workflows.ip_integration import (
     check_ip_integration,
     ip_catalog_contract_path,
@@ -33,52 +26,9 @@ from sigilicon.workflows.ip_packaging import (
     plan_ip_release,
     publish_ip_release,
 )
-from sigilicon.workflows.layout_targets import (
-    LayoutTarget,
-    load_layout_target_catalog,
-)
-from sigilicon.workflows.layout_generation import (
-    plan_layout_spec,
-)
-from sigilicon.workflows.layout_verification import find_calibre, find_xstream
 from sigilicon.workflows.oa_check import UnavailableBridge
-from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
-
-
-def _target_payload(target: LayoutTarget) -> dict[str, object]:
-    return {
-        "name": target.name,
-        "owner": target.owner,
-        "description": target.description,
-        "spec": target.spec_relative.as_posix(),
-        "actions": list(target.actions),
-        "routes": {
-            route.operation: [route.flow, route.target]
-            for route in target.routes
-        },
-    }
-
-
-def _design_target_payload(target: DesignTarget) -> dict[str, object]:
-    return {
-        "name": target.name,
-        "owner": target.owner,
-        "description": target.description,
-        "kind": target.kind,
-        "entrypoint": target.entrypoint,
-        "spec_argument": target.spec_argument,
-        "spec": (
-            target.spec_relative.as_posix()
-            if target.spec_relative is not None
-            else None
-        ),
-        "modes": {mode.name: list(mode.default_args) for mode in target.modes},
-        "routes": {
-            mode.name: [mode.flow, mode.target] for mode in target.modes
-        },
-    }
 
 
 def _print_oa_check_summary(payload: dict[str, Any]) -> None:
@@ -145,65 +95,6 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sigilicon", description=__doc__)
     domains = parser.add_subparsers(dest="domain", required=True)
 
-    layout = domains.add_parser("layout", help="run a cataloged layout workflow")
-    commands = layout.add_subparsers(dest="action", required=True)
-
-    list_parser = commands.add_parser("list", help="list cataloged layout targets")
-    add_json_arg(list_parser)
-
-    show_parser = commands.add_parser("show", help="show one layout target")
-    show_parser.add_argument("target")
-    add_json_arg(show_parser)
-
-    check_parser = commands.add_parser(
-        "check", help="validate a target and print its stable layout plan"
-    )
-    check_parser.add_argument("target")
-
-    generate_parser = commands.add_parser(
-        "generate", help="generate a cataloged target in OpenAccess"
-    )
-    generate_parser.add_argument("target")
-    generate_parser.add_argument("--environment", type=Path)
-    generate_parser.add_argument("--capability", action="append", default=[])
-    generate_parser.add_argument("--run-id")
-
-    verify_parser = commands.add_parser(
-        "verify", help="run audited XStream/Calibre physical verification"
-    )
-    verify_parser.add_argument("target")
-    verify_parser.add_argument("--check", choices=("drc", "lvs", "all"), default="all")
-    verify_parser.add_argument("--environment", type=Path)
-    verify_parser.add_argument("--capability", action="append", default=[])
-    verify_parser.add_argument("--run-id")
-
-    design = domains.add_parser("design", help="run a cataloged design workflow")
-    design_commands = design.add_subparsers(dest="action", required=True)
-
-    design_list = design_commands.add_parser(
-        "list", help="list cataloged design targets"
-    )
-    add_json_arg(design_list)
-
-    design_show = design_commands.add_parser("show", help="show one design target")
-    design_show.add_argument("target")
-    add_json_arg(design_show)
-
-    design_run = design_commands.add_parser(
-        "run", help="run the typed Flow target selected by one design mode"
-    )
-    design_run.add_argument("target")
-    design_run.add_argument("mode")
-    design_run.add_argument("--environment", type=Path)
-    design_run.add_argument(
-        "--capability",
-        action="append",
-        default=[],
-        metavar="NAME[=COMMAND]",
-        help="attest one current-process capability",
-    )
-    design_run.add_argument("--run-id")
-
     oa = domains.add_parser("oa", help="assemble the unique OA library from canonical sources")
     oa_commands = oa.add_subparsers(dest="action", required=True)
     for action, help_text in (
@@ -213,7 +104,7 @@ def _parser() -> argparse.ArgumentParser:
         ("attest", "run one read-only Cadence setup check"),
         (
             "simulate",
-            "run the unique typed Flow target for a declared OA testbench",
+            "run a typed Flow target for a declared OA operation",
         ),
     ):
         action_parser = oa_commands.add_parser(action, help=help_text)
@@ -223,11 +114,22 @@ def _parser() -> argparse.ArgumentParser:
             help="cataloged project owner with one canonical OA assembly",
         )
         add_json_arg(action_parser)
-        if action in {"attest", "simulate"}:
+        if action == "attest":
             action_parser.add_argument(
                 "--testbench",
                 required=True,
                 help="declared OA testbench cell to run",
+            )
+        if action == "simulate":
+            action_parser.add_argument(
+                "--target",
+                required=True,
+                help="typed Flow target to execute",
+            )
+            action_parser.add_argument(
+                "--operation",
+                required=True,
+                help="operation exposed by the typed Flow target",
             )
         if action == "rebuild":
             target = action_parser.add_mutually_exclusive_group()
@@ -364,199 +266,6 @@ def _run_ip(args: argparse.Namespace, project: Any) -> int:
     return 0
 
 
-def _run_layout(
-    args: argparse.Namespace,
-    project: Any,
-    client_factory: Any,
-) -> int:
-    try:
-        catalog = load_layout_target_catalog(project=project)
-        if args.action == "list":
-            payload = [_target_payload(target) for target in catalog.targets]
-            if args.json:
-                emit_json(payload)
-            else:
-                for target in catalog.targets:
-                    print(
-                        f"{target.name}\t{','.join(target.actions)}\t"
-                        f"{target.spec_relative.as_posix()}"
-                    )
-            return 0
-        target = catalog.get(args.target)
-        if args.action == "show":
-            payload = _target_payload(target)
-            if args.json:
-                emit_json(payload)
-            else:
-                print(f"target: {target.name}")
-                print(f"description: {target.description}")
-                print(f"spec: {target.spec_relative.as_posix()}")
-                print(f"actions: {', '.join(target.actions)}")
-                print(
-                    "routes: "
-                    + ", ".join(
-                        f"{route.operation}->{route.flow}:{route.target}"
-                        for route in target.routes
-                    )
-                )
-            return 0
-        target = catalog.get(args.target, action=args.action)
-    except (OSError, RuntimeError, ValueError) as exc:
-        die(f"ERROR: {exc}")
-
-    try:
-        if args.action == "check":
-            preview = plan_layout_spec(target.spec, project=project)
-            print(preview.plan.canonical_json(), end="")
-            return 0
-        operation = (
-            "generate"
-            if args.action == "generate"
-            else f"verify-{args.check}"
-        )
-        project_runner = ProjectRunner(
-            project,
-            target.owner,
-            client_factory=client_factory,
-        )
-        planned = project_runner.plan(
-            RunRequest.layout(target.name, operation),
-        )
-        environment = _layout_execution_environment(
-            args,
-            project=project,
-            target=target,
-            verification=args.action == "verify",
-        )
-        result = planned.run(
-            environment,
-            run_id=args.run_id,
-        )
-        payload = planned.read_result(result.run_id)
-    except (OSError, RuntimeError, ValueError) as exc:
-        die(f"ERROR: {exc}")
-    emit_json(payload)
-    return 0 if payload.get("status") == "accepted" else 2
-
-
-def _layout_execution_environment(
-    args: argparse.Namespace,
-    *,
-    project: Any,
-    target: LayoutTarget,
-    verification: bool,
-) -> ExecutionEnvironment:
-    base = _execution_environment(args)
-    capabilities = dict(base.capabilities)
-
-    def attest(name: str, executable: Path | None = None) -> None:
-        if name not in capabilities:
-            capabilities[name] = ResolvedCapability(
-                identity=f"current-process:{name}",
-                executable=executable,
-            )
-
-    attest("tool.virtuoso-bridge")
-    attest("license.cadence-oa")
-    if verification:
-        planning = plan_layout_spec(target.spec, project=project)
-        attest(
-            "tool.cadence-xstream",
-            find_xstream(planning.spec.layout_pdk.xstream_bin),
-        )
-        attest(
-            "tool.calibre",
-            find_calibre(planning.spec.layout_pdk.calibre_bin),
-        )
-    return ExecutionEnvironment(
-        capabilities=capabilities,
-        platform_assets=base.platform_assets,
-    )
-
-
-def _run_design(
-    args: argparse.Namespace,
-    project: Any,
-) -> int:
-    try:
-        catalog = load_design_target_catalog(project=project)
-        if args.action == "list":
-            payload = [_design_target_payload(target) for target in catalog.targets]
-            if args.json:
-                emit_json(payload)
-            else:
-                for target in catalog.targets:
-                    print(
-                        f"{target.name}\t"
-                        f"{','.join(mode.name for mode in target.modes)}\t"
-                        f"{target.spec_relative.as_posix() if target.spec_relative else '-'}"
-                    )
-            return 0
-        target = catalog.get(args.target)
-        if args.action == "show":
-            payload = _design_target_payload(target)
-            if args.json:
-                emit_json(payload)
-            else:
-                print(f"target: {target.name}")
-                print(f"description: {target.description}")
-                print(f"entrypoint: {target.entrypoint}")
-                spec = target.spec_relative.as_posix() if target.spec_relative else "-"
-                print(f"spec: {spec}")
-                print(
-                    "modes: "
-                    + ", ".join(
-                        f"{mode.name}->{mode.flow}:{mode.target}"
-                        for mode in target.modes
-                    )
-                )
-            return 0
-        target.get_mode(args.mode)
-        project_runner = ProjectRunner(project, target.owner)
-        planned = project_runner.plan(
-            RunRequest.design(target.name, args.mode),
-        )
-        result = planned.run(
-            _execution_environment(args),
-            run_id=args.run_id,
-        )
-        payload = planned.read_result(result.run_id)
-        emit_json(payload)
-        return 0 if payload.get("status") == "accepted" else 1
-    except (OSError, RuntimeError, ValueError) as exc:
-        die(f"ERROR: {exc}")
-
-
-def _execution_environment(args: argparse.Namespace) -> ExecutionEnvironment:
-    contract = getattr(args, "environment", None)
-    base = (
-        ExecutionEnvironment()
-        if contract is None
-        else load_execution_environment(contract)
-    )
-    capabilities = dict(base.capabilities)
-    for declaration in getattr(args, "capability", ()):
-        name, separator, command = declaration.partition("=")
-        if not name or (separator and not command) or name in capabilities:
-            raise ValueError(
-                "--capability must be unique NAME or NAME=COMMAND syntax"
-            )
-        executable = None
-        if separator:
-            resolved = shutil.which(command)
-            if resolved is None:
-                raise ValueError(f"capability command is unavailable: {command!r}")
-            executable = Path(os.path.abspath(resolved))
-        capabilities[name] = ResolvedCapability(
-            identity=f"current-process:{name}",
-            executable=executable,
-        )
-    return ExecutionEnvironment(
-        capabilities=capabilities,
-        platform_assets=base.platform_assets,
-    )
-
-
 def _run_oa(
     args: argparse.Namespace,
     workflow: ProjectOaWorkflow,
@@ -588,9 +297,7 @@ def _run_oa(
             payload = plan.as_dict()
         elif args.action == "simulate":
             project_runner = ProjectRunner(workflow.project, workflow.owner_name)
-            planned = project_runner.plan(
-                RunRequest.oa_simulation(args.testbench),
-            )
+            planned = project_runner.plan(args.target, args.operation)
             result = planned.run(
                 ExecutionEnvironment(
                     capabilities={
@@ -668,12 +375,15 @@ def _run_oa(
         return 0 if payload.get("status") == "accepted" else 1
     return 0 if bool(payload.get("passed")) else 1
 
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     client_factory: Callable[[], Any] = get_client,
 ) -> int:
     args = _parser().parse_args(argv)
+    from sigilicon.workflows.project import load_project
+
     project_contract = discover_project_contract(__file__)
     project = load_project(project_contract)
     if args.domain == "oa":
@@ -686,14 +396,6 @@ def main(
             workflow,
             client_factory,
         )
-    if args.domain == "layout":
-        return _run_layout(
-            args,
-            project,
-            client_factory,
-        )
-    if args.domain == "design":
-        return _run_design(args, project)
     if args.domain == "ip":
         return _run_ip(args, project)
     raise AssertionError(f"unhandled flow domain: {args.domain}")

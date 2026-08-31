@@ -15,13 +15,13 @@ from sigilicon.workflows.project import bind_agentic_execution
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sigilicon execute",
-        description="Execute only launcher-approved canonical Flow Plans.",
+        description="Execute only launcher-approved target-operation plans.",
     )
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--grant", type=Path, required=True)
     parser.add_argument("--environment", type=Path)
     commands = parser.add_subparsers(dest="action", required=True)
-    run = commands.add_parser("flow-run", help="execute and wait for one approved plan")
+    run = commands.add_parser("target-run", help="execute and wait for one approved plan")
     run.add_argument("plan_identity")
     run.add_argument("--maximum-seconds", type=int, required=True)
     run.add_argument("--maximum-nodes", type=int, required=True)
@@ -48,12 +48,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             grant_contract=args.grant,
             environment_contract=args.environment,
         )
-        if args.action == "flow-run":
+        if args.action == "target-run":
             budget = AgenticExecutionBudget(
                 maximum_seconds=args.maximum_seconds,
                 maximum_nodes=args.maximum_nodes,
             )
-            submitted = interface.run_flow(
+            submitted = interface.run_target(
                 plan_identity=args.plan_identity,
                 budget=budget,
                 wait=False,
@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             except KeyboardInterrupt:
                 payload = interface.cancel_run(run_id=run_id)
             payload = dict(payload)
-            payload["operation"] = "flow.run"
+            payload["operation"] = "target.run"
         elif args.action == "run-cancel":
             payload = interface.cancel_run(run_id=args.run_id)
         elif args.action == "campaign-run":

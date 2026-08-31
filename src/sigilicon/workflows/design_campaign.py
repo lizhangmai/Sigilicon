@@ -195,31 +195,27 @@ DesignRepairPlan = TopologyRepairPlan | SizingRepairPlan
 
 @dataclass(frozen=True)
 class DesignCampaignAttemptSpec:
-    """Portable selectors and output bindings for the baseline Flow attempt."""
+    """Portable target-operation selector and bindings for the baseline attempt."""
 
     iteration_id: str
-    flow: str
     target: str
-    profile: str | None
+    operation: str
     candidate: DesignArtifactBinding
     artifacts: tuple[DesignArtifactBinding, ...]
     stages: tuple[DesignStageBinding, ...]
 
     def __post_init__(self) -> None:
         identifier(self.iteration_id, "Design Campaign iteration")
-        identifier(self.flow, "Design Campaign Flow")
-        identifier(self.target, "Design Campaign Flow target")
-        if self.profile is not None:
-            identifier(self.profile, "Design Campaign Execution Profile")
+        identifier(self.target, "Design Campaign target")
+        identifier(self.operation, "Design Campaign operation")
 
 
 @dataclass(frozen=True)
 class DesignCampaignContinuationSpec:
-    """Portable selector for repeated attempts derived after proposal validation."""
+    """Portable target-operation selector for proposal-derived attempts."""
 
-    flow: str
     target: str
-    profile: str | None
+    operation: str
     candidate: DesignArtifactBinding
     artifacts: tuple[DesignArtifactBinding, ...]
     stages: tuple[DesignStageBinding, ...]
@@ -227,10 +223,8 @@ class DesignCampaignContinuationSpec:
     repair_policy: DesignRepairPolicy
 
     def __post_init__(self) -> None:
-        identifier(self.flow, "Design Campaign continuation Flow")
         identifier(self.target, "Design Campaign continuation target")
-        if self.profile is not None:
-            identifier(self.profile, "Design Campaign continuation profile")
+        identifier(self.operation, "Design Campaign continuation operation")
         identifier(self.proposal_node, "Design Campaign continuation proposal node")
 
 
@@ -460,18 +454,16 @@ class DesignAttemptProvenance:
     iteration_id: str
     run_id: str
     plan_identity: str
-    flow_id: str
     target: str
-    execution_profile: str
+    operation: str
     artifacts: tuple[DesignCampaignArtifactIdentity, ...]
 
     def __post_init__(self) -> None:
         identifier(self.iteration_id, "Design Campaign provenance iteration")
         run_identity(self.run_id)
         bounded_identity(self.plan_identity, "Design Campaign Flow Plan")
-        identifier(self.flow_id, "Design Campaign Flow")
-        identifier(self.target, "Design Campaign Flow target")
-        identifier(self.execution_profile, "Design Campaign Execution Profile")
+        identifier(self.target, "Design Campaign provenance target")
+        identifier(self.operation, "Design Campaign provenance operation")
         labels = tuple(item.label for item in self.artifacts)
         if labels != tuple(sorted(set(labels))):
             raise ValueError("Design Campaign provenance labels must be unique and sorted")
@@ -925,7 +917,6 @@ class DesignCampaignRunner:
             plan_identity,
             attempt.plan.spec.flow_id,
             attempt.plan.target.target_id,
-            attempt.plan.profile.profile_id,
             identities,
         )
         return DesignCampaignIterationResult(
@@ -1264,7 +1255,6 @@ class DesignCampaignRunner:
         plan = self._engine.plan(
             spec,
             continuation.plan.target.target_id,
-            continuation.plan.profile,
         )
         return DesignCampaignAttempt(
             f"iteration-{len(state.iterations) + 1}",
@@ -1561,7 +1551,7 @@ def resolve_project_design_campaign(
     project: Project,
     campaign_json: str,
 ) -> ProjectDesignCampaignPlan:
-    """Compile portable Campaign selectors through project-owned Flow catalogs."""
+    """Compile portable Campaign selectors through the owner target catalog."""
 
     source = design_campaign_spec_from_json(campaign_json)
     return ProjectRunner(project, source.owner).plan_design_campaign(source)

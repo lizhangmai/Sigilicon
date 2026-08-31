@@ -1,4 +1,4 @@
-"""Private worker for one exact, already-authorized Flow Plan."""
+"""Private worker for one exact, already-authorized Target Operation Plan."""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--owner", required=True)
-    parser.add_argument("--flow", required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--operation", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--environment", type=Path)
     parser.add_argument("--environment-identity")
@@ -45,15 +45,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = AgenticRunStore(read.project.artifact_root, read.project_id)
     paths = store.paths(
         owner=args.owner,
-        flow=args.flow,
         target=args.target,
+        operation=args.operation,
         run_id=args.run_id,
     )
     request = store.read_request(paths)
     for field, expected in (
         ("owner", args.owner),
-        ("flow", args.flow),
         ("target", args.target),
+        ("operation", args.operation),
         ("run_id", args.run_id),
     ):
         if request[field] != expected:
@@ -61,13 +61,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved = resolve_project_execution(read.project, request["plan_identity"])
     if (
         resolved.owner != request["owner"]
-        or resolved.flow != request["flow"]
         or resolved.target != request["target"]
-        or resolved.profile != request["profile"]
+        or resolved.operation != request["operation"]
         or resolved.node_count != request["total_nodes"]
         or canonical_json(resolved.record) != request["plan_record_json"]
     ):
-        raise ValueError("worker Flow Plan identity drift")
+        raise ValueError("worker Target Operation Plan identity drift")
 
     environment: ExecutionEnvironment
     if args.environment is None:
@@ -187,8 +186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "contract_kind": AGENTIC_RUN_AUDIT_KIND,
             "project_id": request["project_id"],
             "owner": request["owner"],
-            "flow": request["flow"],
             "target": request["target"],
+            "operation": request["operation"],
             "run_id": request["run_id"],
             "plan_identity": request["plan_identity"],
             "grant_identity": request["grant_identity"],
@@ -202,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "started_at": started_at,
             "finished_at": finished_at,
             "terminal_status": terminal_status,
-            "flow_status": None if flow_result is None else flow_result.status,
+            "result_status": None if flow_result is None else flow_result.status,
             "error_code": error_code,
         },
     )

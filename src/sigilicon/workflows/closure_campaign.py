@@ -432,9 +432,8 @@ class ClosureIterationProvenance:
     iteration_id: str
     run_id: str
     plan_identity: str
-    flow_id: str
     target: str
-    execution_profile: str
+    operation: str
     artifacts: tuple[CampaignArtifactIdentity, ...]
 
     def __post_init__(self) -> None:
@@ -442,9 +441,8 @@ class ClosureIterationProvenance:
         run_identity(self.run_id)
         if not isinstance(self.plan_identity, str) or not self.plan_identity:
             raise ClosureCampaignError("closure iteration needs a plan semantic identity")
-        identifier(self.flow_id, "closure Flow")
         identifier(self.target, "closure Flow target")
-        identifier(self.execution_profile, "closure Execution Profile")
+        identifier(self.operation, "closure Flow operation")
 
 
 @dataclass(frozen=True)
@@ -951,9 +949,8 @@ class ClosureCampaignRunner:
             iteration_id=iteration.iteration_id,
             run_id=result.run_id,
             plan_identity=plan_identity,
-            flow_id=iteration.plan.spec.flow_id,
             target=iteration.plan.target.target_id,
-            execution_profile=iteration.plan.profile.profile_id,
+            operation=iteration.plan.spec.flow_id,
             artifacts=tuple(
                 CampaignArtifactIdentity(
                     label,
@@ -1611,9 +1608,8 @@ class ClosureCampaignRunner:
                     iteration.iteration_id,
                     run_id,
                     plan_identity,
-                    iteration.plan.spec.flow_id,
                     iteration.plan.target.target_id,
-                    iteration.plan.profile.profile_id,
+                    iteration.plan.spec.flow_id,
                     (),
                 )
                 outcome = ClosureIterationResult(

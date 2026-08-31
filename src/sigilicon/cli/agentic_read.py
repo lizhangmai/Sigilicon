@@ -14,7 +14,7 @@ from sigilicon.workflows.project import bind_agentic_read
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sigilicon read",
-        description="Inspect cataloged project, Flow, and run identities without execution.",
+        description="Inspect project targets and run identities without execution.",
     )
     parser.add_argument("--project-root", type=Path, required=True)
     commands = parser.add_subparsers(dest="action", required=True)
@@ -22,16 +22,15 @@ def _parser() -> argparse.ArgumentParser:
     project = commands.add_parser("project", help="inspect project ownership and targets")
     project.add_argument("--owner")
 
-    plan = commands.add_parser("flow-plan", help="resolve one source-only Flow plan")
+    plan = commands.add_parser("target-plan", help="resolve one source-only target plan")
     plan.add_argument("owner")
-    plan.add_argument("flow")
     plan.add_argument("target")
-    plan.add_argument("--profile")
+    plan.add_argument("operation")
 
-    run = commands.add_parser("run-inspect", help="read one persisted Flow result")
+    run = commands.add_parser("run-inspect", help="read one persisted target result")
     run.add_argument("owner")
-    run.add_argument("flow")
     run.add_argument("target")
+    run.add_argument("operation")
     run.add_argument("run_id")
 
     candidate = commands.add_parser(
@@ -64,18 +63,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         interface = bind_agentic_read(args.project_root)
         if args.action == "project":
             result = interface.inspect_project(owner=args.owner)
-        elif args.action == "flow-plan":
-            result = interface.plan_flow(
+        elif args.action == "target-plan":
+            result = interface.plan_target(
                 owner=args.owner,
-                flow=args.flow,
                 target=args.target,
-                profile=args.profile,
+                operation=args.operation,
             )
         elif args.action == "run-inspect":
             result = interface.inspect_run(
                 owner=args.owner,
-                flow=args.flow,
                 target=args.target,
+                operation=args.operation,
                 run_id=args.run_id,
             )
         elif args.action == "candidate-validate":

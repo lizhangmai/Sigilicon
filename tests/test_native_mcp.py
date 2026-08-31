@@ -64,53 +64,40 @@ def _read(root: Path) -> AgenticReadInterface:
 
 
 def write_mcp_project(root: Path) -> None:
+    write_project_context(root)
     owner_root = root / "ip/example"
     flow_root = owner_root / "configs/flows"
-    profile_root = flow_root / "profiles"
-    profile_root.mkdir(parents=True)
+    flow_root.mkdir(parents=True)
     (flow_root / "pipeline.toml").write_text(
         '''schema = 1
-contract_kind = "flow"
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
 name = "pipeline"
+
+[actions."fake.source"]
+adapter = "fake-source"
 
 [[nodes]]
 id = "source"
 action = "fake.source"
 config = { text = "hello" }
-
-[[targets]]
-name = "all"
-goals = ["source"]
 ''',
         encoding="utf-8",
     )
-    (profile_root / "offline.toml").write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "offline"
-
-[actions."fake.source"]
-adapter = "fake-source"
-''',
-        encoding="utf-8",
-    )
-    catalog = flow_root / "catalog.toml"
+    catalog = owner_root / "configs/targets.toml"
     catalog.write_text(
         '''schema = 1
-contract_kind = "flow-catalog"
+contract_kind = "owner-targets"
 path_scope = "owner"
 owner = "example"
 
-[flows.pipeline]
-contract = "configs/flows/pipeline.toml"
-default_profile = "offline"
+[targets.pipeline]
+description = "MCP pipeline"
 
-[flows.pipeline.profiles]
-offline = "configs/flows/profiles/offline.toml"
+[targets.pipeline.operations.all]
+recipe = "configs/flows/pipeline.toml"
+goals = ["source"]
 ''',
         encoding="utf-8",
     )
@@ -124,11 +111,18 @@ offline = "configs/flows/profiles/offline.toml"
                 for path in (
                     catalog,
                     flow_root / "pipeline.toml",
-                    profile_root / "offline.toml",
                     extension,
                 )
             )
         },
+    )
+    component_path = owner_root / "component.toml"
+    component_path.write_text(
+        component_path.read_text(encoding="utf-8").replace(
+            "\n[filesets]\n",
+            '\ntarget_catalog = "ip/example/configs/targets.toml"\n\n[filesets]\n',
+        ),
+        encoding="utf-8",
     )
 
 
@@ -170,7 +164,7 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
             listed = await client.list_tools()
             assert [tool.name for tool in listed.tools] == [
                 "project.inspect",
-                "flow.plan",
+                "target.plan",
                 "run.inspect",
                 "candidate.validate",
                 "campaign.plan",
@@ -183,19 +177,40 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
                 and tool.input_schema.get("additionalProperties") is False
                 for tool in listed.tools
             )
+            flow_plan_properties = set(
+                next(tool for tool in listed.tools if tool.name == "target.plan")
+                .input_schema["properties"]
+            )
+            assert flow_plan_properties == {
+                "owner",
+                "target",
+                "operation",
+            }
+            assert "flow" not in flow_plan_properties
+            assert "profile" not in flow_plan_properties
 
-            expected = interface.plan_flow(
+            expected = interface.plan_target(
                 owner="example",
-                flow="pipeline",
-                target="all",
-                profile=None,
+                target="pipeline",
+                operation="all",
             )
             result = await client.call_tool(
-                "flow.plan",
-                {"owner": "example", "flow": "pipeline", "target": "all"},
+                "target.plan",
+                {"owner": "example", "target": "pipeline", "operation": "all"},
             )
             assert result.is_error is False
             assert result.structured_content == expected
+
+            old_selectors = await client.call_tool(
+                "target.plan",
+                {
+                    "owner": "example",
+                    "flow": "pipeline",
+                    "target": "all",
+                    "profile": "offline",
+                },
+            )
+            assert old_selectors.is_error is True
 
             unknown = await client.call_tool(
                 "project.inspect",
@@ -205,11 +220,11 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
             assert unknown.structured_content["conclusion"] == "non-conclusion"
 
             injected = await client.call_tool(
-                "flow.plan",
+                "target.plan",
                 {
                     "owner": "example",
-                    "flow": "pipeline; touch owned",
-                    "target": "all",
+                    "target": "pipeline; touch owned",
+                    "operation": "all",
                 },
             )
             assert injected.is_error is True
@@ -263,11 +278,11 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
 
             templates = await client.list_resource_templates()
             assert [item.name for item in templates.resource_templates] == [
-                "owner-catalog",
-                "flow-run-result",
+                "owner-targets",
+                "target-operation-run-result",
             ]
             with pytest.raises(MCPError):
-                await client.read_resource("sigilicon://owners/../catalog")
+                await client.read_resource("sigilicon://owners/../targets")
 
     asyncio.run(scenario())
 
@@ -304,11 +319,10 @@ def test_native_mcp_stdio_entrypoint_round_trips(tmp_path: Path) -> None:
 def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
     read = _read(tmp_path)
-    plan = read.plan_flow(
+    plan = read.plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        target="pipeline",
+        operation="all",
     )
     plan_identity = plan["data"]["plan_identity"]
     grant = AgenticExecutionGrant(
@@ -330,8 +344,8 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
             tools = {tool.name: tool for tool in listed.tools}
             assert set(tools) == {
                 "project.inspect",
-                "flow.plan",
-                "flow.run",
+                "target.plan",
+                "target.run",
                 "run.inspect",
                 "run.cancel",
                 "candidate.validate",
@@ -339,8 +353,8 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
                 "candidate.promotion_plan",
                 "campaign.run",
             }
-            assert tools["flow.run"].annotations.read_only_hint is False
-            assert tools["flow.run"].annotations.destructive_hint is True
+            assert tools["target.run"].annotations.read_only_hint is False
+            assert tools["target.run"].annotations.destructive_hint is True
             assert tools["run.cancel"].annotations.read_only_hint is False
             assert tools["run.cancel"].annotations.destructive_hint is True
             assert tools["campaign.plan"].annotations.read_only_hint is True
@@ -351,13 +365,26 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
                 tools["campaign.run"].input_schema["properties"]["run_id"]["pattern"],
             }
             assert len(run_id_patterns) == 1
-            assert set(tools["flow.run"].input_schema["properties"]) == {
+            assert set(tools["target.run"].input_schema["properties"]) == {
                 "plan_identity",
                 "budget",
             }
+            assert set(tools["target.plan"].input_schema["properties"]) == {
+                "owner",
+                "target",
+                "operation",
+            }
+            assert set(tools["run.inspect"].input_schema["properties"]) == {
+                "owner",
+                "target",
+                "operation",
+                "run_id",
+            }
+            assert "flow" not in tools["run.inspect"].input_schema["properties"]
+            assert "profile" not in tools["run.inspect"].input_schema["properties"]
 
             rejected = await client.call_tool(
-                "flow.run",
+                "target.run",
                 {
                     "plan_identity": plan_identity,
                     "budget": {"maximum_seconds": 30, "maximum_nodes": 1},
@@ -368,7 +395,7 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
             assert not (tmp_path / "owned").exists()
 
             submitted = await client.call_tool(
-                "flow.run",
+                "target.run",
                 {
                     "plan_identity": plan_identity,
                     "budget": {"maximum_seconds": 30, "maximum_nodes": 1},
@@ -381,8 +408,8 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
                     "run.inspect",
                     {
                         "owner": "example",
-                        "flow": "pipeline",
-                        "target": "all",
+                        "target": "pipeline",
+                        "operation": "all",
                         "run_id": run_id,
                     },
                 )
@@ -392,7 +419,7 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
             else:
                 raise AssertionError("MCP-managed fake Flow did not finish")
             assert inspected.structured_content == execution.inspect_run(run_id=run_id)
-            assert execution.run_flow(
+            assert execution.run_target(
                 plan_identity=plan_identity,
                 budget=AgenticExecutionBudget(30, 1),
                 wait=True,
@@ -412,11 +439,10 @@ def test_native_mcp_rejects_cross_project_read_execution_composition(
     write_mcp_project(execution_root)
     read = _read(read_root)
     execution_read = _read(execution_root)
-    plan = execution_read.plan_flow(
+    plan = execution_read.plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        target="pipeline",
+        operation="all",
     )
     execution = AgenticExecutionInterface(
         execution_read,
@@ -557,11 +583,10 @@ def test_native_mcp_campaign_run_resumes_with_semantic_proposal_only(
 def test_native_mcp_stdio_executes_only_the_launcher_grant(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
     read = _read(tmp_path)
-    plan = read.plan_flow(
+    plan = read.plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        target="pipeline",
+        operation="all",
     )
     plan_identity = plan["data"]["plan_identity"]
     grant = AgenticExecutionGrant(
@@ -593,9 +618,9 @@ def test_native_mcp_stdio_executes_only_the_launcher_grant(tmp_path: Path) -> No
         )
         async with Client(parameters) as client:
             tools = await client.list_tools()
-            assert "flow.run" in {item.name for item in tools.tools}
+            assert "target.run" in {item.name for item in tools.tools}
             submitted = await client.call_tool(
-                "flow.run",
+                "target.run",
                 {
                     "plan_identity": plan_identity,
                     "budget": {"maximum_seconds": 30, "maximum_nodes": 1},
@@ -608,8 +633,8 @@ def test_native_mcp_stdio_executes_only_the_launcher_grant(tmp_path: Path) -> No
                     "run.inspect",
                     {
                         "owner": "example",
-                        "flow": "pipeline",
-                        "target": "all",
+                        "target": "pipeline",
+                        "operation": "all",
                         "run_id": run_id,
                     },
                 )

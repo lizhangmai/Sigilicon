@@ -43,11 +43,10 @@ def _execution(
 
 
 def _plan_identity(root: Path) -> str:
-    return _read(root).plan_flow(
+    return _read(root).plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        target="pipeline",
+        operation="all",
     )["data"]["plan_identity"]
 
 
@@ -57,11 +56,10 @@ def _grant(
     *,
     approval: str = "phase3-test-approval",
 ) -> AgenticExecutionGrant:
-    record = _read(root).plan_flow(
+    record = _read(root).plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        target="pipeline",
+        operation="all",
     )["data"]["plan"]
     return AgenticExecutionGrant(
         principal="test-operator",
@@ -77,34 +75,29 @@ def _grant(
 
 def _write_wait_flow(root: Path) -> None:
     write_read_only_flow_project(root)
+    target_catalog = root / "ip/example/configs/targets.toml"
+    target_catalog.write_text(
+        target_catalog.read_text(encoding="utf-8").replace(
+            'goals = ["source"]',
+            'goals = ["wait"]',
+        ),
+        encoding="utf-8",
+    )
     flow_root = root / "ip/example/configs/flows"
     (flow_root / "pipeline.toml").write_text(
         '''schema = 1
-contract_kind = "flow"
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
 name = "pipeline"
+
+[actions."fake.wait"]
+adapter = "fake-wait"
 
 [[nodes]]
 id = "wait"
 action = "fake.wait"
 config = { seconds = 10 }
-
-[[targets]]
-name = "all"
-goals = ["wait"]
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "profiles/offline.toml").write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "offline"
-
-[actions."fake.wait"]
-adapter = "fake-wait"
 ''',
         encoding="utf-8",
     )
@@ -156,20 +149,31 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
         tmp_path,
         grant=grant,
     )
-    result = interface.run_flow(
+    result = interface.run_target(
         plan_identity=plan_identity,
         budget=budget,
         wait=True,
     )
 
-    assert result["operation"] == "flow.run"
-    assert result["authority"] == "recorded-flow-result"
+    assert result["operation"] == "target.run"
+    assert result["authority"] == "recorded-target-operation-result"
     assert result["data"]["management"]["status"] == "accepted"
     assert result["data"]["result"]["status"] == "accepted"
     assert result["data"]["management"]["completed_nodes"] == 1
-    assert result["data"]["management"]["run_id"].startswith("flow-example-pipeline")
+    assert result["data"]["management"]["run_id"].startswith("target-example-pipeline-all")
+    request = interface.store.read_request(interface.store.locate(
+        result["data"]["management"]["run_id"]
+    ).paths)
+    assert "flow" not in request
+    assert "profile" not in request
+    located = interface.store.locate(result["data"]["management"]["run_id"])
+    state = interface.store.read_state(located.paths)
+    audit = json.loads((located.paths.role("audit") / "audit.json").read_text(encoding="utf-8"))
+    for record in (state, audit):
+        assert "flow" not in record
+        assert "profile" not in record
 
-    duplicate = interface.run_flow(
+    duplicate = interface.run_target(
         plan_identity=plan_identity,
         budget=budget,
         wait=True,
@@ -182,7 +186,7 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
             str(tmp_path),
             "--grant",
             str(grant_path),
-            "flow-run",
+            "target-run",
             plan_identity,
             "--maximum-seconds",
             "30",
@@ -210,7 +214,7 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
         grant=_grant(tmp_path, "forged-plan"),
     )
     with pytest.raises(ValueError, match="approved"):
-        unauthorized.run_flow(
+        unauthorized.run_target(
             plan_identity=plan_identity,
             budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
             wait=False,
@@ -221,7 +225,7 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
         grant=_grant(tmp_path, plan_identity),
     )
     with pytest.raises(ValueError, match="node budget"):
-        interface.run_flow(
+        interface.run_target(
             plan_identity=plan_identity,
             budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=0),
             wait=False,
@@ -246,7 +250,7 @@ def test_grant_rejects_plan_config_changed_after_approval(tmp_path: Path) -> Non
         _execution(
             tmp_path,
             grant=grant,
-        ).run_flow(
+        ).run_target(
             plan_identity=plan_identity,
             budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
             wait=False,
@@ -261,7 +265,7 @@ def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path:
         tmp_path,
         grant=_grant(tmp_path, plan_identity),
     )
-    submitted = interface.run_flow(
+    submitted = interface.run_target(
         plan_identity=plan_identity,
         budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
         wait=False,
@@ -302,8 +306,8 @@ def test_run_cancel_is_owner_bound_and_writes_cancelled_terminal_state(tmp_path:
 
 def test_run_locator_never_traverses_symlinked_namespace(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
-    namespace = artifact_root / "system/agentic-flow-runs"
-    outside = tmp_path / "outside/example/all/pipeline" / ("f" * 32)
+    namespace = artifact_root / "system/agentic-target-runs"
+    outside = tmp_path / "outside/example/pipeline/all" / ("f" * 32)
     (outside / "control").mkdir(parents=True)
     namespace.mkdir(parents=True)
     (namespace / "example").symlink_to(tmp_path / "outside/example", target_is_directory=True)
@@ -330,7 +334,7 @@ def test_partial_flow_run_create_recovers_without_replacing_request(
         nonlocal failed
         if path.name == "state.json" and not failed:
             failed = True
-            raise OSError("injected partial Flow Run create")
+            raise OSError("injected partial target-operation run create")
         original_write(path, value)
 
     monkeypatch.setattr(
@@ -338,8 +342,8 @@ def test_partial_flow_run_create_recovers_without_replacing_request(
         "atomic_write_json",
         interrupt_state_write,
     )
-    with pytest.raises(OSError, match="partial Flow Run create"):
-        interface.run_flow(
+    with pytest.raises(OSError, match="partial target-operation run create"):
+        interface.run_target(
             plan_identity=plan_identity,
             budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
             wait=True,
@@ -352,7 +356,7 @@ def test_partial_flow_run_create_recovers_without_replacing_request(
         original_write,
     )
 
-    completed = interface.run_flow(
+    completed = interface.run_target(
         plan_identity=plan_identity,
         budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
         wait=True,
@@ -369,7 +373,7 @@ def test_agentic_run_audit_and_physical_path_identity_are_strict(tmp_path: Path)
         tmp_path,
         grant=_grant(tmp_path, plan_identity),
     )
-    completed = interface.run_flow(
+    completed = interface.run_target(
         plan_identity=plan_identity,
         budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
         wait=True,
@@ -381,10 +385,10 @@ def test_agentic_run_audit_and_physical_path_identity_are_strict(tmp_path: Path)
     audit_path.unlink()
     with pytest.raises(ValueError, match="fields do not match"):
         interface.store.write_audit(located.paths, {"schema": 1})
-    with pytest.raises(ValueError, match="Flow status"):
+    with pytest.raises(ValueError, match="result status"):
         interface.store.write_audit(
             located.paths,
-            {**valid_audit, "flow_status": "failed"},
+            {**valid_audit, "result_status": "failed"},
         )
 
     state_path = located.paths.role("control") / "state.json"

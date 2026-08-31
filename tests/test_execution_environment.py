@@ -10,10 +10,9 @@ from sigilicon.cli.flow_core import _execution_environment, _parser
 from sigilicon.flow import (
     ActionContext,
     ActionContract,
+    ActionBinding,
     AdapterExecution,
-    AdapterSelection,
     CollectedActionResult,
-    ExecutionProfile,
     FlowContractError,
     FlowEngine,
     FlowNode,
@@ -109,15 +108,12 @@ def _plan() -> tuple[FlowEngine, object]:
     spec = FlowSpec(
         owner="fixture",
         flow_id="environment",
+        recipe_id="environment",
         nodes=(FlowNode("synthesis", "fake.dc"),),
         targets=(FlowTarget("synthesis", ("synthesis",)),),
+        action_bindings=(ActionBinding("fake.dc", "fake-dc"),),
     )
-    profile = ExecutionProfile(
-        owner="fixture",
-        profile_id="local",
-        selections=(AdapterSelection("fake.dc", "fake-dc"),),
-    )
-    return engine, engine.plan(spec, "synthesis", profile)
+    return engine, engine.plan(spec, "synthesis")
 
 
 def test_explicit_environment_resolves_private_files_and_public_identity(
@@ -255,9 +251,9 @@ def test_flow_cli_resolves_explicit_current_process_capabilities(
             "preflight",
             "--owner",
             "fixture",
-            "--flow",
-            "native",
             "--target",
+            "native",
+            "--operation",
             "diagnostic",
             "--capability",
             f"tool.cadence-xcelium={executable}",
@@ -282,9 +278,9 @@ def test_flow_cli_capability_overlay_rejects_ambiguity_and_missing_commands(
         "run",
         "--owner",
         "fixture",
-        "--flow",
-        "native",
         "--target",
+        "native",
+        "--operation",
         "diagnostic",
         "--environment",
         str(contract),

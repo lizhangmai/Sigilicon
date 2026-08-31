@@ -197,12 +197,16 @@ def test_configuration_scanner_reuses_design_source_document(
 
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
 
-    catalogs = project.flow_catalog_inventory()
+    target_catalogs = tuple(
+        project.owner_target_catalog(owner)
+        for owner in project.owners
+        if owner.component.target_catalog is not None
+    )
     sources = RepositorySourceInventory.for_project(project)
     sources.verify("design snapshot", spec.source_documents)
     report = inspect_project_configuration_sources(
         project,
-        catalog_inventory=catalogs,
+        target_catalog_inventory=target_catalogs,
         sources=sources,
     )
 

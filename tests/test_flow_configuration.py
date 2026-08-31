@@ -2,36 +2,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import tomllib
 
 import pytest
 
-from conftest import StagedAdapterFixture
 from sigilicon.flow import (
+    ActionBinding,
     ActionContext,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowContractError,
     FlowEngine,
-    FlowExecutionError,
     FlowNode,
     FlowRegistry,
-    FlowSpec,
     FlowTarget,
     PlatformAssetRequirement,
     ResolvedCapability,
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
-    load_catalog_selection,
-    load_execution_profile,
-    load_flow_catalog,
-    parse_flow_catalog,
-    resolve_catalog_selection,
+    compile_flow_spec,
+    load_execution_recipe,
 )
+
+from conftest import StagedAdapterFixture
 
 
 class RequirementAdapter(StagedAdapterFixture):
@@ -62,33 +56,15 @@ class RequirementAdapter(StagedAdapterFixture):
         return CollectedActionResult()
 
 
-def _write_catalog_sources(owner_root: Path) -> Path:
-    (owner_root / "flows").mkdir()
-    (owner_root / "profiles").mkdir()
-    (owner_root / "flows/pipeline.toml").write_text(
-        '''schema = 1
-contract_kind = "flow"
+def _write_recipe(root: Path, *, schema: int = 1, extra: str = "") -> Path:
+    recipe = root / "recipe.toml"
+    recipe.write_text(
+        f'''schema = {schema}
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
 name = "pipeline"
-
-[[nodes]]
-id = "check"
-action = "fake.requirements"
-
-[[targets]]
-name = "all"
-goals = ["check"]
-''',
-        encoding="utf-8",
-    )
-    (owner_root / "profiles/local.toml").write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "local"
-
+{extra}
 [actions."fake.requirements"]
 adapter = "fake-requirements"
 requires = ["runtime.fake-license"]
@@ -98,134 +74,66 @@ logic-lib = "fake-platform:logic-lib@1"
 
 [actions."fake.requirements".config]
 mode = "local"
+
+[[nodes]]
+id = "check"
+action = "fake.requirements"
 ''',
         encoding="utf-8",
     )
-    catalog = owner_root / "catalog.toml"
-    catalog.write_text(
-        '''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-
-[flows.pipeline]
-contract = "flows/pipeline.toml"
-default_profile = "local"
-
-[flows.pipeline.profiles]
-local = "profiles/local.toml"
-''',
-        encoding="utf-8",
-    )
-    return catalog
+    return recipe
 
 
-def test_catalog_resolves_owner_scoped_flow_and_default_profile(
+def test_execution_recipe_loads_action_bindings_and_compiles_target(
     tmp_path: Path,
 ) -> None:
-    catalog = _write_catalog_sources(tmp_path)
+    recipe = load_execution_recipe(_write_recipe(tmp_path), owner_root=tmp_path)
 
-    selection = load_catalog_selection(
-        catalog,
-        owner_root=tmp_path,
-        flow_id="pipeline",
+    assert recipe.owner == "example"
+    assert recipe.recipe_id == "pipeline"
+    binding = recipe.action_binding("fake.requirements")
+    assert binding.adapter == "fake-requirements"
+    assert binding.requires == ("runtime.fake-license",)
+    assert binding.platform_assets == {
+        "logic-lib": "fake-platform:logic-lib@1"
+    }
+    assert binding.config["mode"] == "local"
+
+    compiled = compile_flow_spec(
+        recipe,
+        flow_id="operation",
+        targets=(FlowTarget("all", ("check",)),),
     )
-    snapshot_selection = resolve_catalog_selection(
-        load_flow_catalog(catalog, owner_root=tmp_path),
-        flow_id="pipeline",
-    )
-
-    assert snapshot_selection == selection
-    assert selection.spec.flow_id == "pipeline"
-    assert selection.profile.profile_id == "local"
-    assert selection.profile.selection("fake.requirements").adapter == "fake-requirements"
-    assert selection.profile.selection("fake.requirements").config["mode"] == "local"
-    assert selection.profile.selection(
-        "fake.requirements"
-    ).platform_asset_identities == {"logic-lib": "fake-platform:logic-lib@1"}
+    assert compiled.recipe_id == "pipeline"
+    assert compiled.target("all").goals == ("check",)
+    assert compiled.action_binding("fake.requirements") == binding
 
 
-def test_flow_catalog_document_parser_matches_path_loader(tmp_path: Path) -> None:
-    catalog = _write_catalog_sources(tmp_path)
-    document = tomllib.loads(catalog.read_text(encoding="utf-8"))
+@pytest.mark.parametrize("field", ["targets", "expand"])
+def test_execution_recipe_rejects_target_selection_and_expansion(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    if field == "targets":
+        extra = 'targets = [{ name = "all", goals = ["check"] }]\n'
+    else:
+        extra = 'expand = { kind = "legacy" }\n'
+    recipe = _write_recipe(tmp_path, extra=extra)
 
-    assert parse_flow_catalog(
-        document,
-        catalog,
-        owner_root=tmp_path,
-    ) == load_flow_catalog(catalog, owner_root=tmp_path)
-
-
-def test_catalog_rejects_paths_outside_the_explicit_owner_root(tmp_path: Path) -> None:
-    owner_root = tmp_path / "owner"
-    owner_root.mkdir()
-    outside = tmp_path / "outside.toml"
-    outside.write_text("not a Flow", encoding="utf-8")
-    catalog = owner_root / "catalog.toml"
-    catalog.write_text(
-        '''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-
-[flows.pipeline]
-contract = "../outside.toml"
-default_profile = "local"
-
-[flows.pipeline.profiles]
-local = "../outside.toml"
-''',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FlowContractError, match="owner root"):
-        load_catalog_selection(
-            catalog,
-            owner_root=owner_root,
-            flow_id="pipeline",
-        )
+    with pytest.raises(FlowContractError, match="cannot declare"):
+        load_execution_recipe(recipe)
 
 
-def test_execution_profile_supports_only_its_current_schema(tmp_path: Path) -> None:
-    profile = tmp_path / "profile.toml"
-    profile.write_text(
-        '''schema = 2
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "local"
-
-[actions."fake.requirements"]
-adapter = "fake-requirements"
-''',
-        encoding="utf-8",
-    )
+def test_execution_recipe_supports_only_current_schema(tmp_path: Path) -> None:
+    recipe = _write_recipe(tmp_path, schema=2)
 
     with pytest.raises(FlowContractError, match="current schema 1"):
-        load_execution_profile(profile)
+        load_execution_recipe(recipe)
 
 
-def test_flow_catalog_supports_only_its_current_schema(tmp_path: Path) -> None:
-    catalog = tmp_path / "catalog.toml"
-    catalog.write_text(
-        '''schema = 2
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-flows = {}
-''',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FlowContractError, match="current schema 1"):
-        load_catalog_selection(
-            catalog,
-            owner_root=tmp_path,
-            flow_id="pipeline",
-        )
-
-
-def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> None:
+def test_flow_engine_uses_bindings_from_compiled_spec_and_writes_recipe_identity(
+    tmp_path: Path,
+) -> None:
     adapter = RequirementAdapter()
     registry = FlowRegistry()
     registry.register_action(
@@ -243,30 +151,30 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
         )
     )
     registry.register_adapter("fake-requirements", adapter)
-    spec = FlowSpec(
+    from sigilicon.flow import ExecutionRecipe
+
+    recipe = ExecutionRecipe(
         owner="example",
-        flow_id="requirements",
+        recipe_id="local",
         nodes=(FlowNode("check", "fake.requirements"),),
-        targets=(FlowTarget("all", ("check",)),),
-    )
-    profile = ExecutionProfile(
-        owner="example",
-        profile_id="local",
-        selections=(
-            AdapterSelection(
-                action_kind="fake.requirements",
-                adapter="fake-requirements",
+        action_bindings=(
+            ActionBinding(
+                "fake.requirements",
+                "fake-requirements",
                 config={"mode": "local"},
-                required_capabilities=("runtime.fake-license",),
-                platform_asset_identities={
-                    "logic-lib": "fake-platform:logic-lib@1"
-                },
+                requires=("runtime.fake-license",),
+                platform_assets={"logic-lib": "fake-platform:logic-lib@1"},
             ),
         ),
+        owner_root=tmp_path,
+    )
+    spec = compile_flow_spec(
+        recipe,
+        flow_id="requirements",
+        targets=(FlowTarget("all", ("check",)),),
     )
     engine = FlowEngine(registry)
-
-    plan = engine.plan(spec, "all", profile)
+    plan = engine.plan(spec, "all")
     missing = engine.preflight(plan, ExecutionEnvironment())
 
     assert plan.nodes[0].adapter == "fake-requirements"
@@ -276,14 +184,11 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
         "runtime.fake-license",
         "logic-lib",
     }
-    assert not (tmp_path / "artifacts").exists()
-    with pytest.raises(FlowExecutionError, match="preflight"):
-        engine.run(
-            plan,
-            artifact_root=tmp_path / "artifacts",
-            environment=ExecutionEnvironment(),
-            run_id="8" * 32,
-        )
+    assert engine.plan_id(plan) == "example:requirements:all"
+    assert engine.plan_record(plan)["recipe"] == "local"
+    assert "execution_profile" not in engine.plan_record(plan)
+    assert engine.preflight_record(plan, missing)["recipe"] == "local"
+    assert "execution_profile" not in engine.preflight_record(plan, missing)
     assert not (tmp_path / "artifacts").exists()
 
     installed_library = tmp_path / "installed/logic.lib"
@@ -308,26 +213,6 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
             ),
         ),
     )
-    incompatible_environment = ExecutionEnvironment(
-        capabilities=environment.capabilities,
-        platform_assets=(
-            ResolvedPlatformAsset(
-                role="logic-lib",
-                kind="library.liberty",
-                identity="fake-platform:logic-lib@wrong",
-                members=environment.platform_assets[0].members,
-            ),
-        ),
-    )
-    incompatible = engine.preflight(plan, incompatible_environment)
-    assert incompatible.status == "blocked"
-    assert next(
-        check
-        for check in incompatible.checks
-        if check.requirement == "logic-lib"
-    ).status == "incompatible"
-    ready = engine.preflight(plan, environment)
-    assert ready.status == "ready"
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
@@ -337,41 +222,22 @@ def test_plan_uses_profile_selection_and_preflight_is_pure(tmp_path: Path) -> No
 
     assert result.status == "accepted"
     assert adapter.executions == 1
-    assert adapter.platform_location == (tmp_path / "installed/logic.lib").resolve()
-    preflight = json.loads((result.run_root / "inputs/preflight.json").read_text())
-    request = json.loads(
-        (result.run_root / "inputs/check/action_request.json").read_text()
+    assert adapter.platform_location == installed_library.resolve()
+    payload = json.loads(
+        (result.run_root / "inputs/preflight.json").read_text(encoding="utf-8")
     )
-    assert preflight["status"] == "ready"
-    platform_check = next(
-        check
-        for check in preflight["checks"]
-        if check["requirement"] == "logic-lib"
-    )
-    assert request["execution_environment"]["capabilities"] == {
-        "runtime.action-capability": "fake-action@1",
-        "runtime.fake-license": "fake-license@1",
-    }
-    assert request["execution_environment"]["platform_assets"]["logic-lib"] == {
-        "kind": "library.liberty",
-        "identity": "fake-platform:logic-lib@1",
-    }
-    assert str(tmp_path / "installed/logic.lib") not in json.dumps(preflight)
-    assert str(tmp_path / "installed/logic.lib") not in json.dumps(request)
+    assert payload["recipe"] == "local"
 
 
-def test_public_environment_identity_rejects_absolute_site_paths(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(FlowContractError, match="absolute site path"):
-        ExecutionEnvironment(
-            capabilities={
-                "tool.fake": ResolvedCapability(str(tmp_path / "fake")),
-            }
+def test_action_binding_requires_declared_action_and_adapter_contract() -> None:
+    binding = ActionBinding("fake.requirements", "fake-requirements")
+    with pytest.raises(FlowContractError, match="Action binding"):
+        from sigilicon.flow import ExecutionRecipe
+
+        ExecutionRecipe(
+            owner="example",
+            recipe_id="empty-binding",
+            nodes=(FlowNode("check", "fake.requirements"),),
+            action_bindings=(),
         )
-    with pytest.raises(FlowContractError, match="absolute site path"):
-        ResolvedPlatformAsset(
-            role="logic-lib",
-            kind="library.liberty",
-            identity=str(tmp_path / "logic.lib"),
-        )
+    assert binding.platform_assets == {}

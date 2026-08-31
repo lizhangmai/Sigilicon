@@ -51,32 +51,27 @@ def _read(root: Path) -> AgenticReadInterface:
 def _write_campaign_project(root: Path) -> None:
     write_read_only_flow_project(root)
     flow_root = root / "ip/example/configs/flows"
+    target_catalog = root / "ip/example/configs/targets.toml"
+    target_catalog.write_text(
+        target_catalog.read_text(encoding="utf-8").replace(
+            'goals = ["source"]',
+            'goals = ["attempt"]',
+        ),
+        encoding="utf-8",
+    )
     (flow_root / "pipeline.toml").write_text(
         '''schema = 1
-contract_kind = "flow"
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
 name = "pipeline"
 
+[actions."design.attempt"]
+adapter = "typed-attempt"
+
 [[nodes]]
 id = "attempt"
 action = "design.attempt"
-
-[[targets]]
-name = "all"
-goals = ["attempt"]
-''',
-        encoding="utf-8",
-    )
-    (flow_root / "profiles/offline.toml").write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "offline"
-
-[actions."design.attempt"]
-adapter = "typed-attempt"
 ''',
         encoding="utf-8",
     )
@@ -141,7 +136,6 @@ def _campaign() -> DesignCampaignSpec:
             "baseline",
             "pipeline",
             "all",
-            "offline",
             DesignArtifactBinding("candidate", "attempt", "candidate"),
             (
                 DesignArtifactBinding("topology", "attempt", "topology"),
@@ -171,7 +165,6 @@ def _feedback_campaign() -> DesignCampaignSpec:
         DesignCampaignContinuationSpec(
             "pipeline",
             "all",
-            "offline",
             baseline.baseline.candidate,
             baseline.baseline.artifacts,
             baseline.baseline.stages,

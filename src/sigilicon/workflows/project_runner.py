@@ -1,4 +1,4 @@
-"""Project-owned extensions assembled into the reusable Flow registry."""
+"""Compile owner targets into one managed project execution lifecycle."""
 
 from __future__ import annotations
 
@@ -6,46 +6,32 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
-import re
 import stat
 import sys
+import tomllib
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.domain.repository import (
-    OwnerCatalogSnapshot,
-    Project,
-    RepositoryOwner,
+from sigilicon.domain.repository import Project, RepositoryOwner
+from sigilicon.domain.targets import (
+    OwnerTargetCatalog,
+    ProjectTarget,
+    TargetOperation,
+    load_owner_target_catalog,
 )
 from sigilicon.flow import (
     ActionPlan,
     ExecutionEnvironment,
-    DesignCatalogExpansion,
-    FlowCatalog,
     FlowEngine,
     FlowPlan,
     FlowProgress,
     FlowResult,
     FlowSpec,
-    LayoutCatalogExpansion,
+    FlowTarget,
     PreflightResult,
-    parse_flow_catalog,
-    resolve_catalog_selection,
-)
-from sigilicon.flow.model import SourceMember, identifier
-from sigilicon.flow.native import (
-    NATIVE_OA_ACTION_PLAN,
-    NATIVE_OA_PLAN_ADAPTER,
-    NATIVE_OA_PLAN_ACTION,
-    NATIVE_OA_SIMULATION_ADAPTER,
-    NATIVE_OA_SIMULATION_ACTION,
-    XCELIUM_ACTION_PLAN,
-    XCELIUM_VERIFICATION_ADAPTER,
-    XCELIUM_VERIFICATION_ACTION,
-    XCELIUM_AMS_ACTION_PLAN,
-    XCELIUM_AMS_VERIFICATION_ADAPTER,
-    XCELIUM_AMS_VERIFICATION_ACTION,
+    compile_flow_spec,
+    parse_execution_recipe,
 )
 from sigilicon.flow.circuit_design import (
     DESIGN_ACTION_PLAN,
@@ -61,135 +47,34 @@ from sigilicon.flow.layout import (
     LAYOUT_VERIFICATION_ADAPTER,
     LAYOUT_VERIFICATION_ACTION,
 )
-from sigilicon.flow.registry import FlowRegistry, ToolAdapter
-from sigilicon.flow.source_assets import (
-    snapshot_source_member,
-    source_member_matches,
+from sigilicon.flow.model import SourceMember
+from sigilicon.flow.native import (
+    NATIVE_OA_ACTION_PLAN,
+    NATIVE_OA_PLAN_ADAPTER,
+    NATIVE_OA_PLAN_ACTION,
+    NATIVE_OA_SIMULATION_ADAPTER,
+    NATIVE_OA_SIMULATION_ACTION,
+    XCELIUM_ACTION_PLAN,
+    XCELIUM_AMS_ACTION_PLAN,
+    XCELIUM_AMS_VERIFICATION_ACTION,
+    XCELIUM_AMS_VERIFICATION_ADAPTER,
+    XCELIUM_VERIFICATION_ACTION,
+    XCELIUM_VERIFICATION_ADAPTER,
 )
+from sigilicon.flow.registry import FlowRegistry, ToolAdapter
+from sigilicon.flow.source_assets import snapshot_source_member, source_member_matches
 from sigilicon.flow.topology import resolve_target_topology
 from sigilicon.workflows.builtin import build_flow_registry
-from sigilicon.workflows.catalog_flow import (
-    compile_design_catalog_flow,
-    compile_layout_catalog_flow,
-)
-from sigilicon.workflows.design_targets import (
-    DesignTargetCatalog,
-    load_design_target_catalog,
-)
-from sigilicon.workflows.layout_generation import (
-    LayoutPlanningResult,
-    plan_layout_spec,
-)
-from sigilicon.workflows.layout_targets import LayoutTargetCatalog
-from sigilicon.workflows.project_oa import ProjectOaWorkflow
 from sigilicon.workflows.oa_library import (
     oa_plan_source_paths,
     validate_oa_plan_source_members,
 )
+from sigilicon.workflows.project_oa import ProjectOaWorkflow
 from sigilicon.workflows.xcelium import plan_xcelium_cell
 from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
 
 if TYPE_CHECKING:
     from sigilicon.virtuoso.client import VirtuosoClient
-
-
-@dataclass(frozen=True)
-class FlowRunSelection:
-    flow: str
-    target: str
-    profile: str | None = None
-
-    def __post_init__(self) -> None:
-        identifier(self.flow, "Flow identity")
-        identifier(self.target, "Flow target")
-        if self.profile is not None:
-            identifier(self.profile, "Execution Profile identity")
-
-
-@dataclass(frozen=True)
-class DesignRunSelection:
-    target: str
-    mode: str
-
-    def __post_init__(self) -> None:
-        identifier(self.target, "design target")
-        identifier(self.mode, "design mode")
-
-
-@dataclass(frozen=True)
-class LayoutRunSelection:
-    target: str
-    operation: str
-
-    def __post_init__(self) -> None:
-        identifier(self.target, "layout target")
-        if self.operation not in {
-            "generate",
-            "verify-drc",
-            "verify-lvs",
-            "verify-all",
-        }:
-            raise ValueError(f"unsupported layout operation: {self.operation!r}")
-
-
-@dataclass(frozen=True)
-class OaSimulationSelection:
-    testbench: str
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.testbench, str)
-            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", self.testbench) is None
-        ):
-            raise ValueError(f"invalid OA simulation testbench: {self.testbench!r}")
-
-
-RunSelection = (
-    FlowRunSelection
-    | DesignRunSelection
-    | LayoutRunSelection
-    | OaSimulationSelection
-)
-
-
-@dataclass(frozen=True)
-class RunRequest:
-    """One typed project operation compiled through the canonical Flow seam."""
-
-    selection: RunSelection
-
-    def __post_init__(self) -> None:
-        if not isinstance(
-            self.selection,
-            (
-                FlowRunSelection,
-                DesignRunSelection,
-                LayoutRunSelection,
-                OaSimulationSelection,
-            ),
-        ):
-            raise ValueError("RunRequest selection must be a typed selection")
-
-    @classmethod
-    def flow(
-        cls,
-        flow: str,
-        target: str,
-        profile: str | None = None,
-    ) -> RunRequest:
-        return cls(FlowRunSelection(flow, target, profile))
-
-    @classmethod
-    def design(cls, target: str, mode: str) -> RunRequest:
-        return cls(DesignRunSelection(target, mode))
-
-    @classmethod
-    def layout(cls, target: str, operation: str) -> RunRequest:
-        return cls(LayoutRunSelection(target, operation))
-
-    @classmethod
-    def oa_simulation(cls, testbench: str) -> RunRequest:
-        return cls(OaSimulationSelection(testbench))
 
 
 def _default_client_factory() -> VirtuosoClient:
@@ -224,22 +109,19 @@ def _xcelium_ams_verification_adapter() -> ToolAdapter:
     return XceliumAmsVerificationAdapter()
 
 
-def _design_target_adapter(
-) -> ToolAdapter:
+def _design_action_adapter() -> ToolAdapter:
     from sigilicon.workflows.design_flow import DesignTargetAdapter
 
     return DesignTargetAdapter()
 
 
-def _layout_target_adapter(
+def _layout_action_adapter(
     *,
     client_factory: Callable[[], Any],
 ) -> ToolAdapter:
     from sigilicon.workflows.layout_flow import LayoutActionAdapter
 
-    return LayoutActionAdapter(
-        client_factory=client_factory,
-    )
+    return LayoutActionAdapter(client_factory=client_factory)
 
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
@@ -253,7 +135,7 @@ def _load_extension(source: Path, record_text: str) -> ModuleType:
     try:
         exec(compile(record_text, str(source), "exec"), module.__dict__)
     except Exception as exc:
-        raise ValueError(f"cannot load Flow registry extension {source}: {exc}") from exc
+        raise ValueError(f"cannot load owner registry extension {source}: {exc}") from exc
     finally:
         if previous is None:
             sys.modules.pop(module_name, None)
@@ -283,7 +165,7 @@ def _project_source_members(
     records: Mapping[Path, str] | None = None,
     external_roots: tuple[tuple[str, Path], ...] = (),
 ) -> tuple[SourceMember, ...]:
-    """Snapshot the exact UTF-8 sources read by one project domain planner."""
+    """Snapshot exact sources selected by a domain planner."""
 
     project_root = project.project_root
     package_root = Path(__file__).resolve().parents[2]
@@ -321,15 +203,6 @@ def _project_source_members(
             key=lambda item: (item[0], item[2].as_posix()),
         )
     )
-
-
-def _merge_source_members(
-    *groups: tuple[SourceMember, ...],
-) -> tuple[SourceMember, ...]:
-    merged: dict[tuple[str, Path, str], SourceMember] = {}
-    for member in (item for group in groups for item in group):
-        merged[(member.scope, member.source_root, member.path)] = member
-    return tuple(merged.values())
 
 
 def _native_oa_source_members(
@@ -371,26 +244,17 @@ def _xcelium_source_members(
 def _project_workflow_registry(
     project: Project,
     owner: RepositoryOwner,
-    catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     *,
     client_factory: Callable[[], Any] = _default_client_factory,
 ) -> FlowRegistry:
-    """Assemble built-ins and one explicitly selected owner extension.
+    """Assemble reusable Actions and the selected owner's Adapter extension."""
 
-    The project manifest selects the source, while the cataloged component
-    proves that source belongs to the selected owner and its ``flow`` fileset.
-    """
-
-    repository = project
-    if owner not in repository.owners:
+    if owner not in project.owners:
         raise ValueError(
-            f"Flow owner {owner.name!r} does not belong to the selected Project"
+            f"execution owner {owner.name!r} does not belong to the selected Project"
         )
     registry = build_flow_registry()
-    registry.register_adapter_factory(
-        NATIVE_OA_PLAN_ADAPTER,
-        _native_oa_plan_adapter,
-    )
+    registry.register_adapter_factory(NATIVE_OA_PLAN_ADAPTER, _native_oa_plan_adapter)
     registry.register_adapter_factory(
         NATIVE_OA_SIMULATION_ADAPTER,
         lambda: _native_oa_simulation_adapter(client_factory),
@@ -403,50 +267,43 @@ def _project_workflow_registry(
         XCELIUM_AMS_VERIFICATION_ADAPTER,
         _xcelium_ams_verification_adapter,
     )
-    registry.register_adapter_factory(
-        DESIGN_SOURCE_CHECK_ADAPTER,
-        _design_target_adapter,
-    )
+    registry.register_adapter_factory(DESIGN_SOURCE_CHECK_ADAPTER, _design_action_adapter)
     registry.register_adapter_factory(
         DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
-        _design_target_adapter,
+        _design_action_adapter,
     )
     registry.register_adapter_factory(
         LAYOUT_GENERATION_ADAPTER,
-        lambda: _layout_target_adapter(client_factory=client_factory),
+        lambda: _layout_action_adapter(client_factory=client_factory),
     )
     registry.register_adapter_factory(
         LAYOUT_VERIFICATION_ADAPTER,
-        lambda: _layout_target_adapter(client_factory=client_factory),
+        lambda: _layout_action_adapter(client_factory=client_factory),
     )
-    source = repository.flow_registry_extension(owner)
+
+    source = project.flow_registry_extension(owner)
     if source is None:
         return registry
     try:
         implementation_sources = tuple(
-            _implementation_source(
-                candidate,
-                project_root=repository.project_root,
-            )
+            _implementation_source(candidate, project_root=project.project_root)
             for candidate in owner.flow_implementation_files()
         )
     except (OSError, RuntimeError, UnicodeError) as exc:
-        raise ValueError(
-            f"cannot read owner Flow implementation source: {exc}"
-        ) from exc
+        raise ValueError(f"cannot read owner implementation source: {exc}") from exc
     source_record = next(
         (record for record in implementation_sources if record.location == source),
         None,
     )
     if source_record is None:
         raise ValueError(
-            f"Flow registry extension {source} is not a bound Python implementation"
+            f"owner registry extension {source} is not a bound Python implementation"
         )
     module = _load_extension(source, source_record.record_text)
     register = getattr(module, "register_flow_adapters", None)
     if not callable(register):
         raise ValueError(
-            f"Flow registry extension {source} must define "
+            f"owner registry extension {source} must define "
             "register_flow_adapters(registry, owner_root)"
         )
     try:
@@ -454,12 +311,10 @@ def _project_workflow_registry(
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
-        raise ValueError(
-            f"cannot register Flow extension {source}: {exc}"
-        ) from exc
+        raise ValueError(f"cannot register owner extension {source}: {exc}") from exc
     if result is not None:
         raise ValueError(
-            f"Flow registry extension {source} must mutate the supplied registry "
+            f"owner registry extension {source} must mutate the supplied registry "
             "and return None"
         )
     try:
@@ -469,20 +324,15 @@ def _project_workflow_registry(
     except (OSError, RuntimeError, UnicodeError):
         stable_sources = False
     if not stable_sources:
-        raise ValueError("owner Flow implementation changed during registry assembly")
+        raise ValueError("owner implementation changed during registry assembly")
     for record in implementation_sources:
         registry.bind_implementation_source(record)
     return registry
 
 
 @dataclass(frozen=True, init=False)
-class FlowExecution:
-    """One resolved plan with its complete managed execution lifecycle.
-
-    The Module owns the exact registry assembly that planned the graph, the
-    project artifact root, and the owner scope.  Callers never need to recover
-    a hidden ``FlowEngine``/``FlowPlan`` pair or reconstruct execution paths.
-    """
+class ProjectExecution:
+    """One owner target operation and its complete managed lifecycle."""
 
     _engine: FlowEngine = field(repr=False, compare=False)
     _plan: FlowPlan = field(repr=False)
@@ -494,12 +344,12 @@ class FlowExecution:
         engine: FlowEngine,
         plan: FlowPlan,
         project: Project,
-    ) -> FlowExecution:
+    ) -> ProjectExecution:
         owner = project.owner(plan.spec.owner)
         expected_scope = project.scope(owner)
         if plan.spec.owner_root != owner.root or engine.project_scope != expected_scope:
             raise ValueError(
-                "Flow execution engine, plan, and Project owner binding disagree"
+                "project execution engine, plan, and owner binding disagree"
             )
         execution = object.__new__(cls)
         object.__setattr__(execution, "_engine", engine)
@@ -520,16 +370,16 @@ class FlowExecution:
         return self._plan.spec.owner
 
     @property
-    def flow(self) -> str:
+    def target(self) -> str:
         return self._plan.spec.flow_id
 
     @property
-    def target(self) -> str:
+    def operation(self) -> str:
         return self._plan.target.target_id
 
     @property
-    def profile(self) -> str:
-        return self._plan.profile.profile_id
+    def recipe(self) -> str:
+        return self._plan.spec.recipe_id
 
     @property
     def node_count(self) -> int:
@@ -570,8 +420,8 @@ class FlowExecution:
         return self._engine.read_run_result(
             artifact_root=self._project.artifact_root,
             owner=self.owner,
-            flow_id=self.flow,
-            target=self.target,
+            flow_id=self.target,
+            target=self.operation,
             run_id=run_id,
         )
 
@@ -586,21 +436,22 @@ class FlowExecution:
         self._engine.clean_run(
             artifact_root=self._project.artifact_root,
             owner=self.owner,
-            flow_id=self.flow,
-            target=self.target,
+            flow_id=self.target,
+            target=self.operation,
             run_id=run_id,
         )
 
 
 @dataclass(frozen=True)
-class ProjectRunner:
-    """Project-level Interface shared by CLI, Python and agent callers.
+class _TargetSelection:
+    target: ProjectTarget
+    operation: TargetOperation
+    spec: FlowSpec
 
-    The Module fixes one canonical owner and hides its root, Flow catalog,
-    Execution Profile paths, registry assembly and project artifact root.
-    ASIC, analog and mixed-signal differences remain behind typed Actions and
-    owner Adapters.
-    """
+
+@dataclass(frozen=True)
+class ProjectRunner:
+    """Plan every project domain through one owner target interface."""
 
     project: Project
     owner_name: str
@@ -620,141 +471,81 @@ class ProjectRunner:
     def owner(self) -> RepositoryOwner:
         return self.project.owner(self.owner_name)
 
-    def catalog(self) -> FlowCatalog:
-        """Load the owner's canonical typed Flow catalog."""
+    def targets(self) -> tuple[dict[str, object], ...]:
+        """Return the owner's canonical target inventory."""
 
-        return self._catalog(
-            self.project.owner_flow_catalog_inventory(self.owner)
+        source = self.project.owner_target_catalog(self.owner)
+        targets = load_owner_target_catalog(
+            self.project,
+            self.owner,
+            catalog_snapshot=source,
+        )
+        self._require_current(
+            (
+                snapshot_source_member(
+                    source.path,
+                    source_root=self.project.project_root,
+                    scope="project",
+                    record_text=source.record_text,
+                    source_label="owner targets",
+                ),
+            )
+        )
+        return tuple(
+            {
+                "name": target.name,
+                "description": target.description,
+                "operations": tuple(target.operations),
+            }
+            for target in targets.targets.values()
         )
 
     def describe(
         self,
-        *,
-        flow: str,
-        profile: str | None = None,
+        target: str,
+        operation: str | None = None,
     ) -> dict[str, object]:
-        """Describe one fully compiled catalog Flow without planning a target."""
+        """Describe one target or one fully compiled target operation."""
 
-        inventory = self.project.owner_flow_catalog_inventory(self.owner)
-        return self._describe_flow(flow, profile, inventory)
-
-    def _catalog(
-        self,
-        inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> FlowCatalog:
-        snapshots = tuple(
-            snapshot
-            for snapshot in inventory
-            if snapshot.contract_kind == "flow-catalog"
-        )
-        if len(snapshots) != 1:
-            raise ValueError(
-                f"cataloged owner {self.owner.name!r} must select exactly one "
-                "Flow Catalog"
-            )
-        snapshot = snapshots[0]
-        return parse_flow_catalog(
-            snapshot.document,
-            snapshot.path,
-            owner_root=self.owner.root,
-        )
-
-    def _compiled_spec(
-        self,
-        spec: FlowSpec,
-        inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> FlowSpec:
-        expansion = spec.catalog_expansion
-        if isinstance(expansion, DesignCatalogExpansion):
-            catalog = load_design_target_catalog(
+        if operation is None:
+            source = self.project.owner_target_catalog(self.owner)
+            targets = load_owner_target_catalog(
                 self.project,
-                catalog_inventory=inventory,
-            ).for_owner(self.owner.name)
-            return compile_design_catalog_flow(spec, catalog)
-        if isinstance(expansion, LayoutCatalogExpansion):
-            from sigilicon.workflows.layout_targets import (
-                load_layout_target_catalog,
+                self.owner,
+                catalog_snapshot=source,
             )
-
-            catalog = load_layout_target_catalog(
-                self.project,
-                catalog_inventory=inventory,
-            ).for_owner(self.owner.name)
-            return compile_layout_catalog_flow(spec, catalog)
-        return spec
-
-    @staticmethod
-    def _summary(spec: FlowSpec, profile: str) -> dict[str, object]:
+            selected = targets.get(target)
+            return {
+                "name": selected.name,
+                "description": selected.description,
+                "operations": tuple(selected.operations),
+            }
+        selection = self._select(target, operation)
         return {
             "schema": 1,
-            "contract_kind": "flow-summary",
-            "owner": spec.owner,
-            "flow": spec.flow_id,
-            "nodes": [node.node_id for node in spec.nodes],
-            "targets": [target.target_id for target in spec.targets],
-            "policies": [policy.policy_id for policy in spec.policies],
-            "execution_profile": profile,
+            "contract_kind": "target-operation-summary",
+            "owner": self.owner.name,
+            "target": selection.target.name,
+            "operation": selection.operation.name,
+            "recipe": selection.spec.recipe_id,
+            "nodes": tuple(node.node_id for node in selection.spec.nodes),
+            "policies": tuple(policy.policy_id for policy in selection.spec.policies),
         }
 
-    def _describe_flow(
-        self,
-        flow: str,
-        profile: str | None,
-        inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> dict[str, object]:
-        selection = resolve_catalog_selection(
-            self._catalog(inventory),
-            flow_id=flow,
-            profile_id=profile,
+    def plan(self, target: str, operation: str) -> ProjectExecution:
+        """Compile exactly one owner target operation."""
+
+        selection = self._select(target, operation)
+        engine = self._engine()
+        plan = engine.plan(
+            selection.spec,
+            selection.operation.name,
+            action_plans=self._action_plans(
+                selection.spec,
+                selection.operation.name,
+            ),
         )
-        spec = self._compiled_spec(selection.spec, inventory)
-        return self._summary(spec, selection.profile.profile_id)
-
-    def catalog_descriptions(
-        self,
-        *,
-        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
-    ) -> tuple[dict[str, object], ...]:
-        """Describe every Flow from one optional caller-owned source snapshot."""
-
-        inventory = (
-            self.project.owner_flow_catalog_inventory(self.owner)
-            if inventory is None
-            else inventory
-        )
-        catalog = self._catalog(inventory)
-        return tuple(
-            {
-                "name": entry.flow_id,
-                "default_profile": entry.default_profile,
-                "profiles": tuple(sorted(entry.profiles)),
-                "summary": self._summary(
-                    self._compiled_spec(selection.spec, inventory),
-                    selection.profile.profile_id,
-                ),
-            }
-            for entry in catalog.entries
-            for selection in (
-                resolve_catalog_selection(catalog, flow_id=entry.flow_id),
-            )
-        )
-
-    def plan(self, request: RunRequest) -> FlowExecution:
-        """Compile one typed project operation into its canonical Flow plan."""
-
-        if not isinstance(request, RunRequest):
-            raise ValueError("ProjectRunner.plan requires a RunRequest")
-
-        selection = request.selection
-        if isinstance(selection, FlowRunSelection):
-            return self._plan_flow(selection)
-        if isinstance(selection, DesignRunSelection):
-            return self._plan_design(selection)
-        if isinstance(selection, LayoutRunSelection):
-            return self._plan_layout(selection)
-        if isinstance(selection, OaSimulationSelection):
-            return self._plan_oa_simulation(selection)
-        raise AssertionError("unhandled typed RunRequest")
+        return ProjectExecution._bind(engine, plan, self.project)
 
     def plan_design_campaign(self, source: object):
         """Compile one typed Design Campaign without exposing engine internals."""
@@ -762,8 +553,8 @@ class ProjectRunner:
         from sigilicon.workflows.design_campaign import (
             DesignCampaign,
             DesignCampaignAttempt,
-            DesignCampaignSpec,
             DesignCampaignContinuation,
+            DesignCampaignSpec,
             ProjectDesignCampaignPlan,
         )
 
@@ -773,11 +564,8 @@ class ProjectRunner:
             raise ValueError("Design Campaign owner disagrees with ProjectRunner")
         baseline_source = source.baseline
         baseline_execution = self.plan(
-            RunRequest.flow(
-                baseline_source.flow,
-                baseline_source.target,
-                baseline_source.profile,
-            )
+            baseline_source.target,
+            baseline_source.operation,
         )
         baseline = DesignCampaignAttempt(
             baseline_source.iteration_id,
@@ -791,11 +579,8 @@ class ProjectRunner:
         if source.continuation is not None:
             template = source.continuation
             continuation_execution = self.plan(
-                RunRequest.flow(
-                    template.flow,
-                    template.target,
-                    template.profile,
-                )
+                template.target,
+                template.operation,
             )
             continuation = DesignCampaignContinuation(
                 continuation_execution._plan,
@@ -821,103 +606,87 @@ class ProjectRunner:
         _ = planned.record
         return planned
 
-    def _plan_flow(
-        self,
-        request: FlowRunSelection,
-        *,
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
-    ) -> FlowExecution:
-        catalog_inventory = (
-            self.project.owner_flow_catalog_inventory(self.owner)
-            if catalog_inventory is None
-            else catalog_inventory
+    def _select(self, target: str, operation: str) -> _TargetSelection:
+        source = self.project.owner_target_catalog(self.owner)
+        targets: OwnerTargetCatalog = load_owner_target_catalog(
+            self.project,
+            self.owner,
+            catalog_snapshot=source,
         )
-        selection = resolve_catalog_selection(
-            self._catalog(catalog_inventory),
-            flow_id=request.flow,
-            profile_id=request.profile,
+        selected_target = targets.get(target)
+        selected_operation = selected_target.operation(operation)
+        recipe_path = self.owner.root.joinpath(*selected_operation.recipe.parts)
+        try:
+            recipe_record = read_nofollow_text(recipe_path)
+            raw = tomllib.loads(recipe_record)
+        except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(
+                f"cannot read execution recipe {recipe_path}: {exc}"
+            ) from exc
+        recipe = parse_execution_recipe(
+            raw,
+            recipe_path,
+            owner_root=self.owner.root,
         )
-        if isinstance(selection.spec.catalog_expansion, DesignCatalogExpansion):
-            catalog = load_design_target_catalog(
-                self.project,
-                catalog_inventory=catalog_inventory,
-            ).for_owner(self.owner.name)
-            matches = [
-                DesignRunSelection(target.name, mode.name)
-                for target in catalog.targets
-                for mode in target.modes
-                if mode.flow == request.flow and mode.target == request.target
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"expanded design Flow target {request.target!r} resolved "
-                    f"{matches!r}"
-                )
-            if request.profile not in {None, selection.profile.profile_id}:
-                raise ValueError("expanded design route profile drift")
-            return self._plan_design(
-                matches[0],
-                catalog=catalog,
-                profile=selection.profile.profile_id,
-            )
-        if isinstance(selection.spec.catalog_expansion, LayoutCatalogExpansion):
-            from sigilicon.workflows.layout_targets import load_layout_target_catalog
-
-            catalog = load_layout_target_catalog(
-                self.project,
-                catalog_inventory=catalog_inventory,
-            ).for_owner(self.owner.name)
-            matches = [
-                LayoutRunSelection(target.name, route.operation)
-                for target in catalog.targets
-                for route in target.routes
-                if route.flow == request.flow and route.target == request.target
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"expanded layout Flow target {request.target!r} resolved "
-                    f"{matches!r}"
-                )
-            if request.profile not in {None, selection.profile.profile_id}:
-                raise ValueError("expanded layout route profile drift")
-            return self._plan_layout(
-                matches[0],
-                catalog=catalog,
-                profile=selection.profile.profile_id,
-            )
-        engine = self._engine(catalog_inventory)
-        return self._bind(
-            engine,
-            engine.plan(
-                selection.spec,
-                request.target,
-                selection.profile,
-                action_plans=self._action_plans(
-                    selection.spec,
-                    request.target,
-                ),
+        if recipe.owner != self.owner.name:
+            raise ValueError("execution recipe owner disagrees with target owner")
+        sources = (
+            snapshot_source_member(
+                source.path,
+                source_root=self.project.project_root,
+                scope="project",
+                record_text=source.record_text,
+                source_label="owner targets",
+            ),
+            snapshot_source_member(
+                recipe_path,
+                source_root=self.project.project_root,
+                scope="project",
+                record_text=recipe_record,
+                source_label="execution recipe",
             ),
         )
+        self._require_current(sources)
+        spec = compile_flow_spec(
+            recipe,
+            flow_id=selected_target.name,
+            targets=(
+                FlowTarget(
+                    selected_operation.name,
+                    selected_operation.goals,
+                ),
+            ),
+            source_members=sources,
+        )
+        return _TargetSelection(
+            selected_target,
+            selected_operation,
+            spec,
+        )
+
+    @staticmethod
+    def _require_current(sources: tuple[SourceMember, ...]) -> None:
+        try:
+            current = all(source_member_matches(source) for source in sources)
+        except (OSError, RuntimeError, UnicodeError):
+            current = False
+        if not current:
+            raise ValueError("target selection source changed during planning")
 
     def _action_plans(
         self,
         spec: FlowSpec,
-        target: str,
-        *,
-        design: object | None = None,
-        layout: object | None = None,
-        selection_sources: tuple[SourceMember, ...] = (),
+        operation: str,
     ) -> dict[str, ActionPlan]:
-        """Resolve domain plans once, before preflight or Adapter selection."""
+        """Resolve every domain Plan once, before Adapter selection."""
 
-        topology = resolve_target_topology(spec, target)
+        topology = resolve_target_topology(spec, operation)
         selected_nodes = tuple(spec.node(node_id) for node_id in topology.nodes)
         result: dict[str, ActionPlan] = {}
         oa_plan = None
         oa_sources: tuple[SourceMember, ...] = ()
         if any(
-            node.action_kind
-            in {NATIVE_OA_PLAN_ACTION, NATIVE_OA_SIMULATION_ACTION}
+            node.action_kind in {NATIVE_OA_PLAN_ACTION, NATIVE_OA_SIMULATION_ACTION}
             for node in selected_nodes
         ):
             oa_plan = ProjectOaWorkflow(self.project, self.owner.name).plan()
@@ -932,266 +701,103 @@ class ProjectRunner:
                     NATIVE_OA_ACTION_PLAN,
                     oa_plan,
                     oa_plan.as_dict(),
-                    _merge_source_members(oa_sources, selection_sources),
+                    oa_sources,
                 )
             elif node.action_kind == XCELIUM_VERIFICATION_ACTION:
                 cell = node.config.get("cell")
                 if not isinstance(cell, str) or not cell:
                     raise ValueError("Xcelium Action requires a cell contract")
-                planned = plan_xcelium_cell(Path(cell), project=self.project)
+                cell_path = Path(cell)
+                if not cell_path.is_absolute():
+                    cell_path = self.project.project_root / cell_path
+                planned = plan_xcelium_cell(cell_path, project=self.project)
                 result[node.node_id] = ActionPlan(
                     XCELIUM_ACTION_PLAN,
                     planned,
                     planned.as_dict(),
-                    _merge_source_members(
-                        _xcelium_source_members(self.project, planned),
-                        selection_sources,
-                    ),
+                    _xcelium_source_members(self.project, planned),
                 )
             elif node.action_kind == XCELIUM_AMS_VERIFICATION_ACTION:
                 cell = node.config.get("cell")
                 if not isinstance(cell, str) or not cell:
                     raise ValueError("Xcelium AMS Action requires a cell contract")
-                planned = plan_xcelium_ams_cell(Path(cell), project=self.project)
+                cell_path = Path(cell)
+                if not cell_path.is_absolute():
+                    cell_path = self.project.project_root / cell_path
+                planned = plan_xcelium_ams_cell(cell_path, project=self.project)
                 result[node.node_id] = ActionPlan(
                     XCELIUM_AMS_ACTION_PLAN,
                     planned,
                     planned.as_dict(),
-                    _merge_source_members(
-                        _xcelium_source_members(self.project, planned),
-                        selection_sources,
-                    ),
+                    _xcelium_source_members(self.project, planned),
                 )
             elif node.action_kind in {
                 DESIGN_SOURCE_CHECK_ACTION,
                 DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
             }:
-                from sigilicon.workflows.design_flow import DesignActionPlan
+                from sigilicon.workflows.design_flow import plan_design_action
 
-                if not isinstance(design, DesignActionPlan):
-                    raise ValueError(
-                        "design Action must be selected through a design target"
-                    )
+                planned = plan_design_action(
+                    self.project,
+                    self.owner.name,
+                    node.config,
+                )
                 result[node.node_id] = ActionPlan(
                     DESIGN_ACTION_PLAN,
-                    design,
-                    design.as_dict(),
-                    selection_sources,
+                    planned,
+                    planned.as_dict(),
+                    planned.source_members,
                 )
             elif node.action_kind in {
                 LAYOUT_GENERATION_ACTION,
                 LAYOUT_VERIFICATION_ACTION,
             }:
-                if layout is None:
-                    raise ValueError(
-                        "custom-layout Action must be selected through a layout target"
-                    )
-                from sigilicon.workflows.layout_flow import LayoutActionPlan
+                from sigilicon.workflows.layout_flow import plan_layout_action
 
-                if not isinstance(layout, LayoutActionPlan):
-                    raise ValueError("layout Action received an invalid typed plan")
+                planned = plan_layout_action(
+                    self.project,
+                    self.owner,
+                    node.config,
+                )
                 result[node.node_id] = ActionPlan(
                     LAYOUT_ACTION_PLAN,
-                    layout,
-                    layout.as_dict(),
-                    selection_sources,
+                    planned,
+                    planned.as_dict(),
+                    planned.source_members,
                 )
         return result
 
-    def _plan_design(
-        self,
-        request: DesignRunSelection,
-        *,
-        catalog: DesignTargetCatalog | None = None,
-        profile: str | None = None,
-    ) -> FlowExecution:
-        selected_catalog = catalog
-        if selected_catalog is None:
-            inventory = self.project.owner_flow_catalog_inventory(self.owner)
-            selected_catalog = load_design_target_catalog(
-                self.project,
-                catalog_inventory=inventory,
-            ).for_owner(self.owner.name)
-        elif selected_catalog.project is not self.project:
-            raise ValueError("design catalog does not belong to this exact Project")
-        selected_target = selected_catalog.get(request.target)
-        selected_mode = selected_target.get_mode(request.mode)
-        engine = self._engine(
-            selected_catalog.inventory,
-        )
-        selection = resolve_catalog_selection(
-            self._catalog(selected_catalog.inventory),
-            flow_id=selected_mode.flow,
-            profile_id=profile,
-        )
-        spec = (
-            compile_design_catalog_flow(selection.spec, selected_catalog)
-            if isinstance(
-                selection.spec.catalog_expansion,
-                DesignCatalogExpansion,
-            )
-            else selection.spec
-        )
-        from sigilicon.workflows.design_flow import DesignActionPlan
-        design_plan = DesignActionPlan(
-            selected_target,
-            selected_mode,
-        )
-        route_sources = selected_catalog.source_members_for(selected_target)
-        action_plans = self._action_plans(
-            spec,
-            selected_mode.target,
-            design=design_plan,
-            selection_sources=route_sources,
-        )
-        return self._bind(
-            engine,
-            engine.plan(
-                spec,
-                selected_mode.target,
-                selection.profile,
-                action_plans=action_plans,
-            ),
-        )
-
-    def _plan_layout(
-        self,
-        request: LayoutRunSelection,
-        *,
-        catalog: LayoutTargetCatalog | None = None,
-        profile: str | None = None,
-    ) -> FlowExecution:
-        from sigilicon.workflows.layout_targets import load_layout_target_catalog
-
-        selected_catalog = catalog
-        if selected_catalog is None:
-            inventory = self.project.owner_flow_catalog_inventory(self.owner)
-            selected_catalog = load_layout_target_catalog(
-                self.project,
-                catalog_inventory=inventory,
-            ).for_owner(self.owner.name)
-        elif selected_catalog.project is not self.project:
-            raise ValueError("layout catalog does not belong to this exact Project")
-        selected_target = selected_catalog.get(request.target)
-        route = selected_target.get_route(request.operation)
-        planning = plan_layout_spec(selected_target.spec, project=self.project)
-        intent_sources = selected_catalog.source_members_for(
-            selected_target,
-            planning,
-        )
-        engine = self._engine(
-            selected_catalog.inventory,
-        )
-        selection = resolve_catalog_selection(
-            self._catalog(selected_catalog.inventory),
-            flow_id=route.flow,
-            profile_id=profile,
-        )
-        spec = (
-            compile_layout_catalog_flow(selection.spec, selected_catalog)
-            if isinstance(
-                selection.spec.catalog_expansion,
-                LayoutCatalogExpansion,
-            )
-            else selection.spec
-        )
-        from sigilicon.workflows.layout_flow import LayoutActionPlan
-
-        layout_plan = LayoutActionPlan(
-            selected_target.name,
-            request.operation,
-            planning,
-        )
-        action_plans = self._action_plans(
-            spec,
-            route.target,
-            layout=layout_plan,
-            selection_sources=intent_sources,
-        )
-        return self._bind(
-            engine,
-            engine.plan(
-                spec,
-                route.target,
-                selection.profile,
-                action_plans=action_plans,
-            ),
-        )
-
-    def _plan_oa_simulation(
-        self,
-        request: OaSimulationSelection,
-    ) -> FlowExecution:
-        inventory = self.project.owner_flow_catalog_inventory(self.owner)
-        catalog = self._catalog(inventory)
-        matches: list[FlowRunSelection] = []
-        for entry in catalog.entries:
-            selection = resolve_catalog_selection(catalog, flow_id=entry.flow_id)
-            node_ids = {
-                node.node_id
-                for node in selection.spec.nodes
-                if node.action_kind == "native-oa.simulate"
-                and node.config.get("testbench") == request.testbench
-            }
-            matches.extend(
-                FlowRunSelection(entry.flow_id, target.target_id)
-                for target in selection.spec.targets
-                if len(target.goals) == 1 and target.goals[0] in node_ids
-            )
-        if len(matches) != 1:
-            raise ValueError(
-                "OA testbench must resolve to exactly one cataloged typed "
-                f"Flow target: {request.testbench!r} resolved {matches!r}"
-            )
-        return self._plan_flow(matches[0], catalog_inventory=inventory)
-
-    def _engine(
-        self,
-        catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> FlowEngine:
+    def _engine(self) -> FlowEngine:
         return FlowEngine(
             _project_workflow_registry(
                 self.project,
                 self.owner,
-                catalog_inventory,
                 client_factory=self.client_factory,
             ),
             project_scope=self.project.scope(self.owner),
         )
 
-    def _bind(self, engine: FlowEngine, plan: FlowPlan) -> FlowExecution:
-        return FlowExecution._bind(engine, plan, self.project)
-
 
 def resolve_project_execution(
     project: Project,
     plan_identity: str,
-) -> FlowExecution:
-    """Resolve one exact plan identity through its selected project owner."""
+) -> ProjectExecution:
+    """Resolve one exact ``owner:target:operation`` identity."""
 
     if not isinstance(plan_identity, str) or not plan_identity:
-        raise ValueError("Flow Plan identity must be non-empty text")
+        raise ValueError("Project Plan identity must be non-empty text")
     fields = plan_identity.split(":")
-    if len(fields) != 4:
-        raise ValueError(
-            "Flow Plan identity must be owner:flow:target:profile"
-        )
-    owner, flow, target, profile = fields
-    resolved = ProjectRunner(project, owner).plan(
-        RunRequest.flow(flow, target, profile),
-    )
+    if len(fields) != 3:
+        raise ValueError("Project Plan identity must be owner:target:operation")
+    owner, target, operation = fields
+    resolved = ProjectRunner(project, owner).plan(target, operation)
     if resolved.plan_identity != plan_identity:
-        raise ValueError("Flow Plan identity does not match its project plan")
+        raise ValueError("Project Plan identity does not match its project plan")
     return resolved
 
 
 __all__ = [
-    "DesignRunSelection",
-    "FlowRunSelection",
-    "LayoutRunSelection",
-    "OaSimulationSelection",
-    "FlowExecution",
+    "ProjectExecution",
     "ProjectRunner",
-    "RunRequest",
     "resolve_project_execution",
 ]

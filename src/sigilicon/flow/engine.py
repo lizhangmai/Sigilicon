@@ -32,7 +32,6 @@ from sigilicon.flow.model import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     EvidenceEnvelope,
     FlowContractError,
     FlowExecutionError,
@@ -113,7 +112,9 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _action_plan_sources_payload(plan: ActionPlan) -> list[dict[str, Any]]:
+def _source_members_payload(
+    sources: tuple[SourceMember, ...],
+) -> list[dict[str, Any]]:
     return [
         {
             "scope": source.scope,
@@ -123,8 +124,12 @@ def _action_plan_sources_payload(plan: ActionPlan) -> list[dict[str, Any]]:
             ).hexdigest(),
             "executable": source.executable,
         }
-        for source in plan.sources
+        for source in sources
     ]
+
+
+def _action_plan_sources_payload(plan: ActionPlan) -> list[dict[str, Any]]:
+    return _source_members_payload(plan.sources)
 
 
 def _action_plan_payload(plan: ActionPlan) -> dict[str, Any]:
@@ -144,9 +149,9 @@ def _source_payload_identity(payload: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _current_action_plan_source_identity(plan: ActionPlan) -> str:
+def _current_source_identity(sources: tuple[SourceMember, ...]) -> str:
     payload = []
-    for source in plan.sources:
+    for source in sources:
         payload.append(
             {
                 "scope": source.scope,
@@ -160,6 +165,10 @@ def _current_action_plan_source_identity(plan: ActionPlan) -> str:
             }
         )
     return _source_payload_identity(payload)
+
+
+def _current_action_plan_source_identity(plan: ActionPlan) -> str:
+    return _current_source_identity(plan.sources)
 
 
 @dataclass
@@ -307,7 +316,6 @@ def _validate_persisted_action_operation(
 
 def _plan_payload(
     spec: FlowSpec,
-    profile: ExecutionProfile,
     target_id: str,
     planned: tuple[PlannedNode, ...],
     topology: tuple[str, ...],
@@ -349,15 +357,14 @@ def _plan_payload(
         "contract_kind": "resolved-flow-plan",
         "owner": spec.owner,
         "flow": spec.flow_id,
-        "execution_profile": {
-            "owner": profile.owner,
-            "name": profile.profile_id,
-        },
+        "recipe": spec.recipe_id,
         "target": target_id,
         "topology": list(topology),
         "nodes": [node_payload(item) for item in planned],
         "policies": [json_value(policy) for policy in spec.policies],
     }
+    if spec.source_members:
+        payload["source_members"] = _source_members_payload(spec.source_members)
     if implementation_sources:
         payload["implementation_sources"] = [
             {
@@ -454,18 +461,27 @@ class FlowEngine:
 
         return (
             f"{plan.spec.owner}:{plan.spec.flow_id}:"
-            f"{plan.target.target_id}:{plan.profile.profile_id}"
+            f"{plan.target.target_id}"
         )
 
     def plan(
         self,
         spec: FlowSpec,
         target_id: str,
-        profile: ExecutionProfile,
         *,
         action_plans: Mapping[str, ActionPlan] | None = None,
     ) -> FlowPlan:
         supplied_action_plans = dict(action_plans or {})
+        invalid_action_plans = {
+            node_id
+            for node_id, action_plan in supplied_action_plans.items()
+            if not isinstance(action_plan, ActionPlan)
+        }
+        if invalid_action_plans:
+            raise FlowContractError(
+                "Action Plans must be ActionPlan values for nodes: "
+                f"{sorted(invalid_action_plans)}"
+            )
         if self._project_scope is not None:
             if spec.owner != self._project_scope.owner:
                 raise FlowContractError(
@@ -476,11 +492,6 @@ class FlowEngine:
                 raise FlowContractError(
                     "Flow owner root does not match explicit project owner root"
                 )
-        if profile.owner != spec.owner:
-            raise FlowContractError(
-                f"Execution Profile owner {profile.owner!r} does not match "
-                f"Flow owner {spec.owner!r}"
-            )
         target = spec.target(target_id)
         target_topology = resolve_target_topology(spec, target_id)
         unknown_plan_nodes = set(supplied_action_plans) - set(target_topology.nodes)
@@ -507,15 +518,15 @@ class FlowEngine:
                     f"node {node.node_id!r} requires Action Plan "
                     f"{contract.plan_input_kind!r}"
                 )
-            selection = profile.selection(node.action_kind)
-            if selection.adapter not in contract.adapters:
+            binding = spec.action_binding(node.action_kind)
+            if binding.adapter not in contract.adapters:
                 raise FlowContractError(
-                    f"Adapter {selection.adapter!r} cannot implement "
+                    f"Adapter {binding.adapter!r} cannot implement "
                     f"Action {contract.kind!r}"
                 )
             self._validate_extensions(
                 contract,
-                self._registry.adapter_extensions(selection.adapter),
+                self._registry.adapter_extensions(binding.adapter),
                 tuple(node.extensions),
             )
             source_assets[node.node_id] = resolve_node_source_assets(
@@ -556,37 +567,37 @@ class FlowEngine:
         for node_id in target_topology.nodes:
             node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
-            selection = profile.selection(node.action_kind)
+            binding = spec.action_binding(node.action_kind)
             contract_asset_roles = {
                 requirement.role for requirement in contract.platform_assets
             }
             unknown_asset_identities = (
-                set(selection.platform_asset_identities) - contract_asset_roles
+                set(binding.platform_assets) - contract_asset_roles
             )
             if unknown_asset_identities:
                 raise FlowContractError(
-                    f"Execution Profile action {node.action_kind!r} selects unknown "
+                    f"Action binding {node.action_kind!r} selects unknown "
                     "platform asset identities: "
                     f"{sorted(unknown_asset_identities)}"
                 )
             planned_items.append(
                 PlannedNode(
                     node=node,
-                    adapter=selection.adapter,
+                    adapter=binding.adapter,
                     action_config=ActionConfiguration(
                         node.action_kind,
                         node.config,
                     ),
                     adapter_config=AdapterConfiguration(
-                        selection.adapter,
-                        selection.config,
+                        binding.adapter,
+                        binding.config,
                     ),
                     evidence=EvidenceEnvelope.from_action_config(node.config),
                     required_capabilities=tuple(
                         dict.fromkeys(
                             (
                                 *contract.required_capabilities,
-                                *selection.required_capabilities,
+                                *binding.requires,
                             )
                         )
                     ),
@@ -595,9 +606,7 @@ class FlowEngine:
                             requirement.role,
                             requirement.kind,
                             requirement.members,
-                            selection.platform_asset_identities.get(
-                                requirement.role
-                            ),
+                            binding.platform_assets.get(requirement.role),
                         )
                         for requirement in contract.platform_assets
                     ),
@@ -610,7 +619,6 @@ class FlowEngine:
         planned = tuple(planned_items)
         return FlowPlan(
             spec=spec,
-            profile=profile,
             target=target,
             nodes=planned,
             topology=target_topology.nodes,
@@ -621,7 +629,6 @@ class FlowEngine:
 
         return _plan_payload(
             plan.spec,
-            plan.profile,
             plan.target.target_id,
             plan.nodes,
             plan.topology,
@@ -636,6 +643,27 @@ class FlowEngine:
         """Purely compare planned semantic requirements with current site facts."""
 
         checks: list[PreflightCheck] = []
+        if plan.spec.source_members:
+            expected_sources = _source_payload_identity(
+                _source_members_payload(plan.spec.source_members)
+            )
+            try:
+                current_sources = _current_source_identity(plan.spec.source_members)
+            except (OSError, RuntimeError, UnicodeError):
+                current_sources = None
+            checks.append(
+                PreflightCheck(
+                    requirement=f"{plan.spec.flow_id}:{plan.target.target_id}",
+                    requirement_kind="target-source",
+                    status=(
+                        "available"
+                        if current_sources == expected_sources
+                        else "changed"
+                    ),
+                    expected=expected_sources,
+                    identity=current_sources,
+                )
+            )
         for source in self._registry.implementation_sources:
             try:
                 exact_source = source_member_matches(source)
@@ -800,7 +828,7 @@ class FlowEngine:
             "owner": plan.spec.owner,
             "flow": plan.spec.flow_id,
             "target": plan.target.target_id,
-            "execution_profile": plan.profile.profile_id,
+            "recipe": plan.spec.recipe_id,
             "status": result.status,
             "checks": [json_value(check) for check in result.checks],
         }

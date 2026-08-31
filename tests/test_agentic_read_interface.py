@@ -29,7 +29,7 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.flow import ExecutionEnvironment
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
-from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner
 
 
 def _read(root: Path) -> AgenticReadInterface:
@@ -39,112 +39,106 @@ def _read(root: Path) -> AgenticReadInterface:
 def write_read_only_flow_project(root: Path, owner: str = "example") -> Path:
     owner_root = root / "ip" / owner
     flow_root = owner_root / "configs" / "flows"
-    profile_root = flow_root / "profiles"
-    profile_root.mkdir(parents=True)
+    flow_root.mkdir(parents=True)
     (flow_root / "pipeline.toml").write_text(
         f'''schema = 1
-contract_kind = "flow"
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "{owner}"
 name = "pipeline"
+
+[actions."fake.source"]
+adapter = "fake-source"
 
 [[nodes]]
 id = "source"
 action = "fake.source"
 config = {{ text = "hello" }}
-
-[[targets]]
-name = "all"
-goals = ["source"]
 ''',
         encoding="utf-8",
     )
-    (profile_root / "offline.toml").write_text(
-        f'''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "{owner}"
-name = "offline"
-
-[actions."fake.source"]
-adapter = "fake-source"
-''',
-        encoding="utf-8",
-    )
-    catalog = flow_root / "catalog.toml"
+    catalog = owner_root / "configs" / "targets.toml"
     catalog.write_text(
         f'''schema = 1
-contract_kind = "flow-catalog"
+contract_kind = "owner-targets"
 path_scope = "owner"
 owner = "{owner}"
 
-[flows.pipeline]
-contract = "configs/flows/pipeline.toml"
-default_profile = "offline"
+[targets.pipeline]
+description = "Read-only pipeline"
 
-[flows.pipeline.profiles]
-offline = "configs/flows/profiles/offline.toml"
+[targets.pipeline.operations.all]
+recipe = "configs/flows/pipeline.toml"
+goals = ["source"]
 ''',
         encoding="utf-8",
     )
     relative_catalog = catalog.relative_to(root).as_posix()
     relative_flow = (flow_root / "pipeline.toml").relative_to(root).as_posix()
-    relative_profile = (profile_root / "offline.toml").relative_to(root).as_posix()
     extension = write_fake_flow_extension(root, owner)
-    write_component_owner(
+    component = write_component_owner(
         root,
         owner,
         filesets={
             "flow": (
                 relative_catalog,
                 relative_flow,
-                relative_profile,
                 extension.relative_to(root).as_posix(),
             )
         },
     )
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            "\n[filesets]\n",
+            f'\ntarget_catalog = "{relative_catalog}"\n\n[filesets]\n',
+        ),
+        encoding="utf-8",
+    )
     return catalog
 
 
-def test_read_interface_inspects_cataloged_project_and_plans_without_writing(
+def test_read_interface_inspects_project_targets_and_plans_without_writing(
     tmp_path: Path,
 ) -> None:
     write_read_only_flow_project(tmp_path)
     interface = _read(tmp_path)
 
     assert interface.project_id == f"test.{tmp_path.name}"
+    assert not hasattr(interface, "plan_flow")
 
     project = interface.inspect_project(owner="example")
-    plan = interface.plan_flow(
+    plan = interface.plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile=None,
+        target="pipeline",
+        operation="all",
     )
 
     assert project["operation"] == "project.inspect"
     assert project["authority"] == "source-contract"
     assert project["conclusion"] == "valid"
     assert [item["name"] for item in project["data"]["owners"]] == ["example"]
-    assert project["data"]["owners"][0]["flows"] == [
+    assert project["data"]["owners"][0]["targets"] == [
         {
-            "default_profile": "offline",
             "name": "pipeline",
-            "profiles": ["offline"],
-            "targets": ["all"],
+            "description": "Read-only pipeline",
+            "operations": ["all"],
         }
     ]
-    assert plan["operation"] == "flow.plan"
+    assert "flows" not in project["data"]["owners"][0]
+    assert "catalogs" not in project["data"]
+    assert plan["operation"] == "target.plan"
     assert plan["authority"] == "plan"
     assert plan["conclusion"] == "planned"
     assert plan["data"]["plan"]["topology"] == ["source"]
-    assert plan["data"]["plan_identity"] == "example:pipeline:all:offline"
+    assert plan["data"]["plan_identity"] == "example:pipeline:all"
+    assert "flow" not in plan["data"]
+    assert "profile" not in plan["data"]
     assert str(tmp_path) not in json.dumps(project)
     assert str(tmp_path) not in json.dumps(plan)
     assert not (tmp_path / "artifacts").exists()
 
 
-def test_project_inspection_reads_each_flow_catalog_once(
+def test_project_inspection_reads_each_target_catalog_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -165,7 +159,7 @@ def test_project_inspection_reads_each_flow_catalog_once(
 
     assert reads == 1
 
-def test_project_rejects_flow_catalog_inventory_from_another_project(
+def test_project_rejects_owner_from_another_project(
     tmp_path: Path,
 ) -> None:
     first_root = tmp_path / "first"
@@ -177,11 +171,8 @@ def test_project_rejects_flow_catalog_inventory_from_another_project(
     first = _read(first_root).project
     second = _read(second_root).project
 
-    with pytest.raises(ValueError, match="does not belong to the current Project"):
-        first.owner_flow_catalog_snapshots(
-            first.owner("example"),
-            inventory=second.flow_catalog_inventory(),
-        )
+    with pytest.raises(ValueError, match="does not contain owner"):
+        first.owner_target_catalog(second.owner("example"))
 
 
 def test_cli_python_and_run_inspection_share_the_exact_interface(
@@ -191,31 +182,26 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
 ) -> None:
     catalog = write_read_only_flow_project(tmp_path)
     interface = _read(tmp_path)
-    python_plan = interface.plan_flow(
+    python_plan = interface.plan_target(
         owner="example",
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        target="pipeline",
+        operation="all",
     )
 
     assert agentic_read_cli_main(
         [
             "--project-root",
             str(tmp_path),
-            "flow-plan",
+            "target-plan",
             "example",
             "pipeline",
             "all",
-            "--profile",
-            "offline",
         ]
     ) == 0
     assert json.loads(capsys.readouterr().out) == python_plan
 
     project_runner = ProjectRunner(interface.project, "example")
-    planned = project_runner.plan(
-        RunRequest.flow("pipeline", "all", "offline"),
-    )
+    planned = project_runner.plan("pipeline", "all")
     result = planned.run(
         ExecutionEnvironment(),
         run_id="a" * 32,
@@ -232,13 +218,13 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
     monkeypatch.setattr(repository_module, "read_toml_record", counted)
     python_run = interface.inspect_run(
         owner="example",
-        flow="pipeline",
-        target="all",
+        target="pipeline",
+        operation="all",
         run_id=result.run_id,
     )
     assert catalog_reads == 1
     assert python_run["operation"] == "run.inspect"
-    assert python_run["authority"] == "recorded-flow-result"
+    assert python_run["authority"] == "recorded-target-operation-result"
     assert python_run["conclusion"] == "recorded"
     assert python_run["data"]["result"]["status"] == "accepted"
 
@@ -265,25 +251,23 @@ def test_read_interface_rejects_injection_cross_owner_and_identity_drift(
 
     with pytest.raises(ValueError, match="owner"):
         interface.inspect_project(owner="../example")
-    with pytest.raises(ValueError, match="Flow identity"):
-        interface.plan_flow(
+    with pytest.raises(ValueError, match="target"):
+        interface.plan_target(
             owner="example",
-            flow="pipeline; touch owned",
-            target="all",
-            profile=None,
+            target="pipeline; touch owned",
+            operation="all",
         )
-    with pytest.raises(ValueError, match="cataloged Flow"):
-        interface.plan_flow(
+    with pytest.raises(ValueError, match="unknown target"):
+        interface.plan_target(
             owner="other",
-            flow="missing",
-            target="all",
-            profile=None,
+            target="missing",
+            operation="all",
         )
     with pytest.raises(ValueError, match="Run"):
         interface.inspect_run(
             owner="example",
-            flow="pipeline",
-            target="all",
+            target="pipeline",
+            operation="all",
             run_id="../../outside",
         )
 

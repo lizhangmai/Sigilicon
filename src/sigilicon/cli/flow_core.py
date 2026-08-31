@@ -1,4 +1,4 @@
-"""Operator CLI for the current typed Flow core."""
+"""Operator CLI for the single owner target interface."""
 
 from __future__ import annotations
 
@@ -12,46 +12,46 @@ from typing import Any
 
 from sigilicon.cli.common import emit_json
 from sigilicon.flow import (
-    FlowContractError,
     ExecutionEnvironment,
+    FlowContractError,
     FlowExecutionError,
     ResolvedCapability,
     load_execution_environment,
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sigilicon flow",
-        description="Plan and run current-schema typed design Flows.",
+        description="Plan and run owner target operations.",
     )
     commands = parser.add_subparsers(dest="action", required=True)
 
-    list_parser = commands.add_parser("list", help="list cataloged Flows")
-    list_parser.add_argument("--project-root", type=Path)
-    list_parser.add_argument("--owner", required=True)
+    listing = commands.add_parser("list", help="list owner targets")
+    listing.add_argument("--project-root", type=Path)
+    listing.add_argument("--owner", required=True)
 
-    show = commands.add_parser("show", help="show one cataloged Flow selection")
+    show = commands.add_parser("show", help="show a target or target operation")
     show.add_argument("--project-root", type=Path)
     show.add_argument("--owner", required=True)
-    show.add_argument("--flow", required=True)
-    show.add_argument("--profile")
+    show.add_argument("--target", required=True)
+    show.add_argument("--operation")
 
     for name, help_text in (
-        ("plan", "resolve and validate a source-only Flow plan"),
-        ("graph", "render the resolved dependency graph as DOT"),
-        ("preflight", "check adapters and an explicit current-site environment"),
+        ("plan", "resolve and validate a source-only target plan"),
+        ("graph", "render the target operation dependency graph as DOT"),
+        ("preflight", "check a target operation against the site environment"),
+        ("run", "execute a target operation"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--project-root", type=Path)
         command.add_argument("--owner", required=True)
-        command.add_argument("--flow", required=True)
         command.add_argument("--target", required=True)
-        command.add_argument("--profile")
-        if name == "preflight":
+        command.add_argument("--operation", required=True)
+        if name in {"preflight", "run"}:
             command.add_argument("--environment", type=Path)
             command.add_argument(
                 "--capability",
@@ -63,40 +63,23 @@ def _parser() -> argparse.ArgumentParser:
                     "from PATH when supplied"
                 ),
             )
-
-    run = commands.add_parser("run", help="execute a resolved Flow plan")
-    run.add_argument("--project-root", type=Path)
-    run.add_argument("--owner", required=True)
-    run.add_argument("--flow", required=True)
-    run.add_argument("--target", required=True)
-    run.add_argument("--profile")
-    run.add_argument("--environment", type=Path)
-    run.add_argument(
-        "--capability",
-        action="append",
-        default=[],
-        metavar="NAME[=COMMAND]",
-        help=(
-            "attest one current-process capability; resolve COMMAND from PATH "
-            "when supplied"
-        ),
-    )
-    run.add_argument("--run-id")
+        if name == "run":
+            command.add_argument("--run-id")
 
     for name, help_text in (
-        ("status", "read a persisted Flow Result"),
-        ("clean", "remove exactly one manifest-owned Flow Run"),
+        ("status", "read a persisted target operation result"),
+        ("clean", "remove exactly one manifest-owned run"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--project-root", type=Path)
         command.add_argument("owner")
-        command.add_argument("flow")
         command.add_argument("target")
+        command.add_argument("operation")
         command.add_argument("run_id")
     return parser
 
 
-def _flow_status_exit(payload: dict[str, Any]) -> int:
+def _result_exit(payload: dict[str, Any]) -> int:
     nodes = payload.get("nodes")
     if isinstance(nodes, dict) and any(
         isinstance(node, dict) and node.get("execution_status") == "cancelled"
@@ -106,9 +89,7 @@ def _flow_status_exit(payload: dict[str, Any]) -> int:
     return 0 if payload.get("status") == "accepted" else 1
 
 
-def _execution_environment(
-    args: argparse.Namespace,
-) -> ExecutionEnvironment:
+def _execution_environment(args: argparse.Namespace) -> ExecutionEnvironment:
     contract = getattr(args, "environment", None)
     base = (
         ExecutionEnvironment()
@@ -158,44 +139,24 @@ def _project_runner(args: argparse.Namespace) -> ProjectRunner:
     return ProjectRunner(_project(args), args.owner)
 
 
-def main(
-    argv: Sequence[str] | None = None,
-) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(arguments)
     try:
+        runner = _project_runner(args)
         if args.action == "list":
-            project = _project_runner(args)
-            catalog = project.catalog()
-            emit_json(
-                [
-                    {
-                        "flow": entry.flow_id,
-                        "default_profile": entry.default_profile,
-                        "profiles": sorted(entry.profiles),
-                    }
-                    for entry in catalog.entries
-                ]
-            )
+            emit_json(runner.targets())
             return 0
         if args.action == "show":
-            project = _project_runner(args)
-            emit_json(project.describe(flow=args.flow, profile=args.profile))
+            emit_json(runner.describe(args.target, args.operation))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
-            project = _project_runner(args)
-            resolved = project.plan(
-                RunRequest.flow(
-                    args.flow,
-                    args.target,
-                    getattr(args, "profile", None),
-                ),
-            )
+            resolved = runner.plan(args.target, args.operation)
             if args.action == "plan":
                 emit_json(resolved.record)
                 return 0
             if args.action == "graph":
-                print(f'digraph "{resolved.flow}:{resolved.target}" {{')
+                print(f'digraph "{resolved.target}:{resolved.operation}" {{')
                 for node, dependencies in resolved.graph:
                     print(f'  "{node}";')
                     for dependency in dependencies:
@@ -206,51 +167,33 @@ def main(
                 preflight = resolved.preflight(_execution_environment(args))
                 emit_json(resolved.preflight_record(preflight))
                 return 0 if preflight.status == "ready" else 2
-            environment = _execution_environment(
-                args,
-            )
             result = resolved.run(
-                environment,
+                _execution_environment(args),
                 run_id=args.run_id,
             )
             payload = resolved.read_result(result.run_id)
             emit_json(payload)
-            return _flow_status_exit(payload)
+            return _result_exit(payload)
+        resolved = runner.plan(args.target, args.operation)
         if args.action == "status":
-            project = _project_runner(args)
-            resolved = project.plan(
-                RunRequest.flow(
-                    args.flow,
-                    args.target,
-                    getattr(args, "profile", None),
-                ),
-            )
             payload = resolved.read_result(args.run_id)
             emit_json(payload)
-            return _flow_status_exit(payload)
+            return _result_exit(payload)
         if args.action == "clean":
-            project = _project_runner(args)
-            resolved = project.plan(
-                RunRequest.flow(
-                    args.flow,
-                    args.target,
-                    getattr(args, "profile", None),
-                ),
-            )
             resolved.clean(args.run_id)
             emit_json(
                 {
                     "schema": 1,
-                    "contract_kind": "flow-clean-result",
+                    "contract_kind": "project-run-clean-result",
                     "status": "cleaned",
                     "owner": args.owner,
-                    "flow": args.flow,
                     "target": args.target,
+                    "operation": args.operation,
                     "run_id": args.run_id,
                 }
             )
             return 0
-        raise AssertionError(f"unhandled Flow command: {args.action}")
+        raise AssertionError(f"unhandled target command: {args.action}")
     except (FlowContractError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

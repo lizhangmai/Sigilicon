@@ -5,17 +5,24 @@ import sys
 
 import sigilicon
 from sigilicon.domain.repository import Project as DomainProject
-from sigilicon.project import Project, ProjectRunner, ProjectOaWorkflow
+from sigilicon.project import (
+    Project,
+    ProjectExecution,
+    ProjectOaWorkflow,
+    ProjectRunner,
+)
 
 
 def test_top_level_project_author_interface_is_narrow_and_canonical() -> None:
     assert sigilicon.__all__ == [
         "Project",
         "ProjectContext",
+        "ProjectExecution",
         "ProjectRunner",
         "ProjectOaWorkflow",
     ]
     assert Project is DomainProject
+    assert sigilicon.ProjectExecution is ProjectExecution
     assert sigilicon.ProjectRunner is ProjectRunner
     assert sigilicon.ProjectOaWorkflow is ProjectOaWorkflow
 
@@ -43,7 +50,10 @@ def test_generic_flow_interface_does_not_aggregate_domain_action_modules() -> No
             sys.executable,
             "-c",
             "import sys; import sigilicon.flow as flow; "
-            "assert len(flow.__all__) == 56; "
+            "assert {'ActionBinding', 'ExecutionRecipe', "
+            "'compile_flow_spec', 'parse_execution_recipe'} <= set(flow.__all__); "
+            "assert {'AdapterSelection', 'ExecutionProfile'}"
+            ".isdisjoint(flow.__all__); "
             "assert 'register_standard_asic_actions' not in flow.__all__; "
             "forbidden = {"
             "'sigilicon.flow.circuit_design', "

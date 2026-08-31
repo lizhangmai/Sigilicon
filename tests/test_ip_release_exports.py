@@ -1106,7 +1106,11 @@ def test_project_configuration_reuses_ip_release_interface_documents(
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
 
     project = contract.project
-    catalogs = project.flow_catalog_inventory()
+    target_catalogs = tuple(
+        project.owner_target_catalog(owner)
+        for owner in project.owners
+        if owner.component.target_catalog is not None
+    )
     sources = RepositorySourceInventory.for_project(project)
     sources.verify(
         "IP release snapshot",
@@ -1114,7 +1118,7 @@ def test_project_configuration_reuses_ip_release_interface_documents(
     )
     report = inspect_project_configuration_sources(
         project,
-        catalog_inventory=catalogs,
+        target_catalog_inventory=target_catalogs,
         sources=sources,
     )
 

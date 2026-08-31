@@ -11,14 +11,13 @@ import pytest
 
 from conftest import StagedAdapterFixture, write_component_owner, write_project_context
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowContractError,
     FlowEngine,
     FlowNode,
@@ -532,6 +531,7 @@ def _plan(engine: FlowEngine, owner_root: Path):
     spec = FlowSpec(
         owner="benchmark",
         flow_id="oa-xstream-materialization",
+        recipe_id="oa-xstream-materialization-recipe",
         nodes=(
             FlowNode("inputs", _INPUT_ACTION),
             FlowNode(
@@ -552,28 +552,24 @@ def _plan(engine: FlowEngine, owner_root: Path):
             ),
         ),
         targets=(FlowTarget("materialized", ("materialize",)),),
-        owner_root=owner_root,
-    )
-    profile = ExecutionProfile(
-        "benchmark",
-        "oa-xstream",
-        (
-            AdapterSelection(_INPUT_ACTION, _INPUT_ADAPTER),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding(_INPUT_ACTION, _INPUT_ADAPTER),
+            ActionBinding(
                 PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
                 OA_XSTREAM_MATERIALIZATION_ADAPTER,
-                required_capabilities=(
+                requires=(
                     "tool.virtuoso-bridge",
                     "tool.xstream",
                     "license.cadence-oa",
                 ),
-                platform_asset_identities={
+                platform_assets={
                     "physical-layout": "benchmark.oa-xstream-assets"
                 },
             ),
         ),
+        owner_root=owner_root,
     )
-    return engine.plan(spec, "materialized", profile)
+    return engine.plan(spec, "materialized")
 
 
 def test_flow_plan_scope_rejects_same_owner_from_another_project(

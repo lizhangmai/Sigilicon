@@ -239,11 +239,11 @@ class SynopsysDCAdapter:
         }
         if unknown:
             raise FlowExecutionError(
-                f"DC profile contains unknown configuration: {sorted(unknown)}"
+                f"DC Adapter contains unknown configuration: {sorted(unknown)}"
             )
         timeout_seconds = context.adapter_config.get("timeout_seconds")
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
-            raise FlowExecutionError("DC profile requires a positive timeout_seconds")
+            raise FlowExecutionError("DC Adapter requires a positive timeout_seconds")
         outputs = _text_mapping(
             context.adapter_config.get("outputs"),
             "DC outputs",
@@ -287,5 +287,4 @@ class SynopsysDCAdapter:
         if not output.is_relative_to(tool_root.resolve()):
             raise FlowExecutionError(f"DC output escaped managed root: {relative!r}")
         return output
-
 

@@ -7,20 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.flow import (
+    ActionBinding,
     ActionContext,
     ActionContract,
     ActionConfiguration,
     ActionPlan,
     AdapterExecution,
     AdapterConfiguration,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     EvidenceEnvelope,
     FlowContractError,
     FlowEngine,
@@ -33,15 +31,12 @@ from sigilicon.flow import (
     PolicySpec,
     ProducedArtifact,
     SourceMember,
-    load_flow_contract,
+    load_execution_recipe,
 )
 from sigilicon.virtuoso.operation_journal import write_operation_incident
 
 from conftest import (
     StagedAdapterFixture,
-    write_component_owner,
-    write_fake_flow_extension,
-    write_project_context,
 )
 
 
@@ -225,22 +220,18 @@ def test_action_plan_is_required_and_source_drift_blocks_preflight(
     spec = FlowSpec(
         "example",
         "planned",
+        "fixture",
         (FlowNode("planned", "fake.planned"),),
         (FlowTarget("planned", ("planned",)),),
-    )
-    profile = ExecutionProfile(
-        "example",
-        "fixture",
-        (AdapterSelection("fake.planned", "fake-planned"),),
+        action_bindings=(ActionBinding("fake.planned", "fake-planned"),),
     )
 
     with pytest.raises(FlowContractError, match="requires Action Plan"):
-        engine.plan(spec, "planned", profile)
+        engine.plan(spec, "planned")
 
     plan = engine.plan(
         spec,
         "planned",
-        profile,
         action_plans={
             "planned": ActionPlan(
                 "fake.intent",
@@ -275,15 +266,11 @@ def test_action_plan_is_required_and_source_drift_blocks_preflight(
     )
 
 
-def fake_profile(owner: str = "example") -> ExecutionProfile:
-    return ExecutionProfile(
-        owner=owner,
-        profile_id="fake",
-        selections=(
-            AdapterSelection("fake.source", "fake-source"),
-            AdapterSelection("fake.transform", "fake-transform"),
-            AdapterSelection("fake.verify", "fake-verify"),
-        ),
+def fake_bindings() -> tuple[ActionBinding, ...]:
+    return (
+        ActionBinding("fake.source", "fake-source"),
+        ActionBinding("fake.transform", "fake-transform"),
+        ActionBinding("fake.verify", "fake-verify"),
     )
 
 
@@ -299,6 +286,7 @@ def flow_spec(
     return FlowSpec(
         owner="example",
         flow_id="fake-pipeline",
+        recipe_id="fake-recipe",
         nodes=(
             FlowNode(
                 node_id="source",
@@ -354,6 +342,7 @@ def flow_spec(
                 else ()
             ),
         ),
+        action_bindings=fake_bindings(),
     )
 
 
@@ -370,6 +359,7 @@ def test_plan_validates_typed_bindings_before_creating_a_run(tmp_path: Path) -> 
     invalid = FlowSpec(
         owner=invalid.owner,
         flow_id=invalid.flow_id,
+        recipe_id=invalid.recipe_id,
         nodes=(
             FlowNode(
                 node_id="source",
@@ -379,21 +369,17 @@ def test_plan_validates_typed_bindings_before_creating_a_run(tmp_path: Path) -> 
             *invalid.nodes[1:],
         ),
         targets=invalid.targets,
+        policies=invalid.policies,
+        action_bindings=(
+            ActionBinding("fake.wrong-source", "fake-source"),
+            *invalid.action_bindings[1:],
+        ),
     )
 
     with pytest.raises(FlowContractError, match="netlist.verilog.*text.plain"):
         FlowEngine(registered).plan(
             invalid,
             "qualification",
-            ExecutionProfile(
-                owner="example",
-                profile_id="fake",
-                selections=(
-                    AdapterSelection("fake.wrong-source", "fake-source"),
-                    AdapterSelection("fake.transform", "fake-transform"),
-                    AdapterSelection("fake.verify", "fake-verify"),
-                ),
-            ),
         )
 
     assert not (tmp_path / "artifacts").exists()
@@ -405,6 +391,7 @@ def test_plan_validates_only_the_selected_target_closure() -> None:
     spec = FlowSpec(
         owner=spec.owner,
         flow_id=spec.flow_id,
+        recipe_id=spec.recipe_id,
         nodes=(
             *spec.nodes,
             FlowNode(
@@ -414,9 +401,13 @@ def test_plan_validates_only_the_selected_target_closure() -> None:
         ),
         targets=spec.targets,
         policies=spec.policies,
+        action_bindings=(
+            *spec.action_bindings,
+            ActionBinding("unavailable.external-tool", "missing-adapter"),
+        ),
     )
 
-    plan = FlowEngine(registered).plan(spec, "qualification", fake_profile())
+    plan = FlowEngine(registered).plan(spec, "qualification")
 
     assert plan.topology == ("source", "transform", "verify")
     assert all(
@@ -430,6 +421,7 @@ def test_plan_rejects_an_unavailable_action_in_the_selected_target_closure() -> 
     spec = FlowSpec(
         owner="example",
         flow_id="selected-external-tool",
+        recipe_id="selected-external-tool-recipe",
         nodes=(
             FlowNode(
                 node_id="selected-external-tool",
@@ -437,10 +429,13 @@ def test_plan_rejects_an_unavailable_action_in_the_selected_target_closure() -> 
             ),
         ),
         targets=(FlowTarget("all", ("selected-external-tool",)),),
+        action_bindings=(
+            ActionBinding("unavailable.external-tool", "missing-adapter"),
+        ),
     )
 
     with pytest.raises(FlowContractError, match="unknown Action"):
-        FlowEngine(registered).plan(spec, "all", fake_profile())
+        FlowEngine(registered).plan(spec, "all")
 
 
 def test_plan_compiles_typed_config_and_evidence_envelope(tmp_path: Path) -> None:
@@ -450,6 +445,7 @@ def test_plan_compiles_typed_config_and_evidence_envelope(tmp_path: Path) -> Non
     typed_spec = FlowSpec(
         owner=spec.owner,
         flow_id=spec.flow_id,
+        recipe_id=spec.recipe_id,
         nodes=(
             FlowNode(
                 node_id=source.node_id,
@@ -465,12 +461,12 @@ def test_plan_compiles_typed_config_and_evidence_envelope(tmp_path: Path) -> Non
         ),
         targets=spec.targets,
         policies=spec.policies,
+        action_bindings=spec.action_bindings,
     )
 
     plan = FlowEngine(registered).plan(
         typed_spec,
         "qualification",
-        fake_profile(),
     )
     planned = plan.planned_node("source")
 
@@ -529,17 +525,14 @@ def test_plan_rejects_invalid_evidence_envelopes(
     spec = FlowSpec(
         owner="example",
         flow_id="invalid-evidence",
+        recipe_id="invalid-evidence-recipe",
         nodes=(FlowNode("source", "fake.source", {"text": "x", **config}),),
         targets=(FlowTarget("all", ("source",)),),
-    )
-    profile = ExecutionProfile(
-        owner="example",
-        profile_id="fake",
-        selections=(AdapterSelection("fake.source", "fake-source"),),
+        action_bindings=(ActionBinding("fake.source", "fake-source"),),
     )
 
     with pytest.raises(FlowContractError, match=message):
-        FlowEngine(registered).plan(spec, "all", profile)
+        FlowEngine(registered).plan(spec, "all")
 
 
 def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:
@@ -598,16 +591,13 @@ def test_adapter_factory_is_materialized_only_when_a_plan_runs(tmp_path: Path) -
     spec = FlowSpec(
         owner="example",
         flow_id="lazy-adapter",
+        recipe_id="lazy-adapter-recipe",
         nodes=(FlowNode("source", "fake.source", {"text": "hello"}),),
         targets=(FlowTarget("all", ("source",)),),
-    )
-    profile = ExecutionProfile(
-        owner="example",
-        profile_id="lazy",
-        selections=(AdapterSelection("fake.source", "lazy-source"),),
+        action_bindings=(ActionBinding("fake.source", "lazy-source"),),
     )
 
-    plan = engine.plan(spec, "all", profile)
+    plan = engine.plan(spec, "all")
 
     assert materialized == []
     engine.run(
@@ -623,7 +613,7 @@ def test_adapter_factory_is_materialized_only_when_a_plan_runs(tmp_path: Path) -
 def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     registered, source, transform, verify = registry()
     engine = FlowEngine(registered)
-    plan = engine.plan(flow_spec(), "qualification", fake_profile())
+    plan = engine.plan(flow_spec(), "qualification")
 
     assert plan.topology == ("source", "transform", "verify")
     assert all(
@@ -719,17 +709,14 @@ def test_flow_action_backlinks_a_workspace_incident(
     engine = FlowEngine(registered)
     plan = engine.plan(
         FlowSpec(
-            "example",
-            "incident-flow",
-            (FlowNode("source", "fake.incident", {"text": "unused"}),),
-            (FlowTarget("all", ("source",)),),
+            owner="example",
+            flow_id="incident-flow",
+            recipe_id="incident-flow-recipe",
+            nodes=(FlowNode("source", "fake.incident", {"text": "unused"}),),
+            targets=(FlowTarget("all", ("source",)),),
+            action_bindings=(ActionBinding("fake.incident", "fake-incident"),),
         ),
         "all",
-        ExecutionProfile(
-            "example",
-            "incident",
-            (AdapterSelection("fake.incident", "fake-incident"),),
-        ),
     )
 
     result = engine.run(
@@ -819,9 +806,10 @@ def test_flow_passes_declared_extensions_without_interpreting_the_payload(
     engine = FlowEngine(registered)
     plan = engine.plan(
         FlowSpec(
-            "example",
-            "extended-flow",
-            (
+            owner="example",
+            flow_id="extended-flow",
+            recipe_id="extended-flow-recipe",
+            nodes=(
                 FlowNode(
                     "source",
                     "fake.extended-source",
@@ -829,14 +817,12 @@ def test_flow_passes_declared_extensions_without_interpreting_the_payload(
                     extensions={"opaque_hint": {"iteration": 2}},
                 ),
             ),
-            (FlowTarget("all", ("source",)),),
+            targets=(FlowTarget("all", ("source",)),),
+            action_bindings=(
+                ActionBinding("fake.extended-source", "fake-extended-source"),
+            ),
         ),
         "all",
-        ExecutionProfile(
-            "example",
-            "extended",
-            (AdapterSelection("fake.extended-source", "fake-extended-source"),),
-        ),
     )
 
     assert engine.plan_record(plan)["nodes"][0]["opaque_hint"] == {
@@ -870,9 +856,10 @@ def test_flow_rejects_extensions_not_declared_by_action_or_adapter() -> None:
     )
     action_rejects.register_adapter("fake-source", accepted_adapter)
     spec = FlowSpec(
-        "example",
-        "extended-flow",
-        (
+        owner="example",
+        flow_id="extended-flow",
+        recipe_id="extended-flow-recipe",
+        nodes=(
             FlowNode(
                 "source",
                 "fake.source",
@@ -880,16 +867,12 @@ def test_flow_rejects_extensions_not_declared_by_action_or_adapter() -> None:
                 extensions={"opaque_hint": {}},
             ),
         ),
-        (FlowTarget("all", ("source",)),),
-    )
-    profile = ExecutionProfile(
-        "example",
-        "extended",
-        (AdapterSelection("fake.source", "fake-source"),),
+        targets=(FlowTarget("all", ("source",)),),
+        action_bindings=(ActionBinding("fake.source", "fake-source"),),
     )
 
     with pytest.raises(FlowContractError, match="Action does not accept"):
-        FlowEngine(action_rejects).plan(spec, "all", profile)
+        FlowEngine(action_rejects).plan(spec, "all")
 
     adapter_rejects = FlowRegistry()
     adapter_rejects.register_action(
@@ -902,17 +885,18 @@ def test_flow_rejects_extensions_not_declared_by_action_or_adapter() -> None:
     )
     adapter_rejects.register_adapter("fake-source", SourceAdapter())
     with pytest.raises(FlowContractError, match="Adapter does not consume"):
-        FlowEngine(adapter_rejects).plan(spec, "all", profile)
+        FlowEngine(adapter_rejects).plan(spec, "all")
 
 
 def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
-    first = engine.plan(flow_spec(), "qualification", fake_profile())
+    first = engine.plan(flow_spec(), "qualification")
     changed_spec = FlowSpec(
-        first.spec.owner,
-        first.spec.flow_id,
-        tuple(
+        owner=first.spec.owner,
+        flow_id=first.spec.flow_id,
+        recipe_id=first.spec.recipe_id,
+        nodes=tuple(
             FlowNode(
                 node.node_id,
                 node.action_kind,
@@ -925,10 +909,13 @@ def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path
             else node
             for node in first.spec.nodes
         ),
-        first.spec.targets,
-        first.spec.policies,
+        targets=first.spec.targets,
+        policies=first.spec.policies,
+        action_bindings=first.spec.action_bindings,
+        source_members=first.spec.source_members,
+        owner_root=first.spec.owner_root,
     )
-    changed = engine.plan(changed_spec, "qualification", fake_profile())
+    changed = engine.plan(changed_spec, "qualification")
     assert engine.plan_id(first) == engine.plan_id(changed)
     assert engine.plan_record(first) != engine.plan_record(changed)
     engine.run(
@@ -949,7 +936,7 @@ def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path
 def test_restore_rejects_action_operation_record_drift(tmp_path: Path) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
-    plan = engine.plan(flow_spec(), "qualification", fake_profile())
+    plan = engine.plan(flow_spec(), "qualification")
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
@@ -975,7 +962,7 @@ def test_restore_rejects_action_operation_record_drift(tmp_path: Path) -> None:
 def test_restore_rejects_legacy_flow_result_schema(tmp_path: Path) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
-    plan = engine.plan(flow_spec(), "qualification", fake_profile())
+    plan = engine.plan(flow_spec(), "qualification")
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
@@ -1009,7 +996,6 @@ def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
         engine.plan(
             flow_spec(internal_symlink=True),
             "qualification",
-            fake_profile(),
         ),
         artifact_root=artifact_root,
         environment=ExecutionEnvironment(),
@@ -1036,7 +1022,6 @@ def test_node_cannot_claim_another_nodes_file_as_evidence(tmp_path: Path) -> Non
         engine.plan(
             flow_spec(foreign_evidence=True),
             "qualification",
-            fake_profile(),
         ),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
@@ -1059,7 +1044,6 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
     first_plan = engine.plan(
         flow_spec(qualifiers={"variant": "variant_a", "corner": "nominal_a"}),
         "qualification",
-        fake_profile(),
     )
     first_run = engine.run(
         first_plan,
@@ -1086,7 +1070,6 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
     product_plan = engine.plan(
         flow_spec(qualifiers={"variant": "variant_b", "corner": "nominal_b"}),
         "qualification",
-        fake_profile(),
     )
     product = engine.run(
         product_plan,
@@ -1108,7 +1091,6 @@ def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) 
         engine.plan(
             flow_spec(transform_policy="long-text", diagnostic_binding=True),
             "qualification",
-            fake_profile(),
         ),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
@@ -1124,7 +1106,6 @@ def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) 
         engine.plan(
             flow_spec(transform_policy="long-text", diagnostic_binding=False),
             "qualification",
-            fake_profile(),
         ),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
@@ -1142,14 +1123,14 @@ def test_run_identity_is_immutable(tmp_path: Path) -> None:
     run_id = "d" * 32
 
     first = engine.run(
-        engine.plan(flow_spec(text="hello"), "qualification", fake_profile()),
+        engine.plan(flow_spec(text="hello"), "qualification"),
         artifact_root=artifact_root,
         environment=ExecutionEnvironment(),
         run_id=run_id,
     )
     with pytest.raises(FlowExecutionError, match="already exists"):
         engine.run(
-            engine.plan(flow_spec(text="goodbye"), "qualification", fake_profile()),
+            engine.plan(flow_spec(text="goodbye"), "qualification"),
             artifact_root=artifact_root,
             environment=ExecutionEnvironment(),
             run_id=run_id,
@@ -1159,13 +1140,13 @@ def test_run_identity_is_immutable(tmp_path: Path) -> None:
     assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
 
 
-def test_flow_contract_loader_supports_only_the_current_schema(tmp_path: Path) -> None:
+def test_execution_recipe_loader_supports_only_the_current_schema(tmp_path: Path) -> None:
     owner_root = tmp_path / "ip/example"
     owner_root.mkdir(parents=True)
-    contract = owner_root / "flow.toml"
+    contract = owner_root / "recipe.toml"
     contract.write_text(
         '''schema = 2
-contract_kind = "flow"
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
 name = "pipeline"
@@ -1174,24 +1155,23 @@ name = "pipeline"
 id = "source"
 action = "fake.source"
 
-[[targets]]
-name = "all"
-goals = ["source"]
+[actions."fake.source"]
+adapter = "fake-source"
 ''',
         encoding="utf-8",
     )
 
     with pytest.raises(FlowContractError, match="schema 1"):
-        load_flow_contract(contract)
+        load_execution_recipe(contract)
 
 
-def test_flow_contract_loads_owner_policy_without_a_runtime_registry(
+def test_execution_recipe_loads_owner_policy_without_a_runtime_registry(
     tmp_path: Path,
 ) -> None:
-    contract = tmp_path / "flow.toml"
+    contract = tmp_path / "recipe.toml"
     contract.write_text(
         '''schema = 1
-contract_kind = "flow"
+contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
 name = "pipeline"
@@ -1201,10 +1181,6 @@ id = "verify"
 action = "fake.verify"
 policy = "accepted"
 
-[[targets]]
-name = "all"
-goals = ["verify"]
-
 [[policies]]
 id = "accepted"
 
@@ -1213,11 +1189,14 @@ id = "accepted"
 fact = "accepted"
 operator = "equals"
 expected = true
+
+[actions."fake.verify"]
+adapter = "fake-verify"
 ''',
         encoding="utf-8",
     )
 
-    loaded = load_flow_contract(contract)
+    loaded = load_execution_recipe(contract)
 
     assert loaded.policy("accepted").checks[0].expected is True
 
@@ -1269,18 +1248,15 @@ def test_non_valid_terminal_results_are_persisted(
     spec = FlowSpec(
         owner="example",
         flow_id="terminal",
+        recipe_id="terminal-recipe",
         nodes=(FlowNode("terminal", "fake.terminal"),),
         targets=(FlowTarget("all", ("terminal",)),),
+        action_bindings=(ActionBinding("fake.terminal", "fake-terminal"),),
     )
     engine = FlowEngine(registered)
-    profile = ExecutionProfile(
-        "example",
-        "terminal",
-        (AdapterSelection("fake.terminal", "fake-terminal"),),
-    )
 
     result = engine.run(
-        engine.plan(spec, "all", profile),
+        engine.plan(spec, "all"),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
         run_id="e" * 32,
@@ -1306,18 +1282,15 @@ def test_result_collection_failure_preserves_successful_execution_status(
     spec = FlowSpec(
         owner="example",
         flow_id="bad-collect",
+        recipe_id="bad-collect-recipe",
         nodes=(FlowNode("collect", "fake.bad-collect"),),
         targets=(FlowTarget("all", ("collect",)),),
+        action_bindings=(ActionBinding("fake.bad-collect", "fake-bad-collect"),),
     )
     engine = FlowEngine(registered)
-    profile = ExecutionProfile(
-        "example",
-        "bad-collect",
-        (AdapterSelection("fake.bad-collect", "fake-bad-collect"),),
-    )
 
     result = engine.run(
-        engine.plan(spec, "all", profile),
+        engine.plan(spec, "all"),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
         run_id="7" * 32,
@@ -1361,24 +1334,21 @@ def test_interruption_writes_cancelled_terminal_records(tmp_path: Path) -> None:
     spec = FlowSpec(
         owner="example",
         flow_id="interrupted",
+        recipe_id="interrupted-recipe",
         nodes=(
             FlowNode("interrupt", "fake.interrupt"),
             FlowNode("later", "fake.later"),
         ),
         targets=(FlowTarget("all", ("interrupt", "later")),),
-    )
-    engine = FlowEngine(registered)
-    profile = ExecutionProfile(
-        "example",
-        "interrupted",
-        (
-            AdapterSelection("fake.interrupt", "fake-interrupt"),
-            AdapterSelection("fake.later", "fake-later"),
+        action_bindings=(
+            ActionBinding("fake.interrupt", "fake-interrupt"),
+            ActionBinding("fake.later", "fake-later"),
         ),
     )
+    engine = FlowEngine(registered)
 
     result = engine.run(
-        engine.plan(spec, "all", profile),
+        engine.plan(spec, "all"),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
         run_id="f" * 32,
@@ -1407,22 +1377,19 @@ def test_progress_interruption_writes_cancelled_terminal_records(
     spec = FlowSpec(
         owner="example",
         flow_id="progress-interrupted",
+        recipe_id="progress-interrupted-recipe",
         nodes=(FlowNode("interrupt", "fake.interrupt"),),
         targets=(FlowTarget("all", ("interrupt",)),),
+        action_bindings=(ActionBinding("fake.interrupt", "fake-interrupt"),),
     )
     engine = FlowEngine(registered)
-    profile = ExecutionProfile(
-        "example",
-        "progress-interrupted",
-        (AdapterSelection("fake.interrupt", "fake-interrupt"),),
-    )
 
     def interrupt_current_node(progress: FlowProgress) -> None:
         if progress.current_node == "interrupt":
             raise KeyboardInterrupt
 
     result = engine.run(
-        engine.plan(spec, "all", profile),
+        engine.plan(spec, "all"),
         artifact_root=tmp_path / "artifacts",
         environment=ExecutionEnvironment(),
         run_id="e" * 32,
@@ -1450,7 +1417,7 @@ def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) ->
     artifact_root = tmp_path / "artifacts"
     run_id = "1" * 32
     result = engine.run(
-        engine.plan(flow_spec(), "qualification", fake_profile()),
+        engine.plan(flow_spec(), "qualification"),
         artifact_root=artifact_root,
         environment=ExecutionEnvironment(),
         run_id=run_id,
@@ -1488,7 +1455,7 @@ def test_policy_change_requires_a_new_run(
     run_id = "6" * 32
     original = flow_spec()
     first = engine.run(
-        engine.plan(original, "qualification", fake_profile()),
+        engine.plan(original, "qualification"),
         artifact_root=artifact_root,
         environment=ExecutionEnvironment(),
         run_id=run_id,
@@ -1496,6 +1463,7 @@ def test_policy_change_requires_a_new_run(
     changed_policy = FlowSpec(
         owner=original.owner,
         flow_id=original.flow_id,
+        recipe_id=original.recipe_id,
         nodes=original.nodes,
         targets=original.targets,
         policies=(
@@ -1504,9 +1472,12 @@ def test_policy_change_requires_a_new_run(
                 checks=(PolicyCheck("accepted", "accepted", "equals", False),),
             ),
         ),
+        action_bindings=original.action_bindings,
+        source_members=original.source_members,
+        owner_root=original.owner_root,
     )
     changed = engine.run(
-        engine.plan(changed_policy, "qualification", fake_profile()),
+        engine.plan(changed_policy, "qualification"),
         artifact_root=artifact_root,
         environment=ExecutionEnvironment(),
         run_id="7" * 32,
@@ -1524,7 +1495,7 @@ def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
     run_id = "2" * 32
     result = engine.run(
-        engine.plan(flow_spec(), "qualification", fake_profile()),
+        engine.plan(flow_spec(), "qualification"),
         artifact_root=artifact_root,
         environment=ExecutionEnvironment(),
         run_id=run_id,
@@ -1544,207 +1515,3 @@ def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:
         )
 
     assert result.run_root.is_dir()
-
-
-def test_public_flow_cli_plans_runs_reads_and_cleans_fake_flow(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    owner_root = tmp_path / "ip/example"
-    owner_root.mkdir(parents=True)
-    contract = owner_root / "flow.toml"
-    contract.write_text(
-        '''schema = 1
-contract_kind = "flow"
-path_scope = "owner"
-owner = "example"
-name = "fake-pipeline"
-
-[[nodes]]
-id = "source"
-action = "fake.source"
-config = { text = "hello" }
-
-[[nodes]]
-id = "transform"
-action = "fake.transform"
-
-[[nodes.bindings]]
-input = "input"
-producer = "source"
-output = "source"
-
-[[nodes]]
-id = "verify"
-action = "fake.verify"
-policy = "verify-accepted"
-config = { expected = "HELLO" }
-
-[[nodes.bindings]]
-input = "candidate"
-producer = "transform"
-output = "transformed"
-
-[[targets]]
-name = "qualification"
-goals = ["verify"]
-
-[[policies]]
-id = "verify-accepted"
-
-[[policies.checks]]
-id = "accepted"
-fact = "accepted"
-operator = "equals"
-expected = true
-''',
-        encoding="utf-8",
-    )
-    profile = owner_root / "profile.toml"
-    profile.write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "example"
-name = "fake"
-
-[actions."fake.source"]
-adapter = "fake-source"
-
-[actions."fake.transform"]
-adapter = "fake-transform"
-
-[actions."fake.verify"]
-adapter = "fake-verify"
-''',
-        encoding="utf-8",
-    )
-    catalog = owner_root / "catalog.toml"
-    catalog.write_text(
-        '''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-
-[flows.fake-pipeline]
-contract = "flow.toml"
-default_profile = "fake"
-
-[flows.fake-pipeline.profiles]
-fake = "profile.toml"
-''',
-        encoding="utf-8",
-    )
-    extension = write_fake_flow_extension(tmp_path, "example")
-    write_component_owner(
-        tmp_path,
-        "example",
-        filesets={
-            "flow": (
-                "ip/example/catalog.toml",
-                "ip/example/flow.toml",
-                "ip/example/profile.toml",
-                extension.relative_to(tmp_path).as_posix(),
-            )
-        },
-    )
-    artifact_root = tmp_path / "artifacts"
-    run_id = "3" * 32
-    source_args = [
-        "--project-root",
-        str(tmp_path),
-        "--owner",
-        "example",
-        "--flow",
-        "fake-pipeline",
-        "--target",
-        "qualification",
-    ]
-
-    assert (
-        flow_cli_main(
-            [
-                "list",
-                "--project-root",
-                str(tmp_path),
-                "--owner",
-                "example",
-            ]
-        )
-        == 0
-    )
-    assert json.loads(capsys.readouterr().out)[0]["flow"] == "fake-pipeline"
-    assert (
-        flow_cli_main(
-            [
-                "show",
-                "--project-root",
-                str(tmp_path),
-                "--owner",
-                "example",
-                "--flow",
-                "fake-pipeline",
-            ]
-        )
-        == 0
-    )
-    assert json.loads(capsys.readouterr().out)["execution_profile"] == "fake"
-
-    assert flow_cli_main(["plan", *source_args]) == 0
-    plan_payload = json.loads(capsys.readouterr().out)
-    assert plan_payload["topology"] == ["source", "transform", "verify"]
-    assert not artifact_root.exists()
-    assert flow_cli_main(["graph", *source_args]) == 0
-    assert '"transform" -> "verify"' in capsys.readouterr().out
-    assert flow_cli_main(["preflight", *source_args]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "ready"
-    assert not artifact_root.exists()
-
-    assert (
-        flow_cli_main(
-            [
-                "run",
-                *source_args,
-                "--run-id",
-                run_id,
-            ]
-        )
-        == 0
-    )
-    assert json.loads(capsys.readouterr().out)["status"] == "accepted"
-    identity = [
-        "--project-root",
-        str(tmp_path),
-        "example",
-        "fake-pipeline",
-        "qualification",
-        run_id,
-    ]
-    assert flow_cli_main(["status", *identity]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "accepted"
-    assert flow_cli_main(["clean", *identity]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "cleaned"
-
-
-def test_public_flow_cli_reports_missing_owner_catalog_as_contract_error(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    write_project_context(tmp_path)
-    write_component_owner(tmp_path, "example", filesets={})
-
-    assert (
-        flow_cli_main(
-            [
-                "list",
-                "--project-root",
-                str(tmp_path),
-                "--owner",
-                "example",
-            ]
-        )
-        == 2
-    )
-    captured = capsys.readouterr()
-    assert "must select exactly one Flow Catalog" in captured.err
-    assert "Sigilicon defect" not in captured.err

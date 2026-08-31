@@ -344,7 +344,7 @@ class SynopsysHSpiceAdapter:
             }
             if unknown_adapter:
                 raise FlowExecutionError(
-                    "HSPICE diagnostic profile contains unknown configuration: "
+                    "HSPICE diagnostic Adapter contains unknown configuration: "
                     f"{sorted(unknown_adapter)}"
                 )
             prefix = context.adapter_config.get("runner_environment_prefix")
@@ -544,13 +544,13 @@ class SynopsysHSpiceAdapter:
         unknown_adapter = set(context.adapter_config) - allowed_keys
         if unknown_adapter:
             raise FlowExecutionError(
-                "HSPICE profile contains unknown configuration: "
+                "HSPICE Adapter contains unknown configuration: "
                 f"{sorted(unknown_adapter)}"
             )
         timeout = context.adapter_config.get("timeout_seconds")
         if not isinstance(timeout, int) or timeout <= 0:
             raise FlowExecutionError(
-                "HSPICE profile requires a positive timeout_seconds"
+                "HSPICE Adapter requires a positive timeout_seconds"
             )
         return timeout
 
@@ -717,6 +717,5 @@ class SynopsysHSpiceAdapter:
         if not rows:
             raise FlowExecutionError("HSPICE measurement CSV has no data rows")
         return rows, failures
-
 
 

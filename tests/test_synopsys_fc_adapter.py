@@ -8,12 +8,11 @@ import pytest
 
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowExecutionError,
     FlowNode,
@@ -254,10 +253,11 @@ def _registry(owner_root: Path) -> FlowRegistry:
     return registry
 
 
-def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
+def _flow(owner_root: Path) -> FlowSpec:
     spec = FlowSpec(
         owner="fixture",
         flow_id="fc-managed",
+        recipe_id="fc-managed-recipe",
         nodes=(
             FlowNode(
                 "assets",
@@ -417,13 +417,9 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
             ),
         ),
         owner_root=owner_root,
-    )
-    profile = ExecutionProfile(
-        owner="fixture",
-        profile_id="fc-fixture",
-        selections=(
-            AdapterSelection("design.fc-fixture", "source-assets"),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding("design.fc-fixture", "source-assets"),
+            ActionBinding(
                 "asic.reference-library-construction",
                 "synopsys-fc",
                 config={
@@ -434,7 +430,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
                     },
                 },
             ),
-            AdapterSelection(
+            ActionBinding(
                 "asic.physical-implementation",
                 "synopsys-fc",
                 config={
@@ -458,7 +454,7 @@ def _flow(owner_root: Path) -> tuple[FlowSpec, ExecutionProfile]:
             ),
         ),
     )
-    return spec, profile
+    return spec
 
 
 def _member(path: Path, role: str) -> ResolvedPlatformAssetMember:
@@ -538,423 +534,6 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
     return environment, collateral
 
 
-def _write_cli_flow_owner(owner_root: Path) -> tuple[Path, Path]:
-    (owner_root / "rtl").mkdir()
-    (owner_root / "rtl" / "top.sv").write_text(
-        "module top; endmodule\n",
-        encoding="utf-8",
-    )
-    for name, content in (
-        ("tb.sv", "module tb; endmodule\n"),
-        ("simulate.sh", "#!/bin/sh\nexit 0\n"),
-        ("synthesis.toml", "schema = 1\n"),
-        ("electrical.sp", ".end\n"),
-        ("deck.sp", ".end\n"),
-        ("electrical.sh", "#!/bin/sh\nexit 0\n"),
-        ("qualification.toml", "schema = 1\n"),
-    ):
-        (owner_root / name).write_text(content, encoding="utf-8")
-    _write_executable(
-        owner_root / "run-dc-fixture.py",
-        '''#!/usr/bin/env python3
-import os
-from pathlib import Path
-
-root = Path(os.environ["SIGILICON_DC_OUTPUT_ROOT"])
-root.mkdir(parents=True, exist_ok=True)
-assert os.environ["SIGILICON_DESIGN_VARIANT"] == "fixture_variant"
-assert Path(os.environ["SIGILICON_DC_RTL_FILELIST"]).is_file()
-assert Path(os.environ["SIGILICON_DC_CONSTRAINTS"]).is_file()
-assert Path(os.environ["SIGILICON_SYNOPSYS_DC_SHELL"]).is_file()
-for role in ("RVT", "HVT", "LVT"):
-    assert Path(os.environ[f"SIGILICON_STDCELL_{role}_DB"]).is_file()
-(root / "mapped.v").write_text("module top; endmodule\\n")
-(root / "mapped.sdc").write_text("create_clock -period 1 clk\\n")
-(root / "mapped.ddc").write_text("checkpoint\\n")
-(root / "check_design.rpt").write_text("passed\\n")
-''',
-    )
-    (owner_root / "source-assets.toml").write_text(
-        '''schema = 1
-contract_kind = "source-assets"
-path_scope = "owner"
-owner = "fixture"
-name = "fc-fixture-source"
-
-[qualifiers]
-variant = "fixture_variant"
-corner = "tt"
-
-[[artifacts]]
-role = "rtl-sources"
-kind = "source-set.systemverilog"
-materialization = "manifest"
-members = ["rtl/top.sv"]
-
-[[artifacts]]
-role = "testbench"
-kind = "source-set.systemverilog"
-materialization = "manifest"
-members = ["tb.sv"]
-
-[[artifacts]]
-role = "simulation-recipe"
-kind = "recipe.simulation"
-materialization = "manifest"
-members = ["simulate.sh"]
-
-[[artifacts]]
-role = "constraints"
-kind = "constraints.sdc"
-materialization = "file"
-members = ["mapped.sdc"]
-
-[[artifacts]]
-role = "synthesis-recipe"
-kind = "recipe.synthesis"
-materialization = "manifest"
-members = ["run-dc-fixture.py", "synthesis.toml"]
-
-[[artifacts]]
-role = "reference-library-recipe"
-kind = "recipe.reference-library"
-materialization = "manifest"
-members = ["run-fc-fixture.py", "build-reference.tcl", "site.lef"]
-
-[[artifacts]]
-role = "implementation-recipe"
-kind = "recipe.physical-implementation"
-materialization = "manifest"
-members = ["run-fc-fixture.py", "place-route.tcl"]
-
-[[artifacts]]
-role = "electrical-sources"
-kind = "source-set.spice"
-materialization = "manifest"
-members = ["electrical.sp"]
-
-[[artifacts]]
-role = "decks"
-kind = "source-set.spice-deck"
-materialization = "manifest"
-members = ["deck.sp"]
-
-[[artifacts]]
-role = "electrical-recipe"
-kind = "recipe.electrical-simulation"
-materialization = "manifest"
-members = ["electrical.sh"]
-
-[[artifacts]]
-role = "qualification-spec"
-kind = "spec.qualification"
-materialization = "file"
-members = ["qualification.toml"]
-
-''',
-        encoding="utf-8",
-    )
-    (owner_root / "interface.toml").write_text(
-        '''schema = 1
-contract_kind = "ip-interface"
-path_scope = "owner"
-owner = "fixture"
-
-[module]
-name = "top"
-''',
-        encoding="utf-8",
-    )
-    (owner_root / "component.toml").write_text(
-        '''schema = 1
-contract_kind = "ip-component"
-path_scope = "owner"
-owner = "fixture"
-name = "fc-fixture"
-kind = "rtl-ip"
-
-[filesets]
-specification = ["owner/interface.toml"]
-''',
-        encoding="utf-8",
-    )
-    flow = owner_root / "flow.toml"
-    flow.write_text(
-        '''schema = 1
-contract_kind = "flow"
-path_scope = "owner"
-owner = "fixture"
-name = "fc-managed"
-
-[[nodes]]
-id = "assets"
-action = "design.source-assets"
-config = { source = "source-assets.toml" }
-
-[[nodes]]
-id = "reference-library"
-action = "asic.reference-library-construction"
-config = { runner = "run-fc-fixture.py", target = "library", top = "top" }
-policy = "reference-library-quality"
-
-[[nodes.bindings]]
-input = "reference-library-recipe"
-producer = "assets"
-output = "reference-library-recipe"
-
-[[nodes]]
-id = "synthesis"
-action = "asic.synthesis"
-config = { runner = "run-dc-fixture.py" }
-policy = "tool-pass"
-
-[[nodes.bindings]]
-input = "rtl-sources"
-producer = "assets"
-output = "rtl-sources"
-
-[[nodes.bindings]]
-input = "constraints"
-producer = "assets"
-output = "constraints"
-
-[[nodes.bindings]]
-input = "synthesis-recipe"
-producer = "assets"
-output = "synthesis-recipe"
-
-[[nodes]]
-id = "implementation"
-action = "asic.physical-implementation"
-config = { runner = "run-fc-fixture.py", target = "pnr", top = "top" }
-policy = "implementation-regression"
-
-[[nodes.bindings]]
-input = "mapped-netlist"
-producer = "synthesis"
-output = "mapped-netlist"
-
-[[nodes.bindings]]
-input = "mapped-constraints"
-producer = "synthesis"
-output = "mapped-constraints"
-
-[[nodes.bindings]]
-input = "implementation-recipe"
-producer = "assets"
-output = "implementation-recipe"
-
-[[nodes.bindings]]
-input = "reference-library"
-producer = "reference-library"
-output = "reference-library"
-
-[[targets]]
-name = "implementation"
-goals = ["implementation"]
-
-[[policies]]
-id = "tool-pass"
-
-[[policies.checks]]
-id = "passed"
-fact = "passed"
-operator = "equals"
-expected = true
-
-[[policies]]
-id = "reference-library-quality"
-
-[[policies.checks]]
-id = "tool-completed"
-fact = "tool-execution-completed"
-operator = "equals"
-expected = true
-
-[[policies.checks]]
-id = "no-library-errors"
-fact = "library-check-error-count"
-operator = "at_most"
-expected = 0
-
-[[policies.checks]]
-id = "workspace-check-succeeded"
-fact = "library-check-succeeded"
-operator = "equals"
-expected = true
-
-[[policies]]
-id = "implementation-regression"
-
-[[policies.checks]]
-id = "tool-completed"
-fact = "tool-execution-completed"
-operator = "equals"
-expected = true
-
-[[policies.checks]]
-id = "no-design-check-errors"
-fact = "design-check-error-count"
-operator = "at_most"
-expected = 0
-
-[[policies.checks]]
-id = "no-open-nets"
-fact = "open-net-count"
-operator = "at_most"
-expected = 0
-
-[[policies.checks]]
-id = "no-route-drc"
-fact = "route-drc-violation-count"
-operator = "at_most"
-expected = 0
-
-[[policies]]
-id = "physical-completion-readiness"
-
-[[policies.checks]]
-id = "tool-completed"
-fact = "tool-execution-completed"
-operator = "equals"
-expected = true
-
-[[policies.checks]]
-id = "required-pg-ports"
-fact = "required-pg-port-count"
-operator = "equals"
-expected = 2
-
-[[policies.checks]]
-id = "all-required-pg-ports-placed"
-fact = "unplaced-required-pg-port-count"
-operator = "at_most"
-expected = 0
-
-[[policies.checks]]
-id = "pg-connectivity-checked"
-fact = "pg-connectivity-check-performed"
-operator = "equals"
-expected = true
-
-[[policies.checks]]
-id = "no-pg-connectivity-violations"
-fact = "pg-connectivity-violation-count"
-operator = "at_most"
-expected = 0
-
-[[policies.checks]]
-id = "antenna-check-active"
-fact = "antenna-check-active"
-operator = "equals"
-expected = true
-
-[[policies.checks]]
-id = "no-antenna-violations"
-fact = "antenna-violation-count"
-operator = "at_most"
-expected = 0
-
-[[policies.checks]]
-id = "tie-off-checked"
-fact = "tie-off-check-performed"
-operator = "equals"
-expected = true
-
-[[policies.checks]]
-id = "no-tie-off-violations"
-fact = "tie-off-violation-count"
-operator = "at_most"
-expected = 0
-''',
-        encoding="utf-8",
-    )
-    profile = owner_root / "profile.toml"
-    profile.write_text(
-        '''schema = 1
-contract_kind = "execution-profile"
-path_scope = "owner"
-owner = "fixture"
-name = "fc-fixture"
-
-[actions."design.source-assets"]
-adapter = "source-assets"
-
-[actions."asic.synthesis"]
-adapter = "synopsys-dc"
-
-[actions."asic.synthesis".config]
-timeout_seconds = 30
-reports = ["check_design.rpt"]
-
-[actions."asic.synthesis".config.outputs]
-mapped-netlist = "mapped.v"
-mapped-constraints = "mapped.sdc"
-checkpoint = "mapped.ddc"
-
-[actions."asic.synthesis".platform_assets]
-standard-cell-timing = "standard-cell-db@fixture"
-
-[actions."asic.reference-library-construction"]
-adapter = "synopsys-fc"
-
-[actions."asic.reference-library-construction".config]
-timeout_seconds = 30
-
-[actions."asic.reference-library-construction".config.outputs]
-reference-library = "reference.ndm"
-library-check-report = "check_workspace.rpt"
-
-[actions."asic.reference-library-construction".platform_assets]
-physical-technology = "physical-technology@fixture"
-standard-cell-physical = "standard-cell-lef@fixture"
-standard-cell-timing = "standard-cell-db@fixture"
-
-[actions."asic.physical-implementation"]
-adapter = "synopsys-fc"
-
-[actions."asic.physical-implementation".config]
-timeout_seconds = 30
-
-[actions."asic.physical-implementation".config.outputs]
-routed-netlist = "routed.v"
-routed-constraints = "routed.sdc"
-layout-stream = "routed.gds"
-checkpoint = "routed.ndm"
-design-check-report = "check_design.rpt"
-structural-report = "protected_inventory.tsv"
-qor-report = "qor.rpt"
-timing-report = "timing.rpt"
-area-report = "area.rpt"
-power-report = "power.rpt"
-drc-report = "drc.rpt"
-physical-completion-report = "physical_completion.rpt"
-tie-off-check-report = "tie_off_check.rpt"
-
-[actions."asic.physical-implementation".platform_assets]
-physical-technology = "physical-technology@fixture"
-''',
-        encoding="utf-8",
-    )
-    catalog = owner_root / "catalog.toml"
-    catalog.write_text(
-        '''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "fixture"
-
-[flows.fc-managed]
-contract = "flow.toml"
-default_profile = "fc-fixture"
-
-[flows.fc-managed.profiles]
-fc-fixture = "profile.toml"
-''',
-        encoding="utf-8",
-    )
-    return catalog, profile
-
-
 def _write_environment_contract(
     path: Path,
     environment: ExecutionEnvironment,
@@ -1021,11 +600,11 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root)
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     registry = _registry(owner_root)
     engine = FlowEngine(registry)
-    plan = engine.plan(spec, "implementation", profile)
+    plan = engine.plan(spec, "implementation")
 
     assert plan.topology == ("assets", "reference-library", "implementation")
     result = engine.run(
@@ -1110,12 +689,12 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
 def test_synopsys_fc_adapter_records_owner_runner_failure(tmp_path: Path) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root, fail_pnr=True)
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "implementation", profile),
+        engine.plan(spec, "implementation"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="b" * 32,
@@ -1151,12 +730,12 @@ def test_library_manager_exit_zero_with_report_error_is_policy_rejected(
             "Workspace check succeeded!\n"
         ),
     )
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "reference-library", profile),
+        engine.plan(spec, "reference-library"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="e" * 32,
@@ -1176,12 +755,12 @@ def test_failed_workspace_check_marker_is_policy_rejected(
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root, library_report="Workspace check failed!\n")
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "reference-library", profile),
+        engine.plan(spec, "reference-library"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="5" * 32,
@@ -1206,12 +785,12 @@ def test_rejected_reference_library_blocks_physical_implementation(
             "Workspace check succeeded!\n"
         ),
     )
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "implementation", profile),
+        engine.plan(spec, "implementation"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="4" * 32,
@@ -1229,12 +808,12 @@ def test_synopsys_fc_adapter_rejects_missing_library_report(
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root, omit_library_report=True)
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "reference-library", profile),
+        engine.plan(spec, "reference-library"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="f" * 32,
@@ -1252,12 +831,12 @@ def test_synopsys_fc_adapter_rejects_malformed_library_report(
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root, library_report="Checking libraries...\n")
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "reference-library", profile),
+        engine.plan(spec, "reference-library"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="1" * 32,
@@ -1281,12 +860,12 @@ def test_fc_exit_zero_with_design_check_error_is_policy_rejected(
             "Total 1 non-EMS messages : 0 errors, 1 warnings, 0 info.\n"
         ),
     )
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "implementation", profile),
+        engine.plan(spec, "implementation"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="2" * 32,
@@ -1316,12 +895,12 @@ def test_fc_exit_zero_with_incomplete_pg_is_policy_rejected(
             "PG connectivity violations = 4\n"
         ),
     )
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "implementation", profile),
+        engine.plan(spec, "implementation"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="6" * 32,
@@ -1341,12 +920,12 @@ def test_synopsys_fc_adapter_rejects_malformed_implementation_report(
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root, design_report="design check finished\n")
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _collateral = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
-        engine.plan(spec, "implementation", profile),
+        engine.plan(spec, "implementation"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="3" * 32,
@@ -1366,10 +945,10 @@ def test_synopsys_fc_preflight_rejects_changed_recipe(
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root)
-    spec, profile = _flow(owner_root)
+    spec = _flow(owner_root)
     environment, _ = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
-    plan = engine.plan(spec, "implementation", profile)
+    plan = engine.plan(spec, "implementation")
 
     (owner_root / "place-route.tcl").write_text(
         "# stale implementation fixture\n",

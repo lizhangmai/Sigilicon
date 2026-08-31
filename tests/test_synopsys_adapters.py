@@ -9,15 +9,14 @@ import pytest
 
 from conftest import StagedAdapterFixture
 from sigilicon.flow import (
+    ActionBinding,
     ActionContext,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowExecutionError,
     FlowNode,
@@ -188,6 +187,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
     spec = FlowSpec(
         owner="fixture",
         flow_id="dc-managed",
+        recipe_id="dc-managed-recipe",
         nodes=(
             FlowNode("assets", "design.fixture-assets"),
             FlowNode(
@@ -206,13 +206,9 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
             ),
         ),
         targets=(FlowTarget("synthesis", ("synthesis",)),),
-    )
-    profile = ExecutionProfile(
-        owner="fixture",
-        profile_id="dc-fixture",
-        selections=(
-            AdapterSelection("design.fixture-assets", "fixture-assets"),
-            AdapterSelection(
+        action_bindings=(
+            ActionBinding("design.fixture-assets", "fixture-assets"),
+            ActionBinding(
                 "asic.synthesis",
                 "synopsys-dc",
                 config={
@@ -257,7 +253,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
     )
     engine = FlowEngine(registry)
     result = engine.run(
-        engine.plan(spec, "synthesis", profile),
+        engine.plan(spec, "synthesis"),
         artifact_root=tmp_path / "artifacts",
         environment=environment,
         run_id="a" * 32,

@@ -9,11 +9,10 @@ import subprocess
 import pytest
 
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
-    AdapterSelection,
     ArtifactPort,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowContractError,
     FlowEngine,
     FlowExecutionError,
@@ -78,7 +77,7 @@ members = ["constraints.sdc"]
     return assets
 
 
-def _fixture(owner_root: Path) -> tuple[FlowRegistry, FlowSpec, ExecutionProfile]:
+def _fixture(owner_root: Path) -> tuple[FlowRegistry, FlowSpec]:
     registry = FlowRegistry()
     registry.register_action(
         ActionContract(
@@ -95,6 +94,7 @@ def _fixture(owner_root: Path) -> tuple[FlowRegistry, FlowSpec, ExecutionProfile
     spec = FlowSpec(
         owner="fixture",
         flow_id="source-only",
+        recipe_id="source-only-recipe",
         nodes=(
             FlowNode(
                 "assets",
@@ -103,14 +103,12 @@ def _fixture(owner_root: Path) -> tuple[FlowRegistry, FlowSpec, ExecutionProfile
             ),
         ),
         targets=(FlowTarget("all", ("assets",)),),
+        action_bindings=(
+            ActionBinding("design.fixture-source", "source-assets"),
+        ),
         owner_root=owner_root,
     )
-    profile = ExecutionProfile(
-        owner="fixture",
-        profile_id="source-only",
-        selections=(AdapterSelection("design.fixture-source", "source-assets"),),
-    )
-    return registry, spec, profile
+    return registry, spec
 
 
 def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
@@ -124,10 +122,10 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
     (owner_root / "constraints.sdc").write_text("set_max_area 0\n", encoding="utf-8")
     _write_assets(owner_root)
     commit = _commit_fixture(owner_root)
-    registry, spec, profile = _fixture(owner_root)
+    registry, spec = _fixture(owner_root)
     engine = FlowEngine(registry)
 
-    old_plan = engine.plan(spec, "all", profile)
+    old_plan = engine.plan(spec, "all")
     old_record = engine.plan_record(old_plan)
     source_record = old_record["nodes"][0]["source_assets"]
     assert source_record["git"] == {"commit": commit, "changes": []}
@@ -160,7 +158,7 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
             run_id="a" * 32,
         )
 
-    new_plan = engine.plan(spec, "all", profile)
+    new_plan = engine.plan(spec, "all")
     assert new_plan.planned_node("assets").source_assets.git.dirty is True
     dirty_record = engine.plan_record(new_plan)
     (owner_root / "rtl/a.sv").write_text(
@@ -168,7 +166,7 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
         encoding="utf-8",
     )
     assert engine.preflight(new_plan, ExecutionEnvironment()).status == "blocked"
-    replanned = engine.plan(spec, "all", profile)
+    replanned = engine.plan(spec, "all")
     assert engine.plan_record(replanned) != dirty_record
     result = engine.run(
         replanned,

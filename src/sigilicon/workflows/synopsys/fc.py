@@ -262,11 +262,11 @@ class SynopsysFCAdapter:
         unknown = set(context.adapter_config) - {"timeout_seconds", "outputs"}
         if unknown:
             raise FlowExecutionError(
-                f"FC profile contains unknown configuration: {sorted(unknown)}"
+                f"FC Adapter contains unknown configuration: {sorted(unknown)}"
             )
         timeout = context.adapter_config.get("timeout_seconds")
         if not isinstance(timeout, int) or timeout <= 0:
-            raise FlowExecutionError("FC profile requires a positive timeout_seconds")
+            raise FlowExecutionError("FC Adapter requires a positive timeout_seconds")
         outputs = _text_mapping(context.adapter_config.get("outputs"), "FC outputs")
         expected = (
             _FC_REFERENCE_OUTPUT_ROLES
@@ -583,6 +583,5 @@ class SynopsysFCAdapter:
             or any(part in {"", ".", ".."} for part in path.parts)
         ):
             raise FlowExecutionError(f"unsafe FC output path: {value!r}")
-
 
 

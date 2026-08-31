@@ -33,13 +33,12 @@ from sigilicon.domain.circuit_design import (
     TopologyOrigin,
 )
 from sigilicon.flow import (
+    ActionBinding,
     ActionContext,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactPort,
     CollectedActionResult,
-    ExecutionProfile,
     FlowContractError,
     FlowEngine,
     FlowNode,
@@ -248,17 +247,14 @@ def _engine_and_plan(conclusion: EvidenceConclusion) -> tuple[FlowEngine, object
     registry.register_adapter("typed-attempt", AttemptAdapter(conclusion))
     engine = FlowEngine(registry)
     spec = FlowSpec(
-        OWNER,
-        "design-campaign-attempt",
-        (FlowNode("attempt", ACTION),),
-        (FlowTarget("all", ("attempt",)),),
+        owner=OWNER,
+        flow_id="design-campaign-attempt",
+        recipe_id="design-campaign-attempt-recipe",
+        nodes=(FlowNode("attempt", ACTION),),
+        targets=(FlowTarget("all", ("attempt",)),),
+        action_bindings=(ActionBinding(ACTION, "typed-attempt"),),
     )
-    profile = ExecutionProfile(
-        OWNER,
-        "typed",
-        (AdapterSelection(ACTION, "typed-attempt"),),
-    )
-    return engine, engine.plan(spec, "all", profile)
+    return engine, engine.plan(spec, "all")
 
 
 def _campaign(plan: object) -> DesignCampaign:
@@ -293,9 +289,8 @@ def test_campaign_spec_is_canonical_strict_and_path_free() -> None:
         "pilot-campaign",
         DesignCampaignAttemptSpec(
             "baseline",
-            "design-campaign-attempt",
             "all",
-            "typed",
+            "design-campaign-attempt",
             DesignArtifactBinding("candidate", "attempt", "candidate"),
             (
                 DesignArtifactBinding("topology", "attempt", "topology"),
@@ -401,17 +396,14 @@ def test_campaign_rejects_required_stage_evidence_contract_drift(
     engine = FlowEngine(registry)
     plan = engine.plan(
         FlowSpec(
-            OWNER,
-            "design-campaign-attempt",
-            (FlowNode("attempt", ACTION),),
-            (FlowTarget("all", ("attempt",)),),
+            owner=OWNER,
+            flow_id="design-campaign-attempt",
+            recipe_id="design-campaign-attempt-role-drift-recipe",
+            nodes=(FlowNode("attempt", ACTION),),
+            targets=(FlowTarget("all", ("attempt",)),),
+            action_bindings=(ActionBinding(ACTION, "role-drift"),),
         ),
         "all",
-        ExecutionProfile(
-            OWNER,
-            "role-drift",
-            (AdapterSelection(ACTION, "role-drift"),),
-        ),
     )
 
     result = DesignCampaignRunner(engine, artifact_root=tmp_path).start(_campaign(plan))
@@ -450,17 +442,14 @@ def test_campaign_reports_artifact_lineage_drift_as_invalid_identity(
     engine = FlowEngine(registry)
     plan = engine.plan(
         FlowSpec(
-            OWNER,
-            "design-campaign-attempt",
-            (FlowNode("attempt", ACTION),),
-            (FlowTarget("all", ("attempt",)),),
+            owner=OWNER,
+            flow_id="design-campaign-attempt",
+            recipe_id="design-campaign-attempt-lineage-drift-recipe",
+            nodes=(FlowNode("attempt", ACTION),),
+            targets=(FlowTarget("all", ("attempt",)),),
+            action_bindings=(ActionBinding(ACTION, "drifted-attempt"),),
         ),
         "all",
-        ExecutionProfile(
-            OWNER,
-            "drifted",
-            (AdapterSelection(ACTION, "drifted-attempt"),),
-        ),
     )
 
     result = DesignCampaignRunner(engine, artifact_root=tmp_path).start(_campaign(plan))
@@ -548,6 +537,14 @@ def test_campaign_caller_has_one_baseline_and_no_repair_input() -> None:
     assert "repair_plan" not in {
         item.name for item in fields(DesignCampaignAttemptSpec)
     }
+    assert tuple(item.name for item in fields(DesignCampaignAttemptSpec)) == (
+        "iteration_id",
+        "target",
+        "operation",
+        "candidate",
+        "artifacts",
+        "stages",
+    )
 
 
 def test_continuation_rejects_an_adapter_that_did_not_declare_consumption(
@@ -649,17 +646,14 @@ def test_feedback_driven_campaign_pauses_for_proposal_and_derives_second_round(
     engine = FlowEngine(registry)
     plan = engine.plan(
         FlowSpec(
-            OWNER,
-            "design-campaign-attempt",
-            (FlowNode("attempt", ACTION),),
-            (FlowTarget("all", ("attempt",)),),
+            owner=OWNER,
+            flow_id="design-campaign-attempt",
+            recipe_id="design-campaign-attempt-feedback-recipe",
+            nodes=(FlowNode("attempt", ACTION),),
+            targets=(FlowTarget("all", ("attempt",)),),
+            action_bindings=(ActionBinding(ACTION, "feedback-driven"),),
         ),
         "all",
-        ExecutionProfile(
-            OWNER,
-            "feedback-driven",
-            (AdapterSelection(ACTION, "feedback-driven"),),
-        ),
     )
     attempt = DesignCampaignAttempt(
         "baseline",
@@ -961,17 +955,14 @@ def test_sizing_child_binds_proposed_point_result_and_verification(
     engine = FlowEngine(registry)
     plan = engine.plan(
         FlowSpec(
-            OWNER,
-            "sizing-campaign-attempt",
-            (FlowNode("attempt", ACTION),),
-            (FlowTarget("all", ("attempt",)),),
+            owner=OWNER,
+            flow_id="sizing-campaign-attempt",
+            recipe_id="sizing-campaign-attempt-feedback-recipe",
+            nodes=(FlowNode("attempt", ACTION),),
+            targets=(FlowTarget("all", ("attempt",)),),
+            action_bindings=(ActionBinding(ACTION, "sizing-feedback"),),
         ),
         "all",
-        ExecutionProfile(
-            OWNER,
-            "sizing-feedback",
-            (AdapterSelection(ACTION, "sizing-feedback"),),
-        ),
     )
     attempt = DesignCampaignAttempt(
         "baseline",

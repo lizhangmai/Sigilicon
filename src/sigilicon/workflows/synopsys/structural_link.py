@@ -1253,9 +1253,8 @@ class SynopsysStructuralLinkAdapter:
         timeout = context.adapter_config.get("timeout_seconds")
         if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
             raise FlowExecutionError(
-                "structural-link profile requires a positive timeout_seconds"
+                "structural-link Adapter configuration requires a positive timeout_seconds"
             )
         return timeout
-
 
 

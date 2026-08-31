@@ -23,14 +23,13 @@ from sigilicon.domain.post_layout import (
     qualification_evidence_from_json,
 )
 from sigilicon.flow import (
+    ActionBinding,
     ActionContract,
     AdapterExecution,
-    AdapterSelection,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -217,9 +216,10 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
     registry.register_action_adapter(PEX_ACTION, _PEX_ADAPTER, _NoopAdapter())
     engine = FlowEngine(registry)
     spec = FlowSpec(
-        "owner",
-        "pex-preflight",
-        (
+        owner="owner",
+        flow_id="pex-preflight",
+        recipe_id="pex-preflight-recipe",
+        nodes=(
             FlowNode("inputs", _SOURCE_ACTION),
             FlowNode(
                 "pex",
@@ -231,21 +231,17 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
                 ),
             ),
         ),
-        (FlowTarget("pex", ("pex",)),),
-    )
-    profile = ExecutionProfile(
-        "owner",
-        "offline-pex",
-        (
-            AdapterSelection(_SOURCE_ACTION, _SOURCE_ADAPTER),
-            AdapterSelection(
+        targets=(FlowTarget("pex", ("pex",)),),
+        action_bindings=(
+            ActionBinding(_SOURCE_ACTION, _SOURCE_ADAPTER),
+            ActionBinding(
                 PEX_ACTION,
                 _PEX_ADAPTER,
-                platform_asset_identities={"physical-pex": "fixture.pex"},
+                platform_assets={"physical-pex": "fixture.pex"},
             ),
         ),
     )
-    plan = engine.plan(spec, "pex", profile)
+    plan = engine.plan(spec, "pex")
     asset = ResolvedPlatformAsset(
         "physical-pex",
         "platform.pex",
