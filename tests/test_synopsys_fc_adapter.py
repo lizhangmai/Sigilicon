@@ -28,7 +28,7 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.source_assets import SourceAssetsAdapter
-from sigilicon.workflows.synopsys import SynopsysFCAdapter
+from sigilicon.workflows.synopsys.fc import SynopsysFCAdapter
 
 
 def _write_executable(path: Path, body: str) -> None:

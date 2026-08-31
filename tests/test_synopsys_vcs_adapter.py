@@ -22,7 +22,7 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.source_assets import SourceAssetsAdapter
-from sigilicon.workflows.synopsys import SynopsysVCSAdapter
+from sigilicon.workflows.synopsys.vcs import SynopsysVCSAdapter
 
 
 def _write_owner(owner_root: Path) -> None:

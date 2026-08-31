@@ -111,3 +111,20 @@ def test_registry_materializes_only_the_selected_synopsys_tool_module() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_synopsys_package_does_not_reexport_tool_adapters() -> None:
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            "import sigilicon.workflows.synopsys as synopsys; "
+            "assert not hasattr(synopsys, 'SynopsysDCAdapter'); "
+            "assert not hasattr(synopsys, 'SynopsysVCSAdapter')",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from importlib import import_module
 
 from sigilicon.flow.circuit_design import register_circuit_design_actions
@@ -28,68 +29,58 @@ from sigilicon.flow.native import (
 )
 
 
-_SYNOPSYS_ADAPTERS = {
-    "dc": ("sigilicon.workflows.synopsys.dc", "SynopsysDCAdapter"),
-    "fc": ("sigilicon.workflows.synopsys.fc", "SynopsysFCAdapter"),
-    "hspice": ("sigilicon.workflows.synopsys.hspice", "SynopsysHSpiceAdapter"),
-    "structural-link": (
+_LAZY_ADAPTERS = {
+    "synopsys-dc": ("sigilicon.workflows.synopsys.dc", "SynopsysDCAdapter"),
+    "synopsys-fc": ("sigilicon.workflows.synopsys.fc", "SynopsysFCAdapter"),
+    "synopsys-hspice": (
+        "sigilicon.workflows.synopsys.hspice",
+        "SynopsysHSpiceAdapter",
+    ),
+    "synopsys-structural-link": (
         "sigilicon.workflows.synopsys.structural_link",
         "SynopsysStructuralLinkAdapter",
     ),
-    "vcs": ("sigilicon.workflows.synopsys.vcs", "SynopsysVCSAdapter"),
+    "synopsys-vcs": ("sigilicon.workflows.synopsys.vcs", "SynopsysVCSAdapter"),
+    REFERENCE_PNR_ADAPTER: (
+        "sigilicon.workflows.physical_design",
+        "ReferencePhysicalDesignAdapter",
+    ),
+    REFERENCE_MATERIALIZATION_ADAPTER: (
+        "sigilicon.workflows.physical_design",
+        "MaterializationPlanAdapter",
+    ),
+    CALIBRE_PHYSICAL_VERIFICATION_ADAPTER: (
+        "sigilicon.workflows.layout_verification",
+        "CalibrePhysicalVerificationAdapter",
+    ),
+    RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER: (
+        "sigilicon.workflows.physical_verification",
+        "ReceiptBoundVerificationSourceAdapter",
+    ),
+    PHYSICAL_DESIGN_OBSERVATION_ADAPTER: (
+        "sigilicon.workflows.design_physical",
+        "PhysicalDesignObservationAdapter",
+    ),
+    OA_XSTREAM_MATERIALIZATION_ADAPTER: (
+        "sigilicon.workflows.oa_materialization",
+        "OaXStreamMaterializationAdapter",
+    ),
 }
 
+_CALIBRE_XRC_PEX = (
+    "sigilicon.workflows.calibre_pex",
+    "CalibreXrcPexAdapter",
+)
 
-def _synopsys_adapter(name: str) -> ToolAdapter:
-    module_name, class_name = _SYNOPSYS_ADAPTERS[name]
-    adapter_type = getattr(import_module(module_name), class_name)
-    return adapter_type()
+def _adapter_factory(
+    module_name: str,
+    class_name: str,
+) -> Callable[[], ToolAdapter]:
+    def create() -> ToolAdapter:
+        adapter_type = getattr(import_module(module_name), class_name)
+        return adapter_type()
 
-
-def _reference_physical_design_adapter() -> ToolAdapter:
-    from sigilicon.workflows.physical_design import ReferencePhysicalDesignAdapter
-
-    return ReferencePhysicalDesignAdapter()
-
-
-def _materialization_plan_adapter() -> ToolAdapter:
-    from sigilicon.workflows.physical_design import MaterializationPlanAdapter
-
-    return MaterializationPlanAdapter()
-
-
-def _calibre_physical_verification_adapter() -> ToolAdapter:
-    from sigilicon.workflows.layout_verification import (
-        CalibrePhysicalVerificationAdapter,
-    )
-
-    return CalibrePhysicalVerificationAdapter()
-
-
-def _receipt_bound_verification_source_adapter() -> ToolAdapter:
-    from sigilicon.workflows.physical_verification import (
-        ReceiptBoundVerificationSourceAdapter,
-    )
-
-    return ReceiptBoundVerificationSourceAdapter()
-
-
-def _physical_design_observation_adapter() -> ToolAdapter:
-    from sigilicon.workflows.design_physical import PhysicalDesignObservationAdapter
-
-    return PhysicalDesignObservationAdapter()
-
-
-def _calibre_xrc_pex_adapter() -> ToolAdapter:
-    from sigilicon.workflows.calibre_pex import CalibreXrcPexAdapter
-
-    return CalibreXrcPexAdapter()
-
-
-def _oa_xstream_materialization_adapter() -> ToolAdapter:
-    from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
-
-    return OaXStreamMaterializationAdapter()
+    return create
 
 
 def build_flow_registry(
@@ -105,53 +96,22 @@ def build_flow_registry(
     register_layout_actions(registry)
     register_native_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
-    registry.register_adapter_factory(
-        "synopsys-dc", lambda: _synopsys_adapter("dc")
-    )
-    registry.register_adapter_factory(
-        "synopsys-fc", lambda: _synopsys_adapter("fc")
-    )
-    registry.register_adapter_factory(
-        "synopsys-hspice", lambda: _synopsys_adapter("hspice")
-    )
-    registry.register_adapter_factory(
-        "synopsys-structural-link",
-        lambda: _synopsys_adapter("structural-link"),
-    )
-    registry.register_adapter_factory(
-        "synopsys-vcs", lambda: _synopsys_adapter("vcs")
-    )
-    registry.register_adapter_factory(
-        REFERENCE_PNR_ADAPTER,
-        _reference_physical_design_adapter,
-    )
-    registry.register_adapter_factory(
-        REFERENCE_MATERIALIZATION_ADAPTER,
-        _materialization_plan_adapter,
-    )
-    registry.register_adapter_factory(
-        CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
-        _calibre_physical_verification_adapter,
-    )
-    registry.register_adapter_factory(
-        RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,
-        _receipt_bound_verification_source_adapter,
-    )
-    registry.register_adapter_factory(
-        PHYSICAL_DESIGN_OBSERVATION_ADAPTER,
-        _physical_design_observation_adapter,
-    )
+    for adapter_name, reference in _LAZY_ADAPTERS.items():
+        if (
+            adapter_name == OA_XSTREAM_MATERIALIZATION_ADAPTER
+            and materialization_adapter is not None
+        ):
+            continue
+        registry.register_adapter_factory(
+            adapter_name,
+            _adapter_factory(*reference),
+        )
     registry.register_action_adapter_factory(
         PEX_ACTION,
         CALIBRE_XRC_PEX_ADAPTER,
-        _calibre_xrc_pex_adapter,
+        _adapter_factory(*_CALIBRE_XRC_PEX),
     )
-    if materialization_adapter is None:
-        registry.register_adapter_factory(
-            OA_XSTREAM_MATERIALIZATION_ADAPTER,
-            _oa_xstream_materialization_adapter,
-        )
-    else:
+    if materialization_adapter is not None:
         registry.register_adapter(
             OA_XSTREAM_MATERIALIZATION_ADAPTER,
             materialization_adapter,

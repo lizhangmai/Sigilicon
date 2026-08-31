@@ -26,7 +26,7 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.standard_asic import register_standard_asic_actions
 from sigilicon.flow.source_assets import SourceAssetsAdapter
-from sigilicon.workflows.synopsys import SynopsysHSpiceAdapter
+from sigilicon.workflows.synopsys.hspice import SynopsysHSpiceAdapter
 
 
 def _write_owner(owner_root: Path) -> None:
