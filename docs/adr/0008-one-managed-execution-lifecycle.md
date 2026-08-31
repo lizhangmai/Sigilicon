@@ -4,7 +4,7 @@ status: accepted
 
 # Use one managed execution lifecycle across design styles
 
-Every operation that executes an EDA tool and produces canonical engineering-run evidence will run as a typed Action through `ProjectFlow` and `FlowEngine`. The selected owner and Execution Profile provide the Adapter, while one Flow run exclusively owns capability preflight, workspace-operation binding, logs, artifacts, incidents, evidence, completion, and cleanup. Each invocation has exactly one canonical Sigilicon RunRecord and manifest; backend-native metadata, summaries, and result databases remain ordinary artifacts of that run rather than a second Sigilicon lifecycle. ASIC, analog, mixed-signal, physical-design, and native-OA payloads retain their domain schemas; only their execution and evidence envelope is shared.
+Every operation that executes an EDA tool and produces canonical engineering-run evidence will run as a typed Action through `ProjectRunner.plan(...) -> FlowExecution` and `FlowEngine`. The selected owner and Execution Profile provide the Adapter, while one Flow run exclusively owns capability preflight, workspace-operation binding, logs, artifacts, incidents, evidence, completion, and cleanup. Each invocation has exactly one canonical Sigilicon RunRecord and manifest; backend-native metadata, summaries, and result databases remain ordinary artifacts of that run rather than a second Sigilicon lifecycle. ASIC, analog, mixed-signal, physical-design, and native-OA payloads retain their domain schemas; only their execution and evidence envelope is shared.
 
 OA source/workspace administration remains a separate Module because plan, check, rebuild, and attestation govern a mutable external design database rather than an engineering run. Their reports are workspace/source administration evidence and cannot produce regression, qualification, or signoff conclusions. Native simulation and verification consume the resolved OA workspace through Flow. Cataloged execution has no standalone recorder or second Sigilicon lifecycle; an owner-mandated human entrypoint may remain only as a thin typed-Flow facade.
 
@@ -13,7 +13,7 @@ This rejects both a universal flattened EDA result schema and permanent parallel
 ## 2026-08-31 custom-layout implementation boundary
 
 Cataloged custom-layout generation and XStream/Calibre verification now enter
-through `ProjectFlow.plan(RunRequest.layout(...))`. The layout registry selects
+through `ProjectRunner.plan(RunRequest.layout(...)) -> FlowExecution`. The layout registry selects
 explicit `generate`, `verify-drc`, `verify-lvs`, or `verify-all` Flow targets. Planning
 freezes the resolved `LayoutSpec`, generated `LayoutPlan`, owner route, platform
 contracts, generator implementation, and canonical netlist sources. Execution

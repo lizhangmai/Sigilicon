@@ -14,7 +14,7 @@ from sigilicon.domain.repository import Project
 from sigilicon.flow import ExecutionEnvironment, FlowExecutionError
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_targets import load_design_target_catalog
-from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
 
 from conftest import write_component_owner
 
@@ -229,7 +229,7 @@ def test_expanded_design_flow_read_interfaces_show_compiled_routes(
 ) -> None:
     _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
-    workflow = ProjectFlow(project, "example")
+    workflow = ProjectRunner(project, "example")
 
     summary = workflow.describe(flow="design-checks")
 
@@ -291,7 +291,7 @@ def test_expanded_design_plan_reuses_one_owner_source_snapshot(
 
     monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
 
-    planned = ProjectFlow(project, "example").plan(
+    planned = ProjectRunner(project, "example").plan(
         RunRequest.flow("design-checks", "leaf-topology", "alternate")
     )
 
@@ -302,19 +302,14 @@ def test_expanded_design_plan_reuses_one_owner_source_snapshot(
 def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) -> None:
     _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
-    workflow = ProjectFlow(project, "example")
+    workflow = ProjectRunner(project, "example")
     planned = workflow.plan(RunRequest.design("leaf", "topology"))
 
-    result = workflow.run(
-        planned,
+    result = planned.run(
         ExecutionEnvironment(),
         run_id="design-flow-fixture",
     )
-    payload = workflow.read_result(
-        flow=result.flow_id,
-        target=result.target,
-        run_id=result.run_id,
-    )
+    payload = planned.read_result(result.run_id)
 
     assert payload["status"] == "accepted"
     assert payload["nodes"]["leaf-topology"]["facts"]["passed"] is True
@@ -345,11 +340,10 @@ def test_project_design_action_consumes_the_plan_validated_evidence_envelope(
         encoding="utf-8",
     )
     project = Project.from_project_root(tmp_path)
-    workflow = ProjectFlow(project, "example")
+    workflow = ProjectRunner(project, "example")
     planned = workflow.plan(RunRequest.design("leaf", "topology"))
 
-    result = workflow.run(
-        planned,
+    result = planned.run(
         ExecutionEnvironment(),
         run_id="design-evidence-envelope-fixture",
     )
@@ -361,13 +355,12 @@ def test_project_design_action_consumes_the_plan_validated_evidence_envelope(
 def test_project_design_action_rejects_exact_route_source_drift(tmp_path: Path) -> None:
     runner, _spec = _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
-    workflow = ProjectFlow(project, "example")
+    workflow = ProjectRunner(project, "example")
     planned = workflow.plan(RunRequest.design("leaf", "topology"))
     runner.write_text("print('{\"passed\": false}')\n", encoding="utf-8")
 
     with pytest.raises(FlowExecutionError, match="preflight is blocked"):
-        workflow.run(
-            planned,
+        planned.run(
             ExecutionEnvironment(),
             run_id="design-source-drift-fixture",
         )
@@ -384,11 +377,10 @@ def test_project_design_action_preserves_valid_failed_diagnostic(
         encoding="utf-8",
     )
     project = Project.from_project_root(tmp_path)
-    workflow = ProjectFlow(project, "example")
+    workflow = ProjectRunner(project, "example")
     planned = workflow.plan(RunRequest.design("leaf", "topology"))
 
-    result = workflow.run(
-        planned,
+    result = planned.run(
         ExecutionEnvironment(),
         run_id="design-failed-diagnostic-fixture",
     )
@@ -409,7 +401,7 @@ def test_project_design_action_preserves_valid_failed_diagnostic(
     assert payload["process_returncode"] == 1
 
 
-def test_design_catalog_owner_must_match_project_flow(tmp_path: Path) -> None:
+def test_design_catalog_owner_must_match_project_runner(tmp_path: Path) -> None:
     _catalog_project(tmp_path)
     catalog_path = tmp_path / "ip/example/configs/flows/design_targets.toml"
     catalog_path.write_text(
@@ -656,28 +648,25 @@ def test_design_cli_runs_the_cataloged_typed_flow_route(
     monkeypatch.chdir(tmp_path)
     events: list[object] = []
 
-    class FakeProjectFlow:
+    class FakeProjectRunner:
         def __init__(self, project, owner):
             events.append(("init", project.project_root, owner))
 
         def plan(self, request):
             selection = request.selection
             events.append(("plan-design", selection.target, selection.mode))
-            return "planned"
+            class Execution:
+                def run(self, environment, *, run_id):
+                    events.append(("run", environment, run_id))
+                    return SimpleNamespace(run_id="fixture-run")
 
-        def run(self, planned, environment, *, run_id):
-            events.append(("run", planned, environment, run_id))
-            return SimpleNamespace(
-                flow_id="design-checks",
-                target="leaf-sync",
-                run_id="fixture-run",
-            )
+                def read_result(self, run_id):
+                    events.append(("read", run_id))
+                    return {"status": "accepted", "run_id": run_id}
 
-        def read_result(self, *, flow, target, run_id):
-            events.append(("read", flow, target, run_id))
-            return {"status": "accepted", "run_id": run_id}
+            return Execution()
 
-    monkeypatch.setattr(flow_cli, "ProjectFlow", FakeProjectFlow)
+    monkeypatch.setattr(flow_cli, "ProjectRunner", FakeProjectRunner)
 
     assert (
         flow_cli.main(
@@ -688,13 +677,8 @@ def test_design_cli_runs_the_cataloged_typed_flow_route(
     assert events[0] == ("init", tmp_path.resolve(), "example")
     assert events[1] == ("plan-design", "leaf", "sync")
     assert events[2][0] == "run"
-    assert events[2][3] == "fixture-run"
-    assert events[3] == (
-        "read",
-        "design-checks",
-        "leaf-sync",
-        "fixture-run",
-    )
+    assert events[2][2] == "fixture-run"
+    assert events[3] == ("read", "fixture-run")
     assert '"status": "accepted"' in capsys.readouterr().out
 
 

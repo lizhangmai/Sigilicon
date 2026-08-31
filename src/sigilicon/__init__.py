@@ -5,11 +5,11 @@ from typing import Any
 from sigilicon.paths import ProjectContext
 
 
-__all__ = ["Project", "ProjectContext", "ProjectFlow", "ProjectOaWorkflow"]
+__all__ = ["Project", "ProjectContext", "ProjectRunner", "ProjectOaWorkflow"]
 
 
 def __getattr__(name: str) -> Any:
-    if name in {"Project", "ProjectFlow", "ProjectOaWorkflow"}:
+    if name in {"Project", "ProjectRunner", "ProjectOaWorkflow"}:
         from sigilicon import project
 
         return getattr(project, name)

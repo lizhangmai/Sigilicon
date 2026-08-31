@@ -29,7 +29,7 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.flow import ExecutionEnvironment
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
-from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
 
 
 def _read(root: Path) -> AgenticReadInterface:
@@ -212,12 +212,11 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
     ) == 0
     assert json.loads(capsys.readouterr().out) == python_plan
 
-    project_flow = ProjectFlow(interface.project, "example")
-    planned = project_flow.plan(
+    project_runner = ProjectRunner(interface.project, "example")
+    planned = project_runner.plan(
         RunRequest.flow("pipeline", "all", "offline"),
     )
-    result = project_flow.run(
-        planned,
+    result = planned.run(
         ExecutionEnvironment(),
         run_id="a" * 32,
     )

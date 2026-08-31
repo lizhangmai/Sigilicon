@@ -327,6 +327,12 @@ class FlowEngine:
         self._registry = registry
         self._project_scope = project_scope
 
+    @property
+    def project_scope(self) -> ProjectScope | None:
+        """Return the immutable project binding used to compile executions."""
+
+        return self._project_scope
+
     def planned_output(self, plan: FlowPlan, node_id: str, role: str) -> ArtifactPort:
         """Resolve one output through the exact Action registry used by this engine."""
 

@@ -19,8 +19,8 @@ from sigilicon.domain.repository import (
     RepositoryOwner,
 )
 from sigilicon.flow.model import identifier, owner_identity, run_identity
-from sigilicon.workflows.project_flow import (
-    ProjectFlow,
+from sigilicon.workflows.project_runner import (
+    ProjectRunner,
     RunRequest,
 )
 from sigilicon.workflows.design_artifacts import validate_candidate_records
@@ -173,7 +173,7 @@ class AgenticReadInterface:
     ) -> dict[str, Any]:
         """Compile one catalog-selected Flow through the existing FlowEngine."""
 
-        resolved = ProjectFlow(
+        resolved = ProjectRunner(
             self.project,
             owner,
         ).plan(
@@ -236,7 +236,10 @@ class AgenticReadInterface:
         flow_name = identifier(flow, "Flow identity")
         target_name = identifier(target, "Flow target")
         identity = run_identity(run_id)
-        project_flow = ProjectFlow(self.project, selected_owner.name)
+        project_runner = ProjectRunner(self.project, selected_owner.name)
+        execution = project_runner.plan(
+            RunRequest.flow(flow_name, target_name),
+        )
         managed = AgenticRunStore(
             self.project.artifact_root,
             self.project_id,
@@ -259,11 +262,7 @@ class AgenticReadInterface:
                 raise ValueError("managed Flow Run identity drift")
             result: dict[str, Any] | None = None
             try:
-                result = project_flow.read_result(
-                    flow=flow_name,
-                    target=target_name,
-                    run_id=identity,
-                )
+                result = execution.read_result(identity)
             except (OSError, RuntimeError):
                 if state["status"] not in RUNNING_STATUSES:
                     raise
@@ -304,11 +303,7 @@ class AgenticReadInterface:
                     else ["project.inspect", "run.inspect"]
                 ),
             )
-        result = project_flow.read_result(
-            flow=flow_name,
-            target=target_name,
-            run_id=identity,
-        )
+        result = execution.read_result(identity)
         resource = self.run_resource_uri(
             owner=selected_owner.name,
             flow=flow_name,
@@ -437,8 +432,8 @@ class AgenticReadInterface:
             raise ValueError(
                 f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
             )
-        project_flow = ProjectFlow(self.project, owner.name)
-        descriptions = project_flow.catalog_descriptions(
+        project_runner = ProjectRunner(self.project, owner.name)
+        descriptions = project_runner.catalog_descriptions(
             inventory=owner_inventory,
         )
         flows = [

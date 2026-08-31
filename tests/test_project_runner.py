@@ -8,12 +8,13 @@ import sigilicon.domain.repository as repository_module
 
 from sigilicon.cli.flow_core import main as flow_cli_main
 from sigilicon.domain.repository import Project
-from sigilicon.flow import ExecutionEnvironment
-from sigilicon.workflows.project_flow import (
+from sigilicon.flow import ExecutionEnvironment, FlowEngine, FlowRegistry
+from sigilicon.workflows.project_runner import (
+    FlowExecution,
     FlowRunSelection,
-    ProjectFlow,
+    ProjectRunner,
     RunRequest,
-    resolve_project_flow_plan,
+    resolve_project_execution,
 )
 
 from conftest import write_component_owner
@@ -126,7 +127,7 @@ def _owner_flow_files(project_root: Path, source: Path, owner: str = "example") 
     )
 
 
-def test_project_flow_reads_its_canonical_catalog_once_per_operation(
+def test_project_runner_reads_its_canonical_catalog_once_per_operation(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -150,16 +151,16 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
 
     monkeypatch.setattr(repository_module, "read_toml_record", counted_read_toml)
     project = Project.from_project_root(tmp_path)
-    project_flow = ProjectFlow(project, "example")
+    project_runner = ProjectRunner(project, "example")
 
-    assert project_flow.catalog().owner == "example"
+    assert project_runner.catalog().owner == "example"
     assert catalog_reads == 1
 
     catalog_reads = 0
     request = RunRequest.flow("owner-flow", "all")
     assert request.selection == FlowRunSelection("owner-flow", "all")
     assert RunRequest.oa_simulation("tb_NATIVE").selection.testbench == "tb_NATIVE"
-    planned = project_flow.plan(request)
+    planned = project_runner.plan(request)
 
     assert planned.plan_identity == "example:owner-flow:all:local"
     assert not hasattr(planned, "engine")
@@ -167,10 +168,10 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     assert catalog_reads == 1
 
     with pytest.raises(ValueError, match="requires a RunRequest"):
-        project_flow.plan("owner-flow")  # type: ignore[arg-type]
+        project_runner.plan("owner-flow")  # type: ignore[arg-type]
 
     catalog_reads = 0
-    resolved = resolve_project_flow_plan(
+    resolved = resolve_project_execution(
         project,
         "example:owner-flow:all:local",
     )
@@ -215,7 +216,7 @@ def test_plan_identity_resolution_does_not_read_unrelated_owner_flows(
     )
     project = Project.from_project_root(tmp_path)
 
-    resolved = resolve_project_flow_plan(
+    resolved = resolve_project_execution(
         project,
         "example:owner-flow:all:local",
     )
@@ -227,7 +228,7 @@ def test_plan_identity_resolution_does_not_read_unrelated_owner_flows(
         "example:owner-flow:all:local:extra",
     ):
         with pytest.raises(ValueError, match="Flow Plan identity"):
-            resolve_project_flow_plan(project, identity)
+            resolve_project_execution(project, identity)
 
 
 def test_project_extension_content_is_bound_to_plan_and_preflight(
@@ -242,23 +243,23 @@ def test_project_extension_content_is_bound_to_plan_and_preflight(
     )
     _declare_extension(tmp_path, "example", source)
     project = Project.from_project_root(tmp_path)
-    project_flow = ProjectFlow(project, "example")
-    planned = project_flow.plan(RunRequest.flow("owner-flow", "all"))
+    project_runner = ProjectRunner(project, "example")
+    planned = project_runner.plan(RunRequest.flow("owner-flow", "all"))
 
     approved_record = planned.record
     source_record = approved_record["implementation_sources"][0]
     assert source_record["path"] == "ip/example/tools/flow_extension.py"
     assert len(source_record["sha256"]) == 64
-    assert project_flow.preflight(planned, ExecutionEnvironment()).status == "ready"
+    assert planned.preflight(ExecutionEnvironment()).status == "ready"
 
     source.write_text(source.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
 
-    preflight = project_flow.preflight(planned, ExecutionEnvironment())
+    preflight = planned.preflight(ExecutionEnvironment())
     assert preflight.status == "blocked"
     assert preflight.checks[0].requirement_kind == "implementation-source"
     assert preflight.checks[0].status == "changed"
 
-    replanned = ProjectFlow(project, "example").plan(
+    replanned = ProjectRunner(project, "example").plan(
         RunRequest.flow("owner-flow", "all"),
     )
     assert replanned.record != approved_record
@@ -281,8 +282,8 @@ def test_project_extension_binds_python_helpers_from_other_owner_filesets(
     )
     _declare_extension(tmp_path, "example", source)
     project = Project.from_project_root(tmp_path)
-    project_flow = ProjectFlow(project, "example")
-    planned = project_flow.plan(RunRequest.flow("owner-flow", "all"))
+    project_runner = ProjectRunner(project, "example")
+    planned = project_runner.plan(RunRequest.flow("owner-flow", "all"))
 
     paths = {
         item["path"] for item in planned.record["implementation_sources"]
@@ -290,10 +291,10 @@ def test_project_extension_binds_python_helpers_from_other_owner_filesets(
     assert helper.relative_to(tmp_path).as_posix() in paths
 
     helper.write_text("VALUE = 2\n", encoding="utf-8")
-    assert project_flow.preflight(planned, ExecutionEnvironment()).status == "blocked"
+    assert planned.preflight(ExecutionEnvironment()).status == "blocked"
 
 
-def test_project_flow_hides_owner_paths_and_registry_assembly(
+def test_project_runner_hides_owner_paths_and_registry_assembly(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -308,22 +309,13 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
     _declare_extension(tmp_path, "example", source)
     _write_owner_flow(tmp_path)
 
-    project_flow = ProjectFlow(Project.from_project_root(tmp_path), "example")
-    planned = project_flow.plan(RunRequest.flow("owner-flow", "all"))
+    project_runner = ProjectRunner(Project.from_project_root(tmp_path), "example")
+    planned = project_runner.plan(RunRequest.flow("owner-flow", "all"))
 
     assert planned.plan_identity == "example:owner-flow:all:local"
     assert planned.record["nodes"][0]["adapter"] == "example-owner-check"
     assert str(tmp_path.resolve()) not in json.dumps(planned.record)
-    assert project_flow.preflight(
-        planned,
-        ExecutionEnvironment(),
-    ).status == "ready"
-    independently_assembled = ProjectFlow(
-        Project.from_project_root(tmp_path), "example"
-    ).plan(RunRequest.flow("owner-flow", "all"))
-    with pytest.raises(ValueError, match="exact project owner binding"):
-        project_flow.preflight(independently_assembled, ExecutionEnvironment())
-
+    assert planned.preflight(ExecutionEnvironment()).status == "ready"
     result = flow_cli_main(
         [
             "plan",
@@ -359,17 +351,32 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
 
     assert result == 0
     assert json.loads(capsys.readouterr().out)["status"] == "accepted"
-    assert project_flow.read_result(
-        flow="owner-flow",
-        target="all",
-        run_id="2" * 32,
-    )["status"] == "accepted"
-    project_flow.clean_run(
-        flow="owner-flow",
-        target="all",
-        run_id="2" * 32,
-    )
+    assert planned.restore_result("2" * 32).status == "accepted"
+    assert planned.read_result("2" * 32)["status"] == "accepted"
+    planned.clean("2" * 32)
     assert not tuple((tmp_path / "artifacts").rglob("flow_result.json"))
+
+
+def test_flow_execution_rejects_public_or_mismatched_construction(
+    tmp_path: Path,
+) -> None:
+    source = _write_extension(tmp_path)
+    write_component_owner(
+        tmp_path,
+        "example",
+        filesets={"flow": _owner_flow_files(tmp_path, source)},
+    )
+    _declare_extension(tmp_path, "example", source)
+    _write_owner_flow(tmp_path)
+    project = Project.from_project_root(tmp_path)
+    planned = ProjectRunner(project, "example").plan(
+        RunRequest.flow("owner-flow", "all")
+    )
+
+    with pytest.raises(TypeError):
+        FlowExecution(None, None, None)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="binding disagree"):
+        FlowExecution._bind(FlowEngine(FlowRegistry()), planned._plan, project)
 
 
 def test_semantic_flow_cli_discovers_and_parses_the_project_once(
@@ -415,7 +422,7 @@ def test_semantic_flow_cli_discovers_and_parses_the_project_once(
     assert manifest_reads == 1
 
 
-def test_project_flow_registry_requires_the_single_extension_interface(
+def test_project_runner_registry_requires_the_single_extension_interface(
     tmp_path: Path,
 ) -> None:
     source = _write_extension(tmp_path, register=False)
@@ -429,12 +436,12 @@ def test_project_flow_registry_requires_the_single_extension_interface(
 
     project = Project.from_project_root(tmp_path)
     with pytest.raises(ValueError, match="register_flow_adapters"):
-        ProjectFlow(project, "example").plan(
+        ProjectRunner(project, "example").plan(
             RunRequest.flow("owner-flow", "all")
         )
 
 
-def test_project_flow_registry_reports_registration_failure_as_contract_error(
+def test_project_runner_registry_reports_registration_failure_as_contract_error(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:

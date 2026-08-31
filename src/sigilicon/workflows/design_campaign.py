@@ -60,8 +60,7 @@ from sigilicon.workflows.design_repair import (
     attribute_design_failure,
     compile_design_repair,
 )
-from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
-from sigilicon.workflows.project_flow_internal import bind_project_flow_execution
+from sigilicon.workflows.project_runner import ProjectRunner
 
 
 DESIGN_CAMPAIGN_ITERATION_EXTENSION = "design_campaign_iteration"
@@ -1565,58 +1564,7 @@ def resolve_project_design_campaign(
     """Compile portable Campaign selectors through project-owned Flow catalogs."""
 
     source = design_campaign_spec_from_json(campaign_json)
-    project_flow = ProjectFlow(project, source.owner)
-    source_baseline = source.baseline
-    baseline_plan = project_flow.plan(
-        RunRequest.flow(
-            source_baseline.flow,
-            source_baseline.target,
-            source_baseline.profile,
-        )
-    )
-    baseline_execution = bind_project_flow_execution(baseline_plan)
-    baseline = DesignCampaignAttempt(
-        source_baseline.iteration_id,
-        baseline_execution.plan,
-        source_baseline.candidate,
-        source_baseline.artifacts,
-        source_baseline.stages,
-        None,
-    )
-    continuation = None
-    if source.continuation is not None:
-        template = source.continuation
-        continuation_plan = project_flow.plan(
-            RunRequest.flow(
-                template.flow,
-                template.target,
-                template.profile,
-            )
-        )
-        continuation_execution = bind_project_flow_execution(continuation_plan)
-        continuation = DesignCampaignContinuation(
-            continuation_execution.plan,
-            template.candidate,
-            template.artifacts,
-            template.stages,
-            template.proposal_node,
-            template.repair_policy,
-        )
-    campaign = DesignCampaign(
-        source.owner,
-        source.campaign_id,
-        baseline,
-        source.budget,
-        source.scope,
-        continuation,
-    )
-    planned = ProjectDesignCampaignPlan(
-        campaign,
-        baseline_execution.engine,
-        project.artifact_root,
-    )
-    _ = planned.record
-    return planned
+    return ProjectRunner(project, source.owner).plan_design_campaign(source)
 
 
 __all__ = [

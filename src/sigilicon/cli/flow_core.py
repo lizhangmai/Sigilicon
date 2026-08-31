@@ -20,7 +20,7 @@ from sigilicon.flow import (
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -154,8 +154,8 @@ def _project(args: argparse.Namespace) -> Any:
     return load_project(project_contract)
 
 
-def _project_flow(args: argparse.Namespace) -> ProjectFlow:
-    return ProjectFlow(_project(args), args.owner)
+def _project_runner(args: argparse.Namespace) -> ProjectRunner:
+    return ProjectRunner(_project(args), args.owner)
 
 
 def main(
@@ -165,7 +165,7 @@ def main(
     args = _parser().parse_args(arguments)
     try:
         if args.action == "list":
-            project = _project_flow(args)
+            project = _project_runner(args)
             catalog = project.catalog()
             emit_json(
                 [
@@ -179,13 +179,17 @@ def main(
             )
             return 0
         if args.action == "show":
-            project = _project_flow(args)
+            project = _project_runner(args)
             emit_json(project.describe(flow=args.flow, profile=args.profile))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
-            project = _project_flow(args)
+            project = _project_runner(args)
             resolved = project.plan(
-                RunRequest.flow(args.flow, args.target, args.profile),
+                RunRequest.flow(
+                    args.flow,
+                    args.target,
+                    getattr(args, "profile", None),
+                ),
             )
             if args.action == "plan":
                 emit_json(resolved.record)
@@ -199,45 +203,41 @@ def main(
                 print("}")
                 return 0
             if args.action == "preflight":
-                preflight = project.preflight(
-                    resolved,
-                    _execution_environment(
-                        args,
-                    ),
-                )
-                emit_json(project.preflight_record(resolved, preflight))
+                preflight = resolved.preflight(_execution_environment(args))
+                emit_json(resolved.preflight_record(preflight))
                 return 0 if preflight.status == "ready" else 2
             environment = _execution_environment(
                 args,
             )
-            result = project.run(
-                resolved,
+            result = resolved.run(
                 environment,
                 run_id=args.run_id,
             )
-            payload = project.read_result(
-                flow=result.flow_id,
-                target=result.target,
-                run_id=result.run_id,
-            )
+            payload = resolved.read_result(result.run_id)
             emit_json(payload)
             return _flow_status_exit(payload)
         if args.action == "status":
-            project = _project_flow(args)
-            payload = project.read_result(
-                flow=args.flow,
-                target=args.target,
-                run_id=args.run_id,
+            project = _project_runner(args)
+            resolved = project.plan(
+                RunRequest.flow(
+                    args.flow,
+                    args.target,
+                    getattr(args, "profile", None),
+                ),
             )
+            payload = resolved.read_result(args.run_id)
             emit_json(payload)
             return _flow_status_exit(payload)
         if args.action == "clean":
-            project = _project_flow(args)
-            project.clean_run(
-                flow=args.flow,
-                target=args.target,
-                run_id=args.run_id,
+            project = _project_runner(args)
+            resolved = project.plan(
+                RunRequest.flow(
+                    args.flow,
+                    args.target,
+                    getattr(args, "profile", None),
+                ),
             )
+            resolved.clean(args.run_id)
             emit_json(
                 {
                     "schema": 1,

@@ -5,18 +5,18 @@ import sys
 
 import sigilicon
 from sigilicon.domain.repository import Project as DomainProject
-from sigilicon.project import Project, ProjectFlow, ProjectOaWorkflow
+from sigilicon.project import Project, ProjectRunner, ProjectOaWorkflow
 
 
 def test_top_level_project_author_interface_is_narrow_and_canonical() -> None:
     assert sigilicon.__all__ == [
         "Project",
         "ProjectContext",
-        "ProjectFlow",
+        "ProjectRunner",
         "ProjectOaWorkflow",
     ]
     assert Project is DomainProject
-    assert sigilicon.ProjectFlow is ProjectFlow
+    assert sigilicon.ProjectRunner is ProjectRunner
     assert sigilicon.ProjectOaWorkflow is ProjectOaWorkflow
 
 

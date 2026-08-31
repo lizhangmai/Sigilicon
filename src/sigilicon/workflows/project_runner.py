@@ -247,7 +247,7 @@ def _layout_target_adapter(
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
     identity = hashlib.sha256(str(source).encode("utf-8")).hexdigest()
-    module_name = f"_sigilicon_project_flow_{identity}"
+    module_name = f"_sigilicon_owner_extension_{identity}"
     module = ModuleType(module_name)
     module.__file__ = str(source)
     module.__package__ = ""
@@ -409,13 +409,37 @@ def _project_workflow_registry(
     return registry
 
 
-@dataclass(frozen=True)
-class ProjectFlowPlan:
-    """One owner plan bound to its exact registry assembly."""
+@dataclass(frozen=True, init=False)
+class FlowExecution:
+    """One resolved plan with its complete managed execution lifecycle.
+
+    The Module owns the exact registry assembly that planned the graph, the
+    project artifact root, and the owner scope.  Callers never need to recover
+    a hidden ``FlowEngine``/``FlowPlan`` pair or reconstruct execution paths.
+    """
 
     _engine: FlowEngine = field(repr=False, compare=False)
     _plan: FlowPlan = field(repr=False)
     _project: Project = field(repr=False, compare=False)
+
+    @classmethod
+    def _bind(
+        cls,
+        engine: FlowEngine,
+        plan: FlowPlan,
+        project: Project,
+    ) -> FlowExecution:
+        owner = project.owner(plan.spec.owner)
+        expected_scope = project.scope(owner)
+        if plan.spec.owner_root != owner.root or engine.project_scope != expected_scope:
+            raise ValueError(
+                "Flow execution engine, plan, and Project owner binding disagree"
+            )
+        execution = object.__new__(cls)
+        object.__setattr__(execution, "_engine", engine)
+        object.__setattr__(execution, "_plan", plan)
+        object.__setattr__(execution, "_project", project)
+        return execution
 
     @property
     def plan_identity(self) -> str:
@@ -455,9 +479,55 @@ class ProjectFlowPlan:
             (node.node.node_id, node.dependencies) for node in self._plan.nodes
         )
 
+    def preflight(self, environment: ExecutionEnvironment) -> PreflightResult:
+        return self._engine.preflight(self._plan, environment)
+
+    def preflight_record(self, result: PreflightResult) -> dict[str, object]:
+        return self._engine.preflight_record(self._plan, result)
+
+    def run(
+        self,
+        environment: ExecutionEnvironment,
+        *,
+        run_id: str | None = None,
+        progress: Callable[[FlowProgress], None] | None = None,
+    ) -> FlowResult:
+        return self._engine.run(
+            self._plan,
+            artifact_root=self._project.artifact_root,
+            environment=environment,
+            run_id=run_id,
+            progress=progress,
+        )
+
+    def read_result(self, run_id: str) -> dict[str, Any]:
+        return self._engine.read_run_result(
+            artifact_root=self._project.artifact_root,
+            owner=self.owner,
+            flow_id=self.flow,
+            target=self.target,
+            run_id=run_id,
+        )
+
+    def restore_result(self, run_id: str) -> FlowResult:
+        return self._engine.restore_result(
+            self._plan,
+            artifact_root=self._project.artifact_root,
+            run_id=run_id,
+        )
+
+    def clean(self, run_id: str) -> None:
+        self._engine.clean_run(
+            artifact_root=self._project.artifact_root,
+            owner=self.owner,
+            flow_id=self.flow,
+            target=self.target,
+            run_id=run_id,
+        )
+
 
 @dataclass(frozen=True)
-class ProjectFlow:
+class ProjectRunner:
     """Project-level Interface shared by CLI, Python and agent callers.
 
     The Module fixes one canonical owner and hides its root, Flow catalog,
@@ -477,7 +547,7 @@ class ProjectFlow:
     def __post_init__(self) -> None:
         owner = self.project.owner(self.owner_name)
         if not callable(self.client_factory):
-            raise ValueError("ProjectFlow client factory must be callable")
+            raise ValueError("ProjectRunner client factory must be callable")
         object.__setattr__(self, "owner_name", owner.name)
 
     @property
@@ -603,11 +673,11 @@ class ProjectFlow:
             )
         )
 
-    def plan(self, request: RunRequest) -> ProjectFlowPlan:
+    def plan(self, request: RunRequest) -> FlowExecution:
         """Compile one typed project operation into its canonical Flow plan."""
 
         if not isinstance(request, RunRequest):
-            raise ValueError("ProjectFlow.plan requires a RunRequest")
+            raise ValueError("ProjectRunner.plan requires a RunRequest")
 
         selection = request.selection
         if isinstance(selection, FlowRunSelection):
@@ -620,12 +690,77 @@ class ProjectFlow:
             return self._plan_oa_simulation(selection)
         raise AssertionError("unhandled typed RunRequest")
 
+    def plan_design_campaign(self, source: object):
+        """Compile one typed Design Campaign without exposing engine internals."""
+
+        from sigilicon.workflows.design_campaign import (
+            DesignCampaign,
+            DesignCampaignAttempt,
+            DesignCampaignSpec,
+            DesignCampaignContinuation,
+            ProjectDesignCampaignPlan,
+        )
+
+        if not isinstance(source, DesignCampaignSpec):
+            raise ValueError("ProjectRunner requires a typed DesignCampaignSpec")
+        if source.owner != self.owner.name:
+            raise ValueError("Design Campaign owner disagrees with ProjectRunner")
+        baseline_source = source.baseline
+        baseline_execution = self.plan(
+            RunRequest.flow(
+                baseline_source.flow,
+                baseline_source.target,
+                baseline_source.profile,
+            )
+        )
+        baseline = DesignCampaignAttempt(
+            baseline_source.iteration_id,
+            baseline_execution._plan,
+            baseline_source.candidate,
+            baseline_source.artifacts,
+            baseline_source.stages,
+            None,
+        )
+        continuation = None
+        if source.continuation is not None:
+            template = source.continuation
+            continuation_execution = self.plan(
+                RunRequest.flow(
+                    template.flow,
+                    template.target,
+                    template.profile,
+                )
+            )
+            continuation = DesignCampaignContinuation(
+                continuation_execution._plan,
+                template.candidate,
+                template.artifacts,
+                template.stages,
+                template.proposal_node,
+                template.repair_policy,
+            )
+        campaign = DesignCampaign(
+            source.owner,
+            source.campaign_id,
+            baseline,
+            source.budget,
+            source.scope,
+            continuation,
+        )
+        planned = ProjectDesignCampaignPlan(
+            campaign,
+            baseline_execution._engine,
+            self.project.artifact_root,
+        )
+        _ = planned.record
+        return planned
+
     def _plan_flow(
         self,
         request: FlowRunSelection,
         *,
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
-    ) -> ProjectFlowPlan:
+    ) -> FlowExecution:
         catalog_inventory = (
             self.project.owner_flow_catalog_inventory(self.owner)
             if catalog_inventory is None
@@ -696,7 +831,7 @@ class ProjectFlow:
         *,
         catalog: DesignTargetCatalog | None = None,
         profile: str | None = None,
-    ) -> ProjectFlowPlan:
+    ) -> FlowExecution:
         selected_catalog = catalog
         if selected_catalog is None:
             inventory = self.project.owner_flow_catalog_inventory(self.owner)
@@ -737,7 +872,7 @@ class ProjectFlow:
         *,
         catalog: LayoutTargetCatalog | None = None,
         profile: str | None = None,
-    ) -> ProjectFlowPlan:
+    ) -> FlowExecution:
         from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
         selected_catalog = catalog
@@ -791,7 +926,7 @@ class ProjectFlow:
     def _plan_oa_simulation(
         self,
         request: OaSimulationSelection,
-    ) -> ProjectFlowPlan:
+    ) -> FlowExecution:
         inventory = self.project.owner_flow_catalog_inventory(self.owner)
         catalog = self._catalog(inventory)
         matches: list[FlowRunSelection] = []
@@ -815,75 +950,6 @@ class ProjectFlow:
             )
         return self._plan_flow(matches[0], catalog_inventory=inventory)
 
-    def preflight(
-        self,
-        planned: ProjectFlowPlan,
-        environment: ExecutionEnvironment,
-    ) -> PreflightResult:
-        self._require_owned_plan(planned)
-        return planned._engine.preflight(planned._plan, environment)
-
-    def preflight_record(
-        self,
-        planned: ProjectFlowPlan,
-        result: PreflightResult,
-    ) -> dict[str, object]:
-        self._require_owned_plan(planned)
-        return planned._engine.preflight_record(planned._plan, result)
-
-    def run(
-        self,
-        planned: ProjectFlowPlan,
-        environment: ExecutionEnvironment,
-        *,
-        run_id: str | None = None,
-        progress: Callable[[FlowProgress], None] | None = None,
-    ) -> FlowResult:
-        self._require_owned_plan(planned)
-        return planned._engine.run(
-            planned._plan,
-            artifact_root=self.project.artifact_root,
-            environment=environment,
-            run_id=run_id,
-            progress=progress,
-        )
-
-    def read_result(
-        self,
-        *,
-        flow: str,
-        target: str,
-        run_id: str,
-    ) -> dict[str, Any]:
-        """Read one persisted result selected through this owner's catalog."""
-
-        planned = self.plan(RunRequest.flow(flow, target))
-        return FlowEngine(FlowRegistry()).read_run_result(
-            artifact_root=self.project.artifact_root,
-            owner=self.owner.name,
-            flow_id=planned.flow,
-            target=planned.target,
-            run_id=run_id,
-        )
-
-    def clean_run(
-        self,
-        *,
-        flow: str,
-        target: str,
-        run_id: str,
-    ) -> None:
-        """Remove one manifest-owned result selected through this owner."""
-
-        planned = self.plan(RunRequest.flow(flow, target))
-        FlowEngine(FlowRegistry()).clean_run(
-            artifact_root=self.project.artifact_root,
-            owner=self.owner.name,
-            flow_id=planned.flow,
-            target=planned.target,
-            run_id=run_id,
-        )
-
     def _engine(
         self,
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
@@ -904,23 +970,14 @@ class ProjectFlow:
             project_scope=self.project.scope(self.owner),
         )
 
-    def _bind(self, engine: FlowEngine, plan: FlowPlan) -> ProjectFlowPlan:
-        return ProjectFlowPlan(engine, plan, self.project)
-
-    def _require_owned_plan(self, planned: ProjectFlowPlan) -> None:
-        if (
-            planned._plan.spec.owner != self.owner.name
-            or planned._project is not self.project
-        ):
-            raise ValueError(
-                "Flow plan does not belong to this exact project owner binding"
-            )
+    def _bind(self, engine: FlowEngine, plan: FlowPlan) -> FlowExecution:
+        return FlowExecution._bind(engine, plan, self.project)
 
 
-def resolve_project_flow_plan(
+def resolve_project_execution(
     project: Project,
     plan_identity: str,
-) -> ProjectFlowPlan:
+) -> FlowExecution:
     """Resolve one exact plan identity through its selected project owner."""
 
     if not isinstance(plan_identity, str) or not plan_identity:
@@ -931,7 +988,7 @@ def resolve_project_flow_plan(
             "Flow Plan identity must be owner:flow:target:profile"
         )
     owner, flow, target, profile = fields
-    resolved = ProjectFlow(project, owner).plan(
+    resolved = ProjectRunner(project, owner).plan(
         RunRequest.flow(flow, target, profile),
     )
     if resolved.plan_identity != plan_identity:
@@ -944,8 +1001,8 @@ __all__ = [
     "FlowRunSelection",
     "LayoutRunSelection",
     "OaSimulationSelection",
-    "ProjectFlow",
-    "ProjectFlowPlan",
+    "FlowExecution",
+    "ProjectRunner",
     "RunRequest",
-    "resolve_project_flow_plan",
+    "resolve_project_execution",
 ]

@@ -139,25 +139,26 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
 
         def plan(self, request):
             calls.append(request.selection.testbench)
-            return object()
+            class Execution:
+                def run(self, environment):
+                    assert set(environment.capabilities) == {
+                        "tool.virtuoso-bridge",
+                        "license.cadence-oa",
+                    }
+                    return SimpleNamespace(run_id="a" * 32)
 
-        def run(self, _planned, environment):
-            assert set(environment.capabilities) == {
-                "tool.virtuoso-bridge",
-                "license.cadence-oa",
-            }
-            return SimpleNamespace(flow_id="native", target="tb-main-l2", run_id="a" * 32)
+                def read_result(self, run_id: str):
+                    assert run_id == "a" * 32
+                    return {
+                        "flow": "native",
+                        "target": "tb-main-l2",
+                        "run_id": run_id,
+                        "status": "accepted",
+                    }
 
-        def read_result(self, *, flow: str, target: str, run_id: str):
-            assert (flow, target, run_id) == ("native", "tb-main-l2", "a" * 32)
-            return {
-                "flow": flow,
-                "target": target,
-                "run_id": run_id,
-                "status": "accepted",
-            }
+            return Execution()
 
-    monkeypatch.setattr(flow_cli, "ProjectFlow", TypedFlow)
+    monkeypatch.setattr(flow_cli, "ProjectRunner", TypedFlow)
     assert not hasattr(flow_cli.ProjectOaWorkflow, "simulate")
 
     assert (

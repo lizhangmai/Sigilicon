@@ -16,7 +16,7 @@ from sigilicon.flow import (
 )
 from sigilicon.workflows.catalog_flow import compile_layout_catalog_flow
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_runner import ProjectRunner
 
 from conftest import write_component_owner
 
@@ -225,7 +225,7 @@ def test_expanded_layout_flow_description_shows_compiled_routes(
     _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
 
-    summary = ProjectFlow(project, "example").describe(
+    summary = ProjectRunner(project, "example").describe(
         flow="layout-validation"
     )
 
@@ -399,7 +399,7 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
         events.append(("check", project, None))
         return type("Preview", (), {"plan": plan})()
 
-    class FakeProjectFlow:
+    class FakeProjectRunner:
         def __init__(self, project, owner, *, client_factory):
             assert project is canonical_project
             assert owner == "example"
@@ -411,29 +411,25 @@ def test_layout_cli_runs_the_project_bound_layout_workflow(
             assert selection.target == "leaf"
             self.operation = selection.operation
             events.append((selection.operation, canonical_project, client))
-            return object()
+            operation = self.operation
 
-        def run(self, planned, environment, *, run_id=None):
-            assert planned is not None
-            assert environment is not None
-            assert run_id is None
-            return type(
-                "Result",
-                (),
-                {
-                    "flow_id": "layout-validation",
-                    "target": f"leaf-{self.operation}",
-                    "run_id": "test-run",
-                },
-            )()
+            class Execution:
+                def run(self, environment, *, run_id=None):
+                    assert environment is not None
+                    assert run_id is None
+                    return type("Result", (), {"run_id": "test-run"})()
 
-        def read_result(self, *, flow, target, run_id):
-            assert flow == "layout-validation"
-            assert run_id == "test-run"
-            return {"status": "accepted", "target": target}
+                def read_result(self, run_id):
+                    assert run_id == "test-run"
+                    return {
+                        "status": "accepted",
+                        "target": f"leaf-{operation}",
+                    }
+
+            return Execution()
 
     monkeypatch.setattr(flow_cli, "plan_layout_spec", preview)
-    monkeypatch.setattr(flow_cli, "ProjectFlow", FakeProjectFlow)
+    monkeypatch.setattr(flow_cli, "ProjectRunner", FakeProjectRunner)
     monkeypatch.setattr(
         flow_cli,
         "_layout_execution_environment",

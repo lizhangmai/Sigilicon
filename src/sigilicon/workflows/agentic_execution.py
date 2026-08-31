@@ -35,7 +35,7 @@ from sigilicon.workflows.design_campaign import (
     resolve_project_design_campaign,
 )
 from sigilicon.workflows.design_repair import design_repair_proposal_from_json
-from sigilicon.workflows.project_flow import resolve_project_flow_plan
+from sigilicon.workflows.project_runner import resolve_project_execution
 from sigilicon.workflows.agentic_campaigns import (
     CAMPAIGN_REQUEST_KIND,
     DesignCampaignStore,
@@ -112,7 +112,7 @@ class AgenticExecutionInterface:
         budget: AgenticExecutionBudget,
         wait: bool,
     ) -> dict[str, Any]:
-        resolved = resolve_project_flow_plan(self.read.project, plan_identity)
+        resolved = resolve_project_execution(self.read.project, plan_identity)
         required = tuple(
             sorted(
                 {

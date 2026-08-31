@@ -43,7 +43,7 @@ from sigilicon.workflows.layout_generation import (
 from sigilicon.workflows.layout_verification import find_calibre, find_xstream
 from sigilicon.workflows.oa_check import UnavailableBridge
 from sigilicon.workflows.project import load_project
-from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
+from sigilicon.workflows.project_runner import ProjectRunner, RunRequest
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 
@@ -414,12 +414,12 @@ def _run_layout(
             if args.action == "generate"
             else f"verify-{args.check}"
         )
-        project_flow = ProjectFlow(
+        project_runner = ProjectRunner(
             project,
             target.owner,
             client_factory=client_factory,
         )
-        planned = project_flow.plan(
+        planned = project_runner.plan(
             RunRequest.layout(target.name, operation),
         )
         environment = _layout_execution_environment(
@@ -428,16 +428,11 @@ def _run_layout(
             target=target,
             verification=args.action == "verify",
         )
-        result = project_flow.run(
-            planned,
+        result = planned.run(
             environment,
             run_id=args.run_id,
         )
-        payload = project_flow.read_result(
-            flow=result.flow_id,
-            target=result.target,
-            run_id=result.run_id,
-        )
+        payload = planned.read_result(result.run_id)
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"ERROR: {exc}")
     emit_json(payload)
@@ -517,20 +512,15 @@ def _run_design(
                 )
             return 0
         target.get_mode(args.mode)
-        project_flow = ProjectFlow(project, target.owner)
-        planned = project_flow.plan(
+        project_runner = ProjectRunner(project, target.owner)
+        planned = project_runner.plan(
             RunRequest.design(target.name, args.mode),
         )
-        result = project_flow.run(
-            planned,
+        result = planned.run(
             _execution_environment(args),
             run_id=args.run_id,
         )
-        payload = project_flow.read_result(
-            flow=result.flow_id,
-            target=result.target,
-            run_id=result.run_id,
-        )
+        payload = planned.read_result(result.run_id)
         emit_json(payload)
         return 0 if payload.get("status") == "accepted" else 1
     except (OSError, RuntimeError, ValueError) as exc:
@@ -597,12 +587,11 @@ def _run_oa(
             plan = workflow.plan()
             payload = plan.as_dict()
         elif args.action == "simulate":
-            project_flow = ProjectFlow(workflow.project, workflow.owner_name)
-            planned = project_flow.plan(
+            project_runner = ProjectRunner(workflow.project, workflow.owner_name)
+            planned = project_runner.plan(
                 RunRequest.oa_simulation(args.testbench),
             )
-            result = project_flow.run(
-                planned,
+            result = planned.run(
                 ExecutionEnvironment(
                     capabilities={
                         "tool.virtuoso-bridge": ResolvedCapability(
@@ -614,11 +603,7 @@ def _run_oa(
                     }
                 ),
             )
-            payload = project_flow.read_result(
-                flow=result.flow_id,
-                target=result.target,
-                run_id=result.run_id,
-            )
+            payload = planned.read_result(result.run_id)
         else:
             client = client_factory()
             if args.action == "attest":
