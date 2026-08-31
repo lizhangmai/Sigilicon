@@ -8,7 +8,7 @@ native-log checks, and raw-output existence checks.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -17,7 +17,6 @@ import shutil
 from typing import Any, Callable, Mapping, Sequence
 
 from sigilicon.artifacts import new_identity, read_nofollow_text
-from sigilicon.domain.repository import Project
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
@@ -46,28 +45,6 @@ class SpectreExecution:
     stdout_log: Path
     native_log: Path | None
     raw_outputs: Mapping[str, Path]
-
-
-@dataclass(frozen=True, eq=False)
-class SpectreArtifactContext:
-    """Repository and design coordinates for a direct-Spectre run."""
-
-    project: Project = field(repr=False, compare=False, hash=False)
-    library: str
-    cell: str
-    testbench: str
-
-    def _comparison_key(self) -> tuple[Path, str, str, str]:
-        return (self.project.project_root, self.library, self.cell, self.testbench)
-
-    def __eq__(self, other: object) -> bool:
-        if other.__class__ is not self.__class__:
-            return NotImplemented
-        assert isinstance(other, SpectreArtifactContext)
-        return self._comparison_key() == other._comparison_key()
-
-    def __hash__(self) -> int:
-        return hash(self._comparison_key())
 
 
 @dataclass(frozen=True)
@@ -364,7 +341,6 @@ def _measurement_artifacts(
 
 
 def run_spectre_measurement(
-    context: SpectreArtifactContext,
     *,
     kind: str,
     condition: Mapping[str, object],
@@ -390,7 +366,6 @@ def run_spectre_measurement(
     the parent's artifact workspace explicitly.
     """
 
-    del context
     run_artifacts = _measurement_artifacts(
         artifacts=artifacts,
     )
@@ -453,7 +428,6 @@ def run_spectre_measurement(
 
 
 def run_spectre_multi_measurement(
-    context: SpectreArtifactContext,
     *,
     kind: str,
     condition: Mapping[str, object],
@@ -478,7 +452,6 @@ def run_spectre_multi_measurement(
         raise ValueError("multi-output Spectre measurement requires outputs")
     if len(set(outputs.values())) != len(outputs):
         raise ValueError("multi-output Spectre destinations must be unique")
-    del context
     run_artifacts = _measurement_artifacts(
         artifacts=artifacts,
     )
@@ -540,7 +513,6 @@ def run_spectre_multi_measurement(
 
 
 def publish_measurement_summary(
-    context: SpectreArtifactContext,
     *,
     kind: str,
     condition: Mapping[str, object],
@@ -551,7 +523,6 @@ def publish_measurement_summary(
 ) -> SpectreRunResult:
     """Publish a derived sweep or distribution result in its parent Flow."""
 
-    del context
     run_artifacts = _measurement_artifacts(artifacts=artifacts)
     _stage_inputs(run_artifacts, inputs)
     exact_command = condition.get("exact_command")

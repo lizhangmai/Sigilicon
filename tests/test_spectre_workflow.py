@@ -13,16 +13,11 @@ from sigilicon.workflows.run_artifacts import (
     managed_run_artifact_environment,
 )
 from sigilicon.workflows.spectre import (
-    SpectreArtifactContext,
     SpectreExecution,
     StagedSpectreInput,
     find_spectre,
     run_spectre_measurement,
 )
-
-from conftest import write_component_owner
-from sigilicon.domain.repository import Project
-
 
 def test_find_spectre_preserves_the_public_launcher_symlink(
     tmp_path: Path,
@@ -45,8 +40,6 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    write_component_owner(tmp_path, "example", filesets={})
-    project = Project.from_project_root(tmp_path)
     run_root = tmp_path / "artifacts/run"
     action = build_flow_registry().action(
         DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION
@@ -100,15 +93,14 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
         evaluate=lambda _value: {"passed": True},
         timeout=10,
     )
-    context = SpectreArtifactContext(project, "example", "cell", "testbench")
     with pytest.raises(RuntimeError, match="require artifacts owned by a parent Flow"):
-        run_spectre_measurement(context, **measurement)
+        run_spectre_measurement(**measurement)
 
     monkeypatch.setenv(
         "SIGILICON_MANAGED_RUN_ARTIFACTS",
         environment["SIGILICON_MANAGED_RUN_ARTIFACTS"],
     )
-    result = run_spectre_measurement(context, **measurement)
+    result = run_spectre_measurement(**measurement)
 
     assert result.run_id == "run"
     assert result.run_dir == run_root
