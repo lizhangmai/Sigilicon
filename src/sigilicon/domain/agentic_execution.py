@@ -9,6 +9,7 @@ import json
 import re
 
 from sigilicon.canonical import (
+    canonical_digest,
     canonical_from_exact_json,
     canonical_json,
 )
@@ -44,19 +45,21 @@ class AgenticExecutionBudget:
 
 @dataclass(frozen=True)
 class AgenticPlanApproval:
-    """One semantic plan selector bound to its exact canonical plan record."""
+    """One immutable plan digest bound to its exact canonical plan record."""
 
-    plan_id: str
+    plan_identity: str
     plan_record_json: str
 
     def __post_init__(self) -> None:
-        bounded_identity(self.plan_id, "approved plan")
+        bounded_identity(self.plan_identity, "approved plan")
         try:
             record = json.loads(self.plan_record_json)
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError("approved plan record must be canonical JSON") from exc
         if not isinstance(record, dict) or canonical_json(record) != self.plan_record_json:
             raise ValueError("approved plan record must be an exact canonical JSON object")
+        if self.plan_identity != canonical_digest(record):
+            raise ValueError("approved plan identity must equal its canonical record digest")
 
 
 @dataclass(frozen=True)
@@ -93,9 +96,9 @@ class AgenticExecutionGrant:
             raise ValueError("execution grant must approve at least one plan")
         if any(not isinstance(item, AgenticPlanApproval) for item in self.approved_plans):
             raise ValueError("execution grant approved plans must be typed")
-        plan_ids = tuple(item.plan_id for item in self.approved_plans)
-        if plan_ids != tuple(sorted(set(plan_ids))):
-            raise ValueError("approved plans must have unique sorted semantic IDs")
+        plan_identities = tuple(item.plan_identity for item in self.approved_plans)
+        if plan_identities != tuple(sorted(set(plan_identities))):
+            raise ValueError("approved plans must have unique sorted identities")
         try:
             expiry = datetime.fromisoformat(self.expires_at)
         except ValueError as exc:
@@ -128,12 +131,7 @@ class AgenticExecutionGrant:
         bounded_identity(plan_identity, "Target Operation Plan")
         if not self.valid_at(instant):
             raise ValueError("execution grant has expired")
-        approval = next(
-            (item for item in self.approved_plans if item.plan_id == plan_identity),
-            None,
-        )
-        if approval is None:
-            raise ValueError("Target Operation Plan identity is not approved by the execution grant")
+        approval = self.approved_plan(plan_identity)
         if canonical_json(plan_record) != approval.plan_record_json:
             raise ValueError("Target Operation Plan record changed after execution approval")
         missing = tuple(item for item in required if item not in self.capabilities)
@@ -142,6 +140,24 @@ class AgenticExecutionGrant:
                 "execution grant lacks required capabilities: "
                 + ", ".join(item.value for item in missing)
             )
+
+    def approved_plan(self, plan_identity: str) -> AgenticPlanApproval:
+        """Return the exact approved record selected by an immutable digest."""
+
+        bounded_identity(plan_identity, "Target Operation Plan")
+        approval = next(
+            (
+                item
+                for item in self.approved_plans
+                if item.plan_identity == plan_identity
+            ),
+            None,
+        )
+        if approval is None:
+            raise ValueError(
+                "Target Operation Plan identity is not approved by the execution grant"
+            )
+        return approval
 
 
 def agentic_execution_grant_from_json(text: str) -> AgenticExecutionGrant:

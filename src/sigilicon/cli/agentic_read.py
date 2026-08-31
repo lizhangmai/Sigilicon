@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json
-from sigilicon.workflows.project import bind_agentic_read
+from sigilicon.workflows.project import bind_agentic_read, bind_run_read
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -48,34 +48,35 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        interface = bind_agentic_read(args.project_root)
-        if args.action == "project":
-            result = interface.inspect_project(owner=args.owner)
-        elif args.action == "target-plan":
-            result = interface.plan_target(
-                owner=args.owner,
-                target=args.target,
-                operation=args.operation,
-            )
-        elif args.action == "run-inspect":
-            result = interface.inspect_run(
+        if args.action == "run-inspect":
+            result = bind_run_read(args.project_root).inspect(
                 owner=args.owner,
                 target=args.target,
                 operation=args.operation,
                 run_id=args.run_id,
             )
-        elif args.action == "candidate-promotion-plan":
-            result = interface.plan_candidate_promotion(
-                owner=args.owner,
-                candidate_json=args.candidate.read_text(encoding="utf-8"),
-                artifact_json=tuple(
-                    path.read_text(encoding="utf-8") for path in args.artifact
-                ),
-                decision_json=args.decision.read_text(encoding="utf-8"),
-                request_json=args.request.read_text(encoding="utf-8"),
-            )
-        else:  # pragma: no cover
-            raise AssertionError(f"unhandled read action: {args.action}")
+        else:
+            interface = bind_agentic_read(args.project_root)
+            if args.action == "project":
+                result = interface.inspect_project(owner=args.owner)
+            elif args.action == "target-plan":
+                result = interface.plan_target(
+                    owner=args.owner,
+                    target=args.target,
+                    operation=args.operation,
+                )
+            elif args.action == "candidate-promotion-plan":
+                result = interface.plan_candidate_promotion(
+                    owner=args.owner,
+                    candidate_json=args.candidate.read_text(encoding="utf-8"),
+                    artifact_json=tuple(
+                        path.read_text(encoding="utf-8") for path in args.artifact
+                    ),
+                    decision_json=args.decision.read_text(encoding="utf-8"),
+                    request_json=args.request.read_text(encoding="utf-8"),
+                )
+            else:  # pragma: no cover
+                raise AssertionError(f"unhandled read action: {args.action}")
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

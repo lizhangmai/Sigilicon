@@ -1387,6 +1387,7 @@ class FlowResult:
     owner: str
     flow_id: str
     target: str
+    plan_identity: str
     run_id: str
     run_root: Path
     status: str

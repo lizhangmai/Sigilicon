@@ -16,6 +16,7 @@ from sigilicon.workflows.agentic_execution import (
     AgenticExecutionInterface,
 )
 from sigilicon.identifiers import RUN_ID_PATTERN
+from sigilicon.workflows.run_read import RunReadInterface
 
 
 _OWNER_PATTERN = r"[A-Za-z][A-Za-z0-9_.-]*"
@@ -128,7 +129,7 @@ _TARGET_RUN_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
-        "plan_identity": {"type": "string", "minLength": 1},
+        "plan_identity": {"type": "string", "pattern": r"^sha256-[0-9a-f]{64}$"},
         "budget": {
             "type": "object",
             "properties": {
@@ -166,32 +167,9 @@ def _read_annotations() -> types.ToolAnnotations:
     )
 
 
-def _tools(*, execution_enabled: bool) -> list[types.Tool]:
+def _tools(*, source_enabled: bool, execution_enabled: bool) -> list[types.Tool]:
     annotations = _read_annotations()
     tools = [
-        types.Tool(
-            name="project.inspect",
-            title="Inspect Sigilicon project",
-            description=(
-                "Validate the bound project's canonical owners and summarize "
-                "source and owner targets. Runtime capabilities and product "
-                "qualification remain not evaluated."
-            ),
-            inputSchema=_PROJECT_INPUT_SCHEMA,
-            outputSchema=_RESPONSE_SCHEMA,
-            annotations=annotations,
-        ),
-        types.Tool(
-            name="target.plan",
-            title="Plan Sigilicon target operation",
-            description=(
-                "Resolve one owner target and operation through FlowEngine without "
-                "executing a backend or writing artifacts."
-            ),
-            inputSchema=_TARGET_OPERATION_INPUT_SCHEMA,
-            outputSchema=_RESPONSE_SCHEMA,
-            annotations=annotations,
-        ),
         types.Tool(
             name="run.inspect",
             title="Inspect Sigilicon target-operation result",
@@ -203,29 +181,58 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
             outputSchema=_RESPONSE_SCHEMA,
             annotations=annotations,
         ),
-        types.Tool(
-            name="candidate.validate",
-            title="Validate Sigilicon Design Candidate",
-            description=(
-                "Validate exact canonical Candidate stage JSON, owner lineage, and "
-                "content identities without reading a path or promoting source."
-            ),
-            inputSchema=_CANDIDATE_INPUT_SCHEMA,
-            outputSchema=_RESPONSE_SCHEMA,
-            annotations=annotations,
-        ),
-        types.Tool(
-            name="candidate.promotion_plan",
-            title="Prepare Sigilicon Candidate Promotion Plan",
-            description=(
-                "Validate exact Candidate, Decision, and Evidence identities and compile "
-                "an immutable human-review plan. This tool cannot write source or apply a patch."
-            ),
-            inputSchema=_PROMOTION_INPUT_SCHEMA,
-            outputSchema=_RESPONSE_SCHEMA,
-            annotations=annotations,
-        ),
     ]
+    if source_enabled:
+        tools.extend(
+            [
+                types.Tool(
+                    name="project.inspect",
+                    title="Inspect Sigilicon project",
+                    description=(
+                        "Validate the bound project's canonical owners and summarize "
+                        "source and owner targets. Runtime capabilities and product "
+                        "qualification remain not evaluated."
+                    ),
+                    inputSchema=_PROJECT_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=annotations,
+                ),
+                types.Tool(
+                    name="target.plan",
+                    title="Plan Sigilicon target operation",
+                    description=(
+                        "Resolve one owner target and operation through FlowEngine without "
+                        "executing a backend or writing artifacts."
+                    ),
+                    inputSchema=_TARGET_OPERATION_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=annotations,
+                ),
+                types.Tool(
+                    name="candidate.validate",
+                    title="Validate Sigilicon Design Candidate",
+                    description=(
+                        "Validate exact canonical Candidate stage JSON, owner lineage, "
+                        "and content identities without reading a path or promoting source."
+                    ),
+                    inputSchema=_CANDIDATE_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=annotations,
+                ),
+                types.Tool(
+                    name="candidate.promotion_plan",
+                    title="Prepare Sigilicon Candidate Promotion Plan",
+                    description=(
+                        "Validate exact Candidate, Decision, and Evidence identities and "
+                        "compile an immutable human-review plan. This tool cannot write "
+                        "source or apply a patch."
+                    ),
+                    inputSchema=_PROMOTION_INPUT_SCHEMA,
+                    outputSchema=_RESPONSE_SCHEMA,
+                    annotations=annotations,
+                ),
+            ]
+        )
     if execution_enabled:
         execute_annotations = types.ToolAnnotations(
             readOnlyHint=False,
@@ -291,7 +298,7 @@ def _optional_text(arguments: dict[str, Any], name: str) -> str | None:
 
 
 def _error_response(
-    interface: AgenticReadInterface,
+    project_id: str,
     *,
     operation: str,
     code: str,
@@ -301,13 +308,13 @@ def _error_response(
         "schema": 1,
         "contract_kind": READ_RESULT_KIND,
         "operation": operation,
-        "project_id": interface.project_id,
+        "project_id": project_id,
         "authority": "none",
         "conclusion": "non-conclusion",
         "summary": summary,
         "data": {"error": {"code": code}},
-        "resources": [interface.project_resource_uri],
-        "allowed_next_actions": ["project.inspect"],
+        "resources": [],
+        "allowed_next_actions": [],
     }
 
 
@@ -340,7 +347,7 @@ def _resource_segments(uri: str) -> tuple[str, ...]:
 
 
 def create_server(
-    application: AgenticReadInterface | AgenticExecutionInterface,
+    application: AgenticReadInterface | AgenticExecutionInterface | RunReadInterface,
 ) -> Server[object]:
     """Create the standards-compliant protocol shell around one bound Interface."""
 
@@ -350,8 +357,15 @@ def create_server(
     elif isinstance(application, AgenticReadInterface):
         execution = None
         interface = application
+        runs = RunReadInterface.from_project(interface.project)
+    elif isinstance(application, RunReadInterface):
+        execution = None
+        interface = None
+        runs = application
     else:
         raise TypeError("MCP requires one Agentic application Interface")
+    if interface is not None and isinstance(application, AgenticExecutionInterface):
+        runs = application.runs
 
     async def list_tools(
         _context: ServerRequestContext[object],
@@ -360,7 +374,10 @@ def create_server(
         if params is not None and params.cursor is not None:
             raise MCPError(types.INVALID_PARAMS, "Unknown tool-list cursor")
         return types.ListToolsResult(
-            tools=_tools(execution_enabled=execution is not None),
+            tools=_tools(
+                source_enabled=interface is not None,
+                execution_enabled=execution is not None,
+            ),
             ttlMs=0,
             cacheScope="private",
         )
@@ -371,7 +388,7 @@ def create_server(
     ) -> types.CallToolResult:
         operation = params.name
         try:
-            if operation == "project.inspect":
+            if operation == "project.inspect" and interface is not None:
                 arguments = _strict_arguments(
                     params.arguments,
                     allowed=frozenset({"owner"}),
@@ -380,7 +397,7 @@ def create_server(
                 payload = interface.inspect_project(
                     owner=_optional_text(arguments, "owner")
                 )
-            elif operation == "target.plan":
+            elif operation == "target.plan" and interface is not None:
                 arguments = _strict_arguments(
                     params.arguments,
                     allowed=frozenset({"owner", "target", "operation"}),
@@ -397,13 +414,13 @@ def create_server(
                     allowed=frozenset({"owner", "target", "operation", "run_id"}),
                     required=frozenset({"owner", "target", "operation", "run_id"}),
                 )
-                payload = interface.inspect_run(
+                payload = runs.inspect(
                     owner=_required_text(arguments, "owner"),
                     target=_required_text(arguments, "target"),
                     operation=_required_text(arguments, "operation"),
                     run_id=_required_text(arguments, "run_id"),
                 )
-            elif operation == "candidate.validate":
+            elif operation == "candidate.validate" and interface is not None:
                 arguments = _strict_arguments(
                     params.arguments,
                     allowed=frozenset({"owner", "candidate", "artifacts"}),
@@ -432,7 +449,7 @@ def create_server(
                     candidate_json=candidate_json,
                     artifact_json=tuple(artifact_values),
                 )
-            elif operation == "candidate.promotion_plan":
+            elif operation == "candidate.promotion_plan" and interface is not None:
                 arguments = _strict_arguments(
                     params.arguments,
                     allowed=frozenset(
@@ -502,7 +519,7 @@ def create_server(
             else:
                 return _tool_result(
                     _error_response(
-                        interface,
+                        runs.project_id,
                         operation="unknown",
                         code="unknown-tool",
                         summary="The requested tool is not registered by this server.",
@@ -512,7 +529,7 @@ def create_server(
         except _RequestRejected:
             return _tool_result(
                 _error_response(
-                    interface,
+                    runs.project_id,
                     operation=operation,
                     code="invalid-arguments",
                     summary="The request does not match the tool's strict input schema.",
@@ -522,7 +539,7 @@ def create_server(
         except (OSError, RuntimeError, ValueError):
             return _tool_result(
                 _error_response(
-                    interface,
+                    runs.project_id,
                     operation=operation,
                     code="contract-rejected",
                     summary=(
@@ -541,7 +558,7 @@ def create_server(
         if params is not None and params.cursor is not None:
             raise MCPError(types.INVALID_PARAMS, "Unknown resource-list cursor")
         return types.ListResourcesResult(
-            resources=[
+            resources=([] if interface is None else [
                 types.Resource(
                     name="bound-project",
                     title="Bound Sigilicon project",
@@ -549,7 +566,7 @@ def create_server(
                     description="Canonical owner, target, and source-status projection.",
                     mimeType="application/json",
                 )
-            ],
+            ]),
             ttlMs=0,
             cacheScope="private",
         )
@@ -561,7 +578,7 @@ def create_server(
         if params is not None and params.cursor is not None:
             raise MCPError(types.INVALID_PARAMS, "Unknown resource-template cursor")
         return types.ListResourceTemplatesResult(
-            resourceTemplates=[
+            resourceTemplates=([
                 types.ResourceTemplate(
                     name="owner-targets",
                     title="Owner target projection",
@@ -569,11 +586,13 @@ def create_server(
                     description="One exact owner and its target operations from the bound project.",
                     mimeType="application/json",
                 ),
+            ] if interface is not None else []) + [
                 types.ResourceTemplate(
                     name="target-operation-run-result",
                     title="Persisted target-operation result",
                     uriTemplate=(
-                        "sigilicon://runs/{owner}/{target}/{operation}/{run_id}/manifest"
+                        "sigilicon://owners/{owner}/targets/{target}/operations/"
+                        "{operation}/runs/{run_id}/manifest"
                     ),
                     description="One identity-matched result in the bound artifact root.",
                     mimeType="application/json",
@@ -588,22 +607,30 @@ def create_server(
         params: types.ReadResourceRequestParams,
     ) -> types.ReadResourceResult:
         uri = str(params.uri)
-        if uri == interface.project_resource_uri:
+        if interface is not None and uri == interface.project_resource_uri:
             return _json_resource(uri, interface.inspect_project(owner=None))
         segments = _resource_segments(uri)
         try:
-            if len(segments) == 3 and segments[0] == "owners" and segments[2] == "targets":
+            if (
+                interface is not None
+                and len(segments) == 3
+                and segments[0] == "owners"
+                and segments[2] == "targets"
+            ):
                 payload = interface.inspect_project(owner=segments[1])
             elif (
-                len(segments) == 6
-                and segments[0] == "runs"
-                and segments[5] == "manifest"
+                len(segments) == 9
+                and segments[0] == "owners"
+                and segments[2] == "targets"
+                and segments[4] == "operations"
+                and segments[6] == "runs"
+                and segments[8] == "manifest"
             ):
-                payload = interface.inspect_run(
+                payload = runs.inspect(
                     owner=segments[1],
-                    target=segments[2],
-                    operation=segments[3],
-                    run_id=segments[4],
+                    target=segments[3],
+                    operation=segments[5],
+                    run_id=segments[7],
                 )
             else:
                 raise MCPError(types.INVALID_PARAMS, "Unknown Sigilicon resource")
@@ -626,6 +653,8 @@ def create_server(
             if execution is not None
             else "Read-only project inspection and deterministic Flow planning "
             "through Sigilicon-owned Interfaces."
+            if interface is not None
+            else "Read-only historical Flow Run inspection through a context-only Interface."
         ),
         instructions=(
             "Treat source-contract validation, plans, and recorded Flow results as "

@@ -31,10 +31,12 @@ from sigilicon.domain.circuit_design import (
 from sigilicon.flow import ExecutionEnvironment
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
 from sigilicon.workflows.project_runner import ProjectRunner
+from sigilicon.workflows.run_read import RunReadInterface
+from sigilicon.workflows.project import bind_run_read, bind_run_store
 
 
 def _read(root: Path) -> AgenticReadInterface:
-    return AgenticReadInterface(Project.from_project_root(root))
+    return AgenticReadInterface.from_project(Project.from_project_root(root))
 
 
 def write_read_only_flow_project(root: Path, owner: str = "example") -> Path:
@@ -131,7 +133,7 @@ def test_read_interface_inspects_project_targets_and_plans_without_writing(
     assert plan["authority"] == "plan"
     assert plan["conclusion"] == "planned"
     assert plan["data"]["plan"]["topology"] == ["source"]
-    assert plan["data"]["plan_identity"] == "example:pipeline:all"
+    assert plan["data"]["plan_identity"].startswith("sha256-")
     assert "flow" not in plan["data"]
     assert "profile" not in plan["data"]
     assert str(tmp_path) not in json.dumps(project)
@@ -207,6 +209,8 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
         ExecutionEnvironment(),
         run_id="a" * 32,
     )
+    recipe = tmp_path / "ip/example/configs/flows/pipeline.toml"
+    recipe.unlink()
     original = repository_module.read_toml_record
     catalog_reads = 0
 
@@ -217,17 +221,23 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
         return original(path)
 
     monkeypatch.setattr(repository_module, "read_toml_record", counted)
-    python_run = interface.inspect_run(
+    python_run = RunReadInterface.from_project(
+        interface.project,
+    ).inspect(
         owner="example",
         target="pipeline",
         operation="all",
         run_id=result.run_id,
     )
-    assert catalog_reads == 1
+    assert catalog_reads == 0
     assert python_run["operation"] == "run.inspect"
     assert python_run["authority"] == "recorded-target-operation-result"
     assert python_run["conclusion"] == "recorded"
     assert python_run["data"]["result"]["status"] == "accepted"
+    assert python_run["resources"] == [
+        "sigilicon://owners/example/targets/pipeline/operations/all/runs/"
+        f"{result.run_id}/manifest"
+    ]
 
     assert agentic_read_cli_main(
         [
@@ -265,7 +275,7 @@ def test_read_interface_rejects_injection_cross_owner_and_identity_drift(
             operation="all",
         )
     with pytest.raises(ValueError, match="Run"):
-        interface.inspect_run(
+        RunReadInterface.from_project(interface.project).inspect(
             owner="example",
             target="pipeline",
             operation="all",
@@ -283,6 +293,26 @@ def test_public_projection_preserves_boolean_executable_qualifier() -> None:
         "executable": True,
         "command": "<redacted-private-execution-material>",
     }
+
+
+def test_historical_run_binders_reject_redirected_project_root(tmp_path: Path) -> None:
+    declared = tmp_path / "declared"
+    redirected = tmp_path / "redirected"
+    write_project_context(declared)
+    write_project_context(redirected)
+    contract = declared / "sigilicon.toml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'project_root = "."',
+            'project_root = "../redirected"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="different project root"):
+        bind_run_read(declared)
+    with pytest.raises(ValueError, match="different project root"):
+        bind_run_store(declared)
 
 
 def test_candidate_validation_has_python_cli_parity(

@@ -18,6 +18,14 @@ from sigilicon.artifacts import (
     read_json_object,
     read_nofollow_text,
 )
+from sigilicon.execution.runs import (
+    FLOW_RESULT_SCHEMA,
+    FLOW_RUN_MANIFEST_SCHEMA,
+    RunStoreError,
+    inventory_relative,
+    validate_run_inventory,
+)
+from sigilicon.canonical import canonical_digest
 from sigilicon.flow.environment import capability_available
 from sigilicon.flow.errors import FactValueError
 from sigilicon.flow.model import (
@@ -109,7 +117,6 @@ _REQUEST_EXTENSION_RESERVED = frozenset(
 )
 _RESERVED_EXTENSIONS = _NODE_EXTENSION_RESERVED | _REQUEST_EXTENSION_RESERVED
 _ACTION_RESULT_SCHEMA = 3
-_FLOW_RESULT_SCHEMA = 3
 
 
 def _utc_now() -> str:
@@ -364,6 +371,7 @@ def _plan_payload(
         "flow": spec.flow_id,
         "recipe": spec.recipe_id,
         "target": target_id,
+        "goals": list(spec.target(target_id).goals),
         "inputs": json_value(spec.inputs),
         "topology": list(topology),
         "nodes": [node_payload(item) for item in planned],
@@ -455,19 +463,6 @@ class FlowEngine:
             self._registry.action(planned.node.action_kind),
             self._registry.adapter_extensions(planned.adapter),
             names,
-        )
-
-    @staticmethod
-    def plan_id(plan: FlowPlan) -> str:
-        """Return the owner-declared semantic selector for one resolved plan.
-
-        The selector is not a correctness projection. Authorization and replay
-        compare :meth:`plan_record` in full whenever this selector is resolved.
-        """
-
-        return (
-            f"{plan.spec.owner}:{plan.spec.flow_id}:"
-            f"{plan.target.target_id}"
         )
 
     def plan(
@@ -645,6 +640,11 @@ class FlowEngine:
             plan.topology,
             self._registry.implementation_sources,
         )
+
+    def plan_identity(self, plan: FlowPlan) -> str:
+        """Return the immutable identity of the registry-bound plan record."""
+
+        return canonical_digest(self.plan_record(plan))
 
     def preflight(
         self,
@@ -898,7 +898,9 @@ class FlowEngine:
                     )
                 )
 
-        atomic_write_json(run_paths.role("inputs") / "resolved_plan.json", self.plan_record(plan))
+        resolved_plan = self.plan_record(plan)
+        plan_identity = canonical_digest(resolved_plan)
+        atomic_write_json(run_paths.role("inputs") / "resolved_plan.json", resolved_plan)
         atomic_write_json(
             run_paths.role("inputs") / "preflight.json",
             self.preflight_record(plan, preflight),
@@ -1142,11 +1144,12 @@ class FlowEngine:
             else "failed"
         )
         flow_payload = {
-            "schema": _FLOW_RESULT_SCHEMA,
+            "schema": FLOW_RESULT_SCHEMA,
             "contract_kind": "flow-result",
             "owner": plan.spec.owner,
             "flow": plan.spec.flow_id,
             "target": plan.target.target_id,
+            "plan_identity": plan_identity,
             "run_id": identity,
             "status": flow_status,
             "interrupted": interrupted,
@@ -1160,14 +1163,15 @@ class FlowEngine:
         atomic_write_json(
             run_root / "run_manifest.json",
             {
-                "schema": 1,
+                "schema": FLOW_RUN_MANIFEST_SCHEMA,
                 "contract_kind": "flow-run-manifest",
                 "owner": plan.spec.owner,
                 "flow": plan.spec.flow_id,
                 "target": plan.target.target_id,
+                "plan_identity": plan_identity,
                 "run_id": identity,
                 "managed_paths": [
-                    self._inventory_relative(path, run_root)
+                    inventory_relative(path, run_root)
                     for path in sorted(run_root.rglob("*"))
                     if path != run_root / "run_manifest.json"
                 ],
@@ -1182,169 +1186,13 @@ class FlowEngine:
             owner=plan.spec.owner,
             flow_id=plan.spec.flow_id,
             target=plan.target.target_id,
+            plan_identity=plan_identity,
             run_id=identity,
             run_root=run_root,
             status=flow_status,
             interrupted=interrupted,
             nodes=MappingProxyType(outcomes),
         )
-
-    def clean_run(
-        self,
-        *,
-        artifact_root: Path,
-        owner: str,
-        flow_id: str,
-        target: str,
-        run_id: str,
-    ) -> None:
-        """Remove exactly one completed run, failing closed on manifest drift."""
-
-        owner_id = owner_identity(owner, "Flow owner")
-        flow_identity = identifier(flow_id, "Flow identity")
-        target_identity = identifier(target, "Flow target")
-        identity = run_identity(run_id)
-        store_root = Path(artifact_root).resolve()
-        if store_root == Path(store_root.anchor):
-            raise FlowExecutionError("artifact root cannot be a filesystem root")
-        run_paths = ArtifactLayout(store_root).execution(
-            owner=owner_id,
-            target=target_identity,
-            flow=flow_identity,
-            variant="default",
-            identity=identity,
-            artifact_kind="flow",
-            identity_kind="run_id",
-        )
-        run_root = run_paths.root
-        resolved_run = run_root.resolve(strict=False)
-        if not resolved_run.is_relative_to(store_root):
-            raise FlowExecutionError("Flow Run path escaped the artifact root")
-        if not run_root.is_dir() or run_root.is_symlink():
-            raise FlowExecutionError(f"cannot clean missing or unsafe Flow Run: {identity}")
-
-        manifest_path = run_root / "run_manifest.json"
-        try:
-            manifest = read_json_object(manifest_path, "Flow Run Manifest")
-        except (OSError, RuntimeError) as exc:
-            raise FlowExecutionError(str(exc)) from exc
-        if (
-            manifest.get("schema") != 1
-            or manifest.get("contract_kind") != "flow-run-manifest"
-            or manifest.get("owner") != owner_id
-            or manifest.get("flow") != flow_identity
-            or manifest.get("target") != target_identity
-            or manifest.get("run_id") != identity
-        ):
-            raise FlowExecutionError("Flow Run Manifest identity does not match clean target")
-        raw_paths = manifest.get("managed_paths")
-        if not isinstance(raw_paths, list) or any(
-            not isinstance(value, str) for value in raw_paths
-        ):
-            raise FlowExecutionError("Flow Run Manifest has invalid managed paths")
-        if len(raw_paths) != len(set(raw_paths)):
-            raise FlowExecutionError("Flow Run Manifest repeats a managed path")
-
-        declared: dict[str, Path] = {}
-        for relative in raw_paths:
-            relative_path = Path(relative)
-            if (
-                not relative
-                or relative_path.is_absolute()
-                or "\\" in relative
-                or any(part in {"", ".", ".."} for part in relative_path.parts)
-            ):
-                raise FlowExecutionError(
-                    f"unsafe managed path in Flow Run Manifest: {relative!r}"
-                )
-            candidate = (run_root / relative_path).resolve(strict=False)
-            if candidate == resolved_run or not candidate.is_relative_to(resolved_run):
-                raise FlowExecutionError(
-                    f"unsafe managed path in Flow Run Manifest: {relative!r}"
-                )
-            declared[relative_path.as_posix()] = run_root / relative_path
-
-        actual: dict[str, Path] = {}
-        for path in run_root.rglob("*"):
-            relative = path.relative_to(run_root).as_posix()
-            if relative == "run_manifest.json":
-                continue
-            if path.is_symlink() and not path.resolve(strict=False).is_relative_to(
-                resolved_run
-            ):
-                raise FlowExecutionError(
-                    f"refusing to clean escaping symlink in Flow Run: {relative!r}"
-                )
-            actual[relative] = path
-        missing = sorted(set(declared) - set(actual))
-        untracked = sorted(set(actual) - set(declared))
-        if missing or untracked:
-            raise FlowExecutionError(
-                "Flow Run manifest drift: "
-                f"missing={missing}, untracked={untracked}"
-            )
-
-        for relative in sorted(declared, key=lambda value: len(Path(value).parts), reverse=True):
-            path = declared[relative]
-            if path.is_symlink():
-                path.unlink()
-            elif path.is_dir():
-                path.rmdir()
-            else:
-                path.unlink()
-        manifest_path.unlink()
-        run_root.rmdir()
-
-    def read_run_result(
-        self,
-        *,
-        artifact_root: Path,
-        owner: str,
-        flow_id: str,
-        target: str,
-        run_id: str,
-    ) -> dict[str, Any]:
-        """Read one current-schema result after checking its selected identity."""
-
-        owner_id = owner_identity(owner, "Flow owner")
-        flow_identity = identifier(flow_id, "Flow identity")
-        target_identity = identifier(target, "Flow target")
-        identity = run_identity(run_id)
-        store_root = Path(artifact_root).resolve()
-        if store_root == Path(store_root.anchor):
-            raise FlowExecutionError("artifact root cannot be a filesystem root")
-        run_paths = ArtifactLayout(store_root).execution(
-            owner=owner_id,
-            target=target_identity,
-            flow=flow_identity,
-            variant="default",
-            identity=identity,
-            artifact_kind="flow",
-            identity_kind="run_id",
-        )
-        run_root = run_paths.root
-        if not run_root.resolve(strict=False).is_relative_to(store_root):
-            raise FlowExecutionError("Flow Run path escaped the artifact root")
-        try:
-            result = read_json_object(
-                run_paths.role("outputs") / "flow_result.json",
-                "Flow Result",
-            )
-        except (OSError, RuntimeError) as exc:
-            raise FlowExecutionError(str(exc)) from exc
-        if result.get("schema") != _FLOW_RESULT_SCHEMA:
-            raise FlowExecutionError(
-                f"unsupported persisted Flow Result schema: {result.get('schema')!r}"
-            )
-        if (
-            result.get("contract_kind") != "flow-result"
-            or result.get("owner") != owner_id
-            or result.get("flow") != flow_identity
-            or result.get("target") != target_identity
-            or result.get("run_id") != identity
-        ):
-            raise FlowExecutionError("Flow Result identity does not match selected run")
-        return result
 
     def restore_result(
         self,
@@ -1392,33 +1240,39 @@ class FlowEngine:
             )
         except (OSError, RuntimeError) as exc:
             raise FlowExecutionError(str(exc)) from exc
+        current_plan_identity = self.plan_identity(plan)
         if set(manifest) != {
-            "schema", "contract_kind", "owner", "flow", "target", "run_id",
-            "managed_paths",
+            "schema", "contract_kind", "owner", "flow", "target", "plan_identity",
+            "run_id", "managed_paths",
         } or (
-            manifest["schema"] != 1
+            manifest["schema"] != FLOW_RUN_MANIFEST_SCHEMA
             or manifest["contract_kind"] != "flow-run-manifest"
             or manifest["owner"] != plan.spec.owner
             or manifest["flow"] != plan.spec.flow_id
             or manifest["target"] != plan.target.target_id
+            or manifest["plan_identity"] != current_plan_identity
             or manifest["run_id"] != identity
         ):
             raise FlowExecutionError("Flow Run Manifest identity or fields drift")
-        self._validate_run_inventory(run_root, manifest)
+        try:
+            validate_run_inventory(run_root, manifest)
+        except RunStoreError as exc:
+            raise FlowExecutionError(str(exc)) from exc
         if resolved_plan != self.plan_record(plan):
             raise FlowExecutionError("persisted resolved Flow Plan record drift")
-        if record.get("schema") != _FLOW_RESULT_SCHEMA:
+        if record.get("schema") != FLOW_RESULT_SCHEMA:
             raise FlowExecutionError(
                 f"unsupported persisted Flow Result schema: {record.get('schema')!r}"
             )
         if set(record) != {
-            "schema", "contract_kind", "owner", "flow", "target", "run_id",
-            "status", "interrupted", "topology", "nodes",
+            "schema", "contract_kind", "owner", "flow", "target", "plan_identity",
+            "run_id", "status", "interrupted", "topology", "nodes",
         } or (
             record["contract_kind"] != "flow-result"
             or record["owner"] != plan.spec.owner
             or record["flow"] != plan.spec.flow_id
             or record["target"] != plan.target.target_id
+            or record["plan_identity"] != current_plan_identity
             or record["run_id"] != identity
             or record["status"] not in {"accepted", "failed"}
             or type(record["interrupted"]) is not bool
@@ -1544,66 +1398,13 @@ class FlowEngine:
             plan.spec.owner,
             plan.spec.flow_id,
             plan.target.target_id,
+            current_plan_identity,
             identity,
             run_root,
             record["status"],
             record["interrupted"],
             MappingProxyType(outcomes),
         )
-
-    def _validate_run_inventory(
-        self,
-        run_root: Path,
-        manifest: Mapping[str, Any],
-    ) -> None:
-        """Fail closed unless a Flow Run Manifest exactly owns its inventory."""
-
-        raw_paths = manifest.get("managed_paths")
-        if not isinstance(raw_paths, list) or any(
-            not isinstance(value, str) for value in raw_paths
-        ):
-            raise FlowExecutionError("Flow Run Manifest has invalid managed paths")
-        if len(raw_paths) != len(set(raw_paths)):
-            raise FlowExecutionError("Flow Run Manifest repeats a managed path")
-        resolved_run = run_root.resolve()
-        declared: set[str] = set()
-        for relative_text in raw_paths:
-            relative = Path(relative_text)
-            if (
-                not relative_text
-                or relative.is_absolute()
-                or "\\" in relative_text
-                or any(part in {"", ".", ".."} for part in relative.parts)
-            ):
-                raise FlowExecutionError(
-                    f"unsafe managed path in Flow Run Manifest: {relative_text!r}"
-                )
-            candidate = (run_root / relative).resolve(strict=False)
-            if candidate == resolved_run or not candidate.is_relative_to(resolved_run):
-                raise FlowExecutionError(
-                    f"unsafe managed path in Flow Run Manifest: {relative_text!r}"
-                )
-            declared.add(relative.as_posix())
-
-        actual: set[str] = set()
-        for path in run_root.rglob("*"):
-            relative = path.relative_to(run_root).as_posix()
-            if relative == "run_manifest.json":
-                continue
-            if path.is_symlink() and not path.resolve(strict=False).is_relative_to(
-                resolved_run
-            ):
-                raise FlowExecutionError(
-                    f"escaping symlink in Flow Run inventory: {relative!r}"
-                )
-            actual.add(relative)
-        missing = sorted(declared - actual)
-        untracked = sorted(actual - declared)
-        if missing or untracked:
-            raise FlowExecutionError(
-                "Flow Run manifest drift: "
-                f"missing={missing}, untracked={untracked}"
-            )
 
     def _block_reason(
         self,
@@ -1720,15 +1521,6 @@ class FlowEngine:
                 "checks": [json_value(check) for check in evaluation.checks],
             },
         )
-
-    def _inventory_relative(self, path: Path, run_root: Path) -> str:
-        """Record a managed locator without dereferencing tool-created symlinks."""
-
-        candidate = Path(path).absolute()
-        root = run_root.absolute()
-        if candidate == root or not candidate.is_relative_to(root):
-            raise FlowExecutionError("managed path escaped the Flow Run")
-        return candidate.relative_to(root).as_posix()
 
     def _managed_relative(self, path: Path, run_root: Path, label: str) -> str:
         candidate = Path(path).resolve()

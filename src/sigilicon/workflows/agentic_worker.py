@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import signal
 from typing import Any, Sequence
@@ -20,7 +21,7 @@ from sigilicon.workflows.agentic_runs import (
     RUNNING_STATUSES,
 )
 from sigilicon.workflows.project import bind_agentic_read
-from sigilicon.workflows.project_runner import resolve_project_execution
+from sigilicon.workflows.project_runner import ProjectRunner
 
 
 def _now() -> str:
@@ -42,7 +43,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     read = bind_agentic_read(args.project_root)
-    store = AgenticRunStore(read.project.artifact_root, read.project_id)
+    store = AgenticRunStore(read.project.context, read.project_id)
     paths = store.paths(
         owner=args.owner,
         target=args.target,
@@ -58,8 +59,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         if request[field] != expected:
             raise ValueError("worker arguments disagree with the authorized request")
-    resolved = resolve_project_execution(read.project, request["plan_identity"])
+    approved_record = json.loads(request["plan_record_json"])
     if (
+        approved_record.get("contract_kind") != "resolved-flow-plan"
+        or approved_record.get("owner") != request["owner"]
+        or approved_record.get("flow") != request["target"]
+        or approved_record.get("target") != request["operation"]
+    ):
+        raise ValueError("worker request selector disagrees with the approved Plan record")
+    resolved = ProjectRunner(read.project, approved_record["owner"]).plan(
+        approved_record["flow"],
+        approved_record["target"],
+    )
+    if (
+        resolved.plan_identity != request["plan_identity"]
+        or
         resolved.owner != request["owner"]
         or resolved.target != request["target"]
         or resolved.operation != request["operation"]

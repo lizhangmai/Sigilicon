@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from sigilicon.domain.component import ComponentContract, load_component_contract
 from sigilicon.domain.config_contracts import (
@@ -21,6 +21,9 @@ from sigilicon.paths import (
     ProjectScope,
     validate_artifact_component,
 )
+
+if TYPE_CHECKING:
+    from sigilicon.execution import RunStore
 
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
@@ -429,6 +432,20 @@ class Project:
     @property
     def artifacts(self) -> ArtifactLayout:
         return self._paths.artifacts
+
+    @property
+    def context(self) -> ProjectContext:
+        """Return the explicit paths bound to this project inventory."""
+
+        return self._paths
+
+    @property
+    def runs(self) -> RunStore:
+        """Bind immutable run lookup to this project's artifact root."""
+
+        from sigilicon.execution import RunStore
+
+        return RunStore(self.context)
 
     def with_artifact_root(self, artifact_root: Path | str) -> "Project":
         """Return this exact project inventory with a run-scoped artifact root."""

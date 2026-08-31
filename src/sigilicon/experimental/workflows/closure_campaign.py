@@ -1598,7 +1598,7 @@ class ClosureCampaignRunner:
         qualities: set[ClosureQuality] = set()
         previous: ClosureQuality | None = None
         for index, iteration in enumerate(campaign.iterations):
-            plan_identity = self._engine.plan_id(iteration.plan)
+            plan_identity = self._engine.plan_identity(iteration.plan)
             run_id = f"closure-{campaign.campaign_id}-{iteration.iteration_id}"
             try:
                 flow_result = self._engine.run(

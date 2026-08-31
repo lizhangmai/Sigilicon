@@ -13,10 +13,10 @@ from sigilicon.artifacts import (
     read_json_object,
     write_immutable_text,
 )
-from sigilicon.canonical import canonical_json
+from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.identifiers import bounded_identity
-from sigilicon.paths import ArtifactExecutionPaths, ArtifactLayout
+from sigilicon.paths import ArtifactExecutionPaths, ProjectContext
 
 
 AGENTIC_RUN_REQUEST_KIND = "agentic-target-run-request"
@@ -107,7 +107,7 @@ def _timestamp(value: object, label: str, *, nullable: bool = False) -> str | No
     return value
 
 
-def _canonical_record(value: object, label: str) -> None:
+def _canonical_record(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be canonical JSON text")
     try:
@@ -116,6 +116,7 @@ def _canonical_record(value: object, label: str) -> None:
         raise ValueError(f"{label} must be canonical JSON text") from exc
     if not isinstance(record, dict) or canonical_json(record) != value:
         raise ValueError(f"{label} must be an exact canonical JSON object")
+    return record
 
 
 def _capabilities(value: object, label: str) -> None:
@@ -152,8 +153,14 @@ def _validate_common(value: Mapping[str, Any], *, request: bool) -> None:
     owner_identity(value.get("owner"), "agentic run owner")
     identifier(value.get("target"), "agentic run target")
     identifier(value.get("operation"), "agentic run operation")
-    bounded_identity(value.get("plan_identity"), "agentic Target Operation Plan")
-    _canonical_record(value.get("plan_record_json"), "agentic Target Operation Plan record")
+    plan_identity = value.get("plan_identity")
+    bounded_identity(plan_identity, "agentic Target Operation Plan")
+    plan_record = _canonical_record(
+        value.get("plan_record_json"),
+        "agentic Target Operation Plan record",
+    )
+    if plan_identity != canonical_digest(plan_record):
+        raise ValueError("agentic Target Operation Plan identity drift")
     run_identity(value.get("run_id"))
     bounded_identity(value.get("grant_identity"), "agentic execution grant")
     _canonical_record(value.get("grant_json"), "agentic execution grant record")
@@ -238,11 +245,12 @@ class LocatedAgenticRun:
 
 @dataclass(frozen=True)
 class AgenticRunStore:
-    artifact_root: Path
+    context: ProjectContext
     project_id: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "artifact_root", Path(self.artifact_root).resolve())
+        if not isinstance(self.context, ProjectContext):
+            raise TypeError("AgenticRunStore requires a ProjectContext")
         bounded_identity(self.project_id, "agentic project")
 
     def paths(
@@ -253,7 +261,7 @@ class AgenticRunStore:
         operation: str,
         run_id: str,
     ) -> ArtifactExecutionPaths:
-        return ArtifactLayout(self.artifact_root).agentic_execution(
+        return self.context.artifacts.agentic_execution(
             owner=owner,
             flow=operation,
             target=target,
@@ -376,7 +384,7 @@ class AgenticRunStore:
 
     def locate(self, run_id: str) -> LocatedAgenticRun:
         identity = run_identity(run_id)
-        root = self.artifact_root / "system" / "agentic-target-runs"
+        root = self.context.artifact_root / "system" / "agentic-target-runs"
         if not root.is_dir() or root.is_symlink():
             raise ValueError(f"unknown managed Target Run: {identity}")
 

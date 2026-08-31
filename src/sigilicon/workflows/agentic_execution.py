@@ -26,7 +26,8 @@ from sigilicon.flow import (
     load_execution_environment_contract,
 )
 from sigilicon.workflows.agentic_read import AgenticReadInterface
-from sigilicon.workflows.project_runner import resolve_project_execution
+from sigilicon.workflows.run_read import RunReadInterface
+from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.agentic_runs import (
     AGENTIC_RUN_AUDIT_KIND,
     AGENTIC_RUN_REQUEST_KIND,
@@ -83,9 +84,10 @@ class AgenticExecutionInterface:
             self.environment_record_json = binding.record_json
             self.execution_environment = binding.environment
         self.store = AgenticRunStore(
-            read.project.artifact_root,
+            read.project.context,
             read.project_id,
         )
+        self.runs = RunReadInterface.from_project(read.project)
         self._active: dict[str, ManagedBackgroundProcess] = {}
 
     def run_target(
@@ -95,7 +97,21 @@ class AgenticExecutionInterface:
         budget: AgenticExecutionBudget,
         wait: bool,
     ) -> dict[str, Any]:
-        resolved = resolve_project_execution(self.read.project, plan_identity)
+        approval = self.grant.approved_plan(plan_identity)
+        approved_record = json.loads(approval.plan_record_json)
+        if (
+            approved_record.get("contract_kind") != "resolved-flow-plan"
+            or not isinstance(approved_record.get("owner"), str)
+            or not isinstance(approved_record.get("flow"), str)
+            or not isinstance(approved_record.get("target"), str)
+        ):
+            raise ValueError("approved Target Operation Plan record is invalid")
+        resolved = ProjectRunner(
+            self.read.project,
+            approved_record["owner"],
+        ).plan(approved_record["flow"], approved_record["target"])
+        if resolved.plan_identity != plan_identity:
+            raise ValueError("Target Operation Plan changed after execution approval")
         required = tuple(
             sorted(
                 {
@@ -253,7 +269,7 @@ class AgenticExecutionInterface:
         located = self.store.locate(run_id)
         self._reconcile(run_id, located.paths)
         state = self.store.read_state(located.paths)
-        return self.read.inspect_run(
+        return self.runs.inspect(
             owner=state["owner"],
             target=state["target"],
             operation=state["operation"],

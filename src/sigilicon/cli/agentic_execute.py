@@ -9,7 +9,7 @@ import sys
 
 from sigilicon.cli.common import emit_json
 from sigilicon.workflows.agentic_execution import AgenticExecutionBudget
-from sigilicon.workflows.project import bind_agentic_execution
+from sigilicon.workflows.project import bind_agentic_execution, bind_run_read
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -18,7 +18,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Execute only launcher-approved target-operation plans.",
     )
     parser.add_argument("--project-root", type=Path, required=True)
-    parser.add_argument("--grant", type=Path, required=True)
+    parser.add_argument("--grant", type=Path)
     parser.add_argument("--environment", type=Path)
     commands = parser.add_subparsers(dest="action", required=True)
     run = commands.add_parser("target-run", help="execute and wait for one approved plan")
@@ -35,6 +35,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.action == "run-inspect":
+            if args.grant is not None or args.environment is not None:
+                raise ValueError("run-inspect does not accept execution bindings")
+            payload = bind_run_read(args.project_root).inspect_managed(args.run_id)
+            emit_json(payload)
+            status = payload["data"]["management"]["status"]
+            return 1 if status in {"failed", "uncertain"} else 0
+        if args.grant is None:
+            raise ValueError("target-run and run-cancel require --grant")
         interface = bind_agentic_execution(
             args.project_root,
             grant_contract=args.grant,
@@ -59,8 +68,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload["operation"] = "target.run"
         elif args.action == "run-cancel":
             payload = interface.cancel_run(run_id=args.run_id)
-        else:
-            payload = interface.inspect_run(run_id=args.run_id)
         emit_json(payload)
         status = payload["data"]["management"]["status"]
         if status == "accepted":

@@ -354,7 +354,7 @@ class ProjectExecution:
 
     @property
     def plan_identity(self) -> str:
-        return self._engine.plan_id(self._plan)
+        return self._engine.plan_identity(self._plan)
 
     @property
     def record(self) -> dict[str, object]:
@@ -411,31 +411,12 @@ class ProjectExecution:
             progress=progress,
         )
 
-    def read_result(self, run_id: str) -> dict[str, Any]:
-        return self._engine.read_run_result(
-            artifact_root=self._project.artifact_root,
-            owner=self.owner,
-            flow_id=self.target,
-            target=self.operation,
-            run_id=run_id,
-        )
-
     def restore_result(self, run_id: str) -> FlowResult:
         return self._engine.restore_result(
             self._plan,
             artifact_root=self._project.artifact_root,
             run_id=run_id,
         )
-
-    def clean(self, run_id: str) -> None:
-        self._engine.clean_run(
-            artifact_root=self._project.artifact_root,
-            owner=self.owner,
-            flow_id=self.target,
-            target=self.operation,
-            run_id=run_id,
-        )
-
 
 @dataclass(frozen=True)
 class _TargetSelection:
@@ -753,26 +734,7 @@ class ProjectRunner:
         )
 
 
-def resolve_project_execution(
-    project: Project,
-    plan_identity: str,
-) -> ProjectExecution:
-    """Resolve one exact ``owner:target:operation`` identity."""
-
-    if not isinstance(plan_identity, str) or not plan_identity:
-        raise ValueError("Project Plan identity must be non-empty text")
-    fields = plan_identity.split(":")
-    if len(fields) != 3:
-        raise ValueError("Project Plan identity must be owner:target:operation")
-    owner, target, operation = fields
-    resolved = ProjectRunner(project, owner).plan(target, operation)
-    if resolved.plan_identity != plan_identity:
-        raise ValueError("Project Plan identity does not match its project plan")
-    return resolved
-
-
 __all__ = [
     "ProjectExecution",
     "ProjectRunner",
-    "resolve_project_execution",
 ]

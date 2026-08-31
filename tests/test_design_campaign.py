@@ -498,7 +498,7 @@ def test_campaign_budget_is_independent_of_flow_engine_and_fail_closed(tmp_path:
     assert expired.iterations == ()
 
 
-def test_campaign_semantic_id_does_not_hide_budget_or_scope_changes(tmp_path: Path) -> None:
+def test_campaign_content_identity_covers_budget_and_scope(tmp_path: Path) -> None:
     engine, plan = _engine_and_plan(EvidenceConclusion.SATISFIED)
     campaign = _campaign(plan)
     changed_budget = replace(
@@ -511,8 +511,8 @@ def test_campaign_semantic_id_does_not_hide_budget_or_scope_changes(tmp_path: Pa
     )
     runner = DesignCampaignRunner(engine, artifact_root=tmp_path)
 
-    assert runner.campaign_identity(campaign) == runner.campaign_identity(changed_budget)
-    assert runner.campaign_identity(campaign) == runner.campaign_identity(changed_scope)
+    assert runner.campaign_identity(campaign) != runner.campaign_identity(changed_budget)
+    assert runner.campaign_identity(campaign) != runner.campaign_identity(changed_scope)
     assert runner.plan_record(campaign) != runner.plan_record(changed_budget)
     assert runner.plan_record(campaign) != runner.plan_record(changed_scope)
 

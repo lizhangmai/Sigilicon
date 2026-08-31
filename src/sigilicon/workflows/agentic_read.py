@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import re
 from typing import Any
 
 from sigilicon.domain.circuit_design import (
@@ -16,7 +15,6 @@ from sigilicon.domain.repository import (
     Project,
     RepositoryOwner,
 )
-from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.workflows.design_promotion import (
@@ -24,45 +22,12 @@ from sigilicon.workflows.design_promotion import (
     promotion_request_from_json,
 )
 from sigilicon.workflows.source_control import inspect_source_state
-from sigilicon.workflows.agentic_runs import AgenticRunStore, RUNNING_STATUSES
-
-
-READ_RESULT_KIND = "agentic-read-result"
-_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_.-])/(?:[^\s\"'<>]+)")
-_WINDOWS_PATH = re.compile(r"[A-Za-z]:[\\/][^\s\"'<>]+")
-_SENSITIVE_FIELDS = frozenset(
-    {"command", "commands", "env", "environment", "executable", "raw_log"}
+from sigilicon.workflows.agentic_response import (
+    READ_RESULT_KIND,
+    public_value as _public_value,
+    read_response,
+    repository_identity,
 )
-
-
-def _repository_identity(project: Project) -> str:
-    return f"{project.manifest_owner}.{project.project_root.name}"
-
-
-def _public_value(value: Any, *, field: str | None = None) -> Any:
-    """Bound untrusted records and remove site-private execution material."""
-
-    if field in _SENSITIVE_FIELDS and not (
-        field == "executable" and isinstance(value, bool)
-    ):
-        return "<redacted-private-execution-material>"
-    if isinstance(value, dict):
-        return {
-            str(key): _public_value(item, field=str(key))
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_public_value(item) for item in value]
-    if isinstance(value, str):
-        if len(value) > 4000:
-            return "<redacted-oversized-text>"
-        return _WINDOWS_PATH.sub(
-            "<redacted-site-path>",
-            _ABSOLUTE_PATH.sub("<redacted-site-path>", value),
-        )
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    raise ValueError("record contains a non-portable public value")
 
 
 @dataclass(frozen=True)
@@ -73,7 +38,17 @@ class AgenticReadInterface:
     project_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "project_id", _repository_identity(self.project))
+        if not isinstance(self.project, Project):
+            raise TypeError("AgenticReadInterface requires a Project")
+        object.__setattr__(
+            self,
+            "project_id",
+            repository_identity(self.project.manifest_owner, self.project.context),
+        )
+
+    @classmethod
+    def from_project(cls, project: Project) -> AgenticReadInterface:
+        return cls(project)
 
     @property
     def project_resource_uri(self) -> str:
@@ -82,23 +57,6 @@ class AgenticReadInterface:
     def owner_resource_uri(self, owner: str) -> str:
         selected = self._owner(owner)
         return f"sigilicon://owners/{selected.name}/targets"
-
-    def run_resource_uri(
-        self,
-        *,
-        owner: str,
-        target: str,
-        operation: str,
-        run_id: str,
-    ) -> str:
-        owner_name = owner_identity(owner, "project owner")
-        target_name = identifier(target, "project target")
-        operation_name = identifier(operation, "target operation")
-        identity = run_identity(run_id)
-        return (
-            f"sigilicon://runs/{owner_name}/{target_name}/"
-            f"{operation_name}/{identity}/manifest"
-        )
 
     def inspect_project(self, *, owner: str | None) -> dict[str, Any]:
         """Project canonical owner/target projection with no site path disclosure."""
@@ -176,111 +134,6 @@ class AgenticReadInterface:
                 self.owner_resource_uri(resolved.owner),
             ],
             allowed_next_actions=["project.inspect", "review-plan"],
-        )
-
-    def inspect_run(
-        self,
-        *,
-        owner: str,
-        target: str,
-        operation: str,
-        run_id: str,
-    ) -> dict[str, Any]:
-        """Read one exact persisted target-operation result."""
-
-        selected_owner = self._owner(owner)
-        target_name = identifier(target, "project target")
-        operation_name = identifier(operation, "target operation")
-        identity = run_identity(run_id)
-        project_runner = ProjectRunner(self.project, selected_owner.name)
-        execution = project_runner.plan(target_name, operation_name)
-        managed = AgenticRunStore(
-            self.project.artifact_root,
-            self.project_id,
-        )
-        managed_paths = managed.paths(
-            owner=selected_owner.name,
-            target=target_name,
-            operation=operation_name,
-            run_id=identity,
-        )
-        state_path = managed_paths.role("control") / "state.json"
-        if state_path.exists():
-            state = managed.read_state(managed_paths)
-            if (
-                state["owner"] != selected_owner.name
-                or state["target"] != target_name
-                or state["operation"] != operation_name
-                or state["run_id"] != identity
-            ):
-                raise ValueError("managed target-operation run identity drift")
-            result: dict[str, Any] | None = None
-            try:
-                result = execution.read_result(identity)
-            except (OSError, RuntimeError):
-                if state["status"] not in RUNNING_STATUSES:
-                    raise
-            resource = self.run_resource_uri(
-                owner=selected_owner.name,
-                target=target_name,
-                operation=operation_name,
-                run_id=identity,
-            )
-            return self.response(
-                operation="run.inspect",
-                authority=(
-                    "managed-run-state"
-                    if result is None
-                    else "recorded-target-operation-result"
-                ),
-                conclusion=(
-                    "in-progress"
-                    if state["status"] in RUNNING_STATUSES
-                    else state["status"]
-                ),
-                summary=(
-                    f"Managed target operation run {identity} is {state['status']!r}; "
-                    "no additional qualification claim was made."
-                ),
-                data={
-                    "management": state,
-                    "result": None if result is None else _public_value(result),
-                    "model_context": {
-                        "record_text_trust": "untrusted",
-                        "qualification_authority": "record-only",
-                    },
-                },
-                resources=[resource],
-                allowed_next_actions=(
-                    ["run.inspect", "run.cancel"]
-                    if state["status"] in RUNNING_STATUSES
-                    else ["project.inspect", "run.inspect"]
-                ),
-            )
-        result = execution.read_result(identity)
-        resource = self.run_resource_uri(
-            owner=selected_owner.name,
-            target=target_name,
-            operation=operation_name,
-            run_id=identity,
-        )
-        return self.response(
-            operation="run.inspect",
-            authority="recorded-target-operation-result",
-            conclusion="recorded",
-            summary=(
-                f"Read the identity-matched target-operation result with status "
-                f"{result.get('status', 'unknown')!r}; no qualification claim was added."
-            ),
-            data={
-                "result": _public_value(result),
-                "model_context": {
-                    "record_text_trust": "untrusted",
-                    "qualification_authority": "record-only",
-                },
-            },
-            resources=[resource],
-            allowed_next_actions=["project.inspect", "run.inspect"],
         )
 
     def validate_candidate(
@@ -413,18 +266,16 @@ class AgenticReadInterface:
         resources: list[str],
         allowed_next_actions: list[str],
     ) -> dict[str, Any]:
-        return {
-            "schema": 1,
-            "contract_kind": READ_RESULT_KIND,
-            "operation": operation,
-            "project_id": self.project_id,
-            "authority": authority,
-            "conclusion": conclusion,
-            "summary": summary,
-            "data": _public_value(data),
-            "resources": resources,
-            "allowed_next_actions": allowed_next_actions,
-        }
+        return read_response(
+            project_id=self.project_id,
+            operation=operation,
+            authority=authority,
+            conclusion=conclusion,
+            summary=summary,
+            data=data,
+            resources=resources,
+            allowed_next_actions=allowed_next_actions,
+        )
 
 
 __all__ = [

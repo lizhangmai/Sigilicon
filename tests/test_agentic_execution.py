@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import sigilicon.workflows.agentic_runs as agentic_runs_module
+import sigilicon.workflows.agentic_execution as agentic_execution_module
 
 from sigilicon.cli.agentic_execute import main as agentic_execute_cli_main
 from sigilicon.domain.agentic_execution import (
@@ -18,6 +19,7 @@ from sigilicon.domain.agentic_execution import (
     agentic_execution_grant_from_json,
 )
 from sigilicon.domain.repository import Project
+from sigilicon.paths import ProjectContext
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.agentic_runs import AgenticRunStore
@@ -26,7 +28,7 @@ from test_agentic_read_interface import write_read_only_flow_project
 
 
 def _read(root: Path) -> AgenticReadInterface:
-    return AgenticReadInterface(Project.from_project_root(root))
+    return AgenticReadInterface.from_project(Project.from_project_root(root))
 
 
 def _execution(
@@ -143,6 +145,9 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
     grant = _grant(tmp_path, plan_identity)
     grant_path = tmp_path / "grant.json"
     grant_path.write_text(grant.canonical_json(), encoding="utf-8")
+    grant_record = json.loads(grant.canonical_json())
+    assert "plan_identity" in grant_record["approved_plans"][0]
+    assert "plan_id" not in grant_record["approved_plans"][0]
     budget = AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1)
 
     interface = _execution(
@@ -196,6 +201,20 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
     ) == 0
     assert json.loads(capsys.readouterr().out) == result
 
+    (tmp_path / "ip/example/configs/flows/pipeline.toml").unlink()
+    (tmp_path / "ip/example/configs/targets.toml").unlink()
+    assert agentic_execute_cli_main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "run-inspect",
+            result["data"]["management"]["run_id"],
+        ]
+    ) == 0
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected["operation"] == "run.inspect"
+    assert inspected["data"] == result["data"]
+
     audit_paths = tuple((tmp_path / "artifacts").rglob("audit.json"))
     assert len(audit_paths) == 1
     audit = json.loads(audit_paths[0].read_text(encoding="utf-8"))
@@ -211,11 +230,11 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
 
     unauthorized = _execution(
         tmp_path,
-        grant=_grant(tmp_path, "forged-plan"),
+        grant=_grant(tmp_path, plan_identity),
     )
     with pytest.raises(ValueError, match="approved"):
         unauthorized.run_target(
-            plan_identity=plan_identity,
+            plan_identity="sha256-" + "0" * 64,
             budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
             wait=False,
         )
@@ -231,6 +250,55 @@ def test_execution_rejects_unapproved_plan_and_insufficient_budget(tmp_path: Pat
             wait=False,
         )
     assert not (tmp_path / "artifacts").exists()
+
+
+def test_plan_approval_rejects_semantic_alias_for_canonical_record(
+    tmp_path: Path,
+) -> None:
+    write_read_only_flow_project(tmp_path)
+    record = _read(tmp_path).plan_target(
+        owner="example",
+        target="pipeline",
+        operation="all",
+    )["data"]["plan"]
+
+    with pytest.raises(ValueError, match="canonical record digest"):
+        AgenticPlanApproval(
+            "example:pipeline:all",
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+        )
+
+
+def test_worker_launch_failure_remains_inspectable_without_flow_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_read_only_flow_project(tmp_path)
+    plan_identity = _plan_identity(tmp_path)
+    interface = _execution(tmp_path, grant=_grant(tmp_path, plan_identity))
+
+    def fail_launch(*_args, **_kwargs):
+        raise OSError("injected worker launch failure")
+
+    monkeypatch.setattr(
+        agentic_execution_module,
+        "spawn_agentic_flow_worker",
+        fail_launch,
+    )
+    with pytest.raises(OSError, match="worker launch failure"):
+        interface.run_target(
+            plan_identity=plan_identity,
+            budget=AgenticExecutionBudget(maximum_seconds=30, maximum_nodes=1),
+            wait=False,
+        )
+    state_path = next((tmp_path / "artifacts").rglob("control/state.json"))
+    state = json.loads(state_path.read_text())
+
+    inspected = interface.inspect_run(run_id=state["run_id"])
+
+    assert inspected["conclusion"] == "uncertain"
+    assert inspected["data"]["management"]["error_code"] == "worker-launch-failed"
+    assert inspected["data"]["result"] is None
 
 
 def test_grant_rejects_plan_config_changed_after_approval(tmp_path: Path) -> None:
@@ -311,7 +379,14 @@ def test_run_locator_never_traverses_symlinked_namespace(tmp_path: Path) -> None
     (outside / "control").mkdir(parents=True)
     namespace.mkdir(parents=True)
     (namespace / "example").symlink_to(tmp_path / "outside/example", target_is_directory=True)
-    store = AgenticRunStore(artifact_root, "run-a")
+    store = AgenticRunStore(
+        ProjectContext.from_roots(
+            tmp_path,
+            artifact_root=artifact_root,
+            workspace_root=tmp_path / "workspace",
+        ),
+        "run-a",
+    )
 
     with pytest.raises(ValueError, match="unknown"):
         store.locate("f" * 32)

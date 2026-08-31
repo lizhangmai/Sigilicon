@@ -32,6 +32,7 @@ from sigilicon.experimental.design_campaign import (
     design_campaign_state_from_json,
 )
 from sigilicon.canonical import canonical_json
+from sigilicon.canonical import canonical_digest
 from sigilicon.domain.circuit_design import ProposalProvenance, TopologyOrigin
 from sigilicon.experimental.design_repair import (
     DesignRepairProposal,
@@ -47,7 +48,7 @@ from test_design_promotion import _inputs as promotion_inputs
 
 
 def _read(root: Path) -> DesignCampaignReadInterface:
-    return DesignCampaignReadInterface(Project.from_project_root(root))
+    return DesignCampaignReadInterface.from_project(Project.from_project_root(root))
 
 
 def _write_campaign_project(root: Path) -> None:
@@ -370,9 +371,10 @@ def test_campaign_run_requires_exact_identity_and_grant(
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
+    unrelated = {"contract_kind": "unrelated-plan"}
     execution = AgenticExecutionInterface(
         read,
-        grant=_grant("forged-campaign", planned["data"]["plan"]),
+        grant=_grant(canonical_digest(unrelated), unrelated),
     )
 
     with pytest.raises(ValueError, match="approved"):
@@ -383,10 +385,10 @@ def test_campaign_run_requires_exact_identity_and_grant(
     with pytest.raises(ValueError, match="identity drift"):
         AgenticExecutionInterface(
             read,
-            grant=_grant("forged-campaign", planned["data"]["plan"]),
+            grant=_grant(campaign_identity, planned["data"]["plan"]),
         ).run_campaign(
             campaign_json=source.canonical_json(),
-            campaign_identity="forged-campaign",
+            campaign_identity="sha256-" + "0" * 64,
         )
     assert not (tmp_path / "artifacts").exists()
 

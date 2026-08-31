@@ -386,7 +386,7 @@ def test_flow_engine_uses_bindings_from_compiled_spec_and_writes_recipe_identity
         "runtime.fake-license",
         "logic-lib",
     }
-    assert engine.plan_id(plan) == "example:requirements:all"
+    assert engine.plan_identity(plan).startswith("sha256-")
     assert engine.plan_record(plan)["recipe"] == "local"
     assert "execution_profile" not in engine.plan_record(plan)
     assert engine.preflight_record(plan, missing)["recipe"] == "local"

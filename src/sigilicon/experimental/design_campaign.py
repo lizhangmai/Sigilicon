@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import (
+    canonical_digest,
     canonical_from_exact_json,
     canonical_json,
 )
@@ -723,7 +724,7 @@ class DesignCampaignRunner:
             )
 
     def campaign_identity(self, campaign: DesignCampaign) -> str:
-        return f"{campaign.owner}:design-campaign:{campaign.campaign_id}"
+        return canonical_digest(self.plan_record(campaign))
 
     @staticmethod
     def _artifact(flow_result: object, binding: DesignArtifactBinding) -> object:
@@ -1011,7 +1012,7 @@ class DesignCampaignRunner:
         attempt: DesignCampaignAttempt,
         lineage: tuple[DesignCandidate, ...],
     ) -> DesignCampaignIterationResult:
-        plan_identity = self._engine.plan_id(attempt.plan)
+        plan_identity = self._engine.plan_identity(attempt.plan)
         run_id = (
             f"design-{campaign.campaign_id}-{attempt.iteration_id}-"
             f"{self._execution_context_identity}"

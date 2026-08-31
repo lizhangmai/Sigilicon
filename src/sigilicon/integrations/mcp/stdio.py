@@ -30,6 +30,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="launcher-only current-site execution environment contract",
     )
+    parser.add_argument(
+        "--history-only",
+        action="store_true",
+        help="serve persisted Run inspection without loading current catalogs",
+    )
     return parser
 
 
@@ -63,10 +68,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         from sigilicon.workflows.project import (
             bind_agentic_execution,
             bind_agentic_read,
+            bind_run_read,
         )
 
         execution = None
-        if args.execution_grant is None:
+        if args.history_only:
+            if args.environment is not None or args.execution_grant is not None:
+                raise ValueError("history-only MCP does not accept execution bindings")
+            interface = bind_run_read(args.project_root)
+        elif args.execution_grant is None:
             if args.environment is not None:
                 raise ValueError("execution environment requires an execution grant")
             interface = bind_agentic_read(args.project_root)

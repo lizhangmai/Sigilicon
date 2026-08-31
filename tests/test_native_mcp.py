@@ -43,11 +43,12 @@ from sigilicon.domain.agentic_execution import (
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
+from sigilicon.workflows.project import bind_run_read
 from test_design_promotion import _inputs as promotion_inputs
 
 
 def _read(root: Path) -> AgenticReadInterface:
-    return AgenticReadInterface(Project.from_project_root(root))
+    return AgenticReadInterface.from_project(Project.from_project_root(root))
 
 
 def write_mcp_project(root: Path) -> None:
@@ -407,11 +408,71 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
             else:
                 raise AssertionError("MCP-managed fake Flow did not finish")
             assert inspected.structured_content == execution.inspect_run(run_id=run_id)
+            run_uri = inspected.structured_content["resources"][0]
+            resource = await client.read_resource(run_uri)
+            assert json.loads(resource.contents[0].text) == inspected.structured_content
+            with pytest.raises(MCPError):
+                await client.read_resource(
+                    f"sigilicon://runs/example/pipeline/all/{run_id}/manifest"
+                )
             assert execution.run_target(
                 plan_identity=plan_identity,
                 budget=AgenticExecutionBudget(30, 1),
                 wait=True,
             )["data"]["result"] == inspected.structured_content["data"]["result"]
+
+    asyncio.run(scenario())
+
+
+def test_native_mcp_history_only_does_not_load_current_catalogs(tmp_path: Path) -> None:
+    write_mcp_project(tmp_path)
+    read = _read(tmp_path)
+    plan = read.plan_target(owner="example", target="pipeline", operation="all")
+    plan_identity = plan["data"]["plan_identity"]
+    execution = AgenticExecutionInterface(
+        read,
+        grant=AgenticExecutionGrant(
+            principal="history-operator",
+            role="design-operator",
+            capabilities=(AgenticExecutionCapability.EXECUTE_DERIVED,),
+            approved_plans=(
+                AgenticPlanApproval(
+                    plan_identity,
+                    canonical_json(plan["data"]["plan"]),
+                ),
+            ),
+            approval="history-only-test",
+            expires_at="2099-01-01T00:00:00+00:00",
+        ),
+    )
+    completed = execution.run_target(
+        plan_identity=plan_identity,
+        budget=AgenticExecutionBudget(30, 1),
+        wait=True,
+    )
+    run_id = completed["data"]["management"]["run_id"]
+    (tmp_path / "ip/example/configs/flows/pipeline.toml").unlink()
+    (tmp_path / "ip/example/configs/targets.toml").unlink()
+    server = create_server(bind_run_read(tmp_path))
+
+    async def scenario() -> None:
+        async with Client(server) as client:
+            tools = await client.list_tools()
+            assert [tool.name for tool in tools.tools] == ["run.inspect"]
+            inspected = await client.call_tool(
+                "run.inspect",
+                {
+                    "owner": "example",
+                    "target": "pipeline",
+                    "operation": "all",
+                    "run_id": run_id,
+                },
+            )
+            assert inspected.structured_content["data"] == completed["data"]
+            templates = await client.list_resource_templates()
+            assert [item.name for item in templates.resource_templates] == [
+                "target-operation-run-result"
+            ]
 
     asyncio.run(scenario())
 

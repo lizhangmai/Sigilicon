@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 
@@ -19,6 +20,7 @@ from sigilicon.flow import (
     FlowRegistry,
     SourceMember,
 )
+from sigilicon.execution import RunStoreError
 from sigilicon.flow.circuit_design import (
     DESIGN_ACTION_PLAN,
     DESIGN_SOURCE_CHECK_ACTION,
@@ -29,7 +31,6 @@ from sigilicon.workflows import project_runner as project_runner_module
 from sigilicon.workflows.project_runner import (
     ProjectExecution,
     ProjectRunner,
-    resolve_project_execution,
 )
 
 from conftest import write_component_owner, write_project_context
@@ -221,7 +222,7 @@ def test_project_runner_targets_describe_and_plan_use_owner_operation_interface(
     assert execution.target == "smoke"
     assert execution.operation == "check"
     assert execution.recipe == "smoke-recipe"
-    assert execution.plan_identity == "example:smoke:check"
+    assert re.fullmatch(r"sha256-[0-9a-f]{64}", execution.plan_identity)
     assert execution.node_count == 1
     assert execution.graph == (("check", ()),)
 
@@ -312,40 +313,49 @@ def test_project_execution_owns_preflight_run_restore_read_and_clean_lifecycle(
     assert set(result.nodes) == {"check", "audit"}
     assert [item.status for item in progress][0] == "running"
     assert progress[-1].status == "accepted"
-    assert execution.read_result(run_id)["status"] == "accepted"
+    assert project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="all",
+        run_id=run_id,
+    )["status"] == "accepted"
 
     restored = execution.restore_result(run_id)
     assert restored.status == "accepted"
     assert restored.run_id == run_id
     assert set(restored.nodes) == {"check", "audit"}
 
-    execution.clean(run_id)
+    project.runs.clean(
+        owner="example",
+        target="smoke",
+        operation="all",
+        run_id=run_id,
+    )
     assert not result.run_root.exists()
-    with pytest.raises(FlowExecutionError):
-        execution.read_result(run_id)
+    with pytest.raises(RunStoreError):
+        project.runs.read(
+            owner="example",
+            target="smoke",
+            operation="all",
+            run_id=run_id,
+        )
 
 
-def test_project_execution_identity_is_owner_target_operation_without_profile(
+def test_project_execution_identity_is_deterministic_plan_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, _targets, _recipe, implementation = _write_project(tmp_path)
     _install_simple_design_seam(monkeypatch, project, implementation)
 
-    resolved = resolve_project_execution(project, "example:smoke:check")
+    first = ProjectRunner(project, "example").plan("smoke", "check")
+    second = ProjectRunner(project, "example").plan("smoke", "check")
 
-    assert resolved.plan_identity == "example:smoke:check"
-    assert resolved.owner == "example"
-    assert resolved.target == "smoke"
-    assert resolved.operation == "check"
-
-    for identity in (
-        "example:smoke:check:extra",
-        "example:smoke:unknown",
-        "other:smoke:check",
-    ):
-        with pytest.raises(ValueError):
-            resolve_project_execution(project, identity)
+    assert first.plan_identity == second.plan_identity
+    assert re.fullmatch(r"sha256-[0-9a-f]{64}", first.plan_identity)
+    assert first.owner == "example"
+    assert first.target == "smoke"
+    assert first.operation == "check"
 
 
 def test_project_runner_retains_exact_target_and_recipe_sources_for_preflight_drift(
@@ -397,7 +407,6 @@ def test_project_runner_has_no_legacy_request_flow_execution_or_profile_catalog_
     assert set(project_runner_module.__all__) == {
         "ProjectRunner",
         "ProjectExecution",
-        "resolve_project_execution",
     }
     assert not hasattr(project_runner_module, "RunRequest")
     assert not hasattr(project_runner_module, "FlowExecution")

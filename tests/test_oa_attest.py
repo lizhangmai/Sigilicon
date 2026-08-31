@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from sigilicon.execution import RunStore
+
 from sigilicon.cli import flow as flow_cli
 from sigilicon.cli.flow import _parser
 from sigilicon.cli.main import main as sigilicon_cli_main
@@ -166,7 +168,12 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
 
         def plan(self, target: str, operation: str):
             calls.append((target, operation))
+
             class Execution:
+                owner = "fixture"
+                target = "native"
+                operation = "tb-main-l2"
+
                 def run(self, environment):
                     assert set(environment.capabilities) == {
                         "tool.virtuoso-bridge",
@@ -174,18 +181,19 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
                     }
                     return SimpleNamespace(run_id="a" * 32)
 
-                def read_result(self, run_id: str):
-                    assert run_id == "a" * 32
-                    return {
-                        "flow": "native",
-                        "target": "tb-main-l2",
-                        "run_id": run_id,
-                        "status": "accepted",
-                    }
-
             return Execution()
 
     monkeypatch.setattr(flow_cli, "ProjectRunner", TypedFlow)
+    monkeypatch.setattr(
+        RunStore,
+        "read",
+        lambda _self, **values: {
+            "flow": "native",
+            "target": "tb-main-l2",
+            "run_id": values["run_id"],
+            "status": "accepted",
+        },
+    )
     assert not hasattr(flow_cli.ProjectOaWorkflow, "simulate")
 
     assert (

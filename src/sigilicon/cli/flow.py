@@ -310,7 +310,12 @@ def _run_oa(
                     }
                 ),
             )
-            payload = planned.read_result(result.run_id)
+            payload = workflow.project.runs.read(
+                owner=planned.owner,
+                target=planned.target,
+                operation=planned.operation,
+                run_id=result.run_id,
+            )
         else:
             client = client_factory()
             if args.action == "attest":

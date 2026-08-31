@@ -112,7 +112,7 @@ Tool baseline:
 | --- | --- | --- | --- |
 | `project.inspect` | Phase 2 | `read-project` | explicit server ProjectContext and semantic owner selector |
 | `target.plan` | Phase 2 | `plan-target` | cataloged owner, target, operation, and bounded options |
-| `target.run` | Phase 3 | `execute-derived` | owner/target/operation plus immutable `plan_identity` and confirmed budget |
+| `target.run` | Phase 3 | `execute-derived` | immutable `plan_identity` plus confirmed budget; the approved record owns owner/target/operation |
 | `run.inspect` | Phase 2 | `read-project` | owner/target/operation plus validated run identity |
 | `run.cancel` | Phase 3 | `execute-derived` | owner/target/operation and opaque run identity; cooperative managed cancellation |
 | `candidate.validate` | Phase 2 | `plan-target` | exact canonical Candidate/stage JSON plus cataloged owner; no paths |
@@ -150,13 +150,16 @@ Capability levels are cumulative only when explicitly granted:
 
 ### Phase 2 binding
 
-`AgenticReadInterface` is the shared application seam for `project.inspect`,
-`target.plan`, `run.inspect`, and owner-bound `candidate.validate`. The read CLI and
-native MCP handlers call this Interface; the Candidate operation delegates to the
-same workflow-owned `validate_candidate_records` function as the existing
-Candidate CLI. MCP accepts semantic identities or bounded canonical JSON only. The
-read-only Phase 2 tools have no path, shell, environment, executor, cancellation,
-OA, or promotion input.
+Source-dependent reads and historical Run reads are separate application seams.
+`AgenticReadInterface` requires one explicit, fully loaded `Project` and owns
+`project.inspect`, `target.plan`, and owner-bound `candidate.validate`.
+`RunReadInterface` requires only the explicit `ProjectContext`; it owns
+`run.inspect` and must not load current owner catalogs or recipes. The read CLI and
+native MCP composition bind the narrowest seam for each operation. The Candidate
+operation delegates to the same workflow-owned `validate_candidate_records`
+function as the existing Candidate CLI. MCP accepts semantic identities or
+bounded canonical JSON only. The read-only Phase 2 tools have no path, shell,
+environment, executor, cancellation, OA, or promotion input.
 
 The local entry point is `sigilicon-mcp --project-root <root>`. Project selection is
 launcher configuration rather than a model-call argument, and cwd discovery is not

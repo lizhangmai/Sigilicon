@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import inspect
 import hashlib
@@ -7,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from sigilicon.execution import RunStore, RunStoreError
+from sigilicon.execution.runs import validate_resolved_plan
 from sigilicon.flow import (
     ActionBinding,
     ActionContext,
@@ -39,10 +42,26 @@ from sigilicon.flow import (
     load_execution_recipe,
 )
 from sigilicon.virtuoso.operation_journal import write_operation_incident
+from sigilicon.paths import ProjectContext
 
 from conftest import (
     StagedAdapterFixture,
 )
+
+
+def _run_store(tmp_path: Path, artifact_root: Path) -> RunStore:
+    return RunStore(
+        ProjectContext.from_roots(
+            tmp_path,
+            artifact_root=artifact_root,
+            workspace_root=tmp_path / "workspace",
+        )
+    )
+
+
+def test_persisted_plan_validator_rejects_arbitrary_json_object() -> None:
+    with pytest.raises(RunStoreError, match="contract envelope"):
+        validate_resolved_plan({"arbitrary": "json"})
 
 
 class SourceAdapter(StagedAdapterFixture):
@@ -917,7 +936,7 @@ def test_flow_rejects_extensions_not_declared_by_action_or_adapter() -> None:
         FlowEngine(adapter_rejects).plan(spec, "all")
 
 
-def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path) -> None:
+def test_restore_compares_the_exact_immutable_plan_identity(tmp_path: Path) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
     first = engine.plan(flow_spec(), "qualification")
@@ -945,7 +964,7 @@ def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path
         owner_root=first.spec.owner_root,
     )
     changed = engine.plan(changed_spec, "qualification")
-    assert engine.plan_id(first) == engine.plan_id(changed)
+    assert engine.plan_identity(first) != engine.plan_identity(changed)
     assert engine.plan_record(first) != engine.plan_record(changed)
     engine.run(
         first,
@@ -954,12 +973,28 @@ def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path
         run_id="record-restore",
     )
 
-    with pytest.raises(FlowExecutionError, match="Plan record drift"):
+    with pytest.raises(FlowExecutionError, match="Manifest identity"):
         engine.restore_result(
             changed,
             artifact_root=tmp_path / "artifacts",
             run_id="record-restore",
         )
+
+
+def test_plan_identity_covers_target_acceptance_goals() -> None:
+    registered, *_ = registry()
+    engine = FlowEngine(registered)
+    spec = flow_spec()
+    changed = replace(
+        spec,
+        targets=(FlowTarget("qualification", ("source", "verify")),),
+    )
+
+    assert engine.plan_identity(
+        engine.plan(spec, "qualification")
+    ) != engine.plan_identity(
+        engine.plan(changed, "qualification")
+    )
 
 
 def test_restore_rejects_action_operation_record_drift(tmp_path: Path) -> None:
@@ -1034,11 +1069,10 @@ def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
 
     assert "work/source/link.txt" in manifest["managed_paths"]
     assert len(manifest["managed_paths"]) == len(set(manifest["managed_paths"]))
-    engine.clean_run(
-        artifact_root=artifact_root,
+    _run_store(tmp_path, artifact_root).clean(
         owner="example",
-        flow_id="fake-pipeline",
-        target="qualification",
+        target="fake-pipeline",
+        operation="qualification",
         run_id=run_id,
     )
     assert not result.run_root.exists()
@@ -1460,22 +1494,20 @@ def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) ->
     untracked = result.run_root / "do-not-delete.txt"
     untracked.write_text("owned by caller", encoding="utf-8")
 
-    with pytest.raises(FlowExecutionError, match="untracked"):
-        engine.clean_run(
-            artifact_root=artifact_root,
+    with pytest.raises(RunStoreError, match="untracked"):
+        _run_store(tmp_path, artifact_root).clean(
             owner="example",
-            flow_id="fake-pipeline",
-            target="qualification",
+            target="fake-pipeline",
+            operation="qualification",
             run_id=run_id,
         )
 
     assert untracked.read_text(encoding="utf-8") == "owned by caller"
     untracked.unlink()
-    engine.clean_run(
-        artifact_root=artifact_root,
+    _run_store(tmp_path, artifact_root).clean(
         owner="example",
-        flow_id="fake-pipeline",
-        target="qualification",
+        target="fake-pipeline",
+        operation="qualification",
         run_id=run_id,
     )
     assert not result.run_root.exists()
@@ -1540,12 +1572,11 @@ def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:
     manifest["managed_paths"].append("../../outside")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(FlowExecutionError, match="unsafe managed path"):
-        engine.clean_run(
-            artifact_root=artifact_root,
+    with pytest.raises(RunStoreError, match="unsafe managed path"):
+        _run_store(tmp_path, artifact_root).clean(
             owner="example",
-            flow_id="fake-pipeline",
-            target="qualification",
+            target="fake-pipeline",
+            operation="qualification",
             run_id=run_id,
         )
 

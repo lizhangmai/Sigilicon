@@ -46,7 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         project = Project.from_project_root(args.project_root)
-        read = DesignCampaignReadInterface(project)
+        read = DesignCampaignReadInterface.from_project(project)
         if args.operation == "plan":
             payload = read.plan_campaign(
                 campaign_json=args.campaign.read_text(encoding="utf-8")

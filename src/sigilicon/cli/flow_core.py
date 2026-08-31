@@ -19,7 +19,7 @@ from sigilicon.flow import (
     load_execution_environment,
 )
 from sigilicon.paths import discover_project_contract
-from sigilicon.workflows.project import load_project
+from sigilicon.workflows.project import bind_run_store, load_project
 from sigilicon.workflows.project_runner import ProjectRunner
 
 
@@ -124,26 +124,56 @@ def _execution_environment(args: argparse.Namespace) -> ExecutionEnvironment:
 
 
 def _project(args: argparse.Namespace) -> Any:
+    return load_project(_project_contract(args))
+
+
+def _project_contract(args: argparse.Namespace) -> Path:
     project_root = getattr(args, "project_root", None)
     if project_root is None:
         try:
-            project_contract = discover_project_contract()
+            return discover_project_contract()
         except RuntimeError as exc:
             raise FlowContractError(str(exc)) from exc
-    else:
-        project_contract = project_root.resolve() / "sigilicon.toml"
-    return load_project(project_contract)
-
-
-def _project_runner(args: argparse.Namespace) -> ProjectRunner:
-    return ProjectRunner(_project(args), args.owner)
+    return project_root.resolve() / "sigilicon.toml"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(arguments)
     try:
-        runner = _project_runner(args)
+        if args.action in {"status", "clean"}:
+            runs = bind_run_store(_project_contract(args).parent)
+        if args.action == "status":
+            payload = runs.read(
+                owner=args.owner,
+                target=args.target,
+                operation=args.operation,
+                run_id=args.run_id,
+            )
+            emit_json(payload)
+            return _result_exit(payload)
+        if args.action == "clean":
+            runs.clean(
+                owner=args.owner,
+                target=args.target,
+                operation=args.operation,
+                run_id=args.run_id,
+            )
+            emit_json(
+                {
+                    "schema": 1,
+                    "contract_kind": "project-run-clean-result",
+                    "status": "cleaned",
+                    "owner": args.owner,
+                    "target": args.target,
+                    "operation": args.operation,
+                    "run_id": args.run_id,
+                }
+            )
+            return 0
+        project = _project(args)
+        runs = project.runs
+        runner = ProjectRunner(project, args.owner)
         if args.action == "list":
             emit_json(runner.targets())
             return 0
@@ -171,28 +201,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _execution_environment(args),
                 run_id=args.run_id,
             )
-            payload = resolved.read_result(result.run_id)
-            emit_json(payload)
-            return _result_exit(payload)
-        resolved = runner.plan(args.target, args.operation)
-        if args.action == "status":
-            payload = resolved.read_result(args.run_id)
-            emit_json(payload)
-            return _result_exit(payload)
-        if args.action == "clean":
-            resolved.clean(args.run_id)
-            emit_json(
-                {
-                    "schema": 1,
-                    "contract_kind": "project-run-clean-result",
-                    "status": "cleaned",
-                    "owner": args.owner,
-                    "target": args.target,
-                    "operation": args.operation,
-                    "run_id": args.run_id,
-                }
+            payload = runs.read(
+                owner=resolved.owner,
+                target=resolved.target,
+                operation=resolved.operation,
+                run_id=result.run_id,
             )
-            return 0
+            emit_json(payload)
+            return _result_exit(payload)
         raise AssertionError(f"unhandled target command: {args.action}")
     except (FlowContractError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
