@@ -439,15 +439,17 @@ class AgenticReadInterface:
                 f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
             )
         project_flow = ProjectFlow(self.project, owner.name)
-        descriptions = project_flow._catalog_descriptions(owner_inventory)
+        descriptions = project_flow.catalog_descriptions(
+            inventory=owner_inventory,
+        )
         flows = [
             {
-                "name": entry.flow_id,
-                "default_profile": entry.default_profile,
-                "profiles": sorted(entry.profiles),
-                "targets": sorted(description["targets"]),
+                "name": description["name"],
+                "default_profile": description["default_profile"],
+                "profiles": list(description["profiles"]),
+                "targets": sorted(description["summary"]["targets"]),
             }
-            for entry, description in descriptions
+            for description in descriptions
         ]
         return sorted(flows, key=lambda item: item["name"])
 

@@ -63,6 +63,7 @@ default_profile = "design-checks"
 
 [flows.design-checks.profiles]
 design-checks = "configs/flows/design_profile.toml"
+alternate = "configs/flows/alternate_design_profile.toml"
 ''',
         encoding="utf-8",
     )
@@ -106,6 +107,22 @@ timeout_seconds = 30
 ''',
         encoding="utf-8",
     )
+    (flow_root / "alternate_design_profile.toml").write_text(
+        '''
+schema = 1
+contract_kind = "execution-profile"
+path_scope = "owner"
+owner = "example"
+name = "alternate"
+
+[actions."circuit-design.source-check"]
+adapter = "project-design-source-check"
+
+[actions."circuit-design.source-check".config]
+timeout_seconds = 45
+''',
+        encoding="utf-8",
+    )
     write_component_owner(
         tmp_path,
         "example",
@@ -115,6 +132,7 @@ timeout_seconds = 30
                 "ip/example/configs/flows/catalog.toml",
                 "ip/example/configs/flows/design_checks.toml",
                 "ip/example/configs/flows/design_profile.toml",
+                "ip/example/configs/flows/alternate_design_profile.toml",
             ),
         },
     )
@@ -217,6 +235,17 @@ def test_expanded_design_flow_read_interfaces_show_compiled_routes(
 
     assert summary["nodes"] == ["leaf-topology", "leaf-sync"]
     assert summary["targets"] == ["leaf-topology", "leaf-sync"]
+    alternate = workflow.plan(
+        RunRequest.flow(
+            "design-checks",
+            "leaf-topology",
+            "alternate",
+        )
+    )
+    assert alternate.profile == "alternate"
+    assert alternate.record["nodes"][0]["adapter_config"] == {
+        "timeout_seconds": 45,
+    }
     assert flow_core_cli_main(
         [
             "show",
@@ -235,10 +264,39 @@ def test_expanded_design_flow_read_interfaces_show_compiled_routes(
         {
             "default_profile": "design-checks",
             "name": "design-checks",
-            "profiles": ["design-checks"],
+            "profiles": ["alternate", "design-checks"],
             "targets": ["leaf-sync", "leaf-topology"],
         }
     ]
+
+
+def test_expanded_design_plan_reuses_one_owner_source_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _catalog_project(tmp_path)
+    project = Project.from_project_root(tmp_path)
+    watched = {
+        (tmp_path / "ip/example/configs/flows/catalog.toml").resolve(),
+        (tmp_path / "ip/example/configs/flows/design_targets.toml").resolve(),
+    }
+    reads = {path: 0 for path in watched}
+    original_read = repository_module.read_toml_record
+
+    def counted_read(path):
+        resolved = Path(path).resolve()
+        if resolved in reads:
+            reads[resolved] += 1
+        return original_read(path)
+
+    monkeypatch.setattr(repository_module, "read_toml_record", counted_read)
+
+    planned = ProjectFlow(project, "example").plan(
+        RunRequest.flow("design-checks", "leaf-topology", "alternate")
+    )
+
+    assert planned.profile == "alternate"
+    assert set(reads.values()) == {1}
 
 
 def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) -> None:

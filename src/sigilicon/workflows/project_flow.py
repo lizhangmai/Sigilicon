@@ -22,7 +22,6 @@ from sigilicon.flow import (
     ExecutionEnvironment,
     DesignCatalogExpansion,
     FlowCatalog,
-    FlowCatalogEntry,
     FlowEngine,
     FlowPlan,
     FlowProgress,
@@ -575,19 +574,29 @@ class ProjectFlow:
         spec = self._compiled_spec(selection.spec, inventory)
         return self._summary(spec, selection.profile.profile_id)
 
-    def _catalog_descriptions(
+    def catalog_descriptions(
         self,
-        inventory: tuple[OwnerCatalogSnapshot, ...],
-    ) -> tuple[tuple[FlowCatalogEntry, dict[str, object]], ...]:
+        *,
+        inventory: tuple[OwnerCatalogSnapshot, ...] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Describe every Flow from one optional caller-owned source snapshot."""
+
+        inventory = (
+            self.project.owner_flow_catalog_inventory(self.owner)
+            if inventory is None
+            else inventory
+        )
         catalog = self._catalog(inventory)
         return tuple(
-            (
-                entry,
-                self._summary(
+            {
+                "name": entry.flow_id,
+                "default_profile": entry.default_profile,
+                "profiles": tuple(sorted(entry.profiles)),
+                "summary": self._summary(
                     self._compiled_spec(selection.spec, inventory),
                     selection.profile.profile_id,
                 ),
-            )
+            }
             for entry in catalog.entries
             for selection in (
                 resolve_catalog_selection(catalog, flow_id=entry.flow_id),
@@ -658,7 +667,11 @@ class ProjectFlow:
                 )
             if request.profile not in {None, selection.profile.profile_id}:
                 raise ValueError("expanded design route profile drift")
-            return self._plan_design(matches[0])
+            return self._plan_design(
+                matches[0],
+                catalog=catalog,
+                profile=selection.profile.profile_id,
+            )
         if isinstance(selection.spec.catalog_expansion, LayoutCatalogExpansion):
             from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
@@ -679,19 +692,33 @@ class ProjectFlow:
                 )
             if request.profile not in {None, selection.profile.profile_id}:
                 raise ValueError("expanded layout route profile drift")
-            return self._plan_layout(matches[0])
+            return self._plan_layout(
+                matches[0],
+                catalog=catalog,
+                profile=selection.profile.profile_id,
+            )
         engine = self._engine(catalog_inventory)
         return self._bind(
             engine,
             engine.plan(selection.spec, request.target, selection.profile),
         )
 
-    def _plan_design(self, request: DesignRunSelection) -> ProjectFlowPlan:
-        inventory = self.project.owner_flow_catalog_inventory(self.owner)
-        selected_catalog = load_design_target_catalog(
-            self.project,
-            catalog_inventory=inventory,
-        ).for_owner(self.owner.name)
+    def _plan_design(
+        self,
+        request: DesignRunSelection,
+        *,
+        catalog: DesignTargetCatalog | None = None,
+        profile: str | None = None,
+    ) -> ProjectFlowPlan:
+        selected_catalog = catalog
+        if selected_catalog is None:
+            inventory = self.project.owner_flow_catalog_inventory(self.owner)
+            selected_catalog = load_design_target_catalog(
+                self.project,
+                catalog_inventory=inventory,
+            ).for_owner(self.owner.name)
+        elif selected_catalog.project is not self.project:
+            raise ValueError("design catalog does not belong to this exact Project")
         selected_target = selected_catalog.get(request.target)
         selected_mode = selected_target.get_mode(request.mode)
         engine = self._engine(
@@ -702,7 +729,7 @@ class ProjectFlow:
         selection = resolve_catalog_selection(
             self._catalog(selected_catalog.inventory),
             flow_id=selected_mode.flow,
-            profile_id=None,
+            profile_id=profile,
         )
         spec = (
             compile_design_catalog_flow(selection.spec, selected_catalog)
@@ -717,14 +744,24 @@ class ProjectFlow:
             engine.plan(spec, selected_mode.target, selection.profile),
         )
 
-    def _plan_layout(self, request: LayoutRunSelection) -> ProjectFlowPlan:
+    def _plan_layout(
+        self,
+        request: LayoutRunSelection,
+        *,
+        catalog: LayoutTargetCatalog | None = None,
+        profile: str | None = None,
+    ) -> ProjectFlowPlan:
         from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
-        inventory = self.project.owner_flow_catalog_inventory(self.owner)
-        selected_catalog = load_layout_target_catalog(
-            self.project,
-            catalog_inventory=inventory,
-        ).for_owner(self.owner.name)
+        selected_catalog = catalog
+        if selected_catalog is None:
+            inventory = self.project.owner_flow_catalog_inventory(self.owner)
+            selected_catalog = load_layout_target_catalog(
+                self.project,
+                catalog_inventory=inventory,
+            ).for_owner(self.owner.name)
+        elif selected_catalog.project is not self.project:
+            raise ValueError("layout catalog does not belong to this exact Project")
         selected_target = selected_catalog.get(request.target)
         route = selected_target.get_route(request.operation)
         planning = plan_layout_spec(selected_target.spec, project=self.project)
@@ -749,7 +786,7 @@ class ProjectFlow:
         selection = resolve_catalog_selection(
             self._catalog(selected_catalog.inventory),
             flow_id=route.flow,
-            profile_id=None,
+            profile_id=profile,
         )
         spec = (
             compile_layout_catalog_flow(selection.spec, selected_catalog)
