@@ -1092,6 +1092,7 @@ class ActionContext:
     capabilities: Mapping[str, ResolvedCapability]
     platform_assets: Mapping[str, ResolvedPlatformAsset]
     source_assets: SourceAssets | None = None
+    evidence: EvidenceEnvelope | None = None
     extensions: Mapping[str, Any] = field(default_factory=dict)
     project_scope: ProjectScope | None = None
     operation_id: str | None = None
@@ -1117,6 +1118,15 @@ class ActionContext:
                 f"Action {self.node_id!r} workspace operation identity drift"
             )
         self._bind_workspace_operation(operation)
+
+    def require_evidence(self) -> EvidenceEnvelope:
+        """Return the plan-validated cross-domain evidence classification."""
+
+        if self.evidence is None:
+            raise FlowExecutionError(
+                f"Action {self.node_id!r} requires an evidence envelope"
+            )
+        return self.evidence
 
     def require_project_scope(self) -> ProjectScope:
         if self.project_scope is None:

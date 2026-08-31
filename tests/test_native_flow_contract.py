@@ -13,6 +13,7 @@ from sigilicon.flow import (
     AdapterSelection,
     ArtifactBinding,
     ExecutionProfile,
+    EvidenceEnvelope,
     FlowEngine,
     FlowExecutionError,
     FlowNode,
@@ -87,6 +88,7 @@ def _context(
         adapter_config=MappingProxyType({"timeout_seconds": 17}),
         capabilities=MappingProxyType(capabilities or {}),
         platform_assets=MappingProxyType({}),
+        evidence=EvidenceEnvelope.from_action_config(action_config),
         project_scope=project.scope("native-owner"),
         operation_id=operation_id,
         _bind_workspace_operation=(

@@ -233,10 +233,11 @@ class ProjectLayoutTargetAdapter:
                 context, "calibre_timeout_seconds"
             ),
         )
+        envelope = context.require_evidence()
         metadata = {
-            "evidence_role": self._text(context, "evidence_role"),
-            "evidence_level": self._text(context, "evidence_level"),
-            "evidence_scope": self._text(context, "evidence_scope"),
+            "evidence_role": envelope.role,
+            "evidence_level": envelope.level,
+            "evidence_scope": envelope.scope,
         }
         payload = {
             "target": self._target.name,

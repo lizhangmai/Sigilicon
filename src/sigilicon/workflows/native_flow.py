@@ -33,12 +33,6 @@ from sigilicon.workflows.xcelium_ams import (
 )
 
 
-_EVIDENCE_ROLES = frozenset(
-    {"diagnostic", "regression", "qualification", "signoff"}
-)
-_EVIDENCE_LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
-
-
 def _require_bound_project(
     context: ActionContext,
     project: Project,
@@ -75,17 +69,11 @@ def _text_config(context: ActionContext, name: str) -> str:
 
 
 def _evidence_metadata(context: ActionContext) -> dict[str, str]:
-    role = _text_config(context, "evidence_role")
-    level = _text_config(context, "evidence_level")
-    scope = _text_config(context, "evidence_scope")
-    if role not in _EVIDENCE_ROLES:
-        raise FlowExecutionError(f"unsupported evidence role: {role!r}")
-    if level not in _EVIDENCE_LEVELS:
-        raise FlowExecutionError(f"unsupported evidence level: {level!r}")
+    evidence = context.require_evidence()
     return {
-        "evidence_role": role,
-        "evidence_level": level,
-        "evidence_scope": scope,
+        "evidence_role": evidence.role,
+        "evidence_level": evidence.level,
+        "evidence_scope": evidence.scope,
     }
 
 

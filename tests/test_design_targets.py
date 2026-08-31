@@ -234,6 +234,34 @@ def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) ->
     ]
 
 
+def test_project_design_action_consumes_the_plan_validated_evidence_envelope(
+    tmp_path: Path,
+) -> None:
+    _catalog_project(tmp_path)
+    catalog = tmp_path / "ip/example/configs/flows/design_targets.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            'topology = { action = "circuit-design.source-check", '
+            'evidence_level = "l0" }',
+            'topology = { action = "circuit-design.source-check", '
+            'evidence_role = "qualification", evidence_level = "l0" }',
+        ),
+        encoding="utf-8",
+    )
+    project = Project.from_project_root(tmp_path)
+    workflow = ProjectFlow(project, "example")
+    planned = workflow.plan(RunRequest.design("leaf", "topology"))
+
+    result = workflow.run(
+        planned,
+        ExecutionEnvironment(),
+        run_id="design-evidence-envelope-fixture",
+    )
+
+    assert planned.record["nodes"][0]["evidence"]["role"] == "qualification"
+    assert result.nodes["leaf-topology"].facts["evidence-role"] == "qualification"
+
+
 def test_project_design_action_rejects_exact_route_source_drift(tmp_path: Path) -> None:
     runner, _spec = _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)

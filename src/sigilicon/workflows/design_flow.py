@@ -42,10 +42,6 @@ from sigilicon.workflows.source_control import (
 )
 
 
-_EVIDENCE_ROLES = frozenset({"diagnostic", "regression"})
-_EVIDENCE_LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
-
-
 class ProjectDesignTargetAdapter:
     """Run one owner-declared command inside its current Flow Action."""
 
@@ -84,13 +80,10 @@ class ProjectDesignTargetAdapter:
             )
         target_name = self._text(context, "target")
         mode_name = self._text(context, "mode")
-        evidence_role = self._text(context, "evidence_role")
-        evidence_level = self._text(context, "evidence_level")
-        evidence_scope = self._text(context, "evidence_scope")
-        if evidence_role not in _EVIDENCE_ROLES:
-            raise FlowExecutionError("design Action evidence_role is not supported")
-        if evidence_level not in _EVIDENCE_LEVELS:
-            raise FlowExecutionError("design Action evidence_level is not supported")
+        evidence = context.require_evidence()
+        evidence_role = evidence.role
+        evidence_level = evidence.level
+        evidence_scope = evidence.scope
         try:
             target = self._catalog.get(target_name)
             mode = target.get_mode(mode_name)

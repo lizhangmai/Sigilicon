@@ -828,6 +828,7 @@ class FlowEngine:
                     self._resolved_platform_assets(planned, current_environment)
                 ),
                 source_assets=planned.source_assets,
+                evidence=planned.evidence,
                 extensions=node.extensions,
                 project_scope=self._project_scope,
                 operation_id=operation_record.operation_id,

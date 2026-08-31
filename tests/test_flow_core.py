@@ -45,6 +45,7 @@ from conftest import (
 class SourceAdapter(StagedAdapterFixture):
     def __init__(self) -> None:
         self.executions = 0
+        self.last_evidence: EvidenceEnvelope | None = None
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return ()
@@ -54,6 +55,7 @@ class SourceAdapter(StagedAdapterFixture):
 
     def execute(self, context: ActionContext) -> AdapterExecution:
         self.executions += 1
+        self.last_evidence = context.evidence
         output = context.output_path("source", "value.txt")
         output.write_text(str(context.action_config["text"]), encoding="utf-8")
         if context.action_config.get("internal_symlink"):
@@ -348,8 +350,8 @@ def test_plan_rejects_an_unavailable_action_in_the_selected_target_closure() -> 
         FlowEngine(registered).plan(spec, "all", fake_profile())
 
 
-def test_plan_compiles_typed_config_and_evidence_envelope() -> None:
-    registered, *_ = registry()
+def test_plan_compiles_typed_config_and_evidence_envelope(tmp_path: Path) -> None:
+    registered, source_adapter, *_ = registry()
     spec = flow_spec()
     source = spec.node("source")
     typed_spec = FlowSpec(
@@ -393,6 +395,14 @@ def test_plan_compiles_typed_config_and_evidence_envelope() -> None:
         "level": "l1",
         "scope": "source-contract",
     }
+
+    FlowEngine(registered).run(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        run_id="evidence-context",
+    )
+
+    assert source_adapter.last_evidence is planned.evidence
 
 
 @pytest.mark.parametrize(
