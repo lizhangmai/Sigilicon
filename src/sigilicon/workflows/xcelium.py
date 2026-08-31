@@ -65,8 +65,8 @@ class XceliumCellPlan:
 
 
 @dataclass(frozen=True)
-class XceliumCellExecution:
-    """Tool result written into an execution lifecycle owned by the caller."""
+class XceliumExecution:
+    """Common Xcelium result for digital or AMS verification."""
 
     plan: XceliumCellPlan
     run_summary: Path
@@ -83,7 +83,9 @@ class XceliumCellExecution:
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
 
 
-def _resolve_contract(path: Path, *, project: Project) -> Path:
+def resolve_xcelium_contract(path: Path, *, project: Project) -> Path:
+    """Resolve one verification cell inside an explicit Project owner."""
+
     root = project.project_root
     contract = path.resolve() if path.is_absolute() else (root / path).resolve()
     if not contract.is_relative_to(root) or not contract.is_file():
@@ -127,7 +129,7 @@ def plan_xcelium_cell(
     """Resolve a cell without finding or launching an external simulator."""
 
     repository = project
-    contract = _resolve_contract(contract_path, project=repository)
+    contract = resolve_xcelium_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() != "xcelium":
         raise ValueError(
@@ -191,7 +193,7 @@ def execute_xcelium_cell(
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
     timeout: int = 600,
-) -> XceliumCellExecution:
+) -> XceliumExecution:
     """Execute a resolved cell without creating or completing a run record."""
 
     xrun_bin = find_xrun(xrun)
@@ -288,7 +290,7 @@ def execute_xcelium_cell(
     summary_path = artifacts.write_json(
         "outputs", ("summary.json",), summary
     )
-    return XceliumCellExecution(
+    return XceliumExecution(
         plan=plan,
         run_summary=summary_path,
         returncode=completed.returncode,

@@ -93,7 +93,7 @@ def _planned_product_conclusion(context: ActionContext) -> bool:
 def _relative_spec(
     config: Mapping[str, Any],
     project: Project,
-    owner: str | RepositoryOwner,
+    owner: RepositoryOwner,
 ) -> tuple[str, Path]:
     """Resolve the one project-relative cell spec owned by *owner*."""
 
@@ -160,9 +160,9 @@ def _validate_layout_config(config: Mapping[str, Any]) -> tuple[str, str, str]:
 
 def plan_layout_action(
     project: Project,
-    owner: str | RepositoryOwner,
+    owner: RepositoryOwner,
     config: Mapping[str, Any],
-) -> "LayoutActionPlan":
+) -> ActionPlan:
     """Plan one custom-layout node directly from its typed node config.
 
     The caller supplies the owner target/recipe node configuration.  No target
@@ -173,37 +173,40 @@ def plan_layout_action(
 
     if not isinstance(project, Project):
         raise ValueError("layout Action planning requires an explicit Project")
-    selected_owner = project.owner(owner) if isinstance(owner, str) else owner
-    if selected_owner not in project.owners:
+    if owner not in project.owners:
         raise ValueError(
-            f"repository does not contain owner {selected_owner.name!r}"
+            f"repository does not contain owner {owner.name!r}"
         )
     target, operation, _ = _validate_layout_config(config)
-    spec_relative, spec_path = _relative_spec(config, project, selected_owner)
+    spec_relative, spec_path = _relative_spec(config, project, owner)
     planning = plan_layout_spec(spec_path, project=project)
     if planning.spec.path != spec_path or planning.spec.project is not project:
         raise ValueError(
             "layout planning result does not belong to this Project/spec"
         )
     source_members = _layout_source_members(project, planning)
-    return LayoutActionPlan(
+    invocation = LayoutInvocation(
         target=target,
         operation=operation,
         spec=spec_relative,
         planning=planning,
-        source_members=source_members,
+    )
+    return ActionPlan(
+        LAYOUT_ACTION_PLAN,
+        invocation,
+        invocation.as_dict(),
+        source_members,
     )
 
 
 @dataclass(frozen=True)
-class LayoutActionPlan:
-    """One direct layout node paired with its exact typed plan and closure."""
+class LayoutInvocation:
+    """Layout-specific payload inside the common source-bound ActionPlan."""
 
     target: str
     operation: str
     spec: str
     planning: LayoutPlanningResult
-    source_members: tuple[SourceMember, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, str) or not self.target:
@@ -236,20 +239,6 @@ class LayoutActionPlan:
         )
         if expected_path != self.planning.spec.path:
             raise ValueError("layout Action spec disagrees with its planning result")
-        try:
-            members = tuple(self.source_members)
-        except TypeError as exc:
-            raise ValueError(
-                "layout Action plan must contain SourceMember closure"
-            ) from exc
-        if not members or any(
-            not isinstance(member, SourceMember) for member in members
-        ):
-            raise ValueError(
-                "layout Action plan must contain SourceMember closure"
-            )
-        if any(not member.location.is_file() for member in members):
-            raise ValueError("layout Action source closure contains a non-file")
         records = self.planning.source_records
         if not isinstance(records, Mapping) or not records:
             raise ValueError(
@@ -266,20 +255,6 @@ class LayoutActionPlan:
                     "layout Action source records contain duplicate path drift"
                 )
             expected_records[resolved] = record
-        identities = [
-            (member.scope, member.source_root, member.path) for member in members
-        ]
-        if len(identities) != len(set(identities)):
-            raise ValueError("layout Action source closure contains duplicates")
-        locations = [member.location for member in members]
-        if len(locations) != len(set(locations)):
-            raise ValueError("layout Action source closure contains duplicate paths")
-        actual_records = {member.location: member.record_text for member in members}
-        if actual_records != expected_records:
-            raise ValueError(
-                "layout Action source closure disagrees with retained records"
-            )
-        object.__setattr__(self, "source_members", members)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -303,7 +278,7 @@ class LayoutActionAdapter:
     def run(self, context: ActionContext) -> AdapterResult:
         selected = context.require_action_plan(
             LAYOUT_ACTION_PLAN,
-            LayoutActionPlan,
+            LayoutInvocation,
         )
         assert context.action_plan is not None
         if json_value(context.action_plan.record) != selected.as_dict():
@@ -355,7 +330,7 @@ class LayoutActionAdapter:
     def _validate_action_config(
         cls,
         context: ActionContext,
-        selected: LayoutActionPlan,
+        selected: LayoutInvocation,
     ) -> None:
         config = context.action_config
         expected_fields = (
@@ -391,22 +366,19 @@ class LayoutActionAdapter:
     @staticmethod
     def _validate_source_closure(
         context: ActionContext,
-        selected: LayoutActionPlan,
+        selected: LayoutInvocation,
     ) -> None:
         if context.action_plan is None:
             raise FlowExecutionError("layout Action is missing its typed plan")
         expected = {
-            (member.scope, member.source_root, member.path): member.record_text
-            for member in selected.source_members
+            Path(path).resolve(): record
+            for path, record in selected.planning.source_records.items()
         }
         provided = {
-            (member.scope, member.source_root, member.path): member.record_text
+            member.location: member.record_text
             for member in context.action_plan.sources
         }
-        if any(
-            provided.get(identity) != record
-            for identity, record in expected.items()
-        ):
+        if provided != expected:
             raise FlowExecutionError("typed layout Action Plan source closure drift")
         try:
             if not all(
@@ -426,7 +398,7 @@ class LayoutActionAdapter:
     def _generate(
         self,
         context: ActionContext,
-        selected: LayoutActionPlan,
+        selected: LayoutInvocation,
         artifacts: FlowRunArtifacts,
     ) -> AdapterResult:
         if set(context.action_config) != _LAYOUT_CONFIG_FIELDS:
@@ -476,7 +448,7 @@ class LayoutActionAdapter:
     def _verify(
         self,
         context: ActionContext,
-        selected: LayoutActionPlan,
+        selected: LayoutInvocation,
         artifacts: FlowRunArtifacts,
     ) -> AdapterResult:
         del context, selected, artifacts
@@ -518,13 +490,7 @@ def install_layout_flow(
     )
 
     def planner(node: FlowNode) -> ActionPlan:
-        planned = plan_layout_action(project, owner, node.config)
-        return ActionPlan(
-            LAYOUT_ACTION_PLAN,
-            planned,
-            planned.as_dict(),
-            planned.source_members,
-        )
+        return plan_layout_action(project, owner, node.config)
 
     registry.register_action_planner(LAYOUT_GENERATION_ACTION, planner)
     registry.register_action_planner(LAYOUT_VERIFICATION_ACTION, planner)
@@ -532,7 +498,7 @@ def install_layout_flow(
 
 __all__ = [
     "LayoutActionAdapter",
-    "LayoutActionPlan",
+    "LayoutInvocation",
     "install_layout_flow",
     "plan_layout_action",
 ]

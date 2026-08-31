@@ -23,7 +23,12 @@ from sigilicon.external_tools import (
 )
 from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.ip_integration import check_ip_integration
-from sigilicon.workflows.xcelium import snapshot_verification_sources
+from sigilicon.workflows.xcelium import (
+    XceliumCellPlan,
+    XceliumExecution,
+    resolve_xcelium_contract,
+    snapshot_verification_sources,
+)
 
 
 _AMS_HDL_SUFFIXES = frozenset({".sv", ".v", ".vams", ".va"})
@@ -42,12 +47,9 @@ def _spectre_path(path: Path) -> str:
 
 
 @dataclass(frozen=True)
-class XceliumAmsCellPlan:
+class XceliumAmsCellPlan(XceliumCellPlan):
     """Resolved HDL, release, platform, and native-cell identity for one run."""
 
-    contract: Path
-    spec: VerificationCellSpec
-    sources: tuple[Path, ...]
     circuit_netlist: Path
     circuit_sha256: str
     native_cell: str
@@ -55,8 +57,6 @@ class XceliumAmsCellPlan:
     model_set: SimulationModelSet
     model_sha256: Mapping[Path, str]
     integration_check: Mapping[str, Any]
-    command_template: tuple[str, ...]
-    source_records: Mapping[Path, str]
 
     def render_ams_control(
         self,
@@ -115,34 +115,6 @@ class XceliumAmsCellPlan:
             "evidence_role": "migration_regression",
             "product_qualification_conclusion": False,
         }
-
-
-@dataclass(frozen=True)
-class XceliumAmsCellExecution:
-    """AMS result written into an execution lifecycle owned by the caller."""
-
-    plan: XceliumAmsCellPlan
-    run_summary: Path
-    returncode: int
-    passed: bool
-    stdout: str
-    stderr: str
-    native_log: str
-
-    @property
-    def evidence_output(self) -> str:
-        return "\n".join(output for output in (self.stdout, self.native_log) if output)
-
-
-def _resolve_contract(path: Path, *, project: Project) -> Path:
-    root = project.project_root
-    contract = path.resolve() if path.is_absolute() else (root / path).resolve()
-    if not contract.is_relative_to(root) or not contract.is_file():
-        raise ValueError(
-            f"Xcelium AMS verification cell contract is not project-owned: {path}"
-        )
-    project.require_owner(contract)
-    return contract
 
 
 def _native_dependency_cell(
@@ -214,7 +186,7 @@ def plan_xcelium_ams_cell(
     """Resolve one AMS cell without finding or launching an external simulator."""
 
     repository = project
-    contract = _resolve_contract(contract_path, project=repository)
+    contract = resolve_xcelium_contract(contract_path, project=repository)
     spec = load_verification_cell(contract, project=repository)
     if spec.simulator.lower() != "xcelium-ams" or spec.ams is None:
         raise ValueError(
@@ -296,7 +268,7 @@ def execute_xcelium_ams_cell(
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
     timeout: int = 600,
-) -> XceliumAmsCellExecution:
+) -> XceliumExecution:
     """Execute a resolved AMS cell without creating or completing a run record."""
 
     xrun_bin = find_xrun(xrun)
@@ -428,7 +400,7 @@ def execute_xcelium_ams_cell(
     summary_path = artifacts.write_json(
         "outputs", ("summary.json",), summary
     )
-    return XceliumAmsCellExecution(
+    return XceliumExecution(
         plan=plan,
         run_summary=summary_path,
         returncode=completed.returncode,

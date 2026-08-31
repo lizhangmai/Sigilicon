@@ -28,7 +28,7 @@ from sigilicon.paths import validate_artifact_component
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _CATALOG_FIELDS = _HEADER_FIELDS | {"targets"}
-_TARGET_FIELDS = frozenset({"description", "recipe", "inputs", "operations"})
+_TARGET_FIELDS = frozenset({"description", "inputs", "operations"})
 _OPERATION_FIELDS = frozenset({"recipe", "goals"})
 
 
@@ -67,7 +67,7 @@ def _goals(value: object, field: str) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class TargetOperation:
+class OwnerOperation:
     """One named operation exposed by an owner target."""
 
     name: str
@@ -94,13 +94,12 @@ class TargetOperation:
 
 
 @dataclass(frozen=True)
-class ProjectTarget:
+class OwnerTarget:
     """One owner-local target and its explicitly declared operations."""
 
     name: str
     description: str
-    operations: Mapping[str, TargetOperation]
-    recipe: PurePosixPath | None = None
+    operations: Mapping[str, OwnerOperation]
     inputs: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -109,24 +108,17 @@ class ProjectTarget:
         if not isinstance(self.operations, Mapping) or not self.operations:
             raise ValueError("target operations must be a non-empty mapping")
         if any(
-            not isinstance(operation, TargetOperation)
+            not isinstance(operation, OwnerOperation)
             or not isinstance(name, str)
             or operation.name != name
             for name, operation in self.operations.items()
         ):
-            raise ValueError("target operations must be named TargetOperation values")
+            raise ValueError("target operations must be named OwnerOperation values")
         object.__setattr__(
             self,
             "operations",
             MappingProxyType(dict(self.operations)),
         )
-        if self.recipe is not None and (
-            not isinstance(self.recipe, PurePosixPath)
-            or self.recipe.is_absolute()
-            or self.recipe.as_posix() != str(self.recipe)
-            or any(part in {"", ".", ".."} for part in self.recipe.parts)
-        ):
-            raise ValueError("target recipe must be a canonical relative path")
         if not isinstance(self.inputs, Mapping):
             raise ValueError("target inputs must be a mapping")
         object.__setattr__(
@@ -137,7 +129,7 @@ class ProjectTarget:
         if not is_frozen_toml_document(self.inputs):
             raise ValueError("target inputs must be recursively frozen")
 
-    def operation(self, name: str) -> TargetOperation:
+    def operation(self, name: str) -> OwnerOperation:
         """Return one operation or explain the available operations."""
 
         operation_name = _name(name, "target operation name")
@@ -157,7 +149,7 @@ class OwnerTargetCatalog:
 
     path: Path
     owner: str
-    targets: Mapping[str, ProjectTarget]
+    targets: Mapping[str, OwnerTarget]
     document: Mapping[str, Any] = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -167,17 +159,17 @@ class OwnerTargetCatalog:
         if not isinstance(self.targets, Mapping):
             raise ValueError("target catalog targets must be a mapping")
         if any(
-            not isinstance(target, ProjectTarget)
+            not isinstance(target, OwnerTarget)
             or not isinstance(name, str)
             or target.name != name
             for name, target in self.targets.items()
         ):
-            raise ValueError("target catalog targets must be named ProjectTarget values")
+            raise ValueError("target catalog targets must be named OwnerTarget values")
         object.__setattr__(self, "targets", MappingProxyType(dict(self.targets)))
         if not is_frozen_toml_document(self.document):
             raise ValueError("owner target catalog document must be frozen")
 
-    def get(self, name: str) -> ProjectTarget:
+    def get(self, name: str) -> OwnerTarget:
         """Return one target or explain the available target identities."""
 
         target_name = _name(name, "target name")
@@ -351,7 +343,7 @@ def parse_owner_target_catalog(
     targets_raw = _table(raw.get("targets"), "target catalog targets")
     flow_files: tuple[Path, ...] | None = None
     recipe_documents: dict[Path, Mapping[str, Any]] = {}
-    targets: dict[str, ProjectTarget] = {}
+    targets: dict[str, OwnerTarget] = {}
     for target_name_raw, target_value in targets_raw.items():
         target_name = _name(target_name_raw, "target name")
         if target_name in targets:
@@ -364,23 +356,11 @@ def parse_owner_target_catalog(
                 f"{field_name} contains unknown fields: {sorted(unknown)}"
             )
         description = _string(target.get("description"), f"{field_name}.description")
-        target_recipe: PurePosixPath | None = None
-        if "recipe" in target:
-            if flow_files is None:
-                flow_files = _flow_files(project, selected)
-            target_recipe = _recipe(
-                project,
-                selected,
-                target.get("recipe"),
-                f"{field_name}.recipe",
-                flow_files,
-                recipe_documents,
-            )
         target_inputs = _inputs(target.get("inputs"), f"{field_name}.inputs")
         operations_raw = _table(target.get("operations"), f"{field_name}.operations")
         if not operations_raw:
             raise ValueError(f"{field_name}.operations must not be empty")
-        operations: dict[str, TargetOperation] = {}
+        operations: dict[str, OwnerOperation] = {}
         for operation_name_raw, operation_value in operations_raw.items():
             operation_name = _name(
                 operation_name_raw,
@@ -399,32 +379,27 @@ def parse_owner_target_catalog(
                 )
             if flow_files is None:
                 flow_files = _flow_files(project, selected)
-            operation_recipe = operation.get("recipe", target_recipe)
-            if operation_recipe is None:
+            if "recipe" not in operation:
                 raise ValueError(
-                    f"{operation_field}.recipe is required when the target has no default recipe"
+                    f"{operation_field}.recipe is required"
                 )
-            if "recipe" not in operation and target_recipe is not None:
-                resolved_recipe = target_recipe
-            else:
-                resolved_recipe = _recipe(
-                    project,
-                    selected,
-                    operation_recipe,
-                    f"{operation_field}.recipe",
-                    flow_files,
-                    recipe_documents,
-                )
-            operations[operation_name] = TargetOperation(
+            resolved_recipe = _recipe(
+                project,
+                selected,
+                operation["recipe"],
+                f"{operation_field}.recipe",
+                flow_files,
+                recipe_documents,
+            )
+            operations[operation_name] = OwnerOperation(
                 name=operation_name,
                 recipe=resolved_recipe,
                 goals=_goals(operation.get("goals"), f"{operation_field}.goals"),
             )
-        targets[target_name] = ProjectTarget(
+        targets[target_name] = OwnerTarget(
             name=target_name,
             description=description,
             operations=MappingProxyType(dict(operations)),
-            recipe=target_recipe,
             inputs=target_inputs,
         )
     return OwnerTargetCatalog(
@@ -456,8 +431,8 @@ def load_owner_target_catalog(
 
 __all__ = [
     "OwnerTargetCatalog",
-    "ProjectTarget",
-    "TargetOperation",
+    "OwnerTarget",
+    "OwnerOperation",
     "load_owner_target_catalog",
     "parse_owner_target_catalog",
 ]

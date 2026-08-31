@@ -467,7 +467,7 @@ def _cell_contract(
 
 def _xcelium_sources(
     project: Project,
-    plan: XceliumCellPlan | XceliumAmsCellPlan,
+    plan: XceliumCellPlan,
 ) -> tuple[SourceMember, ...]:
     records = {
         Path(path).resolve(): record

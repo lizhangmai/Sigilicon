@@ -6,40 +6,29 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
-from pathlib import PurePosixPath
 import stat
 import sys
-import tomllib
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.repository import Project, RepositoryOwner
-from sigilicon.domain.targets import (
-    OwnerTargetCatalog,
-    ProjectTarget,
-    TargetOperation,
-    load_owner_target_catalog,
-)
 from sigilicon.flow import (
     ExecutionEnvironment,
     FlowEngine,
     FlowPlan,
     FlowProgress,
     FlowResult,
-    FlowSpec,
-    FlowTarget,
     PreflightResult,
-    compile_flow_spec,
-    parse_execution_recipe,
 )
 from sigilicon.flow.model import SourceMember
 from sigilicon.flow.registry import FlowRegistry
-from sigilicon.flow.source_assets import snapshot_source_member, source_member_matches
+from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.design_flow import install_design_flow
 from sigilicon.workflows.layout_flow import install_layout_flow
 from sigilicon.workflows.native_flow import install_native_flow
+from sigilicon.workflows.owner_workflow import OwnerWorkflow
 
 if TYPE_CHECKING:
     from sigilicon.virtuoso.client import VirtuosoClient
@@ -253,13 +242,6 @@ class ProjectExecution:
         )
 
 @dataclass(frozen=True)
-class _TargetSelection:
-    target: ProjectTarget
-    operation: TargetOperation
-    spec: FlowSpec
-
-
-@dataclass(frozen=True)
 class ProjectRunner:
     """Plan every project domain through one owner target interface."""
 
@@ -284,30 +266,13 @@ class ProjectRunner:
     def targets(self) -> tuple[dict[str, object], ...]:
         """Return the owner's canonical target inventory."""
 
-        source = self.project.owner_target_catalog(self.owner)
-        targets = load_owner_target_catalog(
-            self.project,
-            self.owner,
-            catalog_snapshot=source,
-        )
-        self._require_current(
-            (
-                snapshot_source_member(
-                    source.path,
-                    source_root=self.project.project_root,
-                    scope="project",
-                    record_text=source.record_text,
-                    source_label="owner targets",
-                ),
-            )
-        )
         return tuple(
             {
                 "name": target.name,
                 "description": target.description,
                 "operations": tuple(target.operations),
             }
-            for target in targets.targets.values()
+            for target in self._workflow().targets()
         )
 
     def describe(
@@ -318,19 +283,13 @@ class ProjectRunner:
         """Describe one target or one fully compiled target operation."""
 
         if operation is None:
-            source = self.project.owner_target_catalog(self.owner)
-            targets = load_owner_target_catalog(
-                self.project,
-                self.owner,
-                catalog_snapshot=source,
-            )
-            selected = targets.get(target)
+            selected = self._workflow().target(target)
             return {
                 "name": selected.name,
                 "description": selected.description,
                 "operations": tuple(selected.operations),
             }
-        selection = self._select(target, operation)
+        selection = self._workflow().compile(target, operation)
         return {
             "schema": 1,
             "contract_kind": "target-operation-summary",
@@ -345,7 +304,7 @@ class ProjectRunner:
     def plan(self, target: str, operation: str) -> ProjectExecution:
         """Compile exactly one owner target operation."""
 
-        selection = self._select(target, operation)
+        selection = self._workflow().compile(target, operation)
         engine = self._engine()
         plan = engine.plan(
             selection.spec,
@@ -353,111 +312,8 @@ class ProjectRunner:
         )
         return ProjectExecution._bind(engine, plan, self.project)
 
-    def _select(self, target: str, operation: str) -> _TargetSelection:
-        source = self.project.owner_target_catalog(self.owner)
-        targets: OwnerTargetCatalog = load_owner_target_catalog(
-            self.project,
-            self.owner,
-            catalog_snapshot=source,
-        )
-        selected_target = targets.get(target)
-        selected_operation = selected_target.operation(operation)
-        recipe_path = self.owner.root.joinpath(*selected_operation.recipe.parts)
-        try:
-            recipe_record = read_nofollow_text(recipe_path)
-            raw = tomllib.loads(recipe_record)
-        except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-            raise ValueError(
-                f"cannot read execution recipe {recipe_path}: {exc}"
-            ) from exc
-        recipe = parse_execution_recipe(
-            raw,
-            recipe_path,
-            owner_root=self.owner.root,
-        )
-        if recipe.owner != self.owner.name:
-            raise ValueError("execution recipe owner disagrees with target owner")
-        sources = (
-            snapshot_source_member(
-                source.path,
-                source_root=self.project.project_root,
-                scope="project",
-                record_text=source.record_text,
-                source_label="owner targets",
-            ),
-            snapshot_source_member(
-                recipe_path,
-                source_root=self.project.project_root,
-                scope="project",
-                record_text=recipe_record,
-                source_label="execution recipe",
-            ),
-        )
-        input_sources = list(sources)
-        for name, declaration in recipe.inputs.items():
-            if declaration.kind != "owner-path":
-                continue
-            value = selected_target.inputs.get(name)
-            if not isinstance(value, str):
-                continue
-            relative = PurePosixPath(value)
-            if (
-                relative.is_absolute()
-                or "\\" in value
-                or relative.as_posix() != value
-                or any(part in {"", ".", ".."} for part in relative.parts)
-            ):
-                continue
-            configured = self.owner.root.joinpath(*relative.parts)
-            resolved = configured.resolve(strict=False)
-            if configured != resolved or not resolved.is_relative_to(self.owner.root):
-                continue
-            if resolved.is_file():
-                member = snapshot_source_member(
-                    resolved,
-                    source_root=self.project.project_root,
-                    scope="project",
-                    source_label=f"execution input {name}",
-                )
-                if not any(
-                    (
-                        existing.scope,
-                        existing.source_root,
-                        existing.path,
-                    )
-                    == (member.scope, member.source_root, member.path)
-                    for existing in input_sources
-                ):
-                    input_sources.append(member)
-        sources = tuple(input_sources)
-        self._require_current(sources)
-        spec = compile_flow_spec(
-            recipe,
-            flow_id=selected_target.name,
-            targets=(
-                FlowTarget(
-                    selected_operation.name,
-                    selected_operation.goals,
-                ),
-            ),
-            inputs=selected_target.inputs,
-            source_members=sources,
-        )
-        self._require_current(sources)
-        return _TargetSelection(
-            selected_target,
-            selected_operation,
-            spec,
-        )
-
-    @staticmethod
-    def _require_current(sources: tuple[SourceMember, ...]) -> None:
-        try:
-            current = all(source_member_matches(source) for source in sources)
-        except (OSError, RuntimeError, UnicodeError):
-            current = False
-        if not current:
-            raise ValueError("target selection source changed during planning")
+    def _workflow(self) -> OwnerWorkflow:
+        return OwnerWorkflow(self.project, self.owner)
 
     def _engine(self) -> FlowEngine:
         return FlowEngine(

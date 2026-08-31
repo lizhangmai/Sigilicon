@@ -67,7 +67,7 @@ def _planned_action(
     monkeypatch: pytest.MonkeyPatch,
     *,
     config: dict[str, str],
-) -> tuple[Project, Path, layout_flow.LayoutActionPlan]:
+) -> tuple[Project, Path, ActionPlan, layout_flow.LayoutInvocation]:
     project, spec = _project_with_layout_spec(tmp_path)
     planning = _retained_planning(project, spec)
     calls: list[tuple[Path, Project]] = []
@@ -77,16 +77,20 @@ def _planned_action(
         return planning
 
     monkeypatch.setattr(layout_flow, "plan_layout_spec", fake_plan)
-    action = layout_flow.plan_layout_action(project, "example", config)
+    action = layout_flow.plan_layout_action(
+        project,
+        project.owner("example"),
+        config,
+    )
     assert calls == [(spec, project)]
-    return project, spec, action
+    return project, spec, action, action.require_value(layout_flow.LayoutInvocation)
 
 
 def test_plan_layout_action_plans_a_direct_recipe_node_and_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project, spec, action = _planned_action(
+    project, spec, action, invocation = _planned_action(
         tmp_path,
         monkeypatch,
         config={
@@ -96,34 +100,35 @@ def test_plan_layout_action_plans_a_direct_recipe_node_and_closure(
         },
     )
 
-    assert action.target == "leaf"
-    assert action.operation == "generate"
-    assert action.spec == "ip/example/leaf.toml"
-    assert action.planning.spec.project is project
-    assert {member.scope for member in action.source_members} == {
+    assert invocation.target == "leaf"
+    assert invocation.operation == "generate"
+    assert invocation.spec == "ip/example/leaf.toml"
+    assert invocation.planning.spec.project is project
+    assert {member.scope for member in action.sources} == {
         "project",
         "sigilicon-package",
     }
     assert {
-        member.location for member in action.source_members
-    } == set(action.planning.source_records)
-    assert action.as_dict() == {
+        member.location for member in action.sources
+    } == set(invocation.planning.source_records)
+    assert invocation.as_dict() == {
         "target": "leaf",
         "operation": "generate",
         "spec": "ip/example/leaf.toml",
         "layout": {"library": "fixture_library"},
     }
-    assert spec in {member.location for member in action.source_members}
+    assert spec in {member.location for member in action.sources}
 
 
 def test_plan_layout_action_requires_verification_node_metadata(
     tmp_path: Path,
 ) -> None:
     _project_with_layout_spec(tmp_path)
+    project = Project.from_project_root(tmp_path)
     with pytest.raises(ValueError, match="configuration fields"):
         layout_flow.plan_layout_action(
-            Project.from_project_root(tmp_path),
-            "example",
+            project,
+            project.owner("example"),
             {
                 "target": "leaf",
                 "operation": "verify-drc",
@@ -134,8 +139,8 @@ def test_plan_layout_action_requires_verification_node_metadata(
 
     with pytest.raises(ValueError, match="one of"):
         layout_flow.plan_layout_action(
-            Project.from_project_root(tmp_path),
-            "example",
+            project,
+            project.owner("example"),
             {
                 "target": "leaf",
                 "operation": "verify-all",
@@ -154,7 +159,7 @@ def test_plan_layout_action_accepts_only_owner_relative_specs(
     with pytest.raises(ValueError, match="inside owner"):
         layout_flow.plan_layout_action(
             project,
-            "example",
+            project.owner("example"),
             {
                 "target": "leaf",
                 "operation": "generate",
@@ -165,7 +170,7 @@ def test_plan_layout_action_accepts_only_owner_relative_specs(
     with pytest.raises(ValueError, match="canonical project-relative"):
         layout_flow.plan_layout_action(
             project,
-            "example",
+            project.owner("example"),
             {
                 "target": "leaf",
                 "operation": "generate",
@@ -174,11 +179,11 @@ def test_plan_layout_action_accepts_only_owner_relative_specs(
         )
 
 
-def test_layout_action_plan_rejects_source_closure_drift(
+def test_layout_action_plan_rejects_retained_source_record_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project, spec, action = _planned_action(
+    _project, spec, action, invocation = _planned_action(
         tmp_path,
         monkeypatch,
         config={
@@ -187,17 +192,14 @@ def test_layout_action_plan_rejects_source_closure_drift(
             "spec": "ip/example/leaf.toml",
         },
     )
-    records = dict(action.planning.source_records)
+    records = dict(invocation.planning.source_records)
     records[spec] = "different\n"
-    object.__setattr__(action.planning, "source_records", records)
+    object.__setattr__(invocation.planning, "source_records", records)
 
-    with pytest.raises(ValueError, match="source closure"):
-        layout_flow.LayoutActionPlan(
-            target=action.target,
-            operation=action.operation,
-            spec=action.spec,
-            planning=action.planning,
-            source_members=action.source_members,
+    with pytest.raises(FlowExecutionError, match="source closure"):
+        layout_flow.LayoutActionAdapter._validate_source_closure(
+            SimpleNamespace(action_plan=action),
+            invocation,
         )
 
 
@@ -205,7 +207,7 @@ def test_layout_adapter_validates_direct_node_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _project, _spec, action = _planned_action(
+    _project, _spec, _action, invocation = _planned_action(
         tmp_path,
         monkeypatch,
         config={
@@ -222,18 +224,18 @@ def test_layout_adapter_validates_direct_node_config(
         }
     )
 
-    layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+    layout_flow.LayoutActionAdapter._validate_action_config(context, invocation)
 
     context.action_config["operation"] = "verify-drc"
     with pytest.raises(FlowExecutionError, match="operation drift"):
-        layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+        layout_flow.LayoutActionAdapter._validate_action_config(context, invocation)
 
 
 def test_layout_adapter_validates_verification_evidence_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _project, _spec, action = _planned_action(
+    _project, _spec, _action, invocation = _planned_action(
         tmp_path,
         monkeypatch,
         config={
@@ -263,18 +265,18 @@ def test_layout_adapter_validates_verification_evidence_fields(
         ),
     )
 
-    layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+    layout_flow.LayoutActionAdapter._validate_action_config(context, invocation)
 
     context.action_config["evidence_scope"] = "different"
     with pytest.raises(FlowExecutionError, match="evidence envelope"):
-        layout_flow.LayoutActionAdapter._validate_action_config(context, action)
+        layout_flow.LayoutActionAdapter._validate_action_config(context, invocation)
 
 
-def test_layout_adapter_accepts_project_recipe_source_merge_and_detects_drift(
+def test_layout_adapter_requires_the_exact_common_action_plan_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project, spec, action = _planned_action(
+    project, spec, action, invocation = _planned_action(
         tmp_path,
         monkeypatch,
         config={
@@ -294,14 +296,22 @@ def test_layout_adapter_accepts_project_recipe_source_merge_and_detects_drift(
     context = SimpleNamespace(
         action_plan=ActionPlan(
             LAYOUT_ACTION_PLAN,
-            action,
-            action.as_dict(),
-            (*action.source_members, extra),
+            invocation,
+            invocation.as_dict(),
+            (*action.sources, extra),
         )
     )
 
-    layout_flow.LayoutActionAdapter._validate_source_closure(context, action)
+    with pytest.raises(FlowExecutionError, match="source closure"):
+        layout_flow.LayoutActionAdapter._validate_source_closure(
+            context,
+            invocation,
+        )
 
     spec.write_text("changed\n", encoding="utf-8")
+    context.action_plan = action
     with pytest.raises(FlowExecutionError, match="source changed"):
-        layout_flow.LayoutActionAdapter._validate_source_closure(context, action)
+        layout_flow.LayoutActionAdapter._validate_source_closure(
+            context,
+            invocation,
+        )

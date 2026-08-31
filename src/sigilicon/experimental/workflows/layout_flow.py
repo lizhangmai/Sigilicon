@@ -20,7 +20,7 @@ from sigilicon.flow.layout import (
 )
 from sigilicon.workflows.layout_flow import (
     LayoutActionAdapter,
-    LayoutActionPlan,
+    LayoutInvocation,
 )
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 
@@ -31,7 +31,7 @@ class ExperimentalLayoutActionAdapter(LayoutActionAdapter):
     def _verify(
         self,
         context: ActionContext,
-        selected: LayoutActionPlan,
+        selected: LayoutInvocation,
         artifacts: FlowRunArtifacts,
     ) -> AdapterResult:
         allowed = {

@@ -33,6 +33,23 @@ the single breaking entrypoint
 `register_action_modules(registry, project, owner)`. No compatibility entrypoint
 or externally supplied per-node plan map is retained.
 
+Owner workflow composition is identical for every design style. An
+`OwnerTarget` contains inputs and explicit `OwnerOperation` values; every
+operation names its own recipe and goals. Target-level default recipes are
+invalid, because their inheritance made the standard-ASIC catalog behave
+differently from analog, mixed-signal, and layout catalogs. `OwnerWorkflow`
+is the sole source-bound compiler from catalog + operation + recipe + selected
+owner inputs to `FlowSpec`; `ProjectRunner` only binds the resulting plan to
+the execution engine.
+
+`ActionPlan` is the sole cross-domain planning envelope and the sole owner of
+the exact `SourceMember` closure. Design and layout payloads retain only their
+domain invocation state; they do not copy the same closure into a second
+wrapper. Native RTL and AMS verification share the same Xcelium invocation
+base and execution result, while the AMS payload adds only native-release and
+platform-model state. This common envelope does not flatten domain records or
+evidence schemas.
+
 Typed plans retain the same source records from which they were resolved.
 Layout generation brackets generator execution with exact source reads; native
 OA retains netlist/text snapshots and validates parsed contract snapshots; RTL

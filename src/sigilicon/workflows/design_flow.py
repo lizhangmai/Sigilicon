@@ -126,14 +126,8 @@ def _planned_product_conclusion(context: ActionContext) -> bool:
 
 
 @dataclass(frozen=True)
-class DesignActionPlan:
-    """One direct design Action bound to an exact source closure.
-
-    ``source_members`` contains exactly the runner and, when configured, the
-    spec.  It deliberately contains no secondary selection record.  The
-    surrounding :class:`sigilicon.flow.model.ActionPlan` should use this tuple
-    as its ``sources`` value and ``as_dict()`` as its persisted ``record``.
-    """
+class DesignInvocation:
+    """Domain payload executed from the common source-bound ActionPlan envelope."""
 
     owner: str
     project_root: Path
@@ -149,7 +143,6 @@ class DesignActionPlan:
     evidence_role: str
     evidence_level: str
     evidence_scope: str
-    source_members: tuple[SourceMember, ...]
 
     def __post_init__(self) -> None:
         _name(self.target, "design Action target")
@@ -207,26 +200,8 @@ class DesignActionPlan:
         object.__setattr__(self, "default_args", default_args)
         _evidence(self.evidence_role, self.evidence_level, self.evidence_scope)
 
-        members = tuple(self.source_members)
-        if not members or any(not isinstance(member, SourceMember) for member in members):
-            raise ValueError(
-                "design Action source_members must be non-empty SourceMember values"
-            )
-        identities = tuple(
-            (member.scope, member.source_root, member.path) for member in members
-        )
-        if len(identities) != len(set(identities)):
-            raise ValueError("design Action source_members contain duplicates")
-        if not any(member.location == entrypoint_path for member in members):
-            raise ValueError("design Action source_members omit the entrypoint")
-        if self.spec is not None and not any(
-            member.location == self.spec for member in members
-        ):
-            raise ValueError("design Action source_members omit the spec")
-
         object.__setattr__(self, "project_root", project_root)
         object.__setattr__(self, "entrypoint_path", entrypoint_path)
-        object.__setattr__(self, "source_members", members)
 
     def as_dict(self) -> dict[str, object]:
         """Return the portable direct node configuration projection."""
@@ -290,10 +265,10 @@ class DesignActionPlan:
 
 
 def plan_design_action(
-    project: Any,
-    owner: Any,
+    project: Project,
+    owner: RepositoryOwner,
     config: Mapping[str, Any],
-) -> DesignActionPlan:
+) -> ActionPlan:
     """Resolve one execution-recipe design node into a typed source-bound plan.
 
     ``entrypoint`` and ``spec`` are canonical project-relative paths for
@@ -302,6 +277,12 @@ def plan_design_action(
     repository scan participates in this operation.
     """
 
+    if not isinstance(project, Project):
+        raise ValueError("design Action planning requires an explicit Project")
+    if owner not in project.owners:
+        raise ValueError(
+            f"repository does not contain owner {owner.name!r}"
+        )
     if not isinstance(config, Mapping):
         raise ValueError("design Action config must be a mapping")
     unknown = set(config) - _PLAN_FIELDS
@@ -315,11 +296,6 @@ def plan_design_action(
             f"design Action is missing configuration: {sorted(missing)}"
         )
 
-    selected_owner = project.owner(owner) if isinstance(owner, str) else owner
-    if selected_owner not in project.owners:
-        raise ValueError(
-            f"repository does not contain owner {selected_owner.name!r}"
-        )
     target = _name(config["target"], "design Action target")
     mode = _name(config["mode"], "design Action mode")
     kind = config["kind"]
@@ -329,7 +305,7 @@ def plan_design_action(
     if kind == "script":
         entrypoint_path, entrypoint_relative = _owned_file(
             project,
-            selected_owner,
+            owner,
             entrypoint_value,
             "design Action entrypoint",
         )
@@ -347,7 +323,7 @@ def plan_design_action(
         entrypoint = entrypoint_value
         entrypoint_path, entrypoint_root, entrypoint_scope = _module_source(
             project,
-            selected_owner,
+            owner,
             entrypoint,
         )
 
@@ -369,7 +345,7 @@ def plan_design_action(
             )
         spec, spec_relative = _owned_file(
             project,
-            selected_owner,
+            owner,
             spec_value,
             "design Action spec",
         )
@@ -408,8 +384,8 @@ def plan_design_action(
         stable = False
     if not stable:
         raise ValueError("design Action source changed during planning")
-    return DesignActionPlan(
-        owner=selected_owner.name,
+    invocation = DesignInvocation(
+        owner=owner.name,
         project_root=project.project_root,
         target=target,
         mode=mode,
@@ -423,7 +399,12 @@ def plan_design_action(
         evidence_role=evidence_role,
         evidence_level=evidence_level,
         evidence_scope=evidence_scope,
-        source_members=tuple(source_members),
+    )
+    return ActionPlan(
+        DESIGN_ACTION_PLAN,
+        invocation,
+        invocation.as_dict(),
+        tuple(source_members),
     )
 
 
@@ -433,7 +414,7 @@ class DesignTargetAdapter:
     def run(self, context: ActionContext) -> AdapterResult:
         selected = context.require_action_plan(
             DESIGN_ACTION_PLAN,
-            DesignActionPlan,
+            DesignInvocation,
         )
         assert context.action_plan is not None
         self._validate_context(context, selected)
@@ -441,7 +422,8 @@ class DesignTargetAdapter:
         product_conclusion = _planned_product_conclusion(context)
 
         route_sources = tuple(context.action_plan.sources)
-        if not self._source_closure_matches(route_sources, selected.source_members):
+        expected_source_count = 1 if selected.spec is None else 2
+        if len(route_sources) != expected_source_count:
             raise FlowExecutionError("typed design Action Plan source closure drift")
         if not self._sources_match(route_sources):
             raise FlowExecutionError("owner design source changed after Flow planning")
@@ -491,14 +473,14 @@ class DesignTargetAdapter:
                 managed_run_artifact_environment(context, "evidence", source)
             )
         runner_member = self._member_at(
-            selected.source_members,
+            route_sources,
             selected.entrypoint_path,
             "entrypoint",
         )
         spec_member = (
             None
             if selected.spec is None
-            else self._member_at(selected.source_members, selected.spec, "spec")
+            else self._member_at(route_sources, selected.spec, "spec")
         )
         with ExitStack() as stack:
             runner_source = stack.enter_context(
@@ -622,7 +604,7 @@ class DesignTargetAdapter:
     @staticmethod
     def _validate_context(
         context: ActionContext,
-        selected: DesignActionPlan,
+        selected: DesignInvocation,
     ) -> None:
         assert context.action_plan is not None
         expected = selected.as_dict()
@@ -653,23 +635,6 @@ class DesignTargetAdapter:
             or evidence.scope != selected.evidence_scope
         ):
             raise FlowExecutionError("design Action evidence envelope drift")
-
-    @staticmethod
-    def _source_closure_matches(
-        actual: tuple[SourceMember, ...],
-        expected: tuple[SourceMember, ...],
-    ) -> bool:
-        if len(actual) != len(expected):
-            return False
-        return all(
-            left.scope == right.scope
-            and left.source_root == right.source_root
-            and left.path == right.path
-            and left.location == right.location
-            and left.record_text == right.record_text
-            and left.executable == right.executable
-            for left, right in zip(actual, expected)
-        )
 
     @staticmethod
     def _sources_match(sources: tuple[SourceMember, ...]) -> bool:
@@ -767,8 +732,8 @@ def _canonical_relative(value: object, label: str) -> PurePosixPath:
 
 
 def _owned_file(
-    project: Any,
-    owner: Any,
+    project: Project,
+    owner: RepositoryOwner,
     value: object,
     label: str,
 ) -> tuple[Path, PurePosixPath]:
@@ -781,8 +746,8 @@ def _owned_file(
 
 
 def _module_source(
-    project: Any,
-    owner: Any,
+    project: Project,
+    owner: RepositoryOwner,
     module: str,
 ) -> tuple[Path, Path, str]:
     if module in _SHARED_MODULES:
@@ -842,20 +807,14 @@ def install_design_flow(
     )
 
     def planner(node: FlowNode) -> ActionPlan:
-        planned = plan_design_action(project, owner, node.config)
-        return ActionPlan(
-            DESIGN_ACTION_PLAN,
-            planned,
-            planned.as_dict(),
-            planned.source_members,
-        )
+        return plan_design_action(project, owner, node.config)
 
     registry.register_action_planner(DESIGN_SOURCE_CHECK_ACTION, planner)
     registry.register_action_planner(DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION, planner)
 
 
 __all__ = [
-    "DesignActionPlan",
+    "DesignInvocation",
     "DesignTargetAdapter",
     "install_design_flow",
     "plan_design_action",

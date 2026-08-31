@@ -391,9 +391,6 @@ def inspect_repository_designs(
         targets[owner.name] = {
             target.name: {
                 "description": target.description,
-                "recipe": (
-                    None if target.recipe is None else target.recipe.as_posix()
-                ),
                 "inputs": thaw_toml_document(target.inputs),
                 "operations": {
                     operation.name: {

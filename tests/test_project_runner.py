@@ -19,7 +19,6 @@ from sigilicon.flow import (
     FactSpec,
     FlowExecutionError,
     FlowRegistry,
-    SourceMember,
 )
 from sigilicon.execution import RunStoreError
 from sigilicon.flow.circuit_design import (
@@ -111,9 +110,6 @@ def _write_project(root: Path) -> tuple[Project, Path, Path, Path]:
 
 
 class _SimpleDesignPlan:
-    def __init__(self, source_members: tuple[SourceMember, ...]) -> None:
-        self.source_members = source_members
-
     def as_dict(self) -> dict[str, object]:
         return {"planned": True}
 
@@ -147,13 +143,19 @@ def _install_simple_design_seam(
 
     def plan_design_action(
         selected_project: Project,
-        owner: str,
+        owner,
         config,
-    ) -> _SimpleDesignPlan:
+    ) -> ActionPlan:
         assert selected_project is project
-        assert owner == "example"
+        assert owner.name == "example"
         assert config["target"] == "smoke"
-        return _SimpleDesignPlan((implementation_member,))
+        planned = _SimpleDesignPlan()
+        return ActionPlan(
+            DESIGN_ACTION_PLAN,
+            planned,
+            planned.as_dict(),
+            (implementation_member,),
+        )
 
     monkeypatch.setattr(design_flow, "plan_design_action", plan_design_action)
 
@@ -182,15 +184,10 @@ def _install_simple_design_seam(
         )
         result.register_action_planner(
             DESIGN_SOURCE_CHECK_ACTION,
-            lambda node: ActionPlan(
-                DESIGN_ACTION_PLAN,
-                planned := plan_design_action(
-                    selected_project,
-                    owner.name,
-                    node.config,
-                ),
-                planned.as_dict(),
-                planned.source_members,
+            lambda node: plan_design_action(
+                selected_project,
+                owner,
+                node.config,
             ),
         )
         return result
@@ -264,16 +261,7 @@ def test_project_runner_compiles_target_inputs_and_retains_input_sources(
             "[targets.smoke]\ndescription = \"Offline smoke target\"",
             "[targets.smoke]\n"
             "description = \"Offline smoke target\"\n"
-            "recipe = \"configs/smoke.toml\"\n"
             "inputs = { variant = \"configs/variant.txt\" }",
-        )
-        .replace(
-            '[targets.smoke.operations.check]\nrecipe = "configs/smoke.toml"\n',
-            "[targets.smoke.operations.check]\n",
-        )
-        .replace(
-            '[targets.smoke.operations.all]\nrecipe = "configs/smoke.toml"\n',
-            "[targets.smoke.operations.all]\n",
         ),
         encoding="utf-8",
     )

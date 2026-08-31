@@ -8,8 +8,8 @@ import pytest
 from sigilicon.domain.repository import Project
 from sigilicon.domain.targets import (
     OwnerTargetCatalog,
-    ProjectTarget,
-    TargetOperation,
+    OwnerTarget,
+    OwnerOperation,
     load_owner_target_catalog,
 )
 
@@ -96,14 +96,46 @@ def test_owner_target_catalog_loads_typed_targets_and_operations(
     )
     assert isinstance(catalog, OwnerTargetCatalog)
     target = catalog.get("adder")
-    assert isinstance(target, ProjectTarget)
+    assert isinstance(target, OwnerTarget)
     operation = target.operation("check")
-    assert isinstance(operation, TargetOperation)
+    assert isinstance(operation, OwnerOperation)
     assert operation.recipe == PurePosixPath("configs/recipe.toml")
     assert operation.goals == ("source-check", "recipe-check")
 
 
-def test_target_default_recipe_and_frozen_inputs_bind_operations(
+def test_target_inputs_are_frozen_and_every_operation_binds_its_recipe(
+    tmp_path: Path,
+) -> None:
+    project = _write_owner_project(
+        tmp_path,
+        catalog_text="""schema = 1
+contract_kind = "owner-targets"
+path_scope = "owner"
+owner = "example"
+
+[targets.adder]
+description = "Adder target"
+inputs = { variant = "paper", limits = { low = 1, high = 3 } }
+
+[targets.adder.operations.check]
+recipe = "configs/recipe.toml"
+goals = ["check"]
+""",
+    )
+
+    target = load_owner_target_catalog(project, "example").get("adder")
+    operation = target.operation("check")
+
+    assert operation.recipe == PurePosixPath("configs/recipe.toml")
+    assert target.inputs == {
+        "variant": "paper",
+        "limits": {"low": 1, "high": 3},
+    }
+    with pytest.raises(TypeError):
+        target.inputs["variant"] = "product"  # type: ignore[index]
+
+
+def test_target_level_recipe_and_implicit_operation_recipe_are_rejected(
     tmp_path: Path,
 ) -> None:
     project = _write_owner_project(
@@ -116,24 +148,26 @@ owner = "example"
 [targets.adder]
 description = "Adder target"
 recipe = "configs/recipe.toml"
-inputs = { variant = "paper", limits = { low = 1, high = 3 } }
 
 [targets.adder.operations.check]
 goals = ["check"]
 """,
     )
 
-    target = load_owner_target_catalog(project, "example").get("adder")
-    operation = target.operation("check")
+    with pytest.raises(ValueError, match="targets.adder contains unknown fields"):
+        load_owner_target_catalog(project, "example")
 
-    assert target.recipe == PurePosixPath("configs/recipe.toml")
-    assert operation.recipe == target.recipe
-    assert target.inputs == {
-        "variant": "paper",
-        "limits": {"low": 1, "high": 3},
-    }
-    with pytest.raises(TypeError):
-        target.inputs["variant"] = "product"  # type: ignore[index]
+    catalog = tmp_path / "ip/example/configs/targets.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            'recipe = "configs/recipe.toml"\n\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+    project = Project.from_project_root(tmp_path)
+    with pytest.raises(ValueError, match=r"operations\.check\.recipe is required"):
+        load_owner_target_catalog(project, "example")
 
 
 def test_target_catalog_rejects_unknown_fields_at_each_level(
