@@ -13,8 +13,8 @@ This rejects both a universal flattened EDA result schema and permanent parallel
 ## 2026-08-31 custom-layout implementation boundary
 
 Cataloged custom-layout generation and XStream/Calibre verification now enter
-through `ProjectFlow.plan_layout`. The layout registry selects explicit
-`generate`, `verify-drc`, `verify-lvs`, or `verify-all` Flow targets. Planning
+through `ProjectFlow.plan(RunRequest.layout(...))`. The layout registry selects
+explicit `generate`, `verify-drc`, `verify-lvs`, or `verify-all` Flow targets. Planning
 freezes the resolved `LayoutSpec`, generated `LayoutPlan`, owner route, platform
 contracts, generator implementation, and canonical netlist sources. Execution
 revalidates those exact records before opening the OA workspace and consumes the
