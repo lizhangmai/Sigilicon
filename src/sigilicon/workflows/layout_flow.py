@@ -10,24 +10,27 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Mapping
 
 from sigilicon.flow import (
+    ActionPlan,
     ActionContext,
     AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
     SourceMember,
+    FlowNode,
 )
 from sigilicon.flow.layout import (
     LAYOUT_ACTION_PLAN,
+    LAYOUT_GENERATION_ADAPTER,
     LAYOUT_GENERATION_ACTION,
     LAYOUT_GENERATION_EVIDENCE_KIND,
     LAYOUT_VERIFICATION_ACTION,
     LAYOUT_VERIFICATION_EVIDENCE_KIND,
 )
+from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
-    snapshot_source_member,
     source_member_matches,
 )
 from sigilicon.domain.repository import Project, RepositoryOwner
@@ -37,6 +40,7 @@ from sigilicon.workflows.layout_generation import (
     plan_layout_spec,
 )
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
+from sigilicon.workflows.source_closure import project_source_members
 from sigilicon.workflows.source_control import artifact_source_state
 
 
@@ -113,49 +117,11 @@ def _layout_source_members(
     if not isinstance(records, Mapping) or not records:
         raise ValueError("layout planning result must retain source records")
 
-    project_root = project.project_root.resolve()
-    package_root = Path(__file__).resolve().parents[2]
-    normalized: dict[Path, str] = {}
-    for raw_path, record in records.items():
-        if not isinstance(raw_path, (str, Path)):
-            raise ValueError("layout source record path must be a filesystem path")
-        if not isinstance(record, str):
-            raise ValueError("layout source record must be UTF-8 text")
-        path = Path(raw_path).resolve()
-        previous = normalized.get(path)
-        if previous is not None and previous != record:
-            raise ValueError(f"layout source record has duplicate path drift: {path}")
-        normalized[path] = record
-
-    selected: list[tuple[str, Path, Path, str]] = []
-    for path, record in normalized.items():
-        if not path.is_file():
-            raise ValueError(f"layout source is not a regular file: {path}")
-        if path.is_relative_to(project_root):
-            scope = "project"
-            source_root = project_root
-        elif path.is_relative_to(package_root):
-            scope = "sigilicon-package"
-            source_root = package_root
-        else:
-            raise ValueError(
-                "layout source is outside project and Sigilicon roots: "
-                f"{path}"
-            )
-        selected.append((scope, source_root, path, record))
-
-    return tuple(
-        snapshot_source_member(
-            path,
-            source_root=source_root,
-            scope=scope,
-            record_text=record,
-            source_label="layout",
-        )
-        for scope, source_root, path, record in sorted(
-            selected,
-            key=lambda item: (item[0], item[2].as_posix()),
-        )
+    return project_source_members(
+        project,
+        records,
+        label="layout",
+        records=records,
     )
 
 
@@ -537,4 +503,36 @@ class LayoutActionAdapter:
         return value
 
 
-__all__ = ["LayoutActionAdapter", "LayoutActionPlan", "plan_layout_action"]
+def install_layout_flow(
+    registry: FlowRegistry,
+    project: Project,
+    owner: RepositoryOwner,
+    *,
+    client_factory: Callable[[], Any],
+) -> None:
+    """Install custom-layout planners and the native layout Adapter."""
+
+    registry.register_adapter_factory(
+        LAYOUT_GENERATION_ADAPTER,
+        lambda: LayoutActionAdapter(client_factory=client_factory),
+    )
+
+    def planner(node: FlowNode) -> ActionPlan:
+        planned = plan_layout_action(project, owner, node.config)
+        return ActionPlan(
+            LAYOUT_ACTION_PLAN,
+            planned,
+            planned.as_dict(),
+            planned.source_members,
+        )
+
+    registry.register_action_planner(LAYOUT_GENERATION_ACTION, planner)
+    registry.register_action_planner(LAYOUT_VERIFICATION_ACTION, planner)
+
+
+__all__ = [
+    "LayoutActionAdapter",
+    "LayoutActionPlan",
+    "install_layout_flow",
+    "plan_layout_action",
+]

@@ -22,6 +22,17 @@ also records a portable scope (`project` or `sigilicon-package`) so editable
 package implementation dependencies remain explicit without persisting host
 paths.
 
+The `FlowRegistry` owns the complete runtime module for each typed Action:
+its contract, its lazy Adapter provider, and, when `plan_input_kind` is
+declared, exactly one domain planner. `FlowEngine` asks that registry to plan
+only the nodes in the selected target topology. `ProjectRunner` is therefore
+only the owner/target composition root; it contains no Action-kind dispatch or
+domain planning branches. Built-in design, native-OA/Xcelium, and custom-layout
+modules install their own planner/Adapter pairs, while an owner extension uses
+the single breaking entrypoint
+`register_action_modules(registry, project, owner)`. No compatibility entrypoint
+or externally supplied per-node plan map is retained.
+
 Typed plans retain the same source records from which they were resolved.
 Layout generation brackets generator execution with exact source reads; native
 OA retains netlist/text snapshots and validates parsed contract snapshots; RTL

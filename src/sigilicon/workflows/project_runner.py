@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
@@ -22,7 +22,6 @@ from sigilicon.domain.targets import (
     load_owner_target_catalog,
 )
 from sigilicon.flow import (
-    ActionPlan,
     ExecutionEnvironment,
     FlowEngine,
     FlowPlan,
@@ -34,44 +33,13 @@ from sigilicon.flow import (
     compile_flow_spec,
     parse_execution_recipe,
 )
-from sigilicon.flow.circuit_design import (
-    DESIGN_ACTION_PLAN,
-    DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
-    DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
-    DESIGN_SOURCE_CHECK_ADAPTER,
-    DESIGN_SOURCE_CHECK_ACTION,
-)
-from sigilicon.flow.layout import (
-    LAYOUT_ACTION_PLAN,
-    LAYOUT_GENERATION_ADAPTER,
-    LAYOUT_GENERATION_ACTION,
-    LAYOUT_VERIFICATION_ACTION,
-)
 from sigilicon.flow.model import SourceMember
-from sigilicon.flow.native import (
-    NATIVE_OA_ACTION_PLAN,
-    NATIVE_OA_PLAN_ADAPTER,
-    NATIVE_OA_PLAN_ACTION,
-    NATIVE_OA_SIMULATION_ADAPTER,
-    NATIVE_OA_SIMULATION_ACTION,
-    XCELIUM_ACTION_PLAN,
-    XCELIUM_AMS_ACTION_PLAN,
-    XCELIUM_AMS_VERIFICATION_ACTION,
-    XCELIUM_AMS_VERIFICATION_ADAPTER,
-    XCELIUM_VERIFICATION_ACTION,
-    XCELIUM_VERIFICATION_ADAPTER,
-)
-from sigilicon.flow.registry import FlowRegistry, ToolAdapter
+from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import snapshot_source_member, source_member_matches
-from sigilicon.flow.topology import resolve_target_topology
 from sigilicon.workflows.builtin import build_flow_registry
-from sigilicon.workflows.oa_library import (
-    oa_plan_source_paths,
-    validate_oa_plan_source_members,
-)
-from sigilicon.workflows.project_oa import ProjectOaWorkflow
-from sigilicon.workflows.xcelium import plan_xcelium_cell
-from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
+from sigilicon.workflows.design_flow import install_design_flow
+from sigilicon.workflows.layout_flow import install_layout_flow
+from sigilicon.workflows.native_flow import install_native_flow
 
 if TYPE_CHECKING:
     from sigilicon.virtuoso.client import VirtuosoClient
@@ -81,47 +49,6 @@ def _default_client_factory() -> VirtuosoClient:
     from sigilicon.virtuoso.client import get_client
 
     return get_client()
-
-
-def _native_oa_plan_adapter() -> ToolAdapter:
-    from sigilicon.workflows.native_flow import NativeOaPlanAdapter
-
-    return NativeOaPlanAdapter()
-
-
-def _native_oa_simulation_adapter(
-    client_factory: Callable[[], Any],
-) -> ToolAdapter:
-    from sigilicon.workflows.native_flow import NativeOaSimulationAdapter
-
-    return NativeOaSimulationAdapter(client_factory=client_factory)
-
-
-def _xcelium_verification_adapter() -> ToolAdapter:
-    from sigilicon.workflows.native_flow import XceliumVerificationAdapter
-
-    return XceliumVerificationAdapter()
-
-
-def _xcelium_ams_verification_adapter() -> ToolAdapter:
-    from sigilicon.workflows.native_flow import XceliumAmsVerificationAdapter
-
-    return XceliumAmsVerificationAdapter()
-
-
-def _design_action_adapter() -> ToolAdapter:
-    from sigilicon.workflows.design_flow import DesignTargetAdapter
-
-    return DesignTargetAdapter()
-
-
-def _layout_action_adapter(
-    *,
-    client_factory: Callable[[], Any],
-) -> ToolAdapter:
-    from sigilicon.workflows.layout_flow import LayoutActionAdapter
-
-    return LayoutActionAdapter(client_factory=client_factory)
 
 
 def _load_extension(source: Path, record_text: str) -> ModuleType:
@@ -157,90 +84,6 @@ def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
     )
 
 
-def _project_source_members(
-    project: Project,
-    paths: set[Path],
-    *,
-    label: str,
-    records: Mapping[Path, str] | None = None,
-    external_roots: tuple[tuple[str, Path], ...] = (),
-) -> tuple[SourceMember, ...]:
-    """Snapshot exact sources selected by a domain planner."""
-
-    project_root = project.project_root
-    package_root = Path(__file__).resolve().parents[2]
-    selected: set[tuple[str, Path, Path]] = set()
-    for path in paths:
-        resolved = Path(path).resolve()
-        if not resolved.is_file():
-            raise ValueError(f"{label} source is not a file: {resolved}")
-        if resolved.is_relative_to(project_root):
-            selected.add(("project", project_root, resolved))
-        elif resolved.is_relative_to(package_root):
-            selected.add(("sigilicon-package", package_root, resolved))
-        else:
-            matches = tuple(
-                (scope, root.resolve())
-                for scope, root in external_roots
-                if resolved.is_relative_to(root.resolve())
-            )
-            if len(matches) != 1:
-                raise ValueError(
-                    f"{label} source is outside its declared roots: {resolved}"
-                )
-            scope, root = matches[0]
-            selected.add((scope, root, resolved))
-    return tuple(
-        snapshot_source_member(
-            path,
-            source_root=root,
-            scope=scope,
-            record_text=(None if records is None else records[path]),
-            source_label=label,
-        )
-        for scope, root, path in sorted(
-            selected,
-            key=lambda item: (item[0], item[2].as_posix()),
-        )
-    )
-
-
-def _native_oa_source_members(
-    project: Project,
-    plan: Any,
-) -> tuple[SourceMember, ...]:
-    members = _project_source_members(
-        project,
-        set(oa_plan_source_paths(plan)),
-        label="native OA",
-    )
-    validate_oa_plan_source_members(plan, members)
-    return members
-
-
-def _xcelium_source_members(
-    project: Project,
-    plan: Any,
-) -> tuple[SourceMember, ...]:
-    records = {
-        Path(path).resolve(): record
-        for path, record in plan.source_records.items()
-    }
-    model_set = getattr(plan, "model_set", None)
-    external_roots = (
-        ()
-        if model_set is None
-        else (("platform-model", model_set.file.parent.resolve()),)
-    )
-    return _project_source_members(
-        project,
-        set(records),
-        label="Xcelium",
-        records=records,
-        external_roots=external_roots,
-    )
-
-
 def _project_workflow_registry(
     project: Project,
     owner: RepositoryOwner,
@@ -254,27 +97,18 @@ def _project_workflow_registry(
             f"execution owner {owner.name!r} does not belong to the selected Project"
         )
     registry = build_flow_registry()
-    registry.register_adapter_factory(NATIVE_OA_PLAN_ADAPTER, _native_oa_plan_adapter)
-    registry.register_adapter_factory(
-        NATIVE_OA_SIMULATION_ADAPTER,
-        lambda: _native_oa_simulation_adapter(client_factory),
+    install_native_flow(
+        registry,
+        project,
+        owner,
+        client_factory=client_factory,
     )
-    registry.register_adapter_factory(
-        XCELIUM_VERIFICATION_ADAPTER,
-        _xcelium_verification_adapter,
-    )
-    registry.register_adapter_factory(
-        XCELIUM_AMS_VERIFICATION_ADAPTER,
-        _xcelium_ams_verification_adapter,
-    )
-    registry.register_adapter_factory(DESIGN_SOURCE_CHECK_ADAPTER, _design_action_adapter)
-    registry.register_adapter_factory(
-        DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
-        _design_action_adapter,
-    )
-    registry.register_adapter_factory(
-        LAYOUT_GENERATION_ADAPTER,
-        lambda: _layout_action_adapter(client_factory=client_factory),
+    install_design_flow(registry, project, owner)
+    install_layout_flow(
+        registry,
+        project,
+        owner,
+        client_factory=client_factory,
     )
     source = project.flow_registry_extension(owner)
     if source is None:
@@ -295,14 +129,14 @@ def _project_workflow_registry(
             f"owner registry extension {source} is not a bound Python implementation"
         )
     module = _load_extension(source, source_record.record_text)
-    register = getattr(module, "register_flow_adapters", None)
+    register = getattr(module, "register_action_modules", None)
     if not callable(register):
         raise ValueError(
             f"owner registry extension {source} must define "
-            "register_flow_adapters(registry, owner_root)"
+            "register_action_modules(registry, project, owner)"
         )
     try:
-        result = register(registry, owner.root)
+        result = register(registry, project, owner)
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
@@ -516,10 +350,6 @@ class ProjectRunner:
         plan = engine.plan(
             selection.spec,
             selection.operation.name,
-            action_plans=self._action_plans(
-                selection.spec,
-                selection.operation.name,
-            ),
         )
         return ProjectExecution._bind(engine, plan, self.project)
 
@@ -628,100 +458,6 @@ class ProjectRunner:
             current = False
         if not current:
             raise ValueError("target selection source changed during planning")
-
-    def _action_plans(
-        self,
-        spec: FlowSpec,
-        operation: str,
-    ) -> dict[str, ActionPlan]:
-        """Resolve every domain Plan once, before Adapter selection."""
-
-        topology = resolve_target_topology(spec, operation)
-        selected_nodes = tuple(spec.node(node_id) for node_id in topology.nodes)
-        result: dict[str, ActionPlan] = {}
-        oa_plan = None
-        oa_sources: tuple[SourceMember, ...] = ()
-        if any(
-            node.action_kind in {NATIVE_OA_PLAN_ACTION, NATIVE_OA_SIMULATION_ACTION}
-            for node in selected_nodes
-        ):
-            oa_plan = ProjectOaWorkflow(self.project, self.owner.name).plan()
-            oa_sources = _native_oa_source_members(self.project, oa_plan)
-        for node in selected_nodes:
-            if node.action_kind in {
-                NATIVE_OA_PLAN_ACTION,
-                NATIVE_OA_SIMULATION_ACTION,
-            }:
-                assert oa_plan is not None
-                result[node.node_id] = ActionPlan(
-                    NATIVE_OA_ACTION_PLAN,
-                    oa_plan,
-                    oa_plan.as_dict(),
-                    oa_sources,
-                )
-            elif node.action_kind == XCELIUM_VERIFICATION_ACTION:
-                cell = node.config.get("cell")
-                if not isinstance(cell, str) or not cell:
-                    raise ValueError("Xcelium Action requires a cell contract")
-                cell_path = Path(cell)
-                if not cell_path.is_absolute():
-                    cell_path = self.project.project_root / cell_path
-                planned = plan_xcelium_cell(cell_path, project=self.project)
-                result[node.node_id] = ActionPlan(
-                    XCELIUM_ACTION_PLAN,
-                    planned,
-                    planned.as_dict(),
-                    _xcelium_source_members(self.project, planned),
-                )
-            elif node.action_kind == XCELIUM_AMS_VERIFICATION_ACTION:
-                cell = node.config.get("cell")
-                if not isinstance(cell, str) or not cell:
-                    raise ValueError("Xcelium AMS Action requires a cell contract")
-                cell_path = Path(cell)
-                if not cell_path.is_absolute():
-                    cell_path = self.project.project_root / cell_path
-                planned = plan_xcelium_ams_cell(cell_path, project=self.project)
-                result[node.node_id] = ActionPlan(
-                    XCELIUM_AMS_ACTION_PLAN,
-                    planned,
-                    planned.as_dict(),
-                    _xcelium_source_members(self.project, planned),
-                )
-            elif node.action_kind in {
-                DESIGN_SOURCE_CHECK_ACTION,
-                DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
-            }:
-                from sigilicon.workflows.design_flow import plan_design_action
-
-                planned = plan_design_action(
-                    self.project,
-                    self.owner.name,
-                    node.config,
-                )
-                result[node.node_id] = ActionPlan(
-                    DESIGN_ACTION_PLAN,
-                    planned,
-                    planned.as_dict(),
-                    planned.source_members,
-                )
-            elif node.action_kind in {
-                LAYOUT_GENERATION_ACTION,
-                LAYOUT_VERIFICATION_ACTION,
-            }:
-                from sigilicon.workflows.layout_flow import plan_layout_action
-
-                planned = plan_layout_action(
-                    self.project,
-                    self.owner,
-                    node.config,
-                )
-                result[node.node_id] = ActionPlan(
-                    LAYOUT_ACTION_PLAN,
-                    planned,
-                    planned.as_dict(),
-                    planned.source_members,
-                )
-        return result
 
     def _engine(self) -> FlowEngine:
         return FlowEngine(

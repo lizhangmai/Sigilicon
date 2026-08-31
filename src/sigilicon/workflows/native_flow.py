@@ -7,38 +7,58 @@ import json
 from pathlib import Path
 from typing import Any
 
-from sigilicon.domain.repository import Project
+from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.flow import (
+    ActionPlan,
     ActionContext,
     AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
+    FlowNode,
+    SourceMember,
 )
 from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.native import (
     NATIVE_OA_ACTION_PLAN,
     NATIVE_OA_EVIDENCE_KIND,
     NATIVE_OA_PLAN_KIND,
+    NATIVE_OA_PLAN_ADAPTER,
+    NATIVE_OA_PLAN_ACTION,
+    NATIVE_OA_SIMULATION_ADAPTER,
+    NATIVE_OA_SIMULATION_ACTION,
     XCELIUM_ACTION_PLAN,
     XCELIUM_AMS_ACTION_PLAN,
+    XCELIUM_AMS_VERIFICATION_ACTION,
+    XCELIUM_AMS_VERIFICATION_ADAPTER,
     XCELIUM_EVIDENCE_KIND,
     XCELIUM_AMS_EVIDENCE_KIND,
+    XCELIUM_VERIFICATION_ACTION,
+    XCELIUM_VERIFICATION_ADAPTER,
 )
+from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.oa_library import (
     OALibraryRebuildPlan,
+    oa_plan_source_paths,
     validate_oa_plan_source_members,
 )
 from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
-from sigilicon.workflows.xcelium import XceliumCellPlan, execute_xcelium_cell
+from sigilicon.workflows.project_oa import ProjectOaWorkflow
+from sigilicon.workflows.source_closure import project_source_members
+from sigilicon.workflows.xcelium import (
+    XceliumCellPlan,
+    execute_xcelium_cell,
+    plan_xcelium_cell,
+)
 from sigilicon.workflows.xcelium_ams import (
     XceliumAmsCellPlan,
     execute_xcelium_ams_cell,
+    plan_xcelium_ams_cell,
 )
 
 
@@ -428,9 +448,126 @@ class XceliumAmsVerificationAdapter:
         )
 
 
+def _cell_contract(
+    node: FlowNode,
+    project: Project,
+    owner: RepositoryOwner,
+    label: str,
+) -> Path:
+    cell = node.config.get("cell")
+    if not isinstance(cell, str) or not cell:
+        raise ValueError(f"{label} Action requires a cell contract")
+    path, _relative = project.resolve_owner_file(
+        owner,
+        cell,
+        f"{label} Action cell",
+    )
+    return path
+
+
+def _xcelium_sources(
+    project: Project,
+    plan: XceliumCellPlan | XceliumAmsCellPlan,
+) -> tuple[SourceMember, ...]:
+    records = {
+        Path(path).resolve(): record
+        for path, record in plan.source_records.items()
+    }
+    model_set = getattr(plan, "model_set", None)
+    external_roots = (
+        ()
+        if model_set is None
+        else (("platform-model", model_set.file.parent.resolve()),)
+    )
+    return project_source_members(
+        project,
+        set(records),
+        label="Xcelium",
+        records=records,
+        external_roots=external_roots,
+    )
+
+
+def install_native_flow(
+    registry: FlowRegistry,
+    project: Project,
+    owner: RepositoryOwner,
+    *,
+    client_factory: Callable[[], Any],
+) -> None:
+    """Install native OA/Xcelium planners and lazy Adapters as one module."""
+
+    registry.register_adapter_factory(NATIVE_OA_PLAN_ADAPTER, NativeOaPlanAdapter)
+    registry.register_adapter_factory(
+        NATIVE_OA_SIMULATION_ADAPTER,
+        lambda: NativeOaSimulationAdapter(client_factory=client_factory),
+    )
+    registry.register_adapter_factory(
+        XCELIUM_VERIFICATION_ADAPTER,
+        XceliumVerificationAdapter,
+    )
+    registry.register_adapter_factory(
+        XCELIUM_AMS_VERIFICATION_ADAPTER,
+        XceliumAmsVerificationAdapter,
+    )
+
+    oa_action_plan: ActionPlan | None = None
+
+    def plan_oa(_node: FlowNode) -> ActionPlan:
+        nonlocal oa_action_plan
+        if oa_action_plan is None:
+            planned = ProjectOaWorkflow(project, owner.name).plan()
+            sources = project_source_members(
+                project,
+                set(oa_plan_source_paths(planned)),
+                label="native OA",
+            )
+            validate_oa_plan_source_members(planned, sources)
+            oa_action_plan = ActionPlan(
+                NATIVE_OA_ACTION_PLAN,
+                planned,
+                planned.as_dict(),
+                sources,
+            )
+        return oa_action_plan
+
+    def plan_xcelium(node: FlowNode) -> ActionPlan:
+        planned = plan_xcelium_cell(
+            _cell_contract(node, project, owner, "Xcelium"),
+            project=project,
+        )
+        return ActionPlan(
+            XCELIUM_ACTION_PLAN,
+            planned,
+            planned.as_dict(),
+            _xcelium_sources(project, planned),
+        )
+
+    def plan_xcelium_ams(node: FlowNode) -> ActionPlan:
+        planned = plan_xcelium_ams_cell(
+            _cell_contract(node, project, owner, "Xcelium AMS"),
+            project=project,
+        )
+        return ActionPlan(
+            XCELIUM_AMS_ACTION_PLAN,
+            planned,
+            planned.as_dict(),
+            _xcelium_sources(project, planned),
+        )
+
+    registry.register_action_planner(NATIVE_OA_PLAN_ACTION, plan_oa)
+    registry.register_action_planner(NATIVE_OA_SIMULATION_ACTION, plan_oa)
+    registry.register_action_planner(XCELIUM_VERIFICATION_ACTION, plan_xcelium)
+    registry.register_action_planner(
+        XCELIUM_AMS_VERIFICATION_ACTION,
+        plan_xcelium_ams,
+    )
+
+
 __all__ = [
     "NativeOaPlanAdapter",
     "NativeOaSimulationAdapter",
     "XceliumVerificationAdapter",
     "XceliumAmsVerificationAdapter",
+    "install_native_flow",
 ]

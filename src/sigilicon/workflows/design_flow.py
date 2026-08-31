@@ -25,6 +25,7 @@ import stat
 import sys
 from typing import Any, Mapping
 
+from sigilicon.domain.repository import Project, RepositoryOwner
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_input_file,
@@ -32,18 +33,23 @@ from sigilicon.external_tools import (
     run_process_group_capture,
 )
 from sigilicon.flow import (
+    ActionPlan,
     ActionContext,
     AdapterResult,
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
     SourceMember,
+    FlowNode,
 )
 from sigilicon.flow.circuit_design import (
     DESIGN_ACTION_PLAN,
+    DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
     DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
+    DESIGN_SOURCE_CHECK_ADAPTER,
     DESIGN_SOURCE_CHECK_ACTION,
 )
+from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.model import EVIDENCE_LEVELS, EVIDENCE_ROLES
 from sigilicon.flow.serialization import json_value
@@ -457,6 +463,7 @@ class DesignTargetAdapter:
             raise FlowExecutionError(
                 f"unsupported project design Action: {context.action.kind}"
             )
+
         timeout = context.adapter_config.get("timeout_seconds", 600)
         if (
             set(context.adapter_config) != {"timeout_seconds"}
@@ -818,4 +825,38 @@ def _validate_runner_args(value: tuple[str, ...], field: str) -> None:
             raise ValueError(f"{field} cannot override routing argument {option}")
 
 
-__all__ = ["DesignActionPlan", "DesignTargetAdapter", "plan_design_action"]
+def install_design_flow(
+    registry: FlowRegistry,
+    project: Project,
+    owner: RepositoryOwner,
+) -> None:
+    """Install direct design planners and their shared stateless Adapter."""
+
+    registry.register_adapter_factory(
+        DESIGN_SOURCE_CHECK_ADAPTER,
+        DesignTargetAdapter,
+    )
+    registry.register_adapter_factory(
+        DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,
+        DesignTargetAdapter,
+    )
+
+    def planner(node: FlowNode) -> ActionPlan:
+        planned = plan_design_action(project, owner, node.config)
+        return ActionPlan(
+            DESIGN_ACTION_PLAN,
+            planned,
+            planned.as_dict(),
+            planned.source_members,
+        )
+
+    registry.register_action_planner(DESIGN_SOURCE_CHECK_ACTION, planner)
+    registry.register_action_planner(DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION, planner)
+
+
+__all__ = [
+    "DesignActionPlan",
+    "DesignTargetAdapter",
+    "install_design_flow",
+    "plan_design_action",
+]

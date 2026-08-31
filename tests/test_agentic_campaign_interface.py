@@ -111,7 +111,7 @@ from sigilicon.experimental.design_campaign import DESIGN_CAMPAIGN_ITERATION_EXT
 from test_design_campaign import AttemptAdapter, FeedbackDrivenAttemptAdapter
 
 
-def register_flow_adapters(registry, owner_root):
+def register_action_modules(registry, project, owner):
     registry.register_action(
         ActionContract(
             "design.attempt",

@@ -177,11 +177,15 @@ def test_native_oa_vertical_slice_plans_as_one_typed_dag(tmp_path: Path) -> None
         {},
         (_source_member(tmp_path / "oa.toml", root=tmp_path),),
     )
-    plan = engine.plan(
-        spec,
-        "simulation",
-        action_plans={"oa-plan": typed, "simulate": typed},
+    registry.register_action_planner(
+        NATIVE_OA_PLAN_ACTION,
+        lambda _node: typed,
     )
+    registry.register_action_planner(
+        NATIVE_OA_SIMULATION_ACTION,
+        lambda _node: typed,
+    )
+    plan = engine.plan(spec, "simulation")
 
     assert plan.topology == ("oa-plan", "simulate")
     assert plan.nodes[1].execution_capability == "mutate-workspace"

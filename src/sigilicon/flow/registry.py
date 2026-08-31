@@ -7,10 +7,12 @@ from dataclasses import dataclass, replace
 from typing import Protocol, runtime_checkable
 
 from sigilicon.flow.model import (
+    ActionPlan,
     ActionContext,
     ActionContract,
     AdapterResult,
     FlowContractError,
+    FlowNode,
     SourceMember,
     identifier,
 )
@@ -56,6 +58,7 @@ class FlowRegistry:
         self._actions: dict[str, ActionContract] = {}
         self._adapters: dict[str, ToolAdapter] = {}
         self._adapter_providers: dict[str, AdapterProvider] = {}
+        self._action_planners: dict[str, Callable[[FlowNode], ActionPlan]] = {}
         self._implementation_sources: dict[str, SourceMember] = {}
 
     def bind_implementation_source(self, source: SourceMember) -> None:
@@ -80,6 +83,55 @@ class FlowRegistry:
         if contract.kind in self._actions:
             raise FlowContractError(f"Action {contract.kind!r} is already registered")
         self._actions[contract.kind] = contract
+
+    def register_action_planner(
+        self,
+        action_kind: str,
+        planner: Callable[[FlowNode], ActionPlan],
+    ) -> None:
+        """Bind one typed domain planner to its declared Action Plan input."""
+
+        contract = self.action(action_kind)
+        if contract.plan_input_kind is None:
+            raise FlowContractError(
+                f"Action {action_kind!r} does not accept a domain Plan input"
+            )
+        if action_kind in self._action_planners:
+            raise FlowContractError(
+                f"Action {action_kind!r} already has a domain planner"
+            )
+        if not callable(planner):
+            raise FlowContractError("Action planner must be callable")
+        self._action_planners[action_kind] = planner
+
+    def compile_action_plan(self, node: FlowNode) -> ActionPlan | None:
+        """Compile the typed Plan required by one resolved Flow node."""
+
+        if not isinstance(node, FlowNode):
+            raise FlowContractError("Action planning requires a FlowNode")
+        contract = self.action(node.action_kind)
+        planner = self._action_planners.get(node.action_kind)
+        if contract.plan_input_kind is None:
+            if planner is not None:  # pragma: no cover - registration rejects this
+                raise FlowContractError(
+                    f"Action {node.action_kind!r} has an unexpected domain planner"
+                )
+            return None
+        if planner is None:
+            raise FlowContractError(
+                f"Action {node.action_kind!r} has no registered domain planner"
+            )
+        planned = planner(node)
+        if not isinstance(planned, ActionPlan):
+            raise FlowContractError(
+                f"Action planner for {node.action_kind!r} did not return ActionPlan"
+            )
+        if planned.kind != contract.plan_input_kind:
+            raise FlowContractError(
+                f"Action planner for {node.action_kind!r} returned {planned.kind!r}; "
+                f"expected {contract.plan_input_kind!r}"
+            )
+        return planned
 
     def register_adapter(
         self,

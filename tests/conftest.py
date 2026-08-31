@@ -210,7 +210,7 @@ class WaitAdapter:
         )
 
 
-def register_flow_adapters(registry, owner_root):
+def register_action_modules(registry, project, owner):
     registry.register_action(
         ActionContract(
             kind="fake.source",

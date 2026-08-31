@@ -7,6 +7,7 @@ import pytest
 
 from sigilicon.domain.repository import Project
 from sigilicon.flow import (
+    ActionPlan,
     ActionContract,
     AdapterResult,
     CollectedActionResult,
@@ -178,6 +179,19 @@ def _install_simple_design_seam(
         result.register_adapter(
             "fake-source-check",
             _SimpleActionAdapter(),
+        )
+        result.register_action_planner(
+            DESIGN_SOURCE_CHECK_ACTION,
+            lambda node: ActionPlan(
+                DESIGN_ACTION_PLAN,
+                planned := plan_design_action(
+                    selected_project,
+                    owner.name,
+                    node.config,
+                ),
+                planned.as_dict(),
+                planned.source_members,
+            ),
         )
         return result
 

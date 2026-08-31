@@ -274,21 +274,19 @@ def test_action_plan_is_required_and_source_drift_blocks_preflight(
         action_bindings=(ActionBinding("fake.planned", "fake-planned"),),
     )
 
-    with pytest.raises(FlowContractError, match="requires Action Plan"):
+    with pytest.raises(FlowContractError, match="no registered domain planner"):
         engine.plan(spec, "planned")
 
-    plan = engine.plan(
-        spec,
-        "planned",
-        action_plans={
-            "planned": ActionPlan(
-                "fake.intent",
-                object(),
-                {"value": 1},
-                (member,),
-            )
-        },
+    flow_registry.register_action_planner(
+        "fake.planned",
+        lambda _node: ActionPlan(
+            "fake.intent",
+            object(),
+            {"value": 1},
+            (member,),
+        ),
     )
+    plan = engine.plan(spec, "planned")
     assert engine.preflight(plan, ExecutionEnvironment()).status == "ready"
     assert engine.plan_record(plan)["nodes"][0]["action_plan"] == {
         "kind": "fake.intent",
@@ -312,6 +310,51 @@ def test_action_plan_is_required_and_source_drift_blocks_preflight(
         and check.status == "changed"
         for check in result.checks
     )
+
+
+def test_registry_owns_one_typed_planner_per_planned_action(tmp_path: Path) -> None:
+    source = tmp_path / "intent.toml"
+    source.write_text("value = 1\n", encoding="utf-8")
+    member = SourceMember(
+        "intent.toml",
+        tmp_path,
+        "value = 1\n",
+        False,
+        source,
+    )
+    registered = FlowRegistry()
+    registered.register_action(ActionContract("fake.plain", adapter_extensible=True))
+    registered.register_action(
+        ActionContract(
+            "fake.planned",
+            adapter_extensible=True,
+            plan_input_kind="fake.intent",
+        )
+    )
+
+    with pytest.raises(FlowContractError, match="does not accept"):
+        registered.register_action_planner(
+            "fake.plain",
+            lambda _node: ActionPlan(
+                "fake.intent", object(), {"value": 1}, (member,)
+            ),
+        )
+
+    registered.register_action_planner(
+        "fake.planned",
+        lambda _node: ActionPlan(
+            "fake.wrong", object(), {"value": 1}, (member,)
+        ),
+    )
+    with pytest.raises(FlowContractError, match="expected 'fake.intent'"):
+        registered.compile_action_plan(FlowNode("planned", "fake.planned"))
+    with pytest.raises(FlowContractError, match="already has a domain planner"):
+        registered.register_action_planner(
+            "fake.planned",
+            lambda _node: ActionPlan(
+                "fake.intent", object(), {"value": 1}, (member,)
+            ),
+        )
 
 
 def fake_bindings() -> tuple[ActionBinding, ...]:

@@ -469,20 +469,7 @@ class FlowEngine:
         self,
         spec: FlowSpec,
         target_id: str,
-        *,
-        action_plans: Mapping[str, ActionPlan] | None = None,
     ) -> FlowPlan:
-        supplied_action_plans = dict(action_plans or {})
-        invalid_action_plans = {
-            node_id
-            for node_id, action_plan in supplied_action_plans.items()
-            if not isinstance(action_plan, ActionPlan)
-        }
-        if invalid_action_plans:
-            raise FlowContractError(
-                "Action Plans must be ActionPlan values for nodes: "
-                f"{sorted(invalid_action_plans)}"
-            )
         if self._project_scope is not None:
             if spec.owner != self._project_scope.owner:
                 raise FlowContractError(
@@ -495,18 +482,22 @@ class FlowEngine:
                 )
         target = spec.target(target_id)
         target_topology = resolve_target_topology(spec, target_id)
-        unknown_plan_nodes = set(supplied_action_plans) - set(target_topology.nodes)
-        if unknown_plan_nodes:
-            raise FlowContractError(
-                "Action Plans were supplied for nodes outside the selected target: "
-                f"{sorted(unknown_plan_nodes)}"
+        action_plans = {
+            node_id: action_plan
+            for node_id in target_topology.nodes
+            if (
+                action_plan := self._registry.compile_action_plan(
+                    spec.node(node_id)
+                )
             )
+            is not None
+        }
         dependencies = target_topology.dependencies
         source_assets: dict[str, Any] = {}
         for node_id in target_topology.nodes:
             node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
-            action_plan = supplied_action_plans.get(node.node_id)
+            action_plan = action_plans.get(node.node_id)
             if contract.plan_input_kind is None and action_plan is not None:
                 raise FlowContractError(
                     f"Action {contract.kind!r} does not accept a domain Plan input"
@@ -619,7 +610,7 @@ class FlowEngine:
                     fact_schema=contract.fact_schema,
                     policy=bound_policy,
                     source_assets=source_assets[node_id],
-                    action_plan=supplied_action_plans.get(node_id),
+                    action_plan=action_plans.get(node_id),
                 )
             )
         planned = tuple(planned_items)
