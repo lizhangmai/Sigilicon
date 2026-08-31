@@ -603,22 +603,9 @@ class ProjectFlow:
             )
         )
 
-    def plan(
-        self,
-        request: RunRequest | None = None,
-        *,
-        flow: str | None = None,
-        target: str | None = None,
-        profile: str | None = None,
-    ) -> ProjectFlowPlan:
-        """Compile a typed request; keyword arguments are a compatibility facade."""
+    def plan(self, request: RunRequest) -> ProjectFlowPlan:
+        """Compile one typed project operation into its canonical Flow plan."""
 
-        if request is None:
-            if flow is None or target is None:
-                raise ValueError("Flow planning requires a RunRequest")
-            request = RunRequest.flow(flow, target, profile)
-        elif flow is not None or target is not None or profile is not None:
-            raise ValueError("RunRequest cannot be combined with legacy Flow fields")
         if not isinstance(request, RunRequest):
             raise ValueError("ProjectFlow.plan requires a RunRequest")
 
@@ -827,32 +814,6 @@ class ProjectFlow:
                 f"Flow target: {request.testbench!r} resolved {matches!r}"
             )
         return self._plan_flow(matches[0], catalog_inventory=inventory)
-
-    def plan_design(
-        self,
-        catalog: DesignTargetCatalog,
-        *,
-        target: str,
-        mode: str,
-    ) -> ProjectFlowPlan:
-        """Compile one owner design intent into its exact typed Flow plan."""
-
-        if catalog.project is not self.project:
-            raise ValueError("design catalog does not belong to this exact Project")
-        return self.plan(RunRequest.design(target, mode))
-
-    def plan_layout(
-        self,
-        catalog: LayoutTargetCatalog,
-        *,
-        target: str,
-        operation: str,
-    ) -> ProjectFlowPlan:
-        """Compile one owner layout intent into its exact typed Flow plan."""
-
-        if catalog.project is not self.project:
-            raise ValueError("layout catalog does not belong to this exact Project")
-        return self.plan(RunRequest.layout(target, operation))
 
     def preflight(
         self,

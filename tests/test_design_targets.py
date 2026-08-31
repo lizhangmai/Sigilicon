@@ -362,11 +362,7 @@ def test_project_design_action_rejects_exact_route_source_drift(tmp_path: Path) 
     runner, _spec = _catalog_project(tmp_path)
     project = Project.from_project_root(tmp_path)
     workflow = ProjectFlow(project, "example")
-    planned = workflow.plan_design(
-        load_design_target_catalog(project),
-        target="leaf",
-        mode="topology",
-    )
+    planned = workflow.plan(RunRequest.design("leaf", "topology"))
     runner.write_text("print('{\"passed\": false}')\n", encoding="utf-8")
 
     with pytest.raises(FlowExecutionError, match="preflight is blocked"):
@@ -389,11 +385,7 @@ def test_project_design_action_preserves_valid_failed_diagnostic(
     )
     project = Project.from_project_root(tmp_path)
     workflow = ProjectFlow(project, "example")
-    planned = workflow.plan_design(
-        load_design_target_catalog(project),
-        target="leaf",
-        mode="topology",
-    )
+    planned = workflow.plan(RunRequest.design("leaf", "topology"))
 
     result = workflow.run(
         planned,

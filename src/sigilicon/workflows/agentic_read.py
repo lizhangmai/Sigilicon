@@ -21,6 +21,7 @@ from sigilicon.domain.repository import (
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
+    RunRequest,
 )
 from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.workflows.design_campaign import (
@@ -176,9 +177,7 @@ class AgenticReadInterface:
             self.project,
             owner,
         ).plan(
-            flow=flow,
-            target=target,
-            profile=profile,
+            RunRequest.flow(flow, target, profile),
         )
         record = resolved.record
         return self.response(

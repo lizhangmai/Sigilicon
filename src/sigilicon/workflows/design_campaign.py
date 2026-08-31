@@ -60,7 +60,7 @@ from sigilicon.workflows.design_repair import (
     attribute_design_failure,
     compile_design_repair,
 )
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
 from sigilicon.workflows.project_flow_internal import bind_project_flow_execution
 
 
@@ -1568,9 +1568,11 @@ def resolve_project_design_campaign(
     project_flow = ProjectFlow(project, source.owner)
     source_baseline = source.baseline
     baseline_plan = project_flow.plan(
-        flow=source_baseline.flow,
-        target=source_baseline.target,
-        profile=source_baseline.profile,
+        RunRequest.flow(
+            source_baseline.flow,
+            source_baseline.target,
+            source_baseline.profile,
+        )
     )
     baseline_execution = bind_project_flow_execution(baseline_plan)
     baseline = DesignCampaignAttempt(
@@ -1585,9 +1587,11 @@ def resolve_project_design_campaign(
     if source.continuation is not None:
         template = source.continuation
         continuation_plan = project_flow.plan(
-            flow=template.flow,
-            target=template.target,
-            profile=template.profile,
+            RunRequest.flow(
+                template.flow,
+                template.target,
+                template.profile,
+            )
         )
         continuation_execution = bind_project_flow_execution(continuation_plan)
         continuation = DesignCampaignContinuation(

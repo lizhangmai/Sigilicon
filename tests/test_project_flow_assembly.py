@@ -166,8 +166,8 @@ def test_project_flow_reads_its_canonical_catalog_once_per_operation(
     assert not hasattr(planned, "plan")
     assert catalog_reads == 1
 
-    with pytest.raises(ValueError, match="cannot be combined"):
-        project_flow.plan(request, flow="owner-flow", target="all")
+    with pytest.raises(ValueError, match="requires a RunRequest"):
+        project_flow.plan("owner-flow")  # type: ignore[arg-type]
 
     catalog_reads = 0
     resolved = resolve_project_flow_plan(
@@ -243,7 +243,7 @@ def test_project_extension_content_is_bound_to_plan_and_preflight(
     _declare_extension(tmp_path, "example", source)
     project = Project.from_project_root(tmp_path)
     project_flow = ProjectFlow(project, "example")
-    planned = project_flow.plan(flow="owner-flow", target="all")
+    planned = project_flow.plan(RunRequest.flow("owner-flow", "all"))
 
     approved_record = planned.record
     source_record = approved_record["implementation_sources"][0]
@@ -259,8 +259,7 @@ def test_project_extension_content_is_bound_to_plan_and_preflight(
     assert preflight.checks[0].status == "changed"
 
     replanned = ProjectFlow(project, "example").plan(
-        flow="owner-flow",
-        target="all",
+        RunRequest.flow("owner-flow", "all"),
     )
     assert replanned.record != approved_record
 
@@ -283,7 +282,7 @@ def test_project_extension_binds_python_helpers_from_other_owner_filesets(
     _declare_extension(tmp_path, "example", source)
     project = Project.from_project_root(tmp_path)
     project_flow = ProjectFlow(project, "example")
-    planned = project_flow.plan(flow="owner-flow", target="all")
+    planned = project_flow.plan(RunRequest.flow("owner-flow", "all"))
 
     paths = {
         item["path"] for item in planned.record["implementation_sources"]
@@ -310,7 +309,7 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
     _write_owner_flow(tmp_path)
 
     project_flow = ProjectFlow(Project.from_project_root(tmp_path), "example")
-    planned = project_flow.plan(flow="owner-flow", target="all")
+    planned = project_flow.plan(RunRequest.flow("owner-flow", "all"))
 
     assert planned.plan_identity == "example:owner-flow:all:local"
     assert planned.record["nodes"][0]["adapter"] == "example-owner-check"
@@ -321,7 +320,7 @@ def test_project_flow_hides_owner_paths_and_registry_assembly(
     ).status == "ready"
     independently_assembled = ProjectFlow(
         Project.from_project_root(tmp_path), "example"
-    ).plan(flow="owner-flow", target="all")
+    ).plan(RunRequest.flow("owner-flow", "all"))
     with pytest.raises(ValueError, match="exact project owner binding"):
         project_flow.preflight(independently_assembled, ExecutionEnvironment())
 
@@ -430,7 +429,9 @@ def test_project_flow_registry_requires_the_single_extension_interface(
 
     project = Project.from_project_root(tmp_path)
     with pytest.raises(ValueError, match="register_flow_adapters"):
-        ProjectFlow(project, "example").plan(flow="owner-flow", target="all")
+        ProjectFlow(project, "example").plan(
+            RunRequest.flow("owner-flow", "all")
+        )
 
 
 def test_project_flow_registry_reports_registration_failure_as_contract_error(

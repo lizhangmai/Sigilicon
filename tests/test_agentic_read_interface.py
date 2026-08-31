@@ -29,7 +29,7 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.flow import ExecutionEnvironment
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
-from sigilicon.workflows.project_flow import ProjectFlow
+from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
 
 
 def _read(root: Path) -> AgenticReadInterface:
@@ -214,9 +214,7 @@ def test_cli_python_and_run_inspection_share_the_exact_interface(
 
     project_flow = ProjectFlow(interface.project, "example")
     planned = project_flow.plan(
-        flow="pipeline",
-        target="all",
-        profile="offline",
+        RunRequest.flow("pipeline", "all", "offline"),
     )
     result = project_flow.run(
         planned,
