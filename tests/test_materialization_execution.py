@@ -55,9 +55,7 @@ from sigilicon.layout.materialization_execution import (
 from sigilicon.layout.physical_design import (
     ResultStatus,
 )
-from sigilicon.experimental.physical_actions import (
-    EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
-)
+from sigilicon.flow.physical_design import OA_XSTREAM_MATERIALIZATION_ADAPTER
 from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
 from physical_design_fixtures import routed_job, typed_result
 from sigilicon.workflows.action_registry import build_action_registry
@@ -540,7 +538,7 @@ def test_common_registry_keeps_materialization_backend_explicit() -> None:
 
     assert contract.adapter_extensible
     assert not registry.has_adapter(_MATERIALIZER)
-    assert registry.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
-    assert EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER in contract.adapters
+    assert registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert OA_XSTREAM_MATERIALIZATION_ADAPTER in contract.adapters
     assert contract.output("layout").kind == MATERIALIZED_GDS_KIND
     assert contract.output("receipt").kind == MATERIALIZATION_RECEIPT_KIND

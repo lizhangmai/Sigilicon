@@ -1,4 +1,4 @@
-"""Experimental, guarded XStream GDSII export for OA layout backends."""
+"""Guarded XStream GDSII export for OA layout backends."""
 
 from __future__ import annotations
 
@@ -141,7 +141,7 @@ def _canonical_generated_structure_names(
     return replacements
 
 
-def canonicalize_experimental_xstream_gdsii(payload: bytes) -> bytes:
+def canonicalize_xstream_gdsii(payload: bytes) -> bytes:
     """Remove timestamp and generated-PCell identity variance from XStream GDSII."""
 
     canonical = canonicalize_gdsii_timestamps(payload)
@@ -170,8 +170,8 @@ def canonicalize_experimental_xstream_gdsii(payload: bytes) -> bytes:
     return result
 
 
-class ExperimentalXStreamExportError(RuntimeError):
-    """Experimental XStream did not prove one complete GDSII translation."""
+class XStreamExportError(RuntimeError):
+    """XStream did not prove one complete GDSII translation."""
 
     def __init__(
         self,
@@ -188,7 +188,7 @@ class ExperimentalXStreamExportError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class ExperimentalXStreamExportRequest:
+class XStreamExportRequest:
     executable: Path
     library: str
     cell: str
@@ -237,7 +237,7 @@ class ExperimentalXStreamExportRequest:
 
 
 @dataclass(frozen=True)
-class ExperimentalXStreamExportResult:
+class XStreamExportResult:
     command: tuple[str, ...]
     exit_code: int
     stdout: str
@@ -251,7 +251,7 @@ def _prepend(environment: dict[str, str], name: str, value: Path) -> None:
     environment[name] = str(value) + (os.pathsep + existing if existing else "")
 
 
-def experimental_xstream_environment(executable: Path) -> dict[str, str]:
+def xstream_environment(executable: Path) -> dict[str, str]:
     """Construct Cadence's subprocess environment from one explicit launcher."""
 
     environment = cadence_subprocess_env()
@@ -288,14 +288,14 @@ def _write_failure_diagnostic(
     return diagnostic
 
 
-def run_experimental_xstream_export(
-    request: ExperimentalXStreamExportRequest,
-) -> ExperimentalXStreamExportResult:
+def run_xstream_export(
+    request: XStreamExportRequest,
+) -> XStreamExportResult:
     """Export one exact OA cellview and require authoritative XStream completion."""
 
     executable = Path(os.path.abspath(request.executable))
     if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise ExperimentalXStreamExportError(
+        raise XStreamExportError(
             "resolved XStream executable is unavailable",
             executed=False,
             exit_code=None,
@@ -305,7 +305,7 @@ def run_experimental_xstream_export(
         (request.cds_lib, "XStream cds.lib"),
     ):
         if not path.is_file() or path.is_symlink():
-            raise ExperimentalXStreamExportError(
+            raise XStreamExportError(
                 f"{label} is not a regular file: {path}",
                 executed=False,
                 exit_code=None,
@@ -369,7 +369,7 @@ def run_experimental_xstream_export(
             completed = run_process_group(
                 command,
                 cwd=work,
-                env=experimental_xstream_environment(executable),
+                env=xstream_environment(executable),
                 timeout=request.timeout_seconds,
                 before_spawn=validate_spawn,
                 pass_fds=(
@@ -381,13 +381,13 @@ def run_experimental_xstream_export(
                 ),
             )
         except FileNotFoundError as exc:
-            raise ExperimentalXStreamExportError(
+            raise XStreamExportError(
                 f"XStream backend unavailable: {exc}",
                 executed=False,
                 exit_code=None,
             ) from exc
         except Exception as exc:
-            raise ExperimentalXStreamExportError(
+            raise XStreamExportError(
                 f"XStream execution failed: {exc}",
                 executed=True,
                 exit_code=None,
@@ -402,7 +402,7 @@ def run_experimental_xstream_export(
             exit_code=completed.returncode,
             stdout=completed.stdout,
         )
-        raise ExperimentalXStreamExportError(
+        raise XStreamExportError(
             f"XStream exited {completed.returncode}; see managed xstream-failure.log",
             executed=True,
             exit_code=completed.returncode,
@@ -414,7 +414,7 @@ def run_experimental_xstream_export(
         (gds, "GDSII output"),
     ):
         if not path.is_file() or path.is_symlink():
-            raise ExperimentalXStreamExportError(
+            raise XStreamExportError(
                 f"XStream did not produce a regular {label}",
                 executed=True,
                 exit_code=0,
@@ -427,18 +427,18 @@ def run_experimental_xstream_export(
         )
     )
     if _XSTREAM_COMPLETE.search(proof) is None:
-        raise ExperimentalXStreamExportError(
+        raise XStreamExportError(
             "XStream summary does not prove a zero-warning translation",
             executed=True,
             exit_code=0,
         )
     if gds.stat().st_size <= 0:
-        raise ExperimentalXStreamExportError(
+        raise XStreamExportError(
             "XStream produced an empty GDSII output",
             executed=True,
             exit_code=0,
         )
-    return ExperimentalXStreamExportResult(
+    return XStreamExportResult(
         command=command,
         exit_code=completed.returncode,
         stdout=completed.stdout,
@@ -449,10 +449,10 @@ def run_experimental_xstream_export(
 
 
 __all__ = [
-    "ExperimentalXStreamExportError",
-    "ExperimentalXStreamExportRequest",
-    "ExperimentalXStreamExportResult",
-    "canonicalize_experimental_xstream_gdsii",
-    "run_experimental_xstream_export",
-    "experimental_xstream_environment",
+    "XStreamExportError",
+    "XStreamExportRequest",
+    "XStreamExportResult",
+    "canonicalize_xstream_gdsii",
+    "run_xstream_export",
+    "xstream_environment",
 ]

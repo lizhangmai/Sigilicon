@@ -1,10 +1,12 @@
-"""Experimental XStream plus Calibre verification for custom layout pilots."""
+"""XStream plus Calibre verification for owner-planned custom layouts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
@@ -14,9 +16,21 @@ from sigilicon.domain.physical_verification import (
     DrcEvidence,
     PhysicalVerificationEvidence,
 )
-from sigilicon.experimental.virtuoso.xstream import (
-    ExperimentalXStreamExportRequest,
-    run_experimental_xstream_export,
+from sigilicon.flow import (
+    ActionContext,
+    AdapterResult,
+    CollectedActionResult,
+    FlowExecutionError,
+    ProducedArtifact,
+)
+from sigilicon.flow.evidence import FactSet, FactSource
+from sigilicon.flow.layout import (
+    LAYOUT_VERIFICATION_EVIDENCE_KIND,
+    XSTREAM_CALIBRE_LAYOUT_ADAPTER,
+)
+from sigilicon.virtuoso.xstream import (
+    XStreamExportRequest,
+    run_xstream_export,
 )
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
@@ -29,16 +43,17 @@ from sigilicon.workflows.layout_verification import (
     run_calibre_verification,
     find_calibre,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.workflows.layout_flow import LayoutActionAdapter, LayoutInvocation
+from sigilicon.workflows.run_artifacts import FlowRunArtifacts, RunArtifacts
 
 
 @dataclass(frozen=True)
-class ExperimentalLayoutVerificationResult:
+class LayoutVerificationResult:
     passed: bool
     evidence: PhysicalVerificationEvidence
 
 
-def find_experimental_xstream(explicit: Path | None = None) -> Path:
+def find_xstream(explicit: Path | None = None) -> Path:
     home = os.environ.get("CDSHOME")
     candidates = [
         Path(home) / "tools" / "dfII" / "bin" / "strmout"
@@ -53,7 +68,7 @@ def find_experimental_xstream(explicit: Path | None = None) -> Path:
     )
 
 
-def _run_experimental_xstream(
+def _run_xstream(
     record: RunArtifacts,
     spec: LayoutSpec,
     *,
@@ -67,8 +82,8 @@ def _run_experimental_xstream(
     if not cds_lib.is_file():
         raise FileNotFoundError(f"workspace cds.lib does not exist: {cds_lib}")
     work = record.directory("work")
-    exported = run_experimental_xstream_export(
-        ExperimentalXStreamExportRequest(
+    exported = run_xstream_export(
+        XStreamExportRequest(
             executable=xstream,
             library=spec.library,
             cell=spec.cell,
@@ -104,7 +119,7 @@ def _run_experimental_xstream(
     return staged_gds
 
 
-def run_experimental_layout_verification(
+def run_layout_verification(
     planning: LayoutPlanningResult,
     client: Any,
     *,
@@ -116,8 +131,8 @@ def run_experimental_layout_verification(
     calibre: Path | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
-) -> ExperimentalLayoutVerificationResult:
-    """Verify one planned layout with the opt-in XStream/Calibre pilot."""
+) -> LayoutVerificationResult:
+    """Verify one planned layout through managed XStream and Calibre."""
 
     if check not in {"drc", "lvs"}:
         raise ValueError("layout verification check must be drc or lvs")
@@ -134,7 +149,7 @@ def run_experimental_layout_verification(
         raise ValueError("physical verification requires a routed layout plan")
     run = artifacts
     run.write_text("inputs", ("layout-plan.json",), plan.canonical_json())
-    xstream_executable = find_experimental_xstream(
+    xstream_executable = find_xstream(
         xstream or layout_spec.layout_pdk.xstream_bin
     )
     calibre_executable = find_calibre(calibre or layout_spec.layout_pdk.calibre_bin)
@@ -168,7 +183,7 @@ def run_experimental_layout_verification(
                 f"{layout_spec.pdk.oa.technology_library!r}"
             )
         validate_layout_plan(client, plan, operation=operation, timeout=60)
-        gds = _run_experimental_xstream(
+        gds = _run_xstream(
             run,
             layout_spec,
             xstream=xstream_executable,
@@ -194,7 +209,7 @@ def run_experimental_layout_verification(
             typed_evidence = drc_evidence_from_summary(
                 read_nofollow_text(run.path("outputs", "drc-summary.rep")),
                 layout=layout_identity,
-                backend="experimental.xstream+calibre",
+                backend="cadence.xstream+calibre",
                 exit_code=0,
                 configuration_warnings=(
                     layout_spec.physical_verification.drc_configuration_warnings
@@ -213,7 +228,7 @@ def run_experimental_layout_verification(
                     owner=layout_spec.library,
                     name=layout_spec.cell,
                 ),
-                backend="experimental.xstream+calibre",
+                backend="cadence.xstream+calibre",
                 exit_code=0,
             )
         run.add_file("work", run.directory("work"))
@@ -248,14 +263,134 @@ def run_experimental_layout_verification(
         or evidence_path is None
     ):
         raise RuntimeError("layout verification completed without committing its artifact")
-    return ExperimentalLayoutVerificationResult(
+    return LayoutVerificationResult(
         passed=bool(outcome["passed"]),
         evidence=typed_evidence,
     )
 
 
+class XStreamCalibreLayoutAdapter(LayoutActionAdapter):
+    """Execute one owner-planned custom-layout verification operation."""
+
+    def _verify(
+        self,
+        context: ActionContext,
+        selected: LayoutInvocation,
+        artifacts: FlowRunArtifacts,
+    ) -> AdapterResult:
+        allowed = {
+            "target",
+            "operation",
+            "spec",
+            "check",
+            "evidence_role",
+            "evidence_level",
+            "evidence_scope",
+        }
+        if set(context.action_config) != allowed:
+            raise FlowExecutionError("layout verification Action configuration drift")
+        if set(context.adapter_config) != {
+            "xstream_timeout_seconds",
+            "calibre_timeout_seconds",
+        }:
+            raise FlowExecutionError("layout verification Adapter configuration drift")
+        check = self._text(context, "check")
+        operation = self._text(context, "operation")
+        if operation != f"verify-{check}" or check not in {"drc", "lvs"}:
+            raise FlowExecutionError("layout verification check disagrees with route")
+        xstream = context.capabilities["tool.cadence-xstream"].executable
+        calibre = context.capabilities["tool.calibre"].executable
+        if xstream is None or calibre is None:
+            raise FlowExecutionError(
+                "layout verification tool capabilities require executable paths"
+            )
+        result = run_layout_verification(
+            selected.planning,
+            self._client_factory(),
+            check=check,
+            artifacts=artifacts,
+            operation_id=context.operation_id,
+            bind_operation=context.bind_workspace_operation,
+            xstream=xstream,
+            calibre=calibre,
+            xstream_timeout=self._positive_timeout(
+                context, "xstream_timeout_seconds"
+            ),
+            calibre_timeout=self._positive_timeout(
+                context, "calibre_timeout_seconds"
+            ),
+        )
+        envelope = context.require_evidence()
+        metadata = {
+            "evidence_role": envelope.role,
+            "evidence_level": envelope.level,
+            "evidence_scope": envelope.scope,
+        }
+        evidence = artifacts.write_json(
+            "outputs",
+            ("flow-evidence.json",),
+            {
+                "target": selected.target,
+                "operation": operation,
+                "library": selected.planning.spec.library,
+                "cell": selected.planning.spec.cell,
+                "view": selected.planning.spec.view,
+                "check": check,
+                "passed": result.passed,
+                **metadata,
+                "physical_verification_evidence": json.loads(
+                    result.evidence.canonical_json()
+                ),
+                "product_qualification_conclusion": False,
+            },
+        )
+        schema = context.action.fact_schema
+        if schema is None:
+            raise FlowExecutionError(
+                f"Action {context.action.kind!r} has no fact schema"
+            )
+        facts = FactSet(
+            schema,
+            {
+                "passed": result.passed,
+                "check": check,
+                "evidence-role": metadata["evidence_role"],
+                "evidence-level": metadata["evidence_level"],
+                "evidence-scope": metadata["evidence_scope"],
+                "product-qualification-conclusion": False,
+            },
+            FactSource(context.action.kind, context.node_id),
+        )
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(
+                    ProducedArtifact(
+                        "evidence", LAYOUT_VERIFICATION_EVIDENCE_KIND, evidence
+                    ),
+                ),
+                facts=facts,
+            )
+        )
+
+
+def create_xstream_calibre_layout_adapter(
+    *,
+    client_factory: Callable[[], Any] | None = None,
+) -> XStreamCalibreLayoutAdapter:
+    """Create the Adapter while keeping Virtuoso client selection at this seam."""
+
+    if client_factory is None:
+        from sigilicon.virtuoso.client import get_client
+
+        client_factory = get_client
+    return XStreamCalibreLayoutAdapter(client_factory=client_factory)
+
+
 __all__ = [
-    "ExperimentalLayoutVerificationResult",
-    "find_experimental_xstream",
-    "run_experimental_layout_verification",
+    "create_xstream_calibre_layout_adapter",
+    "LayoutVerificationResult",
+    "XSTREAM_CALIBRE_LAYOUT_ADAPTER",
+    "XStreamCalibreLayoutAdapter",
+    "find_xstream",
+    "run_layout_verification",
 ]

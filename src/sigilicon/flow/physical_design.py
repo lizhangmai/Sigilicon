@@ -14,6 +14,7 @@ from sigilicon.flow.registry import FlowRegistry
 PHYSICAL_DESIGN_JOB_KIND = "physical-design.job"
 PHYSICAL_DESIGN_RESULT_KIND = "physical-design.result"
 PHYSICAL_DESIGN_SOURCE_ACTION = "physical-design.source-job"
+PHYSICAL_DESIGN_RESULT_SOURCE_ACTION = "physical-design.source-result"
 PHYSICAL_DESIGN_ACTION = "physical-design.solve"
 PHYSICAL_MATERIALIZATION_ACTION = "physical-design.compile-materialization"
 PHYSICAL_MATERIALIZATION_PLAN_KIND = "physical-design.materialization-plan"
@@ -22,10 +23,14 @@ PHYSICAL_MATERIALIZATION_EXECUTION_ACTION = "physical-design.materialize"
 MATERIALIZED_GDS_KIND = "layout.gds"
 MATERIALIZATION_RECEIPT_KIND = "evidence.materialization-receipt"
 MATERIALIZATION_PLAN_ADAPTER = "materialization-plan"
+OA_XSTREAM_MATERIALIZATION_ADAPTER = "oa-virtuoso-xstream-materialization"
 
 
 PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA = FactSchema(
     PHYSICAL_DESIGN_SOURCE_ACTION,
+)
+PHYSICAL_DESIGN_RESULT_SOURCE_FACT_SCHEMA = FactSchema(
+    PHYSICAL_DESIGN_RESULT_SOURCE_ACTION,
 )
 PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA = FactSchema(
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
@@ -85,13 +90,22 @@ PHYSICAL_DESIGN_FACT_SCHEMA = FactSchema(
 
 
 def register_physical_design_actions(registry: FlowRegistry) -> None:
-    """Register reusable artifact and solver seams without project policy."""
+    """Register reusable source, solver, and materialization seams."""
 
     registry.register_action(
         ActionContract(
             kind=PHYSICAL_DESIGN_SOURCE_ACTION,
             outputs=(ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),),
             fact_schema=PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA,
+            adapters=("source-assets",),
+            resolves_source_assets=True,
+        )
+    )
+    registry.register_action(
+        ActionContract(
+            kind=PHYSICAL_DESIGN_RESULT_SOURCE_ACTION,
+            outputs=(ArtifactPort("result", PHYSICAL_DESIGN_RESULT_KIND),),
+            fact_schema=PHYSICAL_DESIGN_RESULT_SOURCE_FACT_SCHEMA,
             adapters=("source-assets",),
             resolves_source_assets=True,
         )
@@ -159,6 +173,8 @@ __all__ = [
     "PHYSICAL_DESIGN_ACTION",
     "PHYSICAL_DESIGN_JOB_KIND",
     "PHYSICAL_DESIGN_RESULT_KIND",
+    "PHYSICAL_DESIGN_RESULT_SOURCE_ACTION",
+    "OA_XSTREAM_MATERIALIZATION_ADAPTER",
     "PHYSICAL_DESIGN_SOURCE_ACTION",
     "PHYSICAL_MATERIALIZATION_ACTION",
     "PHYSICAL_MATERIALIZATION_EXECUTION_ACTION",
@@ -167,6 +183,7 @@ __all__ = [
     "MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND",
     "MATERIALIZATION_RECEIPT_KIND",
     "PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA",
+    "PHYSICAL_DESIGN_RESULT_SOURCE_FACT_SCHEMA",
     "PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA",
     "PHYSICAL_MATERIALIZATION_FACT_SCHEMA",
     "PHYSICAL_DESIGN_FACT_SCHEMA",

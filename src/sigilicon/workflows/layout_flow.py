@@ -453,7 +453,7 @@ class LayoutActionAdapter:
     ) -> AdapterResult:
         del context, selected, artifacts
         raise FlowExecutionError(
-            "combined XStream/Calibre layout verification is experimental"
+            "selected layout Adapter does not implement verification"
         )
 
     @staticmethod

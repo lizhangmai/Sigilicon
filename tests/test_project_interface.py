@@ -123,8 +123,8 @@ def test_action_registry_does_not_import_external_tool_adapters() -> None:
             "'sigilicon.workflows.calibre_pex', "
             "'sigilicon.workflows.layout_verification', "
             "'sigilicon.workflows.physical_design', "
-            "'sigilicon.experimental.workflows.oa_materialization', "
-            "'sigilicon.experimental.workflows.layout_flow'}; "
+            "'sigilicon.workflows.oa_materialization', "
+            "'sigilicon.workflows.custom_layout_verification'}; "
             "assert forbidden.isdisjoint(sys.modules), "
             "sorted(forbidden & set(sys.modules))",
         ),

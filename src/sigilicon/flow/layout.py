@@ -10,6 +10,7 @@ from sigilicon.flow.registry import FlowRegistry
 LAYOUT_GENERATION_ACTION = "custom-layout.generate"
 LAYOUT_GENERATION_ADAPTER = "project-layout-generation"
 LAYOUT_VERIFICATION_ACTION = "custom-layout.verify"
+XSTREAM_CALIBRE_LAYOUT_ADAPTER = "xstream-calibre-layout-verification"
 LAYOUT_GENERATION_EVIDENCE_KIND = "evidence.layout-generation"
 LAYOUT_VERIFICATION_EVIDENCE_KIND = "evidence.layout-verification"
 LAYOUT_ACTION_PLAN = "custom-layout.plan"
@@ -91,6 +92,7 @@ __all__ = [
     "LAYOUT_GENERATION_ADAPTER",
     "LAYOUT_GENERATION_EVIDENCE_KIND",
     "LAYOUT_VERIFICATION_ACTION",
+    "XSTREAM_CALIBRE_LAYOUT_ADAPTER",
     "LAYOUT_VERIFICATION_EVIDENCE_KIND",
     "register_layout_actions",
 ]

@@ -1,4 +1,4 @@
-"""Experimental OA/Virtuoso plus XStream materialization ToolAdapter."""
+"""OA/Virtuoso plus XStream materialization ToolAdapter."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from sigilicon.flow.model import (
     FlowExecutionError,
     ResolvedPlatformAsset,
 )
+from sigilicon.flow.physical_design import OA_XSTREAM_MATERIALIZATION_ADAPTER
 from sigilicon.layout.materialization import MaterializationPlan
 from sigilicon.layout.materialization_execution import (
     LayoutArtifactFormat,
@@ -52,14 +53,11 @@ from sigilicon.virtuoso.client import get_client
 from sigilicon.virtuoso.library import ensure_project_library
 from sigilicon.virtuoso.oa import execute_owned_cellview_skill
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.experimental.virtuoso.xstream import (
-    ExperimentalXStreamExportError,
-    ExperimentalXStreamExportRequest,
-    canonicalize_experimental_xstream_gdsii,
-    run_experimental_xstream_export,
-)
-from sigilicon.experimental.physical_actions import (
-    EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
+from sigilicon.virtuoso.xstream import (
+    XStreamExportError,
+    XStreamExportRequest,
+    canonicalize_xstream_gdsii,
+    run_xstream_export,
 )
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
@@ -70,7 +68,7 @@ from sigilicon.workflows.physical_design import (
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
 _OA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-_BACKEND = "sigilicon.experimental.oa-virtuoso-xstream"
+_BACKEND = "cadence.oa-virtuoso-xstream"
 _CAPABILITIES = (
     "tool.virtuoso-bridge",
     "tool.xstream",
@@ -826,8 +824,8 @@ def _read_regular_bytes(source: Path, label: str) -> bytes:
     return b"".join(chunks)
 
 
-class ExperimentalOaXStreamMaterializationAdapter:
-    """Materialize canonical plans through managed OA and experimental XStream."""
+class OaXStreamMaterializationAdapter:
+    """Materialize canonical plans through managed OA and XStream."""
 
     def run(self, context: ActionContext) -> AdapterResult:
         return complete_staged_run(
@@ -1035,8 +1033,8 @@ class ExperimentalOaXStreamMaterializationAdapter:
                     timeout=configuration.oa_timeout_seconds,
                     mutation=False,
                 )
-            exported = run_experimental_xstream_export(
-                ExperimentalXStreamExportRequest(
+            exported = run_xstream_export(
+                XStreamExportRequest(
                     executable=executable,
                     library=target.library,
                     cell=target.cell,
@@ -1072,7 +1070,7 @@ class ExperimentalOaXStreamMaterializationAdapter:
         )
         raw = _read_regular_bytes(exported.gds_path, "XStream GDSII output")
         validate_layout_content(raw, LayoutArtifactFormat.GDSII)
-        canonical = canonicalize_experimental_xstream_gdsii(raw)
+        canonical = canonicalize_xstream_gdsii(raw)
         layout_path = context.output_path("layout", "layout.gds")
         try:
             layout_path.write_bytes(canonical)
@@ -1152,7 +1150,7 @@ class ExperimentalOaXStreamMaterializationAdapter:
                                 assets,
                                 executable=executable,
                             )
-                        except ExperimentalXStreamExportError as exc:
+                        except XStreamExportError as exc:
                             diagnostic_message = ""
                             if exc.diagnostic_path is not None:
                                 try:
@@ -1222,6 +1220,6 @@ class ExperimentalOaXStreamMaterializationAdapter:
 
 
 __all__ = [
-    "EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER",
-    "ExperimentalOaXStreamMaterializationAdapter",
+    "OA_XSTREAM_MATERIALIZATION_ADAPTER",
+    "OaXStreamMaterializationAdapter",
 ]

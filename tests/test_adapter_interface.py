@@ -30,10 +30,8 @@ from sigilicon.flow import (
     complete_staged_run,
 )
 from sigilicon.workflows.action_registry import build_action_registry
-from sigilicon.experimental.physical_actions import (
-    EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER,
-    EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
-)
+from sigilicon.flow.layout import XSTREAM_CALIBRE_LAYOUT_ADAPTER
+from sigilicon.flow.physical_design import OA_XSTREAM_MATERIALIZATION_ADAPTER
 
 
 class SingleMethodAdapter:
@@ -196,17 +194,17 @@ def test_builtin_adapters_cross_the_registry_without_legacy_wrapping(
     assert type(implementation).__module__ != "sigilicon.flow.registry"
 
 
-def test_common_registry_contains_explicit_experimental_backend_selections() -> None:
+def test_common_registry_contains_explicit_custom_layout_backends() -> None:
     registry = build_action_registry()
 
-    assert registry.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
-    assert registry.has_adapter(EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER)
+    assert registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert registry.has_adapter(XSTREAM_CALIBRE_LAYOUT_ADAPTER)
     assert (
-        EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER
+        OA_XSTREAM_MATERIALIZATION_ADAPTER
         in registry.action("physical-design.materialize").adapters
     )
     assert (
-        EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER
+        XSTREAM_CALIBRE_LAYOUT_ADAPTER
         in registry.action("custom-layout.verify").adapters
     )
 
