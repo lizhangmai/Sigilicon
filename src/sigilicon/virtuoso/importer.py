@@ -338,21 +338,10 @@ def _import_preflight_skill(
 
 
 def _require_skill_result(result: Any, label: str) -> Any:
-    errors = (
-        result.get("errors", ())
-        if isinstance(result, dict)
-        else getattr(result, "errors", ())
-    )
-    if errors:
-        raise RuntimeError(f"{label}: {errors[0]}")
-    if isinstance(result, dict):
-        status = result.get("status")
-        success = status == "success" or getattr(status, "value", None) == "success"
-    else:
-        status = getattr(result, "status", None)
-        success = getattr(result, "ok", None) is True
-    if not success:
-        raise RuntimeError(f"{label}: unconfirmed bridge status {status!r}")
+    if result.errors:
+        raise RuntimeError(f"{label}: {result.errors[0]}")
+    if result.ok is not True:
+        raise RuntimeError(f"{label}: unconfirmed bridge status {result.status!r}")
     return result
 
 

@@ -464,7 +464,7 @@ entrypoint = "../run.py"
 spec_argument = "--spec"
 spec = "ip/example/leaf/design.toml"
 [targets.escape.modes]
-topology = []
+topology = {}
 [targets.escape.routes]
 topology = ["design-checks", "escape-topology"]
 ''',
@@ -487,7 +487,7 @@ entrypoint = "ip/example/leaf/run.py"
 spec_argument = "--spec"
 spec = "ip/example/leaf/design.toml"
 [targets.leaf.modes]
-topology = ["--mode", "sync"]
+topology = { args = ["--mode", "sync"] }
 [targets.leaf.routes]
 topology = ["design-checks", "leaf-topology"]
 ''',
@@ -517,7 +517,7 @@ description = "DV-owned entrypoint"
 kind = "module"
 entrypoint = "ip.example.dv.transaction"
 [targets.dv-check.modes]
-contract = []
+contract = {}
 [targets.dv-check.routes]
 contract = ["design-checks", "dv-contract"]
 ''',
@@ -544,7 +544,7 @@ description = "Unowned module"
 kind = "module"
 entrypoint = "unowned.runner"
 [targets.external.modes]
-contract = []
+contract = {}
 [targets.external.routes]
 contract = ["design-checks", "external-contract"]
 ''',
@@ -565,7 +565,7 @@ description = "Undeclared shared CLI"
 kind = "module"
 entrypoint = "sigilicon.cli.future_command"
 [targets.future-cli.modes]
-contract = []
+contract = {}
 [targets.future-cli.routes]
 contract = ["design-checks", "future-contract"]
 ''',

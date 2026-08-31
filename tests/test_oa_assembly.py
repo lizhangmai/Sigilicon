@@ -1037,7 +1037,7 @@ def test_check_accepts_git_owned_design_without_prior_state(
         library="assembled",
         cells=(cell,),
         expected_views={cell: ("netlist", "schematic", "symbol")},
-        designs=(SimpleNamespace(inspection=inspection),),
+        designs=(SimpleNamespace(inspection=inspection, instance_parameters=()),),
         layouts=(),
         testbenches=(),
         views=(),
@@ -1082,6 +1082,7 @@ def test_testbench_check_includes_transitive_dependency_materialization(
                 spec=SimpleNamespace(cell=cell)
             ),
             dependencies=dependencies,
+            instance_parameters=(),
         )
         for cell, dependencies in (("CHILD", ()), ("DUT", ("CHILD",)))
     )

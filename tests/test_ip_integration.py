@@ -125,6 +125,7 @@ endmodule
                     "layout_view": "layout",
                 },
                 "interface": {
+                    "kind": "oa-mixed-signal",
                     "physical": "fixture_macro:oa-1-pin",
                     "logical": "fixture_model:transaction-1-port",
                 },
@@ -1512,6 +1513,7 @@ def test_ip_integration_reuses_the_validated_producer_release_contract(
                 {
                     "name": "macro",
                     "interface": {
+                        "kind": "oa-mixed-signal",
                         "logical": "fixture_model:transaction-1-port",
                         "physical": "fixture_macro:oa-1-pin",
                     },

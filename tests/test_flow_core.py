@@ -17,6 +17,7 @@ from sigilicon.flow import (
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
+    ExecutionEnvironment,
     ExecutionProfile,
     EvidenceEnvelope,
     FlowContractError,
@@ -399,6 +400,7 @@ def test_plan_compiles_typed_config_and_evidence_envelope(tmp_path: Path) -> Non
     FlowEngine(registered).run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="evidence-context",
     )
 
@@ -516,7 +518,12 @@ def test_adapter_factory_is_materialized_only_when_a_plan_runs(tmp_path: Path) -
     plan = engine.plan(spec, "all", profile)
 
     assert materialized == []
-    engine.run(plan, artifact_root=tmp_path / "artifacts", run_id="1" * 32)
+    engine.run(
+        plan,
+        artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
+        run_id="1" * 32,
+    )
     assert len(materialized) == 1
 
 
@@ -535,6 +542,7 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="a" * 32,
     )
 
@@ -635,6 +643,7 @@ def test_flow_action_backlinks_a_workspace_incident(
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="b" * 32,
     )
 
@@ -744,6 +753,7 @@ def test_flow_passes_declared_extensions_without_interpreting_the_payload(
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="e" * 32,
     )
     request = json.loads(
@@ -829,7 +839,12 @@ def test_restore_compares_the_exact_plan_not_only_its_semantic_id(tmp_path: Path
     changed = engine.plan(changed_spec, "qualification", fake_profile())
     assert engine.plan_id(first) == engine.plan_id(changed)
     assert engine.plan_record(first) != engine.plan_record(changed)
-    engine.run(first, artifact_root=tmp_path / "artifacts", run_id="record-restore")
+    engine.run(
+        first,
+        artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
+        run_id="record-restore",
+    )
 
     with pytest.raises(FlowExecutionError, match="Plan record drift"):
         engine.restore_result(
@@ -846,6 +861,7 @@ def test_restore_rejects_action_operation_record_drift(tmp_path: Path) -> None:
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="operation-restore",
     )
     request_path = result.run_root / "inputs/source/action_request.json"
@@ -871,6 +887,7 @@ def test_restore_rejects_legacy_flow_result_schema(tmp_path: Path) -> None:
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="legacy-result",
     )
     result_path = result.run_root / "outputs/flow_result.json"
@@ -903,6 +920,7 @@ def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
             fake_profile(),
         ),
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id=run_id,
     )
     manifest = json.loads((result.run_root / "run_manifest.json").read_text())
@@ -929,6 +947,7 @@ def test_node_cannot_claim_another_nodes_file_as_evidence(tmp_path: Path) -> Non
             fake_profile(),
         ),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="8" * 32,
     )
 
@@ -950,7 +969,12 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
         "qualification",
         fake_profile(),
     )
-    first_run = engine.run(first_plan, artifact_root=artifact_root, run_id="9" * 32)
+    first_run = engine.run(
+        first_plan,
+        artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
+        run_id="9" * 32,
+    )
 
     source_result = json.loads(
         (first_run.run_root / "outputs/source/action_result.json").read_text()
@@ -975,6 +999,7 @@ def test_artifact_qualifiers_propagate_without_derived_identities(
     product = engine.run(
         product_plan,
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id="8" * 32,
     )
 
@@ -994,6 +1019,7 @@ def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) 
             fake_profile(),
         ),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="b" * 32,
     )
 
@@ -1009,6 +1035,7 @@ def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) 
             fake_profile(),
         ),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="c" * 32,
     )
     assert strict.nodes["transform"].status == "rejected"
@@ -1025,12 +1052,14 @@ def test_run_identity_is_immutable(tmp_path: Path) -> None:
     first = engine.run(
         engine.plan(flow_spec(text="hello"), "qualification", fake_profile()),
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id=run_id,
     )
     with pytest.raises(FlowExecutionError, match="already exists"):
         engine.run(
             engine.plan(flow_spec(text="goodbye"), "qualification", fake_profile()),
             artifact_root=artifact_root,
+            environment=ExecutionEnvironment(),
             run_id=run_id,
         )
 
@@ -1161,6 +1190,7 @@ def test_non_valid_terminal_results_are_persisted(
     result = engine.run(
         engine.plan(spec, "all", profile),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="e" * 32,
     )
 
@@ -1197,6 +1227,7 @@ def test_result_collection_failure_preserves_successful_execution_status(
     result = engine.run(
         engine.plan(spec, "all", profile),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="7" * 32,
     )
 
@@ -1257,6 +1288,7 @@ def test_interruption_writes_cancelled_terminal_records(tmp_path: Path) -> None:
     result = engine.run(
         engine.plan(spec, "all", profile),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="f" * 32,
     )
 
@@ -1300,6 +1332,7 @@ def test_progress_interruption_writes_cancelled_terminal_records(
     result = engine.run(
         engine.plan(spec, "all", profile),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="e" * 32,
         progress=interrupt_current_node,
     )
@@ -1327,6 +1360,7 @@ def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) ->
     result = engine.run(
         engine.plan(flow_spec(), "qualification", fake_profile()),
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id=run_id,
     )
     untracked = result.run_root / "do-not-delete.txt"
@@ -1364,6 +1398,7 @@ def test_policy_change_requires_a_new_run(
     first = engine.run(
         engine.plan(original, "qualification", fake_profile()),
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id=run_id,
     )
     changed_policy = FlowSpec(
@@ -1381,6 +1416,7 @@ def test_policy_change_requires_a_new_run(
     changed = engine.run(
         engine.plan(changed_policy, "qualification", fake_profile()),
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id="7" * 32,
     )
 
@@ -1398,6 +1434,7 @@ def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:
     result = engine.run(
         engine.plan(flow_spec(), "qualification", fake_profile()),
         artifact_root=artifact_root,
+        environment=ExecutionEnvironment(),
         run_id=run_id,
     )
     manifest_path = result.run_root / "run_manifest.json"

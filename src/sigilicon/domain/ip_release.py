@@ -226,10 +226,9 @@ def _parse_ip_contract(
         interface = _table(
             entry.get("interface"), f"exports[{index}].interface"
         )
-        interface_kind = interface.get("kind")
-        if interface_kind is None and "oa" in entry:
-            # Schema-1 OA release contracts predate the explicit interface tag.
-            interface_kind = "oa-mixed-signal"
+        interface_kind = _string(
+            interface.get("kind"), f"exports[{index}].interface.kind"
+        )
         interface_contract = safe_relative(
             interface.get("contract"),
             f"exports[{index}].interface.contract",

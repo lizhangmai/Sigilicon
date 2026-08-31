@@ -1321,7 +1321,7 @@ class CalibrePhysicalVerificationAdapter:
 
 
 def verify_layout(
-    spec: LayoutSpec | LayoutPlanningResult,
+    planning: LayoutPlanningResult,
     client: Any,
     *,
     check: str,
@@ -1337,9 +1337,6 @@ def verify_layout(
 
     if check not in {"drc", "lvs"}:
         raise ValueError("layout verification check must be drc or lvs")
-    planning = (
-        spec if isinstance(spec, LayoutPlanningResult) else LayoutPlanningResult(spec)
-    )
     layout_spec = planning.spec
     plan = planning.plan
     if (

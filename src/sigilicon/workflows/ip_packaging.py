@@ -2010,7 +2010,7 @@ def _packaged_interface_check(
                 interface=interface,
             )
             continue
-        if interface_kind not in {None, "oa-mixed-signal"}:
+        if interface_kind != "oa-mixed-signal":
             raise RuntimeError(
                 f"IP release export {export_name} interface kind is unsupported"
             )
@@ -2179,7 +2179,7 @@ def _packaged_maturity_check(
             if "oa" in exported:
                 problems.append(f"{export_name}:unexpected-oa-identity")
             continue
-        if interface_kind not in {None, "oa-mixed-signal", "oa-native"}:
+        if interface_kind not in {"oa-mixed-signal", "oa-native"}:
             problems.append(f"{export_name}:interface-kind")
             continue
         oa = exported.get("oa")

@@ -28,7 +28,8 @@ def _spec(text: str, cell: str = "CELL") -> SimpleNamespace:
 
 def test_mos_parser_and_static_logic_contract_are_pdk_neutral() -> None:
     spec = _spec(
-        """subckt CELL A Y VDD VSS parameters wn=120n
+        """subckt CELL A Y VDD VSS
+parameters wn=120n
 M0 (Y A VSS VSS) nch l=30n w=wn nf=1 multi=1
 M1 (Y A VDD VDD) pch l=30n w=240n nf=1 multi=1
 ends CELL

@@ -851,8 +851,10 @@ def lower_subckt_default_parameters(
             break
     if header is None:
         raise ValueError(f"subckt header not found: {cell}")
-    tokens = header.split()
-    remainder = tokens[2:]
+    if "parameters" in header.split()[2:]:
+        raise ValueError(
+            "subckt default parameters must use the first body statement"
+        )
     body_source = extract_subckt_body(snapshot, cell)
     logical_body = tuple(iter_spectre_logical_lines(body_source))
 
@@ -878,20 +880,12 @@ def lower_subckt_default_parameters(
             interfaces=MappingProxyType(interfaces),
         )
 
-    body_parameter_line: str | None = None
-    try:
-        parameter_index = remainder.index("parameters")
-        default_tokens = remainder[parameter_index + 1 :]
-    except ValueError:
-        # Spectre's directly executable form declares subcircuit defaults on a
-        # separate first body statement. Support it generically while retaining
-        # the older importer-oriented header form for existing canonical input.
-        if not logical_body or not logical_body[0].lower().startswith("parameters "):
-            if not header_was_continued and "\\" not in body_source:
-                return snapshot
-            return materialize_spicein(logical_body)
-        body_parameter_line = logical_body[0]
-        default_tokens = body_parameter_line.split()[1:]
+    if not logical_body or not logical_body[0].lower().startswith("parameters "):
+        if not header_was_continued and "\\" not in body_source:
+            return snapshot
+        return materialize_spicein(logical_body)
+    body_parameter_line = logical_body[0]
+    default_tokens = body_parameter_line.split()[1:]
     defaults: dict[str, str] = {}
     for token in default_tokens:
         match = _PARAMETER_DEFAULT.fullmatch(token)
@@ -919,10 +913,9 @@ def lower_subckt_default_parameters(
         return _PARAMETER_REFERENCE.sub(replace, code) + separator + comment
 
     body_lines = list(logical_body)
-    if body_parameter_line is not None:
-        if not body_lines or body_lines[0] != body_parameter_line:
-            raise ValueError("cannot locate subckt parameters statement for spiceIn")
-        body_lines.pop(0)
+    if not body_lines or body_lines[0] != body_parameter_line:
+        raise ValueError("cannot locate subckt parameters statement for spiceIn")
+    body_lines.pop(0)
     return materialize_spicein(lower_line(line) for line in body_lines)
 
 

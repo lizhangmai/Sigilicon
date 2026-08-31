@@ -13,6 +13,7 @@ from sigilicon.flow import (
     AdapterSelection,
     ArtifactPort,
     CollectedActionResult,
+    ExecutionEnvironment,
     ExecutionProfile,
     FlowEngine,
     FlowContractError,
@@ -97,6 +98,7 @@ def test_engine_consumes_one_complete_adapter_result(tmp_path: Path) -> None:
     result = engine.run(
         engine.plan(spec, "all", profile),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="a" * 32,
     )
 
@@ -193,6 +195,7 @@ def test_direct_adapter_preserves_successful_execution_on_collection_failure(
     result = engine.run(
         engine.plan(spec, "all", profile),
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="b" * 32,
     )
 

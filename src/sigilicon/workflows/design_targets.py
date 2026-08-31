@@ -248,30 +248,37 @@ def _modes(
     for name, raw_mode in value.items():
         if not isinstance(name, str) or _NAME_RE.fullmatch(name) is None:
             raise ValueError(f"{field} mode names must match {_NAME_RE.pattern!r}")
-        action_kind = None
-        evidence_role = None
-        evidence_level = None
-        evidence_scope = None
-        if isinstance(raw_mode, Mapping):
-            unknown = set(raw_mode) - {
-                "args",
-                "action",
-                "evidence_role",
-                "evidence_level",
-                "evidence_scope",
-            }
-            if unknown:
+        if not isinstance(raw_mode, Mapping):
+            raise ValueError(f"{field}.{name} must be a mode table")
+        unknown = set(raw_mode) - {
+            "args",
+            "action",
+            "evidence_role",
+            "evidence_level",
+            "evidence_scope",
+        }
+        if unknown:
+            raise ValueError(
+                f"{field}.{name} contains unknown fields: {sorted(unknown)}"
+            )
+        raw_args = raw_mode.get("args", [])
+        action_kind = raw_mode.get("action")
+        evidence_role = raw_mode.get("evidence_role")
+        evidence_level = raw_mode.get("evidence_level")
+        evidence_scope = raw_mode.get("evidence_scope")
+        if action_kind is None:
+            if any(
+                value is not None
+                for value in (evidence_role, evidence_level, evidence_scope)
+            ):
                 raise ValueError(
-                    f"{field}.{name} contains unknown fields: {sorted(unknown)}"
+                    f"{field}.{name} route-only mode cannot declare evidence metadata"
                 )
-            raw_args = raw_mode.get("args", [])
-            action_kind = raw_mode.get("action")
-            evidence_role = raw_mode.get("evidence_role", "diagnostic")
-            evidence_level = raw_mode.get("evidence_level")
-            evidence_scope = raw_mode.get("evidence_scope")
+        else:
             if not isinstance(action_kind, str):
                 raise ValueError(f"{field}.{name}.action must be text")
             identifier(action_kind, f"{field}.{name}.action")
+            evidence_role = "diagnostic" if evidence_role is None else evidence_role
             if evidence_role not in EVIDENCE_ROLES:
                 raise ValueError(f"{field}.{name}.evidence_role is unsupported")
             if evidence_level not in EVIDENCE_LEVELS:
@@ -280,8 +287,6 @@ def _modes(
                 not isinstance(evidence_scope, str) or not evidence_scope
             ):
                 raise ValueError(f"{field}.{name}.evidence_scope must be text")
-        else:
-            raw_args = raw_mode
         if not isinstance(raw_args, (list, tuple)):
             raise ValueError(f"{field}.{name}.args must be a string array")
         arguments = tuple(raw_args)

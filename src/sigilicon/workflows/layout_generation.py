@@ -68,7 +68,7 @@ def plan_layout_spec(
 
 
 def generate_layout(
-    spec: LayoutSpec | LayoutPlanningResult,
+    planning: LayoutPlanningResult,
     client: Any,
     *,
     overwrite: bool = False,
@@ -78,11 +78,6 @@ def generate_layout(
     operation_id: str | None = None,
     bind_operation: Any | None = None,
 ) -> LayoutGenerationResult:
-    planning = (
-        spec
-        if isinstance(spec, LayoutPlanningResult)
-        else LayoutPlanningResult(spec)
-    )
     if not disposable and artifacts is None:
         raise ValueError("persistent layout generation requires Flow-owned artifacts")
     if artifacts is not None and disposable:

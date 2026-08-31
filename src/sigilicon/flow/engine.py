@@ -701,12 +701,11 @@ class FlowEngine:
         plan: FlowPlan,
         *,
         artifact_root: Path,
-        environment: ExecutionEnvironment | None = None,
+        environment: ExecutionEnvironment,
         run_id: str | None = None,
         progress: Callable[[FlowProgress], None] | None = None,
     ) -> FlowResult:
-        current_environment = environment or ExecutionEnvironment()
-        preflight = self.preflight(plan, current_environment)
+        preflight = self.preflight(plan, environment)
         if preflight.status != "ready":
             missing = [
                 check.requirement
@@ -791,7 +790,7 @@ class FlowEngine:
             adapter = self._registry.adapter(planned.adapter)
             environment_payload = self._environment_payload(
                 planned,
-                current_environment,
+                environment,
             )
             input_root = run_paths.role("inputs") / node.node_id
             work_root = run_paths.role("work") / node.node_id
@@ -820,12 +819,12 @@ class FlowEngine:
                 adapter_config=planned.adapter_config,
                 capabilities=MappingProxyType(
                     {
-                        capability: current_environment.capabilities[capability]
+                        capability: environment.capabilities[capability]
                         for capability in planned.required_capabilities
                     }
                 ),
                 platform_assets=MappingProxyType(
-                    self._resolved_platform_assets(planned, current_environment)
+                    self._resolved_platform_assets(planned, environment)
                 ),
                 source_assets=planned.source_assets,
                 evidence=planned.evidence,

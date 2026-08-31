@@ -65,6 +65,7 @@ cell = "FIXTURE"
 schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
+kind = "oa-mixed-signal"
 contract = "interface.toml"
 physical = "FIXTURE:physical"
 logical = "fixture_model:logical"

@@ -492,8 +492,9 @@ def _parse_rows(output: str) -> dict[str, Any]:
             parsed["environment"].append(
                 {"test": fields[1], "name": fields[2], "value": fields[3]}
             )
-        elif kind == "OUTPUT" and len(fields) >= 9:
-            has_plot_field = len(fields) >= 10
+        elif kind == "OUTPUT":
+            if len(fields) != 10:
+                raise ValueError("native attestation OUTPUT row must have 10 fields")
             output = {
                 "test": fields[1],
                 "name": fields[2],
@@ -502,15 +503,15 @@ def _parse_rows(output: str) -> dict[str, Any]:
                 "expression": fields[5],
                 "eval_type": fields[6],
                 "save": fields[7] == "true",
-                "plot": fields[8] == "true" if has_plot_field else None,
-                "spec_status": fields[9] if has_plot_field else fields[8],
+                "plot": fields[8] == "true",
+                "spec_status": fields[9],
             }
             parsed["outputs"].append(output)
             parsed["spec_status"].append(
                 {
                     "test": fields[1],
                     "name": fields[2],
-                    "status": fields[9] if has_plot_field else fields[8],
+                    "status": fields[9],
                 }
             )
         elif kind == "MODEL" and len(fields) >= 5:
@@ -612,12 +613,8 @@ def compare_native_setup_attestation(
     run_options = list(attestation.get("run_options") or ())
     persistence = list(attestation.get("persistence") or ())
     contract = spec.native_setup.rdb_contract
-    diagnostic_contract = (
-        None if contract is None else getattr(contract, "diagnostic_equivalence", None)
-    )
-    diagnostic_processor = (
-        None if contract is None else getattr(contract, "diagnostic_processor", None)
-    )
+    diagnostic_contract = None if contract is None else contract.diagnostic_equivalence
+    diagnostic_processor = None if contract is None else contract.diagnostic_processor
     diagnostic_requirements = (
         {}
         if diagnostic_contract is None or diagnostic_processor is None
@@ -698,7 +695,7 @@ def compare_native_setup_attestation(
     platform_model = spec.native_setup.pdk.simulation.default
     default_model = (platform_model.file.name, platform_model.single_section)
     explicit_setup_models = set(
-        getattr(contract, "setup_model_identities", ())
+        () if contract is None else contract.setup_model_identities
     )
     expected_models = set(
         diagnostic_requirements.get(

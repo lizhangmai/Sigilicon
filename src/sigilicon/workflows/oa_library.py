@@ -911,7 +911,7 @@ def check_oa_parity(
                 record_incident=record_incident,
                 instance_parameters={
                     item.instance: (item.master, dict(item.parameters))
-                    for item in getattr(step, "instance_parameters", ())
+                    for item in step.instance_parameters
                 },
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1140,7 +1140,7 @@ def rebuild_oa_library(
         raise ValueError("select at most one OA rebuild target")
     emit = report or (lambda _message: None)
     visible = client.library.list(timeout=30)
-    all_testbenches = tuple(getattr(plan, "testbenches", ()))
+    all_testbenches = plan.testbenches
     selected_testbenches = all_testbenches
     if testbench is not None:
         selected_testbenches = tuple(

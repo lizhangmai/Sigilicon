@@ -15,6 +15,7 @@ from sigilicon.flow import (
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
+    ExecutionEnvironment,
     ExecutionProfile,
     FlowEngine,
     FlowNode,
@@ -311,6 +312,7 @@ def _run_flow(
     return engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id=run_id,
     )
 

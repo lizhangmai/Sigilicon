@@ -156,6 +156,7 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
         engine.run(
             old_plan,
             artifact_root=tmp_path / "blocked-artifacts",
+            environment=ExecutionEnvironment(),
             run_id="a" * 32,
         )
 
@@ -172,6 +173,7 @@ def test_source_assets_use_git_identity_and_materialize_a_run_snapshot(
     result = engine.run(
         replanned,
         artifact_root=tmp_path / "artifacts",
+        environment=ExecutionEnvironment(),
         run_id="b" * 32,
     )
     assert result.status == "accepted"

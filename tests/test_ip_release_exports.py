@@ -84,6 +84,7 @@ cell = "LEFT"
 schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
+kind = "oa-mixed-signal"
 contract = "configs/left_interface.toml"
 physical = "LEFT:physical"
 logical = "left_model:logical"
@@ -102,6 +103,7 @@ cell = "RIGHT"
 schematic_view = "schematic"
 layout_view = "layout"
 [exports.interface]
+kind = "oa-mixed-signal"
 contract = "configs/right_interface.toml"
 physical = "RIGHT:physical"
 logical = "right_model:logical"
@@ -858,6 +860,19 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
 def test_release_interface_kind_controls_oa_source_contract(
     tmp_path: Path,
 ) -> None:
+    untagged_path = _contract_fixture(tmp_path / "untagged-oa")
+    untagged_path.write_text(
+        untagged_path.read_text(encoding="utf-8").replace(
+            'kind = "oa-mixed-signal"\n', "", 1
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="interface.kind"):
+        load_ip_contract(
+            untagged_path,
+            project=Project.from_project_root(tmp_path / "untagged-oa"),
+        )
+
     rtl_path = _rtl_contract_fixture(tmp_path / "rtl-with-oa")
     rtl_path.write_text(
         rtl_path.read_text(encoding="utf-8").replace(

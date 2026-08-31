@@ -8,6 +8,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+from virtuoso_bridge import ExecutionStatus, VirtuosoResult
 
 from sigilicon.domain.repository import Project
 
@@ -494,11 +495,11 @@ def test_owned_spicein_adapter_contract_is_fully_offline(
         def execute_skill(self, source, **_kwargs):
             self.skill.append(source)
             if source.startswith("list(getWorkingDir()"):
-                return {
-                    "status": "success",
-                    "output": f'(\"{tmp_path}\" \"\" \"\" \"\" \"\" \"/tools\")',
-                }
-            return {"status": "success", "output": "t"}
+                return VirtuosoResult(
+                    status=ExecutionStatus.SUCCESS,
+                    output=f'(\"{tmp_path}\" \"\" \"\" \"\" \"\" \"/tools\")',
+                )
+            return VirtuosoResult(status=ExecutionStatus.SUCCESS, output="t")
 
     netlist = tmp_path / "owned.scs"
     netlist.write_text("subckt cell a b\nends cell\n", encoding="utf-8")
@@ -633,14 +634,14 @@ def test_import_skill_result_requires_explicit_success() -> None:
     from sigilicon.virtuoso.importer import _require_skill_result
 
     for result in (
-        {"status": "partial", "errors": []},
-        SimpleNamespace(status="failure", errors=[], ok=False),
-        SimpleNamespace(status=None, errors=[], ok=None),
+        VirtuosoResult(status=ExecutionStatus.PARTIAL),
+        VirtuosoResult(status=ExecutionStatus.FAILURE),
+        VirtuosoResult(status=ExecutionStatus.ERROR),
     ):
         with pytest.raises(RuntimeError, match="unconfirmed bridge status"):
             _require_skill_result(result, "import confirmation")
 
-    success = SimpleNamespace(status="success", errors=[], ok=True)
+    success = VirtuosoResult(status=ExecutionStatus.SUCCESS)
     assert _require_skill_result(success, "import confirmation") is success
 
 

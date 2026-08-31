@@ -76,31 +76,24 @@ def test_materialized_snapshot_detects_parent_symlink_replacement(
         artifact.verify()
 
 
-def test_lowering_subckt_defaults_is_mechanical_and_preserves_interface(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "parameterized.scs"
+def test_lowering_rejects_header_default_parameters(tmp_path: Path) -> None:
+    source = tmp_path / "header-parameterized.scs"
     source.write_text(
-        "// canonical source remains parameterized\n"
-        "subckt cell A Y VDD VSS parameters lch=30n wdev=120n\n"
-        "M0 (Y A VSS VSS) nch_mac l=lch w=wdev nf=1\n"
+        "subckt cell A Y parameters wdev=120n\n"
+        "M0 (Y A 0 0) nch_mac w=wdev\n"
         "ends cell\n",
         encoding="utf-8",
     )
 
-    lowered = lower_subckt_default_parameters(load_netlist_snapshot(source), "cell")
-
-    assert lowered.interfaces == {"cell": ("A", "Y", "VDD", "VSS")}
-    assert "parameters" not in lowered.text
-    assert "l=30n w=120n nf=1" in lowered.text
-    assert "l=lch" not in lowered.text
-    assert "w=wdev" not in lowered.text
+    with pytest.raises(ValueError, match="first body statement"):
+        lower_subckt_default_parameters(load_netlist_snapshot(source), "cell")
 
 
 def test_lowering_rejects_nonliteral_default_parameter(tmp_path: Path) -> None:
     source = tmp_path / "expression.scs"
     source.write_text(
-        "subckt cell A Y parameters wdev=baseWidth\n"
+        "subckt cell A Y\n"
+        "parameters wdev=baseWidth\n"
         "M0 (Y A 0 0) nch_mac w=wdev\n"
         "ends cell\n",
         encoding="utf-8",
