@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from sigilicon.layout.physical_geometry import transformed_pin_accesses
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     BoundingBoxAreaObjective,
     BoundingBoxCongestionObjective,
     DensityOverflowObjective,

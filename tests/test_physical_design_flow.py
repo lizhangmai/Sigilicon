@@ -40,16 +40,15 @@ from sigilicon.layout.materialization import (
     MaterializationDecision,
     materialization_plan_from_json,
 )
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.canonical import CanonicalSerializationError
+from sigilicon.layout.physical_design import (
     Axis,
-    CanonicalSerializationError,
     GridlessRoutingResource,
     LayerKind,
     LayerShape,
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
@@ -57,8 +56,6 @@ from sigilicon.experimental.reference_pnr import (
     PinAccess,
     PinReference,
     Placement,
-    PlacementRoutingTerminationReason,
-    ReferencePnrExecutionPolicy,
     PhysicalDesignRequest,
     PhysicalDesignStage,
     Point,
@@ -66,8 +63,15 @@ from sigilicon.experimental.reference_pnr import (
     ResultStatus,
     RoutingBlockage,
     RoutingDirection,
-    RoutingTerminationReason,
     RoutingTrackPattern,
+    PhysicalDesignJob,
+    PhysicalDesignResult,
+)
+from sigilicon.experimental.reference_pnr import (
+    PlacementRoutingTerminationReason,
+    ReferencePnrExecutionPolicy,
+    ReferencePnrJob,
+    RoutingTerminationReason,
     run,
 )
 from sigilicon.experimental.reference_pnr.serialization import (
@@ -75,7 +79,6 @@ from sigilicon.experimental.reference_pnr.serialization import (
     placement_routing_closure_evidence_from_json,
     reference_pnr_result_from_json,
 )
-from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
 from sigilicon.layout.physical_design_serialization import (
     physical_design_job_from_json,
     physical_design_job_id,
@@ -511,6 +514,27 @@ def test_reference_pnr_artifact_identity_is_deterministic_across_runs(
     assert first_evidence.path.read_bytes() == second_evidence.path.read_bytes()
     assert first_result.qualifiers == second_result.qualifiers
     assert first_evidence.qualifiers == second_evidence.qualifiers
+
+
+def test_reference_adapter_rejects_result_from_a_different_reference_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _capacity_job()
+    stale_result = run(_state_budget_job())
+    monkeypatch.setattr(
+        "sigilicon.experimental.workflows.reference_physical_design.run",
+        lambda _job: stale_result,
+    )
+
+    flow = _run_flow(tmp_path, "policy-mismatch", job, run_id="5" * 32)
+    outcome = flow.nodes["solve"]
+
+    assert outcome.execution_status == "succeeded"
+    assert outcome.result_status == "failed"
+    assert outcome.artifacts == {}
+    assert outcome.reason is not None
+    assert "complete reference job" in outcome.reason
 
 
 @pytest.mark.parametrize(

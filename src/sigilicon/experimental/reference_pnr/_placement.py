@@ -17,7 +17,7 @@ from sigilicon.experimental.reference_pnr._legality import (
 )
 from sigilicon.experimental.reference_pnr._objectives import objective_unit, objective_value
 from sigilicon.layout.physical_geometry import oriented_size, placed_rect
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     ArrayConstraint,
     ConstraintMode,
     ConstraintOutcome,
@@ -25,15 +25,17 @@ from sigilicon.experimental.reference_pnr.model import (
     InstancePlacement,
     Metric,
     Orientation,
-    ReferencePnrJob,
+    PhysicalDesignStage,
     PhysicalInstance,
     PhysicalMaster,
     Placement,
     Point,
-    PhysicalDesignStage,
     Rect,
     ResultStatus,
     StageReport,
+)
+from sigilicon.experimental.reference_pnr.model import (
+    ReferencePnrJob,
 )
 
 

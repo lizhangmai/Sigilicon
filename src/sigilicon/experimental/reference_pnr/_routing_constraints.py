@@ -7,7 +7,7 @@ from sigilicon.layout.physical_geometry import (
     transformed_pin_accesses,
     via_occurrence_shapes,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     ConstraintOutcome,
     ConstraintStatus,
     InstancePlacement,

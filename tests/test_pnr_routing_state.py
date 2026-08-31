@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     GridlessRoutingResource,
     LayerKind,
     MinimumSpacingRule,

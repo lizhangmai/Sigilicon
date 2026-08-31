@@ -12,7 +12,7 @@ from sigilicon.experimental.reference_pnr._routing_resources import (
     RoutingResourceIdentity,
 )
 from sigilicon.experimental.reference_pnr._routing_tree import RoutingTree, whole_route_tree
-from sigilicon.experimental.reference_pnr.model import NetRoute, Rect
+from sigilicon.layout.physical_design import NetRoute, Rect
 
 
 RoutingCostKey = RoutingResourceIdentity

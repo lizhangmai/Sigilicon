@@ -92,7 +92,7 @@ from sigilicon.layout.materialization_execution import (
     MaterializationCompletion,
     MaterializationExecutionStatus,
 )
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     Axis,
     GridlessRoutingResource,
     LayerKind,
@@ -100,7 +100,6 @@ from sigilicon.experimental.reference_pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalLayer,
     PhysicalOwnerIdentity,
     PhysicalOwnerKind,
@@ -110,7 +109,6 @@ from sigilicon.experimental.reference_pnr import (
     PinAccess,
     PinReference,
     Placement,
-    ReferencePnrExecutionPolicy,
     PhysicalDesignRequest,
     PhysicalDesignStage,
     Point,
@@ -118,9 +116,13 @@ from sigilicon.experimental.reference_pnr import (
     RoutingBlockage,
     RoutingDirection,
     RoutingTrackPattern,
+    PhysicalDesignJob,
+)
+from sigilicon.experimental.reference_pnr import (
+    ReferencePnrExecutionPolicy,
+    ReferencePnrJob,
 )
 from sigilicon.layout.physical_design_serialization import physical_design_job_id
-from sigilicon.layout.physical_design import PhysicalDesignJob
 from sigilicon.experimental.registry import build_experimental_flow_registry
 from sigilicon.experimental.workflows.closure_campaign import (
     CampaignArtifactReference,

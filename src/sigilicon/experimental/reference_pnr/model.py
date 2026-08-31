@@ -11,7 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from sigilicon.layout.physical_design import *  # noqa: F401,F403
+from sigilicon.layout.physical_design import (
+    CanonicalValue,
+    PhysicalDesignJob,
+    PhysicalDesignResult,
+    PhysicalOwnerIdentity,
+    Rect,
+)
 
 
 class PhysicalOwnerMobility(str, Enum):

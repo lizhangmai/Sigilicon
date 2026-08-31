@@ -31,6 +31,7 @@ from sigilicon.experimental.reference_pnr.model import (
 from sigilicon.experimental.reference_pnr.serialization import (
     physical_closure_evidence_id,
     placement_routing_closure_evidence_from_json,
+    reference_pnr_job_id,
 )
 from sigilicon.layout.physical_design import (
     PhysicalDesignJob,
@@ -200,8 +201,10 @@ class ReferencePhysicalDesignAdapter:
         job = _read_job(context.input("job").path)
         result_path = context.output_path("result", "physical-design-result.json")
         result = _read_result(result_path)
+        reference_job = _reference_job(job, context)
         job_identity = physical_design_job_id(job)
         result_identity = physical_design_result_id(result)
+        expected_result_identity = f"{reference_pnr_job_id(reference_job)}:result"
         if result.provenance.job_identity != job_identity:
             raise FlowExecutionError(
                 "reference result provenance does not match Physical Design Job"
@@ -214,9 +217,9 @@ class ReferencePhysicalDesignAdapter:
             raise FlowExecutionError(
                 "reference result provenance must declare deterministic execution"
             )
-        if result_identity != f"{job_identity}:result":
+        if result_identity != expected_result_identity:
             raise FlowExecutionError(
-                "reference result identity does not match Physical Design Job"
+                "reference result identity does not match complete reference job"
             )
         evidence = None
         evidence_path = context.output_path(

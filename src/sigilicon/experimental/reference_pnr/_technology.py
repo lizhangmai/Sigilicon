@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     Axis,
     CutSpacingRule,
     EnclosureRule,

@@ -11,8 +11,8 @@ from sigilicon.experimental.reference_pnr._routing_resources import (
     RoutingResourceKind,
     RoutingResourceOverflow,
 )
+from sigilicon.layout.physical_design import PhysicalOwnerIdentity
 from sigilicon.experimental.reference_pnr.model import (
-    PhysicalOwnerIdentity,
     RoutingConflictKind,
     RoutingTerminationReason,
 )

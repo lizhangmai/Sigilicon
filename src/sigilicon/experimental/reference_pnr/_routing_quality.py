@@ -10,14 +10,16 @@ from sigilicon.experimental.reference_pnr._routing_conflicts import RoutingConfl
 from sigilicon.experimental.reference_pnr._routing_constraints import (
     evaluate_routing_constraints,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     ConstraintStatus,
     InstancePlacement,
     PhysicalDesignJob,
     ResultStatus,
+    RoutingBlockagePlacement,
+)
+from sigilicon.experimental.reference_pnr.model import (
     RoutingClosureQuality,
     RoutingClosureQualityDecision,
-    RoutingBlockagePlacement,
     RoutingTerminationReason,
 )
 

@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     Axis,
     CutSpacingRule,
     EnclosureRule,
@@ -14,10 +14,8 @@ from sigilicon.experimental.reference_pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalLayer,
     PhysicalTechnology,
-    PnrInputError,
     PhysicalDesignRequest,
     Rect,
     ResultStatus,
@@ -26,6 +24,10 @@ from sigilicon.experimental.reference_pnr import (
     TechnologyCapability,
     ViaDefinition,
     ViaStack,
+)
+from sigilicon.experimental.reference_pnr import (
+    PnrInputError,
+    ReferencePnrJob,
     run,
 )
 

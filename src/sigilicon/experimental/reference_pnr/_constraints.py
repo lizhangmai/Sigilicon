@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     AlignmentAnchor,
     AlignmentConstraint,
     ArrayConstraint,

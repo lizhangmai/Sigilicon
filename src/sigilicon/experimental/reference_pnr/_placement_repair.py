@@ -17,8 +17,6 @@ from sigilicon.experimental.reference_pnr._placement import (
 )
 from sigilicon.experimental.reference_pnr._routing_ownership import (
     OwnedRoutingRegion,
-    PhysicalOwnerKind,
-    PhysicalOwnerIdentity,
     RoutingPhysicalOwnership,
     compile_routing_physical_ownership,
 )
@@ -34,14 +32,16 @@ from sigilicon.experimental.reference_pnr._routing_resources import (
     RoutingResourceIdentity,
     RoutingResourceKind,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     InstancePlacement,
-    ReferencePnrJob,
+    PhysicalOwnerIdentity,
+    PhysicalOwnerKind,
     Placement,
     Point,
     Rect,
     RoutingBlockagePlacement,
 )
+from sigilicon.experimental.reference_pnr.model import ReferencePnrJob
 
 
 PlacementIdentity = tuple[tuple[str, str, int, int, str], ...]

@@ -4,8 +4,10 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import sigilicon.experimental.reference_pnr as reference_pnr
+import sigilicon.experimental.reference_pnr.serialization as reference_serialization
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     AlignmentAnchor,
     AlignmentConstraint,
     ArrayConstraint,
@@ -22,7 +24,6 @@ from sigilicon.experimental.reference_pnr import (
     Orientation,
     OrderingConstraint,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -33,8 +34,6 @@ from sigilicon.experimental.reference_pnr import (
     PinReference,
     Placement,
     PlacementObjective,
-    PnrInputError,
-    ReferencePnrExecutionPolicy,
     PhysicalDesignRequest,
     PhysicalDesignStage,
     Point,
@@ -44,8 +43,17 @@ from sigilicon.experimental.reference_pnr import (
     SeparationAxis,
     SeparationConstraint,
     SymmetryConstraint,
+)
+from sigilicon.experimental.reference_pnr import (
+    PnrInputError,
+    ReferencePnrExecutionPolicy,
+    ReferencePnrJob,
+    reference_pnr_job_id,
+    reference_pnr_result_id,
     run,
 )
+from sigilicon.layout import physical_design as stable_physical_design
+from sigilicon.layout.physical_design_serialization import physical_design_job_id
 
 
 def _physical_job(*args, **kwargs) -> ReferencePnrJob:
@@ -106,10 +114,43 @@ def test_execution_policy_is_experimental_and_not_in_stable_identity() -> None:
     )
 
     assert first.provenance.job_identity == second.provenance.job_identity
+    assert physical_design_job_id(job) == physical_design_job_id(
+        replace(
+            job,
+            execution_policy=replace(
+                job.execution_policy,
+                maximum_search_states=100_001,
+            ),
+        )
+    )
+    assert reference_pnr_job_id(job) != reference_pnr_job_id(
+        replace(
+            job,
+            execution_policy=replace(
+                job.execution_policy,
+                maximum_search_states=100_001,
+            ),
+        )
+    )
+    assert reference_pnr_result_id(first) != reference_pnr_result_id(second)
+    assert first.artifact_id == f"{reference_pnr_job_id(job)}:result"
     assert job.execution_policy != replace(
         job.execution_policy,
         maximum_search_states=100_001,
     )
+
+
+def test_reference_pnr_facade_does_not_shadow_stable_physical_contract() -> None:
+    assert hasattr(stable_physical_design, "PhysicalDesignJob")
+    assert hasattr(stable_physical_design, "PhysicalDesignResult")
+    assert hasattr(stable_physical_design, "Rect")
+    assert not hasattr(reference_pnr, "PhysicalDesignJob")
+    assert not hasattr(reference_pnr, "PhysicalDesignResult")
+    assert not hasattr(reference_pnr, "Rect")
+    assert "PhysicalDesignJob" not in reference_pnr.__all__
+    assert "PhysicalDesignResult" not in reference_pnr.__all__
+    assert not hasattr(reference_serialization, "physical_design_job_id")
+    assert not hasattr(reference_serialization, "physical_design_result_id")
 
 
 def _placements(job: ReferencePnrJob) -> dict[str, Placement]:

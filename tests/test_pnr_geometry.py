@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     LayerShape,
     Orientation,
     PhysicalMaster,

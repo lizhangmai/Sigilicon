@@ -8,12 +8,13 @@ FlowEngine will continue to resolve and execute one deterministic typed DAG, whi
 
 ## 2026-08-30 implementation boundary and migration
 
-Campaign continuation data crosses Flow only as an opaque portable extension.
+Campaign continuation data crosses the deterministic executor only as an opaque
+portable extension.
 `FlowEngine` validates the extension name declared by the selected Action and
 Adapter, preserves it in plan/action-request records, and does not import,
 decode, or validate the Campaign payload type.
 
-This boundary intentionally removes the campaign-specific Flow model API:
+This boundary intentionally removes the campaign-specific executor model API:
 
 - `ActionContract.accepts_design_campaign_iteration` becomes
   `accepted_extensions=(DESIGN_CAMPAIGN_ITERATION_EXTENSION,)`;
@@ -22,13 +23,24 @@ This boundary intentionally removes the campaign-specific Flow model API:
 - `FlowNode.design_campaign_iteration` becomes `FlowNode.extensions`;
 - adapters read `ActionContext.extensions` and use
   `design_campaign_iteration_input()` to decode the Campaign-owned payload;
-- `DesignCampaignIterationInput` is owned by
-  `sigilicon.workflows.design_campaign`; the former `sigilicon.flow` import is
-  removed because the package dependency matrix forbids Flow from importing a
-  higher-level workflow.
+- `DesignCampaignIterationInput` is owned by the campaign's experimental workflow;
+  the former higher-level workflow import is removed because the package
+  dependency matrix forbids Flow from importing a higher-level workflow.
 
 Derived Campaign plan and action-request records keep the existing top-level
-`design_campaign_iteration` payload field. Ordinary Flow records no longer
+`design_campaign_iteration` payload field. Ordinary execution records no longer
 emit that field with a null value. Because exact plan records are authorization
 identities, approvals or replay records created before this change must be
 regenerated rather than silently treated as equivalent.
+
+## 2026-08-31 final boundary
+
+The stable API names one target operation at a time: `target.plan` resolves an
+owner/target/operation and returns an immutable `plan_identity`; `target.run`
+executes only that plan identity. Design campaigns remain bounded experimental
+orchestration and are available only through the explicit
+`sigilicon experimental campaign plan/run` CLI or an owner opt-in, never the
+default MCP inventory. Reference PNR, closure/repair, OA-XStream, and combined
+XStream-Calibre are likewise explicit `sigilicon.experimental` extensions. The
+migration is destructive: no compatibility alias, profile fallback, or old
+selection record is interpreted as a target/operation plan.

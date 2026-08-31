@@ -4,12 +4,11 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     FenceConstraint,
     LayerKind,
     LayerShape,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -20,6 +19,9 @@ from sigilicon.experimental.reference_pnr import (
     Point,
     Rect,
     RoutingBlockage,
+)
+from sigilicon.experimental.reference_pnr import (
+    ReferencePnrJob,
     run,
 )
 from sigilicon.layout.physical_design_serialization import (

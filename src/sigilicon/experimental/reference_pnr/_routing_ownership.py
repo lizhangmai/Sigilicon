@@ -17,17 +17,17 @@ from sigilicon.layout.physical_geometry import (
     transformed_pin_accesses,
     transformed_routing_blockage_shapes,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     InstancePlacement,
     LayerShape,
     PhysicalDesignJob,
     PhysicalOwnerIdentity,
     PhysicalOwnerKind,
-    PhysicalOwnerMobility,
     PinReference,
     Rect,
     RoutingBlockagePlacement,
 )
+from sigilicon.experimental.reference_pnr.model import PhysicalOwnerMobility
 
 if TYPE_CHECKING:
     from sigilicon.experimental.reference_pnr._routing_resources import (

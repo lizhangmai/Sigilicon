@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 from sigilicon.canonical import (
     CanonicalSerializationError,
     canonical_from_json,
@@ -11,10 +13,6 @@ from sigilicon.experimental.reference_pnr.model import (
     PlacementRoutingClosureEvidence,
     ReferencePnrJob,
     ReferencePnrResult,
-)
-from sigilicon.layout.physical_design_serialization import (
-    physical_design_job_id,
-    physical_design_result_id,
 )
 
 
@@ -36,13 +34,29 @@ def physical_closure_evidence_id(evidence: PlacementRoutingClosureEvidence) -> s
     return evidence.artifact_id
 
 
+def reference_pnr_job_id(job: ReferencePnrJob) -> str:
+    """Identify the complete reference-solver job, including its policy."""
+
+    digest = sha256(canonical_json(job).encode("utf-8")).hexdigest()
+    return (
+        f"reference-pnr-job:{job.technology.name}:{job.design.name}:"
+        f"sha256:{digest}"
+    )
+
+
+def reference_pnr_result_id(result: ReferencePnrResult) -> str:
+    """Return the reference-solver result identity carried by a result."""
+
+    return result.artifact_id
+
+
 __all__ = [
     "CanonicalSerializationError",
     "canonical_json",
     "physical_closure_evidence_id",
-    "physical_design_job_id",
+    "reference_pnr_job_id",
     "reference_pnr_job_from_json",
+    "reference_pnr_result_id",
     "reference_pnr_result_from_json",
-    "physical_design_result_id",
     "placement_routing_closure_evidence_from_json",
 ]

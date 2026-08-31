@@ -9,7 +9,7 @@ from sigilicon.experimental.reference_pnr._routing_resources import (
     RoutingResourceGraph,
     RoutingResourceIdentity,
 )
-from sigilicon.experimental.reference_pnr.model import NetRoute, RouteSegment, RouteVia
+from sigilicon.layout.physical_design import NetRoute, RouteSegment, RouteVia
 
 
 @dataclass(frozen=True)

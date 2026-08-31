@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     AlignmentConstraint,
     ArrayConstraint,
     Axis,
@@ -10,7 +10,6 @@ from sigilicon.experimental.reference_pnr import (
     Orientation,
     OrderingConstraint,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalInstance,
     PhysicalMaster,
     PhysicalTechnology,
@@ -19,6 +18,9 @@ from sigilicon.experimental.reference_pnr import (
     Rect,
     ResultStatus,
     SymmetryConstraint,
+)
+from sigilicon.experimental.reference_pnr import (
+    ReferencePnrJob,
     run,
 )
 

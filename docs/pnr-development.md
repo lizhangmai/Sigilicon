@@ -1,19 +1,27 @@
 # General P&R development baseline
 
-Sigilicon owns a reusable physical-design kernel. Its canonical Interface is:
+Sigilicon owns a small, reusable physical-design kernel and two downstream
+materialization records. Its stable solver Interface is:
 
 ```python
 result = run(job)
 ```
 
-The `PhysicalDesignJob` contains a normalized design, normalized technology facts,
-named constraints, requested stages, and a separate `PnrExecutionPolicy`. Physical
-intent and reference-engine search policy have independent provenance identities.
-The `PhysicalDesignResult` contains only observable solver outcomes: exact solutions,
-constraint status, diagnostics, metrics, typed Placement-Routing Closure Evidence,
-and deterministic provenance. The kernel
-performs no file discovery, database mutation, EDA invocation, or project-specific
-interpretation.
+The `PhysicalDesignJob` is a complete stable input: normalized design, normalized
+technology facts, named constraints, and requested stages. `job_identity` is the
+digest of that complete stable canonical serialization; a digest of only physical
+intent, execution policy, or a partial source closure is not a job identity. The
+`PhysicalDesignResult` contains only tool-independent solver observations: exact
+solutions, constraint status, diagnostics, metrics, and the terminal capability
+outcome. It contains no closure evidence, owner policy, repair plan, execution
+lineage, or tool/database metadata.
+
+`MaterializationPlan` is the database-neutral lowering of one stable job/result
+pair, and `MaterializationReceipt` records the exact plan/result identity, target,
+backend completion, and published artifact identity. These records do not imply
+DRC/LVS, qualification, or signoff. The stable kernel and these materialization
+contracts perform no file discovery, database mutation, EDA invocation, or
+project-specific interpretation.
 
 ## Product scope
 
@@ -30,36 +38,51 @@ Output adapters lower accepted results into a Materialization Plan or another
 persistent representation after the seam. Independent DRC, LVS, PEX, and
 post-layout analysis remain authoritative.
 
-## Flow integration
+## Explicit experimental extensions
+
+The reference PNR implementation, closure/repair campaign, OA-XStream
+materialization, and combined XStream-Calibre verification are explicit
+`sigilicon.experimental`/owner opt-ins. They may consume the stable
+Job/Result and Materialization Plan/Receipt, but must not add closure evidence,
+policy, repair, or lineage fields to those stable types. An owner exposes one of
+these extensions only through an explicitly selected target/operation; none is a
+default MCP capability or an implicit fallback.
+
+The reference solver gives its complete `ReferencePnrJob` a separate canonical
+identity that includes execution policy and repair lineage. Its result and closure
+evidence identities derive from that experimental identity, while the result
+provenance still names the normalized stable Job identity. Thus two policies may
+address the same physical intent, but they cannot alias the same execution result.
+
+## Stable workflow integration
 
 The tool-independent `physical-design.solve` Action consumes a canonical
-`physical-design.job` artifact and emits a canonical `physical-design.result`
-plus optional `evidence.physical-closure`. The in-process reference Adapter is
-assembled in the workflow layer, where the generic Flow and layout Modules may
-legally meet. It reports Adapter execution separately from the typed physical
-result: failed, unsupported, and budget-exhausted P&R conclusions are valid
-artifacts, while owner Flow policy decides whether they are accepted.
+`physical-design.job` artifact and emits a canonical `physical-design.result`.
+An owner target/operation assembles an Adapter around this Action and reports
+execution separately from the typed physical result: failed, unsupported, and
+budget-exhausted P&R outcomes are valid results, while owner policy decides
+whether they are accepted. No execution envelope or policy is copied into the
+stable result.
 
 Serialization is reversible and rejects unknown fields, enum values, duplicate
-fields, missing fields, and malformed nested structures. Closure facts are read
-directly from Placement-Routing Closure Evidence, never reconstructed from Stage
-Report metric names.
+fields, missing fields, and malformed nested structures. Any closure or
+verification conclusion is a separate owner/experimental evidence contract, not
+a reconstruction from stable result metric names.
 
 A result can then cross the independent
 `compile_materialization_plan(job, result, target)` seam. Its immutable,
 database-neutral plan contains exact instance and Routing Blockage placements,
-Route Segments, Route Vias, typed owners, and job/result provenance. Exhausted
-results retain their maximum legal geometry as diagnostic plans; unsupported,
-infeasible, and independently invalid results carry explicit rejection evidence.
-Only a closed result is executable, and this Module never writes OA, DEF, GDS,
-or another persistent database.
+Route Segments, Route Vias, and typed owners. Exhausted results retain their
+maximum legal geometry as diagnostic plans; unsupported, infeasible, and
+independently invalid results carry explicit rejection status. This Module never
+writes OA, DEF, GDS, or another persistent database.
 
 Executable plans cross a second, explicit `physical-design.materialize` Action.
 Its ToolAdapter seam consumes the canonical job, result, and plan plus a typed
 format target.  A successful GDSII implementation emits `layout.gds` and an
-immutable Materialization Receipt that binds owner, target, backend completion,
-managed Flow provenance, and explicit job/result/plan/layout semantic identities;
-recovery also compares their complete typed records.
+immutable Materialization Receipt that binds owner, target, operation, backend
+completion, and complete job/result/plan/layout semantic identities; recovery
+also compares their complete typed records.
 Diagnostic or rejected plans are rejected before backend execution. Unsupported,
 backend-unavailable, execution-failed, and invalid-plan/identity outcomes emit a
 receipt but never publish a checked layout. The package registers no synthetic
@@ -67,30 +90,30 @@ materializer; project assembly must provide a real Adapter, capability, layer
 mapping, and master-layout asset. Contract tests use an unregistered GDSII fixture
 Adapter and do not establish a product or signoff conclusion.
 
-Physical verification crosses separate `physical-verification.drc` and
-`physical-verification.lvs` Actions. Both require the exact `layout.gds` and
-Materialization Receipt from one producer plus an owner verification policy;
-LVS also requires the canonical checked source. Their artifacts carry the
-receipt, job, result, plan, layout, and source identities, backend completion,
-findings, and one of five typed conclusions: clean, violated, unsupported,
-backend unavailable, or execution failed. The production Calibre Adapter uses
-the same run-deck renderers, guarded process execution, and authoritative report
-parsers as the managed OA workflow. Capability and DRC/LVS deck views are explicit
-preflight requirements. A deliberately unregistered offline Adapter exercises
-Flow failure semantics but is structurally unable to emit clean or violated
-evidence. Exit code zero without a parsed authoritative report is execution
-failure, not clean or violated evidence.
+Physical verification remains a separate owner contract after materialization.
+`physical-verification.drc` and `physical-verification.lvs` operations require
+the exact `layout.gds` and Materialization Receipt from one producer plus the
+owner verification policy; LVS also requires the canonical checked source. Their
+artifacts carry receipt, job, result, plan, layout, and source identities,
+backend completion, findings, and one of five typed conclusions: clean, violated,
+unsupported, backend unavailable, or execution failed. Combined XStream-Calibre
+verification and OA-backed verification use the explicit experimental extension
+described above, with capability and deck views as owner preflight requirements.
+Exit code zero without a parsed authoritative report is execution failure, not
+clean or violated evidence.
 
-## Closure Campaign
+## Experimental closure and repair
 
-`ClosureCampaignRunner.run(campaign)` is a separate workflow Module above
-`FlowEngine`. Every iteration supplies an already resolved Flow target and
-explicit artifact references. `FlowEngine` remains a one-pass deterministic DAG
-executor; the campaign validates canonical job, result, standalone closure,
-Materialization Plan, Materialization Receipt, managed checked layout/source, DRC,
-and LVS identities before making a closure decision. A bound optional output that
-was not produced blocks its consumers instead of causing an untyped executor
-lookup failure. Flow acceptance records Action execution only; campaign closure
+`ClosureCampaignRunner.run(campaign)` is an explicit experimental/owner workflow
+above the one-pass deterministic executor. It is reachable only through an
+explicit `sigilicon experimental campaign plan/run` request or an owner opt-in;
+it is not a stable target operation or a default MCP tool. Every attempt supplies
+an already resolved owner/target/operation plan and explicit artifact references.
+The campaign validates canonical job, result, standalone closure, Materialization
+Plan, Materialization Receipt, managed checked layout/source, DRC, and LVS
+identities before making a closure decision. A bound optional output that was not
+produced blocks its consumers instead of causing an untyped executor lookup
+failure. Execution acceptance records Action execution only; campaign closure
 still requires a materialized receipt and every required typed conclusion.
 
 Campaign quality is lexicographic rather than a scalar score. Its dominance order
@@ -99,17 +122,17 @@ resource overflow, unrouted branches, blockers, group, via, and topology failure
 independent checker and constraint evaluation; PEX and post-layout state; project
 qualification; then displacement, area, and power costs. Unknown cost evidence is
 never inferred from report metrics. State budget counts distinct typed quality
-states, while iteration budget counts Flow attempts.
+states, while iteration budget counts owner target/operation attempts.
 
 Feedback is restricted to typed physical owners, fixed blockers, DRC rules, LVS
 mismatch categories, or another explicit evidence identity. A campaign does not
 perform unattributed global search. PEX, post-layout analysis, and project
 qualification cross strict receipt-bound evidence contracts. Their Actions remain
-owner-extension seams. The public workflow assembly now provides a production
-Calibre xRC PEX Adapter selected by an explicit profile and complete attested
-platform view; post-layout and qualification still require owner Adapters and
-canonical specifications. Requesting any unavailable stage yields typed
-non-conclusion and prevents `closed` rather than manufacturing success.
+owner-extension seams. A Calibre xRC PEX Adapter, post-layout analysis, and
+qualification are available only when an owner explicitly opts into the relevant
+experimental extension and supplies a complete attested platform view. Requesting
+any unavailable stage yields typed non-conclusion and prevents `closed` rather
+than manufacturing success.
 
 Attributed continuation crosses the independent
 `compile_closure_repair(...) -> RepairPlan` seam. A project-owned typed policy maps
@@ -120,7 +143,9 @@ text. Applying an accepted plan creates a new immutable `PhysicalDesignJob` whos
 lineage binds the parent job/result, feedback, source evidence, and RepairPlan.
 Unmapped DRC, LVS, PEX, post-layout, and qualification feedback remains explicitly
 unsupported. `ClosureCampaignRunner` consumes the public RepairPlan decision and
-does not own or duplicate its compilation algorithm.
+does not own or duplicate its compilation algorithm. Both the campaign and
+RepairPlan are experimental/owner opt-ins; neither changes the stable Job, Result,
+Plan, or Receipt schemas.
 
 ## PANDA influence
 
@@ -147,6 +172,10 @@ and produce no candidate solution that could be mistaken for a completed result.
 
 ## Milestones
 
+The M0–M5 milestones below describe the opt-in reference implementation and its
+owner extensions. They do not promote reference PNR, closure/repair, or
+verification into the stable kernel or default MCP inventory.
+
 ### M0 — neutral reference placement
 
 Status: implemented.
@@ -161,7 +190,8 @@ Status: implemented.
 - execution-policy identity separate from physical-design intent;
 - neutral tests that exercise more than one technology model.
 
-M0 is a contract and correctness reference. It is not an optimizing placer.
+M0 is an experimental contract and correctness reference. It is not an optimizing
+placer and is not a default target.
 
 ### M1 — general placement constraint system
 
@@ -243,10 +273,11 @@ general routing remains in progress.
   evaluation, physical-owner pressure, routed progress, and displacement;
 - every repair records current/candidate quality and an improved, equivalent,
   or regressed decision; fewer conflicts cannot mask increased overflow;
-- public Placement-Routing Closure Evidence projects final conflict and pressure
-  summaries, owner mobility and attribution reason, distinct routing/outer-loop
-  termination, Routing Closure Quality, and each evaluated attributed repair
-  without exposing mutable routing state or Routing Resource Graph internals;
+- the experimental Placement-Routing Closure Evidence extension projects final
+  conflict and pressure summaries, owner mobility and attribution reason, distinct
+  routing/outer-loop termination, Routing Closure Quality, and each evaluated
+  attributed repair without exposing mutable routing state or Routing Resource
+  Graph internals;
 - independent state and iteration budgets, with partial legal routes retained for
   infeasible, unsupported, and exhausted results;
 - independent geometry, spacing, resource-coverage, and connectivity checks over
@@ -256,7 +287,7 @@ general routing remains in progress.
 - partial-stage observability: a successful Placement Solution remains available
   when the requested Routing Solution cannot be completed.
 
-The current reference router deliberately rejects track problems whose terminals
+The current experimental reference router deliberately rejects track problems whose terminals
 have no legal track access and layer transitions whose Via Definitions lack complete
 enclosure or cut-spacing facts.
 Those are capability boundaries, not implicit fallbacks. Further routing increments
@@ -279,8 +310,8 @@ and unrelated design styles using the same kernel without source edits.
 
 - typed DRC/LVS result ingestion with artifact identity and explicit backend
   completion, without weakening signoff authority;
-- deterministic Closure Campaign iteration provenance connecting each Flow Plan
-  and run to its canonical stage artifacts;
+- deterministic experimental closure-campaign provenance connecting each
+  target/operation plan and run to its canonical stage artifacts;
 - explicit lexicographic Closure Quality and attributed feedback with independent
   state and iteration budgets;
 - PEX, post-layout, and qualification have typed artifact contracts and Campaign

@@ -12,7 +12,7 @@ from sigilicon.layout.physical_geometry import (
     transformed_routing_blockage_shapes,
     via_occurrence_shapes,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     Axis,
     CutSpacingRule,
     Diagnostic,

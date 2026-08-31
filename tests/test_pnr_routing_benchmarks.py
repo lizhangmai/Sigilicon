@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     Axis,
     ConstraintStatus,
     CutSpacingRule,
@@ -19,19 +19,15 @@ from sigilicon.experimental.reference_pnr import (
     MinimumWidthRule,
     Orientation,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
     PhysicalNet,
-    PhysicalOwnerMobility,
     PhysicalPort,
     PhysicalTechnology,
     PinAccess,
     PinReference,
     Placement,
-    PlacementRoutingTerminationReason,
-    ReferencePnrExecutionPolicy,
     PhysicalDesignRequest,
     PhysicalDesignStage,
     Point,
@@ -46,9 +42,16 @@ from sigilicon.experimental.reference_pnr import (
     RoutingShieldConstraint,
     RoutingSkewConstraint,
     RoutingTrackPattern,
-    RoutingTerminationReason,
     RoutingViaCountConstraint,
     ViaDefinition,
+)
+from sigilicon.experimental.reference_pnr import (
+    PhysicalOwnerMobility,
+    PlacementRoutingTerminationReason,
+    ReferencePnrExecutionPolicy,
+    ReferencePnrJob,
+    RoutingConflictKind,
+    RoutingTerminationReason,
     run,
 )
 from sigilicon.experimental.reference_pnr._placement import solve_placement
@@ -60,9 +63,6 @@ from sigilicon.experimental.reference_pnr._closure import (
     close_placement_routing,
 )
 from sigilicon.experimental.reference_pnr._routing import solve_routing
-from sigilicon.experimental.reference_pnr._routing_conflicts import (
-    RoutingConflictKind,
-)
 
 
 def _two_layer_technology(

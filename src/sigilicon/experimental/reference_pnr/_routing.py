@@ -24,7 +24,7 @@ from sigilicon.experimental.reference_pnr._routing_conflicts import (
     capacity_conflicts,
 )
 from sigilicon.experimental.reference_pnr._routing_policy import RoutingGroupPolicy
-from sigilicon.experimental.reference_pnr._routing_ownership import PhysicalOwnerIdentity
+from sigilicon.layout.physical_design import PhysicalOwnerIdentity
 from sigilicon.experimental.reference_pnr._routing_pressure import (
     RoutingPlacementPressure,
     attribute_routing_pressure,
@@ -45,12 +45,11 @@ from sigilicon.experimental.reference_pnr._routing_tree import (
     RoutingTree,
     whole_route_tree,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     Diagnostic,
     InstancePlacement,
     Metric,
     NetRoute,
-    ReferencePnrJob,
     Point,
     PhysicalDesignStage,
     Rect,
@@ -60,6 +59,7 @@ from sigilicon.experimental.reference_pnr.model import (
     RoutingBlockagePlacement,
     StageReport,
 )
+from sigilicon.experimental.reference_pnr.model import ReferencePnrJob
 
 
 @dataclass(frozen=True)

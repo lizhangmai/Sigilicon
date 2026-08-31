@@ -1,6 +1,6 @@
 # Agentic circuit-design contract baseline
 
-Status: Phase 0-5 implemented contract, 2026-08-28.
+Status: stable/experimental boundary finalized, 2026-08-31.
 
 This document fixes the reusable Sigilicon vocabulary and integration inventory for
 agent-assisted circuit design. It does not define an IP topology, PDK fact, project
@@ -29,10 +29,12 @@ MCP-style conventions, or environment variables.
   does not contain a policy decision.
 - **Design Decision** is an owner-policy evaluation of identity-matched Candidate
   and Design Evidence. It cannot repair missing evidence.
-- **Design Campaign** is a bounded, durable multi-round workflow above FlowEngine.
-  Every attempt is one resolved, deterministic FlowPlan. A violated attempt stops
-  in `proposal_required`; only an explicit client proposal can let owner policy
-  compile a Repair Plan and derive the child Candidate and next attempt.
+- **Design Campaign** is an experimental, bounded, durable multi-round workflow
+  above FlowEngine. Every attempt is one resolved owner/target/operation plan. A
+  violated attempt stops in `proposal_required`; only an explicit client proposal
+  can let owner policy compile a Repair Plan and derive the child Candidate and
+  next attempt. It is available only through the independent
+  `sigilicon experimental campaign plan/run` CLI and is not a default MCP tool.
 - **Promotion Plan** is a non-mutating description of semantic source roles,
   required regression, evidence bundle, and unresolved risk. It contains no write
   path or patch. Applying it is outside the MCP interface and always requires human
@@ -64,10 +66,10 @@ owner component graph and cannot be laundered through an artifact reference.
 
 Topology creation has one explicit ownership seam. An owner-side
 `SourceAuthoredTopologyAdapter` normalizes its validated `DesignSpec` and canonical
-netlist into the typed topology. The `circuit-design.source` Flow Action uses the
+netlist into the typed topology. The `circuit-design.source` execution Action uses the
 existing `source-assets` Adapter only to select and ingest that already-authored
 typed artifact; it is not a second topology generator or a parallel inventory.
-The resolved Flow plan carries every selected UTF-8 member record and its executable
+The resolved target/operation plan carries every selected UTF-8 member record and its executable
 bit together with the exact owner-scoped Git commit and change records. Preflight
 and materialization compare those typed values again, so a dirty file changing
 without changing its path cannot reuse an earlier authorization.
@@ -97,7 +99,7 @@ rows remain reserved inventory, not alternate project indexes):
 | --- | --- | --- | --- |
 | `sigilicon://project/{project_id}` | validated ProjectContext and catalog links | `read-project` | Phase 2 |
 | `sigilicon://owners/{owner}/catalog` | owner-selected targets and contracts | `read-project` | Phase 2 |
-| `sigilicon://runs/{owner}/{flow}/{target}/{run_id}/manifest` | owner-bound durable run result | `read-project` | Phase 2 |
+| `sigilicon://owners/{owner}/targets/{target}/operations/{operation}/runs/{run_id}/manifest` | owner/target/operation-bound durable run result | `read-project` | Phase 2 |
 | `sigilicon://owners/{owner}/targets/{target}` | one owner target projection | `read-project` | reserved |
 | `sigilicon://contracts/{identity}` | bounded typed contract summary and source identity | `read-project` | reserved |
 | `sigilicon://schemas/{artifact_kind}` | the Sigilicon-owned schema | `read-project` | reserved |
@@ -109,14 +111,25 @@ Tool baseline:
 | Tool | First phase | Capability | Input rule |
 | --- | --- | --- | --- |
 | `project.inspect` | Phase 2 | `read-project` | explicit server ProjectContext and semantic owner selector |
-| `flow.plan` | Phase 2 | `plan-flow` | cataloged flow, target, profile, and bounded options |
-| `flow.run` | Phase 3 | `execute-derived` | immutable `plan_identity` and confirmed budget only |
-| `run.inspect` | Phase 2 | `read-project` | cataloged owner/flow/target plus validated run identity |
-| `run.cancel` | Phase 3 | `execute-derived` | opaque run identity; cooperative managed cancellation |
-| `campaign.plan` | Phase 4 | `plan-flow` | owner policy, explicit scope, budgets, and stop conditions |
-| `campaign.run` | Phase 4 | `execute-derived` or stronger stage capability | start with immutable campaign identity, or resume the same run with one strict proposal |
-| `candidate.validate` | Phase 2 | `plan-flow` | exact canonical Candidate/stage JSON plus cataloged owner; no paths |
-| `candidate.promotion_plan` | Phase 5 | `plan-flow` | validated Candidate and evidence bundle; never writes source |
+| `target.plan` | Phase 2 | `plan-target` | cataloged owner, target, operation, and bounded options |
+| `target.run` | Phase 3 | `execute-derived` | owner/target/operation plus immutable `plan_identity` and confirmed budget |
+| `run.inspect` | Phase 2 | `read-project` | owner/target/operation plus validated run identity |
+| `run.cancel` | Phase 3 | `execute-derived` | owner/target/operation and opaque run identity; cooperative managed cancellation |
+| `candidate.validate` | Phase 2 | `plan-target` | exact canonical Candidate/stage JSON plus cataloged owner; no paths |
+| `candidate.promotion_plan` | Phase 5 | `plan-target` | validated Candidate and evidence bundle; never writes source |
+
+The stable MCP inventory is exactly the project/target/run/candidate set above;
+campaign planning and execution are not MCP tools. A bounded campaign is available
+only after an explicit experimental request through the independent CLI:
+
+```text
+sigilicon experimental campaign plan ...
+sigilicon experimental campaign run ...
+```
+
+The experimental CLI requires owner policy, explicit target/operation scope,
+budgets, and stop conditions. It does not create a compatibility alias for any
+removed pre-target API.
 
 There is no generic shell, arbitrary file reader, arbitrary absolute path,
 environment editor, raw EDA command, OA mutation shortcut, PANDA compatibility
@@ -129,7 +142,7 @@ conclusion/non-conclusion, and allowed next operations.
 Capability levels are cumulative only when explicitly granted:
 
 1. `read-project` reads authorized Git contracts and existing artifacts;
-2. `plan-flow` performs pure validation and deterministic planning;
+2. `plan-target` performs pure validation and deterministic planning;
 3. `execute-derived` may invoke approved adapters and write ignored artifacts;
 4. `mutate-workspace` additionally requires the existing exact OA lease,
    confirmation, mutation scope, and receipt checks;
@@ -138,12 +151,12 @@ Capability levels are cumulative only when explicitly granted:
 ### Phase 2 binding
 
 `AgenticReadInterface` is the shared application seam for `project.inspect`,
-`flow.plan`, `run.inspect`, and owner-bound `candidate.validate`. The read CLI and
+`target.plan`, `run.inspect`, and owner-bound `candidate.validate`. The read CLI and
 native MCP handlers call this Interface; the Candidate operation delegates to the
 same workflow-owned `validate_candidate_records` function as the existing
-Candidate CLI. MCP accepts semantic identities or bounded canonical JSON only. Its
-tool list has no path, shell, environment, executor, cancellation, OA, or promotion
-input.
+Candidate CLI. MCP accepts semantic identities or bounded canonical JSON only. The
+read-only Phase 2 tools have no path, shell, environment, executor, cancellation,
+OA, or promotion input.
 
 The local entry point is `sigilicon-mcp --project-root <root>`. Project selection is
 launcher configuration rather than a model-call argument, and cwd discovery is not
@@ -161,11 +174,12 @@ contain no IP topology, PDK fact, product threshold, or EDA command.
 Pilot order is fixed as INV/TG physical parity, CDAC_BOTTOM_SWITCH sizing and
 pre-layout diagnostic normalization (SAR_ASYNC_CLOCK_GATE may follow), then
 CALIBRATED_DYNAMIC_COMPARATOR full-loop evidence, and only later the complete MX
-Block. The existing CDAC sizing campaign remains diagnostic and its algorithm,
-candidate set, measurements, and thresholds are not changed by normalization.
+Block. The existing CDAC sizing campaign remains an owner/experimental diagnostic
+and its algorithm, candidate set, measurements, and thresholds are not changed by
+normalization; it is not a default MCP campaign operation.
 
-`DesignCampaignRunner` owns the cross-round state machine; `FlowEngine` remains a
-single-round typed DAG executor. A campaign source contains exactly one baseline
+The experimental `DesignCampaignRunner` owns the cross-round state machine;
+`FlowEngine` remains a single-round typed DAG executor. A campaign source contains exactly one baseline
 attempt plus an optional continuation template and Repair Policy, never a
 pre-enumerated second result. Durable start/resume checkpoints are append-only,
 sequence-checked, recoverable across processes, and bind the grant and execution

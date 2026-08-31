@@ -9,15 +9,11 @@ from sigilicon.experimental.reference_pnr._routing_conflicts import (
     RoutingConflictKind,
     RoutingConflictSet,
 )
-from sigilicon.experimental.reference_pnr._routing_ownership import (
-    PhysicalOwner,
-    PhysicalOwnerIdentity,
-    PhysicalOwnerKind,
-    PhysicalOwnerMobility,
-)
+from sigilicon.experimental.reference_pnr._routing_ownership import PhysicalOwner
+from sigilicon.experimental.reference_pnr.model import PhysicalOwnerMobility
 from sigilicon.experimental.reference_pnr._routing_problem import RoutingProblem
 from sigilicon.experimental.reference_pnr._routing_resources import RoutingResourceIdentity
-from sigilicon.experimental.reference_pnr.model import Rect
+from sigilicon.layout.physical_design import PhysicalOwnerIdentity, PhysicalOwnerKind, Rect
 
 
 @dataclass(frozen=True)

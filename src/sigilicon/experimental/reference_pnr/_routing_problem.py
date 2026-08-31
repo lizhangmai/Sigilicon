@@ -18,15 +18,15 @@ from sigilicon.experimental.reference_pnr._routing_resources import (
     RoutingResourceGraph,
     compile_routing_resource_graph,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     InstancePlacement,
     LayerShape,
-    ReferencePnrJob,
     PinReference,
     ResultStatus,
     RoutingBlockagePlacement,
     ViaDefinition,
 )
+from sigilicon.experimental.reference_pnr.model import ReferencePnrJob
 
 
 @dataclass(frozen=True)

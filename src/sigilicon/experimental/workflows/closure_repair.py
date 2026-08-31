@@ -14,17 +14,19 @@ from typing import TYPE_CHECKING
 
 from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.flow.model import identifier, owner_identity, run_identity
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     ConstraintMode,
-    ReferencePnrJob,
-    ReferencePnrJobLineage,
-    ReferencePnrResult,
     PhysicalOwnerIdentity,
     PhysicalOwnerKind,
     Placement,
     Point,
     Rect,
     ResultStatus,
+)
+from sigilicon.experimental.reference_pnr.model import (
+    ReferencePnrJob,
+    ReferencePnrJobLineage,
+    ReferencePnrResult,
 )
 from sigilicon.experimental.reference_pnr._constraints import evaluate_constraint
 from sigilicon.experimental.reference_pnr._legality import (

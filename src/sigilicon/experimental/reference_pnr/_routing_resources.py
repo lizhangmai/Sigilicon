@@ -14,8 +14,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from sigilicon.layout.physical_geometry import via_occurrence_shapes
-from sigilicon.experimental.reference_pnr._routing_ownership import PhysicalOwnerIdentity
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     Axis,
     CutSpacingRule,
     EnclosureRule,
@@ -24,6 +23,7 @@ from sigilicon.experimental.reference_pnr.model import (
     MinimumSpacingRule,
     MinimumWidthRule,
     NetRoute,
+    PhysicalOwnerIdentity,
     PhysicalTechnology,
     Point,
     Rect,

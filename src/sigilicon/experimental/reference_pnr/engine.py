@@ -21,12 +21,21 @@ from sigilicon.experimental.reference_pnr._technology import (
     technology_capabilities,
     validate_technology,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     ConstraintOutcome,
     ConstraintStatus,
     Diagnostic,
     LayerKind,
     Orientation,
+    PhysicalDesignProvenance,
+    PhysicalDesignStage,
+    Rect,
+    ResultStatus,
+    RoutingBlockagePlacement,
+    StageReport,
+    TechnologyCapability,
+)
+from sigilicon.experimental.reference_pnr.model import (
     ReferencePnrJob,
     ReferencePnrResult,
     PhysicalOwnerSummary,
@@ -34,17 +43,11 @@ from sigilicon.experimental.reference_pnr.model import (
     PlacementRoutingRepairSummary,
     PlacementRoutingTerminationReason,
     ReferencePnrExecutionPolicy,
-    PhysicalDesignProvenance,
-    PhysicalDesignStage,
-    Rect,
-    ResultStatus,
-    RoutingBlockagePlacement,
     RoutingConflictSummary,
     RoutingPlacementPressureSummary,
     RoutingTerminationReason,
-    StageReport,
-    TechnologyCapability,
 )
+from sigilicon.experimental.reference_pnr.serialization import reference_pnr_job_id
 from sigilicon.layout.physical_design_serialization import physical_design_job_id
 
 
@@ -575,6 +578,8 @@ def run(job: ReferencePnrJob) -> ReferencePnrResult:
     """
 
     _validate_job(job)
+    result_identity = f"{reference_pnr_job_id(job)}:result"
+    closure_evidence_identity = f"{result_identity}:closure-evidence"
     capabilities = technology_capabilities(job.technology)
     missing_capabilities = tuple(
         capability
@@ -610,7 +615,7 @@ def run(job: ReferencePnrJob) -> ReferencePnrResult:
             stage_reports=tuple(reports),
             provenance=_provenance(job),
             routing_blockage_placements=_initial_routing_blockage_placements(job),
-            artifact_id=f"{physical_design_job_id(job)}:result",
+            artifact_id=result_identity,
         )
 
     placement = solve_placement(job)
@@ -625,7 +630,7 @@ def run(job: ReferencePnrJob) -> ReferencePnrResult:
             stage_reports=(placement.report,),
             provenance=_provenance(job),
             routing_blockage_placements=_initial_routing_blockage_placements(job),
-            artifact_id=f"{physical_design_job_id(job)}:result",
+            artifact_id=result_identity,
         )
     if PhysicalDesignStage.ROUTING in job.request.stages:
         closure = close_placement_routing(job, placement)
@@ -679,10 +684,10 @@ def run(job: ReferencePnrJob) -> ReferencePnrResult:
                         closure.routing_blockage_placements
                     ),
                     closure_evidence=_public_closure_evidence(
-                        closure, f"{physical_design_job_id(job)}:result:closure-evidence"
+                        closure, closure_evidence_identity
                     ),
                     closed=False,
-                    artifact_id=f"{physical_design_job_id(job)}:result",
+                    artifact_id=result_identity,
                 )
         return ReferencePnrResult(
             status=routing.status,
@@ -704,10 +709,10 @@ def run(job: ReferencePnrJob) -> ReferencePnrResult:
             routes=routing.routes,
             routing_blockage_placements=closure.routing_blockage_placements,
             closure_evidence=_public_closure_evidence(
-                closure, f"{physical_design_job_id(job)}:result:closure-evidence"
+                closure, closure_evidence_identity
             ),
             closed=_closure_is_closed(closure),
-            artifact_id=f"{physical_design_job_id(job)}:result",
+            artifact_id=result_identity,
         )
     return ReferencePnrResult(
         status=placement.status,
@@ -717,5 +722,5 @@ def run(job: ReferencePnrJob) -> ReferencePnrResult:
         provenance=_provenance(job),
         routing_blockage_placements=_initial_routing_blockage_placements(job),
         closed=True,
-        artifact_id=f"{physical_design_job_id(job)}:result",
+        artifact_id=result_identity,
     )

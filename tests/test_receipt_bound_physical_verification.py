@@ -61,13 +61,12 @@ from sigilicon.layout.materialization_execution import (
     materialization_receipt_from_json,
     materialization_receipt_id,
 )
-from sigilicon.experimental.reference_pnr import (
+from sigilicon.layout.physical_design import (
     GridlessRoutingResource,
     LayerKind,
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    ReferencePnrJob,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
@@ -78,6 +77,9 @@ from sigilicon.experimental.reference_pnr import (
     PhysicalDesignStage,
     Rect,
     RoutingDirection,
+)
+from sigilicon.experimental.reference_pnr import (
+    ReferencePnrJob,
     run,
 )
 from sigilicon.workflows.builtin import build_flow_registry

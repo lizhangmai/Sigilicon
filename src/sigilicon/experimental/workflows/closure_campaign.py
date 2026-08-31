@@ -84,7 +84,6 @@ from sigilicon.experimental.reference_pnr.flow import (
 from sigilicon.experimental.reference_pnr.model import (
     PlacementRoutingClosureEvidence,
     PlacementRoutingTerminationReason,
-    ResultStatus,
     RoutingClosureQuality,
     RoutingTerminationReason,
 )
@@ -101,7 +100,11 @@ from sigilicon.layout.physical_design_serialization import (
     physical_design_result_from_json,
     physical_design_result_id,
 )
-from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
+from sigilicon.layout.physical_design import (
+    PhysicalDesignJob,
+    PhysicalDesignResult,
+    ResultStatus,
+)
 from sigilicon.experimental.workflows.closure_repair import (
     ClosureFeedbackKind,
     ClosureFeedbackScope,

@@ -19,18 +19,20 @@ from sigilicon.experimental.reference_pnr._routing_quality import (
     RoutingClosureQualityPolicy,
     compile_routing_closure_quality,
 )
-from sigilicon.experimental.reference_pnr.model import (
+from sigilicon.layout.physical_design import (
     Diagnostic,
     Metric,
     PhysicalOwnerIdentity,
+    ResultStatus,
+    RoutingBlockagePlacement,
+    StageReport,
+)
+from sigilicon.experimental.reference_pnr.model import (
     ReferencePnrJob,
     PlacementRoutingTerminationReason,
-    ResultStatus,
     RoutingClosureQuality,
     RoutingClosureQualityDecision,
-    RoutingBlockagePlacement,
     RoutingTerminationReason,
-    StageReport,
 )
 
 
