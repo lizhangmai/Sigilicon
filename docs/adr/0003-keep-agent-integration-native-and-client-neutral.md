@@ -13,6 +13,6 @@ The default MCP surface is limited to `project.inspect`, `target.plan`,
 `candidate.promotion_plan`. Target requests carry `owner`, `target`, and
 `operation`; a run carries an immutable `plan_identity`. Run resources use the
 `owner/target/operation/run` hierarchy. Bounded campaigns are not MCP tools and
-require an explicit `sigilicon experimental campaign plan/run` CLI request.
+require an explicit `sigilicon campaign plan/run` CLI request.
 OA-XStream and combined XStream-Calibre are explicit owner opt-ins. No compatibility protocol or
 legacy selection alias is provided.

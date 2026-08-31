@@ -1,4 +1,4 @@
-"""Explicit opt-in CLI for experimental Sigilicon workflows."""
+"""CLI for bounded Design Campaign planning and execution."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.cli.common import emit_json
 from sigilicon.domain.agentic_execution import agentic_execution_grant_from_json
 from sigilicon.domain.repository import Project
-from sigilicon.experimental.agentic import (
+from sigilicon.campaigns.interface import (
     DesignCampaignExecutionInterface,
     DesignCampaignReadInterface,
 )
@@ -19,13 +19,11 @@ from sigilicon.experimental.agentic import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sigilicon experimental",
-        description="Explicitly opt in to experimental Sigilicon workflows.",
+        prog="sigilicon campaign",
+        description="Plan, start, or resume a bounded Design Campaign.",
     )
     parser.add_argument("--project-root", type=Path, required=True)
-    commands = parser.add_subparsers(dest="domain", required=True)
-    campaign = commands.add_parser("campaign", help="bounded Design Campaign pilot")
-    operations = campaign.add_subparsers(dest="operation", required=True)
+    operations = parser.add_subparsers(dest="operation", required=True)
 
     plan = operations.add_parser("plan", help="compile a Campaign without execution")
     plan.add_argument("--campaign", type=Path, required=True)
@@ -56,16 +54,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             resuming = args.run_id is not None or args.proposal is not None
             if starting == resuming:
                 raise ValueError(
-                    "experimental campaign run requires either --campaign plus "
+                    "campaign run requires either --campaign plus "
                     "campaign identity or --run-id plus --proposal"
                 )
             if starting and (args.campaign is None or args.campaign_identity is None):
                 raise ValueError(
-                    "experimental campaign start requires --campaign and campaign identity"
+                    "campaign start requires --campaign and campaign identity"
                 )
             if resuming and (args.run_id is None or args.proposal is None):
                 raise ValueError(
-                    "experimental campaign resume requires --run-id and --proposal"
+                    "campaign resume requires --run-id and --proposal"
                 )
             execution = DesignCampaignExecutionInterface(
                 read,

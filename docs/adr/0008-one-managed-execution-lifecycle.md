@@ -8,7 +8,7 @@ Every operation that executes an EDA tool and produces canonical engineering-run
 
 OA source/workspace administration remains a separate Module because plan, check, rebuild, and attestation govern a mutable external design database rather than an engineering run. Their reports are workspace/source administration evidence and cannot produce regression, qualification, or signoff conclusions. Native simulation and verification consume the resolved OA workspace through the selected target operation. Cataloged execution has no standalone recorder or second Sigilicon lifecycle; an owner-mandated human entrypoint may remain only as a thin typed target facade.
 
-This rejects both a universal flattened EDA result schema and permanent parallel script/workflow lifecycles. The one action registry contains every installed implementation, including implementations marked experimental, but providers remain lazy and a recipe must name an Adapter explicitly. Registration is availability, not fallback, qualification, or an implicit owner opt-in.
+This rejects both a universal flattened EDA result schema and permanent parallel script/workflow lifecycles. The one action registry contains every installed implementation, but providers remain lazy and a recipe must name an Adapter explicitly. Registration is availability, not fallback, qualification, or an implicit owner opt-in.
 
 Domain planning is also completed before Adapter materialization. Actions that
 need a resolved design target, OA assembly, Xcelium cell, AMS platform/release,
@@ -35,8 +35,8 @@ or externally supplied per-node plan map is retained.
 
 Repository assembly names those owner sources only under
 `[flow.action_modules]`. The earlier registry-extension vocabulary and the
-separate stable/experimental registry builders are deleted. An experimental
-implementation is selected by the same explicit owner recipe as any ASIC,
+separate core/extension registry builders are deleted. Every implementation is
+selected by the same explicit owner recipe as any ASIC,
 analog, mixed-signal, layout, or native implementation; no owner forwarding
 module is required merely to make an installed implementation visible.
 
@@ -67,7 +67,7 @@ its persisted source closure must describe one source state.
 ## 2026-08-31 custom-layout implementation boundary
 
 Cataloged custom-layout generation and XStream/Calibre verification are an
-explicit owner/experimental extension of the stable `target.plan` -> `target.run`
+explicit owner-selected extension of the stable `target.plan` -> `target.run`
 seam. The owner target selects explicit `generate`, `verify-drc`, `verify-lvs`, or
 `verify-all` operations. Planning freezes the resolved `LayoutSpec`, generated
 `LayoutPlan`, owner route, platform contracts, generator implementation, and
@@ -109,7 +109,7 @@ immutable plan identity and produces one run identity. The old profile and split
 design/layout selection surfaces are deleted; they do not form a second API and
 have no compatibility interpretation. OA-XStream and combined XStream-Calibre
 remain explicitly selected owner implementations;
-bounded campaigns use only the explicit `sigilicon experimental campaign plan/run`
+bounded campaigns use only the explicit `sigilicon campaign plan/run`
 CLI and are absent from default MCP.
 
 Project-owned Python modules are importable only inside one shared bounded import

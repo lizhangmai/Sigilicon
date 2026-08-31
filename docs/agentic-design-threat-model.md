@@ -1,6 +1,6 @@
 # Agentic circuit-design threat model
 
-Status: stable/experimental boundary finalized, 2026-08-31.
+Status: single-attempt/campaign boundary finalized, 2026-08-31.
 
 This model covers Sigilicon's future native MCP process, its application Interface,
 managed artifacts, and deterministic target/operation EDA adapters. MCP clients, models,
@@ -60,11 +60,11 @@ The default MCP server exposes only `project.inspect`, `target.plan`, `target.ru
 surface.
 
 Bounded campaigns are outside the default MCP boundary. They require an explicit
-experimental CLI request:
+campaign CLI request:
 
 ```text
-sigilicon experimental campaign plan ...
-sigilicon experimental campaign run ...
+sigilicon campaign plan ...
+sigilicon campaign run ...
 ```
 
 OA-XStream and combined XStream-Calibre are explicit owner opt-ins. They must not be reached through a
@@ -84,7 +84,7 @@ record secrets, unrestricted environment data, complete PDK paths, or raw prompt
 content. Resource and handle retention is explicit and bounded; terminal evidence
 remains immutable for the project retention period.
 
-Experimental Design Campaign checkpoints are canonical states referenced by append-only,
+Design Campaign checkpoints are canonical states referenced by append-only,
 monotonic sequence events. A mutable state pointer is only a cache and is rebuilt from
 the ordered events after a missing or partial write. Baseline and continuation execution
 failures are recorded as terminal fail-closed states, including when no Candidate

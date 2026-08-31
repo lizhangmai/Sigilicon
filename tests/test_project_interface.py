@@ -71,7 +71,7 @@ def test_generic_flow_interface_does_not_aggregate_domain_action_modules() -> No
     assert result.returncode == 0, result.stderr
 
 
-def test_stable_flow_and_agentic_imports_do_not_load_experimental_modules() -> None:
+def test_single_attempt_interfaces_do_not_load_campaign_modules() -> None:
     result = subprocess.run(
         (
             sys.executable,
@@ -81,8 +81,8 @@ def test_stable_flow_and_agentic_imports_do_not_load_experimental_modules() -> N
             "import sigilicon.workflows.agentic_read; "
             "import sigilicon.workflows.agentic_execution; "
             "import sigilicon.cli.flow_core; "
-            "forbidden = {name for name in sys.modules if name == 'sigilicon.experimental' "
-            "or name.startswith('sigilicon.experimental.')}; "
+            "forbidden = {name for name in sys.modules if name == 'sigilicon.campaigns' "
+            "or name.startswith('sigilicon.campaigns.')}; "
             "assert not forbidden, sorted(forbidden)",
         ),
         check=False,
@@ -93,7 +93,7 @@ def test_stable_flow_and_agentic_imports_do_not_load_experimental_modules() -> N
     assert result.returncode == 0, result.stderr
 
 
-def test_stable_agentic_cli_rejects_experimental_campaign_routes() -> None:
+def test_single_attempt_agentic_cli_rejects_campaign_routes() -> None:
     with pytest.raises(SystemExit):
         read_parser().parse_args(
             ["--project-root", "/tmp/project", "campaign-plan"]

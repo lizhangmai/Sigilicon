@@ -15,12 +15,12 @@ from sigilicon.domain.agentic_execution import (
 )
 from sigilicon.domain.circuit_design import EvidenceLevel, EvidenceRole
 from sigilicon.domain.repository import Project
-from sigilicon.experimental import agentic_campaigns as agentic_campaigns_module
-from sigilicon.experimental.agentic import (
+from sigilicon.campaigns import store as campaign_store_module
+from sigilicon.campaigns.interface import (
     DesignCampaignExecutionInterface as AgenticExecutionInterface,
     DesignCampaignReadInterface,
 )
-from sigilicon.experimental.design_campaign import (
+from sigilicon.campaigns.design import (
     DesignArtifactBinding,
     DesignCampaignAttemptSpec,
     DesignCampaignBudget,
@@ -34,7 +34,7 @@ from sigilicon.experimental.design_campaign import (
 from sigilicon.canonical import canonical_json
 from sigilicon.canonical import canonical_digest
 from sigilicon.domain.circuit_design import ProposalProvenance, TopologyOrigin
-from sigilicon.experimental.design_repair import (
+from sigilicon.campaigns.repair import (
     DesignRepairProposal,
     TopologyRepairPolicy,
 )
@@ -107,7 +107,7 @@ def _write_campaign_extension(root: Path, *, mode: str = "satisfied") -> None:
     EvidenceConclusion,
 )
 from sigilicon.flow import ActionContract, AdapterExecution, ArtifactPort
-from sigilicon.experimental.design_campaign import DESIGN_CAMPAIGN_ITERATION_EXTENSION
+from sigilicon.campaigns.design import DESIGN_CAMPAIGN_ITERATION_EXTENSION
 from test_design_campaign import AttemptAdapter, FeedbackDrivenAttemptAdapter
 
 
@@ -211,10 +211,9 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
 
     assert sigilicon_cli_main(
         [
-            "experimental",
+            "campaign",
             "--project-root",
             str(tmp_path),
-            "campaign",
             "plan",
             "--campaign",
             str(campaign_path),
@@ -243,10 +242,9 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
 
     assert sigilicon_cli_main(
         [
-            "experimental",
+            "campaign",
             "--project-root",
             str(tmp_path),
-            "campaign",
             "run",
             "--grant",
             str(grant_path),
@@ -435,7 +433,7 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
         planned["data"]["campaign_identity"],
         planned["data"]["plan"],
     )
-    original_write = agentic_campaigns_module.write_immutable_text
+    original_write = campaign_store_module.write_immutable_text
     failed = False
 
     def interrupt_campaign_write(path: Path, text: str) -> None:
@@ -446,7 +444,7 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
         original_write(path, text)
 
     monkeypatch.setattr(
-        agentic_campaigns_module,
+        campaign_store_module,
         "write_immutable_text",
         interrupt_campaign_write,
     )
@@ -459,7 +457,7 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
     request_path = next((tmp_path / "artifacts").rglob("inputs/request.json"))
     request_text = request_path.read_text(encoding="utf-8")
     monkeypatch.setattr(
-        agentic_campaigns_module,
+        campaign_store_module,
         "write_immutable_text",
         original_write,
     )
@@ -604,10 +602,9 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     proposal_path.write_text(proposal.canonical_json(), encoding="utf-8")
     assert sigilicon_cli_main(
         [
-            "experimental",
+            "campaign",
             "--project-root",
             str(tmp_path),
-            "campaign",
             "run",
             "--grant",
             str(grant_path),

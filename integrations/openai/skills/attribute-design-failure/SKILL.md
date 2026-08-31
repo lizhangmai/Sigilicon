@@ -16,7 +16,7 @@ Produce an evidence-bound attribution and a bounded repair proposal. Do not turn
 5. Classify the earliest limiting stage as topology/L0, sizing/L1, module/L2, physical/materialization, DRC, LVS, PEX, post-layout, or qualification. Keep `violated`, `not_evaluated`, `unsupported`, `backend_unavailable`, `execution_failed`, `invalid_identity`, and budget exhaustion distinct. Check: exactly one earliest stage or `unattributed` is returned.
 6. Attribute the failure only when typed findings and parent identities identify a circuit, state, timing/load relation, physical owner, or rule. Otherwise return `unattributed` and request the smallest missing diagnostic. Check: the attribution cites its typed finding and parent identity.
 7. Propose either a topology, sizing, or closure repair scope. State the parent Candidate/evidence hashes, allowed variable or physical-owner scope, required regressions, and budgets. The proposal remains non-executable until the corresponding deterministic repair compiler accepts it. Check: no source mutation or unapproved execution is included.
-8. If the user explicitly requests a bounded experimental campaign, use only the independent `sigilicon experimental campaign plan/run` CLI after owner opt-in; attribution itself does not invoke a campaign by default. Check: no campaign call appears without that explicit request.
+8. If the user explicitly requests a bounded campaign, use only the independent `sigilicon campaign plan/run` CLI after owner opt-in; attribution itself does not invoke a campaign by default. Check: no campaign call appears without that explicit request.
 
 ## Stop conditions
 

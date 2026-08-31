@@ -1,6 +1,6 @@
 # Agentic circuit-design contract baseline
 
-Status: stable/experimental boundary finalized, 2026-08-31.
+Status: single-attempt/campaign boundary finalized, 2026-08-31.
 
 This document fixes the reusable Sigilicon vocabulary and integration inventory for
 agent-assisted circuit design. It does not define an IP topology, PDK fact, project
@@ -29,12 +29,12 @@ MCP-style conventions, or environment variables.
   does not contain a policy decision.
 - **Design Decision** is an owner-policy evaluation of identity-matched Candidate
   and Design Evidence. It cannot repair missing evidence.
-- **Design Campaign** is an experimental, bounded, durable multi-round workflow
+- **Design Campaign** is a bounded, durable multi-round workflow
   above FlowEngine. Every attempt is one resolved owner/target/operation plan. A
   violated attempt stops in `proposal_required`; only an explicit client proposal
   can let owner policy compile a Repair Plan and derive the child Candidate and
   next attempt. It is available only through the independent
-  `sigilicon experimental campaign plan/run` CLI and is not a default MCP tool.
+  `sigilicon campaign plan/run` CLI and is not a default MCP tool.
 - **Promotion Plan** is a non-mutating description of semantic source roles,
   required regression, evidence bundle, and unresolved risk. It contains no write
   path or patch. Applying it is outside the MCP interface and always requires human
@@ -120,14 +120,14 @@ Tool baseline:
 
 The stable MCP inventory is exactly the project/target/run/candidate set above;
 campaign planning and execution are not MCP tools. A bounded campaign is available
-only after an explicit experimental request through the independent CLI:
+only after an explicit request through the independent CLI:
 
 ```text
-sigilicon experimental campaign plan ...
-sigilicon experimental campaign run ...
+sigilicon campaign plan ...
+sigilicon campaign run ...
 ```
 
-The experimental CLI requires owner policy, explicit target/operation scope,
+The campaign CLI requires owner policy, explicit target/operation scope,
 budgets, and stop conditions. It does not create a compatibility alias for any
 removed pre-target API.
 
@@ -177,11 +177,11 @@ contain no IP topology, PDK fact, product threshold, or EDA command.
 Pilot order is fixed as INV/TG physical parity, CDAC_BOTTOM_SWITCH sizing and
 pre-layout diagnostic normalization (SAR_ASYNC_CLOCK_GATE may follow), then
 CALIBRATED_DYNAMIC_COMPARATOR full-loop evidence, and only later the complete MX
-Block. The existing CDAC sizing campaign remains an owner/experimental diagnostic
+Block. The existing CDAC sizing campaign remains an owner-scoped diagnostic
 and its algorithm, candidate set, measurements, and thresholds are not changed by
 normalization; it is not a default MCP campaign operation.
 
-The experimental `DesignCampaignRunner` owns the cross-round state machine;
+The `DesignCampaignRunner` owns the cross-round state machine;
 `FlowEngine` remains a single-round typed DAG executor. A campaign source contains exactly one baseline
 attempt plus an optional continuation template and Repair Policy, never a
 pre-enumerated second result. Durable start/resume checkpoints are append-only,

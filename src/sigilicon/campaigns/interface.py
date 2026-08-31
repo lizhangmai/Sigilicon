@@ -1,8 +1,7 @@
-"""Experimental agent-facing Design Campaign facade.
+"""Agent-facing facade for bounded, durable Design Campaigns.
 
-The stable agentic interfaces own one target plan and run.  This module is the
-deliberately separate pilot facade for bounded multi-round Campaigns and their
-durable proposal/resume state.
+The single-attempt agentic interfaces own one target plan and run. This module
+owns bounded multi-round campaigns and their durable proposal/resume state.
 """
 
 from __future__ import annotations
@@ -17,11 +16,11 @@ from sigilicon.domain.agentic_execution import (
     AgenticExecutionCapability,
     AgenticExecutionGrant,
 )
-from sigilicon.experimental.agentic_campaigns import (
+from sigilicon.campaigns.store import (
     CAMPAIGN_REQUEST_KIND,
     DesignCampaignStore,
 )
-from sigilicon.experimental.design_campaign import (
+from sigilicon.campaigns.design import (
     DesignCampaign,
     DesignCampaignPhase,
     DesignCampaignResult,
@@ -29,7 +28,7 @@ from sigilicon.experimental.design_campaign import (
     ProjectDesignCampaignPlan,
     resolve_project_design_campaign,
 )
-from sigilicon.experimental.design_repair import design_repair_proposal_from_json
+from sigilicon.campaigns.repair import design_repair_proposal_from_json
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
 
@@ -39,7 +38,7 @@ def _now() -> str:
 
 
 class DesignCampaignReadInterface(AgenticReadInterface):
-    """Experimental read facade for compiling one Design Campaign."""
+    """Read facade for compiling one bounded Design Campaign."""
 
     def plan_campaign(self, *, campaign_json: str) -> dict[str, Any]:
         resolved = resolve_project_design_campaign(self.project, campaign_json)
@@ -65,7 +64,7 @@ class DesignCampaignReadInterface(AgenticReadInterface):
 
 
 class DesignCampaignExecutionInterface(AgenticExecutionInterface):
-    """Experimental authorized facade for durable Campaign start/resume."""
+    """Authorized facade for durable Campaign start/resume."""
 
     def __init__(
         self,
@@ -92,7 +91,7 @@ class DesignCampaignExecutionInterface(AgenticExecutionInterface):
         run_id: str | None = None,
         proposal_json: str | None = None,
     ) -> dict[str, Any]:
-        """Start or resume one durable experimental Design Campaign."""
+        """Start or resume one durable Design Campaign."""
 
         starting = run_id is None and proposal_json is None
         resuming = (

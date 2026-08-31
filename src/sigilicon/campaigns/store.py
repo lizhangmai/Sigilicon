@@ -1,4 +1,4 @@
-"""Durable nofollow storage for resumable agentic Design Campaigns."""
+"""Durable nofollow storage for resumable Design Campaigns."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ from sigilicon.artifacts import (
 from sigilicon.canonical import canonical_json
 from sigilicon.flow.model import run_identity
 from sigilicon.paths import ArtifactExecutionPaths, ArtifactLayout
-from sigilicon.experimental.design_campaign import (
+from sigilicon.campaigns.design import (
     DesignCampaignState,
     design_campaign_state_from_json,
 )
-from sigilicon.experimental.design_repair import design_repair_proposal_from_json
+from sigilicon.campaigns.repair import design_repair_proposal_from_json
 
 
 CAMPAIGN_REQUEST_KIND = "agentic-design-campaign-request"

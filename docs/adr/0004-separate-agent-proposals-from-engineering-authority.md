@@ -11,7 +11,7 @@ LLMs may produce Design Briefs, proposals, attribution, and next-step suggestion
 Agent proposals may select an owner `target` and `operation` and may reference the
 immutable `plan_identity` returned by `target.plan`, but they cannot execute
 `target.run`, assert a conclusion, or mutate source without the granted interface
-and owner policy. Campaign continuation is an explicit experimental CLI action,
+and owner policy. Campaign continuation is an explicit campaign CLI action,
 never a default MCP operation. OA-XStream and
 combined XStream-Calibre require explicit owner opt-in; no compatibility alias
 widens proposal authority.

@@ -16,7 +16,7 @@ Produce a reviewable proposal whose assumptions, source identities, and required
 5. Use `run.inspect` only for an exact prior run supplied as input evidence. Separate diagnostic/regression observations from qualification/signoff evidence and preserve missing, unsupported, backend-unavailable, violated, and identity-mismatch outcomes. Check: every observation retains its run identity and evidence role.
 6. If exact canonical Candidate and stage artifacts already exist, call `candidate.validate`; bind any further discussion to the returned Candidate identity. Validation proves schema and lineage, not circuit performance. Check: the validated Candidate identity is unchanged in the proposal.
 7. Propose the smallest bounded next evaluation and its expected artifact lineage. Leave canonical source unchanged and mark promotion as requiring a human-approved Promotion Plan. Check: the output is proposal-only and names a budget and stop condition.
-8. If the user explicitly requests a bounded experimental campaign, use the independent `sigilicon experimental campaign plan/run` CLI only after owner opt-in; this skill never calls a campaign by default. Check: no campaign operation is proposed without that explicit request.
+8. If the user explicitly requests a bounded campaign, use the independent `sigilicon campaign plan/run` CLI only after owner opt-in; this skill never calls a campaign by default. Check: no campaign operation is proposed without that explicit request.
 
 ## Stop conditions
 

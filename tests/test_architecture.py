@@ -31,10 +31,10 @@ LAYERS = {
     "workflows",
     "integrations",
     "cli",
-    "experimental",
+    "campaigns",
 }
 ALLOWED_DEPENDENCIES = {
-    "assembly": {"experimental", "flow", "root"},
+    "assembly": {"flow", "root"},
     "root": {"project", "root"},
     "project": {"domain", "project", "workflows", "root"},
     "domain": {"domain", "execution", "root"},
@@ -64,15 +64,13 @@ ALLOWED_DEPENDENCIES = {
         "workflows",
         "cli",
         "root",
-        "experimental",
+        "campaigns",
     },
-    "experimental": {
+    "campaigns": {
+        "campaigns",
         "domain",
         "flow",
-        "layout",
-        "virtuoso",
         "workflows",
-        "experimental",
         "root",
     },
 }
@@ -83,7 +81,7 @@ CLI_DEPENDENCY_PREFIXES = (
     "sigilicon.cli",
     "sigilicon.artifacts",
     "sigilicon.domain",
-    "sigilicon.experimental",
+    "sigilicon.campaigns",
     "sigilicon.flow",
     "sigilicon.paths",
     "sigilicon.workflows",

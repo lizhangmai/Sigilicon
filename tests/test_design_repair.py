@@ -42,7 +42,7 @@ from sigilicon.domain.circuit_design import (
     TopologyOrigin,
     exact_quantity,
 )
-from sigilicon.experimental.design_repair import (
+from sigilicon.campaigns.repair import (
     RepairCompileDecision,
     SizingRepairPolicy,
     TopologyRepairPolicy,

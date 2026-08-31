@@ -1,4 +1,4 @@
-"""Bounded whole-design attempts above the single-attempt deterministic FlowEngine."""
+"""Bounded whole-design attempts above the deterministic FlowEngine."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ from sigilicon.flow import (
 from sigilicon.identifiers import bounded_identity
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.paths import ArtifactLayout
-from sigilicon.experimental.design_repair import (
+from sigilicon.campaigns.repair import (
     DesignRepairAttribution,
     DesignRepairProposal,
     RepairCompileDecision,

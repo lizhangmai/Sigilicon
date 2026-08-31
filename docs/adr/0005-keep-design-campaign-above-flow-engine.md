@@ -23,7 +23,7 @@ This boundary intentionally removes the campaign-specific executor model API:
 - `FlowNode.design_campaign_iteration` becomes `FlowNode.extensions`;
 - adapters read `ActionContext.extensions` and use
   `design_campaign_iteration_input()` to decode the Campaign-owned payload;
-- `DesignCampaignIterationInput` is owned by the campaign's experimental workflow;
+- `DesignCampaignIterationInput` is owned by the campaign module;
   the former higher-level workflow import is removed because the package
   dependency matrix forbids Flow from importing a higher-level workflow.
 
@@ -37,9 +37,9 @@ regenerated rather than silently treated as equivalent.
 
 The stable API names one target operation at a time: `target.plan` resolves an
 owner/target/operation and returns an immutable `plan_identity`; `target.run`
-executes only that plan identity. Design campaigns remain bounded experimental
-orchestration and are available only through the explicit
-`sigilicon experimental campaign plan/run` CLI or an owner opt-in, never the
+executes only that plan identity. Design campaigns remain bounded orchestration
+and are available only through the explicit
+`sigilicon campaign plan/run` CLI or an owner opt-in, never the
 default MCP inventory. OA-XStream and combined XStream-Calibre remain explicitly
 selected owner implementations. The migration is destructive: no compatibility
 alias, profile fallback, or old selection record is interpreted as a
