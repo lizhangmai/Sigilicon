@@ -57,7 +57,10 @@ from sigilicon.workflows.design_targets import (
     DesignTargetCatalog,
     load_design_target_catalog,
 )
-from sigilicon.workflows.layout_generation import plan_layout_spec
+from sigilicon.workflows.layout_generation import (
+    LayoutPlanningResult,
+    plan_layout_spec,
+)
 from sigilicon.workflows.layout_targets import LayoutTargetCatalog
 
 if TYPE_CHECKING:
@@ -216,6 +219,31 @@ def _design_target_adapter(
     )
 
 
+def _layout_target_adapter(
+    project: Project,
+    owner: str,
+    catalog: LayoutTargetCatalog,
+    *,
+    target: str,
+    operation: str,
+    planning: LayoutPlanningResult,
+    client_factory: Callable[[], Any],
+    sources: tuple[SourceMember, ...],
+) -> ToolAdapter:
+    from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
+
+    return ProjectLayoutTargetAdapter(
+        project,
+        owner,
+        catalog,
+        target=target,
+        operation=operation,
+        planning=planning,
+        client_factory=client_factory,
+        sources=sources,
+    )
+
+
 def _load_extension(source: Path, record_text: str) -> ModuleType:
     identity = hashlib.sha256(str(source).encode("utf-8")).hexdigest()
     module_name = f"_sigilicon_project_flow_{identity}"
@@ -255,7 +283,7 @@ def _project_workflow_registry(
     catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     *,
     design_catalog: DesignTargetCatalog | None = None,
-    layout_adapter: ToolAdapter | None = None,
+    layout_adapter_factory: Callable[[], ToolAdapter] | None = None,
     intent_sources: tuple[SourceMember, ...] = (),
 ) -> FlowRegistry:
     """Assemble built-ins and one explicitly selected owner extension.
@@ -306,9 +334,15 @@ def _project_workflow_registry(
             design_catalog,
         ),
     )
-    if layout_adapter is not None:
-        registry.register_adapter(LAYOUT_GENERATION_ADAPTER, layout_adapter)
-        registry.register_adapter(LAYOUT_VERIFICATION_ADAPTER, layout_adapter)
+    if layout_adapter_factory is not None:
+        registry.register_adapter_factory(
+            LAYOUT_GENERATION_ADAPTER,
+            layout_adapter_factory,
+        )
+        registry.register_adapter_factory(
+            LAYOUT_VERIFICATION_ADAPTER,
+            layout_adapter_factory,
+        )
     source = repository.flow_registry_extension(owner)
     if source is None:
         return registry
@@ -601,7 +635,6 @@ class ProjectFlow:
         )
 
     def _plan_layout(self, request: LayoutRunSelection) -> ProjectFlowPlan:
-        from sigilicon.workflows.layout_flow import ProjectLayoutTargetAdapter
         from sigilicon.workflows.layout_targets import load_layout_target_catalog
 
         inventory = self.project.owner_flow_catalog_inventory(self.owner)
@@ -616,19 +649,18 @@ class ProjectFlow:
             selected_target,
             planning,
         )
-        adapter = ProjectLayoutTargetAdapter(
-            self.project,
-            self.owner.name,
-            selected_catalog,
-            target=selected_target.name,
-            operation=request.operation,
-            planning=planning,
-            client_factory=self.client_factory,
-            sources=intent_sources,
-        )
         engine = self._engine(
             selected_catalog.inventory,
-            layout_adapter=adapter,
+            layout_adapter_factory=lambda: _layout_target_adapter(
+                self.project,
+                self.owner.name,
+                selected_catalog,
+                target=selected_target.name,
+                operation=request.operation,
+                planning=planning,
+                client_factory=self.client_factory,
+                sources=intent_sources,
+            ),
             intent_sources=intent_sources,
         )
         selection = resolve_catalog_selection(
@@ -776,7 +808,7 @@ class ProjectFlow:
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
         *,
         design_catalog: DesignTargetCatalog | None = None,
-        layout_adapter: ToolAdapter | None = None,
+        layout_adapter_factory: Callable[[], ToolAdapter] | None = None,
         intent_sources: tuple[SourceMember, ...] = (),
     ) -> FlowEngine:
         return FlowEngine(
@@ -785,7 +817,7 @@ class ProjectFlow:
                 self.owner,
                 catalog_inventory,
                 design_catalog=design_catalog,
-                layout_adapter=layout_adapter,
+                layout_adapter_factory=layout_adapter_factory,
                 intent_sources=intent_sources,
             ),
             project_scope=self.project.scope(self.owner),
