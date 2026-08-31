@@ -75,7 +75,6 @@ def _write_standard_spicein_device_map(attempt: Any) -> Path:
         "inputs",
         ("spiceIn.devmap",),
         _STANDARD_SPICEIN_DEVICE_MAP,
-        label="project-wide Spectre-to-analogLib device map",
     )
 
 
@@ -465,7 +464,6 @@ def _sync_existing_design_target_only_impl(
             "inputs",
             ("design.toml",),
             spec.path,
-            label="canonical design specification",
         )
         canonical = materialize_netlist_snapshot(
             spec.netlist_snapshot,
@@ -587,7 +585,6 @@ def _sync_existing_design_target_only_impl(
                 "cds_lib_modified": False,
                 "oa_completion_confirmed": True,
             },
-            label="target-only OA synchronization completion proof",
         )
 
         def record_failure(error: BaseException) -> None:

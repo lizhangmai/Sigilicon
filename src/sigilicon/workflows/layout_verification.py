@@ -78,14 +78,8 @@ _ORIGINAL_LAYER = re.compile(
 )
 @dataclass(frozen=True)
 class LayoutVerificationResult:
-    check: str
     passed: bool
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
-    details: Mapping[str, object]
     evidence: PhysicalVerificationEvidence
-    evidence_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -660,7 +654,7 @@ def _run_xstream(
     timeout: int,
 ) -> Path:
     staged_layermap = record.copy_file(
-        "inputs", ("layermap",), spec.layout_pdk.layermap, label="XStream layer map"
+        "inputs", ("layermap",), spec.layout_pdk.layermap
     )
     cds_lib = spec.project.workspace_root / "cds.lib"
     if not cds_lib.is_file():
@@ -689,18 +683,17 @@ def _run_xstream(
             "cwd": str(work),
             "timeout_seconds": timeout,
         },
-        label="guarded XStream command",
     )
     record.write_text(
-        "logs", ("xstream-stdout.log",), exported.stdout, label="XStream stdout/stderr"
+        "logs", ("xstream-stdout.log",), exported.stdout
     )
-    for path, name, label in (
-        (exported.native_log_path, "strmout.log", "XStream native log"),
-        (exported.summary_path, "strmout.sum", "XStream summary"),
+    for path, name in (
+        (exported.native_log_path, "strmout.log"),
+        (exported.summary_path, "strmout.sum"),
     ):
-        record.copy_file("logs", (name,), path, label=label)
+        record.copy_file("logs", (name,), path)
     staged_gds = record.copy_file(
-        "inputs", ("layout.gds",), exported.gds_path, label="XStream layout export"
+        "inputs", ("layout.gds",), exported.gds_path
     )
     staged_gds.chmod(0o444)
     return staged_gds
@@ -726,7 +719,6 @@ def _run_calibre(
         "inputs",
         ("foundry.drc" if check == "drc" else "foundry.lvs",),
         source_deck,
-        label=f"foundry Calibre {check.upper()} deck",
     )
     source_text = read_nofollow_text(staged_source_deck)
     source_cdl: Path | None = None
@@ -736,7 +728,6 @@ def _run_calibre(
                 "inputs",
                 ("canonical-source", f"{index:02d}-{snapshot.source_path.name}"),
                 snapshot.text,
-                label="exact canonical Spectre source",
             )
         record.write_json(
             "inputs",
@@ -748,13 +739,11 @@ def _run_calibre(
                     for snapshot in spec.source_snapshots
                 ],
             },
-            label="canonical LVS source provenance",
         )
         source_cdl = record.write_text(
             "inputs",
             ("source.cdl",),
             render_canonical_source_cdl(spec),
-            label="mechanically converted canonical source CDL",
         )
         source_cdl.chmod(0o444)
 
@@ -779,7 +768,7 @@ def _run_calibre(
         )
     )
     record.write_text(
-        "inputs", (f"run.{check}",), canonical_deck, label=f"resolved Calibre {check.upper()} run deck"
+        "inputs", (f"run.{check}",), canonical_deck
     )
 
     with owned_directory(work) as owned_work, ExitStack() as resources:
@@ -811,7 +800,6 @@ def _run_calibre(
             "work",
             (f"run.tool.{check}",),
             invocation_deck,
-            label=f"invocation-only Calibre {check.upper()} deck",
         )
         invocation_path.chmod(0o444)
         owned_deck = resources.enter_context(owned_input_file(invocation_path))
@@ -820,7 +808,6 @@ def _run_calibre(
             "inputs",
             ("calibre-command.json",),
             {"argv": list(command), "cwd": str(work), "timeout_seconds": timeout},
-            label=f"guarded Calibre {check.upper()} command",
         )
 
         def validate_spawn() -> None:
@@ -850,19 +837,18 @@ def _run_calibre(
         "logs",
         (f"calibre-{check}.log",),
         completed.stdout,
-        label=f"Calibre {check.upper()} execution log",
     )
     if completed.returncode != 0:
         raise RuntimeError(f"Calibre {check.upper()} exited {completed.returncode}")
 
     if check == "drc":
         outputs = (
-            ("drc-results.db", "Calibre DRC results database"),
-            ("drc-summary.rep", "Calibre DRC summary report"),
+            "drc-results.db",
+            "drc-summary.rep",
         )
         copied = {
-            name: record.copy_file("outputs", (name,), work / name, label=label)
-            for name, label in outputs
+            name: record.copy_file("outputs", (name,), work / name)
+            for name in outputs
         }
         return parse_drc_summary(
             read_nofollow_text(copied["drc-summary.rep"]),
@@ -871,24 +857,24 @@ def _run_calibre(
         )
 
     outputs = (
-        ("lvs.rep", "lvs-report", "Calibre LVS report"),
-        ("lvs.rep.ext", "lvs-extraction-report", "Calibre LVS extraction report"),
-        ("calibre_erc.db", "calibre-erc-db", "Calibre ERC results"),
-        ("calibre_erc.sum", "calibre-erc-summary", "Calibre ERC summary"),
+        ("lvs.rep", "lvs-report"),
+        ("lvs.rep.ext", "lvs-extraction-report"),
+        ("calibre_erc.db", "calibre-erc-db"),
+        ("calibre_erc.sum", "calibre-erc-summary"),
     )
     copied_lvs: dict[str, Path] = {}
-    for source_name, result_name, label in outputs:
+    for source_name, result_name in outputs:
         candidate = work / source_name
         if not candidate.is_file():
             raise RuntimeError(f"Calibre LVS did not produce {source_name}")
         copied_lvs[source_name] = record.copy_file(
-            "outputs", (result_name,), candidate, label=label
+            "outputs", (result_name,), candidate
         )
     extracted = work / "svdb" / f"{spec.cell}.sp"
     if not extracted.is_file():
         raise RuntimeError("Calibre LVS did not produce the extracted layout netlist")
     record.copy_file(
-        "outputs", ("extracted.sp",), extracted, label="Calibre extracted layout netlist"
+        "outputs", ("extracted.sp",), extracted
     )
     result = parse_lvs_report(read_nofollow_text(copied_lvs["lvs.rep"]), primary=spec.cell)
     if result["passed"] and "LVS completed. CORRECT." not in completed.stdout:
@@ -1351,7 +1337,6 @@ def verify_layout(
     run = artifacts
     run.write_text(
         "inputs", ("layout-plan.json",), plan.canonical_json(),
-        label="generated layout plan",
     )
     xstream_executable = find_xstream(xstream or layout_spec.layout_pdk.xstream_bin)
     calibre_executable = find_calibre(calibre or layout_spec.layout_pdk.calibre_bin)
@@ -1435,10 +1420,7 @@ def verify_layout(
                 backend="xstream+calibre",
                 exit_code=0,
             )
-        run.add_file(
-            "work", run.directory("work"),
-            label="native verification work directory",
-        )
+        run.add_file("work", run.directory("work"))
 
         def commit() -> Path:
             nonlocal evidence_path
@@ -1454,11 +1436,9 @@ def verify_layout(
             }
             run.write_json(
                 "outputs", ("completion.json",), completion_payload,
-                label="physical verification completion proof",
             )
             evidence_path = run.write_text(
                 "outputs", ("typed-evidence.json",), typed_evidence.canonical_json(),
-                label="typed physical verification evidence",
             )
             return evidence_path
 
@@ -1472,12 +1452,6 @@ def verify_layout(
     ):
         raise RuntimeError("layout verification completed without committing its artifact")
     return LayoutVerificationResult(
-        check=check,
         passed=bool(outcome["passed"]),
-        run_id=run.run_id,
-        run_dir=run.root,
-        manifest_path=run.root / "run_manifest.json",
-        details=outcome,
         evidence=typed_evidence,
-        evidence_path=evidence_path,
     )

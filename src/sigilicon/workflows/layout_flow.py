@@ -129,7 +129,6 @@ class ProjectLayoutTargetAdapter:
                 "inputs",
                 ("selected-sources", f"{index:03d}-{Path(member.path).name}"),
                 member.record_text,
-                label="exact planned layout source",
             )
         if self._route_operation == "generate":
             return self._generate(context, artifacts)
@@ -168,7 +167,6 @@ class ProjectLayoutTargetAdapter:
             "outputs",
             ("flow-evidence.json",),
             payload,
-            label="typed layout generation evidence",
         )
         return AdapterResult.succeeded(
             CollectedActionResult(
@@ -258,7 +256,6 @@ class ProjectLayoutTargetAdapter:
             "outputs",
             ("flow-evidence.json",),
             payload,
-            label="typed layout verification evidence",
         )
         return AdapterResult.succeeded(
             CollectedActionResult(

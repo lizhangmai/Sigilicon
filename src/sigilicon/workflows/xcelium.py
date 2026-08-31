@@ -153,7 +153,6 @@ def execute_xcelium_cell(
         "inputs",
         ("source-manifest.json",),
         {"schema": 1, "plan": plan.as_dict()},
-        label="Xcelium source plan",
     )
     work_dir = artifacts.directory("work")
     xcelium_dir = artifacts.directory("work", "xcelium.d")
@@ -191,10 +190,10 @@ def execute_xcelium_cell(
             pass_fds=(owned_work.fd, owned_xcelium.fd),
         )
     stdout_path = artifacts.write_text(
-        "logs", ("xrun.stdout.log",), completed.stdout, label="Xcelium stdout"
+        "logs", ("xrun.stdout.log",), completed.stdout
     )
     stderr_path = artifacts.write_text(
-        "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
+        "logs", ("xrun.stderr.log",), completed.stderr
     )
     native_log = work_dir / "xrun.log"
     native_output = (
@@ -203,7 +202,7 @@ def execute_xcelium_cell(
         else ""
     )
     native_log_path = (
-        artifacts.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
+        artifacts.copy_file("logs", ("xrun.log",), native_log)
         if native_log.is_file()
         else None
     )
@@ -239,7 +238,7 @@ def execute_xcelium_cell(
         },
     }
     summary_path = artifacts.write_json(
-        "outputs", ("summary.json",), summary, label="Xcelium completion summary"
+        "outputs", ("summary.json",), summary
     )
     return XceliumCellExecution(
         plan=plan,

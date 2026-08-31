@@ -54,7 +54,6 @@ class StagedSpectreInput:
     key: str
     source: Path
     components: tuple[str, ...]
-    label: str
 
 
 @dataclass(frozen=True)
@@ -68,17 +67,10 @@ class OaSpectreNetlistExport:
 
 @dataclass(frozen=True)
 class SpectreRunResult:
-    """Stable artifact references for one direct Spectre measurement contract."""
+    """Decision and measurement artifact from one Spectre contract."""
 
-    kind: str
-    run_id: str
-    run_dir: Path
-    manifest_path: Path
     measurements: Path
-    waveform: Path | None
-    raw_curve: Path | None
     passed: bool
-    condition: Mapping[str, object]
 
 
 class MeasurementContractFailure(RuntimeError):
@@ -168,7 +160,6 @@ def run_spectre_deck(
         "inputs",
         ("spectre.scs",),
         render_deck(canonical_paths),
-        label="rendered Spectre deck",
     )
     canonical_deck.chmod(0o444)
     executable = find_spectre(spectre)
@@ -187,7 +178,6 @@ def run_spectre_deck(
             "work",
             ("spectre.tool.scs",),
             render_deck(tool_paths),
-            label="invocation-only exact-inode Spectre deck",
         )
         invocation_deck.chmod(0o444)
         owned_deck = resources.enter_context(owned_input_file(invocation_deck))
@@ -210,7 +200,6 @@ def run_spectre_deck(
                 "canonical_deck": str(canonical_deck),
                 "note": "argv is the exact guarded Spectre process invocation; /proc paths bind immutable open descriptors and are intentionally ephemeral after completion",
             },
-            label="exact Spectre process command",
         )
 
         def validate_spawn() -> None:
@@ -245,7 +234,6 @@ def run_spectre_deck(
         "logs",
         ("spectre.stdout.log",),
         completed.stdout,
-        label="Spectre captured stdout",
     )
     native_log_candidate = record.path("work", "spectre.out")
     native_log: Path | None = None
@@ -255,7 +243,6 @@ def run_spectre_deck(
             "logs",
             ("spectre.out",),
             native_log_candidate,
-            label="Spectre native log",
         )
         log_text = read_nofollow_text(native_log, errors="replace")
     if completed.returncode != 0:
@@ -317,9 +304,7 @@ def _stage_inputs(
             raise ValueError("Spectre staged input keys and destination components must be unique")
         if len(item.components) > 1:
             record.directory("inputs", *item.components[:-1])
-        staged[item.key] = record.copy_file(
-            "inputs", item.components, item.source, label=item.label
-        )
+        staged[item.key] = record.copy_file("inputs", item.components, item.source)
     return staged
 
 
@@ -342,7 +327,6 @@ def _measurement_artifacts(
 
 def run_spectre_measurement(
     *,
-    kind: str,
     condition: Mapping[str, object],
     inputs: Sequence[StagedSpectreInput],
     external_input_references: Mapping[str, Any],
@@ -374,7 +358,6 @@ def run_spectre_measurement(
         "inputs",
         ("external-input-references.json",),
         dict(external_input_references),
-        label="attested external characterization inputs",
     )
     execution = run_spectre_deck(
         run_artifacts,
@@ -388,14 +371,12 @@ def run_spectre_measurement(
         "outputs",
         (raw_result_name,),
         execution.raw_outputs[output_name],
-        label="raw Spectre direct-print data",
     )
     parsed = parse(read_nofollow_text(raw, errors="strict"))
-    normalized = run_artifacts.write_text(
+    run_artifacts.write_text(
         "outputs",
         (normalized_name,),
         normalize(parsed),
-        label="normalized direct-print curve data",
     )
     payload = dict(evaluate(parsed))
     payload.setdefault("contract_version", 1)
@@ -404,159 +385,12 @@ def run_spectre_measurement(
         "outputs",
         ("measurements.json",),
         payload,
-        label="machine-verifiable measurement contract",
     )
-    run_artifacts.add_file(
-        "work",
-        run_artifacts.directory("work"),
-        label="native Spectre work directory",
-    )
+    run_artifacts.add_file("work", run_artifacts.directory("work"))
     result = SpectreRunResult(
-        kind=kind,
-        run_id=run_artifacts.run_id,
-        run_dir=run_artifacts.root,
-        manifest_path=run_artifacts.root / "run_manifest.json",
         measurements=measurements,
-        waveform=normalized,
-        raw_curve=raw,
         passed=bool(payload.get("passed")),
-        condition=dict(condition),
     )
     if not result.passed:
         raise MeasurementContractFailure("machine measurement contract failed", result)
-    return result
-
-
-def run_spectre_multi_measurement(
-    *,
-    kind: str,
-    condition: Mapping[str, object],
-    inputs: Sequence[StagedSpectreInput],
-    external_input_references: Mapping[str, Any],
-    render: Callable[[Mapping[str, str]], str],
-    outputs: Mapping[str, tuple[str, ...]],
-    evaluate: Callable[[Mapping[str, Path]], Mapping[str, object]],
-    timeout: int,
-    artifacts: RunArtifacts | None = None,
-    spectre: Path | None = None,
-) -> SpectreRunResult:
-    """Run one Spectre deck with multiple declared raw-output files.
-
-    This is the multi-analysis sibling of :func:`run_spectre_measurement`.
-    ``outputs`` maps the tool-relative output path to its immutable destination
-    below ``outputs/``.  The evaluator receives only those copied result files;
-    it never reads mutable simulator work files.
-    """
-
-    if not outputs:
-        raise ValueError("multi-output Spectre measurement requires outputs")
-    if len(set(outputs.values())) != len(outputs):
-        raise ValueError("multi-output Spectre destinations must be unique")
-    run_artifacts = _measurement_artifacts(
-        artifacts=artifacts,
-    )
-    staged = _stage_inputs(run_artifacts, inputs)
-    run_artifacts.write_json(
-        "inputs",
-        ("external-input-references.json",),
-        dict(external_input_references),
-        label="attested external characterization inputs",
-    )
-    execution = run_spectre_deck(
-        run_artifacts,
-        render_deck=render,
-        inputs=staged,
-        output_names=tuple(outputs),
-        timeout=timeout,
-        spectre=spectre,
-    )
-    copied: dict[str, Path] = {}
-    for tool_name, destination in outputs.items():
-        if not destination:
-            raise ValueError("multi-output result destination cannot be empty")
-        if len(destination) > 1:
-            run_artifacts.directory("outputs", *destination[:-1])
-        copied[tool_name] = run_artifacts.copy_file(
-            "outputs",
-            destination,
-            execution.raw_outputs[tool_name],
-            label=f"raw Spectre output {tool_name}",
-        )
-    payload = dict(evaluate(copied))
-    payload.setdefault("contract_version", 1)
-    payload.setdefault("condition", dict(condition))
-    measurements = run_artifacts.write_json(
-        "outputs",
-        ("measurements.json",),
-        payload,
-        label="machine-verifiable multi-analysis measurement contract",
-    )
-    run_artifacts.add_file(
-        "work",
-        run_artifacts.directory("work"),
-        label="native Spectre work directory",
-    )
-    result = SpectreRunResult(
-        kind=kind,
-        run_id=run_artifacts.run_id,
-        run_dir=run_artifacts.root,
-        manifest_path=run_artifacts.root / "run_manifest.json",
-        measurements=measurements,
-        waveform=None,
-        raw_curve=None,
-        passed=bool(payload.get("passed")),
-        condition=dict(condition),
-    )
-    if not result.passed:
-        raise MeasurementContractFailure("machine measurement contract failed", result)
-    return result
-
-
-def publish_measurement_summary(
-    *,
-    kind: str,
-    condition: Mapping[str, object],
-    inputs: Sequence[StagedSpectreInput],
-    result_files: Mapping[str, str],
-    payload: Mapping[str, object],
-    artifacts: RunArtifacts | None = None,
-) -> SpectreRunResult:
-    """Publish a derived sweep or distribution result in its parent Flow."""
-
-    run_artifacts = _measurement_artifacts(artifacts=artifacts)
-    _stage_inputs(run_artifacts, inputs)
-    exact_command = condition.get("exact_command")
-    if isinstance(exact_command, Mapping):
-        run_artifacts.write_json(
-            "inputs",
-            ("analysis-command.json",),
-            dict(exact_command),
-            label="exact characterization campaign command",
-        )
-    for name, content in result_files.items():
-        run_artifacts.write_text(
-            "outputs",
-            (name,),
-            content,
-            label=f"derived {kind} result",
-        )
-    measurements = run_artifacts.write_json(
-        "outputs",
-        ("measurements.json",),
-        payload,
-        label="derived measurement contract",
-    )
-    result = SpectreRunResult(
-        kind=kind,
-        run_id=run_artifacts.run_id,
-        run_dir=run_artifacts.root,
-        manifest_path=run_artifacts.root / "run_manifest.json",
-        measurements=measurements,
-        waveform=None,
-        raw_curve=None,
-        passed=bool(payload.get("passed")),
-        condition=dict(condition),
-    )
-    if not result.passed:
-        raise MeasurementContractFailure("derived measurement contract failed", result)
     return result

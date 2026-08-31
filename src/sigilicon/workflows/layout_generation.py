@@ -22,10 +22,7 @@ from sigilicon.workflows.run_artifacts import RunArtifacts
 
 @dataclass(frozen=True)
 class LayoutGenerationResult:
-    attempt_dir: Path | None
-    manifest_path: Path | None
     instance_count: int
-    completion_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -132,14 +129,12 @@ def _generate_layout_impl(
             "inputs",
             ("canonical-subckt.scs",),
             spec.source_snapshot.text,
-            label="selected canonical transistor source",
         )
         for index, snapshot in enumerate(spec.source_snapshots):
             attempt.write_text(
                 "inputs",
                 ("canonical-source", f"{index:02d}-{snapshot.source_path.name}"),
                 snapshot.text,
-                label="exact canonical Spectre source",
             )
         attempt.write_json(
             "inputs",
@@ -151,13 +146,11 @@ def _generate_layout_impl(
                     for snapshot in spec.source_snapshots
                 ],
             },
-            label="canonical layout source provenance",
         )
         attempt.write_text(
             "inputs",
             ("layout-plan.json",),
             execution_plan.canonical_json(),
-            label="stable layout plan",
         )
     with (
         workspace_operation(
@@ -198,7 +191,6 @@ def _generate_layout_impl(
                 "outputs",
                 ("completion.json",),
                 completion_payload,
-                label="OA layout generation completion proof",
             )
             return completion
 
@@ -224,12 +216,6 @@ def _generate_layout_impl(
         )
     if not disposable and (deferred is None or not deferred.completed):
         raise RuntimeError("layout generation completed without committing its artifact")
-    completion_path = (
-        None if disposable else attempt.path("outputs", "completion.json")
-    )
     return LayoutGenerationResult(
-        attempt_dir=attempt.root if not disposable else None,
-        manifest_path=None if disposable else attempt.root / "run_manifest.json",
         instance_count=len(execution_plan.instances),
-        completion_path=completion_path,
     )

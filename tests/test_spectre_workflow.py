@@ -80,9 +80,8 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
 
     monkeypatch.setattr("sigilicon.workflows.spectre.run_spectre_deck", execute)
     measurement = dict(
-        kind="diagnostic",
         condition={"corner": "tt"},
-        inputs=(StagedSpectreInput("source", source, ("source.scs",), "source"),),
+        inputs=(StagedSpectreInput("source", source, ("source.scs",)),),
         external_input_references={},
         render=lambda _paths: "deck\n",
         output_name="result.dat",
@@ -102,9 +101,6 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
     )
     result = run_spectre_measurement(**measurement)
 
-    assert result.run_id == "run"
-    assert result.run_dir == run_root
-    assert result.manifest_path == run_root / "run_manifest.json"
     assert result.measurements.is_relative_to(
         action_context.output_root / "evidence"
     )

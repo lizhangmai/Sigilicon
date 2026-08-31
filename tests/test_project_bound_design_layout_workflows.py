@@ -133,10 +133,7 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
 
     assert bound == [operation]
     assert result.instance_count == 2
-    assert result.attempt_dir == root
-    assert result.manifest_path == root / "run_manifest.json"
-    assert result.completion_path == artifacts.path("outputs", "completion.json")
-    assert result.completion_path.is_file()
+    assert artifacts.path("outputs", "completion.json").is_file()
 
 
 def test_design_set_attestation_binds_project_once(

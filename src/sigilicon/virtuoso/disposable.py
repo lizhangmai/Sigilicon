@@ -84,10 +84,7 @@ class DisposableWork:
         role: str,
         components: Sequence[str],
         value: str,
-        *,
-        label: str | None = None,
     ) -> Path:
-        del label
         path = self.path(role, *components)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value, encoding="utf-8")
@@ -98,10 +95,7 @@ class DisposableWork:
         role: str,
         components: Sequence[str],
         source: Path,
-        *,
-        label: str | None = None,
     ) -> Path:
-        del label
         source = Path(source).resolve()
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -115,12 +109,9 @@ class DisposableWork:
         role: str,
         components: Sequence[str],
         value: Mapping[str, Any],
-        *,
-        label: str | None = None,
     ) -> Path:
         return self.write_text(
             role,
             components,
             json.dumps(value, indent=2, sort_keys=True) + "\n",
-            label=label,
         )

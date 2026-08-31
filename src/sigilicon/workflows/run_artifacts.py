@@ -34,8 +34,6 @@ class RunArtifacts(Protocol):
         role: str,
         components: Sequence[str],
         value: str,
-        *,
-        label: str | None = None,
     ) -> Path: ...
 
     def write_json(
@@ -43,8 +41,6 @@ class RunArtifacts(Protocol):
         role: str,
         components: Sequence[str],
         value: Mapping[str, Any],
-        *,
-        label: str | None = None,
     ) -> Path: ...
 
     def copy_file(
@@ -52,16 +48,12 @@ class RunArtifacts(Protocol):
         role: str,
         components: Sequence[str],
         source: Path,
-        *,
-        label: str | None = None,
     ) -> Path: ...
 
     def add_file(
         self,
         role: str,
         path: Path,
-        *,
-        label: str | None = None,
     ) -> object: ...
 
 
@@ -114,10 +106,7 @@ class FlowRunArtifacts:
         role: str,
         components: Sequence[str],
         value: str,
-        *,
-        label: str | None = None,
     ) -> Path:
-        del label
         destination = self.path(role, *components)
         write_immutable_text(destination, value)
         return destination
@@ -127,14 +116,11 @@ class FlowRunArtifacts:
         role: str,
         components: Sequence[str],
         value: Mapping[str, Any],
-        *,
-        label: str | None = None,
     ) -> Path:
         return self.write_text(
             role,
             components,
             json.dumps(value, indent=2, sort_keys=True) + "\n",
-            label=label,
         )
 
     def copy_file(
@@ -142,10 +128,7 @@ class FlowRunArtifacts:
         role: str,
         components: Sequence[str],
         source: Path,
-        *,
-        label: str | None = None,
     ) -> Path:
-        del label
         destination = self.path(role, *components)
         return copy_immutable_file(source, destination)
 
@@ -153,10 +136,7 @@ class FlowRunArtifacts:
         self,
         role: str,
         path: Path,
-        *,
-        label: str | None = None,
     ) -> object:
-        del label
         root = Path(os.path.abspath(self._root_for(role)))
         candidate = Path(os.path.abspath(path))
         if not candidate.is_relative_to(root) or not candidate.exists():
@@ -217,10 +197,7 @@ class DirectoryRunArtifacts:
         role: str,
         components: Sequence[str],
         value: str,
-        *,
-        label: str | None = None,
     ) -> Path:
-        del label
         destination = self.path(role, *components)
         write_immutable_text(destination, value)
         return destination
@@ -230,14 +207,11 @@ class DirectoryRunArtifacts:
         role: str,
         components: Sequence[str],
         value: Mapping[str, Any],
-        *,
-        label: str | None = None,
     ) -> Path:
         return self.write_text(
             role,
             components,
             json.dumps(value, indent=2, sort_keys=True) + "\n",
-            label=label,
         )
 
     def copy_file(
@@ -245,20 +219,14 @@ class DirectoryRunArtifacts:
         role: str,
         components: Sequence[str],
         source: Path,
-        *,
-        label: str | None = None,
     ) -> Path:
-        del label
         return copy_immutable_file(source, self.path(role, *components))
 
     def add_file(
         self,
         role: str,
         path: Path,
-        *,
-        label: str | None = None,
     ) -> object:
-        del label
         root = Path(os.path.abspath(self._root_for(role)))
         candidate = Path(os.path.abspath(path))
         if not candidate.is_relative_to(root) or not candidate.exists():

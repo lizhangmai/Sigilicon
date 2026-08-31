@@ -327,7 +327,6 @@ def _run_native_oa_maestro_testbench_impl(
                 else "elaborated-netlist.scs",
             ),
             final_netlist,
-            label="final Cadence elaborated netlist",
         )
         artifacts.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
         result_export = artifacts.copy_file(
@@ -343,11 +342,7 @@ def _run_native_oa_maestro_testbench_impl(
                 diagnostic_report.as_dict(),
             )
         artifacts.write_json("outputs", ("oa-library-check.json",), oa_check)
-        artifacts.add_file(
-            "work",
-            artifacts.directory("work"),
-            label="native Maestro work directory",
-        )
+        artifacts.add_file("work", artifacts.directory("work"))
         per_output_spec_status = tuple(
             str(output["spec_status"]) for output in parsed_results["outputs"]
         )
@@ -451,32 +446,27 @@ def _record_native_oa_maestro_inputs(
         "inputs",
         ("simulation.toml",),
         spec.source_snapshot.text,
-        label="exact native simulation contract",
     )
     record.write_text(
         "inputs",
         ("setup.il",),
         native_setup.source_snapshot.text,
-        label="exact native ADE/Maestro setup",
     )
     record.write_text(
         "inputs",
         ("native_rdb.toml",),
         rdb_contract.source_snapshot.text,
-        label="exact native RDB identity contract",
     )
     record.write_text(
         "inputs",
         ("testbench.scs",),
         step.source_snapshot.text,
-        label="exact canonical testbench netlist",
     )
     for index, source in enumerate(support_snapshots, start=1):
         record.write_text(
             "inputs",
             ("support", f"{index:02d}-{source.source_path.name}"),
             source.text,
-            label="exact native diagnostic support source",
         )
 
 

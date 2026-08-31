@@ -291,20 +291,17 @@ def execute_xcelium_ams_cell(
         "inputs",
         ("source-manifest.json",),
         {"schema": 1, "plan": plan.as_dict()},
-        label="Xcelium AMS source plan",
     )
     staged_circuit = artifacts.copy_file(
         "inputs",
         ("release", plan.circuit_netlist.name),
         plan.circuit_netlist,
-        label="Locked native circuit role",
     )
     staged_models = {
         path: artifacts.copy_file(
             "inputs",
             ("pdk", path.name),
             path,
-            label=f"Platform model input {path.name}",
         )
         for path in plan.model_set.files
     }
@@ -315,7 +312,6 @@ def execute_xcelium_ams_cell(
             circuit_netlist=staged_circuit,
             model_file=staged_models[plan.model_set.file],
         ),
-        label="Generated Xcelium AMS control",
     )
     work_dir = artifacts.directory("work")
     xcelium_dir = artifacts.directory("work", "xcelium.d")
@@ -365,10 +361,10 @@ def execute_xcelium_ams_cell(
             pass_fds=(owned_work.fd, owned_xcelium.fd),
         )
     stdout_path = artifacts.write_text(
-        "logs", ("xrun.stdout.log",), completed.stdout, label="Xcelium stdout"
+        "logs", ("xrun.stdout.log",), completed.stdout
     )
     stderr_path = artifacts.write_text(
-        "logs", ("xrun.stderr.log",), completed.stderr, label="Xcelium stderr"
+        "logs", ("xrun.stderr.log",), completed.stderr
     )
     native_log = work_dir / "xrun.log"
     native_output = (
@@ -377,7 +373,7 @@ def execute_xcelium_ams_cell(
         else ""
     )
     native_log_path = (
-        artifacts.copy_file("logs", ("xrun.log",), native_log, label="Xcelium log")
+        artifacts.copy_file("logs", ("xrun.log",), native_log)
         if native_log.is_file()
         else None
     )
@@ -415,7 +411,7 @@ def execute_xcelium_ams_cell(
         },
     }
     summary_path = artifacts.write_json(
-        "outputs", ("summary.json",), summary, label="Xcelium AMS completion summary"
+        "outputs", ("summary.json",), summary
     )
     return XceliumAmsCellExecution(
         plan=plan,
