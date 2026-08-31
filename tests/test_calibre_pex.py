@@ -71,7 +71,7 @@ from sigilicon.experimental.reference_pnr import (
     ReferencePnrJob,
     run,
 )
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.calibre_pex import (
     CALIBRE_XRC_PEX_ADAPTER,
     render_calibre_xrc_deck,
@@ -364,7 +364,7 @@ class _FakeXrc:
 
 
 def _registry(*, corrupt_source: bool = False):
-    registry = build_flow_registry()
+    registry = build_action_registry()
     registry.register_action(
         ActionContract(
             _INPUT_ACTION,
@@ -556,7 +556,7 @@ def test_calibre_xrc_deck_renderer_is_exact_and_rejects_injection() -> None:
 
 
 def test_builtin_registry_owns_calibre_xrc_pex_adapter() -> None:
-    registry = build_flow_registry()
+    registry = build_action_registry()
     assert registry.has_adapter(CALIBRE_XRC_PEX_ADAPTER)
     assert CALIBRE_XRC_PEX_ADAPTER in registry.action(PEX_ACTION).adapters
     assert registry.action(PEX_ACTION).output("parasitics").required is False

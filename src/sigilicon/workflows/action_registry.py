@@ -1,9 +1,10 @@
-"""Cross-domain dependency assembly for every public Flow client."""
+"""Single cross-domain action registry for every public Flow client."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from importlib import import_module
+from typing import Any
 
 from sigilicon.flow.circuit_design import register_circuit_design_actions
 from sigilicon.flow.layout import register_layout_actions
@@ -62,6 +63,7 @@ _CALIBRE_XRC_PEX = (
     "CalibreXrcPexAdapter",
 )
 
+
 def _adapter_factory(
     module_name: str,
     class_name: str,
@@ -73,8 +75,13 @@ def _adapter_factory(
     return create
 
 
-def build_flow_registry(
+def build_action_registry(
+    *,
+    materialization_adapter: ToolAdapter | None = None,
+    client_factory: Callable[[], Any] | None = None,
 ) -> FlowRegistry:
+    """Assemble every action; an owner recipe selects each implementation."""
+
     registry = FlowRegistry()
     register_standard_asic_actions(registry)
     register_physical_design_actions(registry)
@@ -94,7 +101,16 @@ def build_flow_registry(
         CALIBRE_XRC_PEX_ADAPTER,
         _adapter_factory(*_CALIBRE_XRC_PEX),
     )
+    from sigilicon.experimental.physical_actions import (
+        install_experimental_physical_actions,
+    )
+
+    install_experimental_physical_actions(
+        registry,
+        materialization_adapter=materialization_adapter,
+        client_factory=client_factory,
+    )
     return registry
 
 
-__all__ = ["build_flow_registry"]
+__all__ = ["build_action_registry"]

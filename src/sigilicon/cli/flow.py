@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 from sigilicon.cli.common import add_json_arg, die, emit_json
+from sigilicon.domain.repository import Project
 from sigilicon.flow import (
     ExecutionEnvironment,
     ResolvedCapability,
@@ -387,10 +388,8 @@ def main(
     client_factory: Callable[[], Any] = get_client,
 ) -> int:
     args = _parser().parse_args(argv)
-    from sigilicon.workflows.project import load_project
-
     project_contract = discover_project_contract(__file__)
-    project = load_project(project_contract)
+    project = Project.from_file(project_contract)
     if args.domain == "oa":
         try:
             workflow = ProjectOaWorkflow(project, args.owner)

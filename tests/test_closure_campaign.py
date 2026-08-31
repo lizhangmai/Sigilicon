@@ -123,7 +123,7 @@ from sigilicon.experimental.reference_pnr import (
     ReferencePnrJob,
 )
 from sigilicon.layout.physical_design_serialization import physical_design_job_id
-from sigilicon.experimental.registry import build_experimental_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.experimental.workflows.closure_campaign import (
     CampaignArtifactReference,
     ClosureArtifactBindings,
@@ -970,7 +970,7 @@ def _flow(
 ):
     if corrupt_layout_identity:
         corrupt_identity = "result"
-    registry = build_experimental_flow_registry()
+    registry = build_action_registry()
     registry.register_action(
         ActionContract(
             _BENCHMARK_INPUT_ACTION,

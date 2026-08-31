@@ -118,12 +118,12 @@ root = "ip/{owner}"
     return component
 
 
-def write_fake_flow_extension(root: Path, owner: str) -> Path:
-    """Attach fake actions through the same owner extension seam as real IP."""
+def write_fake_action_module(root: Path, owner: str) -> Path:
+    """Attach fake actions through the same owner action-module seam as real IP."""
 
-    extension = root / "ip" / owner / "tools" / "fake_flow_extension.py"
-    extension.parent.mkdir(parents=True, exist_ok=True)
-    extension.write_text(
+    module = root / "ip" / owner / "tools" / "fake_action_module.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(
         '''import time
 
 from sigilicon.flow import (
@@ -254,13 +254,13 @@ def register_action_modules(registry, project, owner):
     )
     project = root / "sigilicon.toml"
     source = project.read_text(encoding="utf-8")
-    header = "[flow.registry_extensions]\n"
-    declaration = f'{owner} = "{extension.relative_to(root).as_posix()}"\n'
+    header = "[flow.action_modules]\n"
+    declaration = f'{owner} = "{module.relative_to(root).as_posix()}"\n'
     project.write_text(
         source + (declaration if header in source else f"\n{header}{declaration}"),
         encoding="utf-8",
     )
-    return extension
+    return module
 
 
 def write_test_platform(root: Path, key: str = "testpdk") -> Path:

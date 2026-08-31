@@ -33,6 +33,7 @@ from sigilicon.domain.ip_release import (
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
 from sigilicon.domain.repository import Project
+from sigilicon.project_modules import project_import_path
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
     plan_ip_release_contract,
@@ -325,26 +326,33 @@ def _variant_source_plan(
 
 
 def _validate_variant_architecture(
+    contract: IpIntegrationContract,
     variant: IpOperatingVariant,
 ) -> dict[str, Any] | None:
     reference = variant.architecture_validator
     if reference is None:
         return None
     module_name, function_name = reference.split(":", 1)
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise RuntimeError(
-            f"IP architecture validator module cannot be imported: {module_name}"
-        ) from exc
-    validator = getattr(module, function_name, None)
-    if not callable(validator):
-        raise RuntimeError(f"IP architecture validator is not callable: {reference}")
-    raw = variant.source_document
-    if not raw:
-        with variant.path.open("rb") as stream:
-            raw = tomllib.load(stream)
-    result = validator(thaw_toml_document(raw))
+    with project_import_path(
+        contract.project_root,
+        module_names=(module_name,),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            raise RuntimeError(
+                f"IP architecture validator module cannot be imported: {module_name}"
+            ) from exc
+        validator = getattr(module, function_name, None)
+        if not callable(validator):
+            raise RuntimeError(
+                f"IP architecture validator is not callable: {reference}"
+            )
+        raw = variant.source_document
+        if not raw:
+            with variant.path.open("rb") as stream:
+                raw = tomllib.load(stream)
+        result = validator(thaw_toml_document(raw))
     if not isinstance(result, Mapping):
         raise RuntimeError(f"IP architecture validator returned no mapping: {reference}")
     return dict(result)
@@ -617,7 +625,7 @@ def check_ip_integration(
     root = contract.project_root
     artifact_root = contract.project.artifact_root
     variant = contract.get_variant(variant_name)
-    architecture = _validate_variant_architecture(variant)
+    architecture = _validate_variant_architecture(contract, variant)
     fileset = variant.get_fileset(fileset_name)
     binding = variant.physical_binding
     if (

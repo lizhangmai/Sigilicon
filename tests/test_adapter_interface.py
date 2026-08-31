@@ -29,11 +29,10 @@ from sigilicon.flow import (
     ProducedArtifact,
     complete_staged_run,
 )
-from sigilicon.workflows.builtin import build_flow_registry
-from sigilicon.experimental.registry import (
+from sigilicon.workflows.action_registry import build_action_registry
+from sigilicon.experimental.physical_actions import (
     EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER,
     EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
-    build_experimental_flow_registry,
 )
 
 
@@ -191,43 +190,34 @@ def test_registry_rejects_the_removed_four_operation_adapter_interface() -> None
 def test_builtin_adapters_cross_the_registry_without_legacy_wrapping(
     name: str,
 ) -> None:
-    implementation = build_flow_registry().adapter(name)
+    implementation = build_action_registry().adapter(name)
 
     assert callable(implementation.run)
     assert type(implementation).__module__ != "sigilicon.flow.registry"
 
 
-def test_reference_pnr_is_only_available_from_the_experimental_registry() -> None:
-    stable = build_flow_registry()
-    assert not stable.has_adapter("reference-pnr")
-    with pytest.raises(FlowContractError):
-        stable.action("physical-design.reference-solve")
+def test_common_registry_contains_explicit_reference_pnr_selection() -> None:
+    registry = build_action_registry()
 
-    experimental = build_experimental_flow_registry()
-    assert experimental.has_adapter("reference-pnr")
+    assert registry.has_adapter("reference-pnr")
     assert (
-        experimental.action("physical-design.reference-solve").kind
+        registry.action("physical-design.reference-solve").kind
         == "physical-design.reference-solve"
     )
 
 
-def test_oa_xstream_and_combined_layout_backends_are_experimental_only() -> None:
-    stable = build_flow_registry()
-    assert not stable.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
-    assert not stable.has_adapter(EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER)
-    assert stable.action("physical-design.materialize").adapters == ()
-    assert stable.action("custom-layout.verify").adapters == ()
+def test_common_registry_contains_explicit_experimental_backend_selections() -> None:
+    registry = build_action_registry()
 
-    experimental = build_experimental_flow_registry()
-    assert experimental.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
-    assert experimental.has_adapter(EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER)
+    assert registry.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert registry.has_adapter(EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER)
     assert (
         EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER
-        in experimental.action("physical-design.materialize").adapters
+        in registry.action("physical-design.materialize").adapters
     )
     assert (
         EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER
-        in experimental.action("custom-layout.verify").adapters
+        in registry.action("custom-layout.verify").adapters
     )
 
 

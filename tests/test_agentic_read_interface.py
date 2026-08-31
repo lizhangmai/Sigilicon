@@ -7,7 +7,7 @@ import pytest
 
 from conftest import (
     write_component_owner,
-    write_fake_flow_extension,
+    write_fake_action_module,
     write_project_context,
 )
 import sigilicon.domain.repository as repository_module
@@ -78,7 +78,7 @@ goals = ["source"]
     )
     relative_catalog = catalog.relative_to(root).as_posix()
     relative_flow = (flow_root / "pipeline.toml").relative_to(root).as_posix()
-    extension = write_fake_flow_extension(root, owner)
+    extension = write_fake_action_module(root, owner)
     component = write_component_owner(
         root,
         owner,

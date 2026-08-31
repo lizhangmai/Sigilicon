@@ -73,8 +73,8 @@ class RepositoryOwner:
 
 
 @dataclass(frozen=True)
-class RepositoryFlowExtension:
-    """One project-selected, owner-owned Flow registry extension source."""
+class RepositoryActionModule:
+    """One project-selected, owner-owned action module source."""
 
     owner: str
     source: Path
@@ -104,13 +104,13 @@ class RepositoryCatalogSnapshot:
 
 @dataclass(frozen=True)
 class Project:
-    """Canonical project paths, catalogs, owners and Flow extensions."""
+    """Canonical project paths, catalogs, owners and action modules."""
 
     _paths: ProjectContext
     manifest_owner: str
     catalog_paths: tuple[tuple[str, Path], ...]
     owners: tuple[RepositoryOwner, ...]
-    flow_registry_extensions: tuple[RepositoryFlowExtension, ...]
+    action_modules: tuple[RepositoryActionModule, ...]
     manifest_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
@@ -272,53 +272,53 @@ class Project:
         flow = raw.get("flow", {})
         if not isinstance(flow, Mapping):
             raise ValueError(f"{contract}: flow must be a table")
-        unknown_flow_fields = set(flow) - {"registry_extensions"}
+        unknown_flow_fields = set(flow) - {"action_modules"}
         if unknown_flow_fields:
             raise ValueError(
                 f"{contract}: flow contains unknown fields: "
                 f"{sorted(unknown_flow_fields)}"
             )
-        extensions = flow.get("registry_extensions", {})
-        if not isinstance(extensions, Mapping):
+        modules = flow.get("action_modules", {})
+        if not isinstance(modules, Mapping):
             raise ValueError(
-                f"{contract}: flow.registry_extensions must be a table"
+                f"{contract}: flow.action_modules must be a table"
             )
         owners_by_name = {owner.name: owner for owner in owners}
-        flow_registry_extensions: list[RepositoryFlowExtension] = []
-        for name, value in extensions.items():
+        action_modules: list[RepositoryActionModule] = []
+        for name, value in modules.items():
             if not isinstance(name, str) or name not in owners_by_name:
                 raise ValueError(
-                    f"{contract}: Flow registry extension names unknown owner {name!r}"
+                    f"{contract}: Flow action module names unknown owner {name!r}"
                 )
             owner = owners_by_name[name]
             source = _project_file(
                 project.project_root,
                 value,
-                f"{contract}: flow.registry_extensions.{name}",
+                f"{contract}: flow.action_modules.{name}",
             )
             if not source.is_relative_to(owner.root):
                 raise ValueError(
-                    f"{contract}: Flow registry extension for {name!r} must stay "
+                    f"{contract}: Flow action module for {name!r} must stay "
                     "inside its owner root"
                 )
             if source.suffix != ".py":
                 raise ValueError(
-                    f"{contract}: Flow registry extension for {name!r} must be "
+                    f"{contract}: Flow action module for {name!r} must be "
                     "a Python source"
                 )
             if source not in owner.files("flow"):
                 raise ValueError(
-                    f"{contract}: Flow registry extension for {name!r} must be "
+                    f"{contract}: Flow action module for {name!r} must be "
                     "declared in its owner flow fileset"
                 )
-            flow_registry_extensions.append(RepositoryFlowExtension(name, source))
+            action_modules.append(RepositoryActionModule(name, source))
         return cls(
             _paths=project,
             manifest_owner=manifest_owner,
             catalog_paths=catalog_paths,
             owners=tuple(sorted(owners, key=lambda item: item.name)),
-            flow_registry_extensions=tuple(
-                sorted(flow_registry_extensions, key=lambda item: item.owner)
+            action_modules=tuple(
+                sorted(action_modules, key=lambda item: item.owner)
             ),
             manifest_document=freeze_toml_document(raw),
             _manifest_path=contract,
@@ -377,23 +377,23 @@ class Project:
             )
         )
         flow = raw.get("flow", {})
-        if not isinstance(flow, Mapping) or set(flow) - {"registry_extensions"}:
+        if not isinstance(flow, Mapping) or set(flow) - {"action_modules"}:
             raise ValueError("project manifest snapshot Flow selection drift")
-        extensions = flow.get("registry_extensions", {})
-        if not isinstance(extensions, Mapping):
+        modules = flow.get("action_modules", {})
+        if not isinstance(modules, Mapping):
             raise ValueError("project manifest snapshot Flow selection drift")
-        selected_extensions = tuple(
+        selected_modules = tuple(
             sorted(
                 (
-                    RepositoryFlowExtension(
+                    RepositoryActionModule(
                         owner,
                         _project_file(
                             self.project_root,
                             value,
-                            f"{contract}: flow.registry_extensions.{owner}",
+                            f"{contract}: flow.action_modules.{owner}",
                         ),
                     )
-                    for owner, value in extensions.items()
+                    for owner, value in modules.items()
                     if isinstance(owner, str)
                 ),
                 key=lambda item: item.owner,
@@ -401,8 +401,8 @@ class Project:
         )
         if (
             catalog_paths != self.catalog_paths
-            or selected_extensions != self.flow_registry_extensions
-            or len(selected_extensions) != len(extensions)
+            or selected_modules != self.action_modules
+            or len(selected_modules) != len(modules)
         ):
             raise ValueError("project manifest snapshot source document drift")
         return raw
@@ -635,16 +635,16 @@ class Project:
             selected.root,
         )
 
-    def flow_registry_extension(self, owner: RepositoryOwner) -> Path | None:
-        """Return the explicitly assembled registry source for one owner."""
+    def action_module(self, owner: RepositoryOwner) -> Path | None:
+        """Return the explicitly selected action module source for one owner."""
 
         if owner not in self.owners:
             raise ValueError(f"repository does not contain owner {owner.name!r}")
         return next(
             (
-                extension.source
-                for extension in self.flow_registry_extensions
-                if extension.owner == owner.name
+                module.source
+                for module in self.action_modules
+                if module.owner == owner.name
             ),
             None,
         )

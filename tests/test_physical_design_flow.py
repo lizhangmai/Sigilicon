@@ -85,7 +85,7 @@ from sigilicon.layout.physical_design_serialization import (
     physical_design_result_from_json,
     physical_design_result_id,
 )
-from sigilicon.experimental.registry import build_experimental_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 
 
 def _routing_technology() -> PhysicalTechnology:
@@ -249,7 +249,7 @@ def _run_flow(
     *,
     run_id: str,
 ):
-    registry = build_experimental_flow_registry()
+    registry = build_action_registry()
     registry.register_action(
         ActionContract(
             "benchmark.physical-job",

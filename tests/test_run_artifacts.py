@@ -7,7 +7,7 @@ import pytest
 
 from sigilicon.flow import ActionContext
 from sigilicon.flow.native import NATIVE_OA_SIMULATION_ACTION
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 from sigilicon.workflows.run_artifacts import (
     managed_run_artifact_environment,
@@ -20,7 +20,7 @@ def _artifacts(tmp_path: Path) -> FlowRunArtifacts:
     run_root = tmp_path / "run"
     context = ActionContext(
         node_id="simulate",
-        action=build_flow_registry().action(NATIVE_OA_SIMULATION_ACTION),
+        action=build_action_registry().action(NATIVE_OA_SIMULATION_ACTION),
         run_root=run_root,
         work_root=run_root / "work/simulate",
         output_root=run_root / "outputs/simulate",

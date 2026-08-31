@@ -58,6 +58,9 @@ from sigilicon.experimental.virtuoso.xstream import (
     canonicalize_experimental_xstream_gdsii,
     run_experimental_xstream_export,
 )
+from sigilicon.experimental.physical_actions import (
+    EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
+)
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
     read_materialization_execution_request,
@@ -67,9 +70,6 @@ from sigilicon.workflows.physical_design import (
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
 _OA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER = (
-    "experimental-oa-virtuoso-xstream-materialization"
-)
 _BACKEND = "sigilicon.experimental.oa-virtuoso-xstream"
 _CAPABILITIES = (
     "tool.virtuoso-bridge",

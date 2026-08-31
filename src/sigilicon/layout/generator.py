@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 import importlib
 import importlib.util
 from pathlib import Path
@@ -13,21 +11,7 @@ import uuid
 
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
-
-
-@contextmanager
-def _project_import_path(project_root: Path) -> Iterator[None]:
-    """Make explicitly selected project modules importable for one load."""
-
-    root = str(project_root.resolve())
-    already_present = root in sys.path
-    if not already_present:
-        sys.path.insert(0, root)
-    try:
-        yield
-    finally:
-        if not already_present:
-            sys.path.remove(root)
+from sigilicon.project_modules import project_import_path
 
 
 def _purge_project_modules(
@@ -102,7 +86,7 @@ def _load_generator_module(
 def build_layout_plan(spec: LayoutSpec) -> LayoutPlan:
     """Load the design-owned generator and enforce the stable IR boundary."""
 
-    with _project_import_path(spec.project_root):
+    with project_import_path(spec.project_root):
         module = _load_generator_module(
             spec.generator_source,
             project_root=spec.project_root,

@@ -809,6 +809,7 @@ def test_architecture_validator_reuses_variant_source_document(
     )
 
     assert ip_integration._validate_variant_architecture(
+        contract,
         contract.get_variant("default")
     ) == {"variant": "default", "validated": True}
 

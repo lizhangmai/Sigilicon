@@ -18,17 +18,12 @@ from sigilicon.project import (
 
 
 def test_top_level_project_author_interface_is_narrow_and_canonical() -> None:
-    assert sigilicon.__all__ == [
-        "Project",
-        "ProjectContext",
-        "ProjectExecution",
-        "ProjectRunner",
-        "ProjectOaWorkflow",
-    ]
+    assert sigilicon.__all__ == []
     assert Project is DomainProject
-    assert sigilicon.ProjectExecution is ProjectExecution
-    assert sigilicon.ProjectRunner is ProjectRunner
-    assert sigilicon.ProjectOaWorkflow is ProjectOaWorkflow
+    assert not hasattr(sigilicon, "Project")
+    assert not hasattr(sigilicon, "ProjectExecution")
+    assert not hasattr(sigilicon, "ProjectRunner")
+    assert not hasattr(sigilicon, "ProjectOaWorkflow")
 
 
 def test_plain_package_import_does_not_load_virtuoso_modules() -> None:
@@ -115,20 +110,22 @@ def test_stable_agentic_cli_rejects_experimental_campaign_routes() -> None:
         )
 
 
-def test_builtin_registry_does_not_import_external_tool_adapters() -> None:
+def test_action_registry_does_not_import_external_tool_adapters() -> None:
     result = subprocess.run(
         (
             sys.executable,
             "-c",
             "import sys; "
-            "from sigilicon.workflows.builtin import build_flow_registry; "
-            "build_flow_registry(); "
+            "from sigilicon.workflows.action_registry import build_action_registry; "
+            "build_action_registry(); "
             "forbidden = {"
             "'sigilicon.workflows.synopsys', "
             "'sigilicon.workflows.calibre_pex', "
             "'sigilicon.workflows.layout_verification', "
-            "'sigilicon.experimental', "
-            "'sigilicon.workflows.physical_design'}; "
+            "'sigilicon.workflows.physical_design', "
+            "'sigilicon.experimental.workflows.oa_materialization', "
+            "'sigilicon.experimental.workflows.layout_flow', "
+            "'sigilicon.experimental.workflows.reference_physical_design'}; "
             "assert forbidden.isdisjoint(sys.modules), "
             "sorted(forbidden & set(sys.modules))",
         ),
@@ -140,17 +137,16 @@ def test_builtin_registry_does_not_import_external_tool_adapters() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_builtin_registry_does_not_register_reference_pnr() -> None:
+def test_action_registry_registers_reference_pnr_without_a_second_builder() -> None:
     result = subprocess.run(
         (
             sys.executable,
             "-c",
-            "from sigilicon.workflows.builtin import build_flow_registry; "
-            "registry = build_flow_registry(); "
-            "assert not registry.has_adapter('reference-pnr'); "
-            "from sigilicon.experimental.registry import build_experimental_flow_registry; "
-            "experimental = build_experimental_flow_registry(); "
-            "assert experimental.has_adapter('reference-pnr')",
+            "from sigilicon.workflows.action_registry import build_action_registry; "
+            "registry = build_action_registry(); "
+            "assert registry.has_adapter('reference-pnr'); "
+            "assert registry.action('physical-design.reference-solve').kind "
+            "== 'physical-design.reference-solve'",
         ),
         check=False,
         capture_output=True,
@@ -165,8 +161,8 @@ def test_registry_materializes_only_the_selected_synopsys_tool_module() -> None:
             sys.executable,
             "-c",
             "import sys; "
-            "from sigilicon.workflows.builtin import build_flow_registry; "
-            "registry = build_flow_registry(); "
+            "from sigilicon.workflows.action_registry import build_action_registry; "
+            "registry = build_action_registry(); "
             "registry.adapter('synopsys-dc'); "
             "assert 'sigilicon.workflows.synopsys.dc' in sys.modules; "
             "forbidden = {"

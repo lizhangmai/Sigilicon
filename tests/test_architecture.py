@@ -20,6 +20,7 @@ from sigilicon.virtuoso import (
 
 
 LAYERS = {
+    "assembly",
     "root",
     "project",
     "domain",
@@ -33,6 +34,7 @@ LAYERS = {
     "experimental",
 }
 ALLOWED_DEPENDENCIES = {
+    "assembly": {"experimental", "flow", "root"},
     "root": {"project", "root"},
     "project": {"domain", "project", "workflows", "root"},
     "domain": {"domain", "execution", "root"},
@@ -74,6 +76,9 @@ ALLOWED_DEPENDENCIES = {
         "root",
     },
 }
+COMPOSITION_ROOTS = {
+    Path("workflows/action_registry.py"): "assembly",
+}
 CLI_DEPENDENCY_PREFIXES = (
     "sigilicon.cli",
     "sigilicon.artifacts",
@@ -110,7 +115,10 @@ def test_sigilicon_modules_follow_the_declared_layer_dependency_matrix() -> None
     violations: list[str] = []
     for path in flow_root.rglob("*.py"):
         relative = path.relative_to(flow_root)
-        source_layer = relative.parts[0] if len(relative.parts) > 1 else "root"
+        source_layer = COMPOSITION_ROOTS.get(
+            relative,
+            relative.parts[0] if len(relative.parts) > 1 else "root",
+        )
         allowed = ALLOWED_DEPENDENCIES[source_layer]
         for imported in _imports(path):
             target = _dependency_layer(imported)

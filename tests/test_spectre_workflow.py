@@ -8,7 +8,7 @@ import pytest
 
 from sigilicon.flow import ActionContext
 from sigilicon.flow.circuit_design import DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.run_artifacts import (
     managed_run_artifact_environment,
 )
@@ -41,7 +41,7 @@ def test_spectre_measurement_inherits_one_parent_flow_lifecycle(
     monkeypatch,
 ) -> None:
     run_root = tmp_path / "artifacts/run"
-    action = build_flow_registry().action(
+    action = build_action_registry().action(
         DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION
     )
     action_context = ActionContext(

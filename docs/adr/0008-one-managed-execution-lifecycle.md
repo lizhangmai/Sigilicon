@@ -8,7 +8,7 @@ Every operation that executes an EDA tool and produces canonical engineering-run
 
 OA source/workspace administration remains a separate Module because plan, check, rebuild, and attestation govern a mutable external design database rather than an engineering run. Their reports are workspace/source administration evidence and cannot produce regression, qualification, or signoff conclusions. Native simulation and verification consume the resolved OA workspace through the selected target operation. Cataloged execution has no standalone recorder or second Sigilicon lifecycle; an owner-mandated human entrypoint may remain only as a thin typed target facade.
 
-This rejects both a universal flattened EDA result schema and permanent parallel script/workflow lifecycles. Action declarations may be shared globally, but concrete Adapters are assembled only for the selected owner target and operation so unrelated tool families do not become hidden runtime dependencies.
+This rejects both a universal flattened EDA result schema and permanent parallel script/workflow lifecycles. The one action registry contains every installed implementation, including implementations marked experimental, but providers remain lazy and a recipe must name an Adapter explicitly. Registration is availability, not fallback, qualification, or an implicit owner opt-in.
 
 Domain planning is also completed before Adapter materialization. Actions that
 need a resolved design target, OA assembly, Xcelium cell, AMS platform/release,
@@ -28,10 +28,17 @@ declared, exactly one domain planner. `FlowEngine` asks that registry to plan
 only the nodes in the selected target topology. `ProjectRunner` is therefore
 only the owner/target composition root; it contains no Action-kind dispatch or
 domain planning branches. Built-in design, native-OA/Xcelium, and custom-layout
-modules install their own planner/Adapter pairs, while an owner extension uses
+modules install their own planner/Adapter pairs, while an owner action module uses
 the single breaking entrypoint
 `register_action_modules(registry, project, owner)`. No compatibility entrypoint
 or externally supplied per-node plan map is retained.
+
+Repository assembly names those owner sources only under
+`[flow.action_modules]`. The earlier registry-extension vocabulary and the
+separate stable/experimental registry builders are deleted. An experimental
+implementation is selected by the same explicit owner recipe as any ASIC,
+analog, mixed-signal, layout, or native implementation; no owner forwarding
+module is required merely to make an installed implementation visible.
 
 Owner workflow composition is identical for every design style. An
 `OwnerTarget` contains inputs and explicit `OwnerOperation` values; every
@@ -104,3 +111,11 @@ have no compatibility interpretation. Reference PNR, closure/repair, OA-XStream,
 combined XStream-Calibre remain explicit `sigilicon.experimental`/owner opt-ins;
 bounded campaigns use only the explicit `sigilicon experimental campaign plan/run`
 CLI and are absent from default MCP.
+
+Project-owned Python modules are importable only inside one shared bounded import
+context tied to the selected project root. Layout generators, native diagnostic
+processors, and composite-IP architecture validators use that same boundary, so
+console-script and `python -m` launches have identical project-module semantics.
+The package root no longer lazily re-exports project workflow classes and CLI
+composition calls `Project.from_file` directly; the explicit public Python seam
+is `sigilicon.project` plus the domain/workflow modules it names.

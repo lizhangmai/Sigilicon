@@ -24,7 +24,8 @@ from sigilicon.flow import (
 from sigilicon.flow.model import SourceMember
 from sigilicon.flow.registry import FlowRegistry
 from sigilicon.flow.source_assets import source_member_matches
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.project_modules import project_import_path
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.design_flow import install_design_flow
 from sigilicon.workflows.layout_flow import install_layout_flow
 from sigilicon.workflows.native_flow import install_native_flow
@@ -40,9 +41,9 @@ def _default_client_factory() -> VirtuosoClient:
     return get_client()
 
 
-def _load_extension(source: Path, record_text: str) -> ModuleType:
+def _load_action_module(source: Path, record_text: str) -> ModuleType:
     identity = hashlib.sha256(str(source).encode("utf-8")).hexdigest()
-    module_name = f"_sigilicon_owner_extension_{identity}"
+    module_name = f"_sigilicon_owner_action_module_{identity}"
     module = ModuleType(module_name)
     module.__file__ = str(source)
     module.__package__ = ""
@@ -51,7 +52,7 @@ def _load_extension(source: Path, record_text: str) -> ModuleType:
     try:
         exec(compile(record_text, str(source), "exec"), module.__dict__)
     except Exception as exc:
-        raise ValueError(f"cannot load owner registry extension {source}: {exc}") from exc
+        raise ValueError(f"cannot load owner action module {source}: {exc}") from exc
     finally:
         if previous is None:
             sys.modules.pop(module_name, None)
@@ -73,19 +74,19 @@ def _implementation_source(source: Path, *, project_root: Path) -> SourceMember:
     )
 
 
-def _project_workflow_registry(
+def _project_action_registry(
     project: Project,
     owner: RepositoryOwner,
     *,
     client_factory: Callable[[], Any] = _default_client_factory,
 ) -> FlowRegistry:
-    """Assemble reusable Actions and the selected owner's Adapter extension."""
+    """Assemble common Actions and the selected owner's action module."""
 
     if owner not in project.owners:
         raise ValueError(
             f"execution owner {owner.name!r} does not belong to the selected Project"
         )
-    registry = build_flow_registry()
+    registry = build_action_registry(client_factory=client_factory)
     install_native_flow(
         registry,
         project,
@@ -99,7 +100,7 @@ def _project_workflow_registry(
         owner,
         client_factory=client_factory,
     )
-    source = project.flow_registry_extension(owner)
+    source = project.action_module(owner)
     if source is None:
         return registry
     try:
@@ -115,24 +116,27 @@ def _project_workflow_registry(
     )
     if source_record is None:
         raise ValueError(
-            f"owner registry extension {source} is not a bound Python implementation"
+            f"owner action module {source} is not a bound Python implementation"
         )
-    module = _load_extension(source, source_record.record_text)
-    register = getattr(module, "register_action_modules", None)
-    if not callable(register):
-        raise ValueError(
-            f"owner registry extension {source} must define "
-            "register_action_modules(registry, project, owner)"
-        )
-    try:
-        result = register(registry, project, owner)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception as exc:
-        raise ValueError(f"cannot register owner extension {source}: {exc}") from exc
+    with project_import_path(project.project_root):
+        module = _load_action_module(source, source_record.record_text)
+        register = getattr(module, "register_action_modules", None)
+        if not callable(register):
+            raise ValueError(
+                f"owner action module {source} must define "
+                "register_action_modules(registry, project, owner)"
+            )
+        try:
+            result = register(registry, project, owner)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"cannot register owner action module {source}: {exc}"
+            ) from exc
     if result is not None:
         raise ValueError(
-            f"owner registry extension {source} must mutate the supplied registry "
+            f"owner action module {source} must mutate the supplied registry "
             "and return None"
         )
     try:
@@ -317,7 +321,7 @@ class ProjectRunner:
 
     def _engine(self) -> FlowEngine:
         return FlowEngine(
-            _project_workflow_registry(
+            _project_action_registry(
                 self.project,
                 self.owner,
                 client_factory=self.client_factory,

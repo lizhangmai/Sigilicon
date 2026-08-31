@@ -98,7 +98,7 @@ def _write_campaign_extension(root: Path, *, mode: str = "satisfied") -> None:
         if mode == "failing"
         else ""
     )
-    extension = root / "ip/example/tools/fake_flow_extension.py"
+    extension = root / "ip/example/tools/fake_action_module.py"
     extension.write_text(
         f'''from sigilicon.domain.circuit_design import (
     CIRCUIT_TOPOLOGY_KIND,

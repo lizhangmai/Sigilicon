@@ -74,12 +74,11 @@ from sigilicon.experimental.reference_pnr import (
     ReferencePnrJob,
     run,
 )
-from sigilicon.experimental.registry import (
+from sigilicon.experimental.physical_actions import (
     EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
-    build_experimental_flow_registry,
 )
 from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
     read_materialization_execution_request,
@@ -576,20 +575,13 @@ def test_layout_content_accepts_only_zero_tape_padding_after_endlib() -> None:
         validate_layout_content(payload + b"\0\0BAD!", LayoutArtifactFormat.GDSII)
 
 
-def test_stable_registry_leaves_materialization_backend_extensible() -> None:
-    registry = build_flow_registry()
+def test_common_registry_keeps_materialization_backend_explicit() -> None:
+    registry = build_action_registry()
     contract = registry.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION)
 
-    assert contract.adapters == ()
     assert contract.adapter_extensible
     assert not registry.has_adapter(_MATERIALIZER)
-    assert not registry.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert registry.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER in contract.adapters
     assert contract.output("layout").kind == MATERIALIZED_GDS_KIND
     assert contract.output("receipt").kind == MATERIALIZATION_RECEIPT_KIND
-
-    experimental = build_experimental_flow_registry()
-    assert experimental.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
-    assert (
-        EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER
-        in experimental.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION).adapters
-    )

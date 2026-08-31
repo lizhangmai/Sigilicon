@@ -45,7 +45,7 @@ from sigilicon.flow import (
     InputArtifact,
 )
 from sigilicon.flow.circuit_design import PHYSICAL_DESIGN_OBSERVATION_ACTION
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.design_physical import PhysicalDesignObservationAdapter
 
 
@@ -108,7 +108,7 @@ def _context(tmp_path: Path, *, offline: bool = False) -> ActionContext:
         else DerivedArtifactIdentity("parasitics", "netlist.pex", "parasitics-fixture"),
         "PEX observation",
     )
-    registry = build_flow_registry()
+    registry = build_action_registry()
     action = registry.action(PHYSICAL_DESIGN_OBSERVATION_ACTION)
     files = {
         "topology": _write(tmp_path / "topology.json", topology.canonical_json()),

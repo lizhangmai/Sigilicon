@@ -19,7 +19,8 @@ from sigilicon.flow import (
     load_execution_environment,
 )
 from sigilicon.paths import discover_project_contract
-from sigilicon.workflows.project import bind_run_store, load_project
+from sigilicon.domain.repository import Project
+from sigilicon.workflows.project import bind_run_store
 from sigilicon.workflows.project_runner import ProjectRunner
 
 
@@ -124,7 +125,7 @@ def _execution_environment(args: argparse.Namespace) -> ExecutionEnvironment:
 
 
 def _project(args: argparse.Namespace) -> Any:
-    return load_project(_project_contract(args))
+    return Project.from_file(_project_contract(args))
 
 
 def _project_contract(args: argparse.Namespace) -> Path:

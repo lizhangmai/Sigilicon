@@ -17,12 +17,6 @@ from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.run_read import RunReadInterface
 
 
-def load_project(project_contract: Path | str) -> Project:
-    """Parse one canonical project contract at an application entrypoint."""
-
-    return Project.from_file(project_contract)
-
-
 def bind_run_store(project_root: Path | str) -> RunStore:
     """Bind historical run records without loading current owner catalogs."""
 
@@ -72,5 +66,4 @@ __all__ = [
     "bind_agentic_read",
     "bind_run_read",
     "bind_run_store",
-    "load_project",
 ]

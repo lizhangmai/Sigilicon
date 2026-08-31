@@ -109,6 +109,17 @@ def _write_project(root: Path) -> tuple[Project, Path, Path, Path]:
     return Project.from_project_root(root), targets, recipe, implementation
 
 
+def test_project_rejects_removed_registry_extension_schema(tmp_path: Path) -> None:
+    contract = write_project_context(tmp_path)
+    contract.write_text(
+        contract.read_text(encoding="utf-8") + "\n[flow.registry_extensions]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"unknown fields.*registry_extensions"):
+        Project.from_project_root(tmp_path)
+
+
 class _SimpleDesignPlan:
     def as_dict(self) -> dict[str, object]:
         return {"planned": True}
@@ -192,7 +203,7 @@ def _install_simple_design_seam(
         )
         return result
 
-    monkeypatch.setattr(project_runner_module, "_project_workflow_registry", registry)
+    monkeypatch.setattr(project_runner_module, "_project_action_registry", registry)
 
 
 def test_project_runner_targets_describe_and_plan_use_owner_operation_interface(

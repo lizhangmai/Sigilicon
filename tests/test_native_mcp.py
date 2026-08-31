@@ -12,7 +12,7 @@ mcp = pytest.importorskip("mcp")
 
 from conftest import (
     write_component_owner,
-    write_fake_flow_extension,
+    write_fake_action_module,
     write_project_context,
 )
 from mcp.client import Client
@@ -89,7 +89,7 @@ goals = ["source"]
 ''',
         encoding="utf-8",
     )
-    extension = write_fake_flow_extension(root, "example")
+    extension = write_fake_action_module(root, "example")
     write_component_owner(
         root,
         "example",

@@ -38,7 +38,7 @@ from sigilicon.flow.native import (
     XCELIUM_VERIFICATION_ADAPTER,
 )
 from sigilicon.workflows import native_flow
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.native_flow import (
     NativeOaPlanAdapter,
     NativeOaSimulationAdapter,
@@ -95,7 +95,7 @@ def _context(
     operation_id = "a" * 32
     return ActionContext(
         node_id=action_kind,
-        action=build_flow_registry().action(action_kind),
+        action=build_action_registry().action(action_kind),
         run_root=run_root,
         work_root=work_root,
         output_root=output_root,
@@ -123,7 +123,7 @@ class _PlanningAdapter:
 
 
 def test_native_adapters_keep_one_run_operation_and_require_project_binding() -> None:
-    registry = build_flow_registry()
+    registry = build_action_registry()
 
     for name, implementation in (
         (NATIVE_OA_PLAN_ADAPTER, NativeOaPlanAdapter),
@@ -143,7 +143,7 @@ def test_native_adapters_keep_one_run_operation_and_require_project_binding() ->
 
 
 def test_native_oa_vertical_slice_plans_as_one_typed_dag(tmp_path: Path) -> None:
-    registry = build_flow_registry()
+    registry = build_action_registry()
     registry.register_adapter(NATIVE_OA_PLAN_ADAPTER, _PlanningAdapter())
     registry.register_adapter(NATIVE_OA_SIMULATION_ADAPTER, _PlanningAdapter())
     engine = FlowEngine(registry)
@@ -631,7 +631,7 @@ def test_xcelium_adapters_recheck_sources_at_spawn_boundary(
 
 
 def test_xcelium_action_declares_rtl_tool_and_evidence_contract() -> None:
-    action = build_flow_registry().action(XCELIUM_VERIFICATION_ACTION)
+    action = build_action_registry().action(XCELIUM_VERIFICATION_ACTION)
 
     assert action.kind == "verification.xcelium-rtl"
     assert action.required_capabilities == ("tool.cadence-xcelium",)
@@ -723,7 +723,7 @@ def test_xcelium_ams_adapter_uses_same_flow_lifecycle(
 
 
 def test_xcelium_ams_action_declares_mixed_signal_contract() -> None:
-    action = build_flow_registry().action(XCELIUM_AMS_VERIFICATION_ACTION)
+    action = build_action_registry().action(XCELIUM_AMS_VERIFICATION_ACTION)
 
     assert action.kind == "verification.xcelium-ams"
     assert action.required_capabilities == ("tool.cadence-xcelium",)

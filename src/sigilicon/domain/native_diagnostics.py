@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 import sys
@@ -12,6 +10,7 @@ from typing import Any, Collection, Mapping, cast
 import uuid
 
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
+from sigilicon.project_modules import project_import_path
 
 
 _REQUIRED_CALLABLES = (
@@ -22,21 +21,6 @@ _REQUIRED_CALLABLES = (
     "reconstruct",
     "attestation_requirements",
 )
-
-
-@contextmanager
-def _project_import_path(project_root: Path) -> Iterator[None]:
-    """Expose the explicitly selected project only while loading its processor."""
-
-    root = str(project_root.resolve())
-    already_present = root in sys.path
-    if not already_present:
-        sys.path.insert(0, root)
-    try:
-        yield
-    finally:
-        if not already_present:
-            sys.path.remove(root)
 
 
 @dataclass(frozen=True)
@@ -160,7 +144,7 @@ def load_native_diagnostic_processor(
     previous = sys.modules.get(module_name)
     sys.modules[module_name] = module
     try:
-        with _project_import_path(root):
+        with project_import_path(root):
             exec(compile(snapshot.text, str(source), "exec"), module.__dict__)
     finally:
         if previous is None:
