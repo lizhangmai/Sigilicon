@@ -131,6 +131,11 @@ from sigilicon.flow import (
     AdapterResult,
     ArtifactPort,
     CollectedActionResult,
+    FactKind,
+    FactSchema,
+    FactSet,
+    FactSource,
+    FactSpec,
     FlowExecutionError,
     ProducedArtifact,
 )
@@ -145,6 +150,10 @@ class SourceAdapter:
         output.write_text(text, encoding="utf-8")
         return AdapterResult.succeeded(
             CollectedActionResult(
+                facts=FactSet.empty(
+                    context.action.fact_schema,
+                    source=FactSource(context.action.kind, context.node_id),
+                ),
                 artifacts=(ProducedArtifact("source", "text.plain", output),)
             )
         )
@@ -158,7 +167,11 @@ class TransformAdapter:
         return AdapterResult.succeeded(
             CollectedActionResult(
                 artifacts=(ProducedArtifact("transformed", "text.plain", output),),
-                facts={"length": len(source)},
+                facts=FactSet(
+                    context.action.fact_schema,
+                    {"length": len(source)},
+                    FactSource(context.action.kind, context.node_id),
+                ),
             )
         )
 
@@ -172,7 +185,11 @@ class VerifyAdapter:
         return AdapterResult.succeeded(
             CollectedActionResult(
                 artifacts=(ProducedArtifact("report", "report.text", output),),
-                facts={"accepted": accepted},
+                facts=FactSet(
+                    context.action.fact_schema,
+                    {"accepted": accepted},
+                    FactSource(context.action.kind, context.node_id),
+                ),
             )
         )
 
@@ -183,7 +200,14 @@ class WaitAdapter:
         if type(seconds) is not int or not 1 <= seconds <= 30:
             raise FlowExecutionError("seconds must be an integer between 1 and 30")
         time.sleep(seconds)
-        return AdapterResult.succeeded()
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                facts=FactSet.empty(
+                    context.action.fact_schema,
+                    source=FactSource(context.action.kind, context.node_id),
+                )
+            )
+        )
 
 
 def register_flow_adapters(registry, owner_root):
@@ -199,7 +223,10 @@ def register_flow_adapters(registry, owner_root):
             kind="fake.transform",
             inputs=(ArtifactPort("input", "text.plain"),),
             outputs=(ArtifactPort("transformed", "text.plain"),),
-            facts=("length",),
+            fact_schema=FactSchema(
+                "fake.transform",
+                (FactSpec("length", FactKind.INTEGER),),
+            ),
             adapters=("fake-transform",),
         )
     )
@@ -208,7 +235,10 @@ def register_flow_adapters(registry, owner_root):
             kind="fake.verify",
             inputs=(ArtifactPort("candidate", "text.plain"),),
             outputs=(ArtifactPort("report", "report.text"),),
-            facts=("accepted",),
+            fact_schema=FactSchema(
+                "fake.verify",
+                (FactSpec("accepted", FactKind.BOOLEAN),),
+            ),
             adapters=("fake-verify",),
         )
     )

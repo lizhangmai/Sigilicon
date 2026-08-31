@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from sigilicon.artifacts import atomic_write_json, read_nofollow_text
 from sigilicon.external_tools import run_readonly_capture
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.model import (
     ActionContext,
     ActionContract,
@@ -508,6 +509,10 @@ class SourceAssetsAdapter:
         if source is None:
             raise FlowExecutionError("source-assets Action has no source selection")
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=tuple(
                 ProducedArtifact(
                     artifact.role,

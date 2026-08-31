@@ -25,6 +25,8 @@ from sigilicon.flow.model import (
     RecipeInput,
     SourceMember,
 )
+from sigilicon.flow.evidence import FactSchema
+from sigilicon.flow.policy import bind_policy
 
 
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
@@ -358,6 +360,7 @@ def compile_flow_spec(
     targets: tuple[FlowTarget, ...],
     inputs: Mapping[str, Any] | None = None,
     source_members: tuple[SourceMember, ...] = (),
+    action_schemas: Mapping[str, FactSchema] | None = None,
 ) -> FlowSpec:
     """Compile one recipe with exact owner-target inputs for the Engine."""
 
@@ -448,6 +451,29 @@ def compile_flow_spec(
         )
         for binding in recipe.action_bindings
     )
+
+    if action_schemas is not None:
+        if not isinstance(action_schemas, Mapping):
+            raise FlowContractError("Action fact schemas must be a mapping")
+        for action_kind, schema in action_schemas.items():
+            if not isinstance(action_kind, str) or not isinstance(schema, FactSchema):
+                raise FlowContractError(
+                    "Action fact schemas must map action names to FactSchema values"
+                )
+            if schema.action_kind != action_kind:
+                raise FlowContractError(
+                    f"Action fact schema {action_kind!r} has a different action kind"
+                )
+        for node in nodes:
+            if node.policy is None:
+                continue
+            try:
+                schema = action_schemas[node.action_kind]
+            except KeyError as exc:
+                raise FlowContractError(
+                    f"missing fact schema for Action {node.action_kind!r}"
+                ) from exc
+            bind_policy(recipe.policy(node.policy), schema)
 
     return FlowSpec(
         owner=recipe.owner,

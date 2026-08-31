@@ -33,7 +33,6 @@ from sigilicon.layout.materialization_execution import (
     MaterializationCompletion,
     MaterializationExecutionStatus,
     MaterializationExecutionTarget,
-    materialization_receipt_from_json,
     validate_layout_content,
     validate_materialization_request,
 )
@@ -61,7 +60,6 @@ from sigilicon.virtuoso.xstream import (
 )
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
-    materialization_execution_facts,
     read_materialization_execution_request,
     write_materialization_receipt,
 )
@@ -1210,16 +1208,7 @@ class OaXStreamMaterializationAdapter:
                                 ),
                                 layout_path=layout_path,
                             )
-        receipt_path = context.output_path(
-            "receipt",
-            "materialization-receipt.json",
-        )
-        receipt = materialization_receipt_from_json(
-            receipt_path.read_text(encoding="utf-8")
-        )
-        return AdapterExecution.succeeded(
-            details=materialization_execution_facts(receipt)
-        )
+        return AdapterExecution.succeeded()
 
     def _collect_result(
         self,

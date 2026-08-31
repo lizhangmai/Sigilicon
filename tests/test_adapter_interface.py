@@ -14,6 +14,11 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactKind,
+    FactSchema,
+    FactSet,
+    FactSource,
+    FactSpec,
     FlowEngine,
     FlowContractError,
     FlowExecutionError,
@@ -33,10 +38,14 @@ class SingleMethodAdapter:
         output.write_text("complete\n", encoding="utf-8")
         return AdapterResult.succeeded(
             CollectedActionResult(
+                facts=FactSet(
+                    context.action.fact_schema,
+                    {"complete": True},
+                    FactSource(context.action.kind, context.node_id),
+                ),
                 artifacts=(
                     ProducedArtifact("report", "report.text", output),
                 ),
-                facts={"complete": True},
             )
         )
 
@@ -76,7 +85,10 @@ def test_engine_consumes_one_complete_adapter_result(tmp_path: Path) -> None:
         ActionContract(
             "test.complete",
             outputs=(ArtifactPort("report", "report.text"),),
-            facts=("complete",),
+            fact_schema=FactSchema(
+                "test.complete",
+                (FactSpec("complete", FactKind.BOOLEAN),),
+            ),
             adapters=("single-method",),
         )
     )
@@ -101,7 +113,11 @@ def test_engine_consumes_one_complete_adapter_result(tmp_path: Path) -> None:
     assert result.status == "accepted"
     assert result.nodes["complete"].execution_status == "succeeded"
     assert result.nodes["complete"].result_status == "valid"
-    assert result.nodes["complete"].facts == {"complete": True}
+    assert result.nodes["complete"].facts is not None
+    facts = result.nodes["complete"].facts
+    assert facts.schema == registry.action("test.complete").fact_schema
+    assert facts.source == FactSource("test.complete", "complete")
+    assert facts["complete"] is True
 
 
 def test_adapter_result_keeps_execution_and_evidence_states_consistent() -> None:
@@ -110,7 +126,13 @@ def test_adapter_result_keeps_execution_and_evidence_states_consistent() -> None
     with pytest.raises(FlowExecutionError, match="cannot include"):
         AdapterResult(
             AdapterExecution("failed", 1),
-            CollectedActionResult(status="failed"),
+            CollectedActionResult(
+                facts=FactSet.empty(
+                    FactSchema("test.failed"),
+                    source=FactSource("test.failed"),
+                ),
+                status="failed",
+            ),
         )
 
 
@@ -135,7 +157,12 @@ def test_registry_rejects_the_removed_four_operation_adapter_interface() -> None
             return AdapterExecution.succeeded()
 
         def collect_result(self, _context, _execution):
-            return CollectedActionResult()
+            return CollectedActionResult(
+                facts=FactSet.empty(
+                    FactSchema("test.removed"),
+                    source=FactSource("test.removed"),
+                )
+            )
 
     with pytest.raises(FlowContractError, match=r"run\(context\)"):
         FlowRegistry().register_adapter("removed", RemovedAdapter())  # type: ignore[arg-type]

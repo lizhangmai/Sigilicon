@@ -293,13 +293,6 @@ def _flow(
             PolicySpec(
                 "electrical-functional-regression",
                 (
-                    PolicyCheck(
-                        "tool-completed",
-                        "tool-execution-completed",
-                        "equals",
-                        True,
-                    ),
-                    PolicyCheck("one-file", "measurement-file-count", "equals", 1),
                     PolicyCheck("two-rows", "measurement-row-count", "equals", 2),
                     PolicyCheck(
                         "no-failed-values",
@@ -319,12 +312,6 @@ def _flow(
                 "electrical-campaign-complete",
                 (
                     PolicyCheck(
-                        "tool-completed",
-                        "tool-execution-completed",
-                        "equals",
-                        True,
-                    ),
-                    PolicyCheck(
                         "two-records",
                         "campaign-record-count",
                         "equals",
@@ -335,12 +322,6 @@ def _flow(
             PolicySpec(
                 "electrical-diagnostic-complete",
                 (
-                    PolicyCheck(
-                        "tool-completed",
-                        "tool-execution-completed",
-                        "equals",
-                        True,
-                    ),
                     PolicyCheck(
                         "diagnostic-role",
                         "evidence-role",
@@ -464,12 +445,10 @@ def test_synopsys_hspice_adapter_collects_structured_measurements(
     measurement = json.loads(outcome.artifacts["measurements"].path.read_text())
 
     assert result.status == "accepted"
-    assert outcome.facts == {
+    assert outcome.facts.as_mapping() == {
         "measurement-check-failure-count": 0,
         "measurement-failure-count": 0,
-        "measurement-file-count": 1,
         "measurement-row-count": 2,
-        "tool-execution-completed": True,
     }
     assert measurement["kind"] == "measurement.collection"
     assert measurement["measurement_file"] == "smoke.mt0.csv"
@@ -559,9 +538,8 @@ def test_managed_campaign_uses_owner_declared_summary_interface(
     summary = json.loads(campaign.artifacts["campaign-summary"].path.read_text())
 
     assert result.status == "accepted"
-    assert campaign.facts == {
+    assert campaign.facts.as_mapping() == {
         "campaign-record-count": 2,
-        "tool-execution-completed": True,
     }
     assert summary["contract_kind"] == "fixture-campaign-summary"
     assert summary["kind"] == "report.electrical-campaign"
@@ -578,8 +556,7 @@ def test_managed_diagnostic_is_typed_nonqualification_evidence(
     evidence = json.loads(diagnostic.artifacts["evidence"].path.read_text())
 
     assert result.status == "accepted"
-    assert diagnostic.facts == {
-        "tool-execution-completed": True,
+    assert diagnostic.facts.as_mapping() == {
         "evidence-role": "diagnostic",
         "product-qualification-conclusion": False,
     }

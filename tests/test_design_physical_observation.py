@@ -40,6 +40,7 @@ from sigilicon.domain.post_layout import (
 )
 from sigilicon.flow import (
     ActionContext,
+    FactSource,
     FlowExecutionError,
     InputArtifact,
 )
@@ -169,6 +170,12 @@ def test_real_physical_evidence_normalizes_to_candidate_bound_design_evidence(
     assert invocation.execution.status == "succeeded"
     assert invocation.collected is not None
     result = invocation.collected
+    assert result.facts.schema == context.action.fact_schema
+    assert result.facts.source == FactSource(
+        PHYSICAL_DESIGN_OBSERVATION_ACTION,
+        "observe",
+    )
+    assert result.facts.as_mapping() == {}
     values = {
         artifact.role: design_artifact_from_json(artifact.path.read_text(encoding="utf-8"))
         for artifact in result.artifacts

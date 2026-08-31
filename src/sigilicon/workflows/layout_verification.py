@@ -37,6 +37,7 @@ from sigilicon.external_tools import (
     run_process_group,
 )
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSource
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
@@ -885,7 +886,7 @@ def _run_calibre(
 _CALIBRE_PRIMARY = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 
 
-def _verification_facts(
+def _verification_values(
     evidence: DrcEvidence | LvsEvidence,
 ) -> dict[str, object]:
     prefix = "drc" if isinstance(evidence, DrcEvidence) else "lvs"
@@ -1225,7 +1226,7 @@ class CalibrePhysicalVerificationAdapter:
             "drc-evidence.json" if isinstance(evidence, DrcEvidence) else "lvs-evidence.json",
         )
         evidence_path.write_text(evidence.canonical_json(), encoding="utf-8")
-        return AdapterExecution.succeeded(details=_verification_facts(evidence))
+        return AdapterExecution.succeeded()
 
     def _collect_result(
         self,
@@ -1255,11 +1256,15 @@ class CalibrePhysicalVerificationAdapter:
             raise FlowExecutionError(
                 "LVS evidence changed the checked source identity"
             )
-        facts = _verification_facts(evidence)
-        if dict(execution.details) != facts:
-            raise FlowExecutionError(
-                "physical-verification execution details disagree with evidence"
-            )
+        evidence_identity = (
+            drc_evidence_id(evidence)
+            if isinstance(evidence, DrcEvidence)
+            else lvs_evidence_id(evidence)
+        )
+        facts = context.action.fact_schema.project(
+            _verification_values(evidence),
+            source=FactSource(context.action.kind, context.node_id, evidence_identity),
+        )
         qualifiers = {
             "owner": inputs.layout.owner,
             "name": inputs.layout.name,

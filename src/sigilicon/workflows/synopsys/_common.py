@@ -18,6 +18,7 @@ from sigilicon.artifacts import atomic_write_json
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.external_tools import run_process_group_capture, run_readonly_capture
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
@@ -153,6 +154,21 @@ _FC_OUTPUT_ENVIRONMENT = {
 _VERILOG_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 
 
+def _fact_set(context: ActionContext, values: Mapping[str, Any]) -> FactSet:
+    """Project one collector observation mapping into the Action schema."""
+
+    schema = context.action.fact_schema
+    if schema is None:
+        raise FlowExecutionError(
+            f"Action {context.node_id!r} has no fact schema"
+        )
+    return FactSet(
+        schema,
+        values,
+        FactSource(context.action.kind, context.node_id),
+    )
+
+
 def _text_mapping(value: object, label: str) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise FlowExecutionError(f"{label} must be a mapping")
@@ -285,5 +301,4 @@ def _pinned_owner_runner(
     if not os.access(runner, os.X_OK):
         raise FlowExecutionError(f"{action_label} runner is not executable")
     return runner
-
 

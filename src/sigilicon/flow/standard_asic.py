@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSpec
 from sigilicon.flow.model import ActionContract, ArtifactPort, PlatformAssetRequirement
 from sigilicon.flow.registry import FlowRegistry
+
+
+def _schema(action_kind: str, *fields: FactSpec) -> FactSchema:
+    return FactSchema(action_kind, fields)
 
 
 def register_standard_asic_actions(registry: FlowRegistry) -> None:
@@ -61,7 +66,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("simulation-recipe", "recipe.simulation"),
             ),
             outputs=(ArtifactPort("evidence", "evidence.simulation"),),
-            facts=("passed",),
             required_capabilities=("tool.synopsys-vcs",),
             adapters=("synopsys-vcs",),
         )
@@ -74,7 +78,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("simulation-recipe", "recipe.simulation"),
             ),
             outputs=(ArtifactPort("evidence", "evidence.simulation"),),
-            facts=("passed",),
             required_capabilities=("tool.synopsys-vcs",),
             platform_assets=(
                 PlatformAssetRequirement(
@@ -100,7 +103,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("checkpoint", "checkpoint.synopsys-ddc"),
                 ArtifactPort("reports", "report.collection"),
             ),
-            facts=("passed",),
             required_capabilities=("tool.synopsys-dc",),
             platform_assets=(
                 PlatformAssetRequirement(
@@ -131,17 +133,34 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("structural-report", "report.structure"),
                 ArtifactPort("evidence", "evidence.tool-execution"),
             ),
-            facts=(
-                "passed",
-                "evidence-role",
-                "evidence-level",
-                "evidence-scope",
-                "product-qualification-conclusion",
-                "macro-instance-count",
-                "unresolved-reference-count",
-                "timing-characterized",
-                "power-characterized",
-                "area-characterized",
+            fact_schema=_schema(
+                "asic.structural-link",
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=(
+                        "diagnostic",
+                        "regression",
+                        "qualification",
+                        "signoff",
+                    ),
+                ),
+                FactSpec(
+                    "evidence-level",
+                    FactKind.TEXT,
+                    enum_values=("l0", "l1", "l2", "l3", "l4"),
+                ),
+                FactSpec("evidence-scope", FactKind.TEXT),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
+                FactSpec("macro-instance-count", FactKind.INTEGER, unit="count"),
+                FactSpec(
+                    "unresolved-reference-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec("timing-characterized", FactKind.BOOLEAN),
+                FactSpec("power-characterized", FactKind.BOOLEAN),
+                FactSpec("area-characterized", FactKind.BOOLEAN),
             ),
             required_capabilities=(
                 "tool.synopsys-library-compiler",
@@ -159,7 +178,6 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("simulation-recipe", "recipe.simulation"),
             ),
             outputs=(ArtifactPort("evidence", "evidence.simulation"),),
-            facts=("passed",),
             required_capabilities=("tool.synopsys-vcs",),
             platform_assets=(
                 PlatformAssetRequirement(
@@ -188,11 +206,19 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("library-check-report", "report.library-check"),
                 ArtifactPort("execution-evidence", "evidence.tool-execution"),
             ),
-            facts=(
-                "tool-execution-completed",
-                "library-check-succeeded",
-                "library-check-error-count",
-                "library-check-warning-count",
+            fact_schema=_schema(
+                "asic.reference-library-construction",
+                FactSpec("library-check-succeeded", FactKind.BOOLEAN),
+                FactSpec(
+                    "library-check-error-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "library-check-warning-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
             ),
             required_capabilities=("tool.synopsys-library-manager",),
             platform_assets=(
@@ -249,39 +275,121 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("tie-off-check-report", "report.tie-off-check"),
                 ArtifactPort("execution-evidence", "evidence.tool-execution"),
             ),
-            facts=(
-                "tool-execution-completed",
-                "design-check-error-count",
-                "design-check-warning-count",
-                "open-net-count",
-                "route-drc-violation-count",
-                "worst-setup-slack-ns",
-                "worst-hold-slack-ns",
-                "max-transition-violation-count",
-                "max-capacitance-violation-count",
-                "physical-cell-area-um2",
-                "leaf-cell-count",
-                "power-activity-mode",
-                "total-dynamic-power-nw",
-                "cell-leakage-power-nw",
-                "antenna-check-active",
-                "antenna-check-status",
-                "tie-to-rail-check-performed",
-                "tie-to-rail-check-status",
-                "tie-off-check-performed",
-                "tie-off-check-status",
-                "tie-off-violation-count",
-                "required-pg-port-count",
-                "placed-required-pg-port-count",
-                "unplaced-required-pg-port-count",
-                "pg-connectivity-check-performed",
-                "pg-connectivity-check-status",
-            ),
-            optional_facts=(
-                "antenna-violation-count",
-                "tie-to-rail-violation-count",
-                "tie-to-rail-direct-violation-count",
-                "pg-connectivity-violation-count",
+            fact_schema=_schema(
+                "asic.physical-implementation",
+                FactSpec(
+                    "design-check-error-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "design-check-warning-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec("open-net-count", FactKind.INTEGER, unit="count"),
+                FactSpec(
+                    "route-drc-violation-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec("worst-setup-slack-ns", FactKind.REAL, unit="ns"),
+                FactSpec("worst-hold-slack-ns", FactKind.REAL, unit="ns"),
+                FactSpec(
+                    "max-transition-violation-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "max-capacitance-violation-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "physical-cell-area-um2",
+                    FactKind.REAL,
+                    unit="um2",
+                ),
+                FactSpec("leaf-cell-count", FactKind.INTEGER, unit="count"),
+                FactSpec("power-activity-mode", FactKind.TEXT),
+                FactSpec(
+                    "total-dynamic-power-nw",
+                    FactKind.REAL,
+                    unit="nW",
+                ),
+                FactSpec(
+                    "cell-leakage-power-nw",
+                    FactKind.REAL,
+                    unit="nW",
+                ),
+                FactSpec("antenna-check-active", FactKind.BOOLEAN),
+                FactSpec(
+                    "antenna-check-status",
+                    FactKind.TEXT,
+                    enum_values=("active", "no-rules", "inactive"),
+                ),
+                FactSpec("tie-to-rail-check-performed", FactKind.BOOLEAN),
+                FactSpec(
+                    "tie-to-rail-check-status",
+                    FactKind.TEXT,
+                    enum_values=("performed", "not-performed"),
+                ),
+                FactSpec("tie-off-check-performed", FactKind.BOOLEAN),
+                FactSpec(
+                    "tie-off-check-status",
+                    FactKind.TEXT,
+                    enum_values=("performed",),
+                ),
+                FactSpec(
+                    "tie-off-violation-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "required-pg-port-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "placed-required-pg-port-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "unplaced-required-pg-port-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec("pg-connectivity-check-performed", FactKind.BOOLEAN),
+                FactSpec(
+                    "pg-connectivity-check-status",
+                    FactKind.TEXT,
+                    enum_values=("performed", "not-performed"),
+                ),
+                FactSpec(
+                    "antenna-violation-count",
+                    FactKind.INTEGER,
+                    required=False,
+                    unit="count",
+                ),
+                FactSpec(
+                    "tie-to-rail-violation-count",
+                    FactKind.INTEGER,
+                    required=False,
+                    unit="count",
+                ),
+                FactSpec(
+                    "tie-to-rail-direct-violation-count",
+                    FactKind.INTEGER,
+                    required=False,
+                    unit="count",
+                ),
+                FactSpec(
+                    "pg-connectivity-violation-count",
+                    FactKind.INTEGER,
+                    required=False,
+                    unit="count",
+                ),
             ),
             required_capabilities=("tool.synopsys-fc",),
             platform_assets=(
@@ -309,12 +417,19 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("measurements", "measurement.collection"),
                 ArtifactPort("waveforms", "waveform.collection", required=False),
             ),
-            facts=(
-                "tool-execution-completed",
-                "measurement-file-count",
-                "measurement-row-count",
-                "measurement-failure-count",
-                "measurement-check-failure-count",
+            fact_schema=_schema(
+                "asic.electrical-functional",
+                FactSpec("measurement-row-count", FactKind.INTEGER, unit="count"),
+                FactSpec(
+                    "measurement-failure-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+                FactSpec(
+                    "measurement-check-failure-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
             ),
             required_capabilities=("tool.synopsys-hspice",),
             platform_assets=(
@@ -341,10 +456,19 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", "evidence.electrical-diagnostic"),
             ),
-            facts=(
-                "tool-execution-completed",
-                "evidence-role",
-                "product-qualification-conclusion",
+            fact_schema=_schema(
+                "asic.electrical-diagnostic",
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=(
+                        "diagnostic",
+                        "regression",
+                        "qualification",
+                        "signoff",
+                    ),
+                ),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
             required_capabilities=("tool.synopsys-hspice",),
             platform_assets=(
@@ -377,10 +501,19 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", "evidence.electrical-diagnostic"),
             ),
-            facts=(
-                "tool-execution-completed",
-                "evidence-role",
-                "product-qualification-conclusion",
+            fact_schema=_schema(
+                "asic.electrical-model-variant-diagnostic",
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=(
+                        "diagnostic",
+                        "regression",
+                        "qualification",
+                        "signoff",
+                    ),
+                ),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
             required_capabilities=("tool.synopsys-hspice",),
             platform_assets=(
@@ -417,9 +550,9 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
                     "report.electrical-campaign",
                 ),
             ),
-            facts=(
-                "tool-execution-completed",
-                "campaign-record-count",
+            fact_schema=_schema(
+                "asic.electrical-campaign",
+                FactSpec("campaign-record-count", FactKind.INTEGER, unit="count"),
             ),
             required_capabilities=("tool.synopsys-hspice",),
             platform_assets=(
@@ -451,7 +584,15 @@ def register_standard_asic_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", "evidence.qualification"),
             ),
-            facts=("passed", "qualification-failure-count"),
+            fact_schema=_schema(
+                "asic.electrical-qualification",
+                FactSpec("passed", FactKind.BOOLEAN),
+                FactSpec(
+                    "qualification-failure-count",
+                    FactKind.INTEGER,
+                    unit="count",
+                ),
+            ),
             adapter_extensible=True,
         )
     )

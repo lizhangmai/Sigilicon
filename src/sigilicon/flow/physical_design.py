@@ -7,6 +7,7 @@ from sigilicon.flow.model import (
     ArtifactPort,
     PlatformAssetRequirement,
 )
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSpec
 from sigilicon.flow.registry import FlowRegistry
 
 
@@ -26,6 +27,93 @@ REFERENCE_MATERIALIZATION_ADAPTER = "reference-materialization"
 OA_XSTREAM_MATERIALIZATION_ADAPTER = "oa-virtuoso-xstream-materialization"
 
 
+PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA = FactSchema(
+    PHYSICAL_DESIGN_SOURCE_ACTION,
+)
+PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA = FactSchema(
+    PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
+    fields=(
+        FactSpec(
+            "materialization-status",
+            FactKind.TEXT,
+            enum_values=(
+                "materialized",
+                "unsupported",
+                "backend_unavailable",
+                "execution_failed",
+                "invalid_plan_identity",
+            ),
+        ),
+        FactSpec("materialized", FactKind.BOOLEAN),
+        FactSpec("backend-executed", FactKind.BOOLEAN),
+        FactSpec("backend-completed", FactKind.BOOLEAN),
+    ),
+)
+PHYSICAL_MATERIALIZATION_FACT_SCHEMA = FactSchema(
+    PHYSICAL_MATERIALIZATION_ACTION,
+    fields=(
+        FactSpec(
+            "materialization-decision",
+            FactKind.TEXT,
+            enum_values=("executable", "diagnostic", "rejected"),
+        ),
+        FactSpec(
+            "materialization-reason",
+            FactKind.TEXT,
+            enum_values=(
+                "accepted",
+                "state_budget",
+                "iteration_budget",
+                "budget_exhausted",
+                "unsupported",
+                "infeasible",
+                "invalid_solution",
+            ),
+        ),
+        FactSpec("materialization-executable", FactKind.BOOLEAN),
+    ),
+)
+PHYSICAL_DESIGN_FACT_SCHEMA = FactSchema(
+    PHYSICAL_DESIGN_ACTION,
+    fields=(
+        FactSpec(
+            "physical-design-status",
+            FactKind.TEXT,
+            enum_values=("succeeded", "failed", "unsupported", "exhausted"),
+        ),
+        FactSpec("physical-design-succeeded", FactKind.BOOLEAN),
+        FactSpec("physical-design-closed", FactKind.BOOLEAN),
+        FactSpec(
+            "closure-termination",
+            FactKind.TEXT,
+            enum_values=(
+                "not_evaluated",
+                "closed",
+                "routing_terminated",
+                "no_legal_repair",
+                "repair_state_budget",
+                "repair_iteration_budget",
+                "independent_evaluation_failed",
+            ),
+        ),
+        FactSpec(
+            "routing-termination",
+            FactKind.TEXT,
+            enum_values=(
+                "not_evaluated",
+                "closed",
+                "infeasible",
+                "unsupported",
+                "state_budget",
+                "iteration_budget",
+            ),
+        ),
+        FactSpec("state-budget-exhausted", FactKind.BOOLEAN),
+        FactSpec("iteration-budget-exhausted", FactKind.BOOLEAN),
+    ),
+)
+
+
 def register_physical_design_actions(registry: FlowRegistry) -> None:
     """Register reusable artifact and solver seams without project policy."""
 
@@ -33,6 +121,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
         ActionContract(
             kind=PHYSICAL_DESIGN_SOURCE_ACTION,
             outputs=(ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),),
+            fact_schema=PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA,
             adapters=("source-assets",),
             resolves_source_assets=True,
         )
@@ -49,12 +138,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("layout", MATERIALIZED_GDS_KIND, required=False),
                 ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
             ),
-            facts=(
-                "materialization-status",
-                "materialized",
-                "backend-executed",
-                "backend-completed",
-            ),
+            fact_schema=PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA,
             required_capabilities=("tool.layout-materializer",),
             platform_assets=(
                 PlatformAssetRequirement(
@@ -82,11 +166,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
                     MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND,
                 ),
             ),
-            facts=(
-                "materialization-decision",
-                "materialization-reason",
-                "materialization-executable",
-            ),
+            fact_schema=PHYSICAL_MATERIALIZATION_FACT_SCHEMA,
             adapters=(REFERENCE_MATERIALIZATION_ADAPTER,),
         )
     )
@@ -102,15 +182,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
                     required=False,
                 ),
             ),
-            facts=(
-                "physical-design-status",
-                "physical-design-succeeded",
-                "physical-design-closed",
-                "closure-termination",
-                "routing-termination",
-                "state-budget-exhausted",
-                "iteration-budget-exhausted",
-            ),
+            fact_schema=PHYSICAL_DESIGN_FACT_SCHEMA,
             adapters=(REFERENCE_PNR_ADAPTER,),
         )
     )
@@ -128,6 +200,10 @@ __all__ = [
     "MATERIALIZED_GDS_KIND",
     "MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND",
     "MATERIALIZATION_RECEIPT_KIND",
+    "PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA",
+    "PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA",
+    "PHYSICAL_MATERIALIZATION_FACT_SCHEMA",
+    "PHYSICAL_DESIGN_FACT_SCHEMA",
     "OA_XSTREAM_MATERIALIZATION_ADAPTER",
     "REFERENCE_MATERIALIZATION_ADAPTER",
     "REFERENCE_PNR_ADAPTER",

@@ -16,6 +16,8 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowEngine,
     FlowNode,
     FlowSpec,
@@ -233,6 +235,10 @@ class _PexInputsAdapter(StagedAdapterFixture):
             "backend": receipt.completion.backend,
         }
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "layout",
@@ -440,7 +446,11 @@ def test_calibre_xrc_adapter_projects_receipt_bound_parasitics(
     assert "xM0 " in parasitics
     assert "c1 " in parasitics
     assert "r1 " in parasitics
-    assert node.facts == {"pex-status": "extracted", "pex-completed": True}
+    assert node.facts is not None
+    assert node.facts.as_mapping() == {
+        "pex-status": "extracted",
+        "pex-completed": True,
+    }
     assert [next(item for item in ("phdb", "pdb", "fmt") if f"-{item}" in call) for call in fake.calls] == [
         "phdb",
         "pdb",
@@ -465,7 +475,11 @@ def test_calibre_xrc_failure_never_publishes_parasitics(
     assert evidence.status is PexStatus.EXECUTION_FAILED
     assert not evidence.completion.proven
     assert "parasitics" not in node.artifacts
-    assert node.facts == {"pex-status": "execution_failed", "pex-completed": False}
+    assert node.facts is not None
+    assert node.facts.as_mapping() == {
+        "pex-status": "execution_failed",
+        "pex-completed": False,
+    }
 
 
 def test_calibre_xrc_identity_drift_fails_before_tool(

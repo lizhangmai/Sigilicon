@@ -15,6 +15,7 @@ from ._common import (
     PurePosixPath,
     RELEASE_MATURITY_LEVELS,
     _VERILOG_IDENTIFIER,
+    _fact_set,
     _manifest_members,
     _stage_source_set,
     atomic_write_json,
@@ -101,17 +102,7 @@ class SynopsysStructuralLinkAdapter:
         staged_release_root.mkdir(parents=True)
         staged_macro_liberty = staged_release_root / "structural-macro.lib"
         shutil.copyfile(macro_liberty, staged_macro_liberty)
-        macro_liberty_sha256 = sha256(staged_macro_liberty.read_bytes()).hexdigest()
-        pinned_source_sha256 = self._pinned_release_source_sha256(
-            context,
-            recipe,
-            released,
-            macro_liberty,
-        )
-        if macro_liberty_sha256 != pinned_source_sha256:
-            raise FlowExecutionError(
-                "structural-link Liberty differs from its pinned source commit"
-            )
+        self._release_identity(context, recipe, released, macro_liberty)
         tool_root = context.output_root / "tool"
         macro_db = tool_root / "structural-macro.db"
         report = tool_root / "structural-link.rpt"
@@ -165,14 +156,7 @@ class SynopsysStructuralLinkAdapter:
             or lc_errors
             or not macro_db.is_file()
         ):
-            return AdapterExecution(
-                "failed",
-                lc.returncode,
-                {
-                    "stage": "library-compilation",
-                    "tool-error-count": len(lc_errors),
-                },
-            )
+            return AdapterExecution("failed", lc.returncode)
 
         dc = run_process_group_capture(
             [str(design_compiler), "-f", str(link_script)],
@@ -206,40 +190,73 @@ class SynopsysStructuralLinkAdapter:
             or not report.is_file()
             or not checkpoint.is_file()
         ):
-            return AdapterExecution(
-                "failed",
-                dc.returncode,
-                {"stage": "structural-link", "tool-error-count": len(tool_errors)},
-            )
-        return AdapterExecution.succeeded(
-            details={
-                "stage": "complete",
-                "variant": self._variant(context),
-                "top": top,
-                "release": {
-                    "release-id": released["release_id"],
-                    "source-commit": released["source_commit"],
-                    "manifest": released["manifest"],
-                    "manifest-sha256": released["manifest_sha256"],
-                    "macro-liberty": released["roles"][recipe["liberty_role"]],
-                    "macro-liberty-sha256": macro_liberty_sha256,
-                    "pinned-source-sha256": pinned_source_sha256,
-                },
-            }
+            return AdapterExecution("failed", dc.returncode)
+        return AdapterExecution.succeeded()
+
+    def _release_identity(
+        self,
+        context: ActionContext,
+        recipe: Mapping[str, Any],
+        released: Mapping[str, Any],
+        macro_liberty: Path,
+    ) -> dict[str, str]:
+        """Rebuild release provenance from the immutable run inputs.
+
+        Execution metadata is deliberately not used as a handoff between the
+        backend and collector.  The collector calls this method again after
+        execution, so the evidence is bound to the managed release and staged
+        input that are actually present in the run.
+        """
+
+        staged_macro_liberty = (
+            context.work_root / "inputs" / "release" / "structural-macro.lib"
         )
+        if not staged_macro_liberty.is_file():
+            raise FlowExecutionError(
+                "structural-link staged release Liberty is unavailable"
+            )
+        macro_liberty_sha256 = sha256(
+            staged_macro_liberty.read_bytes()
+        ).hexdigest()
+        pinned_source_sha256 = self._pinned_release_source_sha256(
+            context,
+            recipe,
+            released,
+            macro_liberty,
+        )
+        if macro_liberty_sha256 != pinned_source_sha256:
+            raise FlowExecutionError(
+                "structural-link Liberty differs from its pinned source commit"
+            )
+        return {
+            "release-id": str(released["release_id"]),
+            "source-commit": str(released["source_commit"]),
+            "manifest": str(released["manifest"]),
+            "manifest-sha256": str(released["manifest_sha256"]),
+            "macro-liberty": str(released["roles"][recipe["liberty_role"]]),
+            "macro-liberty-sha256": macro_liberty_sha256,
+            "pinned-source-sha256": pinned_source_sha256,
+        }
 
     def _collect_result(
         self,
         context: ActionContext,
-        execution: AdapterExecution,
+        _execution: AdapterExecution,
     ) -> CollectedActionResult:
         recipe, recipe_members = self._recipe(context)
+        integration = self._integration(context, recipe, recipe_members)
         top = self._variant_top(context, recipe, recipe_members)
-        if execution.details.get("top") != top:
-            raise FlowExecutionError("structural-link execution top identity drifted")
-        release = execution.details.get("release")
-        if not isinstance(release, Mapping):
-            raise FlowExecutionError("structural-link execution omitted release identity")
+        released, macro_liberty = self._released_macro(
+            context,
+            recipe,
+            integration,
+        )
+        release = self._release_identity(
+            context,
+            recipe,
+            released,
+            macro_liberty,
+        )
         tool_root = context.output_root / "tool"
         macro_db = tool_root / "structural-macro.db"
         report = tool_root / "structural-link.rpt"
@@ -281,7 +298,6 @@ class SynopsysStructuralLinkAdapter:
         }
         atomic_write_json(evidence_path, evidence)
         facts = {
-            "passed": True,
             "evidence-role": "regression",
             "evidence-level": "l4",
             "evidence-scope": "native-macro-structural-link",
@@ -319,7 +335,7 @@ class SynopsysStructuralLinkAdapter:
                     qualifiers=qualifiers,
                 ),
             ),
-            facts=facts,
+            facts=_fact_set(context, facts),
             evidence=(
                 context.log_root / "library-compiler.stdout.log",
                 context.log_root / "library-compiler.stderr.log",
@@ -327,7 +343,6 @@ class SynopsysStructuralLinkAdapter:
                 context.log_root / "design-compiler.stderr.log",
                 evidence_path,
             ),
-            details={"release-id": release["release-id"]},
         )
 
     def _recipe(
@@ -1256,5 +1271,3 @@ class SynopsysStructuralLinkAdapter:
                 "structural-link Adapter configuration requires a positive timeout_seconds"
             )
         return timeout
-
-

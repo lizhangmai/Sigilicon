@@ -19,6 +19,7 @@ from sigilicon.artifacts import (
     read_nofollow_text,
 )
 from sigilicon.flow.environment import capability_available
+from sigilicon.flow.errors import FactValueError
 from sigilicon.flow.model import (
     ActionArtifact,
     ActionConfiguration,
@@ -51,7 +52,8 @@ from sigilicon.flow.model import (
     owner_identity,
     run_identity,
 )
-from sigilicon.flow.policy import EvaluatedPolicy, evaluate_policy
+from sigilicon.flow.evidence import FactSet
+from sigilicon.flow.policy import EvaluatedPolicy, bind_policy, evaluate_policy
 from sigilicon.flow.registry import FlowRegistry, ToolAdapter
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
@@ -106,6 +108,8 @@ _REQUEST_EXTENSION_RESERVED = frozenset(
     }
 )
 _RESERVED_EXTENSIONS = _NODE_EXTENSION_RESERVED | _REQUEST_EXTENSION_RESERVED
+_ACTION_RESULT_SCHEMA = 3
+_FLOW_RESULT_SCHEMA = 3
 
 
 def _utc_now() -> str:
@@ -275,7 +279,7 @@ def _validate_persisted_action_operation(
         or action_request.get("contract_kind") != "action-request"
         or action_request.get("node") != node_id
         or action_request.get("operation_id") != identity
-        or action_result.get("schema") != 2
+        or action_result.get("schema") != _ACTION_RESULT_SCHEMA
         or action_result.get("contract_kind") != "action-result"
         or action_result.get("node") != node_id
         or action_result.get("operation_id") != identity
@@ -330,6 +334,7 @@ def _plan_payload(
             "adapter_config": json_value(item.adapter_config.values),
             "required_capabilities": list(item.required_capabilities),
             "execution_capability": item.execution_capability,
+            "fact_schema": item.fact_schema.descriptor(),
             "platform_assets": [
                 json_value(requirement) for requirement in item.platform_assets
             ],
@@ -535,8 +540,6 @@ class FlowEngine:
                 node,
                 contract,
             )
-            if node.policy is not None:
-                spec.policy(node.policy)
             binding_inputs: dict[str, list[Any]] = {}
             data_dependencies: list[str] = []
             for binding in node.bindings:
@@ -569,6 +572,11 @@ class FlowEngine:
             node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
             binding = spec.action_binding(node.action_kind)
+            bound_policy = (
+                None
+                if node.policy is None
+                else bind_policy(spec.policy(node.policy), contract.fact_schema)
+            )
             contract_asset_roles = {
                 requirement.role for requirement in contract.platform_assets
             }
@@ -613,6 +621,8 @@ class FlowEngine:
                     ),
                     dependencies=dependencies[node_id],
                     execution_capability=contract.execution_capability,
+                    fact_schema=contract.fact_schema,
+                    policy=bound_policy,
                     source_assets=source_assets[node_id],
                     action_plan=supplied_action_plans.get(node_id),
                 )
@@ -907,7 +917,7 @@ class FlowEngine:
                     result_status=None,
                     policy_status=None,
                     artifacts=MappingProxyType({}),
-                    facts=MappingProxyType({}),
+                    facts=None,
                     reason="Flow execution was interrupted",
                 )
                 notify("running", len(outcomes), None)
@@ -921,7 +931,7 @@ class FlowEngine:
                     result_status=None,
                     policy_status=None,
                     artifacts=MappingProxyType({}),
-                    facts=MappingProxyType({}),
+                    facts=None,
                     reason=block_reason,
                 )
                 notify("running", len(outcomes), None)
@@ -1008,9 +1018,9 @@ class FlowEngine:
             atomic_write_json(input_root / "action_request.json", request)
             started = _utc_now()
             execution = AdapterExecution("failed")
-            collected = CollectedActionResult(status="failed")
+            collected: CollectedActionResult | None = None
             artifacts: dict[str, ActionArtifact] = {}
-            facts: dict[str, Any] = {}
+            facts: FactSet | None = None
             result_status = "failed"
             error: str | None = None
             try:
@@ -1045,37 +1055,34 @@ class FlowEngine:
                             collected,
                             run_root=run_root,
                         )
-                        facts = dict(collected.facts)
-                        missing_facts = set(action.facts) - set(facts)
-                        unknown_facts = set(facts) - (
-                            set(action.facts) | set(action.optional_facts)
-                        )
-                        if collected.status == "valid" and missing_facts:
+                        facts = collected.facts
+                        if facts.schema != action.fact_schema:
                             raise FlowExecutionError(
-                                f"Action {node.node_id!r} omitted Facts "
-                                f"{sorted(missing_facts)}"
+                                f"Action {node.node_id!r} returned a different fact schema"
                             )
-                        if unknown_facts:
+                        if (
+                            facts.source.action_kind != action.kind
+                            or facts.source.node_id != node.node_id
+                        ):
                             raise FlowExecutionError(
-                                f"Action {node.node_id!r} emitted undeclared Facts "
-                                f"{sorted(unknown_facts)}"
+                                f"Action {node.node_id!r} returned facts from a different source"
                             )
                         result_status = collected.status
                     except KeyboardInterrupt:
                         interrupted = True
                         execution = AdapterExecution("cancelled")
-                        collected = CollectedActionResult(status="failed")
+                        collected = None
                         artifacts = {}
-                        facts = {}
+                        facts = None
                         error = "interrupted"
                     except Exception as exc:
-                        collected = CollectedActionResult(status="failed")
+                        collected = None
                         artifacts = {}
-                        facts = {}
+                        facts = None
                         error = f"{type(exc).__name__}: {exc}"
             finished = _utc_now()
             action_result = {
-                "schema": 2,
+                "schema": _ACTION_RESULT_SCHEMA,
                 "contract_kind": "action-result",
                 "node": node.node_id,
                 "operation_id": operation_record.operation_id,
@@ -1086,25 +1093,23 @@ class FlowEngine:
                     "exit_code": execution.exit_code,
                     "started_at": started,
                     "finished_at": finished,
-                    "details": json_value(execution.details),
                 },
                 "artifacts": {
                     role: self._artifact_payload(artifact, run_root)
                     for role, artifact in sorted(artifacts.items())
                 },
-                "facts": json_value(facts),
+                "facts": None if facts is None else facts.to_json(),
                 "evidence": [
                     self._managed_relative(path, run_root, "Evidence")
-                    for path in collected.evidence
+                    for path in (() if collected is None else collected.evidence)
                 ],
-                "details": json_value(collected.details),
                 "error": error,
             }
             atomic_write_json(output_root / "action_result.json", action_result)
-            policy = None if node.policy is None else plan.spec.policy(node.policy)
+            policy = planned.policy
             evaluation = (
                 evaluate_policy(policy, facts)
-                if result_status == "valid"
+                if result_status == "valid" and facts is not None
                 else EvaluatedPolicy(
                     None if policy is None else policy.policy_id,
                     "not-evaluated",
@@ -1124,7 +1129,7 @@ class FlowEngine:
                 result_status=result_status,
                 policy_status=evaluation.status,
                 artifacts=MappingProxyType(dict(artifacts)),
-                facts=MappingProxyType(dict(facts)),
+                facts=facts,
                 reason=error,
                 operation_id=operation_record.operation_id,
                 incident_reference=operation_record.incident_reference,
@@ -1137,7 +1142,7 @@ class FlowEngine:
             else "failed"
         )
         flow_payload = {
-            "schema": 2,
+            "schema": _FLOW_RESULT_SCHEMA,
             "contract_kind": "flow-result",
             "owner": plan.spec.owner,
             "flow": plan.spec.flow_id,
@@ -1327,7 +1332,7 @@ class FlowEngine:
             )
         except (OSError, RuntimeError) as exc:
             raise FlowExecutionError(str(exc)) from exc
-        if result.get("schema") != 2:
+        if result.get("schema") != _FLOW_RESULT_SCHEMA:
             raise FlowExecutionError(
                 f"unsupported persisted Flow Result schema: {result.get('schema')!r}"
             )
@@ -1402,7 +1407,7 @@ class FlowEngine:
         self._validate_run_inventory(run_root, manifest)
         if resolved_plan != self.plan_record(plan):
             raise FlowExecutionError("persisted resolved Flow Plan record drift")
-        if record.get("schema") != 2:
+        if record.get("schema") != _FLOW_RESULT_SCHEMA:
             raise FlowExecutionError(
                 f"unsupported persisted Flow Result schema: {record.get('schema')!r}"
             )
@@ -1447,7 +1452,10 @@ class FlowEngine:
                     and not isinstance(raw["incident_reference"], str)
                 )
                 or not isinstance(raw["artifacts"], dict)
-                or not isinstance(raw["facts"], dict)
+                or (
+                    raw["facts"] is not None
+                    and not isinstance(raw["facts"], dict)
+                )
             ):
                 raise FlowExecutionError("persisted Flow node value drift")
             operation_id = _validate_persisted_action_operation(
@@ -1499,6 +1507,27 @@ class FlowEngine:
                     payload["producer"],
                     payload["qualifiers"],
                 )
+            facts = None
+            if raw["facts"] is not None:
+                action_kind = plan.spec.node(node_id).action_kind
+                try:
+                    facts = FactSet.from_json(
+                        raw["facts"],
+                        contract.fact_schema,
+                    )
+                    if (
+                        facts.source.action_kind != action_kind
+                        or facts.source.node_id != node_id
+                    ):
+                        raise FactValueError("FactSet source action or node drift")
+                except FactValueError as exc:
+                    raise FlowExecutionError(str(exc)) from exc
+            if raw["result_status"] in {"valid", "partial", "uncertain"} and facts is None:
+                raise FlowExecutionError("persisted Flow node result has no facts")
+            if raw["result_status"] in {None, "failed"} and facts is not None:
+                raise FlowExecutionError(
+                    "non-valid persisted Flow node unexpectedly has facts"
+                )
             outcomes[node_id] = NodeOutcome(
                 node_id=node_id,
                 status=raw["status"],
@@ -1506,7 +1535,7 @@ class FlowEngine:
                 result_status=raw["result_status"],
                 policy_status=raw["policy_status"],
                 artifacts=MappingProxyType(artifacts),
-                facts=MappingProxyType(dict(raw["facts"])),
+                facts=facts,
                 reason=raw["reason"],
                 operation_id=operation_id,
                 incident_reference=raw["incident_reference"],
@@ -1778,5 +1807,5 @@ class FlowEngine:
                 role: self._artifact_payload(artifact, run_root)
                 for role, artifact in sorted(outcome.artifacts.items())
             },
-            "facts": json_value(outcome.facts),
+            "facts": None if outcome.facts is None else outcome.facts.to_json(),
         }

@@ -44,6 +44,7 @@ from sigilicon.domain.post_layout import (
     pex_evidence_id,
 )
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
@@ -67,6 +68,18 @@ _PEX_STATUS = {
     PexStatus.BACKEND_UNAVAILABLE: EvidenceConclusion.BACKEND_UNAVAILABLE,
     PexStatus.EXECUTION_FAILED: EvidenceConclusion.EXECUTION_FAILED,
 }
+
+
+def _empty_fact_set(context: ActionContext) -> FactSet:
+    """Return the explicit empty fact set bound to this Action and node."""
+
+    schema = context.action.fact_schema
+    if schema is None:
+        raise FlowExecutionError(f"Action {context.node_id!r} has no fact schema")
+    return FactSet.empty(
+        schema,
+        source=FactSource(context.action.kind, context.node_id),
+    )
 
 
 def _input_identity(context: ActionContext, role: str) -> str:
@@ -364,7 +377,10 @@ class PhysicalDesignObservationAdapter:
             if isinstance(value, DesignEvidence):
                 qualifiers["conclusion"] = value.conclusion.value
             artifacts.append(ProducedArtifact(role, kind, path, qualifiers))
-        return CollectedActionResult(artifacts=tuple(artifacts))
+        return CollectedActionResult(
+            facts=_empty_fact_set(context),
+            artifacts=tuple(artifacts),
+        )
 
 
 __all__ = ["PhysicalDesignObservationAdapter"]

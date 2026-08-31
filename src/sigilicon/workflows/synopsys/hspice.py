@@ -19,6 +19,7 @@ from ._common import (
     _HSPICE_MODEL_ENVIRONMENT,
     _HSPICE_TARGET,
     _RESERVED_PROCESS_ENVIRONMENT,
+    _fact_set,
     _manifest_members,
     _pinned_owner_runner,
     _stage_source_set,
@@ -125,10 +126,6 @@ class SynopsysHSpiceAdapter:
         return AdapterExecution(
             "succeeded" if completed.returncode == 0 else "failed",
             completed.returncode,
-            {
-                "runner": str(context.action_config["runner"]),
-                "target": configuration["target"],
-            },
         )
 
     def _collect_result(
@@ -195,18 +192,15 @@ class SynopsysHSpiceAdapter:
                     qualifiers=qualifiers,
                 ),
             ),
-            facts={
-                "tool-execution-completed": True,
-                "measurement-file-count": 1,
-                "measurement-row-count": len(rows),
-                "measurement-failure-count": failure_count,
-                "measurement-check-failure-count": check_failure_count,
-            },
+            facts=_fact_set(
+                context,
+                {
+                    "measurement-row-count": len(rows),
+                    "measurement-failure-count": failure_count,
+                    "measurement-check-failure-count": check_failure_count,
+                },
+            ),
             evidence=(stdout, stderr, raw_measurement),
-            details={
-                "target": configuration["target"],
-                "measurement_file": configuration["measurement_file"],
-            },
         )
 
     def _collect_diagnostic(
@@ -238,19 +232,17 @@ class SynopsysHSpiceAdapter:
                     qualifiers=qualifiers,
                 ),
             ),
-            facts={
-                "tool-execution-completed": True,
-                "evidence-role": "diagnostic",
-                "product-qualification-conclusion": False,
-            },
+            facts=_fact_set(
+                context,
+                {
+                    "evidence-role": "diagnostic",
+                    "product-qualification-conclusion": False,
+                },
+            ),
             evidence=(
                 context.log_root / "stdout.log",
                 context.log_root / "stderr.log",
             ),
-            details={
-                "target": configuration["target"],
-                "product_qualification_conclusion": False,
-            },
         )
 
     def _collect_campaign(
@@ -292,19 +284,15 @@ class SynopsysHSpiceAdapter:
                     qualifiers=qualifiers,
                 ),
             ),
-            facts={
-                "tool-execution-completed": True,
-                "campaign-record-count": len(records),
-            },
+            facts=_fact_set(
+                context,
+                {"campaign-record-count": len(records)},
+            ),
             evidence=(
                 context.log_root / "stdout.log",
                 context.log_root / "stderr.log",
                 raw_summary,
             ),
-            details={
-                "target": configuration["target"],
-                "summary_file": configuration["summary_file"],
-            },
         )
 
     def _configuration(self, context: ActionContext) -> dict[str, Any]:
@@ -717,5 +705,4 @@ class SynopsysHSpiceAdapter:
         if not rows:
             raise FlowExecutionError("HSPICE measurement CSV has no data rows")
         return rows, failures
-
 

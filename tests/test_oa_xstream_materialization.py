@@ -18,6 +18,8 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowContractError,
     FlowEngine,
     FlowNode,
@@ -240,6 +242,10 @@ class _InputsAdapter(StagedAdapterFixture):
 
     def collect_result(self, context, _execution):
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "job",

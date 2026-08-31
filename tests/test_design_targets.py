@@ -15,6 +15,10 @@ from sigilicon.flow import (
     AdapterConfiguration,
     ArtifactPort,
     EvidenceEnvelope,
+    FactKind,
+    FactSchema,
+    FactSource,
+    FactSpec,
     FlowExecutionError,
 )
 from sigilicon.flow.circuit_design import (
@@ -241,14 +245,29 @@ def _adapter_context(tmp_path: Path) -> tuple[ActionContext, Path]:
     action = ActionContract(
         kind=DESIGN_SOURCE_CHECK_ACTION,
         outputs=(ArtifactPort("evidence", "evidence.design-source-check"),),
-        facts=(
-            "passed",
-            "execution-completed",
-            "process-returncode",
-            "evidence-role",
-            "evidence-level",
-            "evidence-scope",
-            "product-qualification-conclusion",
+        fact_schema=FactSchema(
+            DESIGN_SOURCE_CHECK_ACTION,
+            (
+                FactSpec("passed", FactKind.BOOLEAN),
+                FactSpec("process-returncode", FactKind.INTEGER),
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=(
+                        "diagnostic",
+                        "regression",
+                        "qualification",
+                        "signoff",
+                    ),
+                ),
+                FactSpec(
+                    "evidence-level",
+                    FactKind.TEXT,
+                    enum_values=("l0", "l1", "l2", "l3", "l4"),
+                ),
+                FactSpec("evidence-scope", FactKind.TEXT),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
+            ),
         ),
         adapters=("project-design-source-check",),
         plan_input_kind=DESIGN_ACTION_PLAN,
@@ -289,7 +308,10 @@ def test_design_adapter_consumes_typed_plan_and_exact_closure(tmp_path: Path) ->
     result = DesignTargetAdapter().run(context)
 
     assert result.collected is not None
-    assert result.collected.facts["passed"] is True
+    facts = result.collected.facts
+    assert facts.schema == context.action.fact_schema
+    assert facts.source == FactSource(DESIGN_SOURCE_CHECK_ACTION, "leaf-topology")
+    assert facts["passed"] is True
     evidence = (
         context.output_root / "evidence" / "design-evidence.json"
     ).read_text(encoding="utf-8")

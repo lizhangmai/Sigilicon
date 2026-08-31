@@ -16,6 +16,8 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowEngine,
     FlowNode,
     FlowSpec,
@@ -206,6 +208,10 @@ class _BenchmarkJobAdapter(StagedAdapterFixture):
         execution: AdapterExecution,
     ) -> CollectedActionResult:
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "job",

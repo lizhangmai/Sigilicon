@@ -24,6 +24,7 @@ from sigilicon.flow.layout import (
     LAYOUT_VERIFICATION_ACTION,
     LAYOUT_VERIFICATION_EVIDENCE_KIND,
 )
+from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
     snapshot_source_member,
@@ -60,6 +61,30 @@ def _required_text(config: Mapping[str, Any], field: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"layout Action {field!r} must be non-empty text")
     return value
+
+
+def _fact_set(
+    context: ActionContext,
+    values: Mapping[str, object],
+) -> FactSet:
+    """Project one typed layout observation through the Action schema."""
+
+    schema = context.action.fact_schema
+    if schema is None:
+        raise FlowExecutionError(f"Action {context.node_id!r} has no fact schema")
+    return FactSet(
+        schema,
+        values,
+        FactSource(context.action.kind, context.node_id),
+    )
+
+
+def _planned_product_conclusion(context: ActionContext) -> bool:
+    """Do not promote a backend payload to product qualification authority."""
+
+    if context.evidence is not None:
+        context.require_evidence()
+    return False
 
 
 def _relative_spec(
@@ -452,6 +477,7 @@ class LayoutActionAdapter:
             bind_operation=context.bind_workspace_operation,
             timeout=timeout,
         )
+        product_conclusion = _planned_product_conclusion(context)
         payload = {
             "target": selected.target,
             "operation": "generate",
@@ -461,7 +487,7 @@ class LayoutActionAdapter:
             "passed": True,
             "execution_completed": True,
             "instance_count": result.instance_count,
-            "product_qualification_conclusion": False,
+            "product_qualification_conclusion": product_conclusion,
         }
         evidence = artifacts.write_json(
             "outputs",
@@ -475,13 +501,11 @@ class LayoutActionAdapter:
                         "evidence", LAYOUT_GENERATION_EVIDENCE_KIND, evidence
                     ),
                 ),
-                facts={
+                facts=_fact_set(context, {
                     "passed": True,
-                    "execution-completed": True,
                     "instance-count": result.instance_count,
-                    "product-qualification-conclusion": False,
-                },
-                details=payload,
+                    "product-qualification-conclusion": product_conclusion,
+                }),
             )
         )
 
@@ -534,6 +558,7 @@ class LayoutActionAdapter:
             ),
         )
         envelope = context.require_evidence()
+        product_conclusion = _planned_product_conclusion(context)
         metadata = {
             "evidence_role": envelope.role,
             "evidence_level": envelope.level,
@@ -552,7 +577,7 @@ class LayoutActionAdapter:
             "physical_verification_evidence": json.loads(
                 result.evidence.canonical_json()
             ),
-            "product_qualification_conclusion": False,
+            "product_qualification_conclusion": product_conclusion,
         }
         evidence = artifacts.write_json(
             "outputs",
@@ -566,16 +591,14 @@ class LayoutActionAdapter:
                         "evidence", LAYOUT_VERIFICATION_EVIDENCE_KIND, evidence
                     ),
                 ),
-                facts={
+                facts=_fact_set(context, {
                     "passed": result.passed,
-                    "execution-completed": True,
                     "check": check,
                     "evidence-role": metadata["evidence_role"],
                     "evidence-level": metadata["evidence_level"],
                     "evidence-scope": metadata["evidence_scope"],
-                    "product-qualification-conclusion": False,
-                },
-                details=payload,
+                    "product-qualification-conclusion": product_conclusion,
+                }),
             )
         )
 

@@ -269,7 +269,7 @@ def test_synopsys_vcs_adapter_manages_rtl_structural_and_gate_inputs(
         evidence = json.loads(outcome.artifacts["evidence"].path.read_text())
 
         assert result.status == "accepted"
-        assert outcome.facts["passed"] is True
+        assert outcome.facts.as_mapping() == {}
         assert evidence["target"] == target
         assert evidence["qualifiers"] == {
             "corner": "tt",

@@ -23,6 +23,8 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
+    FactSet,
+    FactSource,
     ProducedArtifact,
     ResolvedCapability,
     ResolvedPlatformAsset,
@@ -106,6 +108,10 @@ class SourceAssetsAdapter(StagedAdapterFixture):
     ) -> CollectedActionResult:
         qualifiers = {"variant": "variant_b", "corner": "nominal_b"}
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "rtl-sources",
@@ -261,7 +267,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
 
     assert result.status == "accepted", result.nodes["synthesis"].reason
     synthesis = result.nodes["synthesis"]
-    assert synthesis.facts["passed"] is True
+    assert synthesis.facts.as_mapping() == {}
     assert set(synthesis.artifacts) == {
         "checkpoint",
         "mapped-constraints",

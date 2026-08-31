@@ -11,6 +11,9 @@ from sigilicon.flow.contracts import (
 )
 from sigilicon.flow.adapter_result import complete_staged_run
 from sigilicon.flow.engine import FlowEngine
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSet, FactSource, FactSpec
+from sigilicon.flow.errors import FactContractError, FactValueError
+from sigilicon.flow.policy import bind_policy
 from sigilicon.flow.environment import (
     ExecutionEnvironmentContract,
     load_execution_environment,
@@ -27,6 +30,8 @@ from sigilicon.flow.model import (
     AdapterConfiguration,
     AdapterResult,
     AdapterResultError,
+    BoundPolicyCheck,
+    BoundPolicySpec,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
@@ -68,6 +73,8 @@ __all__ = [
     "AdapterConfiguration",
     "AdapterResult",
     "AdapterResultError",
+    "BoundPolicyCheck",
+    "BoundPolicySpec",
     "ActionBinding",
     "ArtifactBinding",
     "ArtifactPort",
@@ -76,6 +83,13 @@ __all__ = [
     "ExecutionEnvironment",
     "ExecutionEnvironmentContract",
     "EvidenceEnvelope",
+    "FactContractError",
+    "FactKind",
+    "FactSchema",
+    "FactSet",
+    "FactSource",
+    "FactSpec",
+    "FactValueError",
     "FlowContractError",
     "FlowEngine",
     "FlowExecutionError",
@@ -103,6 +117,7 @@ __all__ = [
     "SourceMember",
     "ToolAdapter",
     "complete_staged_run",
+    "bind_policy",
     "compile_flow_spec",
     "load_execution_recipe",
     "parse_execution_recipe",

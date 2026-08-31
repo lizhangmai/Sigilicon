@@ -44,6 +44,7 @@ from sigilicon.flow.circuit_design import (
     DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
     DESIGN_SOURCE_CHECK_ACTION,
 )
+from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.model import EVIDENCE_LEVELS, EVIDENCE_ROLES
 from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import (
@@ -93,6 +94,29 @@ _REQUIRED_PLAN_FIELDS = frozenset(
 _BOUND_RUNNER_BOOTSTRAP = (
     "from sigilicon.workflows.design_runner import main;main()"
 )
+
+
+def _fact_set(
+    context: ActionContext,
+    values: Mapping[str, object],
+) -> FactSet:
+    """Project one validated design observation through the Action schema."""
+
+    schema = context.action.fact_schema
+    if schema is None:
+        raise FlowExecutionError(f"Action {context.node_id!r} has no fact schema")
+    return FactSet(
+        schema,
+        values,
+        FactSource(context.action.kind, context.node_id),
+    )
+
+
+def _planned_product_conclusion(context: ActionContext) -> bool:
+    """Project only plan authority; a runner result cannot mint qualification."""
+
+    context.require_evidence()
+    return False
 
 
 @dataclass(frozen=True)
@@ -408,6 +432,7 @@ class DesignTargetAdapter:
         assert context.action_plan is not None
         self._validate_context(context, selected)
         evidence = context.require_evidence()
+        product_conclusion = _planned_product_conclusion(context)
 
         route_sources = tuple(context.action_plan.sources)
         if not self._source_closure_matches(route_sources, selected.source_members):
@@ -559,7 +584,7 @@ class DesignTargetAdapter:
             "evidence_role": evidence.role,
             "evidence_level": evidence.level,
             "evidence_scope": evidence.scope,
-            "product_qualification_conclusion": False,
+            "product_qualification_conclusion": product_conclusion,
         }
         evidence_path = context.output_path("evidence", "design-evidence.json")
         evidence_path.write_text(
@@ -575,22 +600,15 @@ class DesignTargetAdapter:
                         evidence_path,
                     ),
                 ),
-                facts={
+                facts=_fact_set(context, {
                     "passed": payload["passed"],
-                    "execution-completed": True,
                     "process-returncode": completed.returncode,
                     "evidence-role": evidence.role,
                     "evidence-level": evidence.level,
                     "evidence-scope": evidence.scope,
-                    "product-qualification-conclusion": False,
-                },
+                    "product-qualification-conclusion": product_conclusion,
+                }),
                 evidence=(stdout, stderr),
-                details={
-                    "target": selected.target,
-                    "mode": selected.mode,
-                    "process_returncode": completed.returncode,
-                    "product_qualification_conclusion": False,
-                },
             )
         )
 
@@ -683,8 +701,6 @@ class DesignTargetAdapter:
                 and not Path(value).is_absolute()
             ):
                 result[field] = value
-        if payload.get("product_qualification_conclusion") is False:
-            result["product_qualification_conclusion"] = False
         return result
 
     @staticmethod

@@ -290,8 +290,7 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
 
     assert result.collected is not None
     assert len(bound_operations) == 1
-    assert result.collected.facts == {
-        "execution-completed": True,
+    assert result.collected.facts.as_mapping() == {
         "native-evidence-status": "not_evaluated",
         "evidence-role": "diagnostic",
         "evidence-level": "l2",
@@ -302,7 +301,7 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
     assert payload["native_maestro_field"] == "preserved"
     assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
     assert not {"run_id", "run_dir", "manifest"} & payload.keys()
-    assert "nested_run_id" not in result.collected.details
+    assert not hasattr(result.collected, "details")
     assert payload["product_qualification_conclusion"] is False
 
 
@@ -492,7 +491,7 @@ def test_xcelium_adapter_preserves_native_payload_and_owner_evidence_role(
     assert payload["native_xcelium_field"] == "preserved"
     assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
     assert not {"run_id", "run_dir", "manifest"} & payload.keys()
-    assert "nested_run_id" not in result.collected.details
+    assert not hasattr(result.collected, "details")
 
 
 @pytest.mark.parametrize(
@@ -632,7 +631,8 @@ def test_xcelium_action_declares_rtl_tool_and_evidence_contract() -> None:
 
     assert action.kind == "verification.xcelium-rtl"
     assert action.required_capabilities == ("tool.cadence-xcelium",)
-    assert action.facts == (
+    assert action.fact_schema is not None
+    assert tuple(field.name for field in action.fact_schema.fields) == (
         "passed",
         "simulator",
         "evidence-role",

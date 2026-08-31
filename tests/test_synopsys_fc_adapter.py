@@ -319,12 +319,6 @@ def _flow(owner_root: Path) -> FlowSpec:
                 "reference-library-quality",
                 (
                     PolicyCheck(
-                        "tool-completed",
-                        "tool-execution-completed",
-                        "equals",
-                        True,
-                    ),
-                    PolicyCheck(
                         "no-library-errors",
                         "library-check-error-count",
                         "at_most",
@@ -341,12 +335,6 @@ def _flow(owner_root: Path) -> FlowSpec:
             PolicySpec(
                 "physical-completion-readiness",
                 (
-                    PolicyCheck(
-                        "tool-completed",
-                        "tool-execution-completed",
-                        "equals",
-                        True,
-                    ),
                     PolicyCheck(
                         "no-design-check-errors",
                         "design-check-error-count",
@@ -650,8 +638,7 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     assert checkpoint_manifest["members"][0]["path"] == "top.ndm"
     assert set(reference_manifest["members"][0]) == {"path"}
     assert set(checkpoint_manifest["members"][0]) == {"path"}
-    assert dict(implementation.facts) == {
-        "tool-execution-completed": True,
+    assert implementation.facts.as_mapping() == {
         "design-check-error-count": 0,
         "design-check-warning-count": 3,
         "open-net-count": 0,
@@ -744,7 +731,6 @@ def test_library_manager_exit_zero_with_report_error_is_policy_rejected(
     reference = result.nodes["reference-library"]
     assert reference.execution_status == "succeeded"
     assert reference.result_status == "valid"
-    assert reference.facts["tool-execution-completed"] is True
     assert reference.facts["library-check-error-count"] == 1
     assert reference.policy_status == "rejected"
     assert reference.status == "rejected"

@@ -12,6 +12,8 @@ from sigilicon.flow import (
     AdapterExecution,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowContractError,
     FlowEngine,
     FlowNode,
@@ -44,16 +46,19 @@ class RequirementAdapter(StagedAdapterFixture):
         asset = context.platform_assets.get("logic-lib")
         member = None if asset is None else asset.member("library")
         self.platform_location = None if member is None else member.location
-        return AdapterExecution.succeeded(
-            details={"mode": context.adapter_config.get("mode", "default")}
-        )
+        return AdapterExecution.succeeded()
 
     def collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
-        return CollectedActionResult()
+        return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            )
+        )
 
 
 def _write_recipe(root: Path, *, schema: int = 1, extra: str = "") -> Path:

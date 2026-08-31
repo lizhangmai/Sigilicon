@@ -30,6 +30,9 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactKind,
+    FactSet,
+    FactSource,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -72,7 +75,21 @@ class _NoopAdapter(StagedAdapterFixture):
         return AdapterExecution.succeeded()
 
     def collect_result(self, context, execution) -> CollectedActionResult:
-        return CollectedActionResult()
+        values = {
+            field.name: (
+                False
+                if field.kind is FactKind.BOOLEAN
+                else field.enum_values[0]
+            )
+            for field in context.action.fact_schema.fields
+        }
+        return CollectedActionResult(
+            facts=FactSet(
+                context.action.fact_schema,
+                values,
+                FactSource(context.action.kind, context.node_id),
+            )
+        )
 
 
 def _layout() -> CheckedLayoutIdentity:

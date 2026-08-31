@@ -285,7 +285,6 @@ def parse_synopsys_fc_report_facts(
                 "workspace completion marker is missing"
             )
         return {
-            "tool-execution-completed": True,
             "library-check-succeeded": all(
                 status == "succeeded" for status in completions
             ),
@@ -368,7 +367,6 @@ def parse_synopsys_fc_report_facts(
         )
 
         facts: dict[str, bool | int | float | str] = {
-            "tool-execution-completed": True,
             "design-check-error-count": sum(
                 int(match.group("errors")) for match in summaries
             ),

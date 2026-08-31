@@ -12,6 +12,8 @@ from typing import Any, Callable, Mapping, TypeVar
 
 from sigilicon.identifiers import RUN_ID_PATTERN
 from sigilicon.paths import ProjectScope, validate_artifact_id
+from sigilicon.flow.errors import FlowContractError, FlowExecutionError
+from sigilicon.flow.evidence import FactAtom, FactSchema, FactSet, FactSource, FactSpec
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
@@ -38,14 +40,6 @@ RECIPE_INPUT_KINDS = frozenset(
     }
 )
 _T = TypeVar("_T")
-
-
-class FlowContractError(ValueError):
-    """A source Flow or one of its typed interfaces is invalid."""
-
-
-class FlowExecutionError(RuntimeError):
-    """A planned Action could not produce a valid result."""
 
 
 @dataclass(frozen=True)
@@ -515,8 +509,7 @@ class ActionContract:
     kind: str
     inputs: tuple[ArtifactPort, ...] = ()
     outputs: tuple[ArtifactPort, ...] = ()
-    facts: tuple[str, ...] = ()
-    optional_facts: tuple[str, ...] = ()
+    fact_schema: FactSchema | None = None
     required_capabilities: tuple[str, ...] = ()
     platform_assets: tuple[PlatformAssetRequirement, ...] = ()
     adapters: tuple[str, ...] = ()
@@ -528,10 +521,14 @@ class ActionContract:
 
     def __post_init__(self) -> None:
         identifier(self.kind, "action kind")
-        for value in self.facts:
-            identifier(value, "fact name")
-        for value in self.optional_facts:
-            identifier(value, "optional fact name")
+        if self.fact_schema is None:
+            object.__setattr__(self, "fact_schema", FactSchema(self.kind))
+        elif not isinstance(self.fact_schema, FactSchema):
+            raise FlowContractError("Action fact schema must be a FactSchema")
+        elif self.fact_schema.action_kind != self.kind:
+            raise FlowContractError(
+                f"Action {self.kind!r} fact schema action kind disagrees"
+            )
         for value in self.adapters:
             identifier(value, "Adapter name")
         for value in self.required_capabilities:
@@ -543,14 +540,6 @@ class ActionContract:
             )
         _unique(tuple(port.role for port in self.inputs), "Action input roles")
         _unique(tuple(port.role for port in self.outputs), "Action output roles")
-        _unique(self.facts, "Action facts")
-        _unique(self.optional_facts, "Action optional facts")
-        overlap = set(self.facts) & set(self.optional_facts)
-        if overlap:
-            raise FlowContractError(
-                "Action required and optional facts overlap: "
-                f"{sorted(overlap)}"
-            )
         _unique(self.required_capabilities, "Action required capabilities")
         for value in self.accepted_extensions:
             identifier(value, "Action extension")
@@ -923,6 +912,8 @@ class PlannedNode:
     platform_assets: tuple[PlatformAssetRequirement, ...]
     dependencies: tuple[str, ...]
     execution_capability: str
+    fact_schema: FactSchema
+    policy: BoundPolicySpec | None = None
     source_assets: SourceAssets | None = None
     action_plan: ActionPlan | None = None
 
@@ -950,17 +941,32 @@ class PolicyCheck:
     check_id: str
     fact: str
     operator: str
-    expected: Any = None
+    expected: object = None
 
     def __post_init__(self) -> None:
         identifier(self.check_id, "policy check")
         identifier(self.fact, "policy fact")
         if self.operator not in {"exists", "equals", "at_least", "at_most"}:
             raise FlowContractError(f"unsupported policy operator: {self.operator!r}")
+        if self.operator == "exists" and self.expected is not None:
+            raise FlowContractError(
+                "exists policy checks cannot declare an expected value"
+            )
+        if self.expected is not None and type(self.expected) not in {
+            bool,
+            int,
+            float,
+            str,
+        }:
+            raise FlowContractError(
+                "policy expectation must be a scalar or null"
+            )
+        if isinstance(self.expected, float) and not math.isfinite(self.expected):
+            raise FlowContractError("policy expectation must be finite")
         object.__setattr__(
             self,
             "expected",
-            _portable_value(self.expected, "policy expectation", FlowContractError),
+            self.expected,
         )
 
 
@@ -974,6 +980,46 @@ class PolicySpec:
         _unique(tuple(check.check_id for check in self.checks), "policy checks")
         if not self.checks:
             raise FlowContractError("Policy must declare at least one check")
+
+
+@dataclass(frozen=True)
+class BoundPolicyCheck:
+    """One policy check resolved against an Action's FactSchema."""
+
+    check_id: str
+    fact: FactSpec
+    operator: str
+    expected: FactAtom | None = None
+
+    def __post_init__(self) -> None:
+        identifier(self.check_id, "bound policy check")
+        if not isinstance(self.fact, FactSpec):
+            raise FlowContractError("bound policy fact must be a FactSpec")
+        if self.operator not in {"exists", "equals", "at_least", "at_most"}:
+            raise FlowContractError(
+                f"unsupported bound policy operator: {self.operator!r}"
+            )
+
+
+@dataclass(frozen=True)
+class BoundPolicySpec:
+    """A PolicySpec compiled for one concrete Action fact schema."""
+
+    policy_id: str
+    schema: FactSchema
+    checks: tuple[BoundPolicyCheck, ...]
+
+    def __post_init__(self) -> None:
+        identifier(self.policy_id, "bound policy identity")
+        if not isinstance(self.schema, FactSchema):
+            raise FlowContractError("bound policy schema must be a FactSchema")
+        checks = tuple(self.checks)
+        if not checks:
+            raise FlowContractError("Bound Policy must declare at least one check")
+        _unique(tuple(check.check_id for check in checks), "bound policy checks")
+        if any(check.fact not in self.schema.fields for check in checks):
+            raise FlowContractError("bound policy fact is outside its schema")
+        object.__setattr__(self, "checks", checks)
 
 
 @dataclass(frozen=True)
@@ -1147,52 +1193,32 @@ class ActionArtifact:
 class AdapterExecution:
     status: str
     exit_code: int | None = None
-    details: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.status not in _EXECUTION_STATUSES:
             raise FlowExecutionError(f"invalid execution status: {self.status!r}")
-        object.__setattr__(
-            self,
-            "details",
-            _portable_mapping(self.details, "execution details", FlowExecutionError),
-        )
 
     @classmethod
     def succeeded(
         cls,
         *,
         exit_code: int = 0,
-        details: Mapping[str, Any] | None = None,
     ) -> "AdapterExecution":
-        return cls("succeeded", exit_code, details or {})
+        return cls("succeeded", exit_code)
 
 
 @dataclass(frozen=True)
 class CollectedActionResult:
+    facts: FactSet
     status: str = "valid"
     artifacts: tuple[ProducedArtifact, ...] = ()
-    facts: Mapping[str, Any] = field(default_factory=dict)
     evidence: tuple[Path, ...] = ()
-    details: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.status not in _RESULT_STATUSES:
             raise FlowExecutionError(f"invalid result status: {self.status!r}")
-        object.__setattr__(
-            self,
-            "facts",
-            _portable_mapping(self.facts, "Action Facts", FlowExecutionError),
-        )
-        object.__setattr__(
-            self,
-            "details",
-            _portable_mapping(
-                self.details,
-                "Action result details",
-                FlowExecutionError,
-            ),
-        )
+        if not isinstance(self.facts, FactSet):
+            raise FlowExecutionError("Action facts must be a FactSet")
         object.__setattr__(self, "evidence", tuple(Path(path) for path in self.evidence))
 
 
@@ -1220,14 +1246,13 @@ class AdapterResult:
     @classmethod
     def succeeded(
         cls,
-        collected: CollectedActionResult | None = None,
+        collected: CollectedActionResult,
         *,
         exit_code: int = 0,
-        details: Mapping[str, Any] | None = None,
     ) -> "AdapterResult":
         return cls(
-            AdapterExecution.succeeded(exit_code=exit_code, details=details),
-            collected or CollectedActionResult(),
+            AdapterExecution.succeeded(exit_code=exit_code),
+            collected,
         )
 
 
@@ -1351,7 +1376,7 @@ class NodeOutcome:
     result_status: str | None
     policy_status: str | None
     artifacts: Mapping[str, ActionArtifact]
-    facts: Mapping[str, Any]
+    facts: FactSet | None
     reason: str | None = None
     operation_id: str | None = None
     incident_reference: str | None = None

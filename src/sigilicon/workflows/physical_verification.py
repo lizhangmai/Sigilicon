@@ -8,10 +8,13 @@ from sigilicon.domain.physical_verification import (
     LvsEvidence,
     PhysicalVerificationStatus,
     VerificationCompletion,
+    drc_evidence_id,
+    lvs_evidence_id,
     drc_evidence_from_json,
     lvs_evidence_from_json,
 )
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSource
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
@@ -89,7 +92,6 @@ class ReceiptBoundVerificationSourceAdapter(SourceAssetsAdapter):
             status=collected.status,
             artifacts=tuple(artifacts),
             facts=collected.facts,
-            details=collected.details,
             evidence=collected.evidence,
         )
 
@@ -172,7 +174,7 @@ class OfflinePhysicalVerificationAdapter:
         )
 
     @staticmethod
-    def _facts(evidence: DrcEvidence | LvsEvidence) -> dict[str, object]:
+    def _fact_values(evidence: DrcEvidence | LvsEvidence) -> dict[str, object]:
         prefix = "drc" if isinstance(evidence, DrcEvidence) else "lvs"
         return {
             f"{prefix}-status": evidence.status.value,
@@ -196,7 +198,7 @@ class OfflinePhysicalVerificationAdapter:
             evidence.canonical_json(),
             encoding="utf-8",
         )
-        return AdapterExecution.succeeded(details=self._facts(evidence))
+        return AdapterExecution.succeeded()
 
     def _collect_result(
         self,
@@ -217,11 +219,15 @@ class OfflinePhysicalVerificationAdapter:
             raise FlowExecutionError(
                 f"invalid physical-verification evidence artifact: {exc}"
             ) from exc
-        facts = self._facts(evidence)
-        if dict(execution.details) != facts:
-            raise FlowExecutionError(
-                "physical-verification execution details disagree with evidence"
-            )
+        evidence_identity = (
+            drc_evidence_id(evidence)
+            if isinstance(evidence, DrcEvidence)
+            else lvs_evidence_id(evidence)
+        )
+        facts = context.action.fact_schema.project(
+            self._fact_values(evidence),
+            source=FactSource(context.action.kind, context.node_id, evidence_identity),
+        )
         return CollectedActionResult(
             status="valid",
             artifacts=(

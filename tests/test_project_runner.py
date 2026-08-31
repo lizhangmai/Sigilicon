@@ -10,6 +10,11 @@ from sigilicon.flow import (
     AdapterResult,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactKind,
+    FactSchema,
+    FactSet,
+    FactSource,
+    FactSpec,
     FlowExecutionError,
     FlowRegistry,
     SourceMember,
@@ -115,7 +120,13 @@ class _SimpleActionAdapter:
     def run(self, context):
         context.require_action_plan(DESIGN_ACTION_PLAN, _SimpleDesignPlan)
         return AdapterResult.succeeded(
-            CollectedActionResult(facts={"passed": True})
+            CollectedActionResult(
+                facts=FactSet(
+                    context.action.fact_schema,
+                    {"passed": True},
+                    FactSource(context.action.kind, context.node_id),
+                )
+            )
         )
 
 
@@ -155,7 +166,10 @@ def _install_simple_design_seam(
         result.register_action(
             ActionContract(
                 kind=DESIGN_SOURCE_CHECK_ACTION,
-                facts=("passed",),
+                fact_schema=FactSchema(
+                    DESIGN_SOURCE_CHECK_ACTION,
+                    (FactSpec("passed", FactKind.BOOLEAN),),
+                ),
                 adapters=("fake-source-check",),
                 plan_input_kind=DESIGN_ACTION_PLAN,
             )

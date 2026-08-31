@@ -15,6 +15,8 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowEngine,
     FlowNode,
     FlowRegistry,
@@ -74,7 +76,6 @@ from sigilicon.layout.pnr import (
 from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
-    materialization_execution_facts,
     read_materialization_execution_request,
     write_materialization_receipt,
 )
@@ -193,6 +194,10 @@ class _InputsAdapter(StagedAdapterFixture):
 
     def collect_result(self, context, _execution):
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "job",
@@ -263,16 +268,14 @@ class _ContractGdsMaterializer(StagedAdapterFixture):
                 content_validated=False,
                 exit_code=None,
             )
-        receipt = write_materialization_receipt(
+        write_materialization_receipt(
             context,
             status=status,
             completion=completion,
             layout_path=layout_path,
             message="benchmark contract materialization outcome",
         )
-        return AdapterExecution.succeeded(
-            details=materialization_execution_facts(receipt)
-        )
+        return AdapterExecution.succeeded()
 
     def collect_result(self, context, execution):
         return collect_materialization_execution_result(context, execution)
@@ -410,7 +413,8 @@ def test_materialization_action_emits_content_bound_receipt(tmp_path: Path) -> N
     )
 
     assert flow_result.status == "accepted"
-    assert outcome.facts == {
+    assert outcome.facts is not None
+    assert outcome.facts.as_mapping() == {
         "materialization-status": "materialized",
         "materialized": True,
         "backend-executed": True,

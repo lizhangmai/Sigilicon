@@ -21,6 +21,8 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowEngine,
     FlowExecutionError,
     FlowNode,
@@ -276,6 +278,10 @@ class _ReceiptBoundInputsAdapter(StagedAdapterFixture):
             "source-identity": _identity(source_path),
         }
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "layout",
@@ -520,6 +526,8 @@ def test_calibre_adapter_projects_clean_receipt_bound_evidence(
     assert drc.layout.plan_identity
     assert drc.layout.format == "gdsii"
     assert lvs.source.artifact_identity
+    assert result.nodes["drc"].facts is not None
+    assert result.nodes["lvs"].facts is not None
     assert result.nodes["drc"].facts["drc-clean"] is True
     assert result.nodes["lvs"].facts["lvs-clean"] is True
 

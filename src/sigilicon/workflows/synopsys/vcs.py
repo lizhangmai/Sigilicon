@@ -14,6 +14,7 @@ from ._common import (
     ProducedArtifact,
     _VCS_MODEL_ENVIRONMENT,
     _VCS_TARGETS,
+    _fact_set,
     _manifest_members,
     _pinned_owner_runner,
     _stage_source_set,
@@ -120,10 +121,6 @@ class SynopsysVCSAdapter:
         return AdapterExecution(
             "succeeded" if completed.returncode == 0 else "failed",
             completed.returncode,
-            {
-                "runner": str(context.action_config["runner"]),
-                "target": target,
-            },
         )
 
     def _collect_result(
@@ -155,9 +152,8 @@ class SynopsysVCSAdapter:
                     qualifiers=qualifiers,
                 ),
             ),
-            facts={"passed": True},
+            facts=_fact_set(context, {}),
             evidence=(stdout, stderr),
-            details={"target": self._target(context)},
         )
 
     def _target(self, context: ActionContext) -> str:
@@ -243,4 +239,3 @@ class SynopsysVCSAdapter:
                 )
             models[role] = member.location
         return executable, models
-

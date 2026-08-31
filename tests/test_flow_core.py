@@ -20,6 +20,11 @@ from sigilicon.flow import (
     CollectedActionResult,
     ExecutionEnvironment,
     EvidenceEnvelope,
+    FactKind,
+    FactSchema,
+    FactSet,
+    FactSource,
+    FactSpec,
     FlowContractError,
     FlowEngine,
     FlowExecutionError,
@@ -68,6 +73,10 @@ class SourceAdapter(StagedAdapterFixture):
         execution: AdapterExecution,
     ) -> CollectedActionResult:
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     role="source",
@@ -103,6 +112,11 @@ class TransformAdapter(StagedAdapterFixture):
     ) -> CollectedActionResult:
         output = context.output_path("transformed", "value.txt")
         return CollectedActionResult(
+            facts=FactSet(
+                context.action.fact_schema,
+                {"length": len(output.read_text(encoding="utf-8"))},
+                FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     role="transformed",
@@ -111,7 +125,6 @@ class TransformAdapter(StagedAdapterFixture):
                     qualifiers=context.input("input").qualifiers,
                 ),
             ),
-            facts={"length": len(output.read_text(encoding="utf-8"))},
             evidence=(context.input("input").path,)
             if context.action_config.get("foreign_evidence")
             else (),
@@ -137,14 +150,25 @@ class VerifyAdapter(StagedAdapterFixture):
             f"actual={value}\nexpected={expected}\n",
             encoding="utf-8",
         )
-        return AdapterExecution.succeeded(details={"accepted": value == expected})
+        return AdapterExecution.succeeded()
 
     def collect_result(
         self,
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
+        expected = str(context.action_config["expected"])
         return CollectedActionResult(
+            facts=FactSet(
+                context.action.fact_schema,
+                {
+                    "accepted": context.input("candidate").path.read_text(
+                        encoding="utf-8"
+                    )
+                    == expected
+                },
+                FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     role="report",
@@ -152,7 +176,6 @@ class VerifyAdapter(StagedAdapterFixture):
                     path=context.output_path("report", "verification.txt"),
                 ),
             ),
-            facts={"accepted": bool(execution.details["accepted"])},
         )
 
 
@@ -173,7 +196,10 @@ def registry() -> tuple[FlowRegistry, SourceAdapter, TransformAdapter, VerifyAda
             kind="fake.transform",
             inputs=(ArtifactPort("input", "text.plain"),),
             outputs=(ArtifactPort("transformed", "text.plain"),),
-            facts=("length",),
+            fact_schema=FactSchema(
+                "fake.transform",
+                (FactSpec("length", FactKind.INTEGER),),
+            ),
             adapters=("fake-transform",),
         )
     )
@@ -182,7 +208,10 @@ def registry() -> tuple[FlowRegistry, SourceAdapter, TransformAdapter, VerifyAda
             kind="fake.verify",
             inputs=(ArtifactPort("candidate", "text.plain"),),
             outputs=(ArtifactPort("report", "report.text"),),
-            facts=("accepted",),
+            fact_schema=FactSchema(
+                "fake.verify",
+                (FactSpec("accepted", FactKind.BOOLEAN),),
+            ),
             adapters=("fake-verify",),
         )
     )
@@ -1223,7 +1252,13 @@ class TerminalAdapter(StagedAdapterFixture):
         context: ActionContext,
         execution: AdapterExecution,
     ) -> CollectedActionResult:
-        return CollectedActionResult(status=str(self.result_status))
+        return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
+            status=str(self.result_status),
+        )
 
 
 class BadCollectAdapter(TerminalAdapter):

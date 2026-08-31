@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSource
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
@@ -78,7 +79,7 @@ def _read_result(path: Path) -> PhysicalDesignResult:
         ) from exc
 
 
-def _completion_facts(
+def _completion_values(
     job: PhysicalDesignJob,
     result: PhysicalDesignResult,
 ) -> dict[str, object]:
@@ -160,7 +161,7 @@ class ReferencePhysicalDesignAdapter:
                 result.closure_evidence.canonical_json(),
                 encoding="utf-8",
             )
-        return AdapterExecution.succeeded(details=_completion_facts(job, result))
+        return AdapterExecution.succeeded()
 
     def _collect_result(
         self,
@@ -170,11 +171,14 @@ class ReferencePhysicalDesignAdapter:
         job = _read_job(context.input("job").path)
         result_path = context.output_path("result", "physical-design-result.json")
         result = _read_result(result_path)
-        facts = _completion_facts(job, result)
-        if dict(execution.details) != facts:
-            raise FlowExecutionError(
-                "reference P&R execution details disagree with collected result"
-            )
+        facts = context.action.fact_schema.project(
+            _completion_values(job, result),
+            source=FactSource(
+                context.action.kind,
+                context.node_id,
+                physical_design_result_id(result),
+            ),
+        )
         result_qualifiers = {
             "job-identity": physical_design_job_id(job),
             "result-identity": physical_design_result_id(result),
@@ -223,7 +227,7 @@ class ReferencePhysicalDesignAdapter:
         )
 
 
-def _materialization_facts(plan: MaterializationPlan) -> dict[str, object]:
+def _materialization_values(plan: MaterializationPlan) -> dict[str, object]:
     return {
         "materialization-decision": plan.acceptance.decision.value,
         "materialization-reason": plan.acceptance.reason.value,
@@ -287,7 +291,7 @@ class MaterializationPlanAdapter:
             "acceptance-evidence",
             "materialization-acceptance.json",
         ).write_text(plan.acceptance.canonical_json(), encoding="utf-8")
-        return AdapterExecution.succeeded(details=_materialization_facts(plan))
+        return AdapterExecution.succeeded()
 
     def _collect_result(
         self,
@@ -321,11 +325,10 @@ class MaterializationPlanAdapter:
             raise FlowExecutionError(
                 "acceptance evidence disagrees with Materialization Plan"
             )
-        facts = _materialization_facts(plan)
-        if dict(execution.details) != facts:
-            raise FlowExecutionError(
-                "materialization execution details disagree with collected plan"
-            )
+        facts = context.action.fact_schema.project(
+            _materialization_values(plan),
+            source=FactSource(context.action.kind, context.node_id, plan.artifact_id),
+        )
         qualifiers = {
             "job-identity": plan.provenance.job_identity,
             "result-identity": plan.provenance.result_identity,
@@ -385,7 +388,7 @@ def read_materialization_execution_request(
     return job, result, plan, target
 
 
-def materialization_execution_facts(
+def _materialization_execution_values(
     receipt: MaterializationReceipt,
 ) -> dict[str, object]:
     return {
@@ -470,12 +473,11 @@ def collect_materialization_execution_result(
             "collected Materialization Receipt failed validation: "
             + "; ".join(issue.code for issue in validation.issues)
         )
-    facts = materialization_execution_facts(receipt)
-    if dict(execution.details) != facts:
-        raise FlowExecutionError(
-            "materialization execution details disagree with collected receipt"
-        )
     receipt_identity = materialization_receipt_id(receipt)
+    facts = context.action.fact_schema.project(
+        _materialization_execution_values(receipt),
+        source=FactSource(context.action.kind, context.node_id, receipt_identity),
+    )
     qualifiers = {
         "owner": target.owner,
         "name": target.name,
@@ -520,7 +522,6 @@ __all__ = [
     "MaterializationPlanAdapter",
     "ReferencePhysicalDesignAdapter",
     "collect_materialization_execution_result",
-    "materialization_execution_facts",
     "read_materialization_execution_request",
     "write_materialization_receipt",
 ]

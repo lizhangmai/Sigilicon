@@ -15,6 +15,7 @@ from sigilicon.flow import (
     FlowExecutionError,
     ProducedArtifact,
 )
+from sigilicon.flow.evidence import FactSet, FactSource
 from sigilicon.flow.native import (
     NATIVE_OA_ACTION_PLAN,
     NATIVE_OA_EVIDENCE_KIND,
@@ -157,6 +158,32 @@ def _evidence_metadata(context: ActionContext) -> dict[str, str]:
     }
 
 
+def _fact_set(
+    context: ActionContext,
+    values: Mapping[str, object],
+) -> FactSet:
+    """Project one typed observation through the Action's declared schema."""
+
+    schema = context.action.fact_schema
+    if schema is None:
+        raise FlowExecutionError(f"Action {context.node_id!r} has no fact schema")
+    return FactSet(
+        schema,
+        values,
+        FactSource(context.action.kind, context.node_id),
+    )
+
+
+def _planned_product_conclusion(context: ActionContext) -> bool:
+    """Keep product authority in the planned envelope, never backend JSON."""
+
+    context.require_evidence()
+    # EvidenceEnvelope currently carries classification, not qualification
+    # authority.  Until a plan explicitly grants that authority, the safe
+    # projection is false for every native action.
+    return False
+
+
 class NativeOaPlanAdapter:
     def run(self, context: ActionContext) -> AdapterResult:
         plan = context.require_action_plan(
@@ -178,12 +205,12 @@ class NativeOaPlanAdapter:
                 artifacts=(
                     ProducedArtifact("plan", NATIVE_OA_PLAN_KIND, output),
                 ),
-                facts={
+                facts=_fact_set(context, {
                     "source-plan-valid": True,
                     "source-cell-count": len(plan.cells),
                     "source-layout-count": len(plan.layouts),
                     "source-testbench-count": len(plan.testbenches),
-                },
+                }),
             )
         )
 
@@ -240,7 +267,8 @@ class NativeOaSimulationAdapter:
         )
         payload = result.as_dict()
         payload.update(metadata)
-        payload["product_qualification_conclusion"] = False
+        product_conclusion = _planned_product_conclusion(context)
+        payload["product_qualification_conclusion"] = product_conclusion
         for field, path in (
             ("elaborated_netlist", result.elaborated_netlist),
             ("result_database_export", result.result_database_export),
@@ -259,15 +287,13 @@ class NativeOaSimulationAdapter:
                         output,
                     ),
                 ),
-                facts={
-                    "execution-completed": True,
+                facts=_fact_set(context, {
                     "native-evidence-status": result.evidence.status,
                     "evidence-role": metadata["evidence_role"],
                     "evidence-level": metadata["evidence_level"],
                     "evidence-scope": metadata["evidence_scope"],
-                    "product-qualification-conclusion": False,
-                },
-                details={"product_qualification_conclusion": False},
+                    "product-qualification-conclusion": product_conclusion,
+                }),
             )
         )
 
@@ -288,6 +314,7 @@ class XceliumVerificationAdapter:
         )
         capability = context.capabilities["tool.cadence-xcelium"]
         metadata = _evidence_metadata(context)
+        product_conclusion = _planned_product_conclusion(context)
         result = execute_xcelium_cell(
             plan,
             artifacts=FlowRunArtifacts(
@@ -310,7 +337,7 @@ class XceliumVerificationAdapter:
             "passed": result.passed,
             "run_summary": _artifact_reference(result.run_summary, project),
             **metadata,
-            "product_qualification_conclusion": False,
+            "product_qualification_conclusion": product_conclusion,
         }
         output = context.output_path("evidence", "xcelium-evidence.json")
         output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -323,15 +350,14 @@ class XceliumVerificationAdapter:
                         output,
                     ),
                 ),
-                facts={
+                facts=_fact_set(context, {
                     "passed": result.passed,
                     "simulator": result.plan.spec.simulator,
                     "evidence-role": metadata["evidence_role"],
                     "evidence-level": metadata["evidence_level"],
                     "evidence-scope": metadata["evidence_scope"],
-                    "product-qualification-conclusion": False,
-                },
-                details={"product_qualification_conclusion": False},
+                    "product-qualification-conclusion": product_conclusion,
+                }),
             )
         )
 
@@ -354,6 +380,7 @@ class XceliumAmsVerificationAdapter:
         )
         capability = context.capabilities["tool.cadence-xcelium"]
         metadata = _evidence_metadata(context)
+        product_conclusion = _planned_product_conclusion(context)
         result = execute_xcelium_ams_cell(
             plan,
             artifacts=FlowRunArtifacts(
@@ -376,7 +403,7 @@ class XceliumAmsVerificationAdapter:
             "passed": result.passed,
             "run_summary": _artifact_reference(result.run_summary, project),
             **metadata,
-            "product_qualification_conclusion": False,
+            "product_qualification_conclusion": product_conclusion,
         }
         output = context.output_path("evidence", "xcelium-ams-evidence.json")
         output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -389,15 +416,14 @@ class XceliumAmsVerificationAdapter:
                         output,
                     ),
                 ),
-                facts={
+                facts=_fact_set(context, {
                     "passed": result.passed,
                     "simulator": result.plan.spec.simulator,
                     "evidence-role": metadata["evidence_role"],
                     "evidence-level": metadata["evidence_level"],
                     "evidence-scope": metadata["evidence_scope"],
-                    "product-qualification-conclusion": False,
-                },
-                details={"product_qualification_conclusion": False},
+                    "product-qualification-conclusion": product_conclusion,
+                }),
             )
         )
 

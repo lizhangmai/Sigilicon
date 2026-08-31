@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSpec
 from sigilicon.flow.model import ActionContract, ArtifactPort
 from sigilicon.flow.physical_verification import (
     CANONICAL_SOURCE_NETLIST_KIND,
@@ -27,6 +28,18 @@ _DESIGN_EVIDENCE_KIND = "design.evidence.v1"
 _DESIGN_CHECK_EVIDENCE_KIND = "evidence.design-source-check"
 _DESIGN_ELECTRICAL_EVIDENCE_KIND = "evidence.design-electrical-diagnostic"
 
+_EVIDENCE_ROLES = (
+    "diagnostic",
+    "regression",
+    "qualification",
+    "signoff",
+)
+_EVIDENCE_LEVELS = ("l0", "l1", "l2", "l3", "l4")
+
+
+def _schema(action_kind: str, *fields: FactSpec) -> FactSchema:
+    return FactSchema(action_kind, fields)
+
 
 def register_circuit_design_actions(registry: FlowRegistry) -> None:
     # Ingestion seam only: source-assets selects an owner-authored typed topology.
@@ -35,6 +48,7 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
         ActionContract(
             kind=CIRCUIT_DESIGN_SOURCE_ACTION,
             outputs=(ArtifactPort("topology", _CIRCUIT_TOPOLOGY_KIND),),
+            fact_schema=_schema(CIRCUIT_DESIGN_SOURCE_ACTION),
             adapters=("source-assets",),
             resolves_source_assets=True,
         )
@@ -56,6 +70,7 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("lvs", _DESIGN_EVIDENCE_KIND),
                 ArtifactPort("pex", _DESIGN_EVIDENCE_KIND),
             ),
+            fact_schema=_schema(PHYSICAL_DESIGN_OBSERVATION_ACTION),
             adapters=(PHYSICAL_DESIGN_OBSERVATION_ADAPTER,),
         )
     )
@@ -65,14 +80,26 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", _DESIGN_CHECK_EVIDENCE_KIND),
             ),
-            facts=(
-                "passed",
-                "execution-completed",
-                "process-returncode",
-                "evidence-role",
-                "evidence-level",
-                "evidence-scope",
-                "product-qualification-conclusion",
+            fact_schema=_schema(
+                DESIGN_SOURCE_CHECK_ACTION,
+                FactSpec("passed", FactKind.BOOLEAN),
+                FactSpec(
+                    "process-returncode",
+                    FactKind.INTEGER,
+                    unit="exit-code",
+                ),
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=_EVIDENCE_ROLES,
+                ),
+                FactSpec(
+                    "evidence-level",
+                    FactKind.TEXT,
+                    enum_values=_EVIDENCE_LEVELS,
+                ),
+                FactSpec("evidence-scope", FactKind.TEXT),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
             adapters=(DESIGN_SOURCE_CHECK_ADAPTER,),
             plan_input_kind=DESIGN_ACTION_PLAN,
@@ -84,14 +111,26 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", _DESIGN_ELECTRICAL_EVIDENCE_KIND),
             ),
-            facts=(
-                "passed",
-                "execution-completed",
-                "process-returncode",
-                "evidence-role",
-                "evidence-level",
-                "evidence-scope",
-                "product-qualification-conclusion",
+            fact_schema=_schema(
+                DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
+                FactSpec("passed", FactKind.BOOLEAN),
+                FactSpec(
+                    "process-returncode",
+                    FactKind.INTEGER,
+                    unit="exit-code",
+                ),
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=_EVIDENCE_ROLES,
+                ),
+                FactSpec(
+                    "evidence-level",
+                    FactKind.TEXT,
+                    enum_values=_EVIDENCE_LEVELS,
+                ),
+                FactSpec("evidence-scope", FactKind.TEXT),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
             required_capabilities=("tool.cadence-spectre",),
             adapters=(DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,),

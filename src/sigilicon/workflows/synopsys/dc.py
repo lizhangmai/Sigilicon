@@ -13,6 +13,7 @@ from ._common import (
     ProducedArtifact,
     _DC_RESOURCE_ENVIRONMENT,
     _SYNTHESIS_OUTPUT_ROLES,
+    _fact_set,
     _manifest_members,
     _pinned_owner_runner,
     _stage_source_set,
@@ -121,11 +122,7 @@ class SynopsysDCAdapter:
             encoding="utf-8",
         )
         status = "succeeded" if completed.returncode == 0 else "failed"
-        return AdapterExecution(
-            status,
-            completed.returncode,
-            {"runner": str(context.action_config["runner"])},
-        )
+        return AdapterExecution(status, completed.returncode)
 
     def _collect_result(
         self,
@@ -185,12 +182,11 @@ class SynopsysDCAdapter:
         )
         return CollectedActionResult(
             artifacts=tuple(produced),
-            facts={"passed": True},
+            facts=_fact_set(context, {}),
             evidence=(
                 context.log_root / "stdout.log",
                 context.log_root / "stderr.log",
             ),
-            details={"report_count": len(report_members)},
         )
 
     def _execution_resources(
@@ -287,4 +283,3 @@ class SynopsysDCAdapter:
         if not output.is_relative_to(tool_root.resolve()):
             raise FlowExecutionError(f"DC output escaped managed root: {relative!r}")
         return output
-

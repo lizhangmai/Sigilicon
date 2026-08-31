@@ -45,6 +45,8 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
+    FactSet,
+    FactSource,
     ProducedArtifact,
 )
 from sigilicon.workflows.design_campaign import (
@@ -79,6 +81,15 @@ OWNER = "example"
 SOURCE = ArtifactReference(OWNER, "source.netlist", "source-fixture", None)
 POLICY = ArtifactReference(OWNER, "spec.design-policy", "design-policy-fixture", None)
 ACTION = "design.attempt"
+
+
+def _empty_action_facts(context: ActionContext) -> FactSet:
+    """Bind an intentionally empty evidence set to the executing Action/node."""
+
+    return FactSet.empty(
+        context.action.fact_schema,
+        source=FactSource(context.action.kind, context.node_id),
+    )
 
 
 def _topology(
@@ -227,7 +238,8 @@ class AttemptAdapter(StagedAdapterFixture):
                     DESIGN_EVIDENCE_KIND,
                     context.output_path("l0-evidence", "evidence.json"),
                 ),
-            )
+            ),
+            facts=_empty_action_facts(context),
         )
 
 
@@ -932,7 +944,8 @@ def test_sizing_child_binds_proposed_point_result_and_verification(
                         ("result", CIRCUIT_SIZING_RESULT_KIND),
                         ("l0-evidence", DESIGN_EVIDENCE_KIND),
                     )
-                )
+                ),
+                facts=_empty_action_facts(context),
             )
 
     registry = FlowRegistry()

@@ -21,6 +21,7 @@ from ._common import (
     _FC_STDCELL_PHYSICAL_ENVIRONMENT,
     _FC_STDCELL_TIMING_ENVIRONMENT,
     _VERILOG_IDENTIFIER,
+    _fact_set,
     _manifest_members,
     _pinned_owner_runner,
     _text_mapping,
@@ -148,10 +149,6 @@ class SynopsysFCAdapter:
         return AdapterExecution(
             "succeeded" if completed.returncode == 0 else "failed",
             completed.returncode,
-            {
-                "runner": node["runner"],
-                "target": node["target"],
-            },
         )
 
     def _collect_result(
@@ -229,12 +226,8 @@ class SynopsysFCAdapter:
         )
         return CollectedActionResult(
             artifacts=tuple(produced),
-            facts=facts,
+            facts=_fact_set(context, facts),
             evidence=(stdout, stderr),
-            details={
-                "target": node["target"],
-                "output_count": len(produced),
-            },
         )
 
     def _node_configuration(self, context: ActionContext) -> dict[str, str]:
@@ -583,5 +576,4 @@ class SynopsysFCAdapter:
             or any(part in {"", ".", ".."} for part in path.parts)
         ):
             raise FlowExecutionError(f"unsafe FC output path: {value!r}")
-
 

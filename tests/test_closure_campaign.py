@@ -44,6 +44,8 @@ from sigilicon.flow import (
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
+    FactSet,
+    FactSource,
     FlowEngine,
     FlowNode,
     FlowSpec,
@@ -140,7 +142,6 @@ from sigilicon.workflows.layout_verification import (
 )
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
-    materialization_execution_facts,
     read_materialization_execution_request,
     write_materialization_receipt,
 )
@@ -413,6 +414,10 @@ waiver_layers = []
             "qualification-specification", "qualification.toml"
         )
         return CollectedActionResult(
+            facts=FactSet.empty(
+                context.action.fact_schema,
+                source=FactSource(context.action.kind, context.node_id),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "job",
@@ -556,16 +561,14 @@ class _BenchmarkLayoutAdapter(StagedAdapterFixture):
                 False,
                 None,
             )
-        receipt = write_materialization_receipt(
+        write_materialization_receipt(
             context,
             status=self._outcome,
             completion=completion,
             layout_path=layout,
             message="benchmark contract materialization evidence",
         )
-        return AdapterExecution.succeeded(
-            details=materialization_execution_facts(receipt)
-        )
+        return AdapterExecution.succeeded()
 
     def collect_result(
         self,
@@ -687,7 +690,21 @@ class _BenchmarkVerificationAdapter(StagedAdapterFixture):
             evidence = lvs_evidence_from_json(path.read_text(encoding="utf-8"))
             prefix = "lvs"
             kind = LVS_EVIDENCE_KIND
+        evidence_identity = (
+            drc_evidence_id(evidence)
+            if isinstance(evidence, DrcEvidence)
+            else lvs_evidence_id(evidence)
+        )
         return CollectedActionResult(
+            facts=FactSet(
+                context.action.fact_schema,
+                {
+                    f"{prefix}-status": evidence.status.value,
+                    f"{prefix}-clean": evidence.clean,
+                    f"{prefix}-completed": evidence.completion.proven,
+                },
+                FactSource(context.action.kind, context.node_id, evidence_identity),
+            ),
             artifacts=(
                 ProducedArtifact(
                     "evidence",
@@ -708,11 +725,6 @@ class _BenchmarkVerificationAdapter(StagedAdapterFixture):
                     },
                 ),
             ),
-            facts={
-                f"{prefix}-status": evidence.status.value,
-                f"{prefix}-clean": evidence.clean,
-                f"{prefix}-completed": evidence.completion.proven,
-            },
         )
 
 
@@ -841,6 +853,14 @@ class _BenchmarkDownstreamAdapter(StagedAdapterFixture):
             assert evidence.parasitics is not None
             parasitics = context.output_path("parasitics", "extracted.pex")
             return CollectedActionResult(
+                facts=FactSet(
+                    context.action.fact_schema,
+                    {
+                        "pex-status": evidence.status.value,
+                        "pex-completed": evidence.completion.proven,
+                    },
+                    FactSource(context.action.kind, context.node_id, evidence_identity),
+                ),
                 artifacts=(
                     ProducedArtifact(
                         "parasitics",
@@ -867,7 +887,6 @@ class _BenchmarkDownstreamAdapter(StagedAdapterFixture):
                         },
                     ),
                 ),
-                facts={"pex-status": evidence.status.value, "pex-completed": True},
             )
         if context.action.kind == POST_LAYOUT_ACTION:
             evidence = post_layout_evidence_from_json(
@@ -887,7 +906,7 @@ class _BenchmarkDownstreamAdapter(StagedAdapterFixture):
             }
             facts = {
                 "post-layout-status": evidence.status.value,
-                "post-layout-passed": True,
+                "post-layout-passed": evidence.status is PhysicalAnalysisStatus.PASSED,
             }
         else:
             evidence = qualification_evidence_from_json(
@@ -911,11 +930,17 @@ class _BenchmarkDownstreamAdapter(StagedAdapterFixture):
             }
             facts = {
                 "qualification-status": evidence.status.value,
-                "qualification-passed": True,
+                "qualification-passed": (
+                    evidence.status is PhysicalAnalysisStatus.PASSED
+                ),
             }
         return CollectedActionResult(
+            facts=FactSet(
+                context.action.fact_schema,
+                facts,
+                FactSource(context.action.kind, context.node_id, evidence_identity),
+            ),
             artifacts=(ProducedArtifact("evidence", kind, evidence_path, qualifiers),),
-            facts=facts,
         )
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSpec
+
 from sigilicon.flow.model import ActionContract, ArtifactPort, PlatformAssetRequirement
 from sigilicon.flow.physical_design import (
     MATERIALIZED_GDS_KIND,
@@ -27,6 +29,51 @@ PHYSICAL_QUALIFICATION_SPEC_KIND = "spec.physical-qualification"
 PHYSICAL_QUALIFICATION_EVIDENCE_KIND = "evidence.physical-qualification"
 
 
+_PEX_STATUSES = (
+    "extracted",
+    "unsupported",
+    "backend_unavailable",
+    "execution_failed",
+)
+_PHYSICAL_ANALYSIS_STATUSES = (
+    "passed",
+    "violated",
+    "unsupported",
+    "backend_unavailable",
+    "execution_failed",
+)
+
+PEX_FACT_SCHEMA = FactSchema(
+    PEX_ACTION,
+    fields=(
+        FactSpec("pex-status", FactKind.TEXT, enum_values=_PEX_STATUSES),
+        FactSpec("pex-completed", FactKind.BOOLEAN),
+    ),
+)
+POST_LAYOUT_FACT_SCHEMA = FactSchema(
+    POST_LAYOUT_ACTION,
+    fields=(
+        FactSpec(
+            "post-layout-status",
+            FactKind.TEXT,
+            enum_values=_PHYSICAL_ANALYSIS_STATUSES,
+        ),
+        FactSpec("post-layout-passed", FactKind.BOOLEAN),
+    ),
+)
+PHYSICAL_QUALIFICATION_FACT_SCHEMA = FactSchema(
+    PHYSICAL_QUALIFICATION_ACTION,
+    fields=(
+        FactSpec(
+            "qualification-status",
+            FactKind.TEXT,
+            enum_values=_PHYSICAL_ANALYSIS_STATUSES,
+        ),
+        FactSpec("qualification-passed", FactKind.BOOLEAN),
+    ),
+)
+
+
 def register_post_layout_actions(registry: FlowRegistry) -> None:
     """Register deep owner-extension seams without inventing a backend Adapter."""
 
@@ -43,7 +90,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("parasitics", PEX_NETLIST_KIND, required=False),
                 ArtifactPort("evidence", PEX_EVIDENCE_KIND),
             ),
-            facts=("pex-status", "pex-completed"),
+            fact_schema=PEX_FACT_SCHEMA,
             required_capabilities=("tool.pex",),
             platform_assets=(
                 PlatformAssetRequirement(
@@ -65,7 +112,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("specification", POST_LAYOUT_SPEC_KIND),
             ),
             outputs=(ArtifactPort("evidence", POST_LAYOUT_EVIDENCE_KIND),),
-            facts=("post-layout-status", "post-layout-passed"),
+            fact_schema=POST_LAYOUT_FACT_SCHEMA,
             required_capabilities=("tool.post-layout-simulation",),
             adapter_extensible=True,
         )
@@ -90,7 +137,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
                     PHYSICAL_QUALIFICATION_EVIDENCE_KIND,
                 ),
             ),
-            facts=("qualification-status", "qualification-passed"),
+            fact_schema=PHYSICAL_QUALIFICATION_FACT_SCHEMA,
             adapter_extensible=True,
         )
     )
@@ -100,12 +147,15 @@ __all__ = [
     "CALIBRE_XRC_PEX_ADAPTER",
     "PEX_ACTION",
     "PEX_EVIDENCE_KIND",
+    "PEX_FACT_SCHEMA",
     "PEX_NETLIST_KIND",
     "PHYSICAL_QUALIFICATION_ACTION",
     "PHYSICAL_QUALIFICATION_EVIDENCE_KIND",
+    "PHYSICAL_QUALIFICATION_FACT_SCHEMA",
     "PHYSICAL_QUALIFICATION_SPEC_KIND",
     "POST_LAYOUT_ACTION",
     "POST_LAYOUT_EVIDENCE_KIND",
+    "POST_LAYOUT_FACT_SCHEMA",
     "POST_LAYOUT_SPEC_KIND",
     "register_post_layout_actions",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSpec
 from sigilicon.flow.model import ActionContract, ArtifactPort
 from sigilicon.flow.registry import FlowRegistry
 
@@ -14,6 +15,18 @@ LAYOUT_GENERATION_EVIDENCE_KIND = "evidence.layout-generation"
 LAYOUT_VERIFICATION_EVIDENCE_KIND = "evidence.layout-verification"
 LAYOUT_ACTION_PLAN = "custom-layout.plan"
 
+_EVIDENCE_ROLES = (
+    "diagnostic",
+    "regression",
+    "qualification",
+    "signoff",
+)
+_EVIDENCE_LEVELS = ("l0", "l1", "l2", "l3", "l4")
+
+
+def _schema(action_kind: str, *fields: FactSpec) -> FactSchema:
+    return FactSchema(action_kind, fields)
+
 
 def register_layout_actions(registry: FlowRegistry) -> None:
     """Register the stable seams shared by analog/custom-layout backends."""
@@ -24,11 +37,11 @@ def register_layout_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", LAYOUT_GENERATION_EVIDENCE_KIND),
             ),
-            facts=(
-                "passed",
-                "execution-completed",
-                "instance-count",
-                "product-qualification-conclusion",
+            fact_schema=_schema(
+                LAYOUT_GENERATION_ACTION,
+                FactSpec("passed", FactKind.BOOLEAN),
+                FactSpec("instance-count", FactKind.INTEGER, unit="count"),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
             required_capabilities=(
                 "tool.virtuoso-bridge",
@@ -45,14 +58,26 @@ def register_layout_actions(registry: FlowRegistry) -> None:
             outputs=(
                 ArtifactPort("evidence", LAYOUT_VERIFICATION_EVIDENCE_KIND),
             ),
-            facts=(
-                "passed",
-                "execution-completed",
-                "check",
-                "evidence-role",
-                "evidence-level",
-                "evidence-scope",
-                "product-qualification-conclusion",
+            fact_schema=_schema(
+                LAYOUT_VERIFICATION_ACTION,
+                FactSpec("passed", FactKind.BOOLEAN),
+                FactSpec(
+                    "check",
+                    FactKind.TEXT,
+                    enum_values=("drc", "lvs"),
+                ),
+                FactSpec(
+                    "evidence-role",
+                    FactKind.TEXT,
+                    enum_values=_EVIDENCE_ROLES,
+                ),
+                FactSpec(
+                    "evidence-level",
+                    FactKind.TEXT,
+                    enum_values=_EVIDENCE_LEVELS,
+                ),
+                FactSpec("evidence-scope", FactKind.TEXT),
+                FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
             required_capabilities=(
                 "tool.virtuoso-bridge",

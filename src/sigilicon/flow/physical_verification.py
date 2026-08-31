@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sigilicon.flow.evidence import FactKind, FactSchema, FactSpec
+
 from sigilicon.flow.model import ActionContract, ArtifactPort, PlatformAssetRequirement
 from sigilicon.flow.physical_design import (
     MATERIALIZED_GDS_KIND,
@@ -20,6 +22,40 @@ DRC_ACTION = "physical-verification.drc"
 LVS_ACTION = "physical-verification.lvs"
 OFFLINE_PHYSICAL_VERIFICATION_ADAPTER = "offline-physical-verification"
 CALIBRE_PHYSICAL_VERIFICATION_ADAPTER = "calibre-physical-verification"
+
+
+_PHYSICAL_VERIFICATION_STATUSES = (
+    "clean",
+    "violated",
+    "unsupported",
+    "backend_unavailable",
+    "execution_failed",
+)
+
+DRC_FACT_SCHEMA = FactSchema(
+    DRC_ACTION,
+    fields=(
+        FactSpec(
+            "drc-status",
+            FactKind.TEXT,
+            enum_values=_PHYSICAL_VERIFICATION_STATUSES,
+        ),
+        FactSpec("drc-clean", FactKind.BOOLEAN),
+        FactSpec("drc-completed", FactKind.BOOLEAN),
+    ),
+)
+LVS_FACT_SCHEMA = FactSchema(
+    LVS_ACTION,
+    fields=(
+        FactSpec(
+            "lvs-status",
+            FactKind.TEXT,
+            enum_values=_PHYSICAL_VERIFICATION_STATUSES,
+        ),
+        FactSpec("lvs-clean", FactKind.BOOLEAN),
+        FactSpec("lvs-completed", FactKind.BOOLEAN),
+    ),
+)
 
 
 def _verification_asset(*members: str) -> tuple[PlatformAssetRequirement, ...]:
@@ -43,6 +79,7 @@ def register_physical_verification_actions(registry: FlowRegistry) -> None:
                     PHYSICAL_VERIFICATION_POLICY_KIND,
                 ),
             ),
+            fact_schema=FactSchema(PHYSICAL_VERIFICATION_SOURCE_ACTION),
             adapters=(RECEIPT_BOUND_VERIFICATION_SOURCE_ADAPTER,),
             resolves_source_assets=True,
         )
@@ -56,7 +93,7 @@ def register_physical_verification_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("verification-policy", PHYSICAL_VERIFICATION_POLICY_KIND),
             ),
             outputs=(ArtifactPort("evidence", DRC_EVIDENCE_KIND),),
-            facts=("drc-status", "drc-clean", "drc-completed"),
+            fact_schema=DRC_FACT_SCHEMA,
             required_capabilities=("tool.calibre",),
             platform_assets=_verification_asset("drc-deck"),
             adapters=(
@@ -76,7 +113,7 @@ def register_physical_verification_actions(registry: FlowRegistry) -> None:
                 ArtifactPort("verification-policy", PHYSICAL_VERIFICATION_POLICY_KIND),
             ),
             outputs=(ArtifactPort("evidence", LVS_EVIDENCE_KIND),),
-            facts=("lvs-status", "lvs-clean", "lvs-completed"),
+            fact_schema=LVS_FACT_SCHEMA,
             required_capabilities=("tool.calibre",),
             platform_assets=_verification_asset("lvs-deck"),
             adapters=(
@@ -93,8 +130,10 @@ __all__ = [
     "CALIBRE_PHYSICAL_VERIFICATION_ADAPTER",
     "DRC_ACTION",
     "DRC_EVIDENCE_KIND",
+    "DRC_FACT_SCHEMA",
     "LVS_ACTION",
     "LVS_EVIDENCE_KIND",
+    "LVS_FACT_SCHEMA",
     "OFFLINE_PHYSICAL_VERIFICATION_ADAPTER",
     "PHYSICAL_VERIFICATION_POLICY_KIND",
     "PHYSICAL_VERIFICATION_SOURCE_ACTION",

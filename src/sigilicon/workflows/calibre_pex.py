@@ -26,6 +26,7 @@ from sigilicon.domain.post_layout import (
 )
 from sigilicon.external_tools import owned_directory, owned_input_file, run_process_group
 from sigilicon.flow.adapter_result import complete_staged_run
+from sigilicon.flow.evidence import FactSource
 from sigilicon.flow.model import (
     ActionContext,
     AdapterExecution,
@@ -278,7 +279,7 @@ def _self_contained_parasitics(
     return flattened.rstrip("\n") + "\n"
 
 
-def _facts(evidence: PexEvidence) -> dict[str, object]:
+def _fact_values(evidence: PexEvidence) -> dict[str, object]:
     return {
         "pex-status": evidence.status.value,
         "pex-completed": evidence.completion.proven,
@@ -584,7 +585,7 @@ class CalibreXrcPexAdapter:
                 )
         evidence_path = context.output_path("evidence", "pex-evidence.json")
         evidence_path.write_text(evidence.canonical_json(), encoding="utf-8")
-        return AdapterExecution.succeeded(details=_facts(evidence))
+        return AdapterExecution.succeeded()
 
     def _collect_result(
         self,
@@ -599,9 +600,11 @@ class CalibreXrcPexAdapter:
             raise FlowExecutionError(f"invalid receipt-bound PEX evidence: {exc}") from exc
         if evidence.layout != inputs.layout or evidence.source != inputs.source:
             raise FlowExecutionError("PEX evidence changed the checked input identity")
-        facts = _facts(evidence)
-        if dict(execution.details) != facts:
-            raise FlowExecutionError("PEX execution details disagree with evidence")
+        evidence_identity = pex_evidence_id(evidence)
+        facts = context.action.fact_schema.project(
+            _fact_values(evidence),
+            source=FactSource(context.action.kind, context.node_id, evidence_identity),
+        )
         common = {
             "owner": inputs.layout.owner,
             "name": inputs.layout.name,
@@ -614,7 +617,6 @@ class CalibreXrcPexAdapter:
             "status": evidence.status.value,
             "backend": evidence.completion.backend,
         }
-        evidence_identity = pex_evidence_id(evidence)
         artifacts: list[ProducedArtifact] = [
             ProducedArtifact(
                 "evidence",
