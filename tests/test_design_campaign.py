@@ -49,7 +49,7 @@ from sigilicon.flow import (
     FactSource,
     ProducedArtifact,
 )
-from sigilicon.workflows.design_campaign import (
+from sigilicon.experimental.design_campaign import (
     DESIGN_CAMPAIGN_ITERATION_EXTENSION,
     DesignArtifactBinding,
     DesignCampaign,
@@ -70,7 +70,7 @@ from sigilicon.workflows.design_campaign import (
     design_campaign_spec_from_json,
     design_campaign_state_from_json,
 )
-from sigilicon.workflows.design_repair import (
+from sigilicon.experimental.design_repair import (
     DesignRepairProposal,
     TopologyRepairPolicy,
     compile_topology_repair,
@@ -618,7 +618,7 @@ class FeedbackDrivenAttemptAdapter(AttemptAdapter):
         )
         if iteration_payload is not None:
             iteration = design_campaign_iteration_input(iteration_payload)
-            from sigilicon.workflows.design_repair import design_repair_proposal_from_json
+            from sigilicon.experimental.design_repair import design_repair_proposal_from_json
 
             proposal = design_repair_proposal_from_json(iteration.proposal_json)
             assert proposal.proposed_topology is not None
@@ -825,7 +825,7 @@ def test_sizing_child_binds_proposed_point_result_and_verification(
         SizingCandidateOutcome,
         SizingCandidateResult,
     )
-    from sigilicon.workflows.design_repair import (
+    from sigilicon.experimental.design_repair import (
         SizingRepairPolicy,
         design_repair_proposal_from_json,
         sizing_repair_plan_from_json,

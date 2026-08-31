@@ -32,7 +32,6 @@ from sigilicon.flow import (
     ResolvedPlatformAssetMember,
 )
 from sigilicon.flow.physical_design import (
-    OA_XSTREAM_MATERIALIZATION_ADAPTER,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_DESIGN_RESULT_KIND,
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
@@ -48,7 +47,8 @@ from sigilicon.layout.materialization_execution import (
     canonicalize_gdsii_timestamps,
     materialization_receipt_from_json,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
+from sigilicon.experimental.reference_pnr import (
     CutSpacingRule,
     EnclosureRule,
     GridlessRoutingResource,
@@ -56,7 +56,7 @@ from sigilicon.layout.pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -66,17 +66,20 @@ from sigilicon.layout.pnr import (
     PinAccess,
     PinReference,
     Placement,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     RoutingDirection,
     ViaDefinition,
     run,
 )
-from sigilicon.virtuoso.xstream import XStreamExportError, XStreamExportResult
-from sigilicon.workflows.oa_materialization import OaXStreamMaterializationAdapter
+from sigilicon.experimental.virtuoso.xstream import ExperimentalXStreamExportError, ExperimentalXStreamExportResult
+from sigilicon.experimental.workflows.oa_materialization import (
+    EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
+    ExperimentalOaXStreamMaterializationAdapter,
+)
 from sigilicon.domain.repository import Project
 
 
@@ -84,8 +87,32 @@ _INPUT_ACTION = "fixture.oa-materialization-inputs"
 _INPUT_ADAPTER = "fixture-oa-materialization-inputs"
 
 
-def _job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
+def _stable_job(job: ReferencePnrJob) -> PhysicalDesignJob:
     return PhysicalDesignJob(
+        technology=job.technology,
+        design=job.design,
+        constraints=job.constraints,
+        request=job.request,
+        routing_constraints=job.routing_constraints,
+    )
+
+
+def _stable_result(result) -> PhysicalDesignResult:
+    return PhysicalDesignResult(
+        status=result.status,
+        placements=result.placements,
+        constraint_outcomes=result.constraint_outcomes,
+        stage_reports=result.stage_reports,
+        provenance=result.provenance,
+        routes=result.routes,
+        routing_blockage_placements=result.routing_blockage_placements,
+        closed=result.closed,
+        artifact_id=result.artifact_id,
+    )
+
+
+def _job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
+    return ReferencePnrJob(
         PhysicalTechnology(
             "oa-materialization-neutral",
             1000,
@@ -115,8 +142,8 @@ def _job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(maximum_route_states=maximum_route_states),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(maximum_route_states=maximum_route_states),
     )
 
 
@@ -128,7 +155,7 @@ def _artifacts(*, maximum_route_states: int = 200_000):
         result,
         MaterializationTarget("benchmark", "neutral_layout"),
     )
-    return job, result, plan
+    return _stable_job(job), _stable_result(result), plan
 
 
 def _artifacts_with_instance():
@@ -150,7 +177,7 @@ def _artifacts_with_instance():
         result,
         MaterializationTarget("benchmark", "neutral_layout"),
     )
-    return job, result, plan
+    return _stable_job(job), _stable_result(result), plan
 
 
 def _artifacts_with_via():
@@ -188,7 +215,7 @@ def _artifacts_with_via():
             CutSpacingRule("v1-spacing", "v1", 2, 2),
         ),
     )
-    job = PhysicalDesignJob(
+    job = ReferencePnrJob(
         technology,
         PhysicalDesign(
             "oa-materialization-multilayer",
@@ -206,7 +233,7 @@ def _artifacts_with_via():
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
     result = run(job)
     plan = compile_materialization_plan(
@@ -214,7 +241,7 @@ def _artifacts_with_via():
         result,
         MaterializationTarget("benchmark", "neutral_layout"),
     )
-    return job, result, plan
+    return _stable_job(job), _stable_result(result), plan
 
 
 class _InputsAdapter(StagedAdapterFixture):
@@ -315,7 +342,7 @@ def _patch_workspace(monkeypatch) -> None:
         yield _Operation(operation_id)
 
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_materialization.workspace_operation",
+        "sigilicon.experimental.workflows.oa_materialization.workspace_operation",
         operation,
     )
     def execute_skill(client, _operation, source, **_kwargs):
@@ -325,7 +352,7 @@ def _patch_workspace(monkeypatch) -> None:
         return result.output
 
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_materialization.execute_owned_cellview_skill",
+        "sigilicon.experimental.workflows.oa_materialization.execute_owned_cellview_skill",
         execute_skill,
     )
 
@@ -334,7 +361,7 @@ def _patch_workspace(monkeypatch) -> None:
         return SimpleNamespace(action="created")
 
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_materialization.ensure_project_library",
+        "sigilicon.experimental.workflows.oa_materialization.ensure_project_library",
         ensure_library,
     )
 
@@ -379,7 +406,7 @@ def _fake_xstream(timestamp: int = 2026):
             encoding="utf-8",
         )
         summary.write_text("complete\n", encoding="utf-8")
-        return XStreamExportResult(
+        return ExperimentalXStreamExportResult(
             command=(str(request.executable), "-library", request.library),
             exit_code=0,
             stdout="complete\n",
@@ -523,7 +550,11 @@ def _engine(root: Path | None, job, result, plan, adapter) -> FlowEngine:
         )
     )
     registry.register_adapter(_INPUT_ADAPTER, _InputsAdapter(job, result, plan))
-    registry.register_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER, adapter)
+    registry.register_action_adapter(
+        PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
+        EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
+        adapter,
+    )
     scope = None
     if root is not None:
         if not (root / "ip/benchmark/component.toml").is_file():
@@ -562,7 +593,7 @@ def _plan(engine: FlowEngine, owner_root: Path):
             ActionBinding(_INPUT_ACTION, _INPUT_ADAPTER),
             ActionBinding(
                 PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
-                OA_XSTREAM_MATERIALIZATION_ADAPTER,
+                EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
                 requires=(
                     "tool.virtuoso-bridge",
                     "tool.xstream",
@@ -592,7 +623,7 @@ def test_flow_plan_scope_rejects_same_owner_from_another_project(
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=lambda: None),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=lambda: None),
     )
 
     with pytest.raises(FlowContractError, match="owner root"):
@@ -614,7 +645,7 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     write_project_context(tmp_path)
     asset, library = _write_assets(tmp_path)
     client = _Client(library)
-    adapter = OaXStreamMaterializationAdapter(_client_factory=lambda: client)
+    adapter = ExperimentalOaXStreamMaterializationAdapter(_client_factory=lambda: client)
     job, result, plan = _artifacts()
     engine = _engine(tmp_path, job, result, plan, adapter)
     monkeypatch.setattr(
@@ -628,7 +659,7 @@ def test_production_adapter_materializes_real_gds_contract_through_flow(
     )
     _patch_workspace(monkeypatch)
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_materialization.run_xstream_export",
+        "sigilicon.experimental.workflows.oa_materialization.run_experimental_xstream_export",
         _fake_xstream(),
     )
 
@@ -676,7 +707,7 @@ def test_production_adapter_requires_explicit_project_scope(tmp_path: Path) -> N
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=lambda: None),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=lambda: None),
     )
 
     flow_result = engine.run(
@@ -701,12 +732,12 @@ def test_repeated_materialization_canonicalizes_xstream_timestamps(
     _patch_workspace(monkeypatch)
     identities = []
     for index, timestamp in enumerate((2025, 2026), start=2):
-        adapter = OaXStreamMaterializationAdapter(
+        adapter = ExperimentalOaXStreamMaterializationAdapter(
             _client_factory=lambda: _Client(library),
         )
         engine = _engine(tmp_path, job, result, plan, adapter)
         monkeypatch.setattr(
-            "sigilicon.workflows.oa_materialization.run_xstream_export",
+            "sigilicon.experimental.workflows.oa_materialization.run_experimental_xstream_export",
             _fake_xstream(timestamp),
         )
         flow_result = engine.run(
@@ -739,7 +770,7 @@ def test_flow_preflight_requires_backend_and_license_capabilities(
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=lambda: None),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=lambda: None),
     )
     environment = _environment(tmp_path, asset)
     capabilities = dict(environment.capabilities)
@@ -778,7 +809,7 @@ def test_adapter_preflight_requires_every_explicit_layout_asset(tmp_path: Path) 
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=client_factory),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -803,7 +834,7 @@ def test_missing_managed_library_is_created_inside_managed_workspace(
     asset, library = _write_assets(tmp_path, create_library=False)
     _patch_workspace(monkeypatch)
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_materialization.run_xstream_export",
+        "sigilicon.experimental.workflows.oa_materialization.run_experimental_xstream_export",
         _fake_xstream(),
     )
 
@@ -813,7 +844,7 @@ def test_missing_managed_library_is_created_inside_managed_workspace(
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(
+        ExperimentalOaXStreamMaterializationAdapter(
             _client_factory=lambda: _Client(library),
         ),
     )
@@ -849,7 +880,7 @@ def test_managed_library_symlink_is_rejected_before_bridge_connection(
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=client_factory),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -884,7 +915,7 @@ def test_unmapped_plan_feature_is_typed_unsupported_before_oa(
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=client_factory),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
     flow_result = engine.run(
         _plan(engine, tmp_path / "ip/benchmark"),
@@ -916,7 +947,7 @@ def test_unmapped_master_is_typed_unsupported_before_oa(tmp_path: Path) -> None:
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=client_factory),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -969,7 +1000,7 @@ blockage_purpose = "drawing"
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=client_factory),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
 
     flow_result = engine.run(
@@ -1002,7 +1033,7 @@ def test_diagnostic_plan_is_identity_rejected_before_oa(tmp_path: Path) -> None:
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(_client_factory=client_factory),
+        ExperimentalOaXStreamMaterializationAdapter(_client_factory=client_factory),
     )
     flow_result = engine.run(
         _plan(engine, tmp_path / "ip/benchmark"),
@@ -1027,7 +1058,7 @@ def test_bridge_unavailability_is_not_execution_failure(tmp_path: Path) -> None:
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(
+        ExperimentalOaXStreamMaterializationAdapter(
             _client_factory=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
         ),
     )
@@ -1059,16 +1090,16 @@ def test_attempted_backend_failures_never_publish_layout(
         job,
         result,
         plan,
-        OaXStreamMaterializationAdapter(
+        ExperimentalOaXStreamMaterializationAdapter(
             _client_factory=lambda: client,
         ),
     )
     _patch_workspace(monkeypatch)
     if failure == "xstream-nonzero":
         monkeypatch.setattr(
-            "sigilicon.workflows.oa_materialization.run_xstream_export",
+            "sigilicon.experimental.workflows.oa_materialization.run_experimental_xstream_export",
             lambda _request: (_ for _ in ()).throw(
-                XStreamExportError("exited 9", executed=True, exit_code=9)
+                ExperimentalXStreamExportError("exited 9", executed=True, exit_code=9)
             ),
         )
     elif failure == "malformed-gds":
@@ -1078,12 +1109,12 @@ def test_attempted_backend_failures_never_publish_layout(
             return result_value
 
         monkeypatch.setattr(
-            "sigilicon.workflows.oa_materialization.run_xstream_export",
+            "sigilicon.experimental.workflows.oa_materialization.run_experimental_xstream_export",
             malformed,
         )
     else:
         monkeypatch.setattr(
-            "sigilicon.workflows.oa_materialization.run_xstream_export",
+            "sigilicon.experimental.workflows.oa_materialization.run_experimental_xstream_export",
             lambda _request: pytest.fail("XStream must not run after OA save failure"),
         )
 

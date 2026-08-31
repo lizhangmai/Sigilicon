@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     AlignmentAnchor,
     AlignmentConstraint,
     ArrayConstraint,
@@ -22,7 +22,7 @@ from sigilicon.layout.pnr import (
     Orientation,
     OrderingConstraint,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -34,9 +34,9 @@ from sigilicon.layout.pnr import (
     Placement,
     PlacementObjective,
     PnrInputError,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     ResultStatus,
@@ -48,11 +48,11 @@ from sigilicon.layout.pnr import (
 )
 
 
-def _physical_job(*args, **kwargs) -> PhysicalDesignJob:
-    return PhysicalDesignJob(*args, **kwargs)
+def _physical_job(*args, **kwargs) -> ReferencePnrJob:
+    return ReferencePnrJob(*args, **kwargs)
 
 
-def _job(*, technology_name: str = "neutral-tech", grid: int = 10) -> PhysicalDesignJob:
+def _job(*, technology_name: str = "neutral-tech", grid: int = 10) -> ReferencePnrJob:
     master = PhysicalMaster(
         name="rectangular-master",
         width_dbu=20,
@@ -88,11 +88,11 @@ def test_reference_engine_places_the_same_model_for_distinct_technologies() -> N
     assert first.status is ResultStatus.SUCCEEDED
     assert second.status is ResultStatus.SUCCEEDED
     assert first.placements == second.placements
-    assert first.provenance.job != second.provenance.job
+    assert first.provenance.job_identity != second.provenance.job_identity
     assert first.provenance.deterministic is True
 
 
-def test_execution_policy_is_part_of_the_exact_job_record() -> None:
+def test_execution_policy_is_experimental_and_not_in_stable_identity() -> None:
     job = _job()
     first = run(job)
     second = run(
@@ -105,11 +105,14 @@ def test_execution_policy_is_part_of_the_exact_job_record() -> None:
         )
     )
 
-    assert first.provenance.job != second.provenance.job
-    assert first.provenance.job.execution_policy != second.provenance.job.execution_policy
+    assert first.provenance.job_identity == second.provenance.job_identity
+    assert job.execution_policy != replace(
+        job.execution_policy,
+        maximum_search_states=100_001,
+    )
 
 
-def _placements(job: PhysicalDesignJob) -> dict[str, Placement]:
+def _placements(job: ReferencePnrJob) -> dict[str, Placement]:
     result = run(job)
     assert result.status is ResultStatus.SUCCEEDED
     assert all(
@@ -361,7 +364,7 @@ def test_valid_but_infeasible_job_returns_diagnostics_instead_of_raising() -> No
 def test_search_exhaustion_is_not_reported_as_infeasibility() -> None:
     job = replace(
         _job(),
-        execution_policy=PnrExecutionPolicy(maximum_search_states=1),
+        execution_policy=ReferencePnrExecutionPolicy(maximum_search_states=1),
     )
 
     result = run(job)
@@ -389,7 +392,7 @@ def test_placement_repair_state_budget_must_be_positive() -> None:
 def test_empty_netlist_routing_is_vacuously_succeeded() -> None:
     job = replace(
         _job(),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
         constraints=(
             FenceConstraint(
                 name="preference",
@@ -406,8 +409,8 @@ def test_empty_netlist_routing_is_vacuously_succeeded() -> None:
     assert result.placements
     assert result.routes == ()
     assert tuple(report.stage for report in result.stage_reports) == (
-        PnrStage.PLACEMENT,
-        PnrStage.ROUTING,
+        PhysicalDesignStage.PLACEMENT,
+        PhysicalDesignStage.ROUTING,
     )
     assert result.constraint_outcomes[0].status is ConstraintStatus.SATISFIED
 
@@ -429,14 +432,14 @@ def test_soft_constraint_ranks_legal_placements() -> None:
 
     assert result.status is ResultStatus.SUCCEEDED
     assert len(result.stage_reports) == 1
-    assert result.stage_reports[0].stage is PnrStage.PLACEMENT
+    assert result.stage_reports[0].stage is PhysicalDesignStage.PLACEMENT
     assert result.stage_reports[0].status is ResultStatus.SUCCEEDED
     assert result.constraint_outcomes[0].status is ConstraintStatus.SATISFIED
     placements = {item.instance: item.placement for item in result.placements}
     assert placements["movable"].origin.x >= 20
 
 
-def _net_objective_job(objective: PlacementObjective) -> PhysicalDesignJob:
+def _net_objective_job(objective: PlacementObjective) -> ReferencePnrJob:
     master = PhysicalMaster(
         "node",
         10,
@@ -465,7 +468,7 @@ def _net_objective_job(objective: PlacementObjective) -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(objectives=(objective,)),
+        request=PhysicalDesignRequest(objectives=(objective,)),
     )
 
 
@@ -517,7 +520,7 @@ def test_estimated_hpwl_uses_transformed_pin_access_geometry() -> None:
                 ),
             ),
         ),
-        request=PnrRequest(objectives=(EstimatedHpwlObjective("pin-hpwl"),)),
+        request=PhysicalDesignRequest(objectives=(EstimatedHpwlObjective("pin-hpwl"),)),
     )
 
     result = run(job)
@@ -545,7 +548,7 @@ def test_density_overflow_objective_spreads_occupancy_across_bins() -> None:
                 PhysicalInstance("moving", master.name),
             ),
         ),
-        request=PnrRequest(
+        request=PhysicalDesignRequest(
             objectives=(
                 DensityOverflowObjective(
                     "density-overflow",
@@ -570,7 +573,7 @@ def test_bounding_box_area_and_congestion_proxy_are_observable_objectives() -> N
     area_result = run(
         replace(
             _job(),
-            request=PnrRequest(objectives=(BoundingBoxAreaObjective("area"),)),
+            request=PhysicalDesignRequest(objectives=(BoundingBoxAreaObjective("area"),)),
         )
     )
     congestion_result = run(
@@ -626,7 +629,7 @@ def test_soft_constraint_violation_does_not_change_hard_legality() -> None:
 def test_density_objective_rejects_off_grid_bin_edges() -> None:
     job = replace(
         _job(),
-        request=PnrRequest(
+        request=PhysicalDesignRequest(
             objectives=(
                 DensityOverflowObjective(
                     "off-grid-bins",
@@ -668,7 +671,15 @@ def test_result_is_deterministic_and_canonically_serializable() -> None:
 
 
 def test_core_source_has_no_project_pdk_or_database_dependency() -> None:
-    source_root = Path(__file__).parents[1] / "src" / "sigilicon" / "layout" / "pnr"
+    source_root = (
+        Path(__file__).parents[1]
+        / "src"
+        / "sigilicon"
+        / "experimental"
+        / "reference_pnr"
+    )
+    assert source_root.is_dir()
+    assert tuple(source_root.rglob("*.py"))
     source = "\n".join(
         path.read_text(encoding="utf-8").lower()
         for path in source_root.rglob("*.py")

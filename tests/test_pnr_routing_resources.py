@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     CutSpacingRule,
     EnclosureRule,
@@ -19,7 +19,7 @@ from sigilicon.layout.pnr import (
     RoutingTrackPattern,
     ViaDefinition,
 )
-from sigilicon.layout.pnr._routing_resources import (
+from sigilicon.experimental.reference_pnr._routing_resources import (
     RoutingNode,
     RoutingResourceKind,
     compile_routing_resource_graph,

@@ -9,9 +9,7 @@ from sigilicon.flow.circuit_design import register_circuit_design_actions
 from sigilicon.flow.layout import register_layout_actions
 from sigilicon.flow.physical_design import register_physical_design_actions
 from sigilicon.flow.physical_design import (
-    OA_XSTREAM_MATERIALIZATION_ADAPTER,
-    REFERENCE_MATERIALIZATION_ADAPTER,
-    REFERENCE_PNR_ADAPTER,
+    MATERIALIZATION_PLAN_ADAPTER,
 )
 from sigilicon.flow.physical_verification import (
     CALIBRE_PHYSICAL_VERIFICATION_ADAPTER,
@@ -41,11 +39,7 @@ _LAZY_ADAPTERS = {
         "SynopsysStructuralLinkAdapter",
     ),
     "synopsys-vcs": ("sigilicon.workflows.synopsys.vcs", "SynopsysVCSAdapter"),
-    REFERENCE_PNR_ADAPTER: (
-        "sigilicon.workflows.physical_design",
-        "ReferencePhysicalDesignAdapter",
-    ),
-    REFERENCE_MATERIALIZATION_ADAPTER: (
+    MATERIALIZATION_PLAN_ADAPTER: (
         "sigilicon.workflows.physical_design",
         "MaterializationPlanAdapter",
     ),
@@ -60,10 +54,6 @@ _LAZY_ADAPTERS = {
     PHYSICAL_DESIGN_OBSERVATION_ADAPTER: (
         "sigilicon.workflows.design_physical",
         "PhysicalDesignObservationAdapter",
-    ),
-    OA_XSTREAM_MATERIALIZATION_ADAPTER: (
-        "sigilicon.workflows.oa_materialization",
-        "OaXStreamMaterializationAdapter",
     ),
 }
 
@@ -84,8 +74,6 @@ def _adapter_factory(
 
 
 def build_flow_registry(
-    *,
-    materialization_adapter: ToolAdapter | None = None,
 ) -> FlowRegistry:
     registry = FlowRegistry()
     register_standard_asic_actions(registry)
@@ -97,11 +85,6 @@ def build_flow_registry(
     register_native_actions(registry)
     registry.register_adapter("source-assets", SourceAssetsAdapter())
     for adapter_name, reference in _LAZY_ADAPTERS.items():
-        if (
-            adapter_name == OA_XSTREAM_MATERIALIZATION_ADAPTER
-            and materialization_adapter is not None
-        ):
-            continue
         registry.register_adapter_factory(
             adapter_name,
             _adapter_factory(*reference),
@@ -111,11 +94,6 @@ def build_flow_registry(
         CALIBRE_XRC_PEX_ADAPTER,
         _adapter_factory(*_CALIBRE_XRC_PEX),
     )
-    if materialization_adapter is not None:
-        registry.register_adapter(
-            OA_XSTREAM_MATERIALIZATION_ADAPTER,
-            materialization_adapter,
-        )
     return registry
 
 

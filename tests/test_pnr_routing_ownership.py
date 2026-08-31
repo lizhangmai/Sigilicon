@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     GridlessRoutingResource,
     InstancePlacement,
@@ -13,7 +13,7 @@ from sigilicon.layout.pnr import (
     MinimumWidthRule,
     Orientation,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -23,25 +23,25 @@ from sigilicon.layout.pnr import (
     PinAccess,
     PinReference,
     Placement,
-    PnrExecutionPolicy,
+    ReferencePnrExecutionPolicy,
     Point,
     Rect,
     RoutingDirection,
     RoutingTrackPattern,
 )
-from sigilicon.layout.pnr._routing import solve_routing
-from sigilicon.layout.pnr._routing_conflicts import (
+from sigilicon.experimental.reference_pnr._routing import solve_routing
+from sigilicon.experimental.reference_pnr._routing_conflicts import (
     RoutingConflict,
     RoutingConflictKind,
     RoutingConflictSet,
 )
-from sigilicon.layout.pnr._routing_ownership import (
+from sigilicon.experimental.reference_pnr._routing_ownership import (
     PhysicalOwnerKind,
     PhysicalOwnerMobility,
 )
-from sigilicon.layout.pnr._routing_problem import compile_routing_problem
-from sigilicon.layout.pnr._routing_pressure import attribute_routing_pressure
-from sigilicon.layout.pnr._routing_resources import RoutingResourceKind
+from sigilicon.experimental.reference_pnr._routing_problem import compile_routing_problem
+from sigilicon.experimental.reference_pnr._routing_pressure import attribute_routing_pressure
+from sigilicon.experimental.reference_pnr._routing_resources import RoutingResourceKind
 
 
 def _technology() -> PhysicalTechnology:
@@ -78,7 +78,7 @@ def _blocker_job(
     fixed: bool = False,
     pin_access: bool = False,
     two_owners: bool = False,
-) -> tuple[PhysicalDesignJob, tuple[InstancePlacement, ...]]:
+) -> tuple[ReferencePnrJob, tuple[InstancePlacement, ...]]:
     blocker = PhysicalMaster(
         "blocker-master",
         2,
@@ -113,7 +113,7 @@ def _blocker_job(
         )
         for index, name in enumerate(names)
     )
-    job = PhysicalDesignJob(
+    job = ReferencePnrJob(
         (
             replace(
                 _technology(),
@@ -146,7 +146,7 @@ def _blocker_job(
                 ),
             ),
         ),
-        execution_policy=PnrExecutionPolicy(
+        execution_policy=ReferencePnrExecutionPolicy(
             routing_congestion_bins_x=1,
             routing_congestion_bins_y=1,
         ),

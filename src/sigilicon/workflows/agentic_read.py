@@ -19,9 +19,6 @@ from sigilicon.domain.repository import (
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.design_artifacts import validate_candidate_records
-from sigilicon.workflows.design_campaign import (
-    resolve_project_design_campaign,
-)
 from sigilicon.workflows.design_promotion import (
     compile_promotion_plan,
     promotion_request_from_json,
@@ -179,28 +176,6 @@ class AgenticReadInterface:
                 self.owner_resource_uri(resolved.owner),
             ],
             allowed_next_actions=["project.inspect", "review-plan"],
-        )
-
-    def plan_campaign(self, *, campaign_json: str) -> dict[str, Any]:
-        resolved = resolve_project_design_campaign(self.project, campaign_json)
-        campaign = resolved.campaign
-        return self.response(
-            operation="campaign.plan",
-            authority="plan",
-            conclusion="planned",
-            summary=(
-                f"Compiled bounded Design Campaign {campaign.campaign_id!r} with "
-                "one explicit baseline attempt; no backend was executed."
-            ),
-            data={
-                "campaign_identity": resolved.identity,
-                "plan": resolved.record,
-            },
-            resources=[
-                self.project_resource_uri,
-                self.owner_resource_uri(campaign.owner),
-            ],
-            allowed_next_actions=["review-campaign", "campaign.run"],
         )
 
     def inspect_run(

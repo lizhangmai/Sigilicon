@@ -6,15 +6,15 @@ import subprocess
 
 import pytest
 
-from sigilicon.virtuoso.xstream import (
-    XStreamExportError,
-    XStreamExportRequest,
-    canonicalize_xstream_gdsii,
-    run_xstream_export,
+from sigilicon.experimental.virtuoso.xstream import (
+    ExperimentalXStreamExportError,
+    ExperimentalXStreamExportRequest,
+    canonicalize_experimental_xstream_gdsii,
+    run_experimental_xstream_export,
 )
 
 
-def _request(tmp_path: Path) -> XStreamExportRequest:
+def _request(tmp_path: Path) -> ExperimentalXStreamExportRequest:
     executable = tmp_path / "cadence" / "tools" / "bin" / "strmout"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -23,7 +23,7 @@ def _request(tmp_path: Path) -> XStreamExportRequest:
     layer_map.write_text("M1 drawing 1 0\n", encoding="utf-8")
     cds_lib = tmp_path / "cds.lib"
     cds_lib.write_text("DEFINE scratch ./scratch\n", encoding="utf-8")
-    return XStreamExportRequest(
+    return ExperimentalXStreamExportRequest(
         executable=executable,
         library="scratch",
         cell="neutral",
@@ -85,8 +85,12 @@ def _xstream_pcell_gds(volatile_identity: str) -> bytes:
 
 
 def test_xstream_gdsii_canonicalizes_volatile_pcell_hierarchy_names() -> None:
-    first = canonicalize_xstream_gdsii(_xstream_pcell_gds("787838128820"))
-    second = canonicalize_xstream_gdsii(_xstream_pcell_gds("787838266050"))
+    first = canonicalize_experimental_xstream_gdsii(
+        _xstream_pcell_gds("787838128820")
+    )
+    second = canonicalize_experimental_xstream_gdsii(
+        _xstream_pcell_gds("787838266050")
+    )
 
     assert first == second
     assert b"TOP" in first
@@ -107,9 +111,11 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
         _write_success(kwargs["cwd"])
         return subprocess.CompletedProcess(command, 0, "translator stdout")
 
-    monkeypatch.setattr("sigilicon.virtuoso.xstream.run_process_group", runner)
+    monkeypatch.setattr(
+        "sigilicon.experimental.virtuoso.xstream.run_process_group", runner
+    )
 
-    result = run_xstream_export(request)
+    result = run_experimental_xstream_export(request)
 
     assert result.exit_code == 0
     assert result.gds_path.read_bytes() == b"non-empty-gds"
@@ -135,7 +141,7 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
     wrapper.chmod(0o755)
     request.executable.unlink()
     request.executable.symlink_to(wrapper)
-    request = XStreamExportRequest(
+    request = ExperimentalXStreamExportRequest(
         executable=request.executable,
         library=request.library,
         cell=request.cell,
@@ -153,9 +159,11 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
         _write_success(kwargs["cwd"])
         return subprocess.CompletedProcess(command, 0, "translator stdout")
 
-    monkeypatch.setattr("sigilicon.virtuoso.xstream.run_process_group", runner)
+    monkeypatch.setattr(
+        "sigilicon.experimental.virtuoso.xstream.run_process_group", runner
+    )
 
-    run_xstream_export(request)
+    run_experimental_xstream_export(request)
 
     assert request.executable.is_symlink()
     assert tuple(observed["command"])[0] == str(request.executable)
@@ -202,10 +210,12 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
             "translator rejected one option\n" if failure == "nonzero" else "",
         )
 
-    monkeypatch.setattr("sigilicon.virtuoso.xstream.run_process_group", runner)
+    monkeypatch.setattr(
+        "sigilicon.experimental.virtuoso.xstream.run_process_group", runner
+    )
 
-    with pytest.raises(XStreamExportError, match=expected) as error:
-        run_xstream_export(request)
+    with pytest.raises(ExperimentalXStreamExportError, match=expected) as error:
+        run_experimental_xstream_export(request)
 
     assert error.value.executed
     assert error.value.exit_code == (9 if failure == "nonzero" else 0)

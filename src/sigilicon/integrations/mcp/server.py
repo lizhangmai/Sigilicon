@@ -124,16 +124,6 @@ _PROMOTION_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_CAMPAIGN_PLAN_INPUT_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-        "campaign": {"type": "string", "maxLength": 2_000_000},
-    },
-    "required": ["campaign"],
-    "additionalProperties": False,
-}
-
 _TARGET_RUN_INPUT_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -162,26 +152,6 @@ _RUN_CANCEL_INPUT_SCHEMA: dict[str, Any] = {
     "required": ["run_id"],
     "additionalProperties": False,
 }
-
-_CAMPAIGN_RUN_INPUT_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-        "campaign": {"type": "string", "maxLength": 2_000_000},
-        "campaign_identity": {
-            "type": "string",
-            "minLength": 1,
-        },
-        "run_id": {"type": "string", "pattern": f"^{RUN_ID_PATTERN}$"},
-        "proposal": {"type": "string", "maxLength": 2_000_000},
-    },
-    "oneOf": [
-        {"required": ["campaign", "campaign_identity"]},
-        {"required": ["run_id", "proposal"]},
-    ],
-    "additionalProperties": False,
-}
-
 
 class _RequestRejected(ValueError):
     pass
@@ -245,17 +215,6 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
             annotations=annotations,
         ),
         types.Tool(
-            name="campaign.plan",
-            title="Plan bounded Sigilicon Design Campaign",
-            description=(
-                "Compile strict target-operation selectors, typed output bindings, budgets, "
-                "repair lineage, and stop conditions without executing a backend."
-            ),
-            inputSchema=_CAMPAIGN_PLAN_INPUT_SCHEMA,
-            outputSchema=_RESPONSE_SCHEMA,
-            annotations=annotations,
-        ),
-        types.Tool(
             name="candidate.promotion_plan",
             title="Prepare Sigilicon Candidate Promotion Plan",
             description=(
@@ -295,18 +254,6 @@ def _tools(*, execution_enabled: bool) -> list[types.Tool]:
                         "return its immutable terminal state."
                     ),
                     inputSchema=_RUN_CANCEL_INPUT_SCHEMA,
-                    outputSchema=_RESPONSE_SCHEMA,
-                    annotations=execute_annotations,
-                ),
-                types.Tool(
-                    name="campaign.run",
-                    title="Run approved bounded Sigilicon Design Campaign",
-                    description=(
-                        "Start one exact launcher-approved Campaign or resume its durable "
-                        "run with one strict semantic proposal. No command, path, environment, "
-                        "future attempt, result, or Adapter selector is accepted."
-                    ),
-                    inputSchema=_CAMPAIGN_RUN_INPUT_SCHEMA,
                     outputSchema=_RESPONSE_SCHEMA,
                     annotations=execute_annotations,
                 ),
@@ -485,18 +432,6 @@ def create_server(
                     candidate_json=candidate_json,
                     artifact_json=tuple(artifact_values),
                 )
-            elif operation == "campaign.plan":
-                arguments = _strict_arguments(
-                    params.arguments,
-                    allowed=frozenset({"campaign"}),
-                    required=frozenset({"campaign"}),
-                )
-                campaign_json = _required_text(arguments, "campaign")
-                if len(campaign_json) > 2_000_000:
-                    raise _RequestRejected(
-                        "tool arguments do not match the declared schema"
-                    )
-                payload = interface.plan_campaign(campaign_json=campaign_json)
             elif operation == "candidate.promotion_plan":
                 arguments = _strict_arguments(
                     params.arguments,
@@ -564,47 +499,6 @@ def create_server(
                 payload = execution.cancel_run(
                     run_id=_required_text(arguments, "run_id")
                 )
-            elif operation == "campaign.run" and execution is not None:
-                arguments = _strict_arguments(
-                    params.arguments,
-                    allowed=frozenset(
-                        {"campaign", "campaign_identity", "run_id", "proposal"}
-                    ),
-                    required=frozenset(),
-                )
-                start_fields = {"campaign", "campaign_identity"}
-                resume_fields = {"run_id", "proposal"}
-                argument_fields = frozenset(arguments)
-                if argument_fields not in {
-                    frozenset(start_fields),
-                    frozenset(resume_fields),
-                }:
-                    raise _RequestRejected(
-                        "tool arguments do not match the declared schema"
-                    )
-                if argument_fields == start_fields:
-                    campaign_json = _required_text(arguments, "campaign")
-                    if len(campaign_json) > 2_000_000:
-                        raise _RequestRejected(
-                            "tool arguments do not match the declared schema"
-                        )
-                    payload = execution.run_campaign(
-                        campaign_json=campaign_json,
-                        campaign_identity=_required_text(
-                            arguments,
-                            "campaign_identity",
-                        ),
-                    )
-                else:
-                    proposal_json = _required_text(arguments, "proposal")
-                    if len(proposal_json) > 2_000_000:
-                        raise _RequestRejected(
-                            "tool arguments do not match the declared schema"
-                        )
-                    payload = execution.run_campaign(
-                        run_id=_required_text(arguments, "run_id"),
-                        proposal_json=proposal_json,
-                    )
             else:
                 return _tool_result(
                     _error_response(

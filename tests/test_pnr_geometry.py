@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     LayerShape,
     Orientation,
     PhysicalMaster,
@@ -10,7 +10,7 @@ from sigilicon.layout.pnr import (
     Point,
     Rect,
 )
-from sigilicon.layout.pnr._geometry import transform_rect, transformed_obstructions
+from sigilicon.layout.physical_geometry import transform_rect, transformed_obstructions
 
 
 @pytest.mark.parametrize(

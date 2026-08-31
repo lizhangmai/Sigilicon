@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     ConstraintStatus,
     CutSpacingRule,
@@ -19,7 +19,7 @@ from sigilicon.layout.pnr import (
     MinimumWidthRule,
     Orientation,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -31,9 +31,9 @@ from sigilicon.layout.pnr import (
     PinReference,
     Placement,
     PlacementRoutingTerminationReason,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     ResultStatus,
@@ -51,16 +51,16 @@ from sigilicon.layout.pnr import (
     ViaDefinition,
     run,
 )
-from sigilicon.layout.pnr._placement import solve_placement
-from sigilicon.layout.pnr._placement_repair import (
+from sigilicon.experimental.reference_pnr._placement import solve_placement
+from sigilicon.experimental.reference_pnr._placement_repair import (
     PlacementRepairStatus,
     compile_placement_repair_problem,
 )
-from sigilicon.layout.pnr._closure import (
+from sigilicon.experimental.reference_pnr._closure import (
     close_placement_routing,
 )
-from sigilicon.layout.pnr._routing import solve_routing
-from sigilicon.layout.pnr._routing_conflicts import (
+from sigilicon.experimental.reference_pnr._routing import solve_routing
+from sigilicon.experimental.reference_pnr._routing_conflicts import (
     RoutingConflictKind,
 )
 
@@ -102,7 +102,7 @@ def _two_layer_technology(
     )
 
 
-def _dense_multilayer_job() -> PhysicalDesignJob:
+def _dense_multilayer_job() -> ReferencePnrJob:
     wall = PhysicalMaster(
         "lower-wall",
         10,
@@ -123,7 +123,7 @@ def _dense_multilayer_job() -> PhysicalDesignJob:
             GridlessRoutingResource("upper-domain", "upper"),
         )
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "dense-multilayer-channel",
@@ -146,19 +146,19 @@ def _dense_multilayer_job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(maximum_route_states=600_000),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(maximum_route_states=600_000),
     )
 
 
-def _explicit_track_job() -> PhysicalDesignJob:
+def _explicit_track_job() -> ReferencePnrJob:
     technology = _two_layer_technology(
         resources=(
             RoutingTrackPattern("lower-tracks", "lower", Axis.Y, 2, 4, 10),
             RoutingTrackPattern("upper-tracks", "upper", Axis.X, 3, 4, 10),
         )
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "orthogonal-track-bottleneck",
@@ -176,18 +176,18 @@ def _explicit_track_job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
         routing_constraints=(
             RoutingViaCountConstraint("track-a-via", "track-a", 1),
         ),
-        execution_policy=PnrExecutionPolicy(
+        execution_policy=ReferencePnrExecutionPolicy(
             routing_congestion_bins_x=4,
             routing_congestion_bins_y=4,
         ),
     )
 
 
-def _multi_net_group_job() -> PhysicalDesignJob:
+def _multi_net_group_job() -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "benchmark-group-gridless",
         1000,
@@ -199,7 +199,7 @@ def _multi_net_group_job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "three-net-closure-group",
@@ -220,7 +220,7 @@ def _multi_net_group_job() -> PhysicalDesignJob:
                 PhysicalNet("matched", (PinReference("c-source"), PinReference("c-sink"))),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
         routing_constraints=(
             RoutingLengthConstraint("signal-length", "signal", 54, 54),
             RoutingRegionConstraint(
@@ -234,7 +234,7 @@ def _multi_net_group_job() -> PhysicalDesignJob:
     )
 
 
-def _infeasible_wall_job() -> PhysicalDesignJob:
+def _infeasible_wall_job() -> ReferencePnrJob:
     job = _dense_multilayer_job()
     wall = job.design.masters[0]
     return replace(
@@ -260,7 +260,7 @@ def _infeasible_wall_job() -> PhysicalDesignJob:
     )
 
 
-def _iteration_exhausted_job() -> PhysicalDesignJob:
+def _iteration_exhausted_job() -> ReferencePnrJob:
     route_technology = PhysicalTechnology(
         "benchmark-negotiation-gridless",
         1000,
@@ -288,7 +288,7 @@ def _iteration_exhausted_job() -> PhysicalDesignJob:
         obstructions=(LayerShape("route", Rect(0, 0, 12, 3)),),
         allowed_orientations=(Orientation.R0,),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         route_technology,
         PhysicalDesign(
             "iteration-limited-pocket",
@@ -310,12 +310,12 @@ def _iteration_exhausted_job() -> PhysicalDesignJob:
                 PhysicalNet("z-critical", (PinReference("z-inside"), PinReference("z-outside"))),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(maximum_routing_iterations=1),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(maximum_routing_iterations=1),
     )
 
 
-def _state_exhausted_job() -> PhysicalDesignJob:
+def _state_exhausted_job() -> ReferencePnrJob:
     job = _dense_multilayer_job()
     return replace(
         job,
@@ -325,7 +325,7 @@ def _state_exhausted_job() -> PhysicalDesignJob:
 
 def _capacity_negotiation_job(
     *, maximum_routing_iterations: int = 8
-) -> PhysicalDesignJob:
+) -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "capacity-benchmark",
         dbu_per_micron=1000,
@@ -343,7 +343,7 @@ def _capacity_negotiation_job(
     )
 
 
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "capacity-negotiation",
@@ -367,8 +367,8 @@ def _capacity_negotiation_job(
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_routing_iterations=maximum_routing_iterations,
             routing_congestion_bins_x=1,
             routing_congestion_bins_y=2,
@@ -376,7 +376,7 @@ def _capacity_negotiation_job(
     )
 
 
-def _branch_repair_job() -> PhysicalDesignJob:
+def _branch_repair_job() -> ReferencePnrJob:
     technology = _two_layer_technology(
         resources=(
             GridlessRoutingResource("lower-bottom", "lower", Rect(0, 0, 20, 4)),
@@ -385,7 +385,7 @@ def _branch_repair_job() -> PhysicalDesignJob:
             GridlessRoutingResource("upper-domain", "upper"),
         )
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "local-branch-repair",
@@ -414,11 +414,11 @@ def _branch_repair_job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
         routing_constraints=(
             RoutingLayerConstraint("cross-lower-only", "z-cross", ("lower",)),
         ),
-        execution_policy=PnrExecutionPolicy(
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_route_states=300_000,
             maximum_routing_iterations=6,
             routing_congestion_bins_x=2,
@@ -429,7 +429,7 @@ def _branch_repair_job() -> PhysicalDesignJob:
 
 def _placement_repair_job(
     *, maximum_placement_repair_iterations: int = 2
-) -> PhysicalDesignJob:
+) -> ReferencePnrJob:
     master = PhysicalMaster(
         "movable-terminal",
         2,
@@ -459,7 +459,7 @@ def _placement_repair_job(
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "placement-routing-repair",
@@ -476,8 +476,8 @@ def _placement_repair_job(
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_placement_repair_iterations=(
                 maximum_placement_repair_iterations
             ),
@@ -492,7 +492,7 @@ def _physical_blocker_job(
     pin_access_blocker: bool = False,
     multi_terminal: bool = False,
     maximum_placement_repair_iterations: int = 4,
-) -> PhysicalDesignJob:
+) -> ReferencePnrJob:
     blocker = PhysicalMaster(
         "routing-blocker",
         2,
@@ -586,7 +586,7 @@ def _physical_blocker_job(
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "physical-blocker-closure",
@@ -626,8 +626,8 @@ def _physical_blocker_job(
             ),
         ),
         constraints=constraints,
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_placement_repair_iterations=(
                 maximum_placement_repair_iterations
             ),
@@ -635,7 +635,7 @@ def _physical_blocker_job(
     )
 
 
-def _standalone_blockage_job(*, fixed: bool = False) -> PhysicalDesignJob:
+def _standalone_blockage_job(*, fixed: bool = False) -> ReferencePnrJob:
     spectator = PhysicalMaster(
         "standalone-blockage-spectator",
         2,
@@ -668,7 +668,7 @@ def _standalone_blockage_job(*, fixed: bool = False) -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "standalone-blockage-closure",
@@ -709,11 +709,11 @@ def _standalone_blockage_job(*, fixed: bool = False) -> PhysicalDesignJob:
                 Rect(0, 6, 4, 10),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 
-def _constrained_blocker_group_job() -> PhysicalDesignJob:
+def _constrained_blocker_group_job() -> ReferencePnrJob:
     blocker = PhysicalMaster(
         "two-track-blocker",
         2,
@@ -753,7 +753,7 @@ def _constrained_blocker_group_job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "constrained-placement-routing-repair",
@@ -810,7 +810,7 @@ def _constrained_blocker_group_job() -> PhysicalDesignJob:
                 Rect(0, 12, 4, 16),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
         routing_constraints=(
             RoutingLengthConstraint("signal-length", "signal", 16, 16),
             RoutingLengthConstraint("shield-length", "shield", 16, 16),
@@ -832,7 +832,7 @@ def _constrained_blocker_group_job() -> PhysicalDesignJob:
                 ("route",),
             ),
         ),
-        execution_policy=PnrExecutionPolicy(
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_route_states=300_000,
             maximum_routing_iterations=8,
             maximum_placement_repair_iterations=4,
@@ -846,7 +846,7 @@ def _constrained_blocker_group_job() -> PhysicalDesignJob:
     ids=("dense-gridless", "explicit-track", "multi-net-group"),
 )
 def test_general_routing_benchmarks_close_deterministically(
-    job: PhysicalDesignJob,
+    job: ReferencePnrJob,
 ) -> None:
     first = run(job)
     second = run(job)

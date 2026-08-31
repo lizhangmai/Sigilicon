@@ -27,17 +27,20 @@ from sigilicon.flow import (
     ProducedArtifact,
 )
 from sigilicon.flow.physical_design import (
+    MATERIALIZATION_PLAN_ADAPTER,
     PHYSICAL_MATERIALIZATION_ACTION,
     PHYSICAL_DESIGN_ACTION,
     PHYSICAL_DESIGN_JOB_KIND,
+)
+from sigilicon.experimental.reference_pnr.flow import (
+    REFERENCE_PHYSICAL_DESIGN_ACTION,
     REFERENCE_PNR_ADAPTER,
-    REFERENCE_MATERIALIZATION_ADAPTER,
 )
 from sigilicon.layout.materialization import (
     MaterializationDecision,
     materialization_plan_from_json,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     CanonicalSerializationError,
     GridlessRoutingResource,
@@ -46,7 +49,7 @@ from sigilicon.layout.pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
@@ -55,9 +58,9 @@ from sigilicon.layout.pnr import (
     PinReference,
     Placement,
     PlacementRoutingTerminationReason,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     ResultStatus,
@@ -65,14 +68,21 @@ from sigilicon.layout.pnr import (
     RoutingDirection,
     RoutingTerminationReason,
     RoutingTrackPattern,
-    physical_design_result_id,
-    physical_closure_evidence_id,
-    physical_design_job_from_json,
-    physical_design_result_from_json,
-    placement_routing_closure_evidence_from_json,
     run,
 )
-from sigilicon.workflows.builtin import build_flow_registry
+from sigilicon.experimental.reference_pnr.serialization import (
+    physical_closure_evidence_id,
+    placement_routing_closure_evidence_from_json,
+    reference_pnr_result_from_json,
+)
+from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
+from sigilicon.layout.physical_design_serialization import (
+    physical_design_job_from_json,
+    physical_design_job_id,
+    physical_design_result_from_json,
+    physical_design_result_id,
+)
+from sigilicon.experimental.registry import build_experimental_flow_registry
 
 
 def _routing_technology() -> PhysicalTechnology:
@@ -91,8 +101,8 @@ def _routing_technology() -> PhysicalTechnology:
     )
 
 
-def _capacity_job(*, maximum_iterations: int = 8) -> PhysicalDesignJob:
-    return PhysicalDesignJob(
+def _capacity_job(*, maximum_iterations: int = 8) -> ReferencePnrJob:
+    return ReferencePnrJob(
         _routing_technology(),
         PhysicalDesign(
             "flow-capacity-negotiation",
@@ -116,8 +126,8 @@ def _capacity_job(*, maximum_iterations: int = 8) -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_routing_iterations=maximum_iterations,
             routing_congestion_bins_x=1,
             routing_congestion_bins_y=2,
@@ -125,7 +135,7 @@ def _capacity_job(*, maximum_iterations: int = 8) -> PhysicalDesignJob:
     )
 
 
-def _fixed_blockage_job() -> PhysicalDesignJob:
+def _fixed_blockage_job() -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "flow-benchmark-fixed-blocker",
         dbu_per_micron=1000,
@@ -145,7 +155,7 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "flow-fixed-blocker",
@@ -172,11 +182,11 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 
-def _state_budget_job() -> PhysicalDesignJob:
+def _state_budget_job() -> ReferencePnrJob:
     job = _capacity_job()
     return replace(
         job,
@@ -196,8 +206,15 @@ class _BenchmarkJobAdapter(StagedAdapterFixture):
 
     def execute(self, context: ActionContext) -> AdapterExecution:
         job = self._jobs[str(context.action_config["job"])]
+        stable_job = PhysicalDesignJob(
+            technology=job.technology,
+            design=job.design,
+            constraints=job.constraints,
+            request=job.request,
+            routing_constraints=job.routing_constraints,
+        )
         context.output_path("job", "physical-design-job.json").write_text(
-            job.canonical_json(),
+            stable_job.canonical_json(),
             encoding="utf-8",
         )
         return AdapterExecution.succeeded()
@@ -229,7 +246,7 @@ def _run_flow(
     *,
     run_id: str,
 ):
-    registry = build_flow_registry()
+    registry = build_experimental_flow_registry()
     registry.register_action(
         ActionContract(
             "benchmark.physical-job",
@@ -250,7 +267,25 @@ def _run_flow(
             ),
             FlowNode(
                 "solve",
-                PHYSICAL_DESIGN_ACTION,
+                REFERENCE_PHYSICAL_DESIGN_ACTION,
+                config={
+                    "reference-policy": (
+                        None
+                        if not isinstance(job, ReferencePnrJob)
+                        else {
+                            name: getattr(job.execution_policy, name)
+                            for name in (
+                                "maximum_search_states",
+                                "maximum_route_states",
+                                "maximum_routing_iterations",
+                                "maximum_placement_repair_states",
+                                "maximum_placement_repair_iterations",
+                                "routing_congestion_bins_x",
+                                "routing_congestion_bins_y",
+                            )
+                        }
+                    )
+                },
                 bindings=(ArtifactBinding("job", "job", "job"),),
                 policy="require-closure",
             ),
@@ -302,10 +337,10 @@ def _run_flow(
         ),
         action_bindings=(
             ActionBinding("benchmark.physical-job", "benchmark-job"),
-            ActionBinding(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
+            ActionBinding(REFERENCE_PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
             ActionBinding(
                 PHYSICAL_MATERIALIZATION_ACTION,
-                REFERENCE_MATERIALIZATION_ADAPTER,
+                MATERIALIZATION_PLAN_ADAPTER,
             ),
         ),
     )
@@ -322,29 +357,58 @@ def _run_flow(
 def test_physical_design_serialization_is_reversible_and_strict() -> None:
     job = _capacity_job()
     result = run(job)
+    stable_job = PhysicalDesignJob(
+        technology=job.technology,
+        design=job.design,
+        constraints=job.constraints,
+        request=job.request,
+        routing_constraints=job.routing_constraints,
+    )
 
-    loaded_job = physical_design_job_from_json(job.canonical_json())
-    loaded_result = physical_design_result_from_json(result.canonical_json())
+    loaded_job = physical_design_job_from_json(stable_job.canonical_json())
+    loaded_result = reference_pnr_result_from_json(result.canonical_json())
 
-    assert loaded_job == job
-    assert loaded_job.canonical_json() == job.canonical_json()
+    assert loaded_job == stable_job
+    assert loaded_job.canonical_json() == stable_job.canonical_json()
     assert loaded_result == result
     assert loaded_result.canonical_json() == result.canonical_json()
 
-    raw = json.loads(job.canonical_json())
+    raw = json.loads(stable_job.canonical_json())
     raw["unknown"] = True
     with pytest.raises(CanonicalSerializationError, match="unknown=.*unknown"):
         physical_design_job_from_json(json.dumps(raw))
 
-    raw = json.loads(job.canonical_json())
+    raw = json.loads(stable_job.canonical_json())
     raw["request"]["stages"][0] = "unknown-stage"
-    with pytest.raises(CanonicalSerializationError, match="unknown PnrStage"):
+    with pytest.raises(CanonicalSerializationError, match="unknown PhysicalDesignStage"):
         physical_design_job_from_json(json.dumps(raw))
 
-    raw = json.loads(job.canonical_json())
+    raw = json.loads(stable_job.canonical_json())
     raw["design"]["die"] = []
     with pytest.raises(CanonicalSerializationError, match="must be a Rect object"):
         physical_design_job_from_json(json.dumps(raw))
+
+
+def test_physical_design_job_identity_binds_complete_stable_intent() -> None:
+    reference = _capacity_job()
+    job = PhysicalDesignJob(
+        technology=reference.technology,
+        design=reference.design,
+        constraints=reference.constraints,
+        request=reference.request,
+        routing_constraints=reference.routing_constraints,
+    )
+    changed_request = replace(
+        job,
+        request=replace(job.request, minimum_instance_spacing_dbu=1),
+    )
+
+    identity = physical_design_job_id(job)
+    assert identity != physical_design_job_id(changed_request)
+    assert identity.startswith(
+        "physical-design-job:flow-benchmark-gridless:flow-capacity-negotiation:sha256:"
+    )
+    assert len(identity.rsplit(":sha256:", 1)[1]) == 64
 
 
 @pytest.mark.parametrize(
@@ -411,7 +475,7 @@ def test_reference_pnr_runs_through_public_flow_engine(
     assert outcome.execution_status == "succeeded"
     assert outcome.result_status == "valid"
     assert result.status is status
-    assert result.closure_evidence == evidence
+    assert result.closed is (status is ResultStatus.SUCCEEDED)
     assert evidence.routing_termination is routing_termination
     assert outcome.facts["state-budget-exhausted"] is state_budget
     assert outcome.facts["iteration-budget-exhausted"] is iteration_budget
@@ -447,3 +511,51 @@ def test_reference_pnr_artifact_identity_is_deterministic_across_runs(
     assert first_evidence.path.read_bytes() == second_evidence.path.read_bytes()
     assert first_result.qualifiers == second_result.qualifiers
     assert first_evidence.qualifiers == second_evidence.qualifiers
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("job", "provenance does not match"),
+        ("backend", "different backend"),
+        ("deterministic", "deterministic execution"),
+        ("closed", "closure evidence disagrees"),
+    ),
+)
+def test_reference_adapter_rejects_tampered_result_provenance_and_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+    message: str,
+) -> None:
+    job = _capacity_job()
+    result = run(job)
+    if tamper == "job":
+        result = replace(
+            result,
+            provenance=replace(result.provenance, job_identity="wrong-job"),
+        )
+    elif tamper == "backend":
+        result = replace(
+            result,
+            provenance=replace(result.provenance, backend="different-backend"),
+        )
+    elif tamper == "deterministic":
+        result = replace(
+            result,
+            provenance=replace(result.provenance, deterministic=False),
+        )
+    else:
+        result = replace(result, closed=False)
+    monkeypatch.setattr(
+        "sigilicon.experimental.workflows.reference_physical_design.run",
+        lambda _job: result,
+    )
+
+    flow = _run_flow(tmp_path, tamper, job, run_id="4" * 32)
+    outcome = flow.nodes["solve"]
+
+    assert outcome.execution_status == "succeeded"
+    assert outcome.result_status == "failed"
+    assert outcome.artifacts == {}
+    assert outcome.reason is not None and message in outcome.reason

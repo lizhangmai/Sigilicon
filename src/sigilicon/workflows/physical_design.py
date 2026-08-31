@@ -1,4 +1,4 @@
-"""Flow Adapter for the in-process reference physical-design Module."""
+"""Stable materialization-plan and materialization-receipt Flow Adapters."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from sigilicon.flow.physical_design import (
     MATERIALIZED_GDS_KIND,
     MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND,
     MATERIALIZATION_RECEIPT_KIND,
-    PHYSICAL_CLOSURE_EVIDENCE_KIND,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_DESIGN_RESULT_KIND,
     PHYSICAL_MATERIALIZATION_PLAN_KIND,
@@ -44,22 +43,15 @@ from sigilicon.layout.materialization_execution import (
     materialization_receipt_id,
     validate_materialization_receipt,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.layout.physical_design import (
     PhysicalDesignJob,
     PhysicalDesignResult,
-    PlacementRoutingTerminationReason,
-    PnrStage,
-    ResultStatus,
-    RoutingTerminationReason,
-    run,
 )
-from sigilicon.layout.pnr.serialization import (
-    physical_closure_evidence_id,
+from sigilicon.layout.physical_design_serialization import (
     physical_design_job_from_json,
     physical_design_job_id,
     physical_design_result_from_json,
     physical_design_result_id,
-    placement_routing_closure_evidence_from_json,
 )
 
 
@@ -77,154 +69,6 @@ def _read_result(path: Path) -> PhysicalDesignResult:
         raise FlowExecutionError(
             f"invalid Physical Design Result artifact: {exc}"
         ) from exc
-
-
-def _completion_values(
-    job: PhysicalDesignJob,
-    result: PhysicalDesignResult,
-) -> dict[str, object]:
-    evidence = result.closure_evidence
-    routing_requested = PnrStage.ROUTING in job.request.stages
-    if routing_requested and result.status is ResultStatus.SUCCEEDED:
-        if evidence is None:
-            raise FlowExecutionError(
-                "successful routed result omitted typed closure evidence"
-            )
-        closed = (
-            evidence.termination is PlacementRoutingTerminationReason.CLOSED
-            and evidence.routing_termination is RoutingTerminationReason.CLOSED
-            and evidence.quality.closed
-        )
-    else:
-        closed = result.status is ResultStatus.SUCCEEDED and not routing_requested
-
-    closure_termination = (
-        "not_evaluated" if evidence is None else evidence.termination.value
-    )
-    routing_termination = (
-        "not_evaluated" if evidence is None else evidence.routing_termination.value
-    )
-    state_budget = evidence is not None and (
-        evidence.routing_termination is RoutingTerminationReason.STATE_BUDGET
-        or evidence.termination
-        is PlacementRoutingTerminationReason.REPAIR_STATE_BUDGET
-    )
-    iteration_budget = evidence is not None and (
-        evidence.routing_termination is RoutingTerminationReason.ITERATION_BUDGET
-        or evidence.termination
-        is PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
-    )
-    return {
-        "physical-design-status": result.status.value,
-        "physical-design-succeeded": result.status is ResultStatus.SUCCEEDED,
-        "physical-design-closed": closed,
-        "closure-termination": closure_termination,
-        "routing-termination": routing_termination,
-        "state-budget-exhausted": state_budget,
-        "iteration-budget-exhausted": iteration_budget,
-    }
-
-
-class ReferencePhysicalDesignAdapter:
-    """Run pure P&R over one managed job and emit canonical typed artifacts."""
-
-    def run(self, context: ActionContext) -> AdapterResult:
-        return complete_staged_run(
-            context,
-            validate_inputs=self._validate_inputs,
-            prepare=self._prepare,
-            execute=self._execute,
-            collect_result=self._collect_result,
-        )
-
-    def _validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
-        try:
-            _read_job(context.input("job").path)
-        except FlowExecutionError as exc:
-            return (str(exc),)
-        return ()
-
-    def _prepare(self, context: ActionContext) -> None:
-        pass
-
-    def _execute(self, context: ActionContext) -> AdapterExecution:
-        job = _read_job(context.input("job").path)
-        result = run(job)
-        result_path = context.output_path("result", "physical-design-result.json")
-        result_path.write_text(result.canonical_json(), encoding="utf-8")
-        if result.closure_evidence is not None:
-            evidence_path = context.output_path(
-                "closure-evidence",
-                "physical-closure-evidence.json",
-            )
-            evidence_path.write_text(
-                result.closure_evidence.canonical_json(),
-                encoding="utf-8",
-            )
-        return AdapterExecution.succeeded()
-
-    def _collect_result(
-        self,
-        context: ActionContext,
-        execution: AdapterExecution,
-    ) -> CollectedActionResult:
-        job = _read_job(context.input("job").path)
-        result_path = context.output_path("result", "physical-design-result.json")
-        result = _read_result(result_path)
-        facts = context.action.fact_schema.project(
-            _completion_values(job, result),
-            source=FactSource(
-                context.action.kind,
-                context.node_id,
-                physical_design_result_id(result),
-            ),
-        )
-        result_qualifiers = {
-            "job-identity": physical_design_job_id(job),
-            "result-identity": physical_design_result_id(result),
-            "deterministic": result.provenance.deterministic,
-        }
-        artifacts = [
-            ProducedArtifact(
-                "result",
-                PHYSICAL_DESIGN_RESULT_KIND,
-                result_path,
-                qualifiers=result_qualifiers,
-            )
-        ]
-        if result.closure_evidence is not None:
-            evidence_path = context.output_path(
-                "closure-evidence",
-                "physical-closure-evidence.json",
-            )
-            try:
-                evidence = placement_routing_closure_evidence_from_json(
-                    evidence_path.read_text(encoding="utf-8")
-                )
-            except (OSError, UnicodeError, ValueError, TypeError) as exc:
-                raise FlowExecutionError(
-                    f"invalid physical closure evidence artifact: {exc}"
-                ) from exc
-            if evidence != result.closure_evidence:
-                raise FlowExecutionError(
-                    "closure evidence artifact disagrees with Physical Design Result"
-                )
-            artifacts.append(
-                ProducedArtifact(
-                    "closure-evidence",
-                    PHYSICAL_CLOSURE_EVIDENCE_KIND,
-                    evidence_path,
-                    qualifiers={
-                        **result_qualifiers,
-                        "closure-identity": physical_closure_evidence_id(evidence),
-                    },
-                )
-            )
-        return CollectedActionResult(
-            status="valid",
-            artifacts=tuple(artifacts),
-            facts=facts,
-        )
 
 
 def _materialization_values(plan: MaterializationPlan) -> dict[str, object]:
@@ -520,7 +364,6 @@ def collect_materialization_execution_result(
 
 __all__ = [
     "MaterializationPlanAdapter",
-    "ReferencePhysicalDesignAdapter",
     "collect_materialization_execution_result",
     "read_materialization_execution_request",
     "write_materialization_receipt",

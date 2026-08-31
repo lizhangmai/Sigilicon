@@ -45,7 +45,6 @@ from sigilicon.flow.layout import (
     LAYOUT_ACTION_PLAN,
     LAYOUT_GENERATION_ADAPTER,
     LAYOUT_GENERATION_ACTION,
-    LAYOUT_VERIFICATION_ADAPTER,
     LAYOUT_VERIFICATION_ACTION,
 )
 from sigilicon.flow.model import SourceMember
@@ -277,11 +276,6 @@ def _project_workflow_registry(
         LAYOUT_GENERATION_ADAPTER,
         lambda: _layout_action_adapter(client_factory=client_factory),
     )
-    registry.register_adapter_factory(
-        LAYOUT_VERIFICATION_ADAPTER,
-        lambda: _layout_action_adapter(client_factory=client_factory),
-    )
-
     source = project.flow_registry_extension(owner)
     if source is None:
         return registry
@@ -547,65 +541,6 @@ class ProjectRunner:
             ),
         )
         return ProjectExecution._bind(engine, plan, self.project)
-
-    def plan_design_campaign(self, source: object):
-        """Compile one typed Design Campaign without exposing engine internals."""
-
-        from sigilicon.workflows.design_campaign import (
-            DesignCampaign,
-            DesignCampaignAttempt,
-            DesignCampaignContinuation,
-            DesignCampaignSpec,
-            ProjectDesignCampaignPlan,
-        )
-
-        if not isinstance(source, DesignCampaignSpec):
-            raise ValueError("ProjectRunner requires a typed DesignCampaignSpec")
-        if source.owner != self.owner.name:
-            raise ValueError("Design Campaign owner disagrees with ProjectRunner")
-        baseline_source = source.baseline
-        baseline_execution = self.plan(
-            baseline_source.target,
-            baseline_source.operation,
-        )
-        baseline = DesignCampaignAttempt(
-            baseline_source.iteration_id,
-            baseline_execution._plan,
-            baseline_source.candidate,
-            baseline_source.artifacts,
-            baseline_source.stages,
-            None,
-        )
-        continuation = None
-        if source.continuation is not None:
-            template = source.continuation
-            continuation_execution = self.plan(
-                template.target,
-                template.operation,
-            )
-            continuation = DesignCampaignContinuation(
-                continuation_execution._plan,
-                template.candidate,
-                template.artifacts,
-                template.stages,
-                template.proposal_node,
-                template.repair_policy,
-            )
-        campaign = DesignCampaign(
-            source.owner,
-            source.campaign_id,
-            baseline,
-            source.budget,
-            source.scope,
-            continuation,
-        )
-        planned = ProjectDesignCampaignPlan(
-            campaign,
-            baseline_execution._engine,
-            self.project.artifact_root,
-        )
-        _ = planned.record
-        return planned
 
     def _select(self, target: str, operation: str) -> _TargetSelection:
         source = self.project.owner_target_catalog(self.owner)

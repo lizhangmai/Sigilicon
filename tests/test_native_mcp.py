@@ -43,20 +43,7 @@ from sigilicon.domain.agentic_execution import (
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
-from sigilicon.workflows.design_campaign import design_campaign_state_from_json
-from sigilicon.workflows.design_repair import DesignRepairProposal
-
-from test_agentic_campaign_interface import (
-    _campaign,
-    _feedback_campaign,
-    _feedback_registry,
-    _grant as campaign_grant,
-    _patch_project_registry,
-    _registry as campaign_registry,
-    _write_campaign_project,
-)
 from test_design_promotion import _inputs as promotion_inputs
-from test_design_campaign import _topology
 
 
 def _read(root: Path) -> AgenticReadInterface:
@@ -167,7 +154,6 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
                 "target.plan",
                 "run.inspect",
                 "candidate.validate",
-                "campaign.plan",
                 "candidate.promotion_plan",
             ]
             assert all(
@@ -268,6 +254,13 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
             )
             assert promotion.structured_content["data"]["writes_canonical_source"] is False
 
+            campaign = await client.call_tool(
+                "campaign.plan",
+                {"campaign": "{}"},
+            )
+            assert campaign.is_error is True
+            assert campaign.structured_content["data"]["error"]["code"] == "unknown-tool"
+
             resources = await client.list_resources()
             assert [str(item.uri) for item in resources.resources] == [
                 interface.project_resource_uri
@@ -349,20 +342,15 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
                 "run.inspect",
                 "run.cancel",
                 "candidate.validate",
-                "campaign.plan",
                 "candidate.promotion_plan",
-                "campaign.run",
             }
             assert tools["target.run"].annotations.read_only_hint is False
             assert tools["target.run"].annotations.destructive_hint is True
             assert tools["run.cancel"].annotations.read_only_hint is False
             assert tools["run.cancel"].annotations.destructive_hint is True
-            assert tools["campaign.plan"].annotations.read_only_hint is True
-            assert tools["campaign.run"].annotations.destructive_hint is True
             run_id_patterns = {
                 tools["run.inspect"].input_schema["properties"]["run_id"]["pattern"],
                 tools["run.cancel"].input_schema["properties"]["run_id"]["pattern"],
-                tools["campaign.run"].input_schema["properties"]["run_id"]["pattern"],
             }
             assert len(run_id_patterns) == 1
             assert set(tools["target.run"].input_schema["properties"]) == {
@@ -463,121 +451,6 @@ def test_native_mcp_rejects_cross_project_read_execution_composition(
 
     with pytest.raises(TypeError):
         create_server(read, execution=execution)  # type: ignore[call-arg]
-
-
-def test_native_mcp_campaign_plan_and_run_match_shared_interfaces(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch, campaign_registry)
-    source = _campaign()
-    read = _read(tmp_path)
-    expected_plan = read.plan_campaign(campaign_json=source.canonical_json())
-    campaign_identity = expected_plan["data"]["campaign_identity"]
-    execution = AgenticExecutionInterface(
-        read,
-        grant=campaign_grant(campaign_identity, expected_plan["data"]["plan"]),
-    )
-    server = create_server(execution)
-
-    async def scenario() -> None:
-        async with Client(server) as client:
-            planned = await client.call_tool(
-                "campaign.plan",
-                {"campaign": source.canonical_json()},
-            )
-            assert planned.is_error is False
-            assert planned.structured_content == expected_plan
-
-            executed = await client.call_tool(
-                "campaign.run",
-                {
-                    "campaign": source.canonical_json(),
-                    "campaign_identity": campaign_identity,
-                },
-            )
-            assert executed.is_error is False
-            assert executed.structured_content == execution.run_campaign(
-                campaign_json=source.canonical_json(),
-                campaign_identity=campaign_identity,
-            )
-            assert executed.structured_content["conclusion"] == "passed"
-
-            rejected = await client.call_tool(
-                "campaign.run",
-                {
-                    "campaign": source.canonical_json(),
-                    "campaign_identity": campaign_identity,
-                    "command": "touch owned",
-                },
-            )
-            assert rejected.is_error is True
-            assert not (tmp_path / "owned").exists()
-
-    asyncio.run(scenario())
-
-
-def test_native_mcp_campaign_run_resumes_with_semantic_proposal_only(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_campaign_project(tmp_path)
-    _patch_project_registry(monkeypatch, _feedback_registry)
-    source = _feedback_campaign()
-    read = _read(tmp_path)
-    planned = read.plan_campaign(campaign_json=source.canonical_json())
-    campaign_identity = planned["data"]["campaign_identity"]
-    execution = AgenticExecutionInterface(
-        read,
-        grant=campaign_grant(campaign_identity, planned["data"]["plan"]),
-    )
-    server = create_server(execution)
-
-    async def scenario() -> None:
-        async with Client(server) as client:
-            started = await client.call_tool(
-                "campaign.run",
-                {
-                    "campaign": source.canonical_json(),
-                    "campaign_identity": campaign_identity,
-                },
-            )
-            assert started.is_error is False
-            assert started.structured_content["conclusion"] == "proposal_required"
-            state = design_campaign_state_from_json(
-                canonical_json(started.structured_content["data"]["state"])
-            )
-            assert state.attribution is not None
-            proposal = DesignRepairProposal(
-                "example:proposal:native-mcp-round-2",
-                "example",
-                campaign_identity,
-                state.iterations[-1].candidate.identity,
-                state.attribution.identity,
-                tuple(item.identity for item in state.attribution.evidence),
-                _topology(master="BUF", origin=TopologyOrigin.PROPOSED),
-                None,
-                None,
-                ("l0-functional",),
-                ProposalProvenance(
-                    "test-semantic-client",
-                    "1",
-                    (state.iterations[-1].candidate.identity,),
-                ),
-            )
-            completed = await client.call_tool(
-                "campaign.run",
-                {
-                    "run_id": started.structured_content["data"]["management"]["run_id"],
-                    "proposal": proposal.canonical_json(),
-                },
-            )
-            assert completed.is_error is False
-            assert completed.structured_content["conclusion"] == "passed"
-            assert len(completed.structured_content["data"]["state"]["iterations"]) == 2
-
-    asyncio.run(scenario())
 
 
 def test_native_mcp_stdio_executes_only_the_launcher_grant(tmp_path: Path) -> None:

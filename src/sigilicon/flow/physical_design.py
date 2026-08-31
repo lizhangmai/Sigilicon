@@ -1,4 +1,4 @@
-"""Tool-independent Flow artifact contracts for physical design."""
+"""Stable, tool-independent Flow contracts for physical design."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from sigilicon.flow.registry import FlowRegistry
 
 PHYSICAL_DESIGN_JOB_KIND = "physical-design.job"
 PHYSICAL_DESIGN_RESULT_KIND = "physical-design.result"
-PHYSICAL_CLOSURE_EVIDENCE_KIND = "evidence.physical-closure"
 PHYSICAL_DESIGN_SOURCE_ACTION = "physical-design.source-job"
 PHYSICAL_DESIGN_ACTION = "physical-design.solve"
 PHYSICAL_MATERIALIZATION_ACTION = "physical-design.compile-materialization"
@@ -22,9 +21,7 @@ MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND = "evidence.materialization-acceptance"
 PHYSICAL_MATERIALIZATION_EXECUTION_ACTION = "physical-design.materialize"
 MATERIALIZED_GDS_KIND = "layout.gds"
 MATERIALIZATION_RECEIPT_KIND = "evidence.materialization-receipt"
-REFERENCE_PNR_ADAPTER = "reference-pnr"
-REFERENCE_MATERIALIZATION_ADAPTER = "reference-materialization"
-OA_XSTREAM_MATERIALIZATION_ADAPTER = "oa-virtuoso-xstream-materialization"
+MATERIALIZATION_PLAN_ADAPTER = "materialization-plan"
 
 
 PHYSICAL_DESIGN_SOURCE_FACT_SCHEMA = FactSchema(
@@ -83,33 +80,6 @@ PHYSICAL_DESIGN_FACT_SCHEMA = FactSchema(
         ),
         FactSpec("physical-design-succeeded", FactKind.BOOLEAN),
         FactSpec("physical-design-closed", FactKind.BOOLEAN),
-        FactSpec(
-            "closure-termination",
-            FactKind.TEXT,
-            enum_values=(
-                "not_evaluated",
-                "closed",
-                "routing_terminated",
-                "no_legal_repair",
-                "repair_state_budget",
-                "repair_iteration_budget",
-                "independent_evaluation_failed",
-            ),
-        ),
-        FactSpec(
-            "routing-termination",
-            FactKind.TEXT,
-            enum_values=(
-                "not_evaluated",
-                "closed",
-                "infeasible",
-                "unsupported",
-                "state_budget",
-                "iteration_budget",
-            ),
-        ),
-        FactSpec("state-budget-exhausted", FactKind.BOOLEAN),
-        FactSpec("iteration-budget-exhausted", FactKind.BOOLEAN),
     ),
 )
 
@@ -147,7 +117,7 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
                     members=("layer-map", "master-layouts"),
                 ),
             ),
-            adapters=(OA_XSTREAM_MATERIALIZATION_ADAPTER,),
+            adapters=(),
             adapter_extensible=True,
             execution_capability="mutate-workspace",
         )
@@ -167,7 +137,8 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
                 ),
             ),
             fact_schema=PHYSICAL_MATERIALIZATION_FACT_SCHEMA,
-            adapters=(REFERENCE_MATERIALIZATION_ADAPTER,),
+            adapters=(MATERIALIZATION_PLAN_ADAPTER,),
+            adapter_extensible=True,
         )
     )
     registry.register_action(
@@ -176,20 +147,15 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
             inputs=(ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),),
             outputs=(
                 ArtifactPort("result", PHYSICAL_DESIGN_RESULT_KIND),
-                ArtifactPort(
-                    "closure-evidence",
-                    PHYSICAL_CLOSURE_EVIDENCE_KIND,
-                    required=False,
-                ),
             ),
             fact_schema=PHYSICAL_DESIGN_FACT_SCHEMA,
-            adapters=(REFERENCE_PNR_ADAPTER,),
+            adapters=(),
+            adapter_extensible=True,
         )
     )
 
 
 __all__ = [
-    "PHYSICAL_CLOSURE_EVIDENCE_KIND",
     "PHYSICAL_DESIGN_ACTION",
     "PHYSICAL_DESIGN_JOB_KIND",
     "PHYSICAL_DESIGN_RESULT_KIND",
@@ -204,8 +170,6 @@ __all__ = [
     "PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA",
     "PHYSICAL_MATERIALIZATION_FACT_SCHEMA",
     "PHYSICAL_DESIGN_FACT_SCHEMA",
-    "OA_XSTREAM_MATERIALIZATION_ADAPTER",
-    "REFERENCE_MATERIALIZATION_ADAPTER",
-    "REFERENCE_PNR_ADAPTER",
+    "MATERIALIZATION_PLAN_ADAPTER",
     "register_physical_design_actions",
 ]

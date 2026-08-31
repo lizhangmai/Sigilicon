@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     CutSpacingRule,
     EnclosureRule,
@@ -14,11 +14,11 @@ from sigilicon.layout.pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalLayer,
     PhysicalTechnology,
     PnrInputError,
-    PnrRequest,
+    PhysicalDesignRequest,
     Rect,
     ResultStatus,
     RoutingDirection,
@@ -78,8 +78,8 @@ def _technology() -> PhysicalTechnology:
     )
 
 
-def _job(technology: PhysicalTechnology) -> PhysicalDesignJob:
-    return PhysicalDesignJob(
+def _job(technology: PhysicalTechnology) -> ReferencePnrJob:
+    return ReferencePnrJob(
         technology,
         PhysicalDesign("empty", Rect(0, 0, 40, 40), (), ()),
     )
@@ -90,7 +90,7 @@ def test_required_capabilities_are_derived_from_normalized_technology_facts() ->
     result = run(
         replace(
             _job(_technology()),
-            request=PnrRequest(required_technology_capabilities=required),
+            request=PhysicalDesignRequest(required_technology_capabilities=required),
         )
     )
 
@@ -101,7 +101,7 @@ def test_missing_technology_capability_is_explicitly_unsupported() -> None:
     result = run(
         replace(
             _job(PhysicalTechnology("minimal", 1000, 1)),
-            request=PnrRequest(
+            request=PhysicalDesignRequest(
                 required_technology_capabilities=(
                     TechnologyCapability.VIA_DEFINITIONS,
                 ),

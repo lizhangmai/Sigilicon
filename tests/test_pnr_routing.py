@@ -4,10 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.layout.pnr._routing_check import check_routing_solution
-from sigilicon.layout.pnr._routing_constraints import evaluate_routing_constraints
-from sigilicon.layout.pnr._routing_problem import compile_routing_problem
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr._routing_check import check_routing_solution
+from sigilicon.experimental.reference_pnr._routing_constraints import evaluate_routing_constraints
+from sigilicon.experimental.reference_pnr._routing_problem import compile_routing_problem
+from sigilicon.experimental.reference_pnr import (
     ConstraintStatus,
     CutSpacingRule,
     EnclosureRule,
@@ -20,7 +20,7 @@ from sigilicon.layout.pnr import (
     MinimumWidthRule,
     Orientation,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -31,9 +31,9 @@ from sigilicon.layout.pnr import (
     PinReference,
     Placement,
     PnrInputError,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     ResultStatus,
@@ -74,7 +74,7 @@ def _job(
     technology: PhysicalTechnology | None = None,
     obstruction: bool = False,
     maximum_route_states: int = 200_000,
-) -> PhysicalDesignJob:
+) -> ReferencePnrJob:
     masters: tuple[PhysicalMaster, ...] = ()
     instances: tuple[PhysicalInstance, ...] = ()
     if obstruction:
@@ -89,7 +89,7 @@ def _job(
         instances = (
             PhysicalInstance("wall", master.name, Placement(Point(18, 0))),
         )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology or _technology(),
         PhysicalDesign(
             "route-two-ports",
@@ -107,16 +107,16 @@ def _job(
                 ),
             ),
         ),
-        request=PnrRequest(
-            stages=(PnrStage.PLACEMENT, PnrStage.ROUTING),
+        request=PhysicalDesignRequest(
+            stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING),
         ),
-        execution_policy=PnrExecutionPolicy(
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_route_states=maximum_route_states,
         ),
     )
 
 
-def _multilayer_job(*, three_layers: bool = False) -> PhysicalDesignJob:
+def _multilayer_job(*, three_layers: bool = False) -> ReferencePnrJob:
     layers = [
         PhysicalLayer("m1", LayerKind.ROUTING, RoutingDirection.ANY),
         PhysicalLayer("v1", LayerKind.CUT),
@@ -185,7 +185,7 @@ def _multilayer_job(*, three_layers: bool = False) -> PhysicalDesignJob:
         via_definitions=tuple(vias),
         rules=tuple(rules),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "route-across-layers",
@@ -206,11 +206,11 @@ def _multilayer_job(*, three_layers: bool = False) -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 
-def _ripup_job(*, maximum_routing_iterations: int = 8) -> PhysicalDesignJob:
+def _ripup_job(*, maximum_routing_iterations: int = 8) -> ReferencePnrJob:
     side_wall = PhysicalMaster(
         "side-wall",
         3,
@@ -225,7 +225,7 @@ def _ripup_job(*, maximum_routing_iterations: int = 8) -> PhysicalDesignJob:
         obstructions=(LayerShape("route", Rect(0, 0, 12, 3)),),
         allowed_orientations=(Orientation.R0,),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         _technology(),
         PhysicalDesign(
             "order-dependent-pocket",
@@ -253,16 +253,16 @@ def _ripup_job(*, maximum_routing_iterations: int = 8) -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(
-            stages=(PnrStage.PLACEMENT, PnrStage.ROUTING),
+        request=PhysicalDesignRequest(
+            stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING),
         ),
-        execution_policy=PnrExecutionPolicy(
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_routing_iterations=maximum_routing_iterations,
         ),
     )
 
 
-def _wire_length(job: PhysicalDesignJob) -> int:
+def _wire_length(job: ReferencePnrJob) -> int:
     result = run(job)
     assert result.status is ResultStatus.SUCCEEDED
     return sum(
@@ -273,7 +273,7 @@ def _wire_length(job: PhysicalDesignJob) -> int:
     )
 
 
-def _parallel_net_job(*, congestion_bins_y: int) -> PhysicalDesignJob:
+def _parallel_net_job(*, congestion_bins_y: int) -> ReferencePnrJob:
     job = _job()
     design = replace(
         job.design,
@@ -318,7 +318,7 @@ def test_gridless_router_returns_exact_deterministic_manhattan_geometry() -> Non
     )
     assert _wire_length(job) == 34
     routing_report = first.stage_reports[-1]
-    assert routing_report.stage is PnrStage.ROUTING
+    assert routing_report.stage is PhysicalDesignStage.ROUTING
     assert routing_report.status is ResultStatus.SUCCEEDED
     assert {metric.name: metric.value for metric in routing_report.metrics}[
         "routed_net_count"
@@ -340,7 +340,7 @@ def test_routing_problem_compiles_transformed_static_design_facts() -> None:
         allowed_orientations=(Orientation.R0,),
     )
     placement = Placement(Point(10, 12))
-    job = PhysicalDesignJob(
+    job = ReferencePnrJob(
         _technology(),
         PhysicalDesign(
             "compiled-route-problem",
@@ -363,7 +363,7 @@ def test_routing_problem_compiles_transformed_static_design_facts() -> None:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
     problem = compile_routing_problem(

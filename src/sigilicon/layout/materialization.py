@@ -8,23 +8,20 @@ from collections.abc import Mapping
 from typing import Iterable
 
 from sigilicon.canonical import canonical_from_json
-from sigilicon.layout.pnr._legality import placed_sized_rect
-from sigilicon.layout.pnr.model import (
+from sigilicon.layout.physical_design import (
     LayerKind,
     PhysicalDesignJob,
     PhysicalDesignResult,
     Placement,
-    PlacementRoutingTerminationReason,
     Point,
-    PnrStage,
     ResultStatus,
-    RoutingTerminationReason,
 )
-from sigilicon.layout.pnr.serialization import (
+from sigilicon.layout.physical_design_serialization import (
     canonical_json,
     physical_design_job_id,
     physical_design_result_id,
 )
+from sigilicon.layout.physical_geometry import placed_sized_rect
 
 
 class MaterializationError(ValueError):
@@ -186,15 +183,8 @@ def _acceptance(
     job: PhysicalDesignJob,
     result: PhysicalDesignResult,
 ) -> MaterializationAcceptance:
-    evidence = result.closure_evidence
-    routing_requested = PnrStage.ROUTING in job.request.stages
     if result.status is ResultStatus.SUCCEEDED:
-        if not routing_requested or (
-            evidence is not None
-            and evidence.termination is PlacementRoutingTerminationReason.CLOSED
-            and evidence.routing_termination is RoutingTerminationReason.CLOSED
-            and evidence.quality.closed
-        ):
+        if result.closed:
             return MaterializationAcceptance(
                 MaterializationDecision.EXECUTABLE,
                 MaterializationReason.ACCEPTED,
@@ -212,36 +202,10 @@ def _acceptance(
             "physical-design result requests an unsupported capability",
         )
     if result.status is ResultStatus.EXHAUSTED:
-        reason = MaterializationReason.BUDGET_EXHAUSTED
-        if evidence is not None and (
-            evidence.routing_termination is RoutingTerminationReason.STATE_BUDGET
-            or evidence.termination
-            is PlacementRoutingTerminationReason.REPAIR_STATE_BUDGET
-        ):
-            reason = MaterializationReason.STATE_BUDGET
-        elif evidence is not None and (
-            evidence.routing_termination is RoutingTerminationReason.ITERATION_BUDGET
-            or evidence.termination
-            is PlacementRoutingTerminationReason.REPAIR_ITERATION_BUDGET
-        ):
-            reason = MaterializationReason.ITERATION_BUDGET
         return MaterializationAcceptance(
             MaterializationDecision.DIAGNOSTIC,
-            reason,
+            MaterializationReason.BUDGET_EXHAUSTED,
             "maximum legal partial result is diagnostic only",
-        )
-    if evidence is not None and (
-        evidence.termination
-        is PlacementRoutingTerminationReason.INDEPENDENT_EVALUATION_FAILED
-        or (
-            evidence.routing_termination is RoutingTerminationReason.CLOSED
-            and evidence.quality.closed
-        )
-    ):
-        return MaterializationAcceptance(
-            MaterializationDecision.REJECTED,
-            MaterializationReason.INVALID_SOLUTION,
-            "returned geometry did not pass independent evaluation",
         )
     return MaterializationAcceptance(
         MaterializationDecision.REJECTED,
@@ -257,7 +221,7 @@ def _provenance(
     return MaterializationProvenance(
         job_identity=physical_design_job_id(job),
         result_identity=physical_design_result_id(result),
-        result_engine=result.provenance.engine,
+        result_engine=result.provenance.backend,
     )
 
 
@@ -342,7 +306,7 @@ def validate_materialization_plan(
 
     if plan.provenance != _provenance(job, result):
         issue("provenance_mismatch", "plan provenance does not identify its job and result")
-    if result.provenance.job != job:
+    if result.provenance.job_identity != physical_design_job_id(job):
         issue("result_input_mismatch", "result does not contain the supplied typed job")
     expected_plan_id = (
         f"{result.artifact_id}:materialization-plan:"

@@ -15,7 +15,7 @@ from sigilicon.layout.materialization import (
     materialization_plan_from_json,
     validate_materialization_plan,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     GridlessRoutingResource,
     LayerKind,
@@ -23,7 +23,7 @@ from sigilicon.layout.pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
@@ -31,9 +31,9 @@ from sigilicon.layout.pnr import (
     PinAccess,
     PinReference,
     Placement,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     ResultStatus,
@@ -45,7 +45,7 @@ from sigilicon.layout.pnr import (
 )
 
 
-def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
+def _gridless_job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "materialization-gridless",
         1000,
@@ -57,7 +57,7 @@ def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 1),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "materialization-closed",
@@ -70,12 +70,12 @@ def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
             ),
             nets=(PhysicalNet("signal", (PinReference("source"), PinReference("sink"))),),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(maximum_route_states=maximum_route_states),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(maximum_route_states=maximum_route_states),
     )
 
 
-def _fixed_blockage_job() -> PhysicalDesignJob:
+def _fixed_blockage_job() -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "materialization-fixed-blocker",
         1000,
@@ -89,7 +89,7 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "materialization-infeasible",
@@ -111,11 +111,11 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 
-def _compile(job: PhysicalDesignJob):
+def _compile(job: ReferencePnrJob):
     result = run(job)
     plan = compile_materialization_plan(
         job,
@@ -149,7 +149,7 @@ def test_budget_exhaustion_retains_only_a_diagnostic_plan() -> None:
 
     assert result.status is ResultStatus.EXHAUSTED
     assert plan.acceptance.decision is MaterializationDecision.DIAGNOSTIC
-    assert plan.acceptance.reason is MaterializationReason.STATE_BUDGET
+    assert plan.acceptance.reason is MaterializationReason.BUDGET_EXHAUSTED
     assert not plan.executable
     assert len(plan.route_segments) == sum(
         len(route.segments) for route in result.routes

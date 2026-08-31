@@ -3,7 +3,11 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 import sigilicon
+from sigilicon.cli.agentic_execute import _parser as execute_parser
+from sigilicon.cli.agentic_read import _parser as read_parser
 from sigilicon.domain.repository import Project as DomainProject
 from sigilicon.project import (
     Project,
@@ -72,6 +76,45 @@ def test_generic_flow_interface_does_not_aggregate_domain_action_modules() -> No
     assert result.returncode == 0, result.stderr
 
 
+def test_stable_flow_and_agentic_imports_do_not_load_experimental_modules() -> None:
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            "import sys; "
+            "import sigilicon.flow; "
+            "import sigilicon.workflows.agentic_read; "
+            "import sigilicon.workflows.agentic_execution; "
+            "import sigilicon.cli.flow_core; "
+            "forbidden = {name for name in sys.modules if name == 'sigilicon.experimental' "
+            "or name.startswith('sigilicon.experimental.')}; "
+            "assert not forbidden, sorted(forbidden)",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_stable_agentic_cli_rejects_experimental_campaign_routes() -> None:
+    with pytest.raises(SystemExit):
+        read_parser().parse_args(
+            ["--project-root", "/tmp/project", "campaign-plan"]
+        )
+    with pytest.raises(SystemExit):
+        execute_parser().parse_args(
+            [
+                "--project-root",
+                "/tmp/project",
+                "--grant",
+                "/tmp/grant.json",
+                "campaign-run",
+            ]
+        )
+
+
 def test_builtin_registry_does_not_import_external_tool_adapters() -> None:
     result = subprocess.run(
         (
@@ -84,7 +127,7 @@ def test_builtin_registry_does_not_import_external_tool_adapters() -> None:
             "'sigilicon.workflows.synopsys', "
             "'sigilicon.workflows.calibre_pex', "
             "'sigilicon.workflows.layout_verification', "
-            "'sigilicon.workflows.oa_materialization', "
+            "'sigilicon.experimental', "
             "'sigilicon.workflows.physical_design'}; "
             "assert forbidden.isdisjoint(sys.modules), "
             "sorted(forbidden & set(sys.modules))",
@@ -94,6 +137,25 @@ def test_builtin_registry_does_not_import_external_tool_adapters() -> None:
         text=True,
     )
 
+    assert result.returncode == 0, result.stderr
+
+
+def test_builtin_registry_does_not_register_reference_pnr() -> None:
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            "from sigilicon.workflows.builtin import build_flow_registry; "
+            "registry = build_flow_registry(); "
+            "assert not registry.has_adapter('reference-pnr'); "
+            "from sigilicon.experimental.registry import build_experimental_flow_registry; "
+            "experimental = build_experimental_flow_registry(); "
+            "assert experimental.has_adapter('reference-pnr')",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0, result.stderr
 
 

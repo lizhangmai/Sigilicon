@@ -12,6 +12,7 @@ from conftest import (
 )
 import sigilicon.domain.repository as repository_module
 from sigilicon.cli.agentic_read import main as agentic_read_cli_main
+from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.repository import Project
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
@@ -324,16 +325,19 @@ def test_candidate_validation_has_python_cli_parity(
         candidate_json=candidate.canonical_json(),
         artifact_json=(topology.canonical_json(),),
     )
-    assert agentic_read_cli_main(
+    assert sigilicon_cli_main(
         [
+            "candidate",
+            "validate",
             "--project-root",
             str(tmp_path),
-            "candidate-validate",
+            "--owner",
             "example",
             "--candidate",
             str(candidate_path),
             "--artifact",
             str(topology_path),
+            "--json",
         ]
     ) == 0
     assert json.loads(capsys.readouterr().out) == expected

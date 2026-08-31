@@ -12,17 +12,18 @@ _COMMANDS = (
     "candidate",
     "read",
     "execute",
+    "experimental",
     "flow",
     "oa",
     "ip",
 )
 
-_HELP = """usage: sigilicon [-h] {artifact-path,candidate,read,execute,flow,oa,ip} ...
+_HELP = """usage: sigilicon [-h] {artifact-path,candidate,read,execute,experimental,flow,oa,ip} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {artifact-path,candidate,read,execute,flow,oa,ip}
+  {artifact-path,candidate,read,execute,experimental,flow,oa,ip}
 
 options:
   -h, --help            show this help message and exit
@@ -65,6 +66,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from sigilicon.cli.agentic_execute import main as agentic_execute_main
 
         return agentic_execute_main(arguments[1:])
+    if command == "experimental":
+        from sigilicon.cli.experimental import main as experimental_main
+
+        return experimental_main(arguments[1:])
     if command == "oa" or command == "ip":
         from sigilicon.cli.flow import main as flow_main
 

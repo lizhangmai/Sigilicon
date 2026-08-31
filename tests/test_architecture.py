@@ -29,6 +29,7 @@ LAYERS = {
     "workflows",
     "integrations",
     "cli",
+    "experimental",
 }
 ALLOWED_DEPENDENCIES = {
     "root": {"project", "root"},
@@ -58,10 +59,23 @@ ALLOWED_DEPENDENCIES = {
         "workflows",
         "cli",
         "root",
+        "experimental",
+    },
+    "experimental": {
+        "domain",
+        "flow",
+        "layout",
+        "virtuoso",
+        "workflows",
+        "experimental",
+        "root",
     },
 }
 CLI_DEPENDENCY_PREFIXES = (
     "sigilicon.cli",
+    "sigilicon.artifacts",
+    "sigilicon.domain",
+    "sigilicon.experimental",
     "sigilicon.flow",
     "sigilicon.paths",
     "sigilicon.workflows",

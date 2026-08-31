@@ -10,7 +10,6 @@ from sigilicon.flow.registry import FlowRegistry
 LAYOUT_GENERATION_ACTION = "custom-layout.generate"
 LAYOUT_GENERATION_ADAPTER = "project-layout-generation"
 LAYOUT_VERIFICATION_ACTION = "custom-layout.verify"
-LAYOUT_VERIFICATION_ADAPTER = "project-layout-verification"
 LAYOUT_GENERATION_EVIDENCE_KIND = "evidence.layout-generation"
 LAYOUT_VERIFICATION_EVIDENCE_KIND = "evidence.layout-verification"
 LAYOUT_ACTION_PLAN = "custom-layout.plan"
@@ -79,13 +78,8 @@ def register_layout_actions(registry: FlowRegistry) -> None:
                 FactSpec("evidence-scope", FactKind.TEXT),
                 FactSpec("product-qualification-conclusion", FactKind.BOOLEAN),
             ),
-            required_capabilities=(
-                "tool.virtuoso-bridge",
-                "license.cadence-oa",
-                "tool.cadence-xstream",
-                "tool.calibre",
-            ),
-            adapters=(LAYOUT_VERIFICATION_ADAPTER,),
+            adapters=(),
+            adapter_extensible=True,
             plan_input_kind=LAYOUT_ACTION_PLAN,
         )
     )
@@ -97,7 +91,6 @@ __all__ = [
     "LAYOUT_GENERATION_ADAPTER",
     "LAYOUT_GENERATION_EVIDENCE_KIND",
     "LAYOUT_VERIFICATION_ACTION",
-    "LAYOUT_VERIFICATION_ADAPTER",
     "LAYOUT_VERIFICATION_EVIDENCE_KIND",
     "register_layout_actions",
 ]

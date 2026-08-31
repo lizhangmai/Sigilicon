@@ -58,6 +58,7 @@ from sigilicon.domain.design import load_design_spec
 from sigilicon.workflows.design_frontend import SourceAuthoredTopologyAdapter
 from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.cli.main import main as sigilicon_main
+from conftest import write_component_owner
 
 
 def test_design_artifacts_use_explicit_owner_scoped_ids() -> None:
@@ -416,10 +417,15 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
         path = tmp_path / f"{name}.json"
         path.write_text(artifact.canonical_json(), encoding="utf-8")
         artifact_paths.extend(("--artifact", str(path)))
+    write_component_owner(project_root, "example", filesets={})
     assert sigilicon_main(
         [
             "candidate",
             "validate",
+            "--project-root",
+            str(project_root),
+            "--owner",
+            "example",
             "--candidate",
             str(candidate_path),
             *artifact_paths,
@@ -430,8 +436,8 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 
     assert validated.candidate_identity == candidate.identity
     assert via_interface == validated
-    assert cli_payload["candidate_identity"] == validated.candidate_identity
-    assert cli_payload["resolved_artifacts"] == list(validated.resolved_artifacts)
+    assert cli_payload["data"]["candidate_identity"] == validated.candidate_identity
+    assert cli_payload["data"]["resolved_artifacts"] == list(validated.resolved_artifacts)
     assert "candidate_identity" not in candidate.canonical_json()
     assert design_evidence_from_json(evidence.canonical_json()) == evidence
     assert design_candidate_from_json(candidate.canonical_json()) == candidate

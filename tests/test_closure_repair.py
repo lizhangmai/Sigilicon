@@ -4,12 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     FenceConstraint,
     LayerKind,
     LayerShape,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalLayer,
     PhysicalMaster,
@@ -20,18 +20,22 @@ from sigilicon.layout.pnr import (
     Point,
     Rect,
     RoutingBlockage,
-    physical_design_job_id,
-    physical_design_result_id,
-    physical_design_job_from_json,
     run,
 )
-from sigilicon.workflows.closure_campaign import (
+from sigilicon.layout.physical_design_serialization import (
+    physical_design_job_id,
+    physical_design_result_id,
+)
+from sigilicon.experimental.reference_pnr.serialization import (
+    reference_pnr_job_from_json,
+)
+from sigilicon.experimental.workflows.closure_campaign import (
     CampaignArtifactIdentity,
     ClosureFeedbackKind,
     ClosureFeedbackScope,
     ClosureIterationProvenance,
 )
-from sigilicon.workflows.closure_repair import (
+from sigilicon.experimental.workflows.closure_repair import (
     ClosureRepairDecision,
     ClosureRepairError,
     ClosureRepairPolicy,
@@ -43,9 +47,9 @@ from sigilicon.workflows.closure_repair import (
 )
 
 
-def _job(*, fixed: bool = False) -> PhysicalDesignJob:
+def _job(*, fixed: bool = False) -> ReferencePnrJob:
     placement = Placement(Point(0, 0))
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         PhysicalTechnology(
             "repair-neutral",
             1000,
@@ -80,7 +84,7 @@ def _job(*, fixed: bool = False) -> PhysicalDesignJob:
     )
 
 
-def _provenance(job: PhysicalDesignJob):
+def _provenance(job: ReferencePnrJob):
     result = run(job)
     return result, ClosureIterationProvenance(
         "round-0",
@@ -152,7 +156,7 @@ def _policy(
 
 
 def _compile(
-    job: PhysicalDesignJob,
+    job: ReferencePnrJob,
     *,
     feedback: tuple[ClosureFeedbackScope, ...] | None = None,
     policy: ClosureRepairPolicy | None = None,
@@ -188,7 +192,7 @@ def test_exact_attributed_policy_compiles_and_applies_immutable_next_job() -> No
     assert next_job.repair_lineage.parent_result_identity == first.parent_result_identity
     assert next_job.repair_lineage.feedback_identity == first.feedback_identity
     assert next_job.repair_lineage.repair_plan_identity == first.plan_id
-    assert physical_design_job_from_json(next_job.canonical_json()) == next_job
+    assert reference_pnr_job_from_json(next_job.canonical_json()) == next_job
 
 
 def test_explicit_drc_rule_policy_may_map_to_one_physical_owner() -> None:

@@ -34,7 +34,6 @@ from sigilicon.flow.physical_design import (
     PHYSICAL_DESIGN_RESULT_KIND,
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
     PHYSICAL_MATERIALIZATION_PLAN_KIND,
-    OA_XSTREAM_MATERIALIZATION_ADAPTER,
     register_physical_design_actions,
 )
 from sigilicon.layout.materialization import (
@@ -53,26 +52,31 @@ from sigilicon.layout.materialization_execution import (
     validate_materialization_receipt,
     validate_materialization_request,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     GridlessRoutingResource,
     LayerKind,
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
     PhysicalTechnology,
     PinAccess,
     PinReference,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Rect,
     RoutingDirection,
     run,
 )
+from sigilicon.experimental.registry import (
+    EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
+    build_experimental_flow_registry,
+)
+from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
 from sigilicon.workflows.builtin import build_flow_registry
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
@@ -86,7 +90,7 @@ _INPUT_ADAPTER = "contract-materialization-inputs"
 _MATERIALIZER = "contract-gds-materializer"
 
 
-def _job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
+def _job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "materialization-execution-gridless",
         1000,
@@ -98,7 +102,7 @@ def _job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 1),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "materialization-execution-closed",
@@ -111,8 +115,8 @@ def _job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
             ),
             nets=(PhysicalNet("signal", (PinReference("source"), PinReference("sink"))),),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(maximum_route_states=maximum_route_states),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(maximum_route_states=maximum_route_states),
     )
 
 
@@ -181,11 +185,29 @@ class _InputsAdapter(StagedAdapterFixture):
         pass
 
     def execute(self, context):
+        stable_job = PhysicalDesignJob(
+            technology=self.job.technology,
+            design=self.job.design,
+            constraints=self.job.constraints,
+            request=self.job.request,
+            routing_constraints=self.job.routing_constraints,
+        )
+        stable_result = PhysicalDesignResult(
+            status=self.result.status,
+            placements=self.result.placements,
+            constraint_outcomes=self.result.constraint_outcomes,
+            stage_reports=self.result.stage_reports,
+            provenance=self.result.provenance,
+            routes=self.result.routes,
+            routing_blockage_placements=self.result.routing_blockage_placements,
+            closed=self.result.closed,
+            artifact_id=self.result.artifact_id,
+        )
         context.output_path("job", "job.json").write_text(
-            self.job.canonical_json(), encoding="utf-8"
+            stable_job.canonical_json(), encoding="utf-8"
         )
         context.output_path("result", "result.json").write_text(
-            self.result.canonical_json(), encoding="utf-8"
+            stable_result.canonical_json(), encoding="utf-8"
         )
         context.output_path("plan", "plan.json").write_text(
             self.plan.canonical_json(), encoding="utf-8"
@@ -552,13 +574,20 @@ def test_layout_content_accepts_only_zero_tape_padding_after_endlib() -> None:
         validate_layout_content(payload + b"\0\0BAD!", LayoutArtifactFormat.GDSII)
 
 
-def test_builtin_registry_exposes_only_the_production_materializer() -> None:
+def test_stable_registry_leaves_materialization_backend_extensible() -> None:
     registry = build_flow_registry()
     contract = registry.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION)
 
-    assert contract.adapters == (OA_XSTREAM_MATERIALIZATION_ADAPTER,)
+    assert contract.adapters == ()
     assert contract.adapter_extensible
     assert not registry.has_adapter(_MATERIALIZER)
-    assert registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert not registry.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
     assert contract.output("layout").kind == MATERIALIZED_GDS_KIND
     assert contract.output("receipt").kind == MATERIALIZATION_RECEIPT_KIND
+
+    experimental = build_experimental_flow_registry()
+    assert experimental.has_adapter(EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER)
+    assert (
+        EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER
+        in experimental.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION).adapters
+    )

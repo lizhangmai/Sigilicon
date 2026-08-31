@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.cli.agentic_execute import main as execute_cli_main
-from sigilicon.cli.agentic_read import main as read_cli_main
+from sigilicon.cli.main import main as sigilicon_cli_main
+from sigilicon.cli.agentic_read import main as agentic_read_cli_main
 from sigilicon.domain.agentic_execution import (
     AgenticExecutionCapability,
     AgenticExecutionGrant,
@@ -15,10 +15,12 @@ from sigilicon.domain.agentic_execution import (
 )
 from sigilicon.domain.circuit_design import EvidenceLevel, EvidenceRole
 from sigilicon.domain.repository import Project
-from sigilicon.workflows import agentic_campaigns as agentic_campaigns_module
-from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
-from sigilicon.workflows.agentic_read import AgenticReadInterface
-from sigilicon.workflows.design_campaign import (
+from sigilicon.experimental import agentic_campaigns as agentic_campaigns_module
+from sigilicon.experimental.agentic import (
+    DesignCampaignExecutionInterface as AgenticExecutionInterface,
+    DesignCampaignReadInterface,
+)
+from sigilicon.experimental.design_campaign import (
     DesignArtifactBinding,
     DesignCampaignAttemptSpec,
     DesignCampaignBudget,
@@ -31,7 +33,7 @@ from sigilicon.workflows.design_campaign import (
 )
 from sigilicon.canonical import canonical_json
 from sigilicon.domain.circuit_design import ProposalProvenance, TopologyOrigin
-from sigilicon.workflows.design_repair import (
+from sigilicon.experimental.design_repair import (
     DesignRepairProposal,
     TopologyRepairPolicy,
 )
@@ -44,8 +46,8 @@ from test_design_campaign import (
 from test_design_promotion import _inputs as promotion_inputs
 
 
-def _read(root: Path) -> AgenticReadInterface:
-    return AgenticReadInterface(Project.from_project_root(root))
+def _read(root: Path) -> DesignCampaignReadInterface:
+    return DesignCampaignReadInterface(Project.from_project_root(root))
 
 
 def _write_campaign_project(root: Path) -> None:
@@ -104,7 +106,7 @@ def _write_campaign_extension(root: Path, *, mode: str = "satisfied") -> None:
     EvidenceConclusion,
 )
 from sigilicon.flow import ActionContract, AdapterExecution, ArtifactPort
-from sigilicon.workflows.design_campaign import DESIGN_CAMPAIGN_ITERATION_EXTENSION
+from sigilicon.experimental.design_campaign import DESIGN_CAMPAIGN_ITERATION_EXTENSION
 from test_design_campaign import AttemptAdapter, FeedbackDrivenAttemptAdapter
 
 
@@ -206,11 +208,13 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
 
-    assert read_cli_main(
+    assert sigilicon_cli_main(
         [
+            "experimental",
             "--project-root",
             str(tmp_path),
-            "campaign-plan",
+            "campaign",
+            "plan",
             "--campaign",
             str(campaign_path),
         ]
@@ -236,13 +240,15 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
         campaign_identity=campaign_identity,
     ) == result
 
-    assert execute_cli_main(
+    assert sigilicon_cli_main(
         [
+            "experimental",
             "--project-root",
             str(tmp_path),
+            "campaign",
+            "run",
             "--grant",
             str(grant_path),
-            "campaign-run",
             campaign_identity,
             "--campaign",
             str(campaign_path),
@@ -594,13 +600,15 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     grant_path.write_text(grant.canonical_json(), encoding="utf-8")
     proposal_path = tmp_path / "proposal.json"
     proposal_path.write_text(proposal.canonical_json(), encoding="utf-8")
-    assert execute_cli_main(
+    assert sigilicon_cli_main(
         [
+            "experimental",
             "--project-root",
             str(tmp_path),
+            "campaign",
+            "run",
             "--grant",
             str(grant_path),
-            "campaign-run",
             "--run-id",
             run_id,
             "--proposal",
@@ -641,7 +649,7 @@ def test_promotion_plan_python_and_cli_share_non_writing_interface(
         request_json=inputs["promotion-request.json"],
     )
 
-    assert read_cli_main(
+    assert agentic_read_cli_main(
         [
             "--project-root",
             str(tmp_path),

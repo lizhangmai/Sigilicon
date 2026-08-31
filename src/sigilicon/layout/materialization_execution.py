@@ -22,8 +22,8 @@ from sigilicon.layout.materialization import (
     MaterializationValidation,
     validate_materialization_plan,
 )
-from sigilicon.layout.pnr.model import PhysicalDesignJob, PhysicalDesignResult
-from sigilicon.layout.pnr.serialization import (
+from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
+from sigilicon.layout.physical_design_serialization import (
     canonical_json,
     physical_design_job_id,
     physical_design_result_id,

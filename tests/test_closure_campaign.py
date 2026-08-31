@@ -57,13 +57,16 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.physical_design import (
     MATERIALIZED_GDS_KIND,
+    MATERIALIZATION_PLAN_ADAPTER,
     MATERIALIZATION_RECEIPT_KIND,
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
-    PHYSICAL_DESIGN_ACTION,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_MATERIALIZATION_ACTION,
     PHYSICAL_MATERIALIZATION_PLAN_KIND,
-    REFERENCE_MATERIALIZATION_ADAPTER,
+)
+from sigilicon.experimental.reference_pnr.flow import (
+    PHYSICAL_CLOSURE_EVIDENCE_KIND,
+    REFERENCE_PHYSICAL_DESIGN_ACTION,
     REFERENCE_PNR_ADAPTER,
 )
 from sigilicon.flow.physical_verification import (
@@ -89,7 +92,7 @@ from sigilicon.layout.materialization_execution import (
     MaterializationCompletion,
     MaterializationExecutionStatus,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     Axis,
     GridlessRoutingResource,
     LayerKind,
@@ -97,7 +100,7 @@ from sigilicon.layout.pnr import (
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalLayer,
     PhysicalOwnerIdentity,
     PhysicalOwnerKind,
@@ -107,18 +110,19 @@ from sigilicon.layout.pnr import (
     PinAccess,
     PinReference,
     Placement,
-    PnrExecutionPolicy,
-    PnrRequest,
-    PnrStage,
+    ReferencePnrExecutionPolicy,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Point,
     Rect,
     RoutingBlockage,
     RoutingDirection,
     RoutingTrackPattern,
-    physical_design_job_id,
 )
-from sigilicon.workflows.builtin import build_flow_registry
-from sigilicon.workflows.closure_campaign import (
+from sigilicon.layout.physical_design_serialization import physical_design_job_id
+from sigilicon.layout.physical_design import PhysicalDesignJob
+from sigilicon.experimental.registry import build_experimental_flow_registry
+from sigilicon.experimental.workflows.closure_campaign import (
     CampaignArtifactReference,
     ClosureArtifactBindings,
     ClosureCampaign,
@@ -132,7 +136,7 @@ from sigilicon.workflows.closure_campaign import (
     closure_campaign_result_from_json,
     compare_closure_quality,
 )
-from sigilicon.workflows.closure_repair import (
+from sigilicon.experimental.workflows.closure_repair import (
     ClosureRepairPolicy,
     PlacementRepairDirective,
     apply_repair_plan,
@@ -227,7 +231,7 @@ _BENCHMARK_ENVIRONMENT = ExecutionEnvironment(
 )
 
 
-def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
+def _gridless_job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "campaign-gridless",
         1000,
@@ -239,7 +243,7 @@ def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 1),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "campaign-closed",
@@ -257,14 +261,14 @@ def _gridless_job(*, maximum_route_states: int = 200_000) -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
-        execution_policy=PnrExecutionPolicy(
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
+        execution_policy=ReferencePnrExecutionPolicy(
             maximum_route_states=maximum_route_states
         ),
     )
 
 
-def _fixed_blockage_job() -> PhysicalDesignJob:
+def _fixed_blockage_job() -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "campaign-fixed-blocker",
         1000,
@@ -280,7 +284,7 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 2),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "campaign-infeasible",
@@ -307,11 +311,11 @@ def _fixed_blockage_job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 
-def _repairable_drc_job() -> PhysicalDesignJob:
+def _repairable_drc_job() -> ReferencePnrJob:
     job = _gridless_job()
     return replace(
         job,
@@ -353,7 +357,7 @@ def _drc_repair_policy() -> ClosureRepairPolicy:
 
 
 class _BenchmarkInputsAdapter(StagedAdapterFixture):
-    def __init__(self, job: PhysicalDesignJob) -> None:
+    def __init__(self, job: ReferencePnrJob) -> None:
         self._job = job
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
@@ -363,8 +367,15 @@ class _BenchmarkInputsAdapter(StagedAdapterFixture):
         pass
 
     def execute(self, context: ActionContext) -> AdapterExecution:
+        stable_job = PhysicalDesignJob(
+            technology=self._job.technology,
+            design=self._job.design,
+            constraints=self._job.constraints,
+            request=self._job.request,
+            routing_constraints=self._job.routing_constraints,
+        )
         context.output_path("job", "physical-design-job.json").write_text(
-            self._job.canonical_json(),
+            stable_job.canonical_json(),
             encoding="utf-8",
         )
         context.output_path("source", "canonical-source.cdl").write_text(
@@ -945,7 +956,7 @@ class _BenchmarkDownstreamAdapter(StagedAdapterFixture):
 
 
 def _flow(
-    job: PhysicalDesignJob,
+    job: ReferencePnrJob,
     *,
     drc: str | None = None,
     lvs: str | None = None,
@@ -957,7 +968,7 @@ def _flow(
 ):
     if corrupt_layout_identity:
         corrupt_identity = "result"
-    registry = build_flow_registry()
+    registry = build_experimental_flow_registry()
     registry.register_action(
         ActionContract(
             _BENCHMARK_INPUT_ACTION,
@@ -1020,7 +1031,21 @@ def _flow(
         FlowNode("inputs", _BENCHMARK_INPUT_ACTION),
         FlowNode(
             "solve",
-            PHYSICAL_DESIGN_ACTION,
+            REFERENCE_PHYSICAL_DESIGN_ACTION,
+            config={
+                "reference-policy": {
+                    name: getattr(job.execution_policy, name)
+                    for name in (
+                        "maximum_search_states",
+                        "maximum_route_states",
+                        "maximum_routing_iterations",
+                        "maximum_placement_repair_states",
+                        "maximum_placement_repair_iterations",
+                        "routing_congestion_bins_x",
+                        "routing_congestion_bins_y",
+                    )
+                }
+            },
             bindings=(ArtifactBinding("job", "inputs", "job"),),
         ),
         FlowNode(
@@ -1035,10 +1060,10 @@ def _flow(
     ]
     action_bindings = [
         ActionBinding(_BENCHMARK_INPUT_ACTION, _BENCHMARK_INPUT_ADAPTER),
-        ActionBinding(PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
+        ActionBinding(REFERENCE_PHYSICAL_DESIGN_ACTION, REFERENCE_PNR_ADAPTER),
         ActionBinding(
             PHYSICAL_MATERIALIZATION_ACTION,
-            REFERENCE_MATERIALIZATION_ADAPTER,
+            MATERIALIZATION_PLAN_ADAPTER,
         ),
     ]
     goals = ("compile",)
@@ -1255,7 +1280,7 @@ def test_public_dbu_campaign_closes_full_receipt_bound_graph_deterministically(
 
     assert tuple(item.node.action_kind for item in plan.nodes) == (
         _BENCHMARK_INPUT_ACTION,
-        PHYSICAL_DESIGN_ACTION,
+        REFERENCE_PHYSICAL_DESIGN_ACTION,
         PHYSICAL_MATERIALIZATION_ACTION,
         PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
         DRC_ACTION,

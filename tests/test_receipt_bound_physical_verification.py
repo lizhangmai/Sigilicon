@@ -61,21 +61,21 @@ from sigilicon.layout.materialization_execution import (
     materialization_receipt_from_json,
     materialization_receipt_id,
 )
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     GridlessRoutingResource,
     LayerKind,
     MinimumSpacingRule,
     MinimumWidthRule,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
     PhysicalTechnology,
     PinAccess,
     PinReference,
-    PnrRequest,
-    PnrStage,
+    PhysicalDesignRequest,
+    PhysicalDesignStage,
     Rect,
     RoutingDirection,
     run,
@@ -99,7 +99,7 @@ def _identity(path: Path) -> str:
     return f"fixture:{path.name}"
 
 
-def _job() -> PhysicalDesignJob:
+def _job() -> ReferencePnrJob:
     technology = PhysicalTechnology(
         "receipt-verification-gridless",
         1000,
@@ -111,7 +111,7 @@ def _job() -> PhysicalDesignJob:
             MinimumSpacingRule("route-spacing", "route", 1),
         ),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         technology,
         PhysicalDesign(
             "receipt-bound-verification",
@@ -124,7 +124,7 @@ def _job() -> PhysicalDesignJob:
             ),
             nets=(PhysicalNet("signal", (PinReference("a"), PinReference("b"))),),
         ),
-        request=PnrRequest(stages=(PnrStage.PLACEMENT, PnrStage.ROUTING)),
+        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sigilicon.layout.pnr import (
+from sigilicon.experimental.reference_pnr import (
     AlignmentConstraint,
     ArrayConstraint,
     Axis,
@@ -10,7 +10,7 @@ from sigilicon.layout.pnr import (
     Orientation,
     OrderingConstraint,
     PhysicalDesign,
-    PhysicalDesignJob,
+    ReferencePnrJob,
     PhysicalInstance,
     PhysicalMaster,
     PhysicalTechnology,
@@ -23,7 +23,7 @@ from sigilicon.layout.pnr import (
 )
 
 
-def _row_based_job() -> PhysicalDesignJob:
+def _row_based_job() -> ReferencePnrJob:
     master = PhysicalMaster(
         "row-master",
         4,
@@ -31,7 +31,7 @@ def _row_based_job() -> PhysicalDesignJob:
         allowed_orientations=(Orientation.R0,),
     )
     names = "a", "b", "c"
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         PhysicalTechnology("unit-grid", 1000, 1),
         PhysicalDesign(
             "row-based",
@@ -47,14 +47,14 @@ def _row_based_job() -> PhysicalDesignJob:
     )
 
 
-def _symmetric_job() -> PhysicalDesignJob:
+def _symmetric_job() -> ReferencePnrJob:
     master = PhysicalMaster(
         "free-master",
         4,
         6,
         allowed_orientations=(Orientation.R0,),
     )
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         PhysicalTechnology("double-grid", 500, 2),
         PhysicalDesign(
             "custom-symmetry",
@@ -76,7 +76,7 @@ def _symmetric_job() -> PhysicalDesignJob:
     )
 
 
-def _array_job() -> PhysicalDesignJob:
+def _array_job() -> ReferencePnrJob:
     master = PhysicalMaster(
         "array-master",
         5,
@@ -84,7 +84,7 @@ def _array_job() -> PhysicalDesignJob:
         allowed_orientations=(Orientation.R0,),
     )
     names = "u0", "u1", "u2", "u3"
-    return PhysicalDesignJob(
+    return ReferencePnrJob(
         PhysicalTechnology("five-grid", 200, 5),
         PhysicalDesign(
             "regular-array",
@@ -110,7 +110,7 @@ def _array_job() -> PhysicalDesignJob:
     ids=("row-based", "custom-symmetry", "regular-array"),
 )
 def test_reference_placer_uses_one_interface_across_design_styles(
-    job: PhysicalDesignJob,
+    job: ReferencePnrJob,
 ) -> None:
     result = run(job)
 
