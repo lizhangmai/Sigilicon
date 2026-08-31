@@ -40,10 +40,12 @@ from sigilicon.flow import (
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
 )
-from sigilicon.flow.physical_design import MATERIALIZATION_RECEIPT_KIND
+from sigilicon.flow.physical_design import (
+    MATERIALIZED_GDS_KIND,
+    MATERIALIZATION_RECEIPT_KIND,
+)
 from sigilicon.flow.physical_verification import (
     CANONICAL_SOURCE_NETLIST_KIND,
-    MATERIALIZED_LAYOUT_KIND,
 )
 from sigilicon.flow.post_layout import (
     PEX_ACTION,
@@ -204,7 +206,7 @@ def test_post_layout_actions_are_owner_extensions_with_explicit_preflight() -> N
         ActionContract(
             _SOURCE_ACTION,
             outputs=(
-                ArtifactPort("layout", MATERIALIZED_LAYOUT_KIND),
+                ArtifactPort("layout", MATERIALIZED_GDS_KIND),
                 ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
                 ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
             ),

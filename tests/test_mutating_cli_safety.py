@@ -5,12 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import tomllib
 
-from sigilicon.cli.create_library import main as create_library_main
-from sigilicon.cli.generate_symbol import main as generate_symbol_main
-from sigilicon.cli.import_netlist import main as import_netlist_main
 from sigilicon.cli.open_cell import main as open_cell_main
 from sigilicon.cli.close_cell import main as close_cell_main
-from sigilicon.cli.set_params import main as set_params_main
 from sigilicon.virtuoso.oa import close_visible_cell_windows
 from sigilicon.virtuoso.oa import WindowCloseResult
 from sigilicon.virtuoso.schematic import set_instance_parameters
@@ -43,22 +39,18 @@ def test_internal_oa_mutation_helpers_are_not_public_commands() -> None:
     }.intersection(tasks)
 
 
-def test_internal_oa_adapters_have_no_standalone_module_entrypoint() -> None:
+def test_noncanonical_engineering_cli_modules_are_removed() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "sigilicon" / "cli"
+
     for module in (
         "create_library.py",
-        "import_netlist.py",
+        "generate_layout.py",
         "generate_symbol.py",
+        "import_netlist.py",
         "set_params.py",
+        "verify_layout.py",
+        "xcelium.py",
     ):
-        source = (root / module).read_text(encoding="utf-8")
-        assert 'if __name__ == "__main__":' not in source
-
-
-def test_legacy_engineering_execution_cli_modules_are_removed() -> None:
-    root = Path(__file__).resolve().parents[1] / "src" / "sigilicon" / "cli"
-
-    for module in ("generate_layout.py", "verify_layout.py", "xcelium.py"):
         assert not (root / module).exists()
 
 
@@ -171,7 +163,7 @@ def test_manual_set_params_workflow_cannot_bypass_quiescent_cell_policy(
     ]
 
 
-def test_mutating_clis_delegate_to_application_workflows(
+def test_public_mutating_clis_delegate_to_application_workflows(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -185,33 +177,6 @@ def test_mutating_clis_delegate_to_application_workflows(
         return workflow
 
     monkeypatch.setattr(
-        "sigilicon.cli.create_library.create_library",
-        record(
-            "create-library",
-            SimpleNamespace(
-                action="created",
-                technology_library=None,
-                path=tmp_path / "virtuoso" / "design",
-                cds_entry="DEFINE design ./design",
-            ),
-        ),
-    )
-    monkeypatch.setattr(
-        "sigilicon.cli.import_netlist.import_spectre_hierarchy",
-        record("manual-import-netlist", ("child", "top")),
-    )
-    monkeypatch.setattr(
-        "sigilicon.cli.generate_symbol.generate_cell_symbol",
-        record(
-            "manual-generate-symbol",
-            SimpleNamespace(
-                action="created",
-                terminal_names=("A", "Y"),
-                pin_order=("A", "Y"),
-            ),
-        ),
-    )
-    monkeypatch.setattr(
         "sigilicon.cli.open_cell.open_project_cell",
         record("open-cell", None),
     )
@@ -219,95 +184,14 @@ def test_mutating_clis_delegate_to_application_workflows(
         "sigilicon.cli.close_cell.close_cell",
         record("close-cell", WindowCloseResult(0, 0)),
     )
-    monkeypatch.setattr(
-        "sigilicon.cli.set_params.update_instance_parameters",
-        record(
-            "manual-set-params",
-            SimpleNamespace(
-                applied={"w": "2u"},
-                before={"w": "1u"},
-                after={"w": "2u"},
-            ),
-        ),
-    )
-
-    library_path = tmp_path / "virtuoso" / "design"
-    netlist = tmp_path / "circuit.scs"
-    assert (
-        create_library_main(
-            ["design", "--path", str(library_path), "--if-missing"],
-            client_factory=object,
-        )
-        == 0
-    )
-    assert (
-        import_netlist_main(
-            [
-                str(netlist),
-                "--library",
-                "design",
-                "--ref-lib",
-                "devices",
-                "--top",
-                "top",
-                "--overwrite",
-                "--timeout",
-                "17",
-            ],
-            client_factory=object,
-        )
-        == 0
-    )
-    assert (
-        generate_symbol_main(
-            [
-                "design",
-                "top",
-                "--sort-pins",
-                "alphanumeric",
-                "--overwrite",
-                "--timeout",
-                "18",
-            ],
-            client_factory=object,
-        )
-        == 0
-    )
     assert open_cell_main(["design", "top", "symbol"], client_factory=object) == 0
     assert close_cell_main(["design", "top", "symbol"], client_factory=object) == 0
-    assert (
-        set_params_main(
-            ["design", "top", "M0", "w=2u"],
-            client_factory=object,
-        )
-        == 0
-    )
     assert [name for name, _args, _kwargs in events] == [
-        "create-library",
-        "manual-import-netlist",
-        "manual-generate-symbol",
         "open-cell",
         "close-cell",
-        "manual-set-params",
     ]
-    assert events[0][2] == {
-        "library": "design",
-        "library_path": library_path,
-        "technology_library": None,
-        "if_missing": True,
-    }
-    assert events[1][2]["reference_libraries"] == ("devices",)
-    assert events[1][2]["top"] == "top"
-    assert events[1][2]["overwrite"] is True
-    assert events[2][1][2:] == ("design", "top")
-    assert events[2][2] == {
-        "sort_pins": "alphanumeric",
-        "overwrite": True,
-        "timeout": 18,
-    }
-    assert events[3][1][2:] == ("design", "top", "symbol")
-    assert events[4][1][2:] == ("design", "top", "symbol")
-    assert events[5][1][2:] == ("design", "top", "M0", {"w": "2u"})
+    assert events[0][1][2:] == ("design", "top", "symbol")
+    assert events[1][1][2:] == ("design", "top", "symbol")
 
 
 def test_close_cell_skill_uses_exact_cellview_identity_and_escaping(

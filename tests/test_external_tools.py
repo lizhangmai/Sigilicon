@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import subprocess
 import importlib
 import os
@@ -20,12 +21,16 @@ from sigilicon.external_tools import (
     owned_output_file,
     owned_process_fd_path,
     owned_sealed_input,
-    passthrough_external_invocation,
     process_group_cleanup_uncertainty,
     run_process_group,
     run_process_group_until_confirmed,
     xrun_env,
 )
+
+
+@contextmanager
+def _passthrough_external_invocation(command, cwd):
+    yield OwnedExternalInvocation(tuple(str(item) for item in command), cwd)
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
@@ -402,7 +407,7 @@ def test_bridge_subprocess_run_is_group_guarded_and_restored(
     with enforce_process_group_subprocess_run(
         import_netlist_schematic,
         validate_spawn=lambda *_args: None,
-        own_invocation=passthrough_external_invocation,
+        own_invocation=_passthrough_external_invocation,
     ):
         assert module.subprocess is not original
         result = module.subprocess.run(
@@ -530,7 +535,7 @@ def test_dependency_guard_fails_when_launch_is_skipped_or_bypassed(monkeypatch) 
         with enforce_process_group_subprocess_run(
             import_netlist_schematic,
             validate_spawn=lambda *_args: None,
-            own_invocation=passthrough_external_invocation,
+            own_invocation=_passthrough_external_invocation,
         ):
             pass
 
@@ -540,7 +545,7 @@ def test_dependency_guard_fails_when_launch_is_skipped_or_bypassed(monkeypatch) 
             with enforce_process_group_subprocess_run(
                 import_netlist_schematic,
                 validate_spawn=lambda *_args: None,
-                own_invocation=passthrough_external_invocation,
+                own_invocation=_passthrough_external_invocation,
             ):
                 pass
     finally:
@@ -561,7 +566,7 @@ def test_dependency_guard_runs_pre_spawn_revalidation(monkeypatch, tmp_path: Pat
     with enforce_process_group_subprocess_run(
         import_netlist_schematic,
         validate_spawn=lambda *_args: None,
-        own_invocation=passthrough_external_invocation,
+        own_invocation=_passthrough_external_invocation,
         before_spawn=lambda: events.append("revalidated"),
     ):
         module.subprocess.run(
@@ -596,7 +601,7 @@ def test_dependency_guard_rejects_wrong_launch_before_process_call(
             validate_spawn=lambda *_args: (_ for _ in ()).throw(
                 RuntimeError("wrong guarded launch")
             ),
-            own_invocation=passthrough_external_invocation,
+            own_invocation=_passthrough_external_invocation,
         ):
             module.subprocess.run(
                 ["unrelated-tool"],

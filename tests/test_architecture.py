@@ -14,7 +14,7 @@ from sigilicon.virtuoso import (
     netlisting,
     oa,
     schematic,
-    systemverilog,
+    text_view,
     views,
 )
 
@@ -176,7 +176,7 @@ def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:
         schematic.read_instance_parameters,
         schematic.read_schematic,
         schematic.set_instance_parameters,
-        systemverilog.import_systemverilog_view,
+        text_view.import_oa_text_view,
         views.open_cell_window,
     )
     parameters = {

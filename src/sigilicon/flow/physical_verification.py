@@ -10,7 +10,6 @@ from sigilicon.flow.physical_design import (
 from sigilicon.flow.registry import FlowRegistry
 
 
-MATERIALIZED_LAYOUT_KIND = MATERIALIZED_GDS_KIND
 CANONICAL_SOURCE_NETLIST_KIND = "netlist.canonical-source"
 PHYSICAL_VERIFICATION_POLICY_KIND = "policy.physical-verification"
 PHYSICAL_VERIFICATION_SOURCE_ACTION = "physical-verification.source-inputs"
@@ -52,7 +51,7 @@ def register_physical_verification_actions(registry: FlowRegistry) -> None:
         ActionContract(
             kind=DRC_ACTION,
             inputs=(
-                ArtifactPort("layout", MATERIALIZED_LAYOUT_KIND),
+                ArtifactPort("layout", MATERIALIZED_GDS_KIND),
                 ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
                 ArtifactPort("verification-policy", PHYSICAL_VERIFICATION_POLICY_KIND),
             ),
@@ -71,7 +70,7 @@ def register_physical_verification_actions(registry: FlowRegistry) -> None:
         ActionContract(
             kind=LVS_ACTION,
             inputs=(
-                ArtifactPort("layout", MATERIALIZED_LAYOUT_KIND),
+                ArtifactPort("layout", MATERIALIZED_GDS_KIND),
                 ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
                 ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
                 ArtifactPort("verification-policy", PHYSICAL_VERIFICATION_POLICY_KIND),
@@ -96,7 +95,6 @@ __all__ = [
     "DRC_EVIDENCE_KIND",
     "LVS_ACTION",
     "LVS_EVIDENCE_KIND",
-    "MATERIALIZED_LAYOUT_KIND",
     "OFFLINE_PHYSICAL_VERIFICATION_ADAPTER",
     "PHYSICAL_VERIFICATION_POLICY_KIND",
     "PHYSICAL_VERIFICATION_SOURCE_ACTION",

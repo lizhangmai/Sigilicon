@@ -44,6 +44,7 @@ from sigilicon.flow.model import (
 )
 from sigilicon.flow.engine import FlowEngine
 from sigilicon.flow.physical_design import (
+    MATERIALIZED_GDS_KIND,
     MATERIALIZATION_RECEIPT_KIND,
     PHYSICAL_CLOSURE_EVIDENCE_KIND,
     PHYSICAL_DESIGN_JOB_KIND,
@@ -54,7 +55,6 @@ from sigilicon.flow.physical_verification import (
     CANONICAL_SOURCE_NETLIST_KIND,
     DRC_EVIDENCE_KIND,
     LVS_EVIDENCE_KIND,
-    MATERIALIZED_LAYOUT_KIND,
 )
 from sigilicon.flow.post_layout import (
     PEX_EVIDENCE_KIND,
@@ -1001,7 +1001,7 @@ class ClosureCampaignRunner:
             if receipt_artifact is not None:
                 artifacts["materialization-receipt"] = receipt_artifact
         for label, reference, kind in (
-            ("layout", bindings.layout, MATERIALIZED_LAYOUT_KIND),
+            ("layout", bindings.layout, MATERIALIZED_GDS_KIND),
             ("source", bindings.source, CANONICAL_SOURCE_NETLIST_KIND),
             ("drc", bindings.drc, DRC_EVIDENCE_KIND),
             ("lvs", bindings.lvs, LVS_EVIDENCE_KIND),

@@ -24,9 +24,8 @@ from sigilicon.paths import (
 
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
-_FLOW_CATALOG_KINDS = frozenset(
-    {"flow-catalog", "flow-design-registry", "flow-layout-registry"}
-)
+
+
 def _project_file(root: Path, value: object, field: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} must be a non-empty project-relative path")

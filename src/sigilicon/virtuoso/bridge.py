@@ -47,10 +47,6 @@ def schematic_import_netlist_skill(*args: Any, **kwargs: Any) -> str:
     )(*args, **kwargs)
 
 
-def import_netlist_schematic(*args: Any, **kwargs: Any) -> Any:
-    return load_import_netlist_schematic()(*args, **kwargs)
-
-
 def load_import_netlist_schematic() -> Any:
     """Return the real dependency callable for guarded subprocess auditing."""
 

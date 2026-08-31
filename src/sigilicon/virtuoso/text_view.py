@@ -19,10 +19,8 @@ from sigilicon.external_tools import (
     run_process_group,
 )
 from sigilicon.virtuoso.capability import (
-    WorkspaceAuthority,
     dispatch_oa_mutation,
     require_oa_target_capability,
-    require_workspace_capability,
 )
 from sigilicon.virtuoso.confirmation import require_bridge_confirmation
 from sigilicon.virtuoso.oa import (
@@ -45,119 +43,6 @@ _TEXT_VIEW_ADAPTERS = {
 # Data Registry.  ``text.txt`` is the native master for the generic ``text``
 # view type used by source-owned SKILL measurement views.
 _SKILL_OA_MASTER = "text.txt"
-
-
-def read_oa_skill_master_path(
-    client: Any,
-    *,
-    library: str,
-    cell: str,
-    kind: str,
-    view: str,
-    operation: Any,
-    timeout: int = 60,
-) -> Path:
-    """Resolve one exact generic OA text master under a read-only view lease."""
-
-    if kind != "skill" or view != "measurement":
-        raise ValueError(
-            "read-only text capture supports declared SKILL measurement views"
-        )
-    require_workspace_capability(
-        operation,
-        client,
-        authority=WorkspaceAuthority.READ,
-        library=library,
-        cell=cell,
-        view=view,
-    )
-    skill = f'''let((fileObj path attempt)
-  fileObj = nil
-  path = nil
-  attempt = errset(
-    unwindProtect(
-      progn(
-        fileObj = ddGetObj({skill_quote(library)} {skill_quote(cell)}
-          {skill_quote(view)} "*")
-        unless(fileObj error("cannot open OA measurement text master"))
-        path = ddGetObjReadPath(fileObj)
-        unless(path error("cannot resolve SKILL OA master path"))
-        path)
-      when(fileObj ddReleaseObj(fileObj) fileObj = nil))
-    nil)
-  unless(attempt && car(attempt)
-    error("OA measurement text master read failed"))
-  car(attempt))'''
-    result = require_bridge_confirmation(
-        operation,
-            f"read SKILL view {library}/{cell}/{view}",
-        lambda: client.execute_skill(skill, timeout=timeout),
-    )
-    if result.errors:
-        raise RuntimeError(
-            f"failed to read {library}/{cell}/{view}: {result.errors[0]}"
-        )
-    value = decode_skill_output(result.output or "").strip().strip('"')
-    if not value:
-        raise RuntimeError(f"{library}/{cell}/{view} returned no OA master path")
-    return Path(value)
-
-
-def read_oa_named_file_path(
-    client: Any,
-    *,
-    library: str,
-    cell: str,
-    view: str,
-    file_name: str,
-    operation: Any,
-    timeout: int = 60,
-) -> Path:
-    """Resolve one named native OA file under a read-only view lease."""
-
-    if not file_name or "/" in file_name or file_name in {".", ".."}:
-        raise ValueError("OA capture file name must be a single component")
-    require_workspace_capability(
-        operation,
-        client,
-        authority=WorkspaceAuthority.READ,
-        library=library,
-        cell=cell,
-        view=view,
-    )
-    skill = f'''let((fileObj path attempt)
-  fileObj = nil
-  path = nil
-  attempt = errset(
-    unwindProtect(
-      progn(
-        fileObj = ddGetObj({skill_quote(library)} {skill_quote(cell)}
-          {skill_quote(view)} {skill_quote(file_name)})
-        unless(fileObj error("cannot open requested OA file"))
-        path = ddGetObjReadPath(fileObj)
-        unless(path error("cannot resolve requested OA file path"))
-        path)
-      when(fileObj ddReleaseObj(fileObj) fileObj = nil))
-    nil)
-  unless(attempt && car(attempt)
-    error("requested OA file read failed"))
-  car(attempt))'''
-    result = require_bridge_confirmation(
-        operation,
-        f"read OA file {library}/{cell}/{view}/{file_name}",
-        lambda: client.execute_skill(skill, timeout=timeout),
-    )
-    if result.errors:
-        raise RuntimeError(
-            f"failed to read {library}/{cell}/{view}/{file_name}: "
-            f"{result.errors[0]}"
-        )
-    value = decode_skill_output(result.output or "").strip().strip('"')
-    if not value:
-        raise RuntimeError(
-            f"{library}/{cell}/{view}/{file_name} returned no OA file path"
-        )
-    return Path(value)
 
 
 def _import_skill_view(

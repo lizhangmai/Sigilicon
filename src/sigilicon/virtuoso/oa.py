@@ -400,20 +400,6 @@ def assert_cell_has_no_open_views(client: Any, library: str, cell: str) -> None:
         )
 
 
-def cell_view_open_mode(client: Any, library: str, cell: str, view: str) -> str | None:
-    result = client.execute_skill(
-        f'''let((cv)
-  cv = dbFindOpenCellViewByName({skill_quote(library)} {skill_quote(cell)} {skill_quote(view)})
-  when(cv cv~>mode)
-)''',
-        timeout=20,
-    )
-    if result.errors:
-        raise RuntimeError(result.errors[0])
-    raw = (result.output or "").strip().strip('"')
-    return None if raw in {"", "nil"} else raw
-
-
 def open_cell_views(
     client: Any,
     *,

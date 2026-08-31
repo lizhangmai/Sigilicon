@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from sigilicon.flow.model import ActionContract, ArtifactPort, PlatformAssetRequirement
-from sigilicon.flow.physical_design import MATERIALIZATION_RECEIPT_KIND
+from sigilicon.flow.physical_design import (
+    MATERIALIZED_GDS_KIND,
+    MATERIALIZATION_RECEIPT_KIND,
+)
 from sigilicon.flow.physical_verification import (
     CANONICAL_SOURCE_NETLIST_KIND,
     DRC_EVIDENCE_KIND,
     LVS_EVIDENCE_KIND,
-    MATERIALIZED_LAYOUT_KIND,
 )
 from sigilicon.flow.registry import FlowRegistry
 
@@ -29,7 +31,7 @@ def register_post_layout_actions(registry: FlowRegistry) -> None:
     """Register deep owner-extension seams without inventing a backend Adapter."""
 
     receipt_bound = (
-        ArtifactPort("layout", MATERIALIZED_LAYOUT_KIND),
+        ArtifactPort("layout", MATERIALIZED_GDS_KIND),
         ArtifactPort("receipt", MATERIALIZATION_RECEIPT_KIND),
         ArtifactPort("source", CANONICAL_SOURCE_NETLIST_KIND),
     )

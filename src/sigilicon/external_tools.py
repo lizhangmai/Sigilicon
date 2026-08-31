@@ -1465,16 +1465,6 @@ class OwnedExternalInvocation:
     pass_fds: tuple[int, ...] = ()
 
 
-@contextmanager
-def passthrough_external_invocation(
-    command: Sequence[str],
-    cwd: Path,
-) -> Iterator[OwnedExternalInvocation]:
-    """Explicit test-only/basic ownership for invocations without file resources."""
-
-    yield OwnedExternalInvocation(tuple(str(item) for item in command), cwd)
-
-
 class _ProcessGroupSubprocessProxy:
     """Fail-closed ``subprocess.run`` subset for a guarded dependency call."""
 
