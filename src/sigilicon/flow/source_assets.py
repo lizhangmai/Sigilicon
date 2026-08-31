@@ -149,6 +149,7 @@ def snapshot_source_member(
     path: Path,
     *,
     source_root: Path,
+    scope: str = "project",
     record_text: str | None = None,
     source_label: str = "source",
 ) -> SourceMember:
@@ -174,6 +175,7 @@ def snapshot_source_member(
         record_text=text,
         executable=executable,
         location=resolved,
+        scope=scope,
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from sigilicon.flow import (
     ActionContext,
     ActionContract,
     ActionConfiguration,
+    ActionPlan,
     AdapterExecution,
     AdapterConfiguration,
     AdapterSelection,
@@ -30,6 +32,7 @@ from sigilicon.flow import (
     PolicyCheck,
     PolicySpec,
     ProducedArtifact,
+    SourceMember,
     load_flow_contract,
 )
 from sigilicon.virtuoso.operation_journal import write_operation_incident
@@ -192,6 +195,84 @@ def registry() -> tuple[FlowRegistry, SourceAdapter, TransformAdapter, VerifyAda
     result.register_adapter("fake-transform", transform)
     result.register_adapter("fake-verify", verify)
     return result, source, transform, verify
+
+
+def test_action_plan_is_required_and_source_drift_blocks_preflight(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "intent.toml"
+    source_path.write_text("value = 1\n", encoding="utf-8")
+    member = SourceMember(
+        "intent.toml",
+        tmp_path,
+        "value = 1\n",
+        False,
+        source_path,
+    )
+    with pytest.raises(FlowContractError, match="must declare explicit sources"):
+        ActionPlan("fake.intent", object(), {"value": 1})
+    adapter = SourceAdapter()
+    flow_registry = FlowRegistry()
+    flow_registry.register_action(
+        ActionContract(
+            kind="fake.planned",
+            adapters=("fake-planned",),
+            plan_input_kind="fake.intent",
+        )
+    )
+    flow_registry.register_adapter("fake-planned", adapter)
+    engine = FlowEngine(flow_registry)
+    spec = FlowSpec(
+        "example",
+        "planned",
+        (FlowNode("planned", "fake.planned"),),
+        (FlowTarget("planned", ("planned",)),),
+    )
+    profile = ExecutionProfile(
+        "example",
+        "fixture",
+        (AdapterSelection("fake.planned", "fake-planned"),),
+    )
+
+    with pytest.raises(FlowContractError, match="requires Action Plan"):
+        engine.plan(spec, "planned", profile)
+
+    plan = engine.plan(
+        spec,
+        "planned",
+        profile,
+        action_plans={
+            "planned": ActionPlan(
+                "fake.intent",
+                object(),
+                {"value": 1},
+                (member,),
+            )
+        },
+    )
+    assert engine.preflight(plan, ExecutionEnvironment()).status == "ready"
+    assert engine.plan_record(plan)["nodes"][0]["action_plan"] == {
+        "kind": "fake.intent",
+        "record": {"value": 1},
+        "sources": [
+            {
+                "scope": "project",
+                "path": "intent.toml",
+                "sha256": hashlib.sha256(b"value = 1\n").hexdigest(),
+                "executable": False,
+            }
+        ],
+    }
+
+    source_path.write_text("value = 2\n", encoding="utf-8")
+    result = engine.preflight(plan, ExecutionEnvironment())
+
+    assert result.status == "blocked"
+    assert any(
+        check.requirement_kind == "action-plan-source"
+        and check.status == "changed"
+        for check in result.checks
+    )
 
 
 def fake_profile(owner: str = "example") -> ExecutionProfile:

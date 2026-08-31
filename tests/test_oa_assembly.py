@@ -12,17 +12,21 @@ from sigilicon.domain.oa_library import (
     load_oa_library_source,
     resolve_oa_library_source,
 )
-from sigilicon.domain.netlist import NetlistSubcircuit
+from sigilicon.domain.netlist import NetlistSnapshot, NetlistSubcircuit
+from sigilicon.flow import SourceMember
 from sigilicon.domain.repository import Project
 from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.workflows.layout_generation import LayoutPlanningResult
+from sigilicon.workflows import layout_generation
 from sigilicon.workflows.oa_library import (
+    OALibraryRebuildPlan,
     _instance_parameter_expectations,
     _plan_layouts,
     check_oa_parity,
     plan_oa_library_rebuild,
     rebuild_oa_library,
+    validate_oa_plan_source_members,
 )
 
 from conftest import write_component_owner
@@ -544,6 +548,10 @@ def test_oa_layout_plan_reuses_loaded_assembly_source(
             instances=(),
         ),
     )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.plan_layout_snapshot",
+        lambda selected_spec: LayoutPlanningResult(selected_spec),
+    )
 
     steps = _plan_layouts(source, "assembled", {}, platform_snapshot)
 
@@ -579,6 +587,83 @@ def test_layout_planning_rejects_plan_identity_drift(monkeypatch) -> None:
         LayoutPlanningResult(spec)
     with pytest.raises(TypeError, match="unexpected keyword argument 'plan'"):
         LayoutPlanningResult(spec=spec, plan=plan)
+
+
+def test_layout_planning_rejects_source_change_while_building_typed_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = _write(tmp_path / "generator.py", "version = 1\n")
+    spec = SimpleNamespace(
+        path=tmp_path / "layout.toml",
+        project=object(),
+        library="assembled",
+        cell="CELL_A",
+        view="layout",
+        generator="test",
+        stage="placement_probe",
+        layout_pdk=SimpleNamespace(dbu_per_micron=1000),
+    )
+    plan = LayoutPlan(
+        library="assembled",
+        cell="CELL_A",
+        view="layout",
+        stage="placement_probe",
+        generator="test",
+        dbu_per_micron=1000,
+        instances=(),
+    )
+    monkeypatch.setattr(
+        layout_generation,
+        "_layout_source_paths",
+        lambda _spec: (generator,),
+    )
+    monkeypatch.setattr(
+        layout_generation,
+        "resolve_layout_spec",
+        lambda *_args, **_kwargs: spec,
+    )
+
+    def build(_spec):
+        generator.write_text("version = 2\n", encoding="utf-8")
+        return plan
+
+    monkeypatch.setattr(layout_generation, "build_layout_plan", build)
+
+    with pytest.raises(ValueError, match="source changed while"):
+        layout_generation.plan_layout_snapshot(spec)
+
+
+def test_native_oa_source_members_must_match_retained_netlist_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = _write(tmp_path / "cell.scs", "subckt CELL_A A B\nends CELL_A\n")
+    snapshot = NetlistSnapshot(
+        source,
+        source.read_text(encoding="utf-8"),
+        MappingProxyType({"CELL_A": ("A", "B")}),
+    )
+    plan = OALibraryRebuildPlan(
+        source=SimpleNamespace(source_documents={}, cells=(), source_roots=()),
+        library="assembled",
+        cells=(),
+        designs=(),
+        layouts=(),
+        testbenches=(),
+        views=(),
+        expected_views={},
+        netlist_snapshots=MappingProxyType({source: snapshot}),
+    )
+    member = SourceMember(
+        "cell.scs",
+        tmp_path,
+        "subckt CELL_A A B C\nends CELL_A\n",
+        False,
+        source,
+    )
+
+    with pytest.raises(ValueError, match="source snapshot drift"):
+        validate_oa_plan_source_members(plan, (member,))
 
 
 def test_oa_plan_resolves_one_platform_snapshot_for_every_domain(

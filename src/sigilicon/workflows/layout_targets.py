@@ -115,7 +115,7 @@ class LayoutTargetCatalog:
         spec = planning.spec
         paths = {
             *spec.source_documents,
-            *spec.pdk.source_documents,
+            *spec.pdk.source_paths,
             spec.generator_source,
             *spec.generator_dependencies,
             *spec.generator_module_sources,
@@ -127,11 +127,24 @@ class LayoutTargetCatalog:
             paths.add(spec.physical_verification.path)
         members = [catalog_member]
         for path in sorted(paths):
+            resolved = path.resolve()
+            try:
+                record_text = planning.source_records[resolved]
+            except KeyError as exc:
+                raise ValueError(
+                    f"typed layout plan omitted source snapshot: {resolved}"
+                ) from exc
             source_root = _source_root(path, self.project.project_root)
             members.append(
                 snapshot_source_member(
                     path,
                     source_root=source_root,
+                    scope=(
+                        "project"
+                        if source_root == self.project.project_root
+                        else "sigilicon-package"
+                    ),
+                    record_text=record_text,
                     source_label="layout",
                 )
             )

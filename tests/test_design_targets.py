@@ -314,7 +314,8 @@ def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) ->
     assert payload["status"] == "accepted"
     assert payload["nodes"]["leaf-topology"]["facts"]["passed"] is True
     assert {
-        source["path"] for source in planned.record["implementation_sources"]
+        source["path"]
+        for source in planned.record["nodes"][0]["action_plan"]["sources"]
     } == {
         "ip/example/configs/flows/design_targets.toml",
         "ip/example/leaf/design.toml",

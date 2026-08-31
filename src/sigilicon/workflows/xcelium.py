@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
+import tomllib
+from types import MappingProxyType
+from typing import Any, Mapping
 
+from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
@@ -14,6 +19,7 @@ from sigilicon.external_tools import (
     xrun_env,
 )
 from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.flow.serialization import json_value
 
 
 _HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
@@ -27,6 +33,7 @@ class XceliumCellPlan:
     spec: VerificationCellSpec
     sources: tuple[Path, ...]
     command_template: tuple[str, ...]
+    source_records: Mapping[Path, str]
 
     def as_dict(self) -> dict[str, object]:
         root = self.spec.project_root
@@ -85,6 +92,33 @@ def _resolve_contract(path: Path, *, project: Project) -> Path:
     return contract
 
 
+def snapshot_verification_sources(
+    paths: set[Path],
+    *,
+    documents: tuple[Mapping[Path, Mapping[str, Any]], ...],
+) -> Mapping[Path, str]:
+    """Bind exact source bytes to the semantic documents used by a planner."""
+
+    records = {
+        Path(path).resolve(): read_nofollow_text(Path(path).resolve())
+        for path in paths
+    }
+    for inventory in documents:
+        for path, document in inventory.items():
+            resolved = path.resolve()
+            try:
+                parsed = tomllib.loads(records[resolved])
+            except (KeyError, tomllib.TOMLDecodeError) as exc:
+                raise ValueError(
+                    f"verification source document snapshot drift: {resolved}"
+                ) from exc
+            if json_value(parsed) != json_value(document):
+                raise ValueError(
+                    f"verification source document snapshot drift: {resolved}"
+                )
+    return MappingProxyType(records)
+
+
 def plan_xcelium_cell(
     contract_path: Path,
     *,
@@ -129,13 +163,24 @@ def plan_xcelium_cell(
         "$RUN_WORK/xcelium.d",
         "-log",
         "$RUN_WORK/xrun.log",
-        *(str(path) for path in sources),
+        *(path.relative_to(repository.project_root).as_posix() for path in sources),
     )
+    source_paths = {
+        contract,
+        *spec.source_inputs,
+        *spec.source_documents,
+    }
+    if spec.runner is not None:
+        source_paths.add(spec.runner)
     return XceliumCellPlan(
         contract=contract,
         spec=spec,
         sources=sources,
         command_template=command_template,
+        source_records=snapshot_verification_sources(
+            source_paths,
+            documents=(spec.source_documents,),
+        ),
     )
 
 
@@ -144,6 +189,7 @@ def execute_xcelium_cell(
     *,
     artifacts: RunArtifacts,
     xrun: Path | None = None,
+    before_spawn: Callable[[], None] | None = None,
     timeout: int = 600,
 ) -> XceliumCellExecution:
     """Execute a resolved cell without creating or completing a run record."""
@@ -175,6 +221,8 @@ def execute_xcelium_cell(
         def validate_spawn() -> None:
             owned_work.require_visible()
             owned_xcelium.require_visible()
+            if before_spawn is not None:
+                before_spawn()
             for source_input in plan.spec.source_inputs:
                 if not source_input.is_file():
                     raise FileNotFoundError(

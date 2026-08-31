@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Mapping
 
 from sigilicon.domain.ip_integration import (
@@ -22,13 +23,10 @@ from sigilicon.external_tools import (
 )
 from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.ip_integration import check_ip_integration
+from sigilicon.workflows.xcelium import snapshot_verification_sources
 
 
 _AMS_HDL_SUFFIXES = frozenset({".sv", ".v", ".vams", ".va"})
-
-
-def _display_path(path: Path, *, root: Path) -> str:
-    return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
 
 
 def _sha256(path: Path) -> str:
@@ -58,6 +56,7 @@ class XceliumAmsCellPlan:
     model_sha256: Mapping[Path, str]
     integration_check: Mapping[str, Any]
     command_template: tuple[str, ...]
+    source_records: Mapping[Path, str]
 
     def render_ams_control(
         self,
@@ -96,21 +95,20 @@ class XceliumAmsCellPlan:
                 "dependency": ams.dependency,
                 "role": ams.circuit_role,
                 "cell": self.native_cell,
-                "circuit_netlist": _display_path(
-                    self.circuit_netlist,
-                    root=root,
-                ),
+                "circuit_netlist": self.circuit_netlist.name,
                 "circuit_sha256": self.circuit_sha256,
                 "integration_check": dict(self.integration_check),
             },
             "platform_model": {
                 "platform": self.platform.key,
                 "model_set": self.model_set.name,
-                "file": str(self.model_set.file),
+                "file": self.model_set.file.name,
                 "section": self.model_set.single_section,
-                "support_files": [str(path) for path in self.model_set.support_files],
+                "support_files": [
+                    path.name for path in self.model_set.support_files
+                ],
                 "sha256": {
-                    str(path): digest for path, digest in self.model_sha256.items()
+                    path.name: digest for path, digest in self.model_sha256.items()
                 },
             },
             "command_template": list(self.command_template),
@@ -259,9 +257,19 @@ def plan_xcelium_ams_cell(
         "$RUN_WORK/xcelium.d",
         "-log",
         "$RUN_WORK/xrun.log",
-        *(str(path) for path in sources),
+        *(path.relative_to(repository.project_root).as_posix() for path in sources),
         "$RUN_INPUTS/ams_control.scs",
     )
+    source_paths = {
+        contract,
+        *spec.source_inputs,
+        *spec.source_documents,
+        *platform.source_paths,
+        circuit,
+        *model_set.files,
+    }
+    if spec.runner is not None:
+        source_paths.add(spec.runner)
     return XceliumAmsCellPlan(
         contract=contract,
         spec=spec,
@@ -274,6 +282,10 @@ def plan_xcelium_ams_cell(
         model_sha256={path: _sha256(path) for path in model_set.files},
         integration_check=integration_check,
         command_template=command_template,
+        source_records=snapshot_verification_sources(
+            source_paths,
+            documents=(spec.source_documents, platform.source_documents),
+        ),
     )
 
 
@@ -282,6 +294,7 @@ def execute_xcelium_ams_cell(
     *,
     artifacts: RunArtifacts,
     xrun: Path | None = None,
+    before_spawn: Callable[[], None] | None = None,
     timeout: int = 600,
 ) -> XceliumAmsCellExecution:
     """Execute a resolved AMS cell without creating or completing a run record."""
@@ -336,6 +349,8 @@ def execute_xcelium_ams_cell(
         def validate_spawn() -> None:
             owned_work.require_visible()
             owned_xcelium.require_visible()
+            if before_spawn is not None:
+                before_spawn()
             required = (
                 *plan.spec.source_inputs,
                 *plan.platform.source_paths,

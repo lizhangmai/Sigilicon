@@ -1,9 +1,10 @@
-"""Project-bound Adapters for planned custom-layout generation and verification."""
+"""Stateless Adapters for explicitly planned custom-layout Actions."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,97 +14,112 @@ from sigilicon.flow import (
     CollectedActionResult,
     FlowExecutionError,
     ProducedArtifact,
-    SourceMember,
 )
 from sigilicon.flow.layout import (
+    LAYOUT_ACTION_PLAN,
     LAYOUT_GENERATION_ACTION,
     LAYOUT_GENERATION_EVIDENCE_KIND,
     LAYOUT_VERIFICATION_ACTION,
     LAYOUT_VERIFICATION_EVIDENCE_KIND,
 )
+from sigilicon.flow.serialization import json_value
 from sigilicon.flow.source_assets import source_member_matches
-from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.layout_generation import (
     LayoutPlanningResult,
     generate_layout,
 )
-from sigilicon.workflows.layout_targets import LayoutTargetCatalog
 from sigilicon.workflows.layout_verification import verify_layout
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
 
 
-class ProjectLayoutTargetAdapter:
+@dataclass(frozen=True)
+class LayoutActionPlan:
+    """Selected layout route paired with its exact typed generation plan."""
+
+    target: str
+    route_operation: str
+    planning: LayoutPlanningResult
+
+    def as_dict(self) -> dict[str, object]:
+        root = self.planning.spec.project_root
+        return {
+            "target": self.target,
+            "route_operation": self.route_operation,
+            "spec": self.planning.spec.path.relative_to(root).as_posix(),
+            "layout": json.loads(self.planning.plan.canonical_json()),
+        }
+
+
+class LayoutActionAdapter:
     """Execute one exact owner layout plan inside its Flow Action lifecycle."""
 
     def __init__(
         self,
-        project: Any,
-        owner: str,
-        catalog: LayoutTargetCatalog,
         *,
-        target: str,
-        operation: str,
-        planning: LayoutPlanningResult,
         client_factory: Callable[[], Any],
-        sources: tuple[SourceMember, ...] | None = None,
     ) -> None:
-        self._project = project
-        self._owner = project.owner(owner)
-        self._catalog = catalog
-        self._target = catalog.get(target)
-        self._route_operation = operation
-        self._planning = planning
         self._client_factory = client_factory
-        self._sources = (
-            catalog.source_members_for(self._target, planning)
-            if sources is None
-            else sources
-        )
-
-    @property
-    def sources(self) -> tuple[SourceMember, ...]:
-        return self._sources
 
     def run(self, context: ActionContext) -> AdapterResult:
+        selected = context.require_action_plan(
+            LAYOUT_ACTION_PLAN,
+            LayoutActionPlan,
+        )
+        assert context.action_plan is not None
+        if json_value(context.action_plan.record) != selected.as_dict():
+            raise FlowExecutionError("typed layout Action Plan record drift")
+        planning = selected.planning
+        project = planning.spec.project
+        owner = project.require_owner(planning.spec.path)
         scope = context.require_project_scope()
         if (
-            scope.owner != self._owner.name
-            or scope.owner_root != self._owner.root
-            or scope.project.project_root != self._project.project_root
+            scope.owner != owner.name
+            or scope.owner_root != owner.root
+            or scope.project.project_root != project.project_root
         ):
-            raise FlowExecutionError("layout Action project owner scope drift")
+            raise FlowExecutionError("layout Action Plan project owner scope drift")
         expected_action = (
             LAYOUT_GENERATION_ACTION
-            if self._route_operation == "generate"
+            if selected.route_operation == "generate"
             else LAYOUT_VERIFICATION_ACTION
         )
         if context.action.kind != expected_action:
             raise FlowExecutionError("layout route selected a different Action kind")
-        if self._text(context, "target") != self._target.name:
+        if self._text(context, "target") != selected.target:
             raise FlowExecutionError("layout Action target drift")
         operation = self._text(context, "operation")
         allowed_operations = (
             {"generate"}
-            if self._route_operation == "generate"
+            if selected.route_operation == "generate"
             else (
                 {"verify-drc", "verify-lvs"}
-                if self._route_operation == "verify-all"
-                else {self._route_operation}
+                if selected.route_operation == "verify-all"
+                else {selected.route_operation}
             )
         )
         if operation not in allowed_operations:
             raise FlowExecutionError("layout Action operation drift")
+        planned_records = planning.source_records
+        provided_records = {
+            member.location: member.record_text
+            for member in context.action_plan.sources
+        }
+        if not planned_records or any(
+            provided_records.get(path) != record
+            for path, record in planned_records.items()
+        ):
+            raise FlowExecutionError(
+                "typed layout plan source closure drift"
+            )
         try:
-            if not all(source_member_matches(member) for member in self._sources):
+            if not all(
+                source_member_matches(member)
+                for member in context.action_plan.sources
+            ):
                 raise FlowExecutionError(
                     "owner layout source changed after Flow planning"
                 )
-            resolve_layout_spec(
-                self._target.spec,
-                project=self._project,
-                snapshot=self._planning.spec,
-            )
         except (OSError, RuntimeError, ValueError) as exc:
             if isinstance(exc, FlowExecutionError):
                 raise
@@ -112,7 +128,7 @@ class ProjectLayoutTargetAdapter:
             ) from exc
         if context.operation_id is None:
             raise FlowExecutionError("layout Action has no managed operation")
-        source = artifact_source_state(self._project.project_root)
+        source = artifact_source_state(project.project_root)
         source["layout_route"] = [
             {
                 "path": member.path,
@@ -121,22 +137,23 @@ class ProjectLayoutTargetAdapter:
                 ).hexdigest(),
                 "executable": member.executable,
             }
-            for member in self._sources
+            for member in context.action_plan.sources
         ]
         artifacts = FlowRunArtifacts(context, "evidence", source)
-        for index, member in enumerate(self._sources):
+        for index, member in enumerate(context.action_plan.sources):
             artifacts.write_text(
                 "inputs",
                 ("selected-sources", f"{index:03d}-{Path(member.path).name}"),
                 member.record_text,
             )
-        if self._route_operation == "generate":
-            return self._generate(context, artifacts)
-        return self._verify(context, artifacts)
+        if selected.route_operation == "generate":
+            return self._generate(context, selected, artifacts)
+        return self._verify(context, selected, artifacts)
 
     def _generate(
         self,
         context: ActionContext,
+        selected: LayoutActionPlan,
         artifacts: FlowRunArtifacts,
     ) -> AdapterResult:
         if set(context.action_config) != {"target", "operation"}:
@@ -145,7 +162,7 @@ class ProjectLayoutTargetAdapter:
             raise FlowExecutionError("layout generation Adapter configuration drift")
         timeout = self._positive_timeout(context, "timeout_seconds")
         result = generate_layout(
-            self._planning,
+            selected.planning,
             self._client_factory(),
             artifacts=artifacts,
             operation_id=context.operation_id,
@@ -153,11 +170,11 @@ class ProjectLayoutTargetAdapter:
             timeout=timeout,
         )
         payload = {
-            "target": self._target.name,
+            "target": selected.target,
             "operation": "generate",
-            "library": self._planning.spec.library,
-            "cell": self._planning.spec.cell,
-            "view": self._planning.spec.view,
+            "library": selected.planning.spec.library,
+            "cell": selected.planning.spec.cell,
+            "view": selected.planning.spec.view,
             "passed": True,
             "execution_completed": True,
             "instance_count": result.instance_count,
@@ -188,6 +205,7 @@ class ProjectLayoutTargetAdapter:
     def _verify(
         self,
         context: ActionContext,
+        selected: LayoutActionPlan,
         artifacts: FlowRunArtifacts,
     ) -> AdapterResult:
         allowed = {
@@ -216,7 +234,7 @@ class ProjectLayoutTargetAdapter:
                 "layout verification tool capabilities require executable paths"
             )
         result = verify_layout(
-            self._planning,
+            selected.planning,
             self._client_factory(),
             check=check,
             artifacts=artifacts,
@@ -238,11 +256,11 @@ class ProjectLayoutTargetAdapter:
             "evidence_scope": envelope.scope,
         }
         payload = {
-            "target": self._target.name,
+            "target": selected.target,
             "operation": operation,
-            "library": self._planning.spec.library,
-            "cell": self._planning.spec.cell,
-            "view": self._planning.spec.view,
+            "library": selected.planning.spec.library,
+            "cell": selected.planning.spec.cell,
+            "view": selected.planning.spec.view,
             "check": check,
             "passed": result.passed,
             "execution_completed": True,
@@ -296,4 +314,4 @@ class ProjectLayoutTargetAdapter:
         return value
 
 
-__all__ = ["ProjectLayoutTargetAdapter"]
+__all__ = ["LayoutActionAdapter", "LayoutActionPlan"]

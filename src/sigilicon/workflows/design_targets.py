@@ -420,6 +420,11 @@ def load_design_target_catalog(
                 snapshot_source_member(
                     entrypoint_path,
                     source_root=entrypoint_root,
+                    scope=(
+                        "project"
+                        if entrypoint_root == root
+                        else "sigilicon-package"
+                    ),
                     source_label="design",
                 )
             ]

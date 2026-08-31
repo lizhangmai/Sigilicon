@@ -17,6 +17,9 @@ XCELIUM_VERIFICATION_ADAPTER = "xcelium-verification"
 XCELIUM_AMS_VERIFICATION_ADAPTER = "xcelium-ams-verification"
 
 NATIVE_OA_PLAN_KIND = "native-oa.assembly-plan"
+NATIVE_OA_ACTION_PLAN = "native-oa.assembly"
+XCELIUM_ACTION_PLAN = "verification.xcelium-rtl.cell"
+XCELIUM_AMS_ACTION_PLAN = "verification.xcelium-ams.cell"
 NATIVE_OA_EVIDENCE_KIND = "evidence.native-oa-maestro"
 XCELIUM_EVIDENCE_KIND = "evidence.xcelium-rtl-verification"
 XCELIUM_AMS_EVIDENCE_KIND = "evidence.xcelium-ams-verification"
@@ -36,6 +39,7 @@ def register_native_actions(registry: FlowRegistry) -> None:
                 "source-testbench-count",
             ),
             adapters=(NATIVE_OA_PLAN_ADAPTER,),
+            plan_input_kind=NATIVE_OA_ACTION_PLAN,
         )
     )
     registry.register_action(
@@ -57,6 +61,7 @@ def register_native_actions(registry: FlowRegistry) -> None:
             ),
             execution_capability="mutate-workspace",
             adapters=(NATIVE_OA_SIMULATION_ADAPTER,),
+            plan_input_kind=NATIVE_OA_ACTION_PLAN,
         )
     )
     registry.register_action(
@@ -73,6 +78,7 @@ def register_native_actions(registry: FlowRegistry) -> None:
             ),
             required_capabilities=("tool.cadence-xcelium",),
             adapters=(XCELIUM_VERIFICATION_ADAPTER,),
+            plan_input_kind=XCELIUM_ACTION_PLAN,
         )
     )
     registry.register_action(
@@ -89,19 +95,23 @@ def register_native_actions(registry: FlowRegistry) -> None:
             ),
             required_capabilities=("tool.cadence-xcelium",),
             adapters=(XCELIUM_AMS_VERIFICATION_ADAPTER,),
+            plan_input_kind=XCELIUM_AMS_ACTION_PLAN,
         )
     )
 
 
 __all__ = [
     "NATIVE_OA_EVIDENCE_KIND",
+    "NATIVE_OA_ACTION_PLAN",
     "NATIVE_OA_PLAN_ACTION",
     "NATIVE_OA_PLAN_ADAPTER",
     "NATIVE_OA_PLAN_KIND",
     "NATIVE_OA_SIMULATION_ACTION",
     "NATIVE_OA_SIMULATION_ADAPTER",
     "XCELIUM_EVIDENCE_KIND",
+    "XCELIUM_ACTION_PLAN",
     "XCELIUM_AMS_EVIDENCE_KIND",
+    "XCELIUM_AMS_ACTION_PLAN",
     "XCELIUM_AMS_VERIFICATION_ACTION",
     "XCELIUM_AMS_VERIFICATION_ADAPTER",
     "XCELIUM_VERIFICATION_ACTION",

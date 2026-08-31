@@ -8,7 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 
 from sigilicon.identifiers import RUN_ID_PATTERN
 from sigilicon.paths import ProjectScope, validate_artifact_id
@@ -26,6 +26,7 @@ EVIDENCE_ROLES = frozenset(
     {"diagnostic", "regression", "qualification", "signoff"}
 )
 EVIDENCE_LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
+_T = TypeVar("_T")
 
 
 class FlowContractError(ValueError):
@@ -259,6 +260,7 @@ class SourceMember:
     record_text: str = field(repr=False)
     executable: bool
     location: Path = field(repr=False, compare=False)
+    scope: str = "project"
 
     def __post_init__(self) -> None:
         relative = PurePosixPath(self.path)
@@ -276,6 +278,7 @@ class SourceMember:
             raise FlowContractError("source member record must be exact UTF-8 text")
         if not isinstance(self.executable, bool):
             raise FlowContractError("source member executable flag must be boolean")
+        identifier(self.scope, "source member scope")
         root = Path(self.source_root).resolve()
         location = Path(self.location).resolve()
         expected = root.joinpath(*relative.parts).resolve(strict=False)
@@ -285,6 +288,52 @@ class SourceMember:
             )
         object.__setattr__(self, "source_root", root)
         object.__setattr__(self, "location", location)
+
+
+@dataclass(frozen=True)
+class ActionPlan:
+    """One explicit, source-bound domain plan consumed by an Action.
+
+    ``record`` is the portable identity persisted with the Flow plan. ``value``
+    is the already-resolved typed object used by the Adapter; it is deliberately
+    not reconstructed from the persisted projection during the same execution.
+    """
+
+    kind: str
+    value: object = field(repr=False, compare=False)
+    record: Mapping[str, Any]
+    sources: tuple[SourceMember, ...] = ()
+
+    def __post_init__(self) -> None:
+        identifier(self.kind, "Action Plan kind")
+        sources = tuple(self.sources)
+        if any(not isinstance(member, SourceMember) for member in sources):
+            raise FlowContractError("Action Plan sources must be SourceMember values")
+        if not sources:
+            raise FlowContractError("Action Plan must declare explicit sources")
+        object.__setattr__(self, "sources", sources)
+        object.__setattr__(
+            self,
+            "record",
+            _portable_mapping(
+                self.record,
+                "Action Plan record",
+                FlowContractError,
+            ),
+        )
+        identities = tuple(
+            (member.scope, member.source_root, member.path) for member in self.sources
+        )
+        if len(identities) != len(set(identities)):
+            raise FlowContractError("Action Plan sources contain duplicates")
+
+    def require_value(self, expected_type: type[_T]) -> _T:
+        if not isinstance(self.value, expected_type):
+            raise FlowExecutionError(
+                f"Action Plan {self.kind!r} has value {type(self.value).__name__}, "
+                f"expected {expected_type.__name__}"
+            )
+        return self.value
 
 
 @dataclass(frozen=True)
@@ -407,6 +456,7 @@ class ActionContract:
     resolves_source_assets: bool = False
     execution_capability: str = "execute-derived"
     accepted_extensions: tuple[str, ...] = ()
+    plan_input_kind: str | None = None
 
     def __post_init__(self) -> None:
         identifier(self.kind, "action kind")
@@ -436,6 +486,8 @@ class ActionContract:
         _unique(self.required_capabilities, "Action required capabilities")
         for value in self.accepted_extensions:
             identifier(value, "Action extension")
+        if self.plan_input_kind is not None:
+            identifier(self.plan_input_kind, "Action Plan input kind")
         _unique(self.accepted_extensions, "Action extensions")
         _unique(
             tuple(requirement.role for requirement in self.platform_assets),
@@ -756,6 +808,7 @@ class PlannedNode:
     dependencies: tuple[str, ...]
     execution_capability: str
     source_assets: SourceAssets | None = None
+    action_plan: ActionPlan | None = None
 
     def __post_init__(self) -> None:
         if self.execution_capability not in EXECUTION_CAPABILITIES:
@@ -1092,6 +1145,7 @@ class ActionContext:
     capabilities: Mapping[str, ResolvedCapability]
     platform_assets: Mapping[str, ResolvedPlatformAsset]
     source_assets: SourceAssets | None = None
+    action_plan: ActionPlan | None = None
     evidence: EvidenceEnvelope | None = None
     extensions: Mapping[str, Any] = field(default_factory=dict)
     project_scope: ProjectScope | None = None
@@ -1134,6 +1188,23 @@ class ActionContext:
                 f"Action {self.node_id!r} requires an explicit project owner scope"
             )
         return self.project_scope
+
+    def require_action_plan(
+        self,
+        kind: str,
+        expected_type: type[_T],
+    ) -> _T:
+        """Return the exact typed domain plan selected before preflight."""
+
+        if self.action.plan_input_kind != kind:
+            raise FlowExecutionError(
+                f"Action {self.node_id!r} does not declare Plan input {kind!r}"
+            )
+        if self.action_plan is None or self.action_plan.kind != kind:
+            raise FlowExecutionError(
+                f"Action {self.node_id!r} is missing Plan input {kind!r}"
+            )
+        return self.action_plan.require_value(expected_type)
 
     def input(self, role: str) -> InputArtifact:
         try:

@@ -24,6 +24,7 @@ from sigilicon.flow.model import (
     ActionConfiguration,
     ActionContext,
     ActionContract,
+    ActionPlan,
     AdapterResult,
     AdapterResultError,
     AdapterConfiguration,
@@ -84,6 +85,7 @@ _NODE_EXTENSION_RESERVED = frozenset(
         "dependencies",
         "bindings",
         "source_assets",
+        "action_plan",
         "evidence",
     }
 )
@@ -100,6 +102,7 @@ _REQUEST_EXTENSION_RESERVED = frozenset(
         "execution_environment",
         "inputs",
         "source_assets",
+        "action_plan",
         "evidence",
     }
 )
@@ -108,6 +111,55 @@ _RESERVED_EXTENSIONS = _NODE_EXTENSION_RESERVED | _REQUEST_EXTENSION_RESERVED
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _action_plan_sources_payload(plan: ActionPlan) -> list[dict[str, Any]]:
+    return [
+        {
+            "scope": source.scope,
+            "path": source.path,
+            "sha256": hashlib.sha256(
+                source.record_text.encode("utf-8")
+            ).hexdigest(),
+            "executable": source.executable,
+        }
+        for source in plan.sources
+    ]
+
+
+def _action_plan_payload(plan: ActionPlan) -> dict[str, Any]:
+    return {
+        "kind": plan.kind,
+        "record": json_value(plan.record),
+        "sources": _action_plan_sources_payload(plan),
+    }
+
+
+def _source_payload_identity(payload: list[dict[str, Any]]) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_action_plan_source_identity(plan: ActionPlan) -> str:
+    payload = []
+    for source in plan.sources:
+        payload.append(
+            {
+                "scope": source.scope,
+                "path": source.path,
+                "sha256": hashlib.sha256(
+                    read_nofollow_text(source.location).encode("utf-8")
+                ).hexdigest(),
+                "executable": bool(
+                    source.location.stat(follow_symlinks=False).st_mode & 0o111
+                ),
+            }
+        )
+    return _source_payload_identity(payload)
 
 
 @dataclass
@@ -281,6 +333,11 @@ def _plan_payload(
                 if item.source_assets is None
                 else source_assets_payload(item.source_assets)
             ),
+            "action_plan": (
+                None
+                if item.action_plan is None
+                else _action_plan_payload(item.action_plan)
+            ),
         }
         if item.evidence is not None:
             value["evidence"] = json_value(item.evidence)
@@ -405,7 +462,10 @@ class FlowEngine:
         spec: FlowSpec,
         target_id: str,
         profile: ExecutionProfile,
+        *,
+        action_plans: Mapping[str, ActionPlan] | None = None,
     ) -> FlowPlan:
+        supplied_action_plans = dict(action_plans or {})
         if self._project_scope is not None:
             if spec.owner != self._project_scope.owner:
                 raise FlowContractError(
@@ -423,11 +483,30 @@ class FlowEngine:
             )
         target = spec.target(target_id)
         target_topology = resolve_target_topology(spec, target_id)
+        unknown_plan_nodes = set(supplied_action_plans) - set(target_topology.nodes)
+        if unknown_plan_nodes:
+            raise FlowContractError(
+                "Action Plans were supplied for nodes outside the selected target: "
+                f"{sorted(unknown_plan_nodes)}"
+            )
         dependencies = target_topology.dependencies
         source_assets: dict[str, Any] = {}
         for node_id in target_topology.nodes:
             node = spec.node(node_id)
             contract = self._registry.action(node.action_kind)
+            action_plan = supplied_action_plans.get(node.node_id)
+            if contract.plan_input_kind is None and action_plan is not None:
+                raise FlowContractError(
+                    f"Action {contract.kind!r} does not accept a domain Plan input"
+                )
+            if contract.plan_input_kind is not None and (
+                action_plan is None
+                or action_plan.kind != contract.plan_input_kind
+            ):
+                raise FlowContractError(
+                    f"node {node.node_id!r} requires Action Plan "
+                    f"{contract.plan_input_kind!r}"
+                )
             selection = profile.selection(node.action_kind)
             if selection.adapter not in contract.adapters:
                 raise FlowContractError(
@@ -525,6 +604,7 @@ class FlowEngine:
                     dependencies=dependencies[node_id],
                     execution_capability=contract.execution_capability,
                     source_assets=source_assets[node_id],
+                    action_plan=supplied_action_plans.get(node_id),
                 )
             )
         planned = tuple(planned_items)
@@ -607,6 +687,29 @@ class FlowEngine:
                         ),
                         expected=planned.source_assets.git.commit,
                         identity=current_source.commit,
+                    )
+                )
+            if planned.action_plan is not None:
+                expected_plan_sources = _source_payload_identity(
+                    _action_plan_sources_payload(planned.action_plan)
+                )
+                try:
+                    current_plan_sources = _current_action_plan_source_identity(
+                        planned.action_plan
+                    )
+                except (OSError, RuntimeError, UnicodeError):
+                    current_plan_sources = None
+                checks.append(
+                    PreflightCheck(
+                        requirement=f"{planned.node.node_id}:{planned.action_plan.kind}",
+                        requirement_kind="action-plan-source",
+                        status=(
+                            "available"
+                            if current_plan_sources == expected_plan_sources
+                            else "changed"
+                        ),
+                        expected=expected_plan_sources,
+                        identity=current_plan_sources,
                     )
                 )
             for capability in planned.required_capabilities:
@@ -833,6 +936,7 @@ class FlowEngine:
                     self._resolved_platform_assets(planned, environment)
                 ),
                 source_assets=planned.source_assets,
+                action_plan=planned.action_plan,
                 evidence=planned.evidence,
                 extensions=node.extensions,
                 project_scope=self._project_scope,
@@ -859,6 +963,11 @@ class FlowEngine:
                     None
                     if planned.source_assets is None
                     else source_assets_payload(planned.source_assets)
+                ),
+                "action_plan": (
+                    None
+                    if planned.action_plan is None
+                    else _action_plan_payload(planned.action_plan)
                 ),
             }
             if planned.evidence is not None:

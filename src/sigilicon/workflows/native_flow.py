@@ -1,8 +1,8 @@
-"""Project-bound Adapters for native-OA and Xcelium typed Actions."""
+"""Stateless Adapters for explicitly planned native-OA and Xcelium Actions."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import json
 from pathlib import Path
 from typing import Any
@@ -16,24 +16,32 @@ from sigilicon.flow import (
     ProducedArtifact,
 )
 from sigilicon.flow.native import (
+    NATIVE_OA_ACTION_PLAN,
     NATIVE_OA_EVIDENCE_KIND,
     NATIVE_OA_PLAN_KIND,
+    XCELIUM_ACTION_PLAN,
+    XCELIUM_AMS_ACTION_PLAN,
     XCELIUM_EVIDENCE_KIND,
     XCELIUM_AMS_EVIDENCE_KIND,
 )
+from sigilicon.flow.serialization import json_value
+from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.virtuoso.client import get_client
-from sigilicon.workflows.project_oa import ProjectOaWorkflow
+from sigilicon.workflows.oa_library import (
+    OALibraryRebuildPlan,
+    validate_oa_plan_source_members,
+)
 from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
 from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
-from sigilicon.workflows.xcelium import execute_xcelium_cell, plan_xcelium_cell
+from sigilicon.workflows.xcelium import XceliumCellPlan, execute_xcelium_cell
 from sigilicon.workflows.xcelium_ams import (
+    XceliumAmsCellPlan,
     execute_xcelium_ams_cell,
-    plan_xcelium_ams_cell,
 )
 
 
-def _require_bound_project(
+def _require_planned_project(
     context: ActionContext,
     project: Project,
     owner_name: str,
@@ -46,8 +54,80 @@ def _require_bound_project(
         or scope.project.project_root != project.project_root
         or scope.project.artifact_root != project.artifact_root
     ):
-        raise FlowExecutionError("Action project owner scope drift")
+        raise FlowExecutionError("Action Plan project owner scope drift")
     return project
+
+
+def _require_record(context: ActionContext, record: dict[str, object]) -> None:
+    assert context.action_plan is not None
+    if json_value(context.action_plan.record) != record:
+        raise FlowExecutionError("typed Action Plan record drift")
+
+
+def _require_action_plan_sources(context: ActionContext) -> None:
+    """Recheck the exact source bytes immediately before backend access."""
+
+    assert context.action_plan is not None
+    if not context.action_plan.sources:
+        raise FlowExecutionError("typed Action Plan has no explicit sources")
+    try:
+        exact = all(
+            source_member_matches(member)
+            for member in context.action_plan.sources
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        raise FlowExecutionError(
+            f"typed Action Plan source changed after preflight: {exc}"
+        ) from exc
+    if not exact:
+        raise FlowExecutionError("typed Action Plan source changed after preflight")
+
+
+def _require_oa_plan_sources(
+    context: ActionContext,
+    plan: OALibraryRebuildPlan,
+) -> None:
+    assert context.action_plan is not None
+    try:
+        validate_oa_plan_source_members(plan, context.action_plan.sources)
+    except ValueError as exc:
+        raise FlowExecutionError(str(exc)) from exc
+    _require_action_plan_sources(context)
+
+
+def _require_typed_source_records(
+    context: ActionContext,
+    records: Mapping[Path, str],
+    *,
+    label: str,
+) -> None:
+    assert context.action_plan is not None
+    provided = {
+        member.location: member.record_text
+        for member in context.action_plan.sources
+    }
+    if not records or any(
+        provided.get(Path(path).resolve()) != record
+        for path, record in records.items()
+    ):
+        raise FlowExecutionError(f"typed {label} plan source closure drift")
+    _require_action_plan_sources(context)
+
+
+def _require_cell_config(
+    context: ActionContext,
+    *,
+    contract: Path,
+    project: Project,
+) -> None:
+    configured = _text_config(context, "cell")
+    relative = Path(configured)
+    root = project.project_root
+    if relative.is_absolute():
+        raise FlowExecutionError("Xcelium Action cell must be project-relative")
+    selected = (root / relative).resolve()
+    if not selected.is_relative_to(root) or selected != contract.resolve():
+        raise FlowExecutionError("Xcelium Action cell drifted from typed plan")
 
 
 def _artifact_reference(path: Path, project: Project) -> str:
@@ -78,13 +158,16 @@ def _evidence_metadata(context: ActionContext) -> dict[str, str]:
 
 
 class NativeOaPlanAdapter:
-    def __init__(self, project: Project, owner: str) -> None:
-        self._project = project
-        self._owner = project.owner(owner).name
-
     def run(self, context: ActionContext) -> AdapterResult:
-        project = _require_bound_project(context, self._project, self._owner)
-        plan = ProjectOaWorkflow(project, self._owner).plan()
+        plan = context.require_action_plan(
+            NATIVE_OA_ACTION_PLAN,
+            OALibraryRebuildPlan,
+        )
+        _require_record(context, plan.as_dict())
+        _require_oa_plan_sources(context, plan)
+        project = plan.source.project
+        owner = project.require_owner(plan.source.manifest_path).name
+        _require_planned_project(context, project, owner)
         output = context.output_path("plan", "oa-assembly-plan.json")
         output.write_text(
             json.dumps(plan.as_dict(), indent=2) + "\n",
@@ -108,19 +191,20 @@ class NativeOaPlanAdapter:
 class NativeOaSimulationAdapter:
     def __init__(
         self,
-        project: Project,
-        owner: str,
         *,
         client_factory: Callable[[], Any] = get_client,
     ) -> None:
-        self._project = project
-        self._owner = project.owner(owner).name
         self._client_factory = client_factory
 
     def run(self, context: ActionContext) -> AdapterResult:
-        project = _require_bound_project(context, self._project, self._owner)
-        workflow = ProjectOaWorkflow(project, self._owner)
-        plan = workflow.plan()
+        plan = context.require_action_plan(
+            NATIVE_OA_ACTION_PLAN,
+            OALibraryRebuildPlan,
+        )
+        _require_record(context, plan.as_dict())
+        project = plan.source.project
+        owner = project.require_owner(plan.source.manifest_path).name
+        _require_planned_project(context, project, owner)
         try:
             bound_plan = json.loads(
                 context.input("plan").path.read_text(encoding="utf-8")
@@ -152,6 +236,7 @@ class NativeOaSimulationAdapter:
             operation_id=context.operation_id,
             bind_operation=context.bind_workspace_operation,
             timeout=int(context.adapter_config.get("timeout_seconds", 600)),
+            before_backend=lambda: _require_oa_plan_sources(context, plan),
         )
         payload = result.as_dict()
         payload.update(metadata)
@@ -188,17 +273,21 @@ class NativeOaSimulationAdapter:
 
 
 class XceliumVerificationAdapter:
-    def __init__(self, project: Project, owner: str) -> None:
-        self._project = project
-        self._owner = project.owner(owner).name
-
     def run(self, context: ActionContext) -> AdapterResult:
-        project = _require_bound_project(context, self._project, self._owner)
+        plan = context.require_action_plan(
+            XCELIUM_ACTION_PLAN,
+            XceliumCellPlan,
+        )
+        _require_record(context, plan.as_dict())
+        project = plan.spec.project
+        _require_planned_project(context, project, plan.spec.owner)
+        _require_cell_config(
+            context,
+            contract=plan.contract,
+            project=project,
+        )
         capability = context.capabilities["tool.cadence-xcelium"]
         metadata = _evidence_metadata(context)
-        plan = plan_xcelium_cell(
-            Path(_text_config(context, "cell")), project=project
-        )
         result = execute_xcelium_cell(
             plan,
             artifacts=FlowRunArtifacts(
@@ -208,6 +297,11 @@ class XceliumVerificationAdapter:
             ),
             xrun=capability.executable,
             timeout=int(context.adapter_config.get("timeout_seconds", 600)),
+            before_spawn=lambda: _require_typed_source_records(
+                context,
+                plan.source_records,
+                label="Xcelium",
+            ),
         )
         payload = {
             **result.plan.as_dict(),
@@ -245,17 +339,21 @@ class XceliumVerificationAdapter:
 class XceliumAmsVerificationAdapter:
     """Execute one owner-cataloged mixed-signal verification cell."""
 
-    def __init__(self, project: Project, owner: str) -> None:
-        self._project = project
-        self._owner = project.owner(owner).name
-
     def run(self, context: ActionContext) -> AdapterResult:
-        project = _require_bound_project(context, self._project, self._owner)
+        plan = context.require_action_plan(
+            XCELIUM_AMS_ACTION_PLAN,
+            XceliumAmsCellPlan,
+        )
+        _require_record(context, plan.as_dict())
+        project = plan.spec.project
+        _require_planned_project(context, project, plan.spec.owner)
+        _require_cell_config(
+            context,
+            contract=plan.contract,
+            project=project,
+        )
         capability = context.capabilities["tool.cadence-xcelium"]
         metadata = _evidence_metadata(context)
-        plan = plan_xcelium_ams_cell(
-            Path(_text_config(context, "cell")), project=project
-        )
         result = execute_xcelium_ams_cell(
             plan,
             artifacts=FlowRunArtifacts(
@@ -265,6 +363,11 @@ class XceliumAmsVerificationAdapter:
             ),
             xrun=capability.executable,
             timeout=int(context.adapter_config.get("timeout_seconds", 600)),
+            before_spawn=lambda: _require_typed_source_records(
+                context,
+                plan.source_records,
+                label="Xcelium AMS",
+            ),
         )
         payload = {
             **result.plan.as_dict(),

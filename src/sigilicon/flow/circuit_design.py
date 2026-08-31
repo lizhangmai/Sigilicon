@@ -20,6 +20,7 @@ DESIGN_SOURCE_CHECK_ACTION = "circuit-design.source-check"
 DESIGN_SOURCE_CHECK_ADAPTER = "project-design-source-check"
 DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION = "circuit-design.electrical-diagnostic"
 DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER = "project-design-electrical-diagnostic"
+DESIGN_ACTION_PLAN = "circuit-design.target"
 _CIRCUIT_TOPOLOGY_KIND = "circuit.topology-proposal.v1"
 _DESIGN_CANDIDATE_KIND = "design.candidate.v1"
 _DESIGN_EVIDENCE_KIND = "design.evidence.v1"
@@ -74,6 +75,7 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
                 "product-qualification-conclusion",
             ),
             adapters=(DESIGN_SOURCE_CHECK_ADAPTER,),
+            plan_input_kind=DESIGN_ACTION_PLAN,
         )
     )
     registry.register_action(
@@ -93,6 +95,7 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
             ),
             required_capabilities=("tool.cadence-spectre",),
             adapters=(DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER,),
+            plan_input_kind=DESIGN_ACTION_PLAN,
         )
     )
 
@@ -100,6 +103,7 @@ def register_circuit_design_actions(registry: FlowRegistry) -> None:
 __all__ = [
     "CIRCUIT_DESIGN_SOURCE_ACTION",
     "DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION",
+    "DESIGN_ACTION_PLAN",
     "DESIGN_ELECTRICAL_DIAGNOSTIC_ADAPTER",
     "DESIGN_SOURCE_CHECK_ACTION",
     "DESIGN_SOURCE_CHECK_ADAPTER",

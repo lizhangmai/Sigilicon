@@ -10,6 +10,25 @@ OA source/workspace administration remains a separate Module because plan, check
 
 This rejects both a universal flattened EDA result schema and permanent parallel script/workflow lifecycles. Action declarations may be shared globally, but concrete Adapters are assembled only for the selected owner and profile so unrelated tool families do not become hidden runtime dependencies.
 
+Domain planning is also completed before Adapter materialization. Actions that
+need a resolved design target, OA assembly, Xcelium cell, AMS platform/release,
+or custom-layout plan declare one `plan_input_kind` and receive an `ActionPlan`.
+That value carries the typed in-memory plan, its portable persisted projection,
+and the exact UTF-8 source snapshots checked by preflight. Adapters are stateless
+with respect to repository selection: they may depend on a tool client factory,
+but may not capture a `Project`, owner catalog, target, or planning result in
+their constructor, and they never re-plan during execution. Each source member
+also records a portable scope (`project` or `sigilicon-package`) so editable
+package implementation dependencies remain explicit without persisting host
+paths.
+
+Typed plans retain the same source records from which they were resolved.
+Layout generation brackets generator execution with exact source reads; native
+OA retains netlist/text snapshots and validates parsed contract snapshots; RTL
+and AMS plans retain their complete verification/platform records. Constructing
+an `ActionPlan` from a later filesystem reread is invalid: the typed value and
+its persisted source closure must describe one source state.
+
 ## 2026-08-31 custom-layout implementation boundary
 
 Cataloged custom-layout generation and XStream/Calibre verification now enter

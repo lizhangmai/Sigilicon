@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import sigilicon.domain.repository as repository_module
@@ -14,6 +15,7 @@ from sigilicon.flow import (
     PolicyCheck,
     PolicySpec,
 )
+from sigilicon.flow.source_assets import source_member_matches
 from sigilicon.workflows.catalog_flow import compile_layout_catalog_flow
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
 from sigilicon.workflows.project_runner import ProjectRunner
@@ -217,6 +219,46 @@ def test_layout_catalog_preserves_project_identity(tmp_path: Path) -> None:
     catalog = load_layout_target_catalog(project=project)
 
     assert catalog.project is project
+
+
+def test_layout_action_sources_include_platform_catalog_and_detect_drift(
+    tmp_path: Path,
+) -> None:
+    _catalog_project(tmp_path)
+    platform_catalog = tmp_path / "configs/platform/catalog.toml"
+    platform_catalog.parent.mkdir(parents=True, exist_ok=True)
+    platform_catalog.write_text("platform = 'fixture'\n", encoding="utf-8")
+    project = Project.from_project_root(tmp_path)
+    catalog = load_layout_target_catalog(project).for_owner("example")
+    target = catalog.get("leaf")
+    source_records = {
+        target.spec.resolve(): target.spec.read_text(encoding="utf-8"),
+        platform_catalog.resolve(): platform_catalog.read_text(encoding="utf-8"),
+    }
+    planning = SimpleNamespace(
+        spec=SimpleNamespace(
+            path=target.spec,
+            source_documents=(target.spec,),
+            pdk=SimpleNamespace(source_paths=(platform_catalog,)),
+            generator_source=target.spec,
+            generator_dependencies=(),
+            generator_module_sources=(),
+            source_snapshots=(),
+            oa_assembly_manifest=None,
+            physical_verification=None,
+        ),
+        source_records=source_records,
+    )
+
+    members = catalog.source_members_for(target, planning)
+    platform_member = next(
+        member for member in members if member.location == platform_catalog.resolve()
+    )
+
+    assert platform_member.scope == "project"
+    assert source_member_matches(platform_member)
+    platform_catalog.write_text("platform = 'changed'\n", encoding="utf-8")
+    assert not source_member_matches(platform_member)
 
 
 def test_expanded_layout_flow_description_shows_compiled_routes(

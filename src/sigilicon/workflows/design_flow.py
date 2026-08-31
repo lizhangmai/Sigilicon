@@ -1,8 +1,9 @@
-"""Project-bound Adapter for cataloged source and electrical design checks."""
+"""Stateless Adapter for explicitly planned source and electrical checks."""
 
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -25,12 +26,15 @@ from sigilicon.flow import (
     SourceMember,
 )
 from sigilicon.flow.circuit_design import (
+    DESIGN_ACTION_PLAN,
     DESIGN_ELECTRICAL_DIAGNOSTIC_ACTION,
     DESIGN_SOURCE_CHECK_ACTION,
 )
 from sigilicon.flow.source_assets import source_member_matches
+from sigilicon.flow.serialization import json_value
 from sigilicon.workflows.design_targets import (
-    DesignTargetCatalog,
+    DesignMode,
+    DesignTarget,
 )
 from sigilicon.workflows.run_artifacts import (
     FlowRunArtifacts,
@@ -38,34 +42,51 @@ from sigilicon.workflows.run_artifacts import (
 )
 from sigilicon.workflows.source_control import (
     artifact_source_state,
-    inspect_source_state,
 )
 
 
-class ProjectDesignTargetAdapter:
+@dataclass(frozen=True)
+class DesignActionPlan:
+    """One selected design target/mode with explicit source members."""
+
+    target: DesignTarget
+    mode: DesignMode
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "target": self.target.name,
+            "mode": self.mode.name,
+            "kind": self.target.kind,
+            "entrypoint": self.target.entrypoint,
+            "spec": (
+                None
+                if self.target.spec_relative is None
+                else self.target.spec_relative.as_posix()
+            ),
+            "default_args": list(self.mode.default_args),
+        }
+
+
+class DesignTargetAdapter:
     """Run one owner-declared command inside its current Flow Action."""
 
-    def __init__(
-        self,
-        project: Any,
-        owner: str,
-        catalog: DesignTargetCatalog,
-    ) -> None:
-        self._project = project
-        self._owner = project.owner(owner)
-        self._catalog = catalog
-        self._source_state = (
-            inspect_source_state(self._owner.root) if catalog.targets else None
-        )
-
     def run(self, context: ActionContext) -> AdapterResult:
+        selected = context.require_action_plan(
+            DESIGN_ACTION_PLAN,
+            DesignActionPlan,
+        )
+        assert context.action_plan is not None
+        target = selected.target
+        mode = selected.mode
         scope = context.require_project_scope()
+        project = scope.project
         if (
-            scope.owner != self._owner.name
-            or scope.owner_root != self._owner.root
-            or scope.project.project_root != self._project.project_root
+            scope.owner != target.owner
+            or scope.project.project_root != target.project_root
         ):
-            raise FlowExecutionError("design Action project owner scope drift")
+            raise FlowExecutionError("design Action Plan project owner scope drift")
+        if json_value(context.action_plan.record) != selected.as_dict():
+            raise FlowExecutionError("typed design Action Plan record drift")
         allowed = {
             "target",
             "mode",
@@ -84,19 +105,20 @@ class ProjectDesignTargetAdapter:
         evidence_role = evidence.role
         evidence_level = evidence.level
         evidence_scope = evidence.scope
-        try:
-            target = self._catalog.get(target_name)
-            mode = target.get_mode(mode_name)
-        except ValueError as exc:
-            raise FlowExecutionError(str(exc)) from exc
-        if target.owner != self._owner.name:
-            raise FlowExecutionError("design target belongs to a different owner")
-        route_sources = self._catalog.source_members_for(target)
-        if (
-            self._source_state is None
-            or inspect_source_state(self._owner.root) != self._source_state
-            or not self._sources_match(route_sources)
+        if target_name != target.name or mode_name != mode.name:
+            raise FlowExecutionError("design Action target or mode drift")
+        route_sources = context.action_plan.sources
+        expected_sources = (target.catalog_member, *target.source_members)
+        provided = {
+            member.location: member.record_text
+            for member in route_sources
+        }
+        if any(
+            provided.get(member.location) != member.record_text
+            for member in expected_sources
         ):
+            raise FlowExecutionError("typed design Action Plan source closure drift")
+        if not self._sources_match(route_sources):
             raise FlowExecutionError("owner design source changed after Flow planning")
 
         extra_args: tuple[str, ...] = ()
@@ -126,7 +148,7 @@ class ProjectDesignTargetAdapter:
             raise FlowExecutionError(
                 "design Action profile requires one positive timeout_seconds"
             )
-        source = artifact_source_state(self._project.project_root)
+        source = artifact_source_state(project.project_root)
         source["design_route"] = [
             {
                 "path": member.path,
@@ -201,7 +223,7 @@ class ProjectDesignTargetAdapter:
                     ),
                     extra_args=extra_args,
                 ),
-                cwd=self._project.project_root,
+                cwd=project.project_root,
                 env=environment,
                 timeout=timeout,
                 pass_fds=pass_fds,
@@ -217,10 +239,7 @@ class ProjectDesignTargetAdapter:
             ("design-runner.stderr.log",),
             completed.stderr or "",
         )
-        if (
-            inspect_source_state(self._owner.root) != self._source_state
-            or not self._sources_match(route_sources)
-        ):
+        if not self._sources_match(route_sources):
             raise FlowExecutionError("owner design source changed during Flow execution")
         try:
             payload = json.loads(completed.stdout)
@@ -240,7 +259,7 @@ class ProjectDesignTargetAdapter:
         result_payload = {
             "schema": 1,
             "contract_kind": "design-target-evidence",
-            "owner": self._owner.name,
+            "owner": target.owner,
             "target": target.name,
             "mode": mode.name,
             "runner_result": runner_result,
@@ -333,4 +352,4 @@ class ProjectDesignTargetAdapter:
         return value
 
 
-__all__ = ["ProjectDesignTargetAdapter"]
+__all__ = ["DesignActionPlan", "DesignTargetAdapter"]

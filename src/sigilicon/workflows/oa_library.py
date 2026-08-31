@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 import re
+import tomllib
 from types import MappingProxyType
 from typing import Any, TypeVar
 
@@ -34,6 +35,8 @@ from sigilicon.domain.platform import (
 )
 from sigilicon.domain.repository import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
+from sigilicon.flow.model import SourceMember
+from sigilicon.flow.serialization import json_value
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.virtuoso.attestation import attest_native_setup
@@ -50,6 +53,7 @@ from sigilicon.workflows.design_lifecycle import (
 from sigilicon.workflows.layout_generation import (
     LayoutPlanningResult,
     generate_layout,
+    plan_layout_snapshot,
 )
 from sigilicon.workflows.oa_testbench import (
     sync_oa_testbench,
@@ -124,6 +128,11 @@ class OALibraryRebuildPlan:
     testbenches: tuple[TestbenchRebuildStep, ...]
     views: tuple[ViewRebuildStep, ...]
     expected_views: Mapping[str, tuple[str, ...]]
+    netlist_snapshots: Mapping[Path, NetlistSnapshot] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
 
     def as_dict(self) -> dict[str, object]:
         root = self.source.project_root
@@ -228,6 +237,141 @@ class OALibraryRebuildPlan:
                 cell: list(views) for cell, views in self.expected_views.items()
             },
         }
+
+
+def oa_plan_source_paths(plan: OALibraryRebuildPlan) -> frozenset[Path]:
+    """Return the complete source closure consumed by one resolved OA plan."""
+
+    paths = set(plan.source.source_documents)
+    paths.update(plan.netlist_snapshots)
+    for cell in plan.source.cells:
+        paths.add(cell.canonical_source)
+        paths.update(view.source for view in cell.views)
+    for step in plan.designs:
+        spec = step.inspection.spec
+        paths.update(spec.source_documents)
+        paths.add(spec.netlist_snapshot.source_path)
+        paths.update(spec.pdk.source_paths)
+    for step in plan.layouts:
+        paths.update(step.planning.source_records)
+    for step in plan.testbenches:
+        paths.add(step.source_snapshot.source_path)
+        paths.update(step.simulation.source_documents)
+        native_setup = step.simulation.native_setup
+        if native_setup is not None:
+            paths.update(native_setup.pdk.source_paths)
+            paths.add(native_setup.source_snapshot.source_path)
+            rdb_contract = native_setup.rdb_contract
+            if rdb_contract is not None:
+                paths.add(rdb_contract.source_snapshot.source_path)
+                paths.update(
+                    snapshot.source_path
+                    for snapshot in rdb_contract.support_source_snapshots
+                )
+    for step in plan.views:
+        paths.add(step.view.source)
+        if step.source_snapshot is not None:
+            paths.add(step.source_snapshot.source_path)
+    return frozenset(Path(path).resolve() for path in paths)
+
+
+def _oa_plan_source_expectations(
+    plan: OALibraryRebuildPlan,
+) -> tuple[dict[Path, str], dict[Path, Mapping[str, Any]]]:
+    exact = {
+        path.resolve(): snapshot.text
+        for path, snapshot in plan.netlist_snapshots.items()
+    }
+    documents: dict[Path, Mapping[str, Any]] = {
+        path.resolve(): document
+        for path, document in plan.source.source_documents.items()
+    }
+    for source_root in plan.source.source_roots:
+        documents.update(
+            {
+                path.resolve(): document
+                for path, document in source_root.source_documents.items()
+            }
+        )
+    for step in plan.designs:
+        spec = step.inspection.spec
+        documents.update(
+            {path.resolve(): document for path, document in spec.source_documents.items()}
+        )
+        documents.update(
+            {path.resolve(): document for path, document in spec.pdk.source_documents.items()}
+        )
+        exact[spec.netlist_snapshot.source_path.resolve()] = spec.netlist_snapshot.text
+    for step in plan.layouts:
+        exact.update(
+            {
+                path.resolve(): record
+                for path, record in step.planning.source_records.items()
+            }
+        )
+    for step in plan.testbenches:
+        exact[step.source_snapshot.source_path.resolve()] = step.source_snapshot.text
+        simulation = step.simulation
+        documents.update(
+            {
+                path.resolve(): document
+                for path, document in simulation.source_documents.items()
+            }
+        )
+        if simulation.source_snapshot is not None:
+            exact[simulation.source_snapshot.source_path.resolve()] = (
+                simulation.source_snapshot.text
+            )
+        native_setup = simulation.native_setup
+        if native_setup is not None:
+            exact[native_setup.source_snapshot.source_path.resolve()] = (
+                native_setup.source_snapshot.text
+            )
+            documents.update(
+                {
+                    path.resolve(): document
+                    for path, document in native_setup.pdk.source_documents.items()
+                }
+            )
+            rdb_contract = native_setup.rdb_contract
+            if rdb_contract is not None:
+                exact[rdb_contract.source_snapshot.source_path.resolve()] = (
+                    rdb_contract.source_snapshot.text
+                )
+                exact.update(
+                    {
+                        snapshot.source_path.resolve(): snapshot.text
+                        for snapshot in rdb_contract.support_source_snapshots
+                    }
+                )
+    for step in plan.views:
+        if step.source_snapshot is not None:
+            exact[step.source_snapshot.source_path.resolve()] = step.source_snapshot.text
+    return exact, documents
+
+
+def validate_oa_plan_source_members(
+    plan: OALibraryRebuildPlan,
+    members: Sequence[SourceMember],
+) -> None:
+    """Prove that Action sources are complete and match the typed OA snapshots."""
+
+    records = {member.location: member.record_text for member in members}
+    required = oa_plan_source_paths(plan)
+    if not required.issubset(records):
+        missing = sorted(path.as_posix() for path in required - records.keys())
+        raise ValueError(f"typed OA plan source closure is incomplete: {missing}")
+    exact, documents = _oa_plan_source_expectations(plan)
+    for path, record in exact.items():
+        if records.get(path) != record:
+            raise ValueError(f"typed OA plan source snapshot drift: {path}")
+    for path, document in documents.items():
+        try:
+            parsed = tomllib.loads(records[path])
+        except (KeyError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(f"typed OA plan document snapshot drift: {path}") from exc
+        if json_value(parsed) != json_value(document):
+            raise ValueError(f"typed OA plan document snapshot drift: {path}")
 
 
 def _topological_order(
@@ -570,7 +714,7 @@ def _plan_layouts(
             key = (spec.cell, spec.view)
             if key in planning_by_key:
                 raise ValueError(f"duplicate canonical layout rebuild view: {key}")
-            planning = LayoutPlanningResult(spec)
+            planning = plan_layout_snapshot(spec)
             specs.append(spec)
             planning_by_key[key] = planning
     keys = tuple((spec.cell, spec.view) for spec in specs)
@@ -750,6 +894,7 @@ def plan_oa_library_rebuild(
         testbenches=testbenches,
         views=views,
         expected_views=expected_views,
+        netlist_snapshots=MappingProxyType(dict(netlist_snapshots)),
     )
 
 

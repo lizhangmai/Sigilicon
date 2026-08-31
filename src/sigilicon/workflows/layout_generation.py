@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
+from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.repository import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
-from sigilicon.layout.spec import load_layout_spec
+from sigilicon.layout.spec import load_layout_spec, resolve_layout_spec
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.layout_generation import (
     validate_layout_plan,
@@ -30,6 +32,10 @@ class LayoutPlanningResult:
     """A layout spec paired with the plan built from that exact object."""
 
     spec: LayoutSpec
+    source_records: Mapping[Path, str] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+    )
     plan: LayoutPlan = field(init=False)
 
     def __post_init__(self) -> None:
@@ -55,13 +61,44 @@ class LayoutPlanningResult:
         object.__setattr__(self, "plan", plan)
 
 
+def _layout_source_paths(spec: LayoutSpec) -> tuple[Path, ...]:
+    paths = {
+        *spec.source_documents,
+        *spec.pdk.source_paths,
+        spec.generator_source,
+        *spec.generator_dependencies,
+        *spec.generator_module_sources,
+        *(snapshot.source_path for snapshot in spec.source_snapshots),
+    }
+    if spec.oa_assembly_manifest is not None:
+        paths.add(spec.oa_assembly_manifest)
+    if spec.physical_verification is not None:
+        paths.add(spec.physical_verification.path)
+    return tuple(sorted(Path(path).resolve() for path in paths))
+
+
+def plan_layout_snapshot(spec: LayoutSpec) -> LayoutPlanningResult:
+    """Build a plan while proving that one resolved spec snapshot stayed exact."""
+    paths = _layout_source_paths(spec)
+    before = {path: read_nofollow_text(path) for path in paths}
+    planning = LayoutPlanningResult(
+        spec,
+        source_records=MappingProxyType(before),
+    )
+    resolve_layout_spec(spec.path, project=spec.project, snapshot=spec)
+    after = {path: read_nofollow_text(path) for path in paths}
+    if after != before:
+        raise ValueError("layout source changed while its typed plan was built")
+    return planning
+
+
 def plan_layout_spec(
     spec_path: Path,
     *,
     project: Project,
 ) -> LayoutPlanningResult:
     spec = load_layout_spec(spec_path, project=project)
-    return LayoutPlanningResult(spec)
+    return plan_layout_snapshot(spec)
 
 
 def generate_layout(

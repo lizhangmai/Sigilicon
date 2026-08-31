@@ -12,6 +12,7 @@ LAYOUT_VERIFICATION_ACTION = "custom-layout.verify"
 LAYOUT_VERIFICATION_ADAPTER = "project-layout-verification"
 LAYOUT_GENERATION_EVIDENCE_KIND = "evidence.layout-generation"
 LAYOUT_VERIFICATION_EVIDENCE_KIND = "evidence.layout-verification"
+LAYOUT_ACTION_PLAN = "custom-layout.plan"
 
 
 def register_layout_actions(registry: FlowRegistry) -> None:
@@ -35,6 +36,7 @@ def register_layout_actions(registry: FlowRegistry) -> None:
             ),
             adapters=(LAYOUT_GENERATION_ADAPTER,),
             execution_capability="mutate-workspace",
+            plan_input_kind=LAYOUT_ACTION_PLAN,
         )
     )
     registry.register_action(
@@ -59,12 +61,14 @@ def register_layout_actions(registry: FlowRegistry) -> None:
                 "tool.calibre",
             ),
             adapters=(LAYOUT_VERIFICATION_ADAPTER,),
+            plan_input_kind=LAYOUT_ACTION_PLAN,
         )
     )
 
 
 __all__ = [
     "LAYOUT_GENERATION_ACTION",
+    "LAYOUT_ACTION_PLAN",
     "LAYOUT_GENERATION_ADAPTER",
     "LAYOUT_GENERATION_EVIDENCE_KIND",
     "LAYOUT_VERIFICATION_ACTION",
