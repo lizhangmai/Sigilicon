@@ -14,6 +14,7 @@ from sigilicon.domain.config_contracts import (
     inspect_project_configuration_sources,
     read_toml,
     require_config_header,
+    thaw_toml_document,
 )
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
@@ -390,6 +391,10 @@ def inspect_repository_designs(
         targets[owner.name] = {
             target.name: {
                 "description": target.description,
+                "recipe": (
+                    None if target.recipe is None else target.recipe.as_posix()
+                ),
+                "inputs": thaw_toml_document(target.inputs),
                 "operations": {
                     operation.name: {
                         "recipe": operation.recipe.as_posix(),

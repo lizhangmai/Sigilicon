@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import json
+from dataclasses import replace
+import math
 from pathlib import Path
+from pathlib import PurePosixPath
 import tomllib
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.flow.model import (
@@ -15,8 +18,11 @@ from sigilicon.flow.model import (
     FlowNode,
     FlowSpec,
     FlowTarget,
+    InputReference,
+    RECIPE_INPUT_KINDS,
     PolicyCheck,
     PolicySpec,
+    RecipeInput,
     SourceMember,
 )
 
@@ -44,17 +50,55 @@ def _string_list(value: object, label: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _string_mapping(value: object, label: str) -> dict[str, str]:
-    table = _table(value, label)
-    if any(
-        not isinstance(key, str)
-        or not key
-        or not isinstance(item, str)
-        or not item
-        for key, item in table.items()
+def _recipe_value(value: object, label: str) -> Any:
+    """Capture portable recipe data and only whole-value input references."""
+
+    if isinstance(value, str):
+        if "${" in value:
+            raise FlowContractError(
+                f"{label} cannot use string interpolation; use a whole-value input reference"
+            )
+        return value
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise FlowContractError(f"{label} contains a non-finite number")
+        return value
+    if isinstance(value, Mapping):
+        if "input" in value:
+            if set(value) != {"input"}:
+                raise FlowContractError(
+                    f"{label} input reference must be a whole value"
+                )
+            name = value.get("input")
+            if not isinstance(name, str) or not name:
+                raise FlowContractError(f"{label}.input must be a non-empty name")
+            return InputReference(name)
+        if any(not isinstance(key, str) or not key for key in value):
+            raise FlowContractError(f"{label} contains a non-string key")
+        return {
+            key: _recipe_value(item, f"{label}.{key}")
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _recipe_value(item, f"{label}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    raise FlowContractError(f"{label} is not a portable recipe value")
+
+
+def _string_mapping(value: object, label: str) -> dict[str, Any]:
+    table = _recipe_value(_table(value, label), label)
+    if not isinstance(table, dict) or any(
+        not isinstance(item, (str, InputReference)) or not item
+        for item in table.values()
     ):
-        raise FlowContractError(f"{label} must map strings to strings")
-    return dict(table)
+        raise FlowContractError(
+            f"{label} must map strings to strings or input references"
+        )
+    return table
 
 
 def _table(value: object, label: str) -> Mapping[str, Any]:
@@ -66,11 +110,9 @@ def _table(value: object, label: str) -> Mapping[str, Any]:
 def _json_config(value: object, label: str) -> dict[str, Any]:
     if value is None:
         return {}
-    table = dict(_table(value, label))
-    try:
-        json.dumps(table, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise FlowContractError(f"{label} is not JSON-compatible: {exc}") from exc
+    table = _recipe_value(_table(value, label), label)
+    if not isinstance(table, dict):
+        raise FlowContractError(f"{label} must be a table")
     return table
 
 
@@ -205,6 +247,28 @@ def _parse_action_bindings(raw: Mapping[str, Any]) -> tuple[ActionBinding, ...]:
     return tuple(bindings)
 
 
+def _parse_inputs(raw: Mapping[str, Any]) -> dict[str, RecipeInput]:
+    values = raw.get("inputs", {})
+    table = _table(values, "Execution Recipe inputs")
+    result: dict[str, RecipeInput] = {}
+    for name, value in table.items():
+        input_name = _text(name, "Execution Recipe input name")
+        declaration = _table(value, f"inputs.{input_name}")
+        _reject_unknown(
+            declaration,
+            {"kind"},
+            f"inputs.{input_name}",
+        )
+        kind = _text(declaration.get("kind"), f"inputs.{input_name}.kind")
+        if kind not in RECIPE_INPUT_KINDS:
+            raise FlowContractError(
+                f"inputs.{input_name}.kind must be one of "
+                f"{sorted(RECIPE_INPUT_KINDS)}"
+            )
+        result[input_name] = RecipeInput(input_name, kind)
+    return result
+
+
 def load_execution_recipe(
     path: Path,
     *,
@@ -265,7 +329,7 @@ def parse_execution_recipe(
         )
     _reject_unknown(
         raw,
-        _HEADER_FIELDS | {"name", "actions", "nodes", "policies"},
+        _HEADER_FIELDS | {"name", "inputs", "actions", "nodes", "policies"},
         str(contract),
     )
     if raw.get("schema") != 1:
@@ -282,6 +346,7 @@ def parse_execution_recipe(
         nodes=_parse_nodes(raw),
         policies=_parse_policies(raw),
         action_bindings=_parse_action_bindings(raw),
+        inputs=_parse_inputs(raw),
         owner_root=resolved_owner_root,
     )
 
@@ -291,20 +356,190 @@ def compile_flow_spec(
     *,
     flow_id: str,
     targets: tuple[FlowTarget, ...],
+    inputs: Mapping[str, Any] | None = None,
     source_members: tuple[SourceMember, ...] = (),
 ) -> FlowSpec:
-    """Compile an operation recipe with owner-catalog targets for the Engine."""
+    """Compile one recipe with exact owner-target inputs for the Engine."""
+
+    if inputs is not None and not isinstance(inputs, Mapping):
+        raise FlowContractError("Flow inputs must be a mapping")
+    supplied = {} if inputs is None else dict(inputs)
+    if any(not isinstance(name, str) for name in supplied):
+        raise FlowContractError("Flow inputs must use string names")
+    expected = set(recipe.inputs)
+    actual = set(supplied)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unknown = sorted(actual - expected)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing={missing}")
+        if unknown:
+            details.append(f"unknown={unknown}")
+        raise FlowContractError(
+            "Flow inputs do not match the Execution Recipe declaration: "
+            + ", ".join(details)
+        )
+
+    resolved_inputs = {
+        name: _validate_input_value(
+            declaration.kind,
+            supplied[name],
+            f"inputs.{name}",
+            owner_root=recipe.owner_root,
+        )
+        for name, declaration in recipe.inputs.items()
+    }
+
+    def resolve(value: Any, label: str) -> Any:
+        if isinstance(value, InputReference):
+            try:
+                return resolved_inputs[value.name]
+            except KeyError as exc:
+                raise FlowContractError(
+                    f"{label} references undeclared input {value.name!r}"
+                ) from exc
+        if isinstance(value, str):
+            if "${" in value:
+                raise FlowContractError(
+                    f"{label} cannot use string interpolation; use a whole-value input reference"
+                )
+            return value
+        if isinstance(value, Mapping):
+            if "input" in value:
+                if set(value) != {"input"}:
+                    raise FlowContractError(
+                        f"{label} input reference must be a whole value"
+                    )
+                reference = value.get("input")
+                if not isinstance(reference, str) or not reference:
+                    raise FlowContractError(f"{label}.input must be a non-empty name")
+                return resolve(InputReference(reference), label)
+            return {
+                key: resolve(item, f"{label}.{key}")
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                resolve(item, f"{label}[{index}]")
+                for index, item in enumerate(value)
+            ]
+        return value
+
+    nodes = tuple(
+        replace(
+            node,
+            config=resolve(node.config, f"nodes.{node.node_id}.config"),
+            extensions=resolve(node.extensions, f"nodes.{node.node_id}.extensions"),
+        )
+        for node in recipe.nodes
+    )
+    action_bindings = tuple(
+        replace(
+            binding,
+            config=resolve(
+                binding.config,
+                f"actions.{binding.action_kind}.config",
+            ),
+            platform_assets=resolve(
+                binding.platform_assets,
+                f"actions.{binding.action_kind}.platform_assets",
+            ),
+        )
+        for binding in recipe.action_bindings
+    )
 
     return FlowSpec(
         owner=recipe.owner,
         flow_id=flow_id,
         recipe_id=recipe.recipe_id,
-        nodes=recipe.nodes,
+        nodes=nodes,
         targets=targets,
         policies=recipe.policies,
-        action_bindings=recipe.action_bindings,
+        action_bindings=action_bindings,
+        inputs=MappingProxyType(resolved_inputs),
         source_members=source_members,
         owner_root=recipe.owner_root,
+    )
+
+
+def _validate_input_value(
+    kind: str,
+    value: Any,
+    label: str,
+    *,
+    owner_root: Path | None,
+) -> Any:
+    if kind == "text":
+        if type(value) is not str:
+            raise FlowContractError(f"{label} must be text")
+        return value
+    if kind == "boolean":
+        if type(value) is not bool:
+            raise FlowContractError(f"{label} must be boolean")
+        return value
+    if kind == "integer":
+        if type(value) is not int:
+            raise FlowContractError(f"{label} must be integer")
+        return value
+    if kind == "real":
+        if type(value) not in {int, float} or not math.isfinite(float(value)):
+            raise FlowContractError(f"{label} must be a finite real")
+        return value
+    if kind == "owner-path":
+        if type(value) is not str:
+            raise FlowContractError(f"{label} must be an owner-relative path")
+        if owner_root is None:
+            raise FlowContractError(
+                f"{label} requires an explicit Execution Recipe owner root"
+            )
+        relative = PurePosixPath(value)
+        if (
+            relative.is_absolute()
+            or "\\" in value
+            or relative.as_posix() != value
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise FlowContractError(f"{label} must stay within the explicit owner root")
+        configured = owner_root.joinpath(*relative.parts)
+        resolved = configured.resolve(strict=False)
+        if configured != resolved:
+            raise FlowContractError(f"{label} must not name a symlink")
+        if not resolved.is_relative_to(owner_root):
+            raise FlowContractError(f"{label} escaped the explicit owner root")
+        if not resolved.is_file():
+            raise FlowContractError(
+                f"{label} must name an existing regular file within the owner root"
+            )
+        return relative.as_posix()
+    if kind == "semantic-identity":
+        if (
+            type(value) is not str
+            or not value
+            or "\n" in value
+            or "\r" in value
+            or Path(value).is_absolute()
+        ):
+            raise FlowContractError(f"{label} must be a semantic identity")
+        return value
+    if kind == "scalar-map":
+        if not isinstance(value, Mapping):
+            raise FlowContractError(f"{label} must be a scalar map")
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise FlowContractError(f"{label} must use non-empty string keys")
+            if item is None or isinstance(item, (Mapping, list, tuple)):
+                raise FlowContractError(f"{label}.{key} must be a scalar")
+            if not isinstance(item, (str, bool, int, float)):
+                raise FlowContractError(f"{label}.{key} must be a scalar")
+            if isinstance(item, float) and not math.isfinite(item):
+                raise FlowContractError(f"{label}.{key} must be finite")
+            result[key] = item
+        return MappingProxyType(result)
+    raise FlowContractError(
+        f"{label} uses unsupported recipe input kind {kind!r}; "
+        f"expected one of {sorted(RECIPE_INPUT_KINDS)}"
     )
 
 

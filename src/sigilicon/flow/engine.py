@@ -359,6 +359,7 @@ def _plan_payload(
         "flow": spec.flow_id,
         "recipe": spec.recipe_id,
         "target": target_id,
+        "inputs": json_value(spec.inputs),
         "topology": list(topology),
         "nodes": [node_payload(item) for item in planned],
         "policies": [json_value(policy) for policy in spec.policies],
@@ -696,7 +697,9 @@ class FlowEngine:
             if planned.source_assets is not None:
                 current_source = git_source(planned.source_assets.owner_root)
                 try:
-                    exact_members = all(
+                    exact_members = source_member_matches(
+                        planned.source_assets.contract_source
+                    ) and all(
                         source_member_matches(member)
                         for artifact in planned.source_assets.artifacts
                         for member in artifact.members
@@ -829,6 +832,7 @@ class FlowEngine:
             "flow": plan.spec.flow_id,
             "target": plan.target.target_id,
             "recipe": plan.spec.recipe_id,
+            "inputs": json_value(plan.spec.inputs),
             "status": result.status,
             "checks": [json_value(check) for check in result.checks],
         }

@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
+from pathlib import PurePosixPath
 import stat
 import sys
 import tomllib
@@ -646,6 +647,43 @@ class ProjectRunner:
                 source_label="execution recipe",
             ),
         )
+        input_sources = list(sources)
+        for name, declaration in recipe.inputs.items():
+            if declaration.kind != "owner-path":
+                continue
+            value = selected_target.inputs.get(name)
+            if not isinstance(value, str):
+                continue
+            relative = PurePosixPath(value)
+            if (
+                relative.is_absolute()
+                or "\\" in value
+                or relative.as_posix() != value
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                continue
+            configured = self.owner.root.joinpath(*relative.parts)
+            resolved = configured.resolve(strict=False)
+            if configured != resolved or not resolved.is_relative_to(self.owner.root):
+                continue
+            if resolved.is_file():
+                member = snapshot_source_member(
+                    resolved,
+                    source_root=self.project.project_root,
+                    scope="project",
+                    source_label=f"execution input {name}",
+                )
+                if not any(
+                    (
+                        existing.scope,
+                        existing.source_root,
+                        existing.path,
+                    )
+                    == (member.scope, member.source_root, member.path)
+                    for existing in input_sources
+                ):
+                    input_sources.append(member)
+        sources = tuple(input_sources)
         self._require_current(sources)
         spec = compile_flow_spec(
             recipe,
@@ -656,8 +694,10 @@ class ProjectRunner:
                     selected_operation.goals,
                 ),
             ),
+            inputs=selected_target.inputs,
             source_members=sources,
         )
+        self._require_current(sources)
         return _TargetSelection(
             selected_target,
             selected_operation,

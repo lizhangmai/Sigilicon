@@ -25,6 +25,7 @@ from sigilicon.flow.model import (
     SourceArtifact,
     SourceAssets,
     SourceMember,
+    identifier,
 )
 
 
@@ -109,6 +110,13 @@ def source_assets_payload(source: SourceAssets) -> dict[str, Any]:
 
     return {
         "name": source.name,
+        "selection": source.selection,
+        "contract_source": {
+            "scope": source.contract_source.scope,
+            "path": source.contract_source.path,
+            "record_text": source.contract_source.record_text,
+            "executable": source.contract_source.executable,
+        },
         "git": {
             "commit": source.git.commit,
             "changes": list(source.git.changes),
@@ -179,61 +187,37 @@ def snapshot_source_member(
     )
 
 
-def load_source_assets(
-    path: Path,
+def _parse_artifacts(
+    artifacts_raw: object,
     *,
-    owner_root: Path,
-    expected_owner: str,
-) -> SourceAssets:
-    """Load one Git-owned source selection without content re-hashing."""
-
-    root = Path(owner_root).resolve()
-    contract = Path(path).resolve()
-    if not contract.is_relative_to(root):
-        raise FlowContractError("Source Assets must be inside their owner root")
-    try:
-        with contract.open("rb") as stream:
-            raw: dict[str, Any] = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise FlowContractError("cannot read Source Assets contract") from exc
-    _reject_unknown(
-        raw,
-        _HEADER_FIELDS | {"name", "qualifiers", "artifacts"},
-        str(contract),
-    )
-    if raw.get("schema") != 1:
-        raise FlowContractError("Source Assets must use the current schema 1")
-    if raw.get("contract_kind") != "source-assets":
-        raise FlowContractError("Source Assets contract_kind must be 'source-assets'")
-    if raw.get("path_scope") != "owner":
-        raise FlowContractError("Source Assets path_scope must be 'owner'")
-    owner = _text(raw.get("owner"), "Source Assets owner")
-    if owner != expected_owner:
-        raise FlowContractError(
-            f"Source Assets owner {owner!r} does not match {expected_owner!r}"
-        )
-    qualifiers = _table(raw.get("qualifiers", {}), "source qualifiers")
-    artifacts_raw = raw.get("artifacts")
+    root: Path,
+    qualifiers: Mapping[str, Any],
+    label: str,
+) -> tuple[SourceArtifact, ...]:
     if not isinstance(artifacts_raw, list) or not artifacts_raw:
-        raise FlowContractError("Source Assets artifacts must be a non-empty array")
-
+        raise FlowContractError(f"{label} must be a non-empty array")
     artifacts: list[SourceArtifact] = []
+    roles: set[str] = set()
     for index, value in enumerate(artifacts_raw):
-        artifact = _table(value, f"artifacts[{index}]")
+        artifact = _table(value, f"{label}[{index}]")
         _reject_unknown(
             artifact,
             {"role", "kind", "materialization", "members"},
-            f"artifacts[{index}]",
+            f"{label}[{index}]",
         )
+        role = _text(artifact.get("role"), f"{label}[{index}].role")
+        if role in roles:
+            raise FlowContractError(f"duplicate Source Assets artifact role: {role!r}")
+        roles.add(role)
         members_raw = artifact.get("members")
         if not isinstance(members_raw, list) or not members_raw:
-            raise FlowContractError(f"artifacts[{index}].members must be non-empty")
+            raise FlowContractError(f"{label}[{index}].members must be non-empty")
         members: list[SourceMember] = []
         for member_index, value in enumerate(members_raw):
             relative, location = _owner_path(
                 root,
                 value,
-                f"artifacts[{index}].members[{member_index}]",
+                f"{label}[{index}].members[{member_index}]",
             )
             if not location.is_file():
                 raise FlowContractError(
@@ -259,22 +243,124 @@ def load_source_assets(
             )
         artifacts.append(
             SourceArtifact(
-                role=_text(artifact.get("role"), f"artifacts[{index}].role"),
-                kind=_text(artifact.get("kind"), f"artifacts[{index}].kind"),
+                role=role,
+                kind=_text(artifact.get("kind"), f"{label}[{index}].kind"),
                 materialization=_text(
                     artifact.get("materialization"),
-                    f"artifacts[{index}].materialization",
+                    f"{label}[{index}].materialization",
                 ),
                 qualifiers=qualifiers,
                 members=tuple(members),
             )
         )
+    return tuple(artifacts)
+
+
+def load_source_assets(
+    path: Path,
+    *,
+    owner_root: Path,
+    expected_owner: str,
+    selection: str | None = None,
+) -> SourceAssets:
+    """Load one Git-owned source selection without content re-hashing."""
+
+    root = Path(owner_root).resolve()
+    contract = Path(path).resolve()
+    if not contract.is_relative_to(root):
+        raise FlowContractError("Source Assets must be inside their owner root")
+    try:
+        contract_record = read_nofollow_text(contract)
+        raw: dict[str, Any] = tomllib.loads(contract_record)
+    except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise FlowContractError("cannot read Source Assets contract") from exc
+    _reject_unknown(
+        raw,
+        _HEADER_FIELDS | {"name", "qualifiers", "artifacts", "selections"},
+        str(contract),
+    )
+    if raw.get("schema") != 1:
+        raise FlowContractError("Source Assets must use the current schema 1")
+    if raw.get("contract_kind") != "source-assets":
+        raise FlowContractError("Source Assets contract_kind must be 'source-assets'")
+    if raw.get("path_scope") != "owner":
+        raise FlowContractError("Source Assets path_scope must be 'owner'")
+    owner = _text(raw.get("owner"), "Source Assets owner")
+    if owner != expected_owner:
+        raise FlowContractError(
+            f"Source Assets owner {owner!r} does not match {expected_owner!r}"
+        )
+    qualifiers = _table(raw.get("qualifiers", {}), "source qualifiers")
+    common = _parse_artifacts(
+        raw.get("artifacts"),
+        root=root,
+        qualifiers=qualifiers,
+        label="artifacts",
+    )
+
+    selections_raw = raw.get("selections", {})
+    selections = _table(selections_raw, "source selections")
+    selected_qualifiers = dict(qualifiers)
+    selected_artifacts = common
+    if selection is not None:
+        identifier(selection, "source assets selection")
+        selected = selections.get(selection)
+        if selected is None:
+            raise FlowContractError(
+                f"Source Assets has no selection {selection!r}"
+            )
+        selection_table = _table(selected, f"selections.{selection}")
+        _reject_unknown(
+            selection_table,
+            {"qualifiers", "artifacts"},
+            f"selections.{selection}",
+        )
+        selection_qualifiers = _table(
+            selection_table.get("qualifiers", {}),
+            f"selections.{selection}.qualifiers",
+        )
+        selected_qualifiers.update(selection_qualifiers)
+        base = tuple(
+            SourceArtifact(
+                artifact.role,
+                artifact.kind,
+                artifact.materialization,
+                selected_qualifiers,
+                artifact.members,
+            )
+            for artifact in common
+        )
+        selection_artifacts = (
+            _parse_artifacts(
+                selection_table["artifacts"],
+                root=root,
+                qualifiers=selected_qualifiers,
+                label=f"selections.{selection}.artifacts",
+            )
+            if "artifacts" in selection_table
+            else ()
+        )
+        # Selection artifacts replace public artifacts with the same role.
+        merged = {artifact.role: artifact for artifact in base}
+        for artifact in selection_artifacts:
+            merged[artifact.role] = artifact
+        selected_artifacts = tuple(merged.values())
+
+    contract_source = snapshot_source_member(
+        contract,
+        source_root=root,
+        scope="owner",
+        record_text=contract_record,
+        source_label="source assets contract",
+    )
     return SourceAssets(
         owner=owner,
         name=_text(raw.get("name"), "Source Assets name"),
         git=git_source(root),
-        artifacts=tuple(artifacts),
+        artifacts=tuple(selected_artifacts),
+        contract_source=contract_source,
         owner_root=root,
+        selection=selection,
     )
 
 
@@ -289,19 +375,27 @@ def resolve_node_source_assets(
         raise FlowContractError(
             f"source assets node {node.node_id!r} requires an explicit owner root"
         )
-    if set(node.config) != {"source"}:
+    if set(node.config) not in ({"source"}, {"source", "selection"}):
         raise FlowContractError(
-            f"source assets node {node.node_id!r} config must contain only 'source'"
+            f"source assets node {node.node_id!r} config must contain 'source' and optional 'selection'"
         )
     _relative, contract = _owner_path(
         spec.owner_root,
         node.config["source"],
         f"source assets node {node.node_id!r}",
     )
+    selection = node.config.get("selection")
+    if selection is not None and (
+        not isinstance(selection, str) or not selection
+    ):
+        raise FlowContractError(
+            f"source assets node {node.node_id!r} selection must be text"
+        )
     source = load_source_assets(
         contract,
         owner_root=spec.owner_root,
         expected_owner=spec.owner,
+        selection=selection,
     )
     expected = {port.role: port.kind for port in action.outputs}
     actual = {artifact.role: artifact.kind for artifact in source.artifacts}
@@ -329,6 +423,12 @@ class SourceAssetsAdapter:
         source = context.source_assets
         if source is None:
             return ("source-assets Action omitted its source selection",)
+        try:
+            contract_current = source_member_matches(source.contract_source)
+        except (OSError, RuntimeError, UnicodeError):
+            contract_current = False
+        if not contract_current:
+            return ("Source Assets contract changed after planning",)
         return (
             ()
             if git_source(source.owner_root) == source.git
@@ -342,6 +442,10 @@ class SourceAssetsAdapter:
         source = context.source_assets
         if source is None:
             raise FlowExecutionError("source-assets Action has no source selection")
+        if not source_member_matches(source.contract_source):
+            raise FlowExecutionError(
+                "Source Assets contract changed while creating the run snapshot"
+            )
         for artifact in source.artifacts:
             output = self._output_path(context, artifact)
             if artifact.materialization == "file":
@@ -389,6 +493,10 @@ class SourceAssetsAdapter:
             for member in artifact.members
         ):
             raise FlowExecutionError("source member changed while creating the run snapshot")
+        if not source_member_matches(source.contract_source):
+            raise FlowExecutionError(
+                "Source Assets contract changed while creating the run snapshot"
+            )
         return AdapterExecution.succeeded()
 
     def _collect_result(

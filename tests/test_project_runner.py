@@ -212,6 +212,60 @@ def test_project_runner_targets_describe_and_plan_use_owner_operation_interface(
     assert execution.graph == (("check", ()),)
 
 
+def test_project_runner_compiles_target_inputs_and_retains_input_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, targets, recipe, implementation = _write_project(tmp_path)
+    input_source = tmp_path / "ip/example/configs/variant.txt"
+    input_source.write_text("paper\n", encoding="utf-8")
+    recipe.write_text(
+        _RECIPE.replace(
+            'name = "smoke-recipe"',
+            'name = "smoke-recipe"\n\n[inputs.variant]\nkind = "owner-path"',
+        ).replace(
+            'config = { target = "smoke", mode = "check" }',
+            'config = { target = "smoke", mode = "check", '
+            'variant = { input = "variant" } }',
+        ),
+        encoding="utf-8",
+    )
+    targets.write_text(
+        _TARGETS.replace(
+            "[targets.smoke]\ndescription = \"Offline smoke target\"",
+            "[targets.smoke]\n"
+            "description = \"Offline smoke target\"\n"
+            "recipe = \"configs/smoke.toml\"\n"
+            "inputs = { variant = \"configs/variant.txt\" }",
+        )
+        .replace(
+            '[targets.smoke.operations.check]\nrecipe = "configs/smoke.toml"\n',
+            "[targets.smoke.operations.check]\n",
+        )
+        .replace(
+            '[targets.smoke.operations.all]\nrecipe = "configs/smoke.toml"\n',
+            "[targets.smoke.operations.all]\n",
+        ),
+        encoding="utf-8",
+    )
+    _install_simple_design_seam(monkeypatch, project, implementation)
+
+    execution = ProjectRunner(project, "example").plan("smoke", "check")
+
+    assert execution.record["inputs"] == {"variant": "configs/variant.txt"}
+    assert execution.record["nodes"][0]["action_config"]["variant"] == (
+        "configs/variant.txt"
+    )
+    assert {
+        (source["scope"], source["path"])
+        for source in execution.record["source_members"]
+    } == {
+        ("project", "ip/example/configs/targets.toml"),
+        ("project", "ip/example/configs/smoke.toml"),
+        ("project", "ip/example/configs/variant.txt"),
+    }
+
+
 def test_project_execution_owns_preflight_run_restore_read_and_clean_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -109,6 +109,203 @@ def test_execution_recipe_loads_action_bindings_and_compiles_target(
     assert compiled.action_binding("fake.requirements") == binding
 
 
+def test_execution_recipe_inputs_are_typed_and_fully_compiled(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source\n", encoding="utf-8")
+    recipe = tmp_path / "recipe.toml"
+    recipe.write_text(
+        """schema = 1
+contract_kind = "execution-recipe"
+path_scope = "owner"
+owner = "example"
+name = "parameterized"
+
+[inputs.mode]
+kind = "text"
+
+[inputs.identity]
+kind = "semantic-identity"
+
+[inputs.source]
+kind = "owner-path"
+
+[actions."fake.requirements"]
+adapter = "fake-requirements"
+requires = []
+
+[actions."fake.requirements".platform_assets]
+logic-lib = { input = "identity" }
+
+[actions."fake.requirements".config]
+mode = { input = "mode" }
+source = { input = "source" }
+
+[[nodes]]
+id = "check"
+action = "fake.requirements"
+config = { source = { input = "source" } }
+""",
+        encoding="utf-8",
+    )
+    loaded = load_execution_recipe(recipe, owner_root=tmp_path)
+    compiled = compile_flow_spec(
+        loaded,
+        flow_id="parameterized",
+        targets=(FlowTarget("all", ("check",)),),
+        inputs={
+            "mode": "remote",
+            "identity": "fixture:logic-lib@1",
+            "source": "source.txt",
+        },
+    )
+
+    assert compiled.inputs == {
+        "mode": "remote",
+        "identity": "fixture:logic-lib@1",
+        "source": "source.txt",
+    }
+    assert compiled.node("check").config["source"] == "source.txt"
+    binding = compiled.action_binding("fake.requirements")
+    assert binding.config == {"mode": "remote", "source": "source.txt"}
+    assert binding.platform_assets == {"logic-lib": "fixture:logic-lib@1"}
+
+
+def test_execution_recipe_inputs_require_a_mapping(tmp_path: Path) -> None:
+    loaded = load_execution_recipe(_write_recipe(tmp_path), owner_root=tmp_path)
+
+    with pytest.raises(FlowContractError, match="must be a mapping"):
+        compile_flow_spec(
+            loaded,
+            flow_id="parameterized",
+            targets=(FlowTarget("all", ("check",)),),
+            inputs=[],  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("inputs", "message"),
+    (
+        ({}, "missing"),
+        ({"mode": "remote", "extra": "value"}, "unknown"),
+        (
+            {"mode": True, "identity": "fixture:x", "source": "source.txt"},
+            "must be text",
+        ),
+        ({"mode": "remote", "identity": "fixture:x", "source": "../source.txt"}, "owner root"),
+    ),
+)
+def test_execution_recipe_inputs_reject_missing_unknown_or_wrong_values(
+    tmp_path: Path,
+    inputs: dict[str, object],
+    message: str,
+) -> None:
+    recipe = tmp_path / "recipe.toml"
+    recipe.write_text(
+        """schema = 1
+contract_kind = "execution-recipe"
+path_scope = "owner"
+owner = "example"
+name = "parameterized"
+
+[inputs.mode]
+kind = "text"
+
+[inputs.identity]
+kind = "semantic-identity"
+
+[inputs.source]
+kind = "owner-path"
+
+[actions."fake.requirements"]
+adapter = "fake-requirements"
+
+[[nodes]]
+id = "check"
+action = "fake.requirements"
+""",
+        encoding="utf-8",
+    )
+    loaded = load_execution_recipe(recipe, owner_root=tmp_path)
+    with pytest.raises(FlowContractError, match=message):
+        compile_flow_spec(
+            loaded,
+            flow_id="parameterized",
+            targets=(FlowTarget("all", ("check",)),),
+            inputs=inputs,
+        )
+
+
+@pytest.mark.parametrize("source", ("missing.txt", "source-directory"))
+def test_owner_path_input_requires_an_existing_regular_file(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    (tmp_path / "source-directory").mkdir()
+    recipe = tmp_path / "recipe.toml"
+    recipe.write_text(
+        '''schema = 1
+contract_kind = "execution-recipe"
+path_scope = "owner"
+owner = "example"
+name = "parameterized"
+
+[inputs.source]
+kind = "owner-path"
+
+[actions."fake.requirements"]
+adapter = "fake-requirements"
+
+[[nodes]]
+id = "check"
+action = "fake.requirements"
+''',
+        encoding="utf-8",
+    )
+    loaded = load_execution_recipe(recipe, owner_root=tmp_path)
+
+    with pytest.raises(FlowContractError, match="existing regular file"):
+        compile_flow_spec(
+            loaded,
+            flow_id="parameterized",
+            targets=(FlowTarget("all", ("check",)),),
+            inputs={"source": source},
+        )
+
+
+def test_execution_recipe_rejects_interpolation_and_partial_input_reference(
+    tmp_path: Path,
+) -> None:
+    for value, message in (
+        ('"${mode}"', "string interpolation"),
+        ('{ input = "mode", extra = true }', "whole value"),
+    ):
+        recipe = tmp_path / "recipe.toml"
+        recipe.write_text(
+            f'''schema = 1
+contract_kind = "execution-recipe"
+path_scope = "owner"
+owner = "example"
+name = "invalid"
+
+[inputs.mode]
+kind = "text"
+
+[actions."fake.requirements"]
+adapter = "fake-requirements"
+
+[actions."fake.requirements".config]
+mode = {value}
+
+[[nodes]]
+id = "check"
+action = "fake.requirements"
+''',
+            encoding="utf-8",
+        )
+        with pytest.raises(FlowContractError, match=message):
+            load_execution_recipe(recipe, owner_root=tmp_path)
+
+
 @pytest.mark.parametrize("field", ["targets", "expand"])
 def test_execution_recipe_rejects_target_selection_and_expansion(
     tmp_path: Path,

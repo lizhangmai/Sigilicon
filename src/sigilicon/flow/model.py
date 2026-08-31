@@ -26,6 +26,17 @@ EVIDENCE_ROLES = frozenset(
     {"diagnostic", "regression", "qualification", "signoff"}
 )
 EVIDENCE_LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
+RECIPE_INPUT_KINDS = frozenset(
+    {
+        "text",
+        "boolean",
+        "integer",
+        "real",
+        "owner-path",
+        "semantic-identity",
+        "scalar-map",
+    }
+)
 _T = TypeVar("_T")
 
 
@@ -35,6 +46,32 @@ class FlowContractError(ValueError):
 
 class FlowExecutionError(RuntimeError):
     """A planned Action could not produce a valid result."""
+
+
+@dataclass(frozen=True)
+class InputReference:
+    """A whole-value reference resolved while compiling an Execution Recipe."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        identifier(self.name, "recipe input reference")
+
+
+@dataclass(frozen=True)
+class RecipeInput:
+    """One typed value accepted by an owner target operation."""
+
+    name: str
+    kind: str
+
+    def __post_init__(self) -> None:
+        identifier(self.name, "recipe input name")
+        if self.kind not in RECIPE_INPUT_KINDS:
+            raise FlowContractError(
+                f"unsupported recipe input kind {self.kind!r}; "
+                f"expected one of {sorted(RECIPE_INPUT_KINDS)}"
+            )
 
 
 @dataclass(frozen=True)
@@ -167,6 +204,8 @@ def _portable_value(
     label: str,
     error_type: type[FlowContractError] | type[FlowExecutionError],
 ) -> Any:
+    if isinstance(value, InputReference):
+        return value
     if value is None or isinstance(value, (str, int, bool)):
         return value
     if isinstance(value, float):
@@ -197,6 +236,18 @@ def _portable_mapping(
     if not isinstance(value, Mapping):
         raise error_type(f"{label} must be a mapping")
     return _portable_value(value, label, error_type)
+
+
+def _contains_input_reference(value: Any) -> bool:
+    """Return whether a value still contains an Execution Recipe reference."""
+
+    if isinstance(value, InputReference):
+        return True
+    if isinstance(value, Mapping):
+        return any(_contains_input_reference(item) for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return any(_contains_input_reference(item) for item in value)
+    return False
 
 
 def _qualifier_mapping(
@@ -412,7 +463,9 @@ class SourceAssets:
     name: str
     git: GitSource
     artifacts: tuple[SourceArtifact, ...]
+    contract_source: SourceMember
     owner_root: Path = field(repr=False)
+    selection: str | None = None
 
     def __post_init__(self) -> None:
         owner_identity(self.owner, "source assets owner")
@@ -423,10 +476,18 @@ class SourceAssets:
         )
         if not self.artifacts:
             raise FlowContractError("source assets declare no artifacts")
+        if self.selection is not None:
+            identifier(self.selection, "source assets selection")
         owner_root = Path(self.owner_root).resolve()
         if self.git.scope_root != owner_root:
             raise FlowContractError(
                 "Git source scope disagrees with the Source Assets owner root"
+            )
+        if not isinstance(self.contract_source, SourceMember):
+            raise FlowContractError("source assets contract source must be a SourceMember")
+        if self.contract_source.source_root != owner_root:
+            raise FlowContractError(
+                "source assets contract source root disagrees with the owner root"
             )
         if any(
             member.source_root != owner_root
@@ -556,7 +617,7 @@ class ActionBinding:
     adapter: str
     config: Mapping[str, Any] = field(default_factory=dict)
     requires: tuple[str, ...] = ()
-    platform_assets: Mapping[str, str] = field(default_factory=dict)
+    platform_assets: Mapping[str, str | InputReference] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         identifier(self.action_kind, "Action binding kind")
@@ -573,15 +634,18 @@ class ActionBinding:
             identifier(capability, "Action binding capability")
         _unique(requires, "Action binding capabilities")
         object.__setattr__(self, "requires", requires)
-        identities: dict[str, str] = {}
+        identities: dict[str, str | InputReference] = {}
         if not isinstance(self.platform_assets, Mapping):
             raise FlowContractError("Action binding platform assets must be a mapping")
         for role, identity in self.platform_assets.items():
             identifier(role, "Action binding platform asset role")
-            identities[role] = _semantic_identity(
-                identity,
-                "Action binding platform asset identity",
-            )
+            if isinstance(identity, InputReference):
+                identities[role] = identity
+            else:
+                identities[role] = _semantic_identity(
+                    identity,
+                    "Action binding platform asset identity",
+                )
         object.__setattr__(
             self,
             "platform_assets",
@@ -662,6 +726,7 @@ class ExecutionRecipe:
     nodes: tuple[FlowNode, ...]
     policies: tuple[PolicySpec, ...] = ()
     action_bindings: tuple[ActionBinding, ...] = ()
+    inputs: Mapping[str, RecipeInput] = field(default_factory=dict)
     owner_root: Path | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -670,6 +735,17 @@ class ExecutionRecipe:
         object.__setattr__(self, "nodes", tuple(self.nodes))
         object.__setattr__(self, "policies", tuple(self.policies))
         object.__setattr__(self, "action_bindings", tuple(self.action_bindings))
+        if not isinstance(self.inputs, Mapping):
+            raise FlowContractError("Execution Recipe inputs must be a mapping")
+        inputs = dict(self.inputs)
+        if any(
+            not isinstance(name, str)
+            or not isinstance(value, RecipeInput)
+            or value.name != name
+            for name, value in inputs.items()
+        ):
+            raise FlowContractError("Execution Recipe inputs must be named RecipeInput values")
+        object.__setattr__(self, "inputs", MappingProxyType(inputs))
         _unique(tuple(node.node_id for node in self.nodes), "Execution Recipe nodes")
         _unique(
             tuple(policy.policy_id for policy in self.policies),
@@ -735,6 +811,7 @@ class FlowSpec:
     targets: tuple[FlowTarget, ...]
     policies: tuple[PolicySpec, ...] = ()
     action_bindings: tuple[ActionBinding, ...] = ()
+    inputs: Mapping[str, Any] = field(default_factory=dict)
     source_members: tuple[SourceMember, ...] = ()
     owner_root: Path | None = field(default=None, repr=False, compare=False)
 
@@ -746,6 +823,27 @@ class FlowSpec:
         object.__setattr__(self, "targets", tuple(self.targets))
         object.__setattr__(self, "policies", tuple(self.policies))
         object.__setattr__(self, "action_bindings", tuple(self.action_bindings))
+        object.__setattr__(
+            self,
+            "inputs",
+            _portable_mapping(self.inputs, "Flow inputs", FlowContractError),
+        )
+        if _contains_input_reference(self.inputs):
+            raise FlowContractError("compiled Flow inputs contain an unresolved reference")
+        if any(
+            _contains_input_reference(node.config)
+            or _contains_input_reference(node.extensions)
+            for node in self.nodes
+        ):
+            raise FlowContractError("compiled Flow nodes contain an unresolved input reference")
+        if any(
+            _contains_input_reference(binding.config)
+            or _contains_input_reference(binding.platform_assets)
+            for binding in self.action_bindings
+        ):
+            raise FlowContractError(
+                "compiled Flow Action bindings contain an unresolved input reference"
+            )
         object.__setattr__(self, "source_members", tuple(self.source_members))
         _unique(tuple(node.node_id for node in self.nodes), "Flow nodes")
         _unique(tuple(target.target_id for target in self.targets), "Flow targets")

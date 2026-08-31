@@ -28,7 +28,7 @@ from sigilicon.paths import validate_artifact_component
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _CATALOG_FIELDS = _HEADER_FIELDS | {"targets"}
-_TARGET_FIELDS = frozenset({"description", "operations"})
+_TARGET_FIELDS = frozenset({"description", "recipe", "inputs", "operations"})
 _OPERATION_FIELDS = frozenset({"recipe", "goals"})
 
 
@@ -100,6 +100,8 @@ class ProjectTarget:
     name: str
     description: str
     operations: Mapping[str, TargetOperation]
+    recipe: PurePosixPath | None = None
+    inputs: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _name(self.name, "target name")
@@ -118,6 +120,22 @@ class ProjectTarget:
             "operations",
             MappingProxyType(dict(self.operations)),
         )
+        if self.recipe is not None and (
+            not isinstance(self.recipe, PurePosixPath)
+            or self.recipe.is_absolute()
+            or self.recipe.as_posix() != str(self.recipe)
+            or any(part in {"", ".", ".."} for part in self.recipe.parts)
+        ):
+            raise ValueError("target recipe must be a canonical relative path")
+        if not isinstance(self.inputs, Mapping):
+            raise ValueError("target inputs must be a mapping")
+        object.__setattr__(
+            self,
+            "inputs",
+            freeze_toml_document(dict(self.inputs)),
+        )
+        if not is_frozen_toml_document(self.inputs):
+            raise ValueError("target inputs must be recursively frozen")
 
     def operation(self, name: str) -> TargetOperation:
         """Return one operation or explain the available operations."""
@@ -294,6 +312,18 @@ def _recipe(
     return relative
 
 
+def _inputs(value: object, field: str) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType({})
+    table = _table(value, field)
+    if any(not isinstance(key, str) or not key for key in table):
+        raise ValueError(f"{field} must use non-empty string keys")
+    frozen = freeze_toml_document(dict(table))
+    if not is_frozen_toml_document(frozen):
+        raise ValueError(f"{field} must be recursively frozen")
+    return frozen
+
+
 def parse_owner_target_catalog(
     project: Project,
     owner: RepositoryOwner | str,
@@ -334,6 +364,19 @@ def parse_owner_target_catalog(
                 f"{field_name} contains unknown fields: {sorted(unknown)}"
             )
         description = _string(target.get("description"), f"{field_name}.description")
+        target_recipe: PurePosixPath | None = None
+        if "recipe" in target:
+            if flow_files is None:
+                flow_files = _flow_files(project, selected)
+            target_recipe = _recipe(
+                project,
+                selected,
+                target.get("recipe"),
+                f"{field_name}.recipe",
+                flow_files,
+                recipe_documents,
+            )
+        target_inputs = _inputs(target.get("inputs"), f"{field_name}.inputs")
         operations_raw = _table(target.get("operations"), f"{field_name}.operations")
         if not operations_raw:
             raise ValueError(f"{field_name}.operations must not be empty")
@@ -356,22 +399,33 @@ def parse_owner_target_catalog(
                 )
             if flow_files is None:
                 flow_files = _flow_files(project, selected)
-            operations[operation_name] = TargetOperation(
-                name=operation_name,
-                recipe=_recipe(
+            operation_recipe = operation.get("recipe", target_recipe)
+            if operation_recipe is None:
+                raise ValueError(
+                    f"{operation_field}.recipe is required when the target has no default recipe"
+                )
+            if "recipe" not in operation and target_recipe is not None:
+                resolved_recipe = target_recipe
+            else:
+                resolved_recipe = _recipe(
                     project,
                     selected,
-                    operation.get("recipe"),
+                    operation_recipe,
                     f"{operation_field}.recipe",
                     flow_files,
                     recipe_documents,
-                ),
+                )
+            operations[operation_name] = TargetOperation(
+                name=operation_name,
+                recipe=resolved_recipe,
                 goals=_goals(operation.get("goals"), f"{operation_field}.goals"),
             )
         targets[target_name] = ProjectTarget(
             name=target_name,
             description=description,
             operations=MappingProxyType(dict(operations)),
+            recipe=target_recipe,
+            inputs=target_inputs,
         )
     return OwnerTargetCatalog(
         path=selected_snapshot.path,

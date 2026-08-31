@@ -103,6 +103,39 @@ def test_owner_target_catalog_loads_typed_targets_and_operations(
     assert operation.goals == ("source-check", "recipe-check")
 
 
+def test_target_default_recipe_and_frozen_inputs_bind_operations(
+    tmp_path: Path,
+) -> None:
+    project = _write_owner_project(
+        tmp_path,
+        catalog_text="""schema = 1
+contract_kind = "owner-targets"
+path_scope = "owner"
+owner = "example"
+
+[targets.adder]
+description = "Adder target"
+recipe = "configs/recipe.toml"
+inputs = { variant = "paper", limits = { low = 1, high = 3 } }
+
+[targets.adder.operations.check]
+goals = ["check"]
+""",
+    )
+
+    target = load_owner_target_catalog(project, "example").get("adder")
+    operation = target.operation("check")
+
+    assert target.recipe == PurePosixPath("configs/recipe.toml")
+    assert operation.recipe == target.recipe
+    assert target.inputs == {
+        "variant": "paper",
+        "limits": {"low": 1, "high": 3},
+    }
+    with pytest.raises(TypeError):
+        target.inputs["variant"] = "product"  # type: ignore[index]
+
+
 def test_target_catalog_rejects_unknown_fields_at_each_level(
     tmp_path: Path,
 ) -> None:

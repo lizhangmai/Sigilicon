@@ -203,6 +203,7 @@ def test_source_assets_loader_rejects_non_current_schema_and_owner_escape(
             owner_root=owner_root,
             expected_owner="fixture",
         )
+
     assets.write_text(
         '''schema = 1
 contract_kind = "source-assets"
@@ -225,6 +226,106 @@ members = ["../outside.sv"]
             owner_root=owner_root,
             expected_owner="fixture",
         )
+
+
+def test_source_assets_selection_merges_public_artifacts_and_snapshots_contract(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    (owner_root / "rtl").mkdir(parents=True)
+    (owner_root / "rtl/common.sv").write_text(
+        "module common; endmodule\n", encoding="utf-8"
+    )
+    (owner_root / "rtl/paper.sv").write_text(
+        "module paper; endmodule\n", encoding="utf-8"
+    )
+    (owner_root / "constraints.sdc").write_text(
+        "set_max_area 0\n", encoding="utf-8"
+    )
+    assets = owner_root / "source-assets.toml"
+    assets.write_text(
+        """schema = 1
+contract_kind = "source-assets"
+path_scope = "owner"
+owner = "fixture"
+name = "selected-source"
+
+[qualifiers]
+corner = "tt"
+
+[[artifacts]]
+role = "rtl-sources"
+kind = "source-set.systemverilog"
+materialization = "manifest"
+members = ["rtl/common.sv"]
+
+[[artifacts]]
+role = "constraints"
+kind = "constraints.sdc"
+materialization = "file"
+members = ["constraints.sdc"]
+
+[selections.paper]
+qualifiers = { variant = "paper" }
+
+[[selections.paper.artifacts]]
+role = "rtl-sources"
+kind = "source-set.systemverilog"
+materialization = "manifest"
+members = ["rtl/paper.sv"]
+""",
+        encoding="utf-8",
+    )
+    _commit_fixture(owner_root)
+
+    source = load_source_assets(
+        assets,
+        owner_root=owner_root,
+        expected_owner="fixture",
+        selection="paper",
+    )
+
+    assert source.selection == "paper"
+    assert source.artifact("rtl-sources").members[0].path == "rtl/paper.sv"
+    assert source.artifact("rtl-sources").qualifiers == {
+        "corner": "tt",
+        "variant": "paper",
+    }
+    assert source.artifact("constraints").qualifiers == {
+        "corner": "tt",
+        "variant": "paper",
+    }
+    assert source.contract_source.path == "source-assets.toml"
+    payload = source_assets_payload(source)
+    assert payload["contract_source"]["record_text"] == assets.read_text()
+
+
+def test_source_assets_contract_change_blocks_preflight_even_with_same_git_checkout(
+    tmp_path: Path,
+) -> None:
+    owner_root = tmp_path / "owner"
+    (owner_root / "rtl").mkdir(parents=True)
+    (owner_root / "rtl/a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    (owner_root / "rtl/b.sv").write_text("module b; endmodule\n", encoding="utf-8")
+    (owner_root / "constraints.sdc").write_text("set_max_area 0\n", encoding="utf-8")
+    assets = _write_assets(owner_root)
+    _commit_fixture(owner_root)
+    assets.write_text(assets.read_text() + "\n# planned dirty contract\n", encoding="utf-8")
+    registry, spec = _fixture(owner_root)
+    plan = FlowEngine(registry).plan(spec, "all")
+
+    assets.write_text(assets.read_text() + "# changed after planning\n", encoding="utf-8")
+    planned_source = plan.planned_node("assets").source_assets
+    assert planned_source is not None
+    assert git_source(owner_root) == planned_source.git
+    result = FlowEngine(registry).preflight(plan, ExecutionEnvironment())
+
+    assert result.status == "blocked"
+    assert any(
+        check.status == "changed"
+        for check in result.checks
+        if check.requirement_kind == "git-source"
+    )
 
 
 def test_source_assets_bind_git_and_members_to_one_source_root(
