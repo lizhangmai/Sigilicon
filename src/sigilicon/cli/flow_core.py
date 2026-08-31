@@ -14,11 +14,9 @@ from sigilicon.cli.common import emit_json
 from sigilicon.flow import (
     FlowContractError,
     ExecutionEnvironment,
-    ExecutionProfile,
     FlowExecutionError,
     ResolvedCapability,
     load_execution_environment,
-    resolve_catalog_selection,
 )
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.project import load_project
@@ -96,19 +94,6 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("target")
         command.add_argument("run_id")
     return parser
-
-
-def _spec_payload(spec: Any, profile: ExecutionProfile) -> dict[str, Any]:
-    return {
-        "schema": 1,
-        "contract_kind": "flow-summary",
-        "owner": spec.owner,
-        "flow": spec.flow_id,
-        "nodes": [node.node_id for node in spec.nodes],
-        "targets": [target.target_id for target in spec.targets],
-        "policies": [policy.policy_id for policy in spec.policies],
-        "execution_profile": profile.profile_id,
-    }
 
 
 def _flow_status_exit(payload: dict[str, Any]) -> int:
@@ -195,12 +180,7 @@ def main(
             return 0
         if args.action == "show":
             project = _project_flow(args)
-            selection = resolve_catalog_selection(
-                project.catalog(),
-                flow_id=args.flow,
-                profile_id=args.profile,
-            )
-            emit_json(_spec_payload(selection.spec, selection.profile))
+            emit_json(project.describe(flow=args.flow, profile=args.profile))
             return 0
         if args.action in {"plan", "graph", "preflight", "run"}:
             project = _project_flow(args)

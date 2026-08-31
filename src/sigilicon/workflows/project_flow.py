@@ -22,10 +22,12 @@ from sigilicon.flow import (
     ExecutionEnvironment,
     DesignCatalogExpansion,
     FlowCatalog,
+    FlowCatalogEntry,
     FlowEngine,
     FlowPlan,
     FlowProgress,
     FlowResult,
+    FlowSpec,
     LayoutCatalogExpansion,
     PreflightResult,
     parse_flow_catalog,
@@ -490,6 +492,17 @@ class ProjectFlow:
             self.project.owner_flow_catalog_inventory(self.owner)
         )
 
+    def describe(
+        self,
+        *,
+        flow: str,
+        profile: str | None = None,
+    ) -> dict[str, object]:
+        """Describe one fully compiled catalog Flow without planning a target."""
+
+        inventory = self.project.owner_flow_catalog_inventory(self.owner)
+        return self._describe_flow(flow, profile, inventory)
+
     def _catalog(
         self,
         inventory: tuple[OwnerCatalogSnapshot, ...],
@@ -509,6 +522,76 @@ class ProjectFlow:
             snapshot.document,
             snapshot.path,
             owner_root=self.owner.root,
+        )
+
+    def _compiled_spec(
+        self,
+        spec: FlowSpec,
+        inventory: tuple[OwnerCatalogSnapshot, ...],
+    ) -> FlowSpec:
+        expansion = spec.catalog_expansion
+        if isinstance(expansion, DesignCatalogExpansion):
+            catalog = load_design_target_catalog(
+                self.project,
+                catalog_inventory=inventory,
+            ).for_owner(self.owner.name)
+            return compile_design_catalog_flow(spec, catalog)
+        if isinstance(expansion, LayoutCatalogExpansion):
+            from sigilicon.workflows.layout_targets import (
+                load_layout_target_catalog,
+            )
+
+            catalog = load_layout_target_catalog(
+                self.project,
+                catalog_inventory=inventory,
+            ).for_owner(self.owner.name)
+            return compile_layout_catalog_flow(spec, catalog)
+        return spec
+
+    @staticmethod
+    def _summary(spec: FlowSpec, profile: str) -> dict[str, object]:
+        return {
+            "schema": 1,
+            "contract_kind": "flow-summary",
+            "owner": spec.owner,
+            "flow": spec.flow_id,
+            "nodes": [node.node_id for node in spec.nodes],
+            "targets": [target.target_id for target in spec.targets],
+            "policies": [policy.policy_id for policy in spec.policies],
+            "execution_profile": profile,
+        }
+
+    def _describe_flow(
+        self,
+        flow: str,
+        profile: str | None,
+        inventory: tuple[OwnerCatalogSnapshot, ...],
+    ) -> dict[str, object]:
+        selection = resolve_catalog_selection(
+            self._catalog(inventory),
+            flow_id=flow,
+            profile_id=profile,
+        )
+        spec = self._compiled_spec(selection.spec, inventory)
+        return self._summary(spec, selection.profile.profile_id)
+
+    def _catalog_descriptions(
+        self,
+        inventory: tuple[OwnerCatalogSnapshot, ...],
+    ) -> tuple[tuple[FlowCatalogEntry, dict[str, object]], ...]:
+        catalog = self._catalog(inventory)
+        return tuple(
+            (
+                entry,
+                self._summary(
+                    self._compiled_spec(selection.spec, inventory),
+                    selection.profile.profile_id,
+                ),
+            )
+            for entry in catalog.entries
+            for selection in (
+                resolve_catalog_selection(catalog, flow_id=entry.flow_id),
+            )
         )
 
     def plan(

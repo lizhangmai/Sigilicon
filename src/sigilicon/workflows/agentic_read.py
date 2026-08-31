@@ -18,10 +18,6 @@ from sigilicon.domain.repository import (
     Project,
     RepositoryOwner,
 )
-from sigilicon.flow import (
-    parse_flow_catalog,
-    resolve_catalog_selection,
-)
 from sigilicon.flow.model import identifier, owner_identity, run_identity
 from sigilicon.workflows.project_flow import (
     ProjectFlow,
@@ -427,9 +423,14 @@ class AgenticReadInterface:
         owner: RepositoryOwner,
         catalog_inventory: tuple[OwnerCatalogSnapshot, ...],
     ) -> list[dict[str, Any]]:
+        owner_inventory = tuple(
+            snapshot
+            for snapshot in catalog_inventory
+            if snapshot.owner == owner.name
+        )
         snapshots = self.project.owner_flow_catalog_snapshots(
             owner,
-            inventory=catalog_inventory,
+            inventory=owner_inventory,
         )
         if not snapshots:
             return []
@@ -437,27 +438,17 @@ class AgenticReadInterface:
             raise ValueError(
                 f"cataloged owner {owner.name!r} must select exactly one Flow Catalog"
             )
-        catalog = parse_flow_catalog(
-            snapshots[0].document,
-            snapshots[0].path,
-            owner_root=owner.root,
-        )
-        flows: list[dict[str, Any]] = []
-        for entry in catalog.entries:
-            selection = resolve_catalog_selection(
-                catalog,
-                flow_id=entry.flow_id,
-            )
-            flows.append(
-                {
-                    "name": entry.flow_id,
-                    "default_profile": entry.default_profile,
-                    "profiles": sorted(entry.profiles),
-                    "targets": sorted(
-                        target.target_id for target in selection.spec.targets
-                    ),
-                }
-            )
+        project_flow = ProjectFlow(self.project, owner.name)
+        descriptions = project_flow._catalog_descriptions(owner_inventory)
+        flows = [
+            {
+                "name": entry.flow_id,
+                "default_profile": entry.default_profile,
+                "profiles": sorted(entry.profiles),
+                "targets": sorted(description["targets"]),
+            }
+            for entry, description in descriptions
+        ]
         return sorted(flows, key=lambda item: item["name"])
 
     def _design_targets(

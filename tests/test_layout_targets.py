@@ -16,6 +16,7 @@ from sigilicon.flow import (
 )
 from sigilicon.workflows.catalog_flow import compile_layout_catalog_flow
 from sigilicon.workflows.layout_targets import load_layout_target_catalog
+from sigilicon.workflows.project_flow import ProjectFlow
 
 from conftest import write_component_owner
 
@@ -54,11 +55,81 @@ actions = [{actions}]
 ''',
         encoding="utf-8",
     )
+    (flow_root / "catalog.toml").write_text(
+        '''
+schema = 1
+contract_kind = "flow-catalog"
+path_scope = "owner"
+owner = "example"
+
+[flows.layout-validation]
+contract = "configs/flows/layout_validation.toml"
+default_profile = "layout-validation"
+
+[flows.layout-validation.profiles]
+layout-validation = "configs/flows/layout_profile.toml"
+''',
+        encoding="utf-8",
+    )
+    (flow_root / "layout_validation.toml").write_text(
+        '''
+schema = 1
+contract_kind = "flow"
+path_scope = "owner"
+owner = "example"
+name = "layout-validation"
+
+[expand]
+kind = "layout-target-routes"
+generation_policy = "generated"
+verification_policy = "verified"
+evidence_role = "regression"
+evidence_level = "l1"
+
+[[policies]]
+id = "generated"
+[[policies.checks]]
+id = "passed"
+fact = "passed"
+operator = "equals"
+expected = true
+
+[[policies]]
+id = "verified"
+[[policies.checks]]
+id = "passed"
+fact = "passed"
+operator = "equals"
+expected = true
+''',
+        encoding="utf-8",
+    )
+    (flow_root / "layout_profile.toml").write_text(
+        '''
+schema = 1
+contract_kind = "execution-profile"
+path_scope = "owner"
+owner = "example"
+name = "layout-validation"
+
+[actions."custom-layout.generate"]
+adapter = "project-layout-generation"
+
+[actions."custom-layout.verify"]
+adapter = "project-layout-verification"
+''',
+        encoding="utf-8",
+    )
     write_component_owner(
         tmp_path,
         "example",
         filesets={
-            "flow": ("ip/example/configs/flows/layout_targets.toml",),
+            "flow": (
+                "ip/example/configs/flows/layout_targets.toml",
+                "ip/example/configs/flows/catalog.toml",
+                "ip/example/configs/flows/layout_validation.toml",
+                "ip/example/configs/flows/layout_profile.toml",
+            ),
         },
     )
     return spec
@@ -146,6 +217,29 @@ def test_layout_catalog_preserves_project_identity(tmp_path: Path) -> None:
     catalog = load_layout_target_catalog(project=project)
 
     assert catalog.project is project
+
+
+def test_expanded_layout_flow_description_shows_compiled_routes(
+    tmp_path: Path,
+) -> None:
+    _catalog_project(tmp_path)
+    project = Project.from_project_root(tmp_path)
+
+    summary = ProjectFlow(project, "example").describe(
+        flow="layout-validation"
+    )
+
+    assert summary["nodes"] == [
+        "leaf-generate",
+        "leaf-verify-drc",
+        "leaf-verify-lvs",
+    ]
+    assert summary["targets"] == [
+        "leaf-generate",
+        "leaf-verify-drc",
+        "leaf-verify-lvs",
+        "leaf-verify-all",
+    ]
 
 
 def test_layout_catalog_routes_compile_to_ordinary_flow_nodes(tmp_path: Path) -> None:

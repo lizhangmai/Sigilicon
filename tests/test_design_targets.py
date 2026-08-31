@@ -9,8 +9,10 @@ import pytest
 import sigilicon.domain.repository as repository_module
 
 from sigilicon.cli import flow as flow_cli
+from sigilicon.cli.flow_core import main as flow_core_cli_main
 from sigilicon.domain.repository import Project
 from sigilicon.flow import ExecutionEnvironment, FlowExecutionError
+from sigilicon.workflows.agentic_read import AgenticReadInterface
 from sigilicon.workflows.design_targets import load_design_target_catalog
 from sigilicon.workflows.project_flow import ProjectFlow, RunRequest
 
@@ -201,6 +203,42 @@ def test_design_catalog_preserves_project_identity(tmp_path: Path) -> None:
     catalog = load_design_target_catalog(project=project)
 
     assert catalog.project is project
+
+
+def test_expanded_design_flow_read_interfaces_show_compiled_routes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _catalog_project(tmp_path)
+    project = Project.from_project_root(tmp_path)
+    workflow = ProjectFlow(project, "example")
+
+    summary = workflow.describe(flow="design-checks")
+
+    assert summary["nodes"] == ["leaf-topology", "leaf-sync"]
+    assert summary["targets"] == ["leaf-topology", "leaf-sync"]
+    assert flow_core_cli_main(
+        [
+            "show",
+            "--project-root",
+            str(tmp_path),
+            "--owner",
+            "example",
+            "--flow",
+            "design-checks",
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out) == summary
+
+    inspected = AgenticReadInterface(project).inspect_project(owner="example")
+    assert inspected["data"]["owners"][0]["flows"] == [
+        {
+            "default_profile": "design-checks",
+            "name": "design-checks",
+            "profiles": ["design-checks"],
+            "targets": ["leaf-sync", "leaf-topology"],
+        }
+    ]
 
 
 def test_project_design_action_runs_inside_one_flow_lifecycle(tmp_path: Path) -> None:
