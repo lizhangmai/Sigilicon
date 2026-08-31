@@ -166,16 +166,6 @@ def _text_mapping(value: object, label: str) -> dict[str, str]:
     return result
 
 
-def _environment_mapping(value: object, label: str) -> dict[str, str]:
-    result = _text_mapping(value, label)
-    for environment_name in result.values():
-        if _ENVIRONMENT_NAME.fullmatch(environment_name) is None:
-            raise FlowExecutionError(
-                f"{label} contains invalid environment name {environment_name!r}"
-            )
-    return result
-
-
 def _manifest_members(
     manifest_path: Path,
     expected_kind: str,
@@ -295,6 +285,5 @@ def _pinned_owner_runner(
     if not os.access(runner, os.X_OK):
         raise FlowExecutionError(f"{action_label} runner is not executable")
     return runner
-
 
 

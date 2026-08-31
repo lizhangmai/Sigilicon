@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
+
+import pytest
 
 from conftest import StagedAdapterFixture
 from sigilicon.flow import (
@@ -16,6 +19,7 @@ from sigilicon.flow import (
     ExecutionEnvironment,
     ExecutionProfile,
     FlowEngine,
+    FlowExecutionError,
     FlowNode,
     FlowRegistry,
     FlowSpec,
@@ -134,13 +138,13 @@ import json
 import os
 from pathlib import Path
 
-root = Path(os.environ["MANAGED_DC_ROOT"])
+root = Path(os.environ["SIGILICON_DC_OUTPUT_ROOT"])
 root.mkdir(parents=True, exist_ok=True)
-assert os.environ["DESIGN_VARIANT"] == "variant_b"
-rtl_sources = Path(os.environ["RTL_SOURCE_SET"]).read_text(encoding="utf-8").splitlines()
+assert os.environ["SIGILICON_DESIGN_VARIANT"] == "variant_b"
+rtl_sources = Path(os.environ["SIGILICON_DC_RTL_FILELIST"]).read_text(encoding="utf-8").splitlines()
 assert len(rtl_sources) == 1
 assert Path(rtl_sources[0]).is_file()
-assert Path(os.environ["DESIGN_CONSTRAINTS"]).is_file()
+assert Path(os.environ["SIGILICON_DC_CONSTRAINTS"]).is_file()
 assert Path(os.environ["SIGILICON_SYNOPSYS_DC_SHELL"]).is_file()
 for role in ("RVT", "HVT", "LVT"):
     assert Path(os.environ[f"SIGILICON_STDCELL_{role}_DB"]).is_file()
@@ -149,7 +153,7 @@ for name in ("mapped.v", "mapped.sdc", "mapped.ddc"):
 for name in ("check_design.rpt", "timing.rpt"):
     (root / name).write_text("passed\\n", encoding="utf-8")
 (root / "seen.json").write_text(
-    json.dumps({"variant": os.environ["DESIGN_VARIANT"]}),
+    json.dumps({"variant": os.environ["SIGILICON_DESIGN_VARIANT"]}),
     encoding="utf-8",
 )
 ''',
@@ -212,13 +216,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
                 "asic.synthesis",
                 "synopsys-dc",
                 config={
-                    "output_root_environment": "MANAGED_DC_ROOT",
                     "timeout_seconds": 30,
-                    "input_environment": {
-                        "rtl-sources": "RTL_SOURCE_SET",
-                        "constraints": "DESIGN_CONSTRAINTS",
-                    },
-                    "qualifier_environment": {"variant": "DESIGN_VARIANT"},
                     "outputs": {
                         "mapped-netlist": "mapped.v",
                         "mapped-constraints": "mapped.sdc",
@@ -283,3 +281,19 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
     assert len(reports["members"]) == 2
     for record in result.run_root.rglob("*.json"):
         assert str(tmp_path) not in record.read_text(encoding="utf-8")
+
+
+def test_synopsys_dc_adapter_rejects_environment_mapping_configuration() -> None:
+    context = SimpleNamespace(
+        adapter_config={
+            "output_root_environment": "LEGACY_DC_ROOT",
+            "input_environment": {
+                "rtl-sources": "LEGACY_DC_RTL",
+                "constraints": "LEGACY_DC_CONSTRAINTS",
+            },
+            "qualifier_environment": {"variant": "LEGACY_VARIANT"},
+        }
+    )
+
+    with pytest.raises(FlowExecutionError, match="unknown configuration"):
+        SynopsysDCAdapter()._configuration(context)

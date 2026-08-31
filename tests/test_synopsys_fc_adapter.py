@@ -560,11 +560,11 @@ def _write_cli_flow_owner(owner_root: Path) -> tuple[Path, Path]:
 import os
 from pathlib import Path
 
-root = Path(os.environ["SIGILICON_DC_BUILD_ROOT"])
+root = Path(os.environ["SIGILICON_DC_OUTPUT_ROOT"])
 root.mkdir(parents=True, exist_ok=True)
 assert os.environ["SIGILICON_DESIGN_VARIANT"] == "fixture_variant"
-assert Path(os.environ["SIGILICON_RTL_SOURCES_FILE"]).is_file()
-assert Path(os.environ["SIGILICON_CONSTRAINTS"]).is_file()
+assert Path(os.environ["SIGILICON_DC_RTL_FILELIST"]).is_file()
+assert Path(os.environ["SIGILICON_DC_CONSTRAINTS"]).is_file()
 assert Path(os.environ["SIGILICON_SYNOPSYS_DC_SHELL"]).is_file()
 for role in ("RVT", "HVT", "LVT"):
     assert Path(os.environ[f"SIGILICON_STDCELL_{role}_DB"]).is_file()
@@ -884,16 +884,8 @@ adapter = "source-assets"
 adapter = "synopsys-dc"
 
 [actions."asic.synthesis".config]
-output_root_environment = "SIGILICON_DC_BUILD_ROOT"
 timeout_seconds = 30
 reports = ["check_design.rpt"]
-
-[actions."asic.synthesis".config.input_environment]
-rtl-sources = "SIGILICON_RTL_SOURCES_FILE"
-constraints = "SIGILICON_CONSTRAINTS"
-
-[actions."asic.synthesis".config.qualifier_environment]
-variant = "SIGILICON_DESIGN_VARIANT"
 
 [actions."asic.synthesis".config.outputs]
 mapped-netlist = "mapped.v"

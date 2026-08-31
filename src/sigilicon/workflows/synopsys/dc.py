@@ -12,9 +12,7 @@ from ._common import (
     Path,
     ProducedArtifact,
     _DC_RESOURCE_ENVIRONMENT,
-    _ENVIRONMENT_NAME,
     _SYNTHESIS_OUTPUT_ROLES,
-    _environment_mapping,
     _manifest_members,
     _pinned_owner_runner,
     _stage_source_set,
@@ -72,6 +70,8 @@ class SynopsysDCAdapter:
                     diagnostics.append(
                         f"synthesis input qualifier {dimension!r} does not match"
                     )
+        if rtl is not None and "variant" not in rtl.qualifiers:
+            diagnostics.append("DC design input omitted the variant qualifier")
         return tuple(diagnostics)
 
     def _prepare(self, context: ActionContext) -> None:
@@ -86,7 +86,7 @@ class SynopsysDCAdapter:
         for role, environment_name in _DC_RESOURCE_ENVIRONMENT.items():
             environment[environment_name] = str(timing_members[role])
         tool_root = context.output_root / "tool"
-        environment[configuration["output_root_environment"]] = str(tool_root)
+        environment["SIGILICON_DC_OUTPUT_ROOT"] = str(tool_root)
         materialized_inputs = {
             "rtl-sources": _stage_source_set(
                 context,
@@ -95,17 +95,16 @@ class SynopsysDCAdapter:
             ),
             "constraints": context.input("constraints").path,
         }
-        for role, environment_name in configuration["input_environment"].items():
-            environment[environment_name] = str(materialized_inputs[role])
+        environment["SIGILICON_DC_RTL_FILELIST"] = str(
+            materialized_inputs["rtl-sources"]
+        )
+        environment["SIGILICON_DC_CONSTRAINTS"] = str(
+            materialized_inputs["constraints"]
+        )
         qualifiers = context.input("rtl-sources").qualifiers
-        for dimension, environment_name in configuration[
-            "qualifier_environment"
-        ].items():
-            if dimension not in qualifiers:
-                raise FlowExecutionError(
-                    f"rtl-sources omitted required qualifier {dimension!r}"
-                )
-            environment[environment_name] = str(qualifiers[dimension])
+        if "variant" not in qualifiers:
+            raise FlowExecutionError("DC design input omitted the variant qualifier")
+        environment["SIGILICON_DESIGN_VARIANT"] = str(qualifiers["variant"])
 
         completed = run_process_group_capture(
             [str(runner)],
@@ -233,31 +232,18 @@ class SynopsysDCAdapter:
         )
 
     def _configuration(self, context: ActionContext) -> dict[str, Any]:
-        output_root_environment = context.adapter_config.get(
-            "output_root_environment"
-        )
-        if (
-            not isinstance(output_root_environment, str)
-            or _ENVIRONMENT_NAME.fullmatch(output_root_environment) is None
-        ):
+        unknown = set(context.adapter_config) - {
+            "timeout_seconds",
+            "outputs",
+            "reports",
+        }
+        if unknown:
             raise FlowExecutionError(
-                "DC profile requires a valid output_root_environment"
+                f"DC profile contains unknown configuration: {sorted(unknown)}"
             )
         timeout_seconds = context.adapter_config.get("timeout_seconds")
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             raise FlowExecutionError("DC profile requires a positive timeout_seconds")
-        input_environment = _environment_mapping(
-            context.adapter_config.get("input_environment"),
-            "DC input_environment",
-        )
-        if set(input_environment) != {"rtl-sources", "constraints"}:
-            raise FlowExecutionError(
-                "DC input_environment must map rtl-sources and constraints"
-            )
-        qualifier_environment = _environment_mapping(
-            context.adapter_config.get("qualifier_environment", {}),
-            "DC qualifier_environment",
-        )
         outputs = _text_mapping(
             context.adapter_config.get("outputs"),
             "DC outputs",
@@ -280,10 +266,7 @@ class SynopsysDCAdapter:
         if len(all_outputs) != len(set(all_outputs)):
             raise FlowExecutionError("DC output and report paths must be unique")
         return {
-            "output_root_environment": output_root_environment,
             "timeout_seconds": timeout_seconds,
-            "input_environment": input_environment,
-            "qualifier_environment": qualifier_environment,
             "outputs": outputs,
             "reports": reports,
         }
@@ -304,6 +287,5 @@ class SynopsysDCAdapter:
         if not output.is_relative_to(tool_root.resolve()):
             raise FlowExecutionError(f"DC output escaped managed root: {relative!r}")
         return output
-
 
 
