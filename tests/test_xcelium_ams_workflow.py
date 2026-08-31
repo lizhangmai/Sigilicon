@@ -14,7 +14,7 @@ from sigilicon.domain.ip_integration import (
 )
 from sigilicon.domain.repository import Project
 from sigilicon.workflows import xcelium_ams
-from sigilicon.workflows.run_artifacts import DirectoryRunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.xcelium_ams import (
     execute_xcelium_ams_cell,
     plan_xcelium_ams_cell,
@@ -33,9 +33,9 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _run_artifacts(root: Path) -> DirectoryRunArtifacts:
+def _run_artifacts(root: Path) -> RunArtifacts:
     run = root / "run"
-    return DirectoryRunArtifacts(
+    return RunArtifacts(
         run_id="managed-run",
         root=run,
         input_root=run / "work/action/inputs",

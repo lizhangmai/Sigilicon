@@ -16,8 +16,6 @@ from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platfo
 from sigilicon.domain.repository import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
-    find_xrun,
-    owned_directory,
     run_process_group_capture,
     xrun_env,
 )
@@ -26,6 +24,7 @@ from sigilicon.workflows.ip_integration import check_ip_integration
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
+    _execute_xcelium,
     resolve_xcelium_contract,
     snapshot_verification_sources,
 )
@@ -271,39 +270,38 @@ def execute_xcelium_ams_cell(
 ) -> XceliumExecution:
     """Execute a resolved AMS cell without creating or completing a run record."""
 
-    xrun_bin = find_xrun(xrun)
-    artifacts.write_json(
-        "inputs",
-        ("source-manifest.json",),
-        {"schema": 1, "plan": plan.as_dict()},
-    )
-    staged_circuit = artifacts.copy_file(
-        "inputs",
-        ("release", plan.circuit_netlist.name),
-        plan.circuit_netlist,
-    )
-    staged_models = {
-        path: artifacts.copy_file(
+    staged: dict[str, Path] = {}
+
+    def prepare_inputs() -> None:
+        staged["circuit"] = artifacts.copy_file(
             "inputs",
-            ("pdk", path.name),
-            path,
+            ("release", plan.circuit_netlist.name),
+            plan.circuit_netlist,
         )
-        for path in plan.model_set.files
-    }
-    control = artifacts.write_text(
-        "inputs",
-        ("ams_control.scs",),
-        plan.render_ams_control(
-            circuit_netlist=staged_circuit,
-            model_file=staged_models[plan.model_set.file],
-        ),
-    )
-    work_dir = artifacts.directory("work")
-    xcelium_dir = artifacts.directory("work", "xcelium.d")
-    with owned_directory(work_dir) as owned_work, owned_directory(
-        xcelium_dir
-    ) as owned_xcelium:
-        command = [
+        staged.update(
+            {
+                f"model:{path.name}": artifacts.copy_file(
+                    "inputs",
+                    ("pdk", path.name),
+                    path,
+                )
+                for path in plan.model_set.files
+            }
+        )
+        staged["control"] = artifacts.write_text(
+            "inputs",
+            ("ams_control.scs",),
+            plan.render_ams_control(
+                circuit_netlist=staged["circuit"],
+                model_file=staged[f"model:{plan.model_set.file.name}"],
+            ),
+        )
+
+    return _execute_xcelium(
+        plan,
+        artifacts=artifacts,
+        prepare_inputs=prepare_inputs,
+        command_factory=lambda xrun_bin, work_path, xcelium_path: [
             str(xrun_bin),
             "-64bit",
             "-timescale",
@@ -311,101 +309,38 @@ def execute_xcelium_ams_cell(
             "-access",
             "+rwc",
             "-xmlibdirname",
-            owned_xcelium.child_path,
+            xcelium_path,
             "-log",
-            owned_work.child_file("xrun.log"),
+            f"{work_path}/xrun.log",
             *(str(path) for path in plan.sources),
-            str(control),
-        ]
-
-        def validate_spawn() -> None:
-            owned_work.require_visible()
-            owned_xcelium.require_visible()
-            if before_spawn is not None:
-                before_spawn()
-            required = (
-                *plan.spec.source_inputs,
-                *plan.platform.source_paths,
-                *plan.model_set.files,
-                plan.circuit_netlist,
-            )
-            if any(not path.is_file() for path in required):
-                raise FileNotFoundError("Xcelium AMS source input disappeared")
-            if _sha256(plan.circuit_netlist) != plan.circuit_sha256:
-                raise RuntimeError("Xcelium AMS locked circuit identity drift")
-            if any(
-                _sha256(path) != digest
-                for path, digest in plan.model_sha256.items()
-            ):
-                raise RuntimeError("Xcelium AMS platform model identity drift")
-
-        completed = run_process_group_capture(
-            command,
-            cwd=Path(owned_work.child_path),
-            env=xrun_env(xrun_bin),
-            timeout=timeout,
-            before_spawn=validate_spawn,
-            pass_fds=(owned_work.fd, owned_xcelium.fd),
-        )
-    stdout_path = artifacts.write_text(
-        "logs", ("xrun.stdout.log",), completed.stdout
-    )
-    stderr_path = artifacts.write_text(
-        "logs", ("xrun.stderr.log",), completed.stderr
-    )
-    native_log = work_dir / "xrun.log"
-    native_output = (
-        native_log.read_text(encoding="utf-8", errors="replace")
-        if native_log.is_file()
-        else ""
-    )
-    native_log_path = (
-        artifacts.copy_file("logs", ("xrun.log",), native_log)
-        if native_log.is_file()
-        else None
-    )
-    evidence = [
-        source
-        for source, output in (
-            ("stdout", completed.stdout),
-            ("native_log", native_output),
-        )
-        if plan.spec.success_marker in output
-    ]
-    marker_seen = bool(evidence)
-    passed = completed.returncode == 0 and marker_seen
-    summary = {
-        "schema": 1,
-        "cell": plan.spec.cell,
-        "dut": plan.spec.dut,
-        "xrun": str(xrun_bin),
-        "command": command,
-        "returncode": completed.returncode,
-        "success_marker": plan.spec.success_marker,
-        "success_marker_seen": marker_seen,
-        "success_marker_evidence": evidence,
-        "passed": passed,
-        "evidence_role": "migration_regression",
-        "product_qualification_conclusion": False,
-        "logs": {
-            "stdout": str(stdout_path.relative_to(artifacts.root)),
-            "stderr": str(stderr_path.relative_to(artifacts.root)),
-            "native": (
-                str(native_log_path.relative_to(artifacts.root))
-                if native_log_path is not None
-                else None
-            ),
+            str(staged["control"]),
+        ],
+        validate_inputs=lambda: _require_ams_inputs(plan),
+        summary_fields={
+            "evidence_role": "migration_regression",
+            "product_qualification_conclusion": False,
         },
-    }
-    summary_path = artifacts.write_json(
-        "outputs", ("summary.json",), summary
+        before_spawn=before_spawn,
+        xrun=xrun,
+        timeout=timeout,
+        run_process=run_process_group_capture,
+        environment=xrun_env,
     )
-    return XceliumExecution(
-        plan=plan,
-        run_summary=summary_path,
-        returncode=completed.returncode,
-        passed=passed,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        native_log=native_output,
+
+
+def _require_ams_inputs(plan: XceliumAmsCellPlan) -> None:
+    required = (
+        *plan.spec.source_inputs,
+        *plan.platform.source_paths,
+        *plan.model_set.files,
+        plan.circuit_netlist,
     )
+    if any(not path.is_file() for path in required):
+        raise FileNotFoundError("Xcelium AMS source input disappeared")
+    if _sha256(plan.circuit_netlist) != plan.circuit_sha256:
+        raise RuntimeError("Xcelium AMS locked circuit identity drift")
+    if any(
+        _sha256(path) != digest
+        for path, digest in plan.model_sha256.items()
+    ):
+        raise RuntimeError("Xcelium AMS platform model identity drift")

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from sigilicon.virtuoso import (
     ade,
-    environment,
     importer,
     layout,
     library,
@@ -15,7 +14,6 @@ from sigilicon.virtuoso import (
     oa,
     schematic,
     text_view,
-    views,
 )
 
 
@@ -185,7 +183,6 @@ def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:
     stateful = (
         ade.create_oa_native_config_view,
         ade.create_oa_native_maestro_view,
-        environment.sanitize_virtuoso_license_env,
         importer.generate_symbol,
         importer.import_schematic,
         layout.read_layout_geometry,
@@ -200,7 +197,6 @@ def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:
         schematic.read_schematic,
         schematic.set_instance_parameters,
         text_view.import_oa_text_view,
-        views.open_cell_window,
     )
     parameters = {
         f"{function.__module__}.{function.__name__}": inspect.signature(function).parameters

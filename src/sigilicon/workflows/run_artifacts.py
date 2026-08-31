@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Sequence
 
 from sigilicon.artifacts import (
     copy_immutable_file,
@@ -18,141 +18,9 @@ from sigilicon.flow import ActionContext
 from sigilicon.paths import validate_artifact_component
 
 
-class RunArtifacts(Protocol):
-    """Paths and writes available to one already-owned execution lifecycle."""
-
-    run_id: str
-    root: Path
-    source: Mapping[str, Any]
-
-    def path(self, role: str, *components: str) -> Path: ...
-
-    def directory(self, role: str, *components: str) -> Path: ...
-
-    def write_text(
-        self,
-        role: str,
-        components: Sequence[str],
-        value: str,
-    ) -> Path: ...
-
-    def write_json(
-        self,
-        role: str,
-        components: Sequence[str],
-        value: Mapping[str, Any],
-    ) -> Path: ...
-
-    def copy_file(
-        self,
-        role: str,
-        components: Sequence[str],
-        source: Path,
-    ) -> Path: ...
-
-    def add_file(
-        self,
-        role: str,
-        path: Path,
-    ) -> object: ...
-
-
 @dataclass(frozen=True)
-class FlowRunArtifacts:
-    """RunArtifacts Adapter using directories owned by one Flow Action."""
-
-    context: ActionContext
-    output_role: str
-    source: Mapping[str, Any]
-
-    @property
-    def run_id(self) -> str:
-        return self.context.run_root.name
-
-    @property
-    def root(self) -> Path:
-        return self.context.run_root
-
-    def _root_for(self, role: str) -> Path:
-        roots = {
-            "inputs": self.context.work_root / "inputs",
-            "work": self.context.work_root / "tool",
-            "outputs": self.context.output_root / self.output_role,
-            "logs": self.context.log_root,
-        }
-        try:
-            root = roots[role]
-        except KeyError as exc:
-            raise ValueError(f"unknown execution artifact role: {role!r}") from exc
-        return ensure_nofollow_directory(root)
-
-    def path(self, role: str, *components: str) -> Path:
-        root = self._root_for(role)
-        current = root
-        for component in components:
-            current /= validate_artifact_component(component, "artifact path component")
-        if not Path(os.path.abspath(current)).is_relative_to(
-            Path(os.path.abspath(root))
-        ):
-            raise RuntimeError("execution artifact escaped its managed role")
-        return current
-
-    def directory(self, role: str, *components: str) -> Path:
-        result = self.path(role, *components) if components else self._root_for(role)
-        return ensure_nofollow_directory(result)
-
-    def write_text(
-        self,
-        role: str,
-        components: Sequence[str],
-        value: str,
-    ) -> Path:
-        destination = self.path(role, *components)
-        write_immutable_text(destination, value)
-        return destination
-
-    def write_json(
-        self,
-        role: str,
-        components: Sequence[str],
-        value: Mapping[str, Any],
-    ) -> Path:
-        return self.write_text(
-            role,
-            components,
-            json.dumps(value, indent=2, sort_keys=True) + "\n",
-        )
-
-    def copy_file(
-        self,
-        role: str,
-        components: Sequence[str],
-        source: Path,
-    ) -> Path:
-        destination = self.path(role, *components)
-        return copy_immutable_file(source, destination)
-
-    def add_file(
-        self,
-        role: str,
-        path: Path,
-    ) -> object:
-        root = Path(os.path.abspath(self._root_for(role)))
-        candidate = Path(os.path.abspath(path))
-        if not candidate.is_relative_to(root) or not candidate.exists():
-            raise RuntimeError("execution artifact is outside its managed role")
-        if candidate.is_symlink():
-            raise RuntimeError("execution artifact cannot be a symlink")
-        if candidate.is_dir():
-            ensure_nofollow_directory(candidate)
-        else:
-            ensure_nofollow_directory(candidate.parent)
-        return candidate
-
-
-@dataclass(frozen=True)
-class DirectoryRunArtifacts:
-    """Action-owned artifact view reconstructed in one managed child process."""
+class RunArtifacts:
+    """Artifact directories owned by one Flow Action execution."""
 
     run_id: str
     root: Path
@@ -161,6 +29,24 @@ class DirectoryRunArtifacts:
     output_root: Path
     log_root: Path
     source: Mapping[str, Any]
+
+    @classmethod
+    def from_action_context(
+        cls,
+        context: ActionContext,
+        output_role: str,
+        source: Mapping[str, Any],
+    ) -> RunArtifacts:
+        context.action.output(output_role)
+        return cls(
+            run_id=context.run_root.name,
+            root=context.run_root,
+            input_root=context.work_root / "inputs",
+            work_root=context.work_root / "tool",
+            output_root=context.output_root / output_role,
+            log_root=context.log_root,
+            source=source,
+        )
 
     def _root_for(self, role: str) -> Path:
         roots = {
@@ -273,7 +159,7 @@ def managed_run_artifact_environment(
     return {_MANAGED_ARTIFACT_CONTEXT: str(path)}
 
 
-def managed_run_artifacts_from_environment() -> DirectoryRunArtifacts | None:
+def managed_run_artifacts_from_environment() -> RunArtifacts | None:
     """Recover a parent Action's directories when called from a managed child."""
 
     value = os.environ.get(_MANAGED_ARTIFACT_CONTEXT)
@@ -330,7 +216,7 @@ def managed_run_artifacts_from_environment() -> DirectoryRunArtifacts | None:
         or context_path.is_symlink()
     ):
         raise RuntimeError("managed run artifact context escaped the canonical run")
-    return DirectoryRunArtifacts(
+    return RunArtifacts(
         run_id=run_id,
         root=run_root,
         input_root=roots["input_root"],
@@ -342,13 +228,13 @@ def managed_run_artifacts_from_environment() -> DirectoryRunArtifacts | None:
 
 
 def scoped_run_artifacts(
-    artifacts: DirectoryRunArtifacts,
+    artifacts: RunArtifacts,
     component: str,
-) -> DirectoryRunArtifacts:
+) -> RunArtifacts:
     """Give one measurement collision-free directories in the same run."""
 
     name = validate_artifact_component(component, "artifact scope")
-    return DirectoryRunArtifacts(
+    return RunArtifacts(
         run_id=artifacts.run_id,
         root=artifacts.root,
         input_root=artifacts.input_root / name,
@@ -360,8 +246,6 @@ def scoped_run_artifacts(
 
 
 __all__ = [
-    "DirectoryRunArtifacts",
-    "FlowRunArtifacts",
     "RunArtifacts",
     "managed_run_artifact_environment",
     "managed_run_artifacts_from_environment",

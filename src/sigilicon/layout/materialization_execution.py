@@ -15,16 +15,16 @@ import re
 import stat
 from collections.abc import Mapping
 
-from sigilicon.canonical import canonical_from_json
+from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.layout.materialization import (
     MaterializationIssue,
     MaterializationPlan,
     MaterializationValidation,
     validate_materialization_plan,
 )
-from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
-from sigilicon.layout.physical_design_serialization import (
-    canonical_json,
+from sigilicon.layout.physical_design import (
+    PhysicalDesignJob,
+    PhysicalDesignResult,
     physical_design_job_id,
     physical_design_result_id,
 )

@@ -3,19 +3,13 @@
 from __future__ import annotations
 
 from sigilicon.layout.physical_design import (
-    ConstraintOutcome,
-    GridlessRoutingResource,
     InstancePlacement,
     LayerKind,
-    MinimumSpacingRule,
-    MinimumWidthRule,
     NetRoute,
     PhysicalDesign,
     PhysicalDesignJob,
     PhysicalDesignProvenance,
-    PhysicalDesignRequest,
     PhysicalDesignResult,
-    PhysicalDesignStage,
     PhysicalLayer,
     PhysicalNet,
     PhysicalPort,
@@ -28,24 +22,18 @@ from sigilicon.layout.physical_design import (
     RouteSegment,
     RoutingBlockagePlacement,
     RoutingDirection,
-    StageReport,
+    physical_design_job_id,
 )
-from sigilicon.layout.physical_design_serialization import physical_design_job_id
 
 
 def routed_job(name: str = "contract-physical-design") -> PhysicalDesignJob:
-    """Return a minimal stable Job with one legal gridless route."""
+    """Return a minimal stable Job with one legal route."""
 
     technology = PhysicalTechnology(
         f"{name}-technology",
         dbu_per_micron=1000,
         manufacturing_grid_dbu=1,
         layers=(PhysicalLayer("route", LayerKind.ROUTING, RoutingDirection.ANY),),
-        routing_resources=(GridlessRoutingResource("route-domain", "route"),),
-        rules=(
-            MinimumWidthRule("route-width", "route", 2),
-            MinimumSpacingRule("route-spacing", "route", 1),
-        ),
     )
     return PhysicalDesignJob(
         technology,
@@ -64,9 +52,6 @@ def routed_job(name: str = "contract-physical-design") -> PhysicalDesignJob:
                     (PinReference("source"), PinReference("sink")),
                 ),
             ),
-        ),
-        request=PhysicalDesignRequest(
-            stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)
         ),
     )
 
@@ -115,11 +100,6 @@ def typed_result(
     return PhysicalDesignResult(
         status=status,
         placements=placements,
-        constraint_outcomes=(),
-        stage_reports=tuple(
-            StageReport(stage, status)
-            for stage in job.request.stages
-        ),
         provenance=PhysicalDesignProvenance(backend, identity, True),
         routes=routes,
         routing_blockage_placements=blockages,

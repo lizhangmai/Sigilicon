@@ -636,25 +636,6 @@ def test_read_only_policy_cannot_open_mutation_scope(workspace_factory) -> None:
                 pytest.fail("read-only policy must not escalate to mutation")
 
 
-def test_read_only_policy_cannot_mutate_virtuoso_process_environment(
-    workspace_factory,
-) -> None:
-    from sigilicon.virtuoso.environment import sanitize_virtuoso_license_env
-
-    client = object()
-    with workspace_factory(
-        client,
-        library="lib",
-        policy=OperationPolicy.READ_ONLY,
-    ) as operation:
-        with pytest.raises(RuntimeError, match="process-env-mutation"):
-            sanitize_virtuoso_license_env(
-                client,
-                library="lib",
-                operation=operation,
-            )
-
-
 def test_view_lease_counts_duplicate_handles_without_closing_preexisting_state(
     monkeypatch, tmp_path, workspace_factory
 ) -> None:

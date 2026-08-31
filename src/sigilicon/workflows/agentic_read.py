@@ -7,16 +7,17 @@ import json
 from typing import Any
 
 from sigilicon.domain.circuit_design import (
+    DesignCandidate,
     design_artifact_from_json,
     design_candidate_from_json,
     design_decision_from_json,
+    validate_design_candidate,
 )
 from sigilicon.domain.repository import (
     Project,
     RepositoryOwner,
 )
 from sigilicon.workflows.project_runner import ProjectRunner
-from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.workflows.design_promotion import (
     compile_promotion_plan,
     promotion_request_from_json,
@@ -146,11 +147,15 @@ class AgenticReadInterface:
         """Validate an immutable Candidate chain inside one project owner."""
 
         selected_owner = self._owner(owner)
-        validation = validate_candidate_records(
-            candidate_json,
-            artifact_json,
-            expected_owner=selected_owner.name,
-        )
+        candidate = design_artifact_from_json(candidate_json)
+        if not isinstance(candidate, DesignCandidate):
+            raise ValueError("candidate input is not a Design Candidate")
+        if candidate.metadata.owner != selected_owner.name:
+            raise ValueError(
+                "Candidate owner does not match the selected project owner"
+            )
+        artifacts = tuple(design_artifact_from_json(text) for text in artifact_json)
+        validation = validate_design_candidate(candidate, artifacts)
         return self.response(
             operation="candidate.validate",
             authority="plan",

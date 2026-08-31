@@ -39,7 +39,7 @@ from sigilicon.workflows.layout_generation import (
     generate_layout,
     plan_layout_spec,
 )
-from sigilicon.workflows.run_artifacts import FlowRunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.source_closure import project_source_members
 from sigilicon.workflows.source_control import artifact_source_state
 
@@ -315,7 +315,7 @@ class LayoutActionAdapter:
             }
             for member in context.action_plan.sources
         ]
-        artifacts = FlowRunArtifacts(context, "evidence", source)
+        artifacts = RunArtifacts.from_action_context(context, "evidence", source)
         for index, member in enumerate(context.action_plan.sources):
             artifacts.write_text(
                 "inputs",
@@ -399,7 +399,7 @@ class LayoutActionAdapter:
         self,
         context: ActionContext,
         selected: LayoutInvocation,
-        artifacts: FlowRunArtifacts,
+        artifacts: RunArtifacts,
     ) -> AdapterResult:
         if set(context.action_config) != _LAYOUT_CONFIG_FIELDS:
             raise FlowExecutionError("layout generation Action configuration drift")
@@ -449,7 +449,7 @@ class LayoutActionAdapter:
         self,
         context: ActionContext,
         selected: LayoutInvocation,
-        artifacts: FlowRunArtifacts,
+        artifacts: RunArtifacts,
     ) -> AdapterResult:
         del context, selected, artifacts
         raise FlowExecutionError(

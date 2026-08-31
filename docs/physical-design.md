@@ -1,25 +1,23 @@
 # Physical-design contract baseline
 
-Sigilicon owns a small, reusable physical-design model and the orchestration
-seams around external implementation tools. It does not contain a placement,
-routing, optimization, or physical-closure engine.
+Sigilicon owns a small, reusable physical-materialization interchange model. It
+does not contain a placement, routing, optimization, or physical-closure engine.
 
-The solver-independent interface is:
+The interface joins exact source artifacts only at materialization:
 
 ```python
-result = adapter.run(job)
+plan = compile_materialization_plan(job, result, target)
 ```
 
-`PhysicalDesignJob` is the complete normalized input: design, technology facts,
-constraints, and requested stages. Its identity is the digest of that complete
-canonical value. `PhysicalDesignResult` records only tool-independent
-observations: placements, routes, constraint outcomes, diagnostics, metrics,
-terminal status, and provenance binding it to the exact Job.
+`PhysicalDesignJob` contains only the design and technology geometry needed to
+validate materialization. Its identity is the digest of that complete canonical
+value. `PhysicalDesignResult` contains only placements, routes, terminal status,
+and provenance binding it to the exact Job.
 
-The external Adapter owns tool invocation and translation. Synopsys FC, another
-commercial implementation tool, or a project-owned implementation may satisfy
-the same `physical-design.solve` Action. Sigilicon supplies no fallback solver
-and never interprets a failed external tool as a successful physical result.
+Implementation tools keep their own domain Actions and schemas. Standard ASIC
+flows use `asic.physical-implementation`; custom and mixed-signal owners may
+publish a normalized Job/Result pair. The common registry intentionally has no
+generic `physical-design.solve` Action or fallback solver.
 
 ## Ownership and independence
 
@@ -65,7 +63,7 @@ recover conclusions from generic metric names.
 
 ## Capability rule
 
-Every requested stage has an explicit observable outcome: succeeded, failed,
-unsupported, or exhausted. Only typed, identity-bound evidence may cross to a
-downstream Action. Offline and fake Adapters are contract-test fixtures and can
-never establish product qualification or signoff.
+Every Result has an explicit observable outcome: succeeded, failed, unsupported,
+or exhausted. Only typed, identity-bound evidence may cross to a downstream
+Action. Offline and fake Adapters are contract-test fixtures and can never
+establish product qualification or signoff.

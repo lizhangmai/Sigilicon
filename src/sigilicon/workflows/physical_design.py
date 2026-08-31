@@ -46,8 +46,6 @@ from sigilicon.layout.materialization_execution import (
 from sigilicon.layout.physical_design import (
     PhysicalDesignJob,
     PhysicalDesignResult,
-)
-from sigilicon.layout.physical_design_serialization import (
     physical_design_job_from_json,
     physical_design_job_id,
     physical_design_result_from_json,

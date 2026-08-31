@@ -18,7 +18,6 @@ class WorkspaceAuthority(str, Enum):
     OA_MUTATION = "oa-mutation"
     RECURSIVE_OA = "recursive-oa"
     MAESTRO_SESSION = "maestro-session"
-    PROCESS_ENV_MUTATION = "process-env-mutation"
     GUI = "gui"
 
 
@@ -32,7 +31,6 @@ _POLICY_AUTHORITIES = {
             WorkspaceAuthority.READ,
             WorkspaceAuthority.OA_MUTATION,
             WorkspaceAuthority.RECURSIVE_OA,
-            WorkspaceAuthority.PROCESS_ENV_MUTATION,
         }
     ),
     "maestro-run": frozenset(

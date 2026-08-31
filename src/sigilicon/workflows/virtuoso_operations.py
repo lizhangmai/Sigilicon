@@ -10,8 +10,6 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import ArtifactRecord, new_identity
 from sigilicon.paths import ProjectContext
-from sigilicon.virtuoso.discovery import list_cells, list_libraries
-from sigilicon.virtuoso.layout import read_layout_geometry
 from sigilicon.virtuoso.library import LibraryCreateResult, create_project_library
 from sigilicon.virtuoso.netlisting import export_netlist
 from sigilicon.virtuoso.oa import (
@@ -21,11 +19,14 @@ from sigilicon.virtuoso.oa import (
 )
 from sigilicon.virtuoso.schematic import (
     normalize_instance_parameters,
-    read_schematic,
     read_instance_parameters,
     set_instance_parameters,
 )
-from sigilicon.virtuoso.views import open_cell_window
+from sigilicon.virtuoso.capability import (
+    WorkspaceAuthority,
+    require_workspace_capability,
+)
+from sigilicon.virtuoso.confirmation import require_bridge_confirmation
 from sigilicon.virtuoso.workspace import (
     OperationPolicy,
     require_project_library_path,
@@ -56,14 +57,6 @@ class ProjectNetlistExport:
     input_scs: Path
     support_files: tuple[Path, ...]
     manifest_path: Path
-
-
-def list_project_libraries(client: Any) -> dict[str, Any]:
-    return list_libraries(client)
-
-
-def list_project_cells(client: Any, library: str) -> dict[str, Any]:
-    return list_cells(client, library)
 
 
 def _copy_export_support_files(
@@ -223,59 +216,6 @@ def export_project_netlist(
     )
 
 
-def read_project_schematic(
-    client: Any,
-    paths: ProjectContext,
-    library: str,
-    cell: str,
-    *,
-    include_positions: bool,
-) -> dict[str, Any]:
-    with workspace_operation(
-        client,
-        paths.workspace_root,
-        "read-schematic",
-        policy=OperationPolicy.READ_ONLY,
-    ) as operation, operation.view_lease(
-        library,
-        cells=(cell,),
-        views=((cell, "schematic"),),
-    ):
-        return read_schematic(
-            client,
-            library,
-            cell,
-            include_positions=include_positions,
-            operation=operation,
-        )
-
-
-def read_project_layout(
-    client: Any,
-    paths: ProjectContext,
-    library: str,
-    cell: str,
-    view: str,
-) -> list[dict[str, Any]]:
-    with workspace_operation(
-        client,
-        paths.workspace_root,
-        "read-layout",
-        policy=OperationPolicy.READ_ONLY,
-    ) as operation, operation.view_lease(
-        library,
-        cells=(cell,),
-        views=((cell, view),),
-    ):
-        return read_layout_geometry(
-            client,
-            library,
-            cell,
-            view,
-            operation=operation,
-        )
-
-
 def open_project_cell(
     client: Any,
     paths: ProjectContext,
@@ -289,14 +229,19 @@ def open_project_cell(
         "open-cell",
         policy=OperationPolicy.GUI_ACTION,
     ) as operation:
-        require_project_library_path(operation, library)
-        open_cell_window(
+        require_workspace_capability(
+            operation,
             client,
-            library,
-            cell,
-            view,
-            operation=operation,
+            authority=WorkspaceAuthority.GUI,
         )
+        operation.require_project_library_target(client, library)
+        result = require_bridge_confirmation(
+            operation,
+            f"open window {library}/{cell}/{view}",
+            lambda: client.open_window(library, cell, view=view),
+        )
+        if result.is_nil:
+            raise RuntimeError(f"geOpen returned nil for {library}/{cell}/{view}")
 
 
 _LIBRARY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")

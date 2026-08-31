@@ -15,7 +15,6 @@ PHYSICAL_DESIGN_JOB_KIND = "physical-design.job"
 PHYSICAL_DESIGN_RESULT_KIND = "physical-design.result"
 PHYSICAL_DESIGN_SOURCE_ACTION = "physical-design.source-job"
 PHYSICAL_DESIGN_RESULT_SOURCE_ACTION = "physical-design.source-result"
-PHYSICAL_DESIGN_ACTION = "physical-design.solve"
 PHYSICAL_MATERIALIZATION_ACTION = "physical-design.compile-materialization"
 PHYSICAL_MATERIALIZATION_PLAN_KIND = "physical-design.materialization-plan"
 MATERIALIZATION_ACCEPTANCE_EVIDENCE_KIND = "evidence.materialization-acceptance"
@@ -75,22 +74,10 @@ PHYSICAL_MATERIALIZATION_FACT_SCHEMA = FactSchema(
         FactSpec("materialization-executable", FactKind.BOOLEAN),
     ),
 )
-PHYSICAL_DESIGN_FACT_SCHEMA = FactSchema(
-    PHYSICAL_DESIGN_ACTION,
-    fields=(
-        FactSpec(
-            "physical-design-status",
-            FactKind.TEXT,
-            enum_values=("succeeded", "failed", "unsupported", "exhausted"),
-        ),
-        FactSpec("physical-design-succeeded", FactKind.BOOLEAN),
-        FactSpec("physical-design-closed", FactKind.BOOLEAN),
-    ),
-)
 
 
 def register_physical_design_actions(registry: FlowRegistry) -> None:
-    """Register reusable source, solver, and materialization seams."""
+    """Register reusable physical source and materialization seams."""
 
     registry.register_action(
         ActionContract(
@@ -155,22 +142,9 @@ def register_physical_design_actions(registry: FlowRegistry) -> None:
             adapter_extensible=True,
         )
     )
-    registry.register_action(
-        ActionContract(
-            kind=PHYSICAL_DESIGN_ACTION,
-            inputs=(ArtifactPort("job", PHYSICAL_DESIGN_JOB_KIND),),
-            outputs=(
-                ArtifactPort("result", PHYSICAL_DESIGN_RESULT_KIND),
-            ),
-            fact_schema=PHYSICAL_DESIGN_FACT_SCHEMA,
-            adapters=(),
-            adapter_extensible=True,
-        )
-    )
 
 
 __all__ = [
-    "PHYSICAL_DESIGN_ACTION",
     "PHYSICAL_DESIGN_JOB_KIND",
     "PHYSICAL_DESIGN_RESULT_KIND",
     "PHYSICAL_DESIGN_RESULT_SOURCE_ACTION",
@@ -186,7 +160,6 @@ __all__ = [
     "PHYSICAL_DESIGN_RESULT_SOURCE_FACT_SCHEMA",
     "PHYSICAL_MATERIALIZATION_EXECUTION_FACT_SCHEMA",
     "PHYSICAL_MATERIALIZATION_FACT_SCHEMA",
-    "PHYSICAL_DESIGN_FACT_SCHEMA",
     "MATERIALIZATION_PLAN_ADAPTER",
     "register_physical_design_actions",
 ]

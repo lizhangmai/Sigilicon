@@ -156,9 +156,9 @@ Source-dependent reads and historical Run reads are separate application seams.
 `RunReadInterface` requires only the explicit `ProjectContext`; it owns
 `run.inspect` and must not load current owner catalogs or recipes. The read CLI and
 native MCP composition bind the narrowest seam for each operation. The Candidate
-operation delegates to the same workflow-owned `validate_candidate_records`
-function as the existing Candidate CLI. MCP accepts semantic identities or
-bounded canonical JSON only. The read-only Phase 2 tools have no path, shell,
+operation and Candidate CLI both delegate to `AgenticReadInterface`, which applies
+the same typed `validate_design_candidate` domain validation. MCP accepts semantic
+identities or bounded canonical JSON only. The read-only Phase 2 tools have no path, shell,
 environment, executor, cancellation, OA, or promotion input.
 
 The local entry point is `sigilicon-mcp --project-root <root>`. Project selection is

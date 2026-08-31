@@ -9,7 +9,7 @@ import pytest
 from sigilicon.domain.repository import Project
 import sigilicon.domain.repository as repository_module
 from sigilicon.workflows import xcelium
-from sigilicon.workflows.run_artifacts import DirectoryRunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.xcelium import (
     execute_xcelium_cell,
     plan_xcelium_cell,
@@ -29,9 +29,9 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _run_artifacts(root: Path) -> DirectoryRunArtifacts:
+def _run_artifacts(root: Path) -> RunArtifacts:
     run = root / "run"
-    return DirectoryRunArtifacts(
+    return RunArtifacts(
         run_id="managed-run",
         root=run,
         input_root=run / "work/action/inputs",

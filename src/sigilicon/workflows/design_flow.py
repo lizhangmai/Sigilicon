@@ -58,7 +58,7 @@ from sigilicon.flow.source_assets import (
     source_member_matches,
 )
 from sigilicon.workflows.run_artifacts import (
-    FlowRunArtifacts,
+    RunArtifacts,
     managed_run_artifact_environment,
 )
 from sigilicon.workflows.source_control import artifact_source_state
@@ -533,7 +533,7 @@ class DesignTargetAdapter:
                 timeout=timeout,
                 pass_fds=pass_fds,
             )
-        artifacts = FlowRunArtifacts(context, "evidence", source)
+        artifacts = RunArtifacts.from_action_context(context, "evidence", source)
         stdout = artifacts.write_text(
             "logs",
             ("design-runner.stdout.log",),

@@ -42,8 +42,6 @@ from sigilicon.layout.physical_design import (
     PhysicalDesignJob,
     PhysicalDesignResult,
     Rect,
-)
-from sigilicon.layout.physical_design_serialization import (
     physical_design_job_id,
     physical_design_result_id,
 )

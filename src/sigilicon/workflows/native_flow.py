@@ -46,7 +46,7 @@ from sigilicon.workflows.oa_library import (
     validate_oa_plan_source_members,
 )
 from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
-from sigilicon.workflows.run_artifacts import FlowRunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.source_control import artifact_source_state
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 from sigilicon.workflows.source_closure import project_source_members
@@ -275,7 +275,7 @@ class NativeOaSimulationAdapter:
             plan,
             matches[0],
             self._client_factory(),
-            artifacts=FlowRunArtifacts(
+            artifacts=RunArtifacts.from_action_context(
                 context,
                 "evidence",
                 artifact_source_state(project.project_root),
@@ -337,7 +337,7 @@ class XceliumVerificationAdapter:
         product_conclusion = _planned_product_conclusion(context)
         result = execute_xcelium_cell(
             plan,
-            artifacts=FlowRunArtifacts(
+            artifacts=RunArtifacts.from_action_context(
                 context,
                 "evidence",
                 artifact_source_state(project.project_root),
@@ -403,7 +403,7 @@ class XceliumAmsVerificationAdapter:
         product_conclusion = _planned_product_conclusion(context)
         result = execute_xcelium_ams_cell(
             plan,
-            artifacts=FlowRunArtifacts(
+            artifacts=RunArtifacts.from_action_context(
                 context,
                 "evidence",
                 artifact_source_state(project.project_root),

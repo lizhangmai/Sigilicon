@@ -146,15 +146,10 @@ class _InputsAdapter(StagedAdapterFixture):
         stable_job = PhysicalDesignJob(
             technology=self.job.technology,
             design=self.job.design,
-            constraints=self.job.constraints,
-            request=self.job.request,
-            routing_constraints=self.job.routing_constraints,
         )
         stable_result = PhysicalDesignResult(
             status=self.result.status,
             placements=self.result.placements,
-            constraint_outcomes=self.result.constraint_outcomes,
-            stage_reports=self.result.stage_reports,
             provenance=self.result.provenance,
             routes=self.result.routes,
             routing_blockage_placements=self.result.routing_blockage_placements,

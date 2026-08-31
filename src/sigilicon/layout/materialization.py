@@ -7,7 +7,7 @@ from enum import Enum
 from collections.abc import Mapping
 from typing import Iterable
 
-from sigilicon.canonical import canonical_from_json
+from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.layout.physical_design import (
     LayerKind,
     PhysicalDesignJob,
@@ -15,9 +15,6 @@ from sigilicon.layout.physical_design import (
     Placement,
     Point,
     ResultStatus,
-)
-from sigilicon.layout.physical_design_serialization import (
-    canonical_json,
     physical_design_job_id,
     physical_design_result_id,
 )
@@ -378,8 +375,6 @@ def validate_materialization_plan(
         rect = placed_sized_rect(source.width_dbu, source.height_dbu, item.placement)
         if not die.contains(rect):
             issue("coordinate_outside_die", "Routing Blockage is outside the die", item.blockage)
-        if source.repair_region is not None and not source.repair_region.contains(rect):
-            issue("coordinate_outside_repair_region", "Routing Blockage escaped its repair region", item.blockage)
         if item.placement.origin.x % grid or item.placement.origin.y % grid:
             issue("coordinate_off_grid", "Routing Blockage placement is off grid", item.blockage)
 

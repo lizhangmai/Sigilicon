@@ -44,7 +44,7 @@ from sigilicon.workflows.layout_verification import (
     find_calibre,
 )
 from sigilicon.workflows.layout_flow import LayoutActionAdapter, LayoutInvocation
-from sigilicon.workflows.run_artifacts import FlowRunArtifacts, RunArtifacts
+from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 @dataclass(frozen=True)
@@ -276,28 +276,15 @@ class XStreamCalibreLayoutAdapter(LayoutActionAdapter):
         self,
         context: ActionContext,
         selected: LayoutInvocation,
-        artifacts: FlowRunArtifacts,
+        artifacts: RunArtifacts,
     ) -> AdapterResult:
-        allowed = {
-            "target",
-            "operation",
-            "spec",
-            "check",
-            "evidence_role",
-            "evidence_level",
-            "evidence_scope",
-        }
-        if set(context.action_config) != allowed:
-            raise FlowExecutionError("layout verification Action configuration drift")
         if set(context.adapter_config) != {
             "xstream_timeout_seconds",
             "calibre_timeout_seconds",
         }:
             raise FlowExecutionError("layout verification Adapter configuration drift")
         check = self._text(context, "check")
-        operation = self._text(context, "operation")
-        if operation != f"verify-{check}" or check not in {"drc", "lvs"}:
-            raise FlowExecutionError("layout verification check disagrees with route")
+        operation = selected.operation
         xstream = context.capabilities["tool.cadence-xstream"].executable
         calibre = context.capabilities["tool.calibre"].executable
         if xstream is None or calibre is None:

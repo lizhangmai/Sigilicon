@@ -5,14 +5,12 @@ from __future__ import annotations
 import pytest
 
 from sigilicon.layout.physical_design import (
-    LayerShape,
     Orientation,
-    PhysicalMaster,
     Placement,
     Point,
     Rect,
 )
-from sigilicon.layout.physical_geometry import transform_rect, transformed_obstructions
+from sigilicon.layout.physical_geometry import transform_sized_rect
 
 
 @pytest.mark.parametrize(
@@ -33,15 +31,6 @@ def test_master_geometry_uses_all_orthogonal_orientations(
     expected: Rect,
 ) -> None:
     local = Rect(2, 1, 6, 4)
-    master = PhysicalMaster(
-        "master",
-        20,
-        10,
-        obstructions=(LayerShape("routing", local),),
-    )
     placement = Placement(Point(100, 200), orientation)
 
-    assert transform_rect(local, master, placement) == expected
-    assert transformed_obstructions(master, placement) == (
-        LayerShape("routing", expected),
-    )
+    assert transform_sized_rect(local, 20, 10, placement) == expected

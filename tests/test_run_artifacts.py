@@ -8,15 +8,15 @@ import pytest
 from sigilicon.flow import ActionContext
 from sigilicon.flow.native import NATIVE_OA_SIMULATION_ACTION
 from sigilicon.workflows.action_registry import build_action_registry
-from sigilicon.workflows.run_artifacts import FlowRunArtifacts
 from sigilicon.workflows.run_artifacts import (
+    RunArtifacts,
     managed_run_artifact_environment,
     managed_run_artifacts_from_environment,
     scoped_run_artifacts,
 )
 
 
-def _artifacts(tmp_path: Path) -> FlowRunArtifacts:
+def _artifacts(tmp_path: Path) -> tuple[ActionContext, RunArtifacts]:
     run_root = tmp_path / "run"
     context = ActionContext(
         node_id="simulate",
@@ -31,14 +31,16 @@ def _artifacts(tmp_path: Path) -> FlowRunArtifacts:
         capabilities=MappingProxyType({}),
         platform_assets=MappingProxyType({}),
     )
-    return FlowRunArtifacts(context, "evidence", MappingProxyType({}))
+    return context, RunArtifacts.from_action_context(
+        context, "evidence", MappingProxyType({})
+    )
 
 
 def test_flow_run_artifacts_rejects_symlinked_role_root(tmp_path: Path) -> None:
-    artifacts = _artifacts(tmp_path)
+    context, artifacts = _artifacts(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    inputs = artifacts.context.work_root / "inputs"
+    inputs = context.work_root / "inputs"
     inputs.parent.mkdir(parents=True)
     inputs.symlink_to(outside, target_is_directory=True)
 
@@ -49,7 +51,7 @@ def test_flow_run_artifacts_rejects_symlinked_role_root(tmp_path: Path) -> None:
 
 
 def test_flow_run_artifacts_rejects_nested_parent_symlink(tmp_path: Path) -> None:
-    artifacts = _artifacts(tmp_path)
+    _, artifacts = _artifacts(tmp_path)
     inputs = artifacts.directory("inputs")
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -62,7 +64,7 @@ def test_flow_run_artifacts_rejects_nested_parent_symlink(tmp_path: Path) -> Non
 
 
 def test_flow_run_artifacts_never_replace_existing_destination(tmp_path: Path) -> None:
-    artifacts = _artifacts(tmp_path)
+    _, artifacts = _artifacts(tmp_path)
     destination = artifacts.write_text("outputs", ("evidence.json",), "first\n")
 
     with pytest.raises(FileExistsError):
@@ -74,7 +76,7 @@ def test_flow_run_artifacts_never_replace_existing_destination(tmp_path: Path) -
 def test_flow_run_artifacts_reads_sources_without_following_symlinks(
     tmp_path: Path,
 ) -> None:
-    artifacts = _artifacts(tmp_path)
+    _, artifacts = _artifacts(tmp_path)
     source = tmp_path / "source.bin"
     source.write_bytes(b"trusted")
     alias = tmp_path / "source-link.bin"
@@ -90,9 +92,9 @@ def test_managed_child_recovers_only_the_parent_action_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    artifacts = _artifacts(tmp_path)
+    context, artifacts = _artifacts(tmp_path)
     environment = managed_run_artifact_environment(
-        artifacts.context,
+        context,
         "evidence",
         {"project": {"commit": "fixture"}},
     )
@@ -105,8 +107,8 @@ def test_managed_child_recovers_only_the_parent_action_roots(
 
     assert recovered is not None
     assert recovered.run_id == "run"
-    assert recovered.root == artifacts.context.run_root
+    assert recovered.root == context.run_root
     scoped = scoped_run_artifacts(recovered, "measurement")
     output = scoped.write_text("outputs", ("result.txt",), "managed\n")
-    assert output.is_relative_to(artifacts.context.output_root / "evidence")
-    assert not (artifacts.context.run_root / "run_manifest.json").exists()
+    assert output.is_relative_to(context.output_root / "evidence")
+    assert not (context.run_root / "run_manifest.json").exists()

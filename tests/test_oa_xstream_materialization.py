@@ -48,12 +48,7 @@ from sigilicon.layout.materialization_execution import (
     materialization_receipt_from_json,
 )
 from sigilicon.layout.physical_design import (
-    CutSpacingRule,
-    EnclosureRule,
-    GridlessRoutingResource,
     LayerKind,
-    MinimumSpacingRule,
-    MinimumWidthRule,
     PhysicalDesign,
     PhysicalInstance,
     PhysicalLayer,
@@ -64,8 +59,6 @@ from sigilicon.layout.physical_design import (
     PinAccess,
     PinReference,
     Placement,
-    PhysicalDesignRequest,
-    PhysicalDesignStage,
     NetRoute,
     Point,
     Rect,
@@ -99,11 +92,6 @@ def _job() -> PhysicalDesignJob:
             layers=(
                 PhysicalLayer("route", LayerKind.ROUTING, RoutingDirection.ANY),
             ),
-            routing_resources=(GridlessRoutingResource("route-domain", "route"),),
-            rules=(
-                MinimumWidthRule("route-width", "route", 2),
-                MinimumSpacingRule("route-spacing", "route", 1),
-            ),
         ),
         PhysicalDesign(
             "oa-materialization-neutral",
@@ -121,7 +109,6 @@ def _job() -> PhysicalDesignJob:
                 ),
             ),
         ),
-        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
 
 
@@ -175,10 +162,6 @@ def _artifacts_with_via():
             PhysicalLayer("v1", LayerKind.CUT),
             PhysicalLayer("m2", LayerKind.ROUTING, RoutingDirection.ANY),
         ),
-        routing_resources=(
-            GridlessRoutingResource("m1-domain", "m1"),
-            GridlessRoutingResource("m2-domain", "m2"),
-        ),
         via_definitions=(
             ViaDefinition(
                 "via12",
@@ -189,15 +172,6 @@ def _artifacts_with_via():
                 cut_shapes=(Rect(-1, -1, 1, 1),),
                 upper_shapes=(Rect(-2, -2, 2, 2),),
             ),
-        ),
-        rules=(
-            MinimumWidthRule("m1-width", "m1", 2),
-            MinimumSpacingRule("m1-spacing", "m1", 1),
-            MinimumWidthRule("m2-width", "m2", 2),
-            MinimumSpacingRule("m2-spacing", "m2", 1),
-            EnclosureRule("m1-v1", "m1", "v1", 1, 1),
-            EnclosureRule("m2-v1", "m2", "v1", 1, 1),
-            CutSpacingRule("v1-spacing", "v1", 2, 2),
         ),
     )
     job = PhysicalDesignJob(
@@ -218,7 +192,6 @@ def _artifacts_with_via():
                 ),
             ),
         ),
-        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
     result = typed_result(
         job,

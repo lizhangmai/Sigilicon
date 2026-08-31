@@ -196,7 +196,57 @@ def execute_xcelium_cell(
 ) -> XceliumExecution:
     """Execute a resolved cell without creating or completing a run record."""
 
+    return _execute_xcelium(
+        plan,
+        artifacts=artifacts,
+        command_factory=lambda xrun_bin, work_path, xcelium_path: [
+            str(xrun_bin),
+            "-64bit",
+            "-sv",
+            "-timescale",
+            "1ns/1ps",
+            "-xmlibdirname",
+            xcelium_path,
+            "-log",
+            f"{work_path}/xrun.log",
+            *(str(path) for path in plan.sources),
+        ],
+        validate_inputs=lambda: _require_xcelium_sources(plan),
+        before_spawn=before_spawn,
+        xrun=xrun,
+        timeout=timeout,
+        run_process=run_process_group_capture,
+        environment=xrun_env,
+    )
+
+
+def _require_xcelium_sources(plan: XceliumCellPlan) -> None:
+    for source_input in plan.spec.source_inputs:
+        if not source_input.is_file():
+            raise FileNotFoundError(
+                f"Xcelium source input disappeared: {source_input}"
+            )
+
+
+def _execute_xcelium(
+    plan: XceliumCellPlan,
+    *,
+    artifacts: RunArtifacts,
+    command_factory: Callable[[Path, str, str], list[str]],
+    prepare_inputs: Callable[[], None] | None = None,
+    validate_inputs: Callable[[], None] | None = None,
+    summary_fields: Mapping[str, object] | None = None,
+    xrun: Path | None = None,
+    before_spawn: Callable[[], None] | None = None,
+    timeout: int = 600,
+    run_process: Callable[..., Any] = run_process_group_capture,
+    environment: Callable[[Path], Mapping[str, str]] = xrun_env,
+) -> XceliumExecution:
+    """Run one typed Xcelium plan after its caller-specific inputs are prepared."""
+
     xrun_bin = find_xrun(xrun)
+    if prepare_inputs is not None:
+        prepare_inputs()
     artifacts.write_json(
         "inputs",
         ("source-manifest.json",),
@@ -207,34 +257,24 @@ def execute_xcelium_cell(
     with owned_directory(work_dir) as owned_work, owned_directory(
         xcelium_dir
     ) as owned_xcelium:
-        command = [
-            str(xrun_bin),
-            "-64bit",
-            "-sv",
-            "-timescale",
-            "1ns/1ps",
-            "-xmlibdirname",
+        command = command_factory(
+            xrun_bin,
+            owned_work.child_path,
             owned_xcelium.child_path,
-            "-log",
-            owned_work.child_file("xrun.log"),
-            *(str(path) for path in plan.sources),
-        ]
+        )
 
         def validate_spawn() -> None:
             owned_work.require_visible()
             owned_xcelium.require_visible()
             if before_spawn is not None:
                 before_spawn()
-            for source_input in plan.spec.source_inputs:
-                if not source_input.is_file():
-                    raise FileNotFoundError(
-                        f"Xcelium source input disappeared: {source_input}"
-                    )
+            if validate_inputs is not None:
+                validate_inputs()
 
-        completed = run_process_group_capture(
+        completed = run_process(
             command,
             cwd=Path(owned_work.child_path),
-            env=xrun_env(xrun_bin),
+            env=environment(xrun_bin),
             timeout=timeout,
             before_spawn=validate_spawn,
             pass_fds=(owned_work.fd, owned_xcelium.fd),
@@ -277,6 +317,7 @@ def execute_xcelium_cell(
         "success_marker_seen": success_marker_seen,
         "success_marker_evidence": success_marker_evidence,
         "passed": passed,
+        **(summary_fields or {}),
         "logs": {
             "stdout": str(stdout_path.relative_to(artifacts.root)),
             "stderr": str(stderr_path.relative_to(artifacts.root)),

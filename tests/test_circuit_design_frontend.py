@@ -56,7 +56,6 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.domain.design import load_design_spec
 from sigilicon.workflows.design_frontend import SourceAuthoredTopologyAdapter
-from sigilicon.workflows.design_artifacts import validate_candidate_records
 from sigilicon.cli.main import main as sigilicon_main
 from conftest import write_component_owner
 
@@ -397,15 +396,6 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 
     validated = validate_design_candidate(candidate, (topology, problem, evidence))
     validate_design_decision(decision, candidate, (evidence,))
-    via_interface = validate_candidate_records(
-        candidate.canonical_json(),
-        (
-            topology.canonical_json(),
-            problem.canonical_json(),
-            evidence.canonical_json(),
-        ),
-    )
-
     candidate_path = tmp_path / "candidate.json"
     candidate_path.write_text(candidate.canonical_json(), encoding="utf-8")
     artifact_paths = []
@@ -435,7 +425,6 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
     cli_payload = json.loads(capsys.readouterr().out)
 
     assert validated.candidate_identity == candidate.identity
-    assert via_interface == validated
     assert cli_payload["data"]["candidate_identity"] == validated.candidate_identity
     assert cli_payload["data"]["resolved_artifacts"] == list(validated.resolved_artifacts)
     assert "candidate_identity" not in candidate.canonical_json()
