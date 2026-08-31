@@ -14,13 +14,11 @@
 - `virtuoso_bridge` 只能由 `sigilicon.virtuoso` adapter 直接导入。顶层
   `import sigilicon` 和 CLI help 不得要求 Bridge 或 Virtuoso 可用。
 - 测试不得启动真实 EDA；需要 Bridge 的测试使用 fake client 或已有离线 helper。
-- 修改 physical-design、P&R、materialization、physical verification 或 closure campaign
-  时，先完整阅读 `docs/pnr-development.md` 及相关 ADR。保持 `FlowEngine` 为单轮确定
-  DAG executor，跨轮 closure 由独立 workflow Module 拥有；阶段只交换严格 typed
-  artifacts，不从 report metric 或任意 dict 恢复状态。只有 closed result 可生成
-  executable Materialization Plan；DRC/LVS clean 必须同时具有 checked identity、已执行
-  backend、已解析报告和零退出码。Closure feedback 只有经过独立 repair compiler 与显式
-  project-owned typed policy 才能生成 immutable Repair Plan；Campaign 只消费该 Interface，
-  不拥有修复算法。测试用 offline/fake Adapter 只能产生非结论状态。
+- 修改 physical-design、materialization 或 physical verification 时，先完整阅读
+  `docs/physical-design.md` 及相关 ADR。Sigilicon 不内置 placement、routing 或 physical
+  closure engine；`FlowEngine` 保持单轮确定 DAG executor，阶段只交换严格 typed artifacts，
+  不从 report metric 或任意 dict 恢复状态。只有 closed result 可生成 executable
+  Materialization Plan；DRC/LVS clean 必须同时具有 checked identity、已执行 backend、
+  已解析报告和零退出码。测试用 offline/fake Adapter 只能产生非结论状态。
 - 完成修改至少运行 package tests、wheel build、clean-wheel import/CLI smoke 与
   `git diff --check`（目录属于 Git 仓库时）。不执行真实 OA 写入或仿真。

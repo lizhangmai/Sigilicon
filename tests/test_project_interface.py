@@ -124,8 +124,7 @@ def test_action_registry_does_not_import_external_tool_adapters() -> None:
             "'sigilicon.workflows.layout_verification', "
             "'sigilicon.workflows.physical_design', "
             "'sigilicon.experimental.workflows.oa_materialization', "
-            "'sigilicon.experimental.workflows.layout_flow', "
-            "'sigilicon.experimental.workflows.reference_physical_design'}; "
+            "'sigilicon.experimental.workflows.layout_flow'}; "
             "assert forbidden.isdisjoint(sys.modules), "
             "sorted(forbidden & set(sys.modules))",
         ),
@@ -134,24 +133,6 @@ def test_action_registry_does_not_import_external_tool_adapters() -> None:
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
-
-
-def test_action_registry_registers_reference_pnr_without_a_second_builder() -> None:
-    result = subprocess.run(
-        (
-            sys.executable,
-            "-c",
-            "from sigilicon.workflows.action_registry import build_action_registry; "
-            "registry = build_action_registry(); "
-            "assert registry.has_adapter('reference-pnr'); "
-            "assert registry.action('physical-design.reference-solve').kind "
-            "== 'physical-design.reference-solve'",
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
     assert result.returncode == 0, result.stderr
 
 

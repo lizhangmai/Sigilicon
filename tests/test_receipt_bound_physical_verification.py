@@ -61,27 +61,7 @@ from sigilicon.layout.materialization_execution import (
     materialization_receipt_from_json,
     materialization_receipt_id,
 )
-from sigilicon.layout.physical_design import (
-    GridlessRoutingResource,
-    LayerKind,
-    MinimumSpacingRule,
-    MinimumWidthRule,
-    PhysicalDesign,
-    PhysicalLayer,
-    PhysicalNet,
-    PhysicalPort,
-    PhysicalTechnology,
-    PinAccess,
-    PinReference,
-    PhysicalDesignRequest,
-    PhysicalDesignStage,
-    Rect,
-    RoutingDirection,
-)
-from sigilicon.experimental.reference_pnr import (
-    ReferencePnrJob,
-    run,
-)
+from physical_design_fixtures import routed_artifacts
 from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.physical_verification import (
     OfflinePhysicalVerificationAdapter,
@@ -99,35 +79,6 @@ _TARGET = MaterializationExecutionTarget(
 
 def _identity(path: Path) -> str:
     return f"fixture:{path.name}"
-
-
-def _job() -> ReferencePnrJob:
-    technology = PhysicalTechnology(
-        "receipt-verification-gridless",
-        1000,
-        1,
-        layers=(PhysicalLayer("route", LayerKind.ROUTING, RoutingDirection.ANY),),
-        routing_resources=(GridlessRoutingResource("route-domain", "route"),),
-        rules=(
-            MinimumWidthRule("route-width", "route", 2),
-            MinimumSpacingRule("route-spacing", "route", 1),
-        ),
-    )
-    return ReferencePnrJob(
-        technology,
-        PhysicalDesign(
-            "receipt-bound-verification",
-            Rect(0, 0, 20, 10),
-            (),
-            (),
-            ports=(
-                PhysicalPort("a", (PinAccess("route", Rect(1, 1, 3, 3)),)),
-                PhysicalPort("b", (PinAccess("route", Rect(17, 1, 19, 3)),)),
-            ),
-            nets=(PhysicalNet("signal", (PinReference("a"), PinReference("b"))),),
-        ),
-        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
-    )
 
 
 def _record(record_type: int, data_type: int = 0, data: bytes = b"") -> bytes:
@@ -192,8 +143,7 @@ class _ReceiptBoundInputsAdapter(StagedAdapterFixture):
 
     def __init__(self, *, corrupt: str | None = None) -> None:
         self.corrupt = corrupt
-        self.job = _job()
-        self.result = run(self.job)
+        self.job, self.result = routed_artifacts("receipt-bound-verification")
         self.plan = compile_materialization_plan(
             self.job,
             self.result,

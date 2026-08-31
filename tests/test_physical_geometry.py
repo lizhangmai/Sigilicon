@@ -1,3 +1,5 @@
+"""Tests for the stable, solver-independent physical geometry model."""
+
 from __future__ import annotations
 
 import pytest

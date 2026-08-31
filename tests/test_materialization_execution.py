@@ -53,31 +53,13 @@ from sigilicon.layout.materialization_execution import (
     validate_materialization_request,
 )
 from sigilicon.layout.physical_design import (
-    GridlessRoutingResource,
-    LayerKind,
-    MinimumSpacingRule,
-    MinimumWidthRule,
-    PhysicalDesign,
-    PhysicalLayer,
-    PhysicalNet,
-    PhysicalPort,
-    PhysicalTechnology,
-    PinAccess,
-    PinReference,
-    PhysicalDesignRequest,
-    PhysicalDesignStage,
-    Rect,
-    RoutingDirection,
-)
-from sigilicon.experimental.reference_pnr import (
-    ReferencePnrExecutionPolicy,
-    ReferencePnrJob,
-    run,
+    ResultStatus,
 )
 from sigilicon.experimental.physical_actions import (
     EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
 )
 from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
+from physical_design_fixtures import routed_job, typed_result
 from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
@@ -91,39 +73,16 @@ _INPUT_ADAPTER = "contract-materialization-inputs"
 _MATERIALIZER = "contract-gds-materializer"
 
 
-def _job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
-    technology = PhysicalTechnology(
-        "materialization-execution-gridless",
-        1000,
-        1,
-        layers=(PhysicalLayer("route", LayerKind.ROUTING, RoutingDirection.ANY),),
-        routing_resources=(GridlessRoutingResource("route-domain", "route"),),
-        rules=(
-            MinimumWidthRule("route-width", "route", 2),
-            MinimumSpacingRule("route-spacing", "route", 1),
-        ),
-    )
-    return ReferencePnrJob(
-        technology,
-        PhysicalDesign(
-            "materialization-execution-closed",
-            Rect(0, 0, 20, 10),
-            (),
-            (),
-            ports=(
-                PhysicalPort("source", (PinAccess("route", Rect(1, 1, 3, 3)),)),
-                PhysicalPort("sink", (PinAccess("route", Rect(17, 1, 19, 3)),)),
-            ),
-            nets=(PhysicalNet("signal", (PinReference("source"), PinReference("sink"))),),
-        ),
-        request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
-        execution_policy=ReferencePnrExecutionPolicy(maximum_route_states=maximum_route_states),
-    )
-
-
 def _artifacts(*, maximum_route_states: int = 200_000):
-    job = _job(maximum_route_states=maximum_route_states)
-    result = run(job)
+    job = routed_job("materialization-execution")
+    result = typed_result(
+        job,
+        status=(
+            ResultStatus.EXHAUSTED
+            if maximum_route_states <= 1
+            else ResultStatus.SUCCEEDED
+        ),
+    )
     plan = compile_materialization_plan(
         job,
         result,

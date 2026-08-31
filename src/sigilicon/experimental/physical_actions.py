@@ -1,4 +1,4 @@
-"""Experimental physical implementations available for explicit recipe selection."""
+"""Opt-in OA physical implementations available for explicit recipe selection."""
 
 from __future__ import annotations
 
@@ -6,11 +6,6 @@ from collections.abc import Callable
 from importlib import import_module
 from typing import Any
 
-from sigilicon.experimental.reference_pnr.flow import (
-    REFERENCE_PNR_ADAPTER,
-    REFERENCE_PHYSICAL_DESIGN_ACTION,
-    register_reference_physical_design_action,
-)
 from sigilicon.flow.layout import LAYOUT_VERIFICATION_ACTION
 from sigilicon.flow.physical_design import PHYSICAL_MATERIALIZATION_EXECUTION_ACTION
 from sigilicon.flow.registry import FlowRegistry
@@ -21,16 +16,6 @@ EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER = "experimental-layout-verification"
 EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER = (
     "experimental-oa-virtuoso-xstream-materialization"
 )
-
-
-def _lazy_adapter_factory(module_name: str, class_name: str) -> Callable[[], ToolAdapter]:
-    """Create an experimental provider without importing its backend eagerly."""
-
-    def create() -> ToolAdapter:
-        adapter_type = getattr(import_module(module_name), class_name)
-        return adapter_type()
-
-    return create
 
 
 def _experimental_oa_xstream_adapter() -> ToolAdapter:
@@ -80,14 +65,6 @@ def install_experimental_physical_actions(
         LAYOUT_VERIFICATION_ACTION,
         EXPERIMENTAL_LAYOUT_VERIFICATION_ADAPTER,
         lambda: _experimental_layout_verification_adapter(client_factory),
-    )
-    register_reference_physical_design_action(registry)
-    registry.register_adapter_factory(
-        REFERENCE_PNR_ADAPTER,
-        _lazy_adapter_factory(
-            "sigilicon.experimental.workflows.reference_physical_design",
-            "ReferencePhysicalDesignAdapter",
-        ),
     )
 
 

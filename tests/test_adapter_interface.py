@@ -196,16 +196,6 @@ def test_builtin_adapters_cross_the_registry_without_legacy_wrapping(
     assert type(implementation).__module__ != "sigilicon.flow.registry"
 
 
-def test_common_registry_contains_explicit_reference_pnr_selection() -> None:
-    registry = build_action_registry()
-
-    assert registry.has_adapter("reference-pnr")
-    assert (
-        registry.action("physical-design.reference-solve").kind
-        == "physical-design.reference-solve"
-    )
-
-
 def test_common_registry_contains_explicit_experimental_backend_selections() -> None:
     registry = build_action_registry()
 

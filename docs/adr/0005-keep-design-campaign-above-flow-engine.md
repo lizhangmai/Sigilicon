@@ -4,7 +4,7 @@ status: accepted
 
 # Keep whole-design campaigns above the deterministic Flow engine
 
-FlowEngine will continue to resolve and execute one deterministic typed DAG, while a separate Design Campaign Module owns bounded cross-attempt progression over topology, sizing, pre-layout, physical, extracted, and qualification evidence. Stage-specific repair compilers, not the campaign or an LLM, validate and compile proposed changes; this extends the existing physical Closure Campaign pattern without turning FlowEngine into a stateful agent loop or recovering state from reports and conversation text.
+FlowEngine will continue to resolve and execute one deterministic typed DAG, while a separate Design Campaign Module owns bounded cross-attempt progression over topology, sizing, pre-layout, physical, extracted, and qualification evidence. Stage-specific repair compilers, not the campaign or an LLM, validate and compile proposed changes. The campaign never turns FlowEngine into a stateful agent loop and never recovers state from reports or conversation text.
 
 ## 2026-08-30 implementation boundary and migration
 
@@ -40,7 +40,7 @@ owner/target/operation and returns an immutable `plan_identity`; `target.run`
 executes only that plan identity. Design campaigns remain bounded experimental
 orchestration and are available only through the explicit
 `sigilicon experimental campaign plan/run` CLI or an owner opt-in, never the
-default MCP inventory. Reference PNR, closure/repair, OA-XStream, and combined
-XStream-Calibre are likewise explicit `sigilicon.experimental` extensions. The
-migration is destructive: no compatibility alias, profile fallback, or old
-selection record is interpreted as a target/operation plan.
+default MCP inventory. OA-XStream and combined XStream-Calibre remain explicitly
+selected owner implementations. The migration is destructive: no compatibility
+alias, profile fallback, or old selection record is interpreted as a
+target/operation plan.

@@ -67,8 +67,7 @@ sigilicon experimental campaign plan ...
 sigilicon experimental campaign run ...
 ```
 
-Reference PNR, closure/repair, OA-XStream, and combined XStream-Calibre are
-`sigilicon.experimental` and owner opt-ins. They must not be reached through a
+OA-XStream and combined XStream-Calibre are explicit owner opt-ins. They must not be reached through a
 default target catalog or silently selected by an MCP handler.
 
 Stable resource identity follows the real ownership hierarchy:

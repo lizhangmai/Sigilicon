@@ -107,8 +107,8 @@ The public lifecycle is `target.plan` -> `target.run` -> `run.inspect`/`run.canc
 Each request names `owner`, `target`, and `operation`; execution accepts only the
 immutable plan identity and produces one run identity. The old profile and split
 design/layout selection surfaces are deleted; they do not form a second API and
-have no compatibility interpretation. Reference PNR, closure/repair, OA-XStream, and
-combined XStream-Calibre remain explicit `sigilicon.experimental`/owner opt-ins;
+have no compatibility interpretation. OA-XStream and combined XStream-Calibre
+remain explicitly selected owner implementations;
 bounded campaigns use only the explicit `sigilicon experimental campaign plan/run`
 CLI and are absent from default MCP.
 

@@ -66,18 +66,18 @@ from sigilicon.layout.physical_design import (
     Placement,
     PhysicalDesignRequest,
     PhysicalDesignStage,
+    NetRoute,
     Point,
     Rect,
+    ResultStatus,
+    RouteSegment,
+    RouteVia,
     RoutingDirection,
     ViaDefinition,
     PhysicalDesignJob,
     PhysicalDesignResult,
 )
-from sigilicon.experimental.reference_pnr import (
-    ReferencePnrExecutionPolicy,
-    ReferencePnrJob,
-    run,
-)
+from physical_design_fixtures import typed_result
 from sigilicon.experimental.virtuoso.xstream import ExperimentalXStreamExportError, ExperimentalXStreamExportResult
 from sigilicon.experimental.workflows.oa_materialization import (
     EXPERIMENTAL_OA_XSTREAM_MATERIALIZATION_ADAPTER,
@@ -90,32 +90,8 @@ _INPUT_ACTION = "fixture.oa-materialization-inputs"
 _INPUT_ADAPTER = "fixture-oa-materialization-inputs"
 
 
-def _stable_job(job: ReferencePnrJob) -> PhysicalDesignJob:
+def _job() -> PhysicalDesignJob:
     return PhysicalDesignJob(
-        technology=job.technology,
-        design=job.design,
-        constraints=job.constraints,
-        request=job.request,
-        routing_constraints=job.routing_constraints,
-    )
-
-
-def _stable_result(result) -> PhysicalDesignResult:
-    return PhysicalDesignResult(
-        status=result.status,
-        placements=result.placements,
-        constraint_outcomes=result.constraint_outcomes,
-        stage_reports=result.stage_reports,
-        provenance=result.provenance,
-        routes=result.routes,
-        routing_blockage_placements=result.routing_blockage_placements,
-        closed=result.closed,
-        artifact_id=result.artifact_id,
-    )
-
-
-def _job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
-    return ReferencePnrJob(
         PhysicalTechnology(
             "oa-materialization-neutral",
             1000,
@@ -146,19 +122,25 @@ def _job(*, maximum_route_states: int = 200_000) -> ReferencePnrJob:
             ),
         ),
         request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
-        execution_policy=ReferencePnrExecutionPolicy(maximum_route_states=maximum_route_states),
     )
 
 
 def _artifacts(*, maximum_route_states: int = 200_000):
-    job = _job(maximum_route_states=maximum_route_states)
-    result = run(job)
+    job = _job()
+    result = typed_result(
+        job,
+        status=(
+            ResultStatus.EXHAUSTED
+            if maximum_route_states <= 1
+            else ResultStatus.SUCCEEDED
+        ),
+    )
     plan = compile_materialization_plan(
         job,
         result,
         MaterializationTarget("benchmark", "neutral_layout"),
     )
-    return _stable_job(job), _stable_result(result), plan
+    return job, result, plan
 
 
 def _artifacts_with_instance():
@@ -174,13 +156,13 @@ def _artifacts_with_instance():
             ),
         ),
     )
-    result = run(job)
+    result = typed_result(job)
     plan = compile_materialization_plan(
         job,
         result,
         MaterializationTarget("benchmark", "neutral_layout"),
     )
-    return _stable_job(job), _stable_result(result), plan
+    return job, result, plan
 
 
 def _artifacts_with_via():
@@ -218,7 +200,7 @@ def _artifacts_with_via():
             CutSpacingRule("v1-spacing", "v1", 2, 2),
         ),
     )
-    job = ReferencePnrJob(
+    job = PhysicalDesignJob(
         technology,
         PhysicalDesign(
             "oa-materialization-multilayer",
@@ -238,13 +220,25 @@ def _artifacts_with_via():
         ),
         request=PhysicalDesignRequest(stages=(PhysicalDesignStage.PLACEMENT, PhysicalDesignStage.ROUTING)),
     )
-    result = run(job)
+    result = typed_result(
+        job,
+        routes=(
+            NetRoute(
+                "signal",
+                (
+                    RouteSegment("signal", "m1", Point(2, 2), Point(10, 2), 2),
+                    RouteSegment("signal", "m2", Point(10, 2), Point(18, 2), 2),
+                ),
+                (RouteVia("signal", "via12", Point(10, 2)),),
+            ),
+        ),
+    )
     plan = compile_materialization_plan(
         job,
         result,
         MaterializationTarget("benchmark", "neutral_layout"),
     )
-    return _stable_job(job), _stable_result(result), plan
+    return job, result, plan
 
 
 class _InputsAdapter(StagedAdapterFixture):
