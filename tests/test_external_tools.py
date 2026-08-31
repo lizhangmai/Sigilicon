@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import subprocess
-import importlib
 import os
 import sys
 from pathlib import Path
@@ -10,10 +8,8 @@ from pathlib import Path
 import pytest
 
 from sigilicon.external_tools import (
-    OwnedExternalInvocation,
     ProcessGroupCleanupUncertainError,
     cadence_subprocess_env,
-    enforce_process_group_subprocess_run,
     find_xrun,
     owned_atomic_output_file,
     owned_directory,
@@ -26,13 +22,6 @@ from sigilicon.external_tools import (
     run_process_group_until_confirmed,
     xrun_env,
 )
-
-
-@contextmanager
-def _passthrough_external_invocation(command, cwd):
-    yield OwnedExternalInvocation(tuple(str(item) for item in command), cwd)
-
-
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
     source = {
         "LM_LICENSE_FILE": "mentor-or-synopsys-license",
@@ -388,52 +377,6 @@ def test_cleanup_uncertainty_survives_context_exit_exception_wrapping() -> None:
     assert process_group_cleanup_uncertainty(wrapped) == "owned group unknown"
 
 
-def test_bridge_subprocess_run_is_group_guarded_and_restored(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from sigilicon.virtuoso.bridge import load_import_netlist_schematic
-
-    import_netlist_schematic = load_import_netlist_schematic()
-    module = importlib.import_module(import_netlist_schematic.__module__)
-    original = module.subprocess
-    calls: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        "sigilicon.external_tools.run_process_group_capture",
-        lambda command, **kwargs: calls.append((tuple(command), kwargs))
-        or subprocess.CompletedProcess(command, 0, "stdout", "stderr"),
-    )
-
-    with enforce_process_group_subprocess_run(
-        import_netlist_schematic,
-        validate_spawn=lambda *_args: None,
-        own_invocation=_passthrough_external_invocation,
-    ):
-        assert module.subprocess is not original
-        result = module.subprocess.run(
-            ["spiceIn", "-param", "spiceIn.il"],
-            cwd=tmp_path,
-            env={"PATH": "/tools"},
-            timeout=17,
-            capture_output=True,
-            text=True,
-        )
-
-    assert module.subprocess is original
-    assert result.stdout == "stdout"
-    assert result.stderr == "stderr"
-    assert calls == [
-        (
-            ("spiceIn", "-param", "spiceIn.il"),
-            {
-                "cwd": tmp_path,
-                "env": {"PATH": "/tools"},
-                "timeout": 17,
-                "pass_fds": (),
-            },
-        )
-    ]
-
 
 def test_explicit_empty_child_environment_stays_empty() -> None:
     assert cadence_subprocess_env({}) == {}
@@ -524,143 +467,3 @@ def test_normal_leader_exit_succeeds_only_after_residual_descendants_are_cleaned
     child_pid = int(child_pid_file.read_text(encoding="utf-8"))
     assert completed.returncode == 0
     assert not Path(f"/proc/{child_pid}").exists()
-
-
-def test_dependency_guard_fails_when_launch_is_skipped_or_bypassed(monkeypatch) -> None:
-    from sigilicon.virtuoso.bridge import load_import_netlist_schematic
-
-    import_netlist_schematic = load_import_netlist_schematic()
-    module = importlib.import_module(import_netlist_schematic.__module__)
-    with pytest.raises(RuntimeError, match="exactly one"):
-        with enforce_process_group_subprocess_run(
-            import_netlist_schematic,
-            validate_spawn=lambda *_args: None,
-            own_invocation=_passthrough_external_invocation,
-        ):
-            pass
-
-    setattr(module, "cached_unguarded_popen", subprocess.Popen)
-    try:
-        with pytest.raises(RuntimeError, match="unguarded process-launch alias"):
-            with enforce_process_group_subprocess_run(
-                import_netlist_schematic,
-                validate_spawn=lambda *_args: None,
-                own_invocation=_passthrough_external_invocation,
-            ):
-                pass
-    finally:
-        delattr(module, "cached_unguarded_popen")
-
-
-def test_dependency_guard_runs_pre_spawn_revalidation(monkeypatch, tmp_path: Path) -> None:
-    from sigilicon.virtuoso.bridge import load_import_netlist_schematic
-
-    import_netlist_schematic = load_import_netlist_schematic()
-    module = importlib.import_module(import_netlist_schematic.__module__)
-    events: list[str] = []
-    monkeypatch.setattr(
-        "sigilicon.external_tools.run_process_group_capture",
-        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
-    )
-
-    with enforce_process_group_subprocess_run(
-        import_netlist_schematic,
-        validate_spawn=lambda *_args: None,
-        own_invocation=_passthrough_external_invocation,
-        before_spawn=lambda: events.append("revalidated"),
-    ):
-        module.subprocess.run(
-            ["spiceIn"],
-            cwd=tmp_path,
-            env={},
-            timeout=1,
-            capture_output=True,
-            text=True,
-        )
-
-    assert events == ["revalidated"]
-
-
-def test_dependency_guard_rejects_wrong_launch_before_process_call(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from sigilicon.virtuoso.bridge import load_import_netlist_schematic
-
-    import_netlist_schematic = load_import_netlist_schematic()
-    module = importlib.import_module(import_netlist_schematic.__module__)
-    launches: list[object] = []
-    monkeypatch.setattr(
-        "sigilicon.external_tools.run_process_group_capture",
-        lambda *args, **kwargs: launches.append((args, kwargs)),
-    )
-
-    with pytest.raises(RuntimeError, match="wrong guarded launch"):
-        with enforce_process_group_subprocess_run(
-            import_netlist_schematic,
-            validate_spawn=lambda *_args: (_ for _ in ()).throw(
-                RuntimeError("wrong guarded launch")
-            ),
-            own_invocation=_passthrough_external_invocation,
-        ):
-            module.subprocess.run(
-                ["unrelated-tool"],
-                cwd=tmp_path,
-                env={},
-                timeout=1,
-                capture_output=True,
-                text=True,
-            )
-
-    assert launches == []
-
-
-def test_dependency_guard_holds_owned_fds_through_process_completion(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from contextlib import contextmanager
-    import os
-
-    from sigilicon.virtuoso.bridge import load_import_netlist_schematic
-
-    import_netlist_schematic = load_import_netlist_schematic()
-    module = importlib.import_module(import_netlist_schematic.__module__)
-    source = tmp_path / "source.scs"
-    source.write_text("subckt cell a b\nends cell\n", encoding="utf-8")
-    observed: list[str] = []
-
-    @contextmanager
-    def own(command, cwd):
-        descriptor = os.open(source, os.O_RDONLY | os.O_CLOEXEC)
-        try:
-            yield OwnedExternalInvocation(
-                command=(str(command[0]), owned_process_fd_path(descriptor)),
-                cwd=cwd,
-                pass_fds=(descriptor,),
-            )
-        finally:
-            os.close(descriptor)
-
-    def run(command, **kwargs):
-        descriptor = kwargs["pass_fds"][0]
-        os.fstat(descriptor)
-        observed.append(Path(command[1]).read_text(encoding="utf-8"))
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr("sigilicon.external_tools.run_process_group_capture", run)
-    with enforce_process_group_subprocess_run(
-        import_netlist_schematic,
-        validate_spawn=lambda *_args: None,
-        own_invocation=own,
-    ):
-        module.subprocess.run(
-            ["spiceIn", "ignored"],
-            cwd=tmp_path,
-            env={},
-            timeout=1,
-            capture_output=True,
-            text=True,
-        )
-
-    assert observed == ["subckt cell a b\nends cell\n"]

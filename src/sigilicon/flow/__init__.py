@@ -19,7 +19,6 @@ from sigilicon.flow.environment import (
     load_execution_environment,
     load_execution_environment_contract,
 )
-from sigilicon.flow.fake import fake_profile, fake_registry
 from sigilicon.flow.model import (
     ActionArtifact,
     ActionConfiguration,
@@ -121,6 +120,4 @@ __all__ = [
     "resolve_catalog_selection",
     "load_execution_environment",
     "load_execution_environment_contract",
-    "fake_registry",
-    "fake_profile",
 ]

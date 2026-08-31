@@ -30,7 +30,6 @@ from sigilicon.flow import (
     PolicyCheck,
     PolicySpec,
     ProducedArtifact,
-    fake_profile,
     load_flow_contract,
 )
 from sigilicon.virtuoso.operation_journal import write_operation_incident
@@ -193,6 +192,18 @@ def registry() -> tuple[FlowRegistry, SourceAdapter, TransformAdapter, VerifyAda
     result.register_adapter("fake-transform", transform)
     result.register_adapter("fake-verify", verify)
     return result, source, transform, verify
+
+
+def fake_profile(owner: str = "example") -> ExecutionProfile:
+    return ExecutionProfile(
+        owner=owner,
+        profile_id="fake",
+        selections=(
+            AdapterSelection("fake.source", "fake-source"),
+            AdapterSelection("fake.transform", "fake-transform"),
+            AdapterSelection("fake.verify", "fake-verify"),
+        ),
+    )
 
 
 def flow_spec(

@@ -75,12 +75,6 @@ def main() -> int:
     p.add_argument("lib")
     p.add_argument("cell")
     p.add_argument(
-        "view",
-        nargs="?",
-        default="schematic",
-        help="（保留位，目前固定读 schematic）",
-    )
-    p.add_argument(
         "--positions",
         action="store_true",
         help="包含 xy / 方向 / bBox（默认只读拓扑，大图更快）",

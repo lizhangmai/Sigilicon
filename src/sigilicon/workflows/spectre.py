@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
-from typing import Any, Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from sigilicon.artifacts import new_identity, read_nofollow_text
 from sigilicon.external_tools import (
@@ -23,13 +23,11 @@ from sigilicon.external_tools import (
     owned_input_file,
     run_process_group,
 )
-from sigilicon.paths import ProjectContext
 from sigilicon.workflows.run_artifacts import (
     RunArtifacts,
     managed_run_artifacts_from_environment,
     scoped_run_artifacts,
 )
-from sigilicon.workflows.virtuoso_operations import export_project_netlist
 
 
 _SPECTRE_ZERO_ERRORS = re.compile(r"spectre completes with\s+0 errors", re.IGNORECASE)
@@ -54,15 +52,6 @@ class StagedSpectreInput:
     key: str
     source: Path
     components: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class OaSpectreNetlistExport:
-    """One exact bridge-exported OA Spectre package, never a guessed latest run."""
-
-    input_scs: Path
-    support_files: tuple[Path, ...]
-    manifest_path: Path
 
 
 @dataclass(frozen=True)
@@ -263,34 +252,6 @@ def run_spectre_deck(
         stdout_log=stdout_log,
         native_log=native_log,
         raw_outputs=raw_outputs,
-    )
-
-
-def export_oa_spectre_netlist(
-    client: Any,
-    *,
-    paths: ProjectContext,
-    library: str,
-    testbench: str,
-    timeout: int = 120,
-) -> OaSpectreNetlistExport:
-    """Bridge-export an OA testbench plus every direct relative support file."""
-
-    exported = export_project_netlist(
-        client,
-        paths,
-        library,
-        testbench,
-        view="schematic",
-        simulator="spectre",
-        timeout=timeout,
-    )
-    if not exported.manifest_path.is_file():
-        raise RuntimeError("OA netlist export is not inside a complete artifact")
-    return OaSpectreNetlistExport(
-        input_scs=exported.input_scs,
-        support_files=exported.support_files,
-        manifest_path=exported.manifest_path,
     )
 
 

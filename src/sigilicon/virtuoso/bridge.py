@@ -33,27 +33,11 @@ def decode_skill_output(value: str) -> str:
     return _bridge_attribute("virtuoso_bridge", "decode_skill_output")(value)
 
 
-def schematic_export_netlist_skill(*args: Any, **kwargs: Any) -> str:
-    return _bridge_attribute(
-        "virtuoso_bridge.virtuoso.schematic.netlist",
-        "schematic_export_netlist_skill",
-    )(*args, **kwargs)
-
-
 def schematic_import_netlist_skill(*args: Any, **kwargs: Any) -> str:
     return _bridge_attribute(
         "virtuoso_bridge.virtuoso.schematic.netlist",
         "schematic_import_netlist_skill",
     )(*args, **kwargs)
-
-
-def load_import_netlist_schematic() -> Any:
-    """Return the real dependency callable for guarded subprocess auditing."""
-
-    return _bridge_attribute(
-        "virtuoso_bridge.virtuoso.schematic.netlist",
-        "import_netlist_schematic",
-    )
 
 
 def escape_skill_string(value: str) -> str:

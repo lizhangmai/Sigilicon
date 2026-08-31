@@ -43,7 +43,7 @@ def test_generic_flow_interface_does_not_aggregate_domain_action_modules() -> No
             sys.executable,
             "-c",
             "import sys; import sigilicon.flow as flow; "
-            "assert len(flow.__all__) == 57; "
+            "assert len(flow.__all__) == 55; "
             "assert 'register_standard_asic_actions' not in flow.__all__; "
             "forbidden = {"
             "'sigilicon.flow.circuit_design', "

@@ -115,27 +115,3 @@ def artifact_source_state(project_root: Path) -> dict[str, Any]:
         "project": inspect_source_state(project_root).as_dict(),
         "sigilicon": sigilicon,
     }
-
-
-def require_clean_source_commit(root: Path) -> str:
-    """Return HEAD after proving that a formal qualification checkout is clean."""
-
-    revision = run_process_group(
-        ["git", "rev-parse", "HEAD"], cwd=root, env=os.environ.copy(), timeout=30
-    )
-    if revision.returncode != 0:
-        raise RuntimeError(f"cannot resolve source commit:\n{revision.stdout}")
-    status = run_process_group(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=root,
-        env=os.environ.copy(),
-        timeout=30,
-    )
-    if status.returncode != 0:
-        raise RuntimeError(f"cannot inspect source checkout:\n{status.stdout}")
-    if status.stdout.strip():
-        raise RuntimeError(
-            "managed qualification requires a clean committed checkout; "
-            f"found:\n{status.stdout}"
-        )
-    return revision.stdout.strip()

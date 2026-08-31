@@ -744,48 +744,6 @@ def check_ip_integration(
     }
 
 
-def resolve_ip_dependency_role(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    dependency_name: str,
-    role: str,
-    lock_path: Path | None = None,
-) -> Path:
-    repository = _integration_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_integration_contract(contract_path, project=repository)
-    matches = [
-        item
-        for item in contract.release_dependencies
-        if item.name == dependency_name
-    ]
-    if len(matches) != 1:
-        raise KeyError(f"unknown released IP dependency: {dependency_name}")
-    dependency = matches[0]
-    lock = load_ip_dependency_lock(
-        _selected_lock(contract, lock_path), contract=contract
-    )
-    pinned = next(item for item in lock.dependencies if item.name == dependency_name)
-    manifest_path, manifest = _locked_release_manifest(
-        contract=contract,
-        artifact_root=contract.project.artifact_root,
-        dependency=dependency,
-        pinned=pinned,
-    )
-    release = dependency.release
-    assert release is not None
-    return resolve_release_role(
-        manifest,
-        manifest_path,
-        role,
-        export=_role_export(release, role),
-    )
-
-
 def resolve_ip_integration_fileset(
     contract_path: Path,
     *,

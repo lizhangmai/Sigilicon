@@ -9,7 +9,6 @@ from sigilicon.cli.export_netlist import main
 from sigilicon.paths import ProjectContext
 from sigilicon.workflows.virtuoso_operations import export_project_netlist
 from sigilicon.virtuoso.netlisting import _scoped_netlisting_skill
-from sigilicon.virtuoso.bridge import schematic_export_netlist_skill
 
 
 def test_scoped_netlisting_skill_contains_native_output_and_restores_session_setting(
@@ -54,22 +53,6 @@ def test_scoped_netlisting_skill_contains_native_output_and_restores_session_set
     assert "ddsRefresh" in rendered
     assert rendered.index(project_dir_set) < rendered.index("vbSimResult = errset(simulator")
     assert rendered.index("ddsRefresh") < rendered.index(results_dir) < rendered.index("createNetlist")
-
-
-def test_scoped_netlisting_skill_accepts_the_installed_bridge_shape(tmp_path: Path) -> None:
-    bridge_source = schematic_export_netlist_skill("test_lib", "test_cell")
-
-    rendered = _scoped_netlisting_skill(
-        bridge_source,
-        project_dir=tmp_path / "work",
-        results_dir=tmp_path / "work",
-    )
-
-    assert rendered.count("createNetlist(?recreateAll t ?display nil)") == 1
-    assert rendered.index('envSetVal("asimenv.startup" "projectDir" \'string') < rendered.index(
-        "vbSimResult = errset(simulator"
-    )
-    assert rendered.index('resultsDir("') > rendered.index("ddsRefresh")
 
 
 def test_export_defaults_to_the_project_artifact_root(

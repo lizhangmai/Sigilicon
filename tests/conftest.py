@@ -124,11 +124,101 @@ def write_fake_flow_extension(root: Path, owner: str) -> Path:
     extension = root / "ip" / owner / "tools" / "fake_flow_extension.py"
     extension.parent.mkdir(parents=True, exist_ok=True)
     extension.write_text(
-        '''from sigilicon.flow.fake import register_fake_actions
+        '''import time
+
+from sigilicon.flow import (
+    ActionContract,
+    AdapterResult,
+    ArtifactPort,
+    CollectedActionResult,
+    FlowExecutionError,
+    ProducedArtifact,
+)
+
+
+class SourceAdapter:
+    def run(self, context):
+        text = context.action_config.get("text")
+        if not isinstance(text, str):
+            raise FlowExecutionError("text must be a string")
+        output = context.output_path("source", "value.txt")
+        output.write_text(text, encoding="utf-8")
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(ProducedArtifact("source", "text.plain", output),)
+            )
+        )
+
+
+class TransformAdapter:
+    def run(self, context):
+        source = context.input("input").path.read_text(encoding="utf-8")
+        output = context.output_path("transformed", "value.txt")
+        output.write_text(source.upper(), encoding="utf-8")
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(ProducedArtifact("transformed", "text.plain", output),),
+                facts={"length": len(source)},
+            )
+        )
+
+
+class VerifyAdapter:
+    def run(self, context):
+        value = context.input("candidate").path.read_text(encoding="utf-8")
+        accepted = value == context.action_config.get("expected")
+        output = context.output_path("report", "verification.txt")
+        output.write_text(value, encoding="utf-8")
+        return AdapterResult.succeeded(
+            CollectedActionResult(
+                artifacts=(ProducedArtifact("report", "report.text", output),),
+                facts={"accepted": accepted},
+            )
+        )
+
+
+class WaitAdapter:
+    def run(self, context):
+        seconds = context.action_config.get("seconds")
+        if type(seconds) is not int or not 1 <= seconds <= 30:
+            raise FlowExecutionError("seconds must be an integer between 1 and 30")
+        time.sleep(seconds)
+        return AdapterResult.succeeded()
 
 
 def register_flow_adapters(registry, owner_root):
-    register_fake_actions(registry)
+    registry.register_action(
+        ActionContract(
+            kind="fake.source",
+            outputs=(ArtifactPort("source", "text.plain"),),
+            adapters=("fake-source",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
+            kind="fake.transform",
+            inputs=(ArtifactPort("input", "text.plain"),),
+            outputs=(ArtifactPort("transformed", "text.plain"),),
+            facts=("length",),
+            adapters=("fake-transform",),
+        )
+    )
+    registry.register_action(
+        ActionContract(
+            kind="fake.verify",
+            inputs=(ArtifactPort("candidate", "text.plain"),),
+            outputs=(ArtifactPort("report", "report.text"),),
+            facts=("accepted",),
+            adapters=("fake-verify",),
+        )
+    )
+    registry.register_action(
+        ActionContract(kind="fake.wait", adapters=("fake-wait",))
+    )
+    registry.register_adapter("fake-source", SourceAdapter())
+    registry.register_adapter("fake-transform", TransformAdapter())
+    registry.register_adapter("fake-verify", VerifyAdapter())
+    registry.register_adapter("fake-wait", WaitAdapter())
 ''',
         encoding="utf-8",
     )
