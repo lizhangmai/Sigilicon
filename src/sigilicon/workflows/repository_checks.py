@@ -392,7 +392,7 @@ def inspect_repository_designs(
                 raise ValueError(f"{catalog_path}: target declarations are invalid")
             operations = target_row.get("operations")
             if (
-                not isinstance(operations, list)
+                not isinstance(operations, (list, tuple))
                 or not operations
                 or any(not isinstance(name, str) or not name for name in operations)
                 or len(operations) != len(set(operations))

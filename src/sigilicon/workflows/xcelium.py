@@ -192,6 +192,7 @@ def execute_xcelium_cell(
     artifacts: RunArtifacts,
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
+    environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
 ) -> XceliumExecution:
     """Execute a resolved cell without creating or completing a run record."""
@@ -213,6 +214,7 @@ def execute_xcelium_cell(
         ],
         validate_inputs=lambda: _require_xcelium_sources(plan),
         before_spawn=before_spawn,
+        environment_values=environment_values,
         xrun=xrun,
         timeout=timeout,
         run_process=run_process_group_capture,
@@ -238,6 +240,7 @@ def _execute_xcelium(
     summary_fields: Mapping[str, object] | None = None,
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
+    environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
     run_process: Callable[..., Any] = run_process_group_capture,
     environment: Callable[[Path], Mapping[str, str]] = xrun_env,
@@ -274,7 +277,11 @@ def _execute_xcelium(
         completed = run_process(
             command,
             cwd=Path(owned_work.child_path),
-            env=environment(xrun_bin),
+            env=(
+                environment(xrun_bin)
+                if environment_values is None
+                else environment(xrun_bin, environment_values)
+            ),
             timeout=timeout,
             before_spawn=validate_spawn,
             pass_fds=(owned_work.fd, owned_xcelium.fd),

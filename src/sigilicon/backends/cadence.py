@@ -256,7 +256,127 @@ class XceliumBackend:
         )
 
 
-def _copy_isolated_project(context: StepContext, owner: str) -> tuple[Path, str]:
+class XceliumAmsBackend:
+    """Execute one locked-release Verilog-AMS migration cell."""
+
+    name = "cadence.xcelium-ams"
+    _fields = frozenset({"owner", "cell", "timeout_seconds"})
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        config = _strict_config(step, self._fields)
+        _text(config, "owner")
+        cell = _relative(_text(config, "cell"), "verification cell")
+        if cell not in step.sources:
+            raise ContractError("Xcelium AMS cell must be inside the source closure")
+        _positive_integer(config, "timeout_seconds")
+        if step.evidence is None:
+            raise ContractError("Xcelium AMS execution requires an evidence envelope")
+        return (
+            _executable_check(resources, _XRUN),
+            *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
+        )
+
+    def run(self, context: StepContext) -> StepResult:
+        from sigilicon.domain.repository import Project
+        from sigilicon.workflows.run_artifacts import RunArtifacts
+        from sigilicon.workflows.xcelium_ams import (
+            execute_xcelium_ams_cell,
+            plan_xcelium_ams_cell,
+        )
+
+        config = _strict_config(context.step, self._fields)
+        owner = _text(config, "owner")
+        project_root, owner_path = _copy_isolated_project(
+            context, owner, shallow_component=True
+        )
+        project = Project.from_project_root(project_root)
+        if project.owner(owner).root.resolve() != project_root / owner_path:
+            raise ExecutionError("Xcelium AMS owner identity drift")
+        cell = project_root / owner_path / _relative(
+            _text(config, "cell"), "verification cell"
+        )
+        planning = plan_xcelium_ams_cell(cell, project=project)
+        root_environment = planning.platform.installation_root_environment
+        if root_environment is not None and context.resources.environment.get(
+            root_environment
+        ) != os.environ.get(root_environment):
+            raise ExecutionError(
+                "Xcelium AMS platform root differs from the resource snapshot"
+            )
+        xrun = _configured_executable(context.resources, _XRUN)
+        if xrun is None:
+            raise ExecutionError("configured Xcelium executable is unavailable")
+        with owned_scratch_directory(
+            prefix=f"sigilicon-xcelium-ams-{context.run_id}-",
+            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
+            is not None,
+        ) as scratch:
+            artifacts = RunArtifacts.from_step_context(
+                context,
+                "xcelium-ams",
+                {
+                    "owner": owner,
+                    "cell": str(config["cell"]),
+                },
+                tool_work_root=scratch.path,
+            )
+            result = execute_xcelium_ams_cell(
+                planning,
+                artifacts=artifacts,
+                xrun=xrun,
+                environment_values=context.resources.environment,
+                timeout=_positive_integer(config, "timeout_seconds"),
+            )
+        envelope = context.step.evidence
+        if envelope is None:
+            raise ExecutionError("Xcelium AMS lost its evidence envelope")
+        context.write_text(
+            "xcelium-ams",
+            "flow-evidence.json",
+            json.dumps(
+                {
+                    "schema": 1,
+                    "contract_kind": "cadence-execution-evidence",
+                    "plan_identity": context.plan_identity,
+                    "tool": "xcelium-ams",
+                    "cell": planning.spec.cell,
+                    "evidence_role": envelope.role,
+                    "evidence_level": envelope.level,
+                    "evidence_scope": envelope.scope,
+                    "passed": result.passed,
+                    "product_qualification_conclusion": False,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+        )
+        published = _publish_tree(context, "xcelium-ams", "evidence.xcelium-ams")
+        facts = {
+            "passed": result.passed,
+            "evidence_role": envelope.role,
+            "evidence_level": envelope.level,
+            "evidence_scope": envelope.scope,
+            "product_qualification_conclusion": False,
+        }
+        return (
+            StepResult.succeeded(artifacts=published, facts=facts)
+            if result.passed
+            else StepResult(
+                "failed",
+                published,
+                facts,
+                "Xcelium AMS did not prove the declared migration testbench",
+            )
+        )
+
+
+def _copy_isolated_project(
+    context: StepContext,
+    owner: str,
+    *,
+    shallow_component: bool = False,
+) -> tuple[Path, str]:
     """Build a source-only project view while keeping the real OA workspace."""
 
     if (
@@ -290,12 +410,25 @@ def _copy_isolated_project(context: StepContext, owner: str) -> tuple[Path, str]
         "[paths]\n"
         "project_root = \".\"\n"
         f"workspace_root = {json.dumps(str(context.workspace_root))}\n"
-        f"artifact_root = {json.dumps(str(context.output_root))}\n",
+        'artifact_root = "artifacts"\n',
         encoding="utf-8",
     )
     catalog = root / "ip/catalog.toml"
     catalog.parent.mkdir(parents=True, exist_ok=True)
     component = f"{owner_path}/configs/ip.toml"
+    if shallow_component:
+        component = f"{owner_path}/configs/.sigilicon-runtime-component.toml"
+        runtime_component = root / component
+        runtime_component.parent.mkdir(parents=True, exist_ok=True)
+        runtime_component.write_text(
+            "schema = 1\n"
+            'contract_kind = "ip-component"\n'
+            'path_scope = "owner"\n'
+            f"owner = {json.dumps(owner)}\n\n"
+            f"name = {json.dumps(owner)}\n"
+            'kind = "composite-ip"\n',
+            encoding="utf-8",
+        )
     catalog.write_text(
         "schema = 1\n"
         "contract_kind = \"ip-catalog\"\n"
@@ -647,12 +780,14 @@ class LayoutVerificationBackend:
 
 def cadence_backends() -> tuple[
     XceliumBackend,
+    XceliumAmsBackend,
     NativeOaBackend,
     LayoutBackend,
     LayoutVerificationBackend,
 ]:
     return (
         XceliumBackend(),
+        XceliumAmsBackend(),
         NativeOaBackend(),
         LayoutBackend(),
         LayoutVerificationBackend(),
@@ -664,5 +799,6 @@ __all__ = [
     "LayoutVerificationBackend",
     "NativeOaBackend",
     "XceliumBackend",
+    "XceliumAmsBackend",
     "cadence_backends",
 ]

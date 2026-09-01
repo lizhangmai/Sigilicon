@@ -1,17 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import subprocess
-from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
-from sigilicon.domain.ip_integration import (
-    IpIntegrationDependency,
-    IpReleaseDependency,
-    OaNativeReleaseInterfaceReference,
-)
 from sigilicon.domain.repository import Project
 from sigilicon.workflows import xcelium_ams
 from sigilicon.workflows.run_artifacts import RunArtifacts
@@ -97,69 +91,28 @@ def _patch_native_resolution(
     root: Path,
     circuit: Path,
 ) -> None:
-    interface = OaNativeReleaseInterfaceReference(
-        kind="oa-native",
-        library="native_provider",
-        cell="NATIVE_TOP",
-        schematic_view="schematic",
-        layout_view="layout",
-    )
-    release = IpReleaseDependency(
-        export="native-top",
-        required_maturity="development",
-        interface=interface,
-        roles=("interface_contract", "circuit_netlist"),
-        role_modules=MappingProxyType({}),
-        role_exports=MappingProxyType({}),
-    )
-    dependency = IpIntegrationDependency(
-        name="native-provider",
-        component_contract=PurePosixPath("ip/native-provider/component.toml"),
-        release=release,
-    )
-    monkeypatch.setattr(
-        xcelium_ams,
-        "load_ip_integration_contract",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            release_dependencies=(dependency,)
-        ),
-    )
     relative = circuit.relative_to(root / "artifacts").as_posix()
     monkeypatch.setattr(
         xcelium_ams,
-        "check_ip_integration",
-        lambda *_args, **_kwargs: {
-            "schema": 1,
-            "contract_kind": "ip-integration-check",
-            "owner": "demo",
-            "ip": "demo",
-            "variant": "no-recovery",
-            "fileset": "ams",
-            "dependency_lock": "ip/demo/dependency.lock.toml",
-            "passed": True,
-            "architecture": None,
-            "dependency_releases": [
-                {
-                    "name": "native-provider",
-                    "export": "native-top",
-                    "release_id": "development-123456789abc",
-                    "maturity": "development",
-                    "manifest": "releases/native-provider/manifest.json",
-                    "role_exports": {
-                        "interface_contract": "native-top",
-                        "circuit_netlist": "native-top",
-                    },
-                    "roles": {
-                        "interface_contract": "releases/native-provider/interface.toml",
-                        "circuit_netlist": relative,
-                    },
-                }
-            ],
-            "source_files": [
-                "ip/demo/rtl/native_adapter.sv",
-            ],
-            "release_sources": [relative],
-        },
+        "_locked_native_release",
+        lambda _spec: (
+            "NATIVE_TOP",
+            circuit,
+            {
+                "schema": 1,
+                "contract_kind": "locked-release-selection",
+                "passed": True,
+                "dependency_releases": [
+                    {
+                        "name": "native-provider",
+                        "export": "native-top",
+                        "release_id": "development-123456789abc",
+                        "manifest": "releases/native-provider/manifest.json",
+                        "roles": {"circuit_netlist": relative},
+                    }
+                ],
+            },
+        ),
     )
 
 

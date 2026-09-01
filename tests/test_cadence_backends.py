@@ -9,6 +9,7 @@ from sigilicon.backends.cadence import (
     LayoutVerificationBackend,
     NativeOaBackend,
     XceliumBackend,
+    XceliumAmsBackend,
     _copy_isolated_project,
 )
 from sigilicon.execution import Evidence, Resources, Step, StepContext
@@ -122,6 +123,76 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     assert not (context.work_root / "xcelium.d").exists()
 
 
+def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _file(tmp_path / "bin/xrun", executable=True)
+    step = Step(
+        "ams",
+        "cadence.xcelium-ams",
+        {
+            "owner": "example",
+            "cell": "dv/tb_ams/cell.toml",
+            "timeout_seconds": 10,
+        },
+        sources=("dv/tb_ams/cell.toml",),
+        evidence=Evidence("diagnostic", "l2", "native-adapter-wiring"),
+    )
+    environment = {
+        "SIGILICON_CADENCE_XRUN": str(executable),
+        "PATH": "/snapshot/bin",
+    }
+    resources = Resources(frozenset({"tool.cadence-xcelium"}), environment)
+    project = tmp_path / "source-project"
+    owner = project / "ip/example"
+    workspace = tmp_path / "workspace"
+    owner.mkdir(parents=True)
+    workspace.mkdir()
+    context = _context(
+        tmp_path,
+        step,
+        resources,
+        project_root=project,
+        owner_root=owner,
+        workspace_root=workspace,
+        scopes={"dv/tb_ams/cell.toml": "owner"},
+    )
+    _file(context.source_root / "dv/tb_ams/cell.toml")
+    selected_project = _patch_isolated_owner(monkeypatch, tmp_path)
+    planning = SimpleNamespace(
+        platform=SimpleNamespace(installation_root_environment=None),
+        spec=SimpleNamespace(cell="tb_ams"),
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.xcelium_ams.plan_xcelium_ams_cell",
+        lambda _cell, *, project: planning if project is selected_project else None,
+    )
+
+    def execute(_planning, *, artifacts, environment_values, **_kwargs):
+        assert environment_values is resources.environment
+        artifacts.write_json("outputs", ("summary.json",), {"passed": True})
+        return SimpleNamespace(passed=True)
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.xcelium_ams.execute_xcelium_ams_cell",
+        execute,
+    )
+    backend = XceliumAmsBackend()
+
+    assert all(check.status == "ready" for check in backend.preflight(step, resources))
+    result = backend.run(context)
+
+    assert result.status == "succeeded"
+    assert result.facts == {
+        "passed": True,
+        "evidence_role": "diagnostic",
+        "evidence_level": "l2",
+        "evidence_scope": "native-adapter-wiring",
+        "product_qualification_conclusion": False,
+    }
+
+
 def test_cadence_isolated_project_preserves_owner_and_project_scopes(
     tmp_path: Path,
 ) -> None:
@@ -164,6 +235,43 @@ def test_cadence_isolated_project_preserves_owner_and_project_scopes(
     assert "[components.example]" in (isolated / "ip/catalog.toml").read_text()
 
 
+def test_ams_isolation_uses_a_derived_shallow_owner_component(tmp_path: Path) -> None:
+    project = tmp_path / "source-project"
+    owner = project / "ip/example"
+    workspace = project / "workspace"
+    owner.mkdir(parents=True)
+    workspace.mkdir()
+    step = Step(
+        "ams",
+        "cadence.xcelium-ams",
+        {"owner": "example", "cell": "dv/cell.toml", "timeout_seconds": 10},
+        sources=("configs/ip.toml", "dv/cell.toml"),
+        evidence=Evidence("diagnostic", "l2", "ams"),
+    )
+    context = _context(
+        tmp_path,
+        step,
+        Resources(),
+        project_root=project,
+        owner_root=owner,
+        workspace_root=workspace,
+        scopes={source: "owner" for source in step.sources},
+    )
+    _file(context.source_root / "configs/ip.toml", "unparsed consumer source\n")
+    _file(context.source_root / "dv/cell.toml")
+
+    isolated, _ = _copy_isolated_project(
+        context, "example", shallow_component=True
+    )
+
+    catalog = (isolated / "ip/catalog.toml").read_text(encoding="utf-8")
+    assert ".sigilicon-runtime-component.toml" in catalog
+    assert (isolated / "ip/example/configs/ip.toml").is_file()
+    assert "name = \"example\"" in (
+        isolated / "ip/example/configs/.sigilicon-runtime-component.toml"
+    ).read_text(encoding="utf-8")
+
+
 def _oa_context(
     tmp_path: Path,
     step: Step,
@@ -194,12 +302,22 @@ def _patch_isolated_owner(monkeypatch, tmp_path: Path):
     isolated = tmp_path / "isolated"
     owner_root = isolated / "ip/example"
     owner_root.mkdir(parents=True)
+    _file(
+        owner_root / "configs/ip.toml",
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "example"
+name = "example"
+kind = "composite-ip"
+''',
+    )
     project = SimpleNamespace(
         owner=lambda _name: SimpleNamespace(root=owner_root),
     )
     monkeypatch.setattr(
         "sigilicon.backends.cadence._copy_isolated_project",
-        lambda _context, _owner: (isolated, "ip/example"),
+        lambda _context, _owner, **_kwargs: (isolated, "ip/example"),
     )
     monkeypatch.setattr(
         "sigilicon.domain.repository.Project.from_project_root",

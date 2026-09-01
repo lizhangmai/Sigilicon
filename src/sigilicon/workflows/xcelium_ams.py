@@ -5,22 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+from pathlib import PurePosixPath
 from collections.abc import Callable
+import tomllib
 from typing import Any, Mapping
 
-from sigilicon.domain.ip_integration import (
-    OaNativeReleaseInterfaceReference,
-    load_ip_integration_contract,
-)
+from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platform
 from sigilicon.domain.repository import Project
+from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
     run_process_group_capture,
     xrun_env,
 )
 from sigilicon.workflows.run_artifacts import RunArtifacts
-from sigilicon.workflows.ip_integration import check_ip_integration
+from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
@@ -111,70 +111,251 @@ class XceliumAmsCellPlan(XceliumCellPlan):
                 },
             },
             "command_template": list(self.command_template),
-            "evidence_role": "migration_regression",
             "product_qualification_conclusion": False,
         }
 
 
-def _native_dependency_cell(
+def _project_source(root: Path, value: object, label: str) -> Path:
+    if not isinstance(value, str):
+        raise ValueError(f"Xcelium AMS {label} must be a project-relative path")
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or "\\" in value
+        or relative.as_posix() != value
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError(f"Xcelium AMS {label} must be a canonical relative path")
+    path = (root / Path(*relative.parts)).resolve()
+    if not path.is_relative_to(root) or not path.is_file() or path.is_symlink():
+        raise ValueError(f"Xcelium AMS {label} is missing or unsafe")
+    return path
+
+
+def _toml(path: Path, label: str) -> dict[str, Any]:
+    try:
+        return tomllib.loads(read_nofollow_text(path))
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Xcelium AMS {label} is invalid TOML") from exc
+
+
+def _locked_native_release(
     spec: VerificationCellSpec,
-) -> str:
+) -> tuple[str, Path, Mapping[str, Any]]:
+    """Resolve only the consumer-owned declaration, lock, and immutable package."""
+
     ams = spec.ams
     assert ams is not None
-    integration = load_ip_integration_contract(
-        ams.integration_contract,
-        project=spec.project,
+    component = _toml(ams.integration_contract, "integration contract")
+    dependencies = component.get("component")
+    matches = (
+        [
+            dependency
+            for dependency in dependencies
+            if isinstance(dependency, Mapping)
+            and dependency.get("name") == ams.dependency
+        ]
+        if isinstance(dependencies, list)
+        else []
     )
-    matches = [
-        dependency
-        for dependency in integration.release_dependencies
-        if dependency.name == ams.dependency
-    ]
-    if len(matches) != 1 or matches[0].release is None:
+    if len(matches) != 1 or not isinstance(matches[0].get("release"), Mapping):
         raise ValueError(
             f"Xcelium AMS dependency is not one released dependency: {ams.dependency}"
         )
-    interface = matches[0].release.interface
-    if not isinstance(interface, OaNativeReleaseInterfaceReference):
+    release = matches[0]["release"]
+    interface = release.get("interface")
+    if (
+        not isinstance(interface, Mapping)
+        or interface.get("kind") != "oa-native"
+        or any(
+            not isinstance(interface.get(field), str) or not interface.get(field)
+            for field in (
+                "library",
+                "cell",
+                "schematic_view",
+                "layout_view",
+            )
+        )
+    ):
         raise ValueError(
             f"Xcelium AMS dependency {ams.dependency} is not oa-native"
         )
-    return interface.cell
-
-
-def _resolved_circuit(
-    spec: VerificationCellSpec,
-) -> tuple[Path, Mapping[str, Any]]:
-    ams = spec.ams
-    assert ams is not None
-    result = check_ip_integration(
-        ams.integration_contract,
-        project=spec.project,
-        variant_name=ams.variant,
-        fileset_name=ams.fileset,
+    variants = component.get("variants")
+    if not isinstance(variants, Mapping) or ams.variant not in variants:
+        raise ValueError("Xcelium AMS integration contract omits its variant")
+    variant = _toml(
+        _project_source(
+            spec.project_root,
+            variants[ams.variant],
+            "variant contract",
+        ),
+        "variant contract",
     )
-    matches = [
-        dependency
-        for dependency in result["dependency_releases"]
-        if dependency.get("name") == ams.dependency
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"Xcelium AMS fileset did not resolve dependency {ams.dependency!r}"
-        )
-    roles = matches[0].get("roles")
-    if not isinstance(roles, Mapping) or ams.circuit_role not in roles:
-        raise RuntimeError(
-            "Xcelium AMS fileset did not resolve its selected circuit role"
-        )
-    relative = roles[ams.circuit_role]
-    if not isinstance(relative, str):
-        raise RuntimeError("Xcelium AMS circuit role path is invalid")
+    try:
+        required_roles = variant["filesets"][ams.fileset]["dependency_roles"][
+            ams.dependency
+        ]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("Xcelium AMS fileset omits its release roles") from exc
+    if (
+        not isinstance(required_roles, list)
+        or ams.circuit_role not in required_roles
+        or any(not isinstance(role, str) or not role for role in required_roles)
+        or len(required_roles) != len(set(required_roles))
+    ):
+        raise ValueError("Xcelium AMS circuit role is not selected by its fileset")
+    declared_roles = release.get("roles")
+    if not isinstance(declared_roles, list) or not set(required_roles).issubset(
+        declared_roles
+    ):
+        raise ValueError("Xcelium AMS fileset roles exceed its release declaration")
+
+    lock = _toml(
+        _project_source(
+            spec.project_root,
+            component.get("dependency_lock"),
+            "dependency lock",
+        ),
+        "dependency lock",
+    )
+    pinned_dependencies = lock.get("dependency")
+    pinned = (
+        [
+            item
+            for item in pinned_dependencies
+            if isinstance(item, Mapping) and item.get("name") == ams.dependency
+        ]
+        if isinstance(pinned_dependencies, list)
+        else []
+    )
+    if len(pinned) != 1:
+        raise ValueError("Xcelium AMS dependency lock is ambiguous")
+    pin = pinned[0]
     artifact_root = spec.project.artifact_root.resolve()
-    circuit = (artifact_root / Path(relative)).resolve()
-    if not circuit.is_relative_to(artifact_root) or not circuit.is_file():
-        raise RuntimeError("Xcelium AMS circuit role path is missing or unsafe")
-    return circuit, result
+    manifest_path = _project_source(
+        artifact_root,
+        pin.get("manifest"),
+        "release manifest",
+    )
+    if _sha256(manifest_path) != pin.get("manifest_sha256"):
+        raise ValueError("Xcelium AMS release manifest differs from its lock")
+    manifest = audit_ip_release_manifest(manifest_path)
+    if (
+        manifest.get("ip_name") != ams.dependency
+        or manifest.get("owner") != ams.dependency
+        or manifest.get("release_id") != pin.get("release_id")
+        or manifest.get("source_commit") != pin.get("source_commit")
+    ):
+        raise ValueError("Xcelium AMS release identity differs from its lock")
+    export = release.get("export")
+    exports = manifest.get("exports")
+    selected_exports = (
+        [item for item in exports if isinstance(item, Mapping) and item.get("name") == export]
+        if isinstance(exports, list)
+        else []
+    )
+    if len(selected_exports) != 1:
+        raise ValueError("Xcelium AMS release export is missing or ambiguous")
+    exported = selected_exports[0]
+    exported_interface = exported.get("interface")
+    if (
+        not isinstance(exported_interface, Mapping)
+        or exported_interface.get("kind") != interface["kind"]
+    ):
+        raise ValueError("Xcelium AMS release interface kind differs from intent")
+    if exported.get("oa") != {
+        field: interface[field]
+        for field in ("library", "cell", "schematic_view", "layout_view")
+    }:
+        raise ValueError("Xcelium AMS release OA identity differs from intent")
+    availability = exported.get("availability")
+    if (
+        not isinstance(availability, Mapping)
+        or availability.get("simulation") is not True
+    ):
+        raise ValueError("Xcelium AMS release is unavailable for simulation")
+    maturity = manifest.get("maturity")
+    required_maturity = release.get("required_maturity")
+    actual_maturity = (
+        None if not isinstance(maturity, Mapping) else maturity.get("level")
+    )
+    if (
+        actual_maturity not in RELEASE_MATURITY_LEVELS
+        or required_maturity not in RELEASE_MATURITY_LEVELS
+        or pin.get("maturity") != actual_maturity
+        or RELEASE_MATURITY_LEVELS.index(actual_maturity)
+        < RELEASE_MATURITY_LEVELS.index(required_maturity)
+    ):
+        raise ValueError("Xcelium AMS release maturity differs from its lock or intent")
+    checks = maturity.get("checks")
+    if not isinstance(checks, list) or not checks or any(
+        not isinstance(check, Mapping) or check.get("passed") is not True
+        for check in checks
+    ):
+        raise ValueError("Xcelium AMS release maturity checks are incomplete")
+    provenance = manifest.get("provenance")
+    dependency_contract = matches[0].get("contract")
+    dependency_path = (
+        PurePosixPath(dependency_contract)
+        if isinstance(dependency_contract, str)
+        else None
+    )
+    if (
+        dependency_path is None
+        or dependency_path.is_absolute()
+        or "\\" in str(dependency_contract)
+        or any(part in {"", ".", ".."} for part in dependency_path.parts)
+        or len(dependency_path.parts) < 3
+    ):
+        raise ValueError("Xcelium AMS provider contract path is invalid")
+    expected_producer = (
+        PurePosixPath(*dependency_path.parts[:-2]).as_posix()
+    )
+    if (
+        not isinstance(provenance, Mapping)
+        or provenance.get("working_tree_dirty") is not False
+        or provenance.get("producer") != expected_producer
+    ):
+        raise ValueError("Xcelium AMS release provenance differs from its provider")
+    artifacts = manifest.get("views")
+    selected_roles = (
+        [
+            item
+            for item in artifacts
+            if isinstance(item, Mapping)
+            and item.get("export") == export
+            and item.get("role") in required_roles
+        ]
+        if isinstance(artifacts, list)
+        else []
+    )
+    by_role = {item["role"]: item for item in selected_roles}
+    if set(by_role) != set(required_roles) or len(selected_roles) != len(by_role):
+        raise ValueError("Xcelium AMS package omits or duplicates a selected role")
+    selected = by_role[ams.circuit_role]
+    package_root = manifest_path.parent
+    circuit = _project_source(
+        package_root,
+        selected.get("path"),
+        "release circuit",
+    )
+    result = {
+        "schema": 1,
+        "contract_kind": "locked-release-selection",
+        "passed": True,
+        "dependency_releases": [
+            {
+                "name": ams.dependency,
+                "export": export,
+                "release_id": pin["release_id"],
+                "source_commit": pin["source_commit"],
+                "manifest": pin["manifest"],
+                "manifest_sha256": pin["manifest_sha256"],
+                "roles": {role: by_role[role]["path"] for role in required_roles},
+            }
+        ],
+    }
+    return interface["cell"], circuit, result
 
 
 def plan_xcelium_ams_cell(
@@ -210,13 +391,12 @@ def plan_xcelium_ams_cell(
             "Xcelium AMS compile inputs must be HDL/Verilog-AMS sources; "
             f"Spectre circuits must come from a locked release role: {invalid}"
         )
-    circuit, integration_check = _resolved_circuit(spec)
+    native_cell, circuit, integration_check = _locked_native_release(spec)
     platform = load_platform(repository, spec.ams.platform)
     model_set = platform.simulation.model_set(spec.ams.model_set)
     model_names = [path.name for path in model_set.files]
     if len(model_names) != len(set(model_names)):
         raise ValueError("Xcelium AMS platform model files have duplicate basenames")
-    native_cell = _native_dependency_cell(spec)
     command_template = (
         "xrun",
         "-64bit",
@@ -266,6 +446,7 @@ def execute_xcelium_ams_cell(
     artifacts: RunArtifacts,
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
+    environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
 ) -> XceliumExecution:
     """Execute a resolved AMS cell without creating or completing a run record."""
@@ -317,10 +498,10 @@ def execute_xcelium_ams_cell(
         ],
         validate_inputs=lambda: _require_ams_inputs(plan),
         summary_fields={
-            "evidence_role": "migration_regression",
             "product_qualification_conclusion": False,
         },
         before_spawn=before_spawn,
+        environment_values=environment_values,
         xrun=xrun,
         timeout=timeout,
         run_process=run_process_group_capture,

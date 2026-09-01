@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -33,6 +34,8 @@ from sigilicon.execution.model import (
 from sigilicon.external_tools import (
     owned_directory,
     owned_input_file,
+    owned_scratch_directory,
+    process_group_cleanup_uncertainty,
     run_process_group_capture,
 )
 
@@ -766,16 +769,261 @@ class HspiceBackend:
         return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
-def synopsys_backends() -> tuple[VcsBackend, DcBackend, FcBackend, HspiceBackend]:
+class StructuralLinkBackend:
+    """Link owner RTL against one locked, uncharacterized macro release."""
+
+    name = "synopsys.structural-link"
+    _fields = frozenset(
+        {
+            "owner",
+            "dependency",
+            "dependency_lock",
+            "variant",
+            "variant_contract",
+            "compile_script",
+            "link_script",
+            "library_name",
+            "macro_cell",
+            "parameter_overrides",
+            "expected_macro_instances",
+            "expected_unresolved_references",
+            "release_export",
+            "liberty_role",
+            "release_manifest",
+            "release_liberty",
+            "rtl_sources",
+            "timeout_seconds",
+        }
+    )
+    _capabilities = frozenset(
+        {"tool.synopsys-library-compiler", "tool.synopsys-dc"}
+    )
+
+    def _config(self, step: Step) -> Mapping[str, Any]:
+        unknown = set(step.config) - self._fields
+        missing = self._fields - set(step.config)
+        if unknown or missing:
+            raise ContractError(
+                "structural-link config fields disagree with its contract; "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        return step.config
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        config = self._config(step)
+        _text(config, "owner")
+        for name in (
+            "dependency_lock",
+            "variant_contract",
+            "compile_script",
+            "link_script",
+            "release_manifest",
+            "release_liberty",
+        ):
+            path = _safe_relative(_text(config, name), name)
+            if path not in step.sources:
+                raise ContractError(
+                    f"structural-link {name} must be inside the source closure"
+                )
+        for source in _strings(config, "rtl_sources"):
+            _safe_relative(source, "structural-link RTL source")
+            if source not in step.sources:
+                raise ContractError(
+                    "structural-link RTL source must be inside the source closure"
+                )
+        for name in (
+            "dependency",
+            "variant",
+            "library_name",
+            "macro_cell",
+            "release_export",
+            "liberty_role",
+        ):
+            _text(config, name)
+        _mapping(config, "parameter_overrides")
+        _positive_integer(config, "expected_macro_instances")
+        unresolved = config.get("expected_unresolved_references")
+        if type(unresolved) is not int or unresolved < 0:
+            raise ContractError(
+                "structural-link expected_unresolved_references must be non-negative"
+            )
+        _positive_integer(config, "timeout_seconds")
+        if step.evidence is None:
+            raise ContractError("structural-link requires an evidence envelope")
+        checks = [
+            _environment_path_check(
+                resources,
+                "SIGILICON_SYNOPSYS_LIBRARY_COMPILER",
+                executable=True,
+            ),
+            _environment_path_check(
+                resources,
+                "SIGILICON_SYNOPSYS_DC_SHELL",
+                executable=True,
+            ),
+        ]
+        checks.extend(
+            PreflightCheck(
+                "runtime-capability",
+                capability,
+                "ready" if capability in resources.capabilities else "blocked",
+                "supplied by the invoking runtime"
+                if capability in resources.capabilities
+                else "missing capability",
+            )
+            for capability in sorted(self._capabilities)
+        )
+        return tuple(checks)
+
+    def run(self, context: StepContext) -> StepResult:
+        from sigilicon.workflows.run_artifacts import RunArtifacts
+        from sigilicon.workflows.structural_link import (
+            execute_structural_link,
+            plan_structural_link,
+        )
+
+        config = self._config(context.step)
+        lock_name = _safe_relative(
+            _text(config, "dependency_lock"), "dependency lock"
+        )
+        compile_name = _safe_relative(
+            _text(config, "compile_script"), "Liberty compile script"
+        )
+        link_name = _safe_relative(
+            _text(config, "link_script"), "structural link script"
+        )
+        variant = _text(config, "variant")
+        variant_name = _safe_relative(
+            _text(config, "variant_contract"), "structural-link variant contract"
+        )
+        rtl_names = tuple(
+            _safe_relative(name, "structural-link RTL source")
+            for name in _strings(config, "rtl_sources")
+        )
+        planning = plan_structural_link(
+            owner=_text(config, "owner"),
+            dependency=_text(config, "dependency"),
+            dependency_lock_path=context.owner_source_path(lock_name),
+            variant_path=context.owner_source_path(variant_name),
+            variant=variant,
+            rtl_sources=tuple(context.owner_source_path(name) for name in rtl_names),
+            compile_script=context.owner_source_path(compile_name),
+            link_script=context.owner_source_path(link_name),
+            library_name=_text(config, "library_name"),
+            macro_cell=_text(config, "macro_cell"),
+            parameter_overrides=_mapping(config, "parameter_overrides"),
+            expected_macro_instances=_positive_integer(
+                config, "expected_macro_instances"
+            ),
+            expected_unresolved_references=int(
+                config["expected_unresolved_references"]
+            ),
+            release_export=_text(config, "release_export"),
+            liberty_role=_text(config, "liberty_role"),
+            release_manifest=context.project_source_path(
+                _safe_relative(_text(config, "release_manifest"), "release manifest")
+            ),
+            release_liberty=context.project_source_path(
+                _safe_relative(_text(config, "release_liberty"), "release Liberty")
+            ),
+        )
+        library_compiler = Path(
+            _text(
+                context.resources.environment,
+                "SIGILICON_SYNOPSYS_LIBRARY_COMPILER",
+            )
+        )
+        design_compiler = Path(
+            _text(context.resources.environment, "SIGILICON_SYNOPSYS_DC_SHELL")
+        )
+        with owned_scratch_directory(
+            prefix=f"sigilicon-structural-link-{context.run_id}-",
+            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
+            is not None,
+        ) as scratch:
+            artifacts = RunArtifacts.from_step_context(
+                context,
+                "structural-link",
+                {"owner": planning.owner, "variant": planning.variant},
+                tool_work_root=scratch.path,
+            )
+            result = execute_structural_link(
+                planning,
+                artifacts=artifacts,
+                library_compiler=library_compiler,
+                design_compiler=design_compiler,
+                environment=context.resources.environment,
+                timeout=_positive_integer(config, "timeout_seconds"),
+            )
+        envelope = context.step.evidence
+        if envelope is None:
+            raise ExecutionError("structural-link lost its evidence envelope")
+        context.write_text(
+            "structural-link",
+            "flow-evidence.json",
+            json.dumps(
+                {
+                    "schema": 1,
+                    "contract_kind": "structural-link-flow-evidence",
+                    "plan_identity": context.plan_identity,
+                    "variant": planning.variant,
+                    "evidence_role": envelope.role,
+                    "evidence_level": envelope.level,
+                    "evidence_scope": envelope.scope,
+                    "status": result.status,
+                    **result.facts,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+        )
+        published = _tree_artifacts(
+            context.output_root / "structural-link",
+            "structural-link",
+            "evidence.structural-link",
+        )
+        facts = {
+            **result.facts,
+            "evidence_role": envelope.role,
+            "evidence_level": envelope.level,
+            "evidence_scope": envelope.scope,
+        }
+        return (
+            StepResult.succeeded(artifacts=published, facts=facts)
+            if result.passed
+            else StepResult(
+                "failed",
+                published,
+                facts,
+                "Synopsys structural link did not prove the declared macro seam",
+            )
+        )
+
+
+def synopsys_backends() -> tuple[
+    VcsBackend,
+    DcBackend,
+    FcBackend,
+    HspiceBackend,
+    StructuralLinkBackend,
+]:
     """Return the fixed trusted standard-ASIC backend pack."""
 
-    return VcsBackend(), DcBackend(), FcBackend(), HspiceBackend()
+    return (
+        VcsBackend(),
+        DcBackend(),
+        FcBackend(),
+        HspiceBackend(),
+        StructuralLinkBackend(),
+    )
 
 
 __all__ = [
     "DcBackend",
     "FcBackend",
     "HspiceBackend",
+    "StructuralLinkBackend",
     "VcsBackend",
     "synopsys_backends",
 ]
