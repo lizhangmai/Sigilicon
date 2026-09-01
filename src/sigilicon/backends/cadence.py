@@ -416,8 +416,16 @@ class XceliumAmsBackend:
                 *planning.model_set.files,
             }
         )
-        bindings = _bind_source_paths(project, owner, step, required)
-        return _BoundXceliumAmsBackend(planning, bindings)
+        if required != frozenset(planning.source_records):
+            raise ContractError("Xcelium AMS plan source snapshot is incomplete")
+        bindings = _bind_source_paths(
+            project,
+            owner,
+            step,
+            planning.source_records,
+        )
+        external = _external_file_records(project, planning.source_records)
+        return _BoundXceliumAmsBackend(planning, bindings, external)
 
     def run(self, context: StepContext) -> StepResult:
         raise ExecutionError("Xcelium AMS Step was not bound by Project.plan")
@@ -427,9 +435,11 @@ class XceliumAmsBackend:
 class _BoundXceliumAmsBackend(XceliumAmsBackend):
     _planning: Any
     _sources: Mapping[Path, tuple[str, str]]
+    _external: Mapping[Path, tuple[str, str]]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+        object.__setattr__(self, "_external", MappingProxyType(dict(self._external)))
 
     @property
     def binding_sources(self) -> Mapping[Path, str]:
@@ -447,6 +457,12 @@ class _BoundXceliumAmsBackend(XceliumAmsBackend):
                 {"path": name, "sha256": digest}
                 for name, digest in sorted(self._sources.values())
             ],
+            "external_sources": [
+                {"path": str(path), "sha256": record[0]}
+                for path, record in sorted(
+                    self._external.items(), key=lambda item: str(item[0])
+                )
+            ],
         }
 
     def bind(self, project: Any, step: Step) -> "_BoundXceliumAmsBackend":
@@ -460,6 +476,7 @@ class _BoundXceliumAmsBackend(XceliumAmsBackend):
         owner = _text(config, "owner")
         planning = self._planning
         _require_bound_sources(context, self._sources)
+        _require_external_files(self._external)
         root_environment = planning.platform.installation_root_environment
         if root_environment is not None and context.resources.environment.get(
             root_environment
@@ -484,14 +501,27 @@ class _BoundXceliumAmsBackend(XceliumAmsBackend):
                 },
                 tool_work_root=scratch.path,
             )
+            bound_sources = {
+                path: context.source_path(name)
+                for path, (name, _digest) in self._sources.items()
+            }
+            bound_sources.update(
+                {
+                    path: artifacts.write_text(
+                        "inputs",
+                        ("external", f"{index:03d}-{path.name}"),
+                        snapshot,
+                    )
+                    for index, (path, (_digest, snapshot)) in enumerate(
+                        sorted(self._external.items(), key=lambda item: str(item[0]))
+                    )
+                }
+            )
             result = execute_xcelium_ams_cell(
                 planning,
                 artifacts=artifacts,
                 xrun=xrun,
-                source_paths={
-                    path: context.source_path(name)
-                    for path, (name, _digest) in self._sources.items()
-                },
+                source_paths=bound_sources,
                 environment_values=context.resources.environment,
                 timeout=_positive_integer(config, "timeout_seconds"),
             )

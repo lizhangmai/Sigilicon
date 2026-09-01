@@ -93,6 +93,14 @@ def bind_plan(
             raise ContractError(
                 f"backend {step.uses!r} produced an invalid Step binding"
             )
+        changed_during_binding = tuple(
+            source.path for source in captured.values() if not source.current()
+        )
+        if changed_during_binding:
+            raise ContractError(
+                "operation source changed during backend binding: "
+                + ", ".join(sorted(set(changed_during_binding)))
+            )
         selected[step.id] = bound
         source_names = list(step.sources)
         bindings = getattr(bound, "binding_sources", {})
@@ -130,10 +138,17 @@ def bind_plan(
                 raise ContractError(
                     f"backend {step.uses!r} source changed during binding: {source.path}"
                 )
+            previous = captured.get((source.root, source.path))
+            if previous is not None and not previous.current():
+                raise ContractError(
+                    f"source changed between operation compilation and backend binding: "
+                    f"{source.path}"
+                )
             previous_root = captured_names.get(source.path)
             if previous_root is not None and previous_root != source.root:
                 raise ContractError("backend source paths collide across scopes")
-            captured[(source.root, source.path)] = source
+            if previous is None:
+                captured[(source.root, source.path)] = source
             captured_names[source.path] = source.root
             if source.path not in source_names:
                 source_names.append(source.path)

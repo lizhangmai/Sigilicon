@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import sys
+from types import MappingProxyType
 from typing import Any
 
 from sigilicon.artifacts import (
@@ -29,6 +30,7 @@ from sigilicon.execution.model import (
     ExecutionError,
     PreflightCheck,
     Resources,
+    Source,
     Step,
     StepContext,
     StepResult,
@@ -919,8 +921,6 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             "variant_contract",
             "compile_script",
             "link_script",
-            "release_manifest",
-            "release_liberty",
         ):
             path = _safe_relative(_text(config, name), name)
             if path not in step.sources:
@@ -1007,15 +1007,34 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         liberty_name = _safe_relative(
             _text(config, "release_liberty"), "release Liberty"
         )
+        owner_names = (
+            lock_name,
+            variant_name,
+            compile_name,
+            link_name,
+            *rtl_names,
+        )
+        captured_sources = [
+            ("owner", Source.capture(owner_root / name, root=owner_root))
+            for name in owner_names
+        ]
+        captured_sources.extend(
+            (
+                "project",
+                Source.capture(project_root / name, root=project_root),
+            )
+            for name in (manifest_name, liberty_name)
+        )
+        by_location = {source.location: source for _scope, source in captured_sources}
         planning = plan_structural_link(
             owner=owner,
             dependency=_text(config, "dependency"),
-            dependency_lock_path=owner_root / lock_name,
-            variant_path=owner_root / variant_name,
+            dependency_lock_path=by_location[owner_root / lock_name].location,
+            variant_path=by_location[owner_root / variant_name].location,
             variant=_text(config, "variant"),
-            rtl_sources=tuple(owner_root / name for name in rtl_names),
-            compile_script=owner_root / compile_name,
-            link_script=owner_root / link_name,
+            rtl_sources=tuple(by_location[owner_root / name].location for name in rtl_names),
+            compile_script=by_location[owner_root / compile_name].location,
+            link_script=by_location[owner_root / link_name].location,
             library_name=_text(config, "library_name"),
             macro_cell=_text(config, "macro_cell"),
             parameter_overrides=_mapping(config, "parameter_overrides"),
@@ -1027,15 +1046,37 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             ),
             release_export=_text(config, "release_export"),
             liberty_role=_text(config, "liberty_role"),
-            release_manifest=project_root / manifest_name,
-            release_liberty=project_root / liberty_name,
+            release_manifest=by_location[project_root / manifest_name].location,
+            release_liberty=by_location[project_root / liberty_name].location,
         )
+        if any(not source.current() for _scope, source in captured_sources):
+            raise ContractError(
+                "structural-link input changed while its Step was being bound"
+            )
+        planning_sources = {
+            source.location: (scope, source.path, source.sha256)
+            for scope, source in captured_sources
+        }
+        expected_release_digests = {
+            (project_root / manifest_name).resolve(): (
+                planning.release_manifest_sha256
+            ),
+            (project_root / liberty_name).resolve(): planning.release_liberty_sha256,
+        }
+        if any(
+            planning_sources[path][2] != digest
+            for path, digest in expected_release_digests.items()
+        ):
+            raise ContractError(
+                "structural-link release changed while its Step was being bound"
+            )
         return _BoundStructuralLinkBackend(
             planning,
             rtl_names,
             compile_name,
             link_name,
             liberty_name,
+            planning_sources,
         )
 
     def run(self, context: StepContext) -> StepResult:
@@ -1127,6 +1168,34 @@ class _BoundStructuralLinkBackend(StructuralLinkBackend):
     _compile_script: str
     _link_script: str
     _release_liberty: str
+    _planning_sources: Mapping[Path, tuple[str, str, str]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_planning_sources",
+            MappingProxyType(dict(self._planning_sources)),
+        )
+
+    @property
+    def binding_sources(self) -> Mapping[Path, str]:
+        return MappingProxyType(
+            {
+                path: digest
+                for path, (_scope, _name, digest) in self._planning_sources.items()
+            }
+        )
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        checks = super().preflight(step, resources)
+        required = {
+            name for _scope, name, _digest in self._planning_sources.values()
+        }
+        if not required.issubset(step.sources):
+            raise ContractError(
+                "bound structural-link release sources are absent from its closure"
+            )
+        return checks
 
     @property
     def binding_record(self) -> Mapping[str, Any]:
@@ -1155,6 +1224,10 @@ class _BoundStructuralLinkBackend(StructuralLinkBackend):
                 "release_liberty": self._release_liberty,
                 "release_liberty_sha256": plan.release_liberty_sha256,
             },
+            "sources": [
+                {"scope": scope, "path": name, "sha256": digest}
+                for scope, name, digest in sorted(self._planning_sources.values())
+            ],
         }
 
     def bind(self, project: Any, step: Step) -> "_BoundStructuralLinkBackend":

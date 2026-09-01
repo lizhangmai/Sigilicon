@@ -776,7 +776,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert all(path.is_absolute() and path.is_file() for path in resolved)
 
 
-def test_ip_integration_is_exposed_only_under_the_ip_cli(
+def test_integration_check_is_not_a_parallel_public_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -784,26 +784,22 @@ def test_ip_integration_is_exposed_only_under_the_ip_cli(
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
-    _write_ip_fixture(project_root, release_id, manifest)
+    contract = _write_ip_fixture(project_root, release_id, manifest)
     monkeypatch.chdir(project_root)
 
-    result = sigilicon_cli_main(
-        [
-            "ip",
-            "integration",
-            "check",
-            "demo",
-            "--variant",
-            "default",
-            "--json",
-        ]
+    result = check_ip_integration(
+        contract,
+        project=Project.open(project_root),
+        artifact_root=artifact_root,
+        variant_name="default",
     )
 
-    assert result == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["contract_kind"] == "ip-integration-check"
-    assert payload["ip"] == "demo"
-    assert _absolute_strings(payload) == []
+    assert result["contract_kind"] == "ip-integration-check"
+    assert result["ip"] == "demo"
+    assert _absolute_strings(result) == []
+    with pytest.raises(SystemExit, match="2"):
+        sigilicon_cli_main(["ip"])
+    assert "invalid choice: 'ip'" in capsys.readouterr().err
 
 
 def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(

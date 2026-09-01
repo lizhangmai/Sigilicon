@@ -592,6 +592,17 @@ def _asset_path(base: Path, value: object, field: str) -> Path:
     return (base / relative).resolve()
 
 
+def _asset_source_path(base: Path, value: object, field: str) -> Path:
+    text = _text(value, field)
+    relative = Path(text)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"{field} must be a safe asset-relative path")
+    configured = (base / relative).absolute()
+    if configured != configured.resolve():
+        raise ValueError(f"{field} must not traverse a symlink")
+    return configured
+
+
 def _platform_asset_root(
     manifest: Path,
     raw: Mapping[str, Any],
@@ -626,7 +637,7 @@ def _platform_asset_root(
 
 
 def _required_file(base: Path, value: object, field: str) -> Path:
-    result = _asset_path(base, value, field)
+    result = _asset_source_path(base, value, field)
     if not result.is_file():
         raise ValueError(f"{field} does not exist: {result}")
     return result
@@ -694,7 +705,7 @@ def _load_simulation(
         )
         support_values = item.get("support_files", [])
         support_files = tuple(
-            _asset_path(
+            _asset_source_path(
                 asset_root,
                 support,
                 f"model_sets.{name}.support_files[{index}]",
@@ -705,7 +716,11 @@ def _load_simulation(
         )
         model_sets[name] = SimulationModelSet(
             name=name,
-            file=_asset_path(asset_root, item.get("file"), f"model_sets.{name}.file"),
+            file=_asset_source_path(
+                asset_root,
+                item.get("file"),
+                f"model_sets.{name}.file",
+            ),
             sections=sections,
             support_files=support_files,
         )

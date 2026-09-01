@@ -247,6 +247,21 @@ def test_backend_discovered_sources_have_canonical_plan_order(tmp_path: Path) ->
     )
 
 
+def test_backend_binding_rejects_a_compiled_source_change(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    source = tmp_path / "ip/example/configs/value.txt"
+
+    class ChangingBackend(CopyBackend):
+        def bind(self, project, step):
+            source.write_text("changed during bind\n", encoding="utf-8")
+            return self
+
+    project = _project(tmp_path, ChangingBackend())
+
+    with pytest.raises(ContractError, match="changed during backend binding"):
+        project.plan("example/smoke:check")
+
+
 def test_backend_cannot_discover_another_owners_source(tmp_path: Path) -> None:
     _write_project(tmp_path)
     catalog = tmp_path / "catalogs/ip.toml"

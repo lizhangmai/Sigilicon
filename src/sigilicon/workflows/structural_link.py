@@ -12,25 +12,17 @@ import re
 import tomllib
 from typing import Any, Mapping
 
+from sigilicon.artifacts import read_nofollow_text
 from sigilicon.external_tools import (
     owned_directory,
     owned_executable,
     owned_input_file,
     run_process_group_capture,
 )
-from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _sha256_fd(descriptor: int) -> str:
@@ -77,10 +69,27 @@ def _structural_report(
 
 def _toml(path: Path, label: str) -> dict[str, Any]:
     try:
-        with path.open("rb") as stream:
-            return tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return tomllib.loads(read_nofollow_text(path))
+    except (OSError, UnicodeError, RuntimeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"cannot read structural-link {label}") from exc
+
+
+def _manifest(path: Path) -> tuple[dict[str, Any], str]:
+    try:
+        snapshot = read_nofollow_text(path)
+        value = json.loads(snapshot)
+    except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot read structural-link release manifest") from exc
+    if not isinstance(value, dict) or any(
+        value.get(name) != expected
+        for name, expected in (
+            ("schema", 1),
+            ("contract_kind", "ip-release-manifest"),
+            ("release_kind", "source-package"),
+        )
+    ):
+        raise ValueError("structural-link release manifest identity is invalid")
+    return value, hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
 
 def _text(document: Mapping[str, Any], name: str, label: str) -> str:
@@ -109,6 +118,7 @@ class StructuralLinkPlan:
     release_manifest: str
     release_manifest_sha256: str
     release_liberty_sha256: str
+    release_sources: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -203,15 +213,11 @@ def plan_structural_link(
     if len(matches) != 1:
         raise ValueError("structural-link dependency lock does not select one provider")
     pinned = matches[0]
-    manifest_digest = _sha256(release_manifest)
+    manifest, manifest_digest = _manifest(release_manifest)
     if manifest_digest != pinned.get("manifest_sha256"):
         raise ValueError("structural-link release manifest differs from its lock")
     if not release_manifest.as_posix().endswith(_text(pinned, "manifest", "lock")):
         raise ValueError("structural-link release manifest path differs from its lock")
-    try:
-        manifest = audit_ip_release_manifest(release_manifest)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ValueError("cannot audit structural-link release manifest") from exc
     if (
         manifest.get("ip_name") != dependency
         or manifest.get("owner") != dependency
@@ -244,10 +250,17 @@ def plan_structural_link(
         raise ValueError("structural-link release does not contain one macro Liberty")
     released = matches[0]
     released_path = Path(_text(released, "path", "manifest"))
+    if released_path.is_absolute() or any(
+        part in {"", ".", ".."} for part in released_path.parts
+    ):
+        raise ValueError("structural-link Liberty manifest path is unsafe")
     expected_liberty = (release_manifest.parent / released_path).resolve()
+    if not expected_liberty.is_relative_to(release_manifest.parent.resolve()):
+        raise ValueError("structural-link Liberty escapes its release package")
     if release_liberty.resolve() != expected_liberty:
         raise ValueError("structural-link Liberty path differs from the release manifest")
-    if released.get("size") != release_liberty.stat().st_size:
+    liberty_snapshot = read_nofollow_text(release_liberty)
+    if released.get("size") != len(liberty_snapshot.encode("utf-8")):
         raise ValueError("structural-link Liberty size differs from the release manifest")
     if not rtl_sources or len(set(rtl_sources)) != len(rtl_sources):
         raise ValueError("structural-link requires unique RTL sources")
@@ -271,7 +284,10 @@ def plan_structural_link(
         release_source_commit=pinned["source_commit"],
         release_manifest=pinned["manifest"],
         release_manifest_sha256=manifest_digest,
-        release_liberty_sha256=_sha256(release_liberty),
+        release_liberty_sha256=hashlib.sha256(
+            liberty_snapshot.encode("utf-8")
+        ).hexdigest(),
+        release_sources=(release_manifest, release_liberty),
     )
 
 

@@ -193,6 +193,37 @@ package_root = "testpdk"
     assert all(path.is_relative_to(tmp_path) for path in platform.source_documents)
 
 
+def test_external_platform_model_cannot_traverse_a_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    package = tmp_path / "installed/testpdk"
+    package.mkdir(parents=True)
+    target = package / "real-model.scs"
+    target.write_text("// installed model\n", encoding="utf-8")
+    (package / "model.scs").symlink_to(target.name)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '''
+[installation]
+root_environment = "TEST_PDK_ROOT"
+package_root = "testpdk"
+
+[contracts]
+''',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_PDK_ROOT", str(tmp_path / "installed"))
+
+    with pytest.raises(ValueError, match="must not traverse a symlink"):
+        load_platform(Project.open(tmp_path), "testpdk")
+
+
 def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)

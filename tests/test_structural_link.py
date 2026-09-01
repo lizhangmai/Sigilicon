@@ -55,6 +55,9 @@ variant = "no-recovery"
     manifest.write_text(
         json.dumps(
             {
+                "schema": 1,
+                "contract_kind": "ip-release-manifest",
+                "release_kind": "source-package",
                 "release_id": "development-0123456789ab",
                 "source_commit": "0" * 40,
                 "ip_name": "cim-compute-v2",
@@ -75,10 +78,6 @@ variant = "no-recovery"
         encoding="utf-8",
     )
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
-    monkeypatch.setattr(
-        "sigilicon.workflows.structural_link.audit_ip_release_manifest",
-        lambda selected: json.loads(selected.read_text(encoding="utf-8")),
-    )
     lock = _write(
         owner / "configs/dependency.lock.toml",
         f'''schema = 1

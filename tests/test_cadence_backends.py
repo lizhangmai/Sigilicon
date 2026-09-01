@@ -152,6 +152,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     owner.mkdir(parents=True)
     workspace.mkdir()
     contract = _file(owner / "dv/tb_ams/cell.toml")
+    model = _file(tmp_path / "pdk/model.scs", "model snapshot\n")
     context = _context(
         tmp_path,
         step,
@@ -169,18 +170,30 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     planning = SimpleNamespace(
         platform=SimpleNamespace(installation_root_environment=None),
         spec=SimpleNamespace(cell="tb_ams"),
-        source_records={contract: "snapshot"},
+        source_records={
+            contract: contract.read_text(encoding="utf-8"),
+            model: model.read_text(encoding="utf-8"),
+        },
         sources=(contract,),
         circuit_netlist=contract,
-        model_set=SimpleNamespace(files=(contract,)),
+        model_set=SimpleNamespace(files=(model,)),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.xcelium_ams.plan_xcelium_ams_cell",
         lambda _cell, *, project: planning if project is selected_project else None,
     )
 
-    def execute(_planning, *, artifacts, environment_values, **_kwargs):
+    def execute(
+        _planning,
+        *,
+        artifacts,
+        environment_values,
+        source_paths,
+        **_kwargs,
+    ):
         assert environment_values is resources.environment
+        assert source_paths[model] != model
+        assert source_paths[model].read_text(encoding="utf-8") == "model snapshot\n"
         artifacts.write_json("outputs", ("summary.json",), {"passed": True})
         return SimpleNamespace(passed=True)
 

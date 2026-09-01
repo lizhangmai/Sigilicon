@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path
 from pathlib import PurePosixPath
 from collections.abc import Callable
@@ -21,7 +22,6 @@ from sigilicon.external_tools import (
     xrun_env,
 )
 from sigilicon.workflows.run_artifacts import RunArtifacts
-from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
@@ -35,11 +35,7 @@ _AMS_HDL_SUFFIXES = frozenset({".sv", ".v", ".vams", ".va"})
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hashlib.sha256(read_nofollow_text(path).encode("utf-8")).hexdigest()
 
 
 def _spectre_path(path: Path) -> str:
@@ -147,8 +143,14 @@ def _project_source(root: Path, value: object, label: str) -> Path:
         or any(part in {"", ".", ".."} for part in relative.parts)
     ):
         raise ValueError(f"Xcelium AMS {label} must be a canonical relative path")
-    path = (root / Path(*relative.parts)).resolve()
-    if not path.is_relative_to(root) or not path.is_file() or path.is_symlink():
+    configured = (root / Path(*relative.parts)).absolute()
+    path = configured.resolve()
+    if (
+        configured != path
+        or not path.is_relative_to(root)
+        or not path.is_file()
+        or path.is_symlink()
+    ):
         raise ValueError(f"Xcelium AMS {label} is missing or unsafe")
     return path
 
@@ -160,9 +162,27 @@ def _toml(path: Path, label: str) -> dict[str, Any]:
         raise ValueError(f"Xcelium AMS {label} is invalid TOML") from exc
 
 
+def _manifest(path: Path) -> tuple[dict[str, Any], str]:
+    try:
+        snapshot = read_nofollow_text(path)
+        value = json.loads(snapshot)
+    except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
+        raise ValueError("Xcelium AMS release manifest is invalid JSON") from exc
+    if not isinstance(value, dict) or any(
+        value.get(name) != expected
+        for name, expected in (
+            ("schema", 1),
+            ("contract_kind", "ip-release-manifest"),
+            ("release_kind", "source-package"),
+        )
+    ):
+        raise ValueError("Xcelium AMS release manifest identity is invalid")
+    return value, hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+
+
 def _locked_native_release(
     spec: VerificationCellSpec,
-) -> tuple[str, Path, Mapping[str, Any]]:
+) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     """Resolve only the consumer-owned declaration, lock, and immutable package."""
 
     ams = spec.ams
@@ -258,9 +278,9 @@ def _locked_native_release(
         pin.get("manifest"),
         "release manifest",
     )
-    if _sha256(manifest_path) != pin.get("manifest_sha256"):
+    manifest, manifest_digest = _manifest(manifest_path)
+    if manifest_digest != pin.get("manifest_sha256"):
         raise ValueError("Xcelium AMS release manifest differs from its lock")
-    manifest = audit_ip_release_manifest(manifest_path)
     if (
         manifest.get("ip_name") != ams.dependency
         or manifest.get("owner") != ams.dependency
@@ -376,7 +396,13 @@ def _locked_native_release(
             }
         ],
     }
-    return interface["cell"], circuit, result
+    release_sources = MappingProxyType(
+        {
+            manifest_path: manifest_digest,
+            circuit: _sha256(circuit),
+        }
+    )
+    return interface["cell"], circuit, result, release_sources
 
 
 def plan_xcelium_ams_cell(
@@ -412,7 +438,9 @@ def plan_xcelium_ams_cell(
             "Xcelium AMS compile inputs must be HDL/Verilog-AMS sources; "
             f"Spectre circuits must come from a locked release role: {invalid}"
         )
-    native_cell, circuit, integration_check = _locked_native_release(spec)
+    native_cell, circuit, integration_check, release_records = (
+        _locked_native_release(spec)
+    )
     platform = load_platform(repository, spec.ams.platform)
     model_set = platform.simulation.model_set(spec.ams.model_set)
     model_names = [path.name for path in model_set.files]
@@ -437,27 +465,36 @@ def plan_xcelium_ams_cell(
         *spec.source_inputs,
         *spec.source_documents,
         *platform.source_paths,
-        circuit,
+        *release_records,
         *model_set.files,
     }
     if spec.runner is not None:
         source_paths.add(spec.runner)
+    model_sha256 = {path: _sha256(path) for path in model_set.files}
+    source_records = snapshot_verification_sources(
+        source_paths,
+        documents=(spec.source_documents, platform.source_documents),
+    )
+    expected_snapshots = {**release_records, **model_sha256}
+    if any(
+        hashlib.sha256(source_records[path].encode("utf-8")).hexdigest()
+        != digest
+        for path, digest in expected_snapshots.items()
+    ):
+        raise ValueError("Xcelium AMS input changed while its plan was being bound")
     return XceliumAmsCellPlan(
         contract=contract,
         spec=spec,
         sources=sources,
         circuit_netlist=circuit,
-        circuit_sha256=_sha256(circuit),
+        circuit_sha256=release_records[circuit],
         native_cell=native_cell,
         platform=platform,
         model_set=model_set,
-        model_sha256={path: _sha256(path) for path in model_set.files},
+        model_sha256=model_sha256,
         integration_check=integration_check,
         command_template=command_template,
-        source_records=snapshot_verification_sources(
-            source_paths,
-            documents=(spec.source_documents, platform.source_documents),
-        ),
+        source_records=source_records,
     )
 
 

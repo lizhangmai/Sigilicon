@@ -10,15 +10,14 @@ import sys
 _COMMANDS = (
     "artifact-path",
     "flow",
-    "ip",
 )
 
-_HELP = """usage: sigilicon [-h] {artifact-path,flow,ip} ...
+_HELP = """usage: sigilicon [-h] {artifact-path,flow} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {artifact-path,flow,ip}
+  {artifact-path,flow}
 
 options:
   -h, --help            show this help message and exit
@@ -49,10 +48,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from sigilicon.cli.artifact_path import main as artifact_path_main
 
         return artifact_path_main(arguments[1:])
-    if command == "ip":
-        from sigilicon.cli.ip import main as ip_main
-
-        return ip_main(arguments[1:])
     raise AssertionError(f"unhandled command: {command}")
 
 

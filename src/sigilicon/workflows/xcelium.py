@@ -101,13 +101,15 @@ def snapshot_verification_sources(
 ) -> Mapping[Path, str]:
     """Bind exact source bytes to the semantic documents used by a planner."""
 
-    records = {
-        Path(path).resolve(): read_nofollow_text(Path(path).resolve())
-        for path in paths
-    }
+    records: dict[Path, str] = {}
+    for source in paths:
+        path = Path(source).absolute()
+        if path != path.resolve():
+            raise ValueError(f"verification source traverses a symlink: {path}")
+        records[path] = read_nofollow_text(path)
     for inventory in documents:
         for path, document in inventory.items():
-            resolved = path.resolve()
+            resolved = path.absolute()
             try:
                 parsed = tomllib.loads(records[resolved])
             except (KeyError, tomllib.TOMLDecodeError) as exc:

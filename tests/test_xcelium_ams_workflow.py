@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -112,6 +113,7 @@ def _patch_native_resolution(
                     }
                 ],
             },
+            {circuit: hashlib.sha256(circuit.read_bytes()).hexdigest()},
         ),
     )
 
