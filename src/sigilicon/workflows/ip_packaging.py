@@ -1718,10 +1718,6 @@ def build_ip_release(
     return _audit_loaded_ip_release(contract, plan)
 
 
-def _load_release(release_root: Path) -> dict[str, Any]:
-    return read_json_object(release_root / "manifest.json", "IP release manifest")
-
-
 def load_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Load and audit one immutable release without consulting a channel pointer."""
 
@@ -2291,7 +2287,7 @@ def _audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     for path in release_root.rglob("*"):
         if path.is_symlink():
             raise RuntimeError(f"IP release cannot contain symlinks: {path}")
-    manifest = _load_release(manifest_path.parent)
+    manifest = read_json_object(manifest_path, "IP release manifest")
     if (
         manifest.get("schema") != 1
         or manifest.get("contract_kind") != "ip-release-manifest"
@@ -2460,86 +2456,6 @@ def _audit_loaded_ip_release(
     }
 
 
-def _audit_source_ip_release(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    maturity: str | None = None,
-) -> dict[str, Any]:
-    repository = _release_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_contract(contract_path, project=repository)
-    plan = _plan_loaded_ip_release(contract, maturity=maturity)
-    return _audit_loaded_ip_release(contract, plan)
-
-
-def publish_ip_release(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    maturity: str | None = None,
-) -> dict[str, Any]:
-    repository = _release_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_contract(contract_path, project=repository)
-    plan = _plan_loaded_ip_release(contract, maturity=maturity)
-    if plan["working_tree_dirty"]:
-        raise IpReleaseError(
-            "cannot publish an immutable IP release from a dirty source checkout"
-        )
-    audited = _audit_loaded_ip_release(contract, plan)
-    provenance = audited.get("provenance")
-    if not isinstance(provenance, Mapping) or provenance.get("working_tree_dirty"):
-        raise IpReleaseError(
-            "cannot publish a release candidate that was built from dirty source"
-        )
-    manifest = repository.artifact_root / Path(str(audited["manifest"]))
-    namespace = ArtifactLayout(repository.artifact_root).export(
-        str(audited["ip_name"]), "package"
-    )
-    pointer = {
-        "ip_name": audited["ip_name"],
-        "release_id": audited["release_id"],
-        "maturity": audited["maturity"]["level"],
-        "source_commit": audited["source_commit"],
-        "manifest": manifest.relative_to(repository.artifact_root).as_posix(),
-        "published_at": utc_now(),
-    }
-    atomic_write_json(namespace / "current.json", pointer)
-    return pointer
-
-
-def load_published_ip(
-    pointer_path: Path,
-    *,
-    artifact_root: Path,
-) -> tuple[dict[str, Any], Path]:
-    pointer = read_json_object(pointer_path, "IP current pointer")
-    relative = Path(str(pointer.get("manifest", "")))
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-        raise RuntimeError("IP current pointer manifest path is unsafe")
-    artifact_base = artifact_root.resolve()
-    manifest_path = artifact_base / relative
-    if not manifest_path.resolve().is_relative_to(artifact_base):
-        raise RuntimeError("IP current pointer escapes the artifact root")
-    manifest = load_ip_release_manifest(manifest_path)
-    for key in ("ip_name", "release_id", "source_commit"):
-        if manifest.get(key) != pointer.get(key):
-            raise RuntimeError(f"IP current pointer {key} is inconsistent")
-    maturity = manifest.get("maturity")
-    if not isinstance(maturity, Mapping) or (
-        maturity.get("level") != pointer.get("maturity")
-    ):
-        raise RuntimeError("IP current pointer maturity is inconsistent")
-    return manifest, manifest_path
-
-
 def resolve_release_role(
     manifest: Mapping[str, Any],
     manifest_path: Path,
@@ -2552,19 +2468,3 @@ def resolve_release_role(
     if not path.is_relative_to(manifest_path.parent.resolve()) or not path.is_file():
         raise RuntimeError(f"IP release role {export}/{role} is missing")
     return path
-
-
-def audit_ip_release(
-    contract_path: Path,
-    *,
-    project: Project,
-    artifact_root: Path | None = None,
-    maturity: str | None = None,
-) -> dict[str, Any]:
-    """Audit the exact release selected by the configured IP contract."""
-    return _audit_source_ip_release(
-        contract_path,
-        project=project,
-        artifact_root=artifact_root,
-        maturity=maturity,
-    )

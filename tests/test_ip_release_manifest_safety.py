@@ -59,31 +59,6 @@ def test_exact_release_audit_rejects_symlinked_payload(
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
-def test_published_pointer_does_not_resolve_away_release_symlink(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
-    alias = tmp_path / "release-alias"
-    alias.symlink_to(manifest_path.parent, target_is_directory=True)
-    pointer = tmp_path / "current.json"
-    pointer.write_text(
-        json.dumps(
-            {
-                "ip_name": "fixture",
-                "release_id": "development-fixture",
-                "maturity": "development",
-                "source_commit": "0" * 40,
-                "manifest": "release-alias/manifest.json",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises((OSError, RuntimeError), match="symlink|Not a directory"):
-        ip_packaging.load_published_ip(pointer, artifact_root=tmp_path)
-
-
 def test_release_build_rejects_symlinked_namespace_ancestor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
