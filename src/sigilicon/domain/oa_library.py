@@ -9,7 +9,7 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     require_config_header,
@@ -18,7 +18,7 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationPolicy,
     parse_physical_verification_policy,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _VIEW_KINDS = {

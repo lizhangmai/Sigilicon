@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.workflows import xcelium_ams
 from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.xcelium_ams import (
@@ -123,7 +123,7 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     contract, circuit = _ams_project(tmp_path)
     _patch_native_resolution(monkeypatch, root=tmp_path, circuit=circuit)
 
-    plan = plan_xcelium_ams_cell(contract, project=Project.from_project_root(tmp_path))
+    plan = plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
 
     assert plan.native_cell == "NATIVE_TOP"
     assert plan.circuit_netlist == circuit
@@ -155,7 +155,7 @@ def test_xcelium_ams_plan_rejects_spectre_compile_input(
     )
 
     with pytest.raises(ValueError, match="locked release role"):
-        plan_xcelium_ams_cell(contract, project=Project.from_project_root(tmp_path))
+        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
 
 
 def test_xcelium_ams_execution_stages_inputs_and_records_regression(
@@ -164,7 +164,7 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
 ) -> None:
     contract, circuit = _ams_project(tmp_path)
     _patch_native_resolution(monkeypatch, root=tmp_path, circuit=circuit)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     xrun = _write(tmp_path / "tools/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
@@ -213,7 +213,7 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
     monkeypatch.setattr(xcelium_ams, "run_process_group_capture", capture)
     monkeypatch.setattr(xcelium_ams, "xrun_env", lambda _xrun: {})
 
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     result = execute_xcelium_ams_cell(
         plan_xcelium_ams_cell(contract, project=project),
         artifacts=_run_artifacts(tmp_path),

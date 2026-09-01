@@ -14,7 +14,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.artifacts import atomic_write_json, read_json_object, utc_now
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.contracts import require_config_header
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
@@ -34,7 +34,7 @@ from sigilicon.domain.netlist import (
     resolve_netlist_hierarchy,
     subckt_ports,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.systemverilog import (
     ModulePort,
     module_ports,

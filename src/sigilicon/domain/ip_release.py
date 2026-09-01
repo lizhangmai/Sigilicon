@@ -8,15 +8,15 @@ import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     require_config_header,
 )
 
 if TYPE_CHECKING:
-    from sigilicon.domain.component import ComponentContract
-    from sigilicon.domain.repository import Project
+    from sigilicon.project._component import ComponentContract
+    from sigilicon.project import Project
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
@@ -184,7 +184,7 @@ def _parse_ip_contract(
     component_path = (producer_path / component_contract).resolve()
     if not component_path.is_file() or not component_path.is_relative_to(producer_path):
         raise FileNotFoundError("IP component contract is missing or outside its owner")
-    from sigilicon.domain.component import (
+    from sigilicon.project._component import (
         load_component_graph,
         resolve_component_fileset,
         resolve_component_graph,
@@ -518,7 +518,7 @@ def load_ip_contract(
     *,
     project: Project,
 ) -> IpContract:
-    from sigilicon.domain.repository import Project
+    from sigilicon.project import Project
 
     repository = project
     contract_path = path.resolve()

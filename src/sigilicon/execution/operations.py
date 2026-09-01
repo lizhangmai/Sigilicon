@@ -247,6 +247,7 @@ def _step(
 def compile_operation(
     catalog_path: Path,
     *,
+    project_identity: str,
     owner: str,
     owner_root: Path,
     project_root: Path,
@@ -473,7 +474,14 @@ def compile_operation(
                     f"step {step.id!r} source is absent from the compiled closure: "
                     f"{source_name}"
                 )
-    return ExecutionPlan(owner, target_name, operation_name, steps, tuple(unique_sources.values()))
+    return ExecutionPlan(
+        project_identity,
+        owner,
+        target_name,
+        operation_name,
+        steps,
+        tuple(unique_sources.values()),
+    )
 
 
 def parse_selector(value: str) -> tuple[str, str, str]:

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.workflows import ip_packaging
 
 from conftest import write_project_context
@@ -87,7 +87,7 @@ def test_published_pointer_does_not_resolve_away_release_symlink(
 def test_release_build_rejects_symlinked_namespace_ancestor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = Project.from_file(write_project_context(tmp_path))
+    project = Project.open(write_project_context(tmp_path).parent)
     exports = project.artifact_root / "exports"
     exports.mkdir(parents=True)
     outside = tmp_path / "outside"

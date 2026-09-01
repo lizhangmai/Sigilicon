@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.virtuoso.locks import discover_oa_locks, inspect_flow_operation_lock
 from sigilicon.virtuoso.maestro import active_maestro_sessions
 from sigilicon.virtuoso.oa import open_cell_views, virtuoso_pid, virtuoso_workdir

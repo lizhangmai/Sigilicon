@@ -21,6 +21,7 @@ from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 
 _BACKEND = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
+_DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
 _ROLES = frozenset({"diagnostic", "regression", "qualification", "signoff"})
 _LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
 _STEP_STATUSES = frozenset(
@@ -282,13 +283,19 @@ def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
 class ExecutionPlan:
     """Source-bound deterministic plan for exactly one owner operation."""
 
+    project_identity: str
     owner: str
     target: str
     operation: str
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
+    _authorization: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.project_identity, str) or _DIGEST.fullmatch(
+            self.project_identity
+        ) is None:
+            raise ContractError("execution plan project identity must be a SHA-256 digest")
         object.__setattr__(self, "owner", _identifier(self.owner, "owner"))
         object.__setattr__(self, "target", _identifier(self.target, "target"))
         object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
@@ -300,6 +307,8 @@ class ExecutionPlan:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
             raise ContractError("execution plan sources must be Source values")
+        if not isinstance(self._authorization, str):
+            raise ContractError("execution plan authorization must be text")
         closure = {(source.root, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
@@ -318,6 +327,7 @@ class ExecutionPlan:
         return {
             "schema": 1,
             "contract_kind": "execution-plan",
+            "project_identity": self.project_identity,
             "owner": self.owner,
             "target": self.target,
             "operation": self.operation,

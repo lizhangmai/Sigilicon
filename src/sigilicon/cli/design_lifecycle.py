@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from sigilicon.cli.common import die, emit_json
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.paths import discover_project_contract
 from sigilicon.workflows.design_lifecycle import inspect_design
 
@@ -23,7 +23,7 @@ def main(
         default="topology",
     )
     args = parser.parse_args(argv)
-    project = Project.from_file(discover_project_contract(__file__))
+    project = Project.open(discover_project_contract(__file__).parent)
     try:
         inspection = inspect_design(args.design, project=project)
         emit_json(inspection.as_dict())

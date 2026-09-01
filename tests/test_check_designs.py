@@ -7,10 +7,10 @@ import tomllib
 import pytest
 
 from conftest import write_component_owner
-import sigilicon.domain.repository as repository_module
+import sigilicon.project._project as repository_module
 from sigilicon.cli.check_designs import main as check_designs_main
-from sigilicon.domain.config_contracts import freeze_toml_document
-from sigilicon.domain.repository import Project
+from sigilicon.contracts import freeze_toml_document
+from sigilicon.project import Project
 import sigilicon.workflows.repository_checks as repository_checks
 
 
@@ -50,7 +50,7 @@ def test_check_designs_parses_the_project_manifest_once(
 def test_project_manifest_source_document_is_frozen_and_resolved(
     tmp_path: Path,
 ) -> None:
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
 
     assert project.manifest_source_document() is project.manifest_document
     with pytest.raises(TypeError):
@@ -124,7 +124,7 @@ owner = "example"
         encoding="utf-8",
     )
 
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     documents = repository_checks._architecture_source_documents(project)
     variants = repository_checks._integration_variant_inventory(
         project,
@@ -163,7 +163,7 @@ owner = "other"
 
     with pytest.raises(ValueError, match="owner must be 'example'"):
         repository_checks._architecture_source_documents(
-            Project.from_project_root(tmp_path)
+            Project.open(tmp_path)
         )
 
 
@@ -184,5 +184,5 @@ def test_architecture_inventory_rejects_cross_owner_sources(
 
     with pytest.raises(ValueError, match="cataloged root|architecture fileset source"):
         repository_checks._architecture_source_documents(
-            Project.from_project_root(tmp_path)
+            Project.open(tmp_path)
         )

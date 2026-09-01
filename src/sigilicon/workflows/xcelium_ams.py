@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platform
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (

@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
@@ -74,7 +74,7 @@ def test_explicit_ids_do_not_substitute_different_typed_records(
 ) -> None:
     project_root, design_path = project_factory()
     design = load_design_spec(
-        design_path, project=Project.from_project_root(project_root)
+        design_path, project=Project.open(project_root)
     )
     topology = SourceAuthoredTopologyAdapter().read(design, owner="example")
     changed = replace(
@@ -118,7 +118,7 @@ def test_source_authored_topology_is_immutable_canonical_and_strict(
 ) -> None:
     project_root, design_path = project_factory()
     design = load_design_spec(
-        design_path, project=Project.from_project_root(project_root)
+        design_path, project=Project.open(project_root)
     )
 
     topology = SourceAuthoredTopologyAdapter().read(
@@ -156,7 +156,7 @@ def test_source_authored_topology_rejects_owner_and_role_injection(
 ) -> None:
     project_root, design_path = project_factory()
     design = load_design_spec(
-        design_path, project=Project.from_project_root(project_root)
+        design_path, project=Project.open(project_root)
     )
     adapter = SourceAuthoredTopologyAdapter()
 
@@ -181,7 +181,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 ) -> None:
     project_root, design_path = project_factory()
     design = load_design_spec(
-        design_path, project=Project.from_project_root(project_root)
+        design_path, project=Project.open(project_root)
     )
     topology = SourceAuthoredTopologyAdapter().read(design, owner="example")
     source = ArtifactReference(
@@ -285,7 +285,7 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 def test_cross_owner_and_fake_authority_fail_closed(project_factory) -> None:
     project_root, design_path = project_factory()
     design = load_design_spec(
-        design_path, project=Project.from_project_root(project_root)
+        design_path, project=Project.open(project_root)
     )
     topology = SourceAuthoredTopologyAdapter().read(design, owner="example")
     source = ArtifactReference(

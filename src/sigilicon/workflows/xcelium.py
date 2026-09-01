@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
     find_xrun,

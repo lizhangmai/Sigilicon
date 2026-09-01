@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 from sigilicon.canonical import canonical_from_json, canonical_json
 from sigilicon.identifiers import bounded_identity
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     read_toml,
     require_config_header,

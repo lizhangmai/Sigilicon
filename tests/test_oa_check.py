@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.cli.flow import _parser, _print_oa_check_summary
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_check import (
     _library_ownership,
@@ -82,7 +82,7 @@ def test_invalid_manifest_is_reported_as_blocked_without_artifact_write(
     )
     report = check_oa_library(
         tmp_path / "missing-oa.toml",
-        project=Project.from_project_root(tmp_path),
+        project=Project.open(tmp_path),
         library="fixture_lib",
         client=SimpleNamespace(),
     )
@@ -135,7 +135,7 @@ def test_check_proves_live_library_path_is_the_manifest_target(
     plan = SimpleNamespace(
         library="fixture_lib",
         source=SimpleNamespace(
-            project=Project.from_project_root(tmp_path),
+            project=Project.open(tmp_path),
             project_root=tmp_path,
             oa_library=expected,
         ),

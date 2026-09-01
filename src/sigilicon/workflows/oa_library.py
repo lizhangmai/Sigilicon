@@ -33,7 +33,7 @@ from sigilicon.domain.platform import (
     load_platform,
     resolve_platform_snapshot,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 from sigilicon.execution.model import Source, json_value
 from sigilicon.layout.ir import LayoutPlan

@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import sigilicon.domain.repository as repository_module
+import sigilicon.project._project as repository_module
 
 from sigilicon.paths import (
     ProjectContext,
@@ -12,7 +12,7 @@ from sigilicon.paths import (
     discover_project_context,
     validate_artifact_component,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 from conftest import write_component_owner
 
@@ -83,7 +83,7 @@ def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
     )
 
     with pytest.raises(ValueError, match="component source escapes"):
-        Project.from_project_root(tmp_path)
+        Project.open(tmp_path)
 
 
 def test_project_is_the_single_manifest_parser(
@@ -102,7 +102,7 @@ def test_project_is_the_single_manifest_parser(
 
     monkeypatch.setattr(repository_module, "read_toml", counted)
 
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
 
     assert project.manifest_owner == "test"
     assert project.project_root == tmp_path.resolve()
@@ -112,7 +112,7 @@ def test_project_is_the_single_manifest_parser(
 
 def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
     write_component_owner(tmp_path, "example", filesets={})
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
 
     scope = project.scope("example")
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell_view

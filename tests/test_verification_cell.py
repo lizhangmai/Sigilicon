@@ -5,7 +5,7 @@ import pytest
 from sigilicon.domain.verification_cell import (
     load_verification_cell,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 from conftest import write_component_owner
 
@@ -54,7 +54,7 @@ success_marker = "TB_DEMO_SUMMARY failures=0"
 
 def test_verification_cell_loads_its_owned_source_boundary(tmp_path: Path) -> None:
     contract = _contract(tmp_path)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
 
     spec = load_verification_cell(contract, project=project)
 
@@ -88,7 +88,7 @@ owner = "demo"
         encoding="utf-8",
     )
 
-    spec = load_verification_cell(contract, project=Project.from_project_root(tmp_path))
+    spec = load_verification_cell(contract, project=Project.open(tmp_path))
 
     assert set(spec.source_documents) == {contract.resolve(), declared.resolve()}
     with pytest.raises(TypeError):
@@ -106,7 +106,7 @@ def test_verification_cell_rejects_canonical_source_outside_cell(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="canonical_source must stay inside"):
-        load_verification_cell(contract, project=Project.from_project_root(tmp_path))
+        load_verification_cell(contract, project=Project.open(tmp_path))
 
 
 def _as_xcelium_ams(contract: Path, *, stop: str = "1u") -> None:
@@ -136,7 +136,7 @@ def test_verification_cell_loads_typed_xcelium_ams_inputs(tmp_path: Path) -> Non
     contract = _contract(tmp_path)
     _as_xcelium_ams(contract)
 
-    spec = load_verification_cell(contract, project=Project.from_project_root(tmp_path))
+    spec = load_verification_cell(contract, project=Project.open(tmp_path))
 
     assert spec.ams is not None
     assert spec.ams.platform == "testpdk"
@@ -158,7 +158,7 @@ def test_verification_cell_requires_ams_only_for_xcelium_ams(tmp_path: Path) -> 
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="must declare ams"):
-        load_verification_cell(missing, project=Project.from_project_root(tmp_path))
+        load_verification_cell(missing, project=Project.open(tmp_path))
 
     _as_xcelium_ams(missing)
     missing.write_text(
@@ -169,7 +169,7 @@ def test_verification_cell_requires_ams_only_for_xcelium_ams(tmp_path: Path) -> 
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="valid only"):
-        load_verification_cell(missing, project=Project.from_project_root(tmp_path))
+        load_verification_cell(missing, project=Project.open(tmp_path))
 
 
 @pytest.mark.parametrize("stop", ["0", "0.0", "0.0u", "1u; alter"])
@@ -181,7 +181,7 @@ def test_verification_cell_rejects_unsafe_ams_stop_time(
     _as_xcelium_ams(contract, stop=stop)
 
     with pytest.raises(ValueError, match="positive Spectre time token"):
-        load_verification_cell(contract, project=Project.from_project_root(tmp_path))
+        load_verification_cell(contract, project=Project.open(tmp_path))
 
 
 def test_verification_cell_rejects_incomplete_ams_table(tmp_path: Path) -> None:
@@ -196,4 +196,4 @@ def test_verification_cell_rejects_incomplete_ams_table(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="fields must be exactly"):
-        load_verification_cell(contract, project=Project.from_project_root(tmp_path))
+        load_verification_cell(contract, project=Project.open(tmp_path))

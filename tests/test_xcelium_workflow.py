@@ -6,8 +6,8 @@ import subprocess
 
 import pytest
 
-from sigilicon.domain.repository import Project
-import sigilicon.domain.repository as repository_module
+from sigilicon.project import Project
+import sigilicon.project._project as repository_module
 from sigilicon.workflows import xcelium
 from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.xcelium import (
@@ -98,7 +98,7 @@ def test_project_xcelium_plan_parses_one_project(
 
     monkeypatch.setattr(repository_module, "read_toml", counted)
 
-    project = Project.from_file(project_contract)
+    project = Project.open(project_contract.parent)
     plan = plan_xcelium_cell(contract, project=project)
     payload = plan.as_dict()
 
@@ -127,7 +127,7 @@ def test_xcelium_plan_rejects_non_hdl_compile_dependency(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="support_files or contracts"):
         plan_xcelium_cell(
             contract,
-            project=Project.from_file(tmp_path / "sigilicon.toml"),
+            project=Project.open(tmp_path),
         )
 
 
@@ -144,7 +144,7 @@ def test_xcelium_plan_requires_explicit_success_marker(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="must declare success_marker"):
         plan_xcelium_cell(
             contract,
-            project=Project.from_file(tmp_path / "sigilicon.toml"),
+            project=Project.open(tmp_path),
         )
 
 
@@ -153,7 +153,7 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = _verification_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
@@ -190,7 +190,7 @@ def test_xcelium_execution_reports_absent_success_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = _verification_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
@@ -216,7 +216,7 @@ def test_xcelium_execution_accepts_success_marker_from_native_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = _verification_project(tmp_path)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 

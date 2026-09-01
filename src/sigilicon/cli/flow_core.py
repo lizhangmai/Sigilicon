@@ -9,7 +9,6 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json
-from sigilicon.backends import trusted_backends
 from sigilicon.execution import ContractError, ExecutionError, Resources, RunStoreError
 from sigilicon.paths import discover_project_contract
 from sigilicon.project import Project
@@ -42,8 +41,8 @@ def _parser() -> argparse.ArgumentParser:
 def _project(args: argparse.Namespace) -> Project:
     root = args.project_root
     if root is None:
-        return Project.open(discover_project_contract(), backends=trusted_backends())
-    return Project.open(root, backends=trusted_backends())
+        return Project.open(discover_project_contract().parent)
+    return Project.open(root)
 
 
 def _resources(args: argparse.Namespace) -> Resources:

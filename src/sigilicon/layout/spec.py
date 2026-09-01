@@ -9,8 +9,8 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.component import ComponentContract, load_component_graph
-from sigilicon.domain.config_contracts import freeze_toml_document, require_config_header
+from sigilicon.project._component import ComponentContract, load_component_graph
+from sigilicon.contracts import freeze_toml_document, require_config_header
 from sigilicon.domain.design import IDENTIFIER_RE
 from sigilicon.domain.netlist import (
     NetlistSnapshot,
@@ -26,7 +26,8 @@ from sigilicon.domain.platform import (
     PlatformSnapshot,
     resolve_platform_snapshot,
 )
-from sigilicon.domain.repository import Project, RepositoryOwner
+from sigilicon.project import Project
+from sigilicon.project._project import RepositoryOwner
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}

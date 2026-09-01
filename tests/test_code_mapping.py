@@ -11,7 +11,7 @@ from sigilicon.domain.code_mapping import (
     load_integer_code_mapping,
     load_integer_code_mapping_contract,
 )
-from sigilicon.domain.config_contracts import freeze_toml_document
+from sigilicon.contracts import freeze_toml_document
 
 
 def test_affine_saturating_mapping_clamps_both_ends() -> None:

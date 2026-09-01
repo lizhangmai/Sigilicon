@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.workflows import ip_integration
 
 from conftest import write_component_owner, write_project_context
@@ -26,20 +26,12 @@ owner = "fixture"
         "fixture",
         filesets={"oa_source": ("ip/fixture/configs/oa.toml",)},
     )
-    return Project.from_file(project_contract), component
+    return Project.open(project_contract.parent), component
 
 
-def test_project_ip_catalog_reuses_bound_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_project_ip_catalog_reuses_bound_project(tmp_path: Path) -> None:
     project, component = _project(tmp_path)
-    monkeypatch.setattr(
-        Project,
-        "from_project_root",
-        classmethod(
-            lambda _cls, _root: pytest.fail("bound workflow reparsed its Project")
-        ),
-    )
+    assert not hasattr(Project, "from_project_root")
 
     assert ip_integration.ip_catalog_contract_path(
         project,
@@ -74,13 +66,7 @@ def test_integration_plan_passes_same_project_to_domain_loader(
         "plan_ip_integration_contract",
         lambda contract, **_kwargs: {"ip": contract.name},
     )
-    monkeypatch.setattr(
-        Project,
-        "from_project_root",
-        classmethod(
-            lambda _cls, _root: pytest.fail("integration plan reparsed its Project")
-        ),
-    )
+    assert not hasattr(Project, "from_project_root")
 
     plan = ip_integration.plan_ip_integration(component, project=project)
 

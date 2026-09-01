@@ -14,7 +14,7 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticProcessor,
     NativeDiagnosticReport,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.virtuoso.ade import (
     _native_setup_entry_point,
@@ -216,7 +216,7 @@ def test_elaborated_netlist_prefers_ams_design_over_spectre_config_map(
 
 def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
-    project = Project.from_project_root(root)
+    project = Project.open(root)
 
     spec = load_oa_simulation_spec(spec_path, project=project)
 
@@ -241,7 +241,7 @@ def test_native_simulation_contract_rejects_maestro_schema_duplication(
     )
 
     with pytest.raises(ValueError, match="unsupported fields"):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_loader_rejects_unsupported_schema(tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ def test_native_loader_rejects_unsupported_schema(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="schema must be exactly 3"):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_rdb_identity_contract_is_source_owned_and_setup_consistent(
@@ -289,7 +289,7 @@ expression = "value(VT(\\"/OUT\\") 1u)"
         encoding="utf-8",
     )
 
-    spec = load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+    spec = load_oa_simulation_spec(spec_path, project=Project.open(root))
 
     contract = spec.native_setup.rdb_contract
     assert contract is not None
@@ -376,7 +376,7 @@ kind = "fixture"
         encoding="utf-8",
     )
 
-    spec = load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+    spec = load_oa_simulation_spec(spec_path, project=Project.open(root))
 
     contract = spec.native_setup.rdb_contract
     assert contract is not None
@@ -399,7 +399,7 @@ kind = "fixture"
     with pytest.raises(ValueError, match="architecture source inventory"):
         load_oa_simulation_spec(
             spec_path,
-            project=Project.from_project_root(root),
+            project=Project.open(root),
             architecture_source_documents={},
         )
 
@@ -422,7 +422,7 @@ kind = "fixture"
     )
 
     with pytest.raises(ValueError, match="testbench-local Python filename"):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_rdb_rejects_an_unused_diagnostic_processor(tmp_path: Path) -> None:
@@ -444,7 +444,7 @@ scalars = []
         ValueError,
         match="diagnostic_processor requires diagnostic_equivalence",
     ):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_rdb_requires_local_processor_for_diagnostic_equivalence(
@@ -466,7 +466,7 @@ kind = "fixture"
     )
 
     with pytest.raises(ValueError, match="testbench-local diagnostic_processor"):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_rdb_contract_rejects_setup_identity_mismatch(tmp_path: Path) -> None:
@@ -489,7 +489,7 @@ expression = "value(VT(\\"/OUT\\") 1u)"
     )
 
     with pytest.raises(ValueError, match="not consistent with setup.il"):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_rdb_contract_can_audit_nondefault_setup_model_identity(
@@ -539,7 +539,7 @@ models = [
         encoding="utf-8",
     )
 
-    spec = load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+    spec = load_oa_simulation_spec(spec_path, project=Project.open(root))
 
     assert spec.native_setup.rdb_contract.setup_model_identities == (
         ("local_models.scs", "local_mos"),
@@ -583,7 +583,7 @@ models = [
     )
 
     with pytest.raises(ValueError, match="not declared by the selected platform"):
-        load_oa_simulation_spec(spec_path, project=Project.from_project_root(root))
+        load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
 def test_native_setup_entry_point_requires_the_declared_definition(tmp_path: Path) -> None:

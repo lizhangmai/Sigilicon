@@ -8,7 +8,7 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     is_frozen_toml_document,
     require_config_header,
 )

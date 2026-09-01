@@ -8,7 +8,7 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
 )
@@ -23,7 +23,7 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticReport,
     load_native_diagnostic_processor,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 
 

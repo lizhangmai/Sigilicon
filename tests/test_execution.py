@@ -25,6 +25,7 @@ from sigilicon.execution import (
 )
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
+from sigilicon.project._project import _open_project_for_test
 
 
 def _write_project(root: Path) -> Path:
@@ -163,11 +164,17 @@ class UpperBackend:
         )
 
 
+def _project(root: Path, *backends) -> Project:
+    """Assemble private test Adapters without widening Project.open."""
+
+    return _open_project_for_test(root, backends)
+
+
 def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     tmp_path: Path,
 ) -> None:
     operations = _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(), UpperBackend()))
+    project = _project(tmp_path, CopyBackend(), UpperBackend())
 
     plan = project.plan("example/smoke:check")
 
@@ -262,7 +269,7 @@ def test_source_group_can_share_owner_and_project_globs(tmp_path: Path) -> None:
 
 def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(), UpperBackend()))
+    project = _project(tmp_path, CopyBackend(), UpperBackend())
     plan = project.plan("example/smoke:all")
     progress: list[tuple[str, str]] = []
 
@@ -326,7 +333,7 @@ def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
             source.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
             return ()
 
-    project = Project.open(tmp_path, backends=(MutatingBackend(),))
+    project = _project(tmp_path, MutatingBackend(),)
     plan = project.plan("example/smoke:check")
 
     with pytest.raises(ExecutionError, match="changed immediately before backend"):
@@ -365,7 +372,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
                 artifacts=(Artifact("source", "text.plain", output),)
             )
 
-    project = Project.open(tmp_path, backends=(SealedSourceBackend(),))
+    project = _project(tmp_path, SealedSourceBackend(),)
     plan = project.plan("example/smoke:check")
 
     result = project.run(
@@ -380,15 +387,44 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     assert sealed.parent.stat().st_mode & 0o777 == 0o555
 
 
-def test_project_rejects_a_plan_not_issued_by_that_project(tmp_path: Path) -> None:
+def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    project = _project(tmp_path, CopyBackend(),)
+    plan = project.plan("example/smoke:check")
+    forged = replace(plan, project_identity="sha256-" + "0" * 64)
+
+    with pytest.raises(ValueError, match="not authorized by this Project"):
+        project.preflight(forged, Resources(frozenset({"offline"})))
+
+
+def test_project_rejects_an_authorized_plan_modified_by_the_caller(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyBackend())
     plan = project.plan("example/smoke:check")
     forged_step = replace(plan.steps[0], config={"text": "forged"})
     forged = replace(plan, steps=(forged_step,))
 
-    with pytest.raises(ValueError, match="not produced by this Project"):
+    with pytest.raises(ValueError, match="not authorized by this Project"):
         project.preflight(forged, Resources(frozenset({"offline"})))
+
+
+def test_project_rejects_composition_source_drift(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyBackend())
+    plan = project.plan("example/smoke:check")
+    manifest = tmp_path / "sigilicon.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    checked = project.preflight(plan, Resources(frozenset({"offline"})))
+    assert checked.status == "blocked"
+    assert checked.checks[0].record == {
+        "kind": "project",
+        "subject": "example",
+        "status": "blocked",
+        "detail": "project composition changed after planning",
+    }
 
 
 def test_project_rejects_owner_python_registration_fields_without_importing(
@@ -450,7 +486,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
                 artifacts=(Artifact("source", "text.plain", published),)
             )
 
-    project = Project.open(tmp_path, backends=(ExtraOutputBackend(),))
+    project = _project(tmp_path, ExtraOutputBackend(),)
     plan = project.plan("example/smoke:check")
 
     with pytest.raises(ExecutionError, match="output inventory"):
@@ -464,7 +500,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
         def run(self, context: StepContext) -> StepResult:
             return StepResult.uncertain("descendant cleanup could not be proven")
 
-    project = Project.open(tmp_path, backends=(UncertainBackend(),))
+    project = _project(tmp_path, UncertainBackend(),)
     plan = project.plan("example/smoke:check")
     result = project.run(
         plan,
@@ -496,7 +532,7 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
                 "descendant cleanup could not be proven"
             )
 
-    project = Project.open(tmp_path, backends=(CleanupUnknownBackend(),))
+    project = _project(tmp_path, CleanupUnknownBackend(),)
     plan = project.plan("example/smoke:check")
     result = project.run(
         plan,
@@ -517,7 +553,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
         def run(self, context: StepContext) -> StepResult:
             return StepResult.cancelled("operator cancelled the tool")
 
-    project = Project.open(tmp_path, backends=(CancelledBackend(),))
+    project = _project(tmp_path, CancelledBackend(),)
     plan = project.plan("example/smoke:check")
     result = project.run(
         plan,
@@ -550,7 +586,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
                 "qualification failed",
             )
 
-    project = Project.open(tmp_path, backends=(RejectingBackend(),))
+    project = _project(tmp_path, RejectingBackend(),)
     plan = project.plan("example/smoke:check")
     result = project.run(
         plan,
@@ -583,7 +619,7 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
             live.write_text("changed\n", encoding="utf-8")
             return result
 
-    project = Project.open(tmp_path, backends=(DriftingCopyBackend(), UpperBackend()))
+    project = _project(tmp_path, DriftingCopyBackend(), UpperBackend())
     plan = project.plan("example/smoke:all")
 
     with pytest.raises(ExecutionError, match="changed immediately before backend"):
@@ -606,7 +642,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     tmp_path: Path,
 ) -> None:
     operations = _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    project = _project(tmp_path, CopyBackend(),)
     plan = project.plan("example/smoke:check")
     result = project.run(
         plan,
@@ -638,7 +674,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
 
 def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    project = _project(tmp_path, CopyBackend(),)
     plan = project.plan("example/smoke:check")
     result = project.run(
         plan,
@@ -659,7 +695,7 @@ def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
 
 def test_run_identity_is_exclusive(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    project = _project(tmp_path, CopyBackend(),)
     plan = project.plan("example/smoke:check")
     resources = Resources(frozenset({"offline"}))
     project.run(plan, resources, run_id="e" * 32)
@@ -676,7 +712,7 @@ def test_run_identity_is_exclusive(tmp_path: Path) -> None:
 
 def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    project = _project(tmp_path, CopyBackend(),)
     plan = project.plan("example/smoke:check")
     resources = Resources(frozenset({"offline"}))
 

@@ -15,7 +15,7 @@ from sigilicon.domain.circuit_design import (
     StateSemantic,
     TopologyOrigin,
 )
-from sigilicon.domain.config_contracts import read_toml, require_config_header
+from sigilicon.contracts import read_toml, require_config_header
 from sigilicon.domain.design import DesignSpec
 from sigilicon.domain.netlist import (
     parse_subcircuit_definitions,

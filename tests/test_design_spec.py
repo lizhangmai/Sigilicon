@@ -6,7 +6,7 @@ import pytest
 
 from conftest import write_component_owner
 from sigilicon.domain.design import load_design_spec, resolve_design_spec
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 
 def test_design_loader_rejects_project_escape_and_symlink(
@@ -25,7 +25,7 @@ def test_design_loader_rejects_project_escape_and_symlink(
     )
 
     with pytest.raises(ValueError, match="project root"):
-        load_design_spec(path, project=Project.from_project_root(root))
+        load_design_spec(path, project=Project.open(root))
 
     link = path.with_name("linked.scs")
     link.symlink_to(external)
@@ -37,7 +37,7 @@ def test_design_loader_rejects_project_escape_and_symlink(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project root"):
-        load_design_spec(path, project=Project.from_project_root(root))
+        load_design_spec(path, project=Project.open(root))
 
 
 def test_cataloged_design_loader_rejects_cross_owner_source(
@@ -68,7 +68,7 @@ def test_cataloged_design_loader_rejects_cross_owner_source(
     )
 
     with pytest.raises(ValueError, match="owning active IP"):
-        load_design_spec(path, project=Project.from_project_root(root))
+        load_design_spec(path, project=Project.open(root))
 
 
 def test_design_spec_preserves_and_resolves_its_source_document(
@@ -85,7 +85,7 @@ def test_design_spec_preserves_and_resolves_its_source_document(
             )
         },
     )
-    project = Project.from_project_root(root)
+    project = Project.open(root)
     spec = load_design_spec(path, project=project)
     resolved_path = path.resolve()
 

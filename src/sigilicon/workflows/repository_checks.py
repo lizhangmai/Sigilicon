@@ -7,20 +7,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from sigilicon.domain.component import load_component_graph
+from sigilicon.project._component import load_component_graph
 from sigilicon.domain.config_contracts import (
     RepositorySourceInventory,
-    freeze_toml_document,
     inspect_project_configuration_sources,
-    read_toml,
-    require_config_header,
 )
+from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
 from sigilicon.execution.operations import compile_operation
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platform_inventory
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
 from sigilicon.workflows.ip_integration import plan_ip_integration_contract
@@ -404,6 +402,7 @@ def inspect_repository_designs(
             compiled = {
                 operation_name: compile_operation(
                     catalog_path,
+                    project_identity=context.identity,
                     owner=owner.name,
                     owner_root=owner.root,
                     project_root=context.project_root,

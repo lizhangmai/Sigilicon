@@ -8,7 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
@@ -20,7 +20,7 @@ from sigilicon.domain.platform import (
     PlatformSnapshot,
     resolve_platform_snapshot,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")

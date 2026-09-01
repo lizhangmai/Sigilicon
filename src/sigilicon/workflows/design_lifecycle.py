@@ -15,7 +15,7 @@ from typing import Any
 from sigilicon.domain.design import DesignSpec, load_design_spec
 from sigilicon.domain.platform import PlatformSnapshot
 from sigilicon.domain.netlist import NetlistSnapshot, select_subckt_snapshot
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.virtuoso.oa import (
     validate_cell_port_directions,
     validate_instance_parameters,

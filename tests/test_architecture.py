@@ -30,18 +30,19 @@ LAYERS = {
 }
 ALLOWED_DEPENDENCIES = {
     "root": {"project", "root"},
-    "project": {"domain", "execution", "project", "root"},
-    "domain": {"domain", "execution", "root"},
+    "project": {"backends", "execution", "project", "root"},
+    "domain": {"domain", "project", "root"},
     "execution": {"execution", "root"},
     "backends": {
         "backends",
         "domain",
         "execution",
+        "project",
         "virtuoso",
         "workflows",
         "root",
     },
-    "layout": {"domain", "layout", "root"},
+    "layout": {"domain", "layout", "project", "root"},
     "virtuoso": {"domain", "layout", "virtuoso", "root"},
     "workflows": {
         "domain",

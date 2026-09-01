@@ -320,7 +320,7 @@ kind = "composite-ip"
         lambda _context, _owner, **_kwargs: (isolated, "ip/example"),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.repository.Project.from_project_root",
+        "sigilicon.project.Project.open",
         lambda _root: project,
     )
     return project

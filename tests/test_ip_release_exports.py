@@ -16,7 +16,7 @@ from sigilicon.domain.ip_release import (
     RtlIpInterface,
     load_ip_contract,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.workflows.ip_packaging import release_role_view
 
 from conftest import write_project_context
@@ -415,7 +415,7 @@ def _native_oa_library_fixture(root: Path) -> SimpleNamespace:
 
 
 def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.open(tmp_path))
 
     assert contract.name == "fixture-ip"
     assert contract.owner == "fixture"
@@ -437,7 +437,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     exported = contract.get_export("native-top")
     assert isinstance(exported.interface, OaNativeIpInterface)
 
@@ -562,7 +562,7 @@ capabilities = ["synthesis"]
 ''',
         encoding="utf-8",
     )
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
@@ -607,7 +607,7 @@ def test_native_oa_release_rejects_circuit_port_order_drift(
     tmp_path: Path,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     (tmp_path / "ip/native_fixture/sources/circuit.scs").write_text(
         "subckt NATIVE_TOP OUT IN\nends NATIVE_TOP\n",
         encoding="utf-8",
@@ -625,7 +625,7 @@ def test_native_oa_package_rejects_digital_interface_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
@@ -683,7 +683,7 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
         "_source_inputs",
@@ -737,7 +737,7 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _rtl_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     exported = contract.get_export("rtl-top")
     assert isinstance(exported.interface, RtlIpInterface)
     assert contract.oa_assembly is None
@@ -856,7 +856,7 @@ source = "ip/rtl_fixture/rtl/top.sv"
         ip_packaging, "_source_control", lambda _root: ("b" * 40, False)
     )
 
-    contract = load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     exported = contract.get_export("rtl-top")
     assert isinstance(exported.interface, RtlIpInterface)
     assert exported.interface.variant == "alternate"
@@ -876,7 +876,7 @@ source = "ip/rtl_fixture/rtl/top.sv"
 def test_release_design_inventory_rejects_forged_oa_plan(
     tmp_path: Path,
 ) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.from_project_root(tmp_path))
+    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.open(tmp_path))
     oa_manifest = (tmp_path / "ip/fixture/configs/oa.toml").resolve()
     declared = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
     forged = (tmp_path / "ip/fixture/configs/right_interface.toml").resolve()
@@ -915,7 +915,7 @@ def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="owner"):
-        load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+        load_ip_contract(contract_path, project=Project.open(tmp_path))
 
 
 def test_release_identity_cannot_alias_one_component_as_another_ip(
@@ -930,4 +930,4 @@ def test_release_identity_cannot_alias_one_component_as_another_ip(
     )
 
     with pytest.raises(ValueError, match="component identity"):
-        load_ip_contract(contract_path, project=Project.from_project_root(tmp_path))
+        load_ip_contract(contract_path, project=Project.open(tmp_path))

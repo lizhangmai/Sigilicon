@@ -17,14 +17,14 @@ from sigilicon.domain.platform import (
     resolve_platform,
     resolve_platform_snapshot,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 
 
 def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     model = write_test_platform(tmp_path)
 
-    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.open(tmp_path), "testpdk")
 
     assert platform.simulation.default.file == model
     assert platform.simulation.default.single_section == "tt"
@@ -45,7 +45,7 @@ def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> 
 def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     inventory = load_platform_inventory(project)
 
     assert (
@@ -59,7 +59,7 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="different operation"):
         resolve_platform_snapshot(
-            Project.from_project_root(tmp_path),
+            Project.open(tmp_path),
             "testpdk",
             snapshot=inventory,
         )
@@ -68,7 +68,7 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
 def test_resolve_platform_rejects_typed_and_source_drift(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
     snapshot = load_platform(project, "testpdk")
     assert snapshot.layout is not None
 
@@ -100,7 +100,7 @@ def test_platform_contract_rejects_unknown_fields(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*model_sects"):
-        load_platform(Project.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.open(tmp_path), "testpdk")
 
 
 def test_layout_platform_resolves_optional_and_materialization_capabilities(
@@ -131,7 +131,7 @@ routing1_routing2 = "M2_M1c"
         encoding="utf-8",
     )
 
-    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.open(tmp_path), "testpdk")
 
     assert platform.layout is not None
     assert platform.layout.qrc_tech_file is None
@@ -154,7 +154,7 @@ def test_platform_catalog_selects_explicit_manifest_only(tmp_path: Path) -> None
     )
     manifest = tmp_path / "configs/platform/custom/platform.toml"
     manifest.rename(manifest.with_name("platform-contract.toml"))
-    project = Project.from_project_root(tmp_path)
+    project = Project.open(tmp_path)
 
     assert load_platform(project, "custom").path.name == "platform-contract.toml"
     with pytest.raises(ValueError, match="safe relative path"):
@@ -187,7 +187,7 @@ package_root = "testpdk"
     )
     monkeypatch.setenv("TEST_PDK_ROOT", str(tmp_path / "installed"))
 
-    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
+    platform = load_platform(Project.open(tmp_path), "testpdk")
 
     assert platform.simulation.default.file == model
     assert all(path.is_relative_to(tmp_path) for path in platform.source_documents)
@@ -205,4 +205,4 @@ def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="owner must be 'test-platform'"):
-        load_platform(Project.from_project_root(tmp_path), "testpdk")
+        load_platform(Project.open(tmp_path), "testpdk")

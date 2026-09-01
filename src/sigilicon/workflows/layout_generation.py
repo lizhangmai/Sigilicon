@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.layout.generator import build_layout_plan
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec

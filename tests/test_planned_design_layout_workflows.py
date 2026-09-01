@@ -6,7 +6,7 @@ from contextlib import nullcontext
 
 import pytest
 
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.workflows import layout_generation
 from sigilicon.workflows.layout_generation import LayoutPlanningResult
 from sigilicon.workflows.run_artifacts import RunArtifacts
@@ -16,7 +16,7 @@ from conftest import write_component_owner
 
 def _project(tmp_path: Path) -> Project:
     write_component_owner(tmp_path, "example", filesets={})
-    return Project.from_project_root(tmp_path)
+    return Project.open(tmp_path)
 
 
 def test_managed_layout_generation_reuses_parent_artifacts_and_operation(

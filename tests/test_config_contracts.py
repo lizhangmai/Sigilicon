@@ -7,11 +7,10 @@ import pytest
 import sigilicon.domain.config_contracts as config_contracts
 from sigilicon.domain.config_contracts import (
     RepositorySourceInventory,
-    freeze_toml_document,
     inspect_project_configuration_sources,
-    require_config_header,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.contracts import freeze_toml_document, require_config_header
+from sigilicon.project import Project
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -143,7 +142,7 @@ owner = "alpha"
     )
     _write(tmp_path, "ip/beta/native.toml", "schema = 3\n")
 
-    report = _inspect(Project.from_project_root(tmp_path))
+    report = _inspect(Project.open(tmp_path))
 
     assert report["passed"] is True
     assert report["contracts"] == report["documents"] - 1
@@ -177,7 +176,7 @@ path_scope = "owner"
 owner = "beta"
 ''',
     )
-    context = Project.from_project_root(tmp_path)
+    context = Project.open(tmp_path)
     inventory = RepositorySourceInventory.for_project(context)
     catalogs = {
         "example": (
@@ -222,14 +221,14 @@ owner = "alpha"
     fallback.write_text("not valid TOML = [\n", encoding="utf-8")
 
     reads: list[Path] = []
-    original_read_toml = config_contracts.read_toml
+    original_read_source = config_contracts.read_nofollow_text
 
-    def counted_read_toml(path: Path):
+    def counted_read_source(path: Path):
         if path.resolve() in {seeded, fallback}:
             reads.append(path.resolve())
-        return original_read_toml(path)
+        return original_read_source(path)
 
-    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
+    monkeypatch.setattr(config_contracts, "read_nofollow_text", counted_read_source)
     report = inspect_project_configuration_sources(
         context,
         operation_catalog_inventory=catalogs,
@@ -244,7 +243,7 @@ owner = "alpha"
     assert fallback not in reads
     with pytest.raises(ValueError, match="another operation"):
         inspect_project_configuration_sources(
-            Project.from_project_root(tmp_path),
+            Project.open(tmp_path),
             operation_catalog_inventory=catalogs,
             sources=inventory,
         )
@@ -261,7 +260,7 @@ def test_repository_source_inventory_rejects_symlinked_directory(
         target,
         target_is_directory=True,
     )
-    context = Project.from_project_root(tmp_path)
+    context = Project.open(tmp_path)
 
     with pytest.raises(ValueError, match="is a symlink"):
         RepositorySourceInventory.for_project(context)
@@ -273,7 +272,7 @@ def test_project_configuration_rejects_partial_common_header(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="incomplete configuration header"):
         _inspect(
-            Project.from_project_root(tmp_path),
+            Project.open(tmp_path),
         )
 
 
@@ -291,7 +290,7 @@ owner = "beta"
 
     with pytest.raises(ValueError, match="owner must be 'alpha'"):
         _inspect(
-            Project.from_project_root(tmp_path),
+            Project.open(tmp_path),
         )
 
 

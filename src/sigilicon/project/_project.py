@@ -1,19 +1,24 @@
-"""Caller-owned repository inventory resolved from canonical catalogs."""
+"""The deep Project module for composition and managed execution."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import hmac
+import hashlib
 from pathlib import Path, PurePosixPath
+import secrets
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
-from sigilicon.domain.component import ComponentContract, load_component_contract
-from sigilicon.domain.config_contracts import (
+from sigilicon.artifacts import read_nofollow_text
+from sigilicon.canonical import canonical_digest, canonical_json
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
     require_config_header,
 )
+from sigilicon.project._component import ComponentContract, load_component_contract
 from sigilicon.paths import (
     ArtifactLayout,
     ProjectContext,
@@ -89,9 +94,9 @@ class Project:
         repr=False,
         compare=False,
     )
-    _backends: object | None = field(default=None, repr=False, compare=False)
-    _issued_plans: dict[str, Mapping[str, Any]] = field(
-        default_factory=dict,
+    _backend_override: object | None = field(default=None, repr=False, compare=False)
+    _plan_key: bytes = field(
+        default_factory=lambda: secrets.token_bytes(32),
         repr=False,
         compare=False,
     )
@@ -100,21 +105,24 @@ class Project:
     def open(
         cls,
         root: Path | str,
-        *,
-        backends: object = (),
     ) -> "Project":
-        """Open one project and bind its explicit execution backends."""
-
-        from sigilicon.execution.backend import Backends
+        """Open the canonical project rooted at *root* without loading tools."""
 
         location = Path(root).resolve()
-        project = (
-            cls.from_file(location)
-            if location.is_file()
-            else cls.from_project_root(location)
-        )
-        selected = backends if isinstance(backends, Backends) else Backends(backends)
-        return replace(project, _backends=selected)
+        if not location.is_dir():
+            raise ValueError("Project.open requires a project root directory")
+        project = cls._from_file(location / "sigilicon.toml")
+        if project.project_root != location:
+            raise ValueError("sigilicon.toml declares a different project root")
+        return project
+
+    def _selected_backends(self):
+        from sigilicon.backends import trusted_backends
+        from sigilicon.execution.backend import Backends
+
+        if self._backend_override is not None:
+            return self._backend_override
+        return Backends(trusted_backends())
 
     def plan(self, selector: str):
         """Compile one canonical ``owner/target:operation`` selector."""
@@ -134,27 +142,52 @@ class Project:
             project_root=self.project_root,
             target=target,
             operation=operation,
+            project_identity=self.identity,
         )
-        self._issued_plans[plan.identity] = plan.record
-        return plan
+        return replace(plan, _authorization=self._authorize_plan(plan))
+
+    def _authorize_plan(self, plan) -> str:
+        return hmac.new(
+            self._plan_key,
+            canonical_json(plan.record).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
 
     def preflight(self, plan, resources=None):
         """Check a plan without creating a run or starting a backend."""
 
-        from sigilicon.execution.backend import Backends
         from sigilicon.execution.engine import preflight
-        from sigilicon.execution.model import ExecutionPlan, Resources
+        from sigilicon.execution.model import (
+            ExecutionPlan,
+            PreflightCheck,
+            PreflightResult,
+            Resources,
+        )
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
-        self._require_canonical_plan(plan)
+        self._require_canonical_plan(plan, require_current=False)
         selected = Resources() if resources is None else resources
         if not isinstance(selected, Resources):
             raise TypeError("Project.preflight resources must be Resources")
-        return preflight(
+        checked = preflight(
             plan,
-            Backends() if self._backends is None else self._backends,
+            self._selected_backends(),
             selected,
+        )
+        if plan.project_identity == self.identity:
+            return checked
+        return PreflightResult(
+            checked.plan_identity,
+            (
+                PreflightCheck(
+                    "project",
+                    plan.owner,
+                    "blocked",
+                    "project composition changed after planning",
+                ),
+                *checked.checks,
+            ),
         )
 
     def run(
@@ -167,7 +200,6 @@ class Project:
     ):
         """Execute one source-current plan through its selected backends."""
 
-        from sigilicon.execution.backend import Backends
         from sigilicon.execution.engine import run
         from sigilicon.execution.model import ExecutionPlan, Resources
 
@@ -179,7 +211,7 @@ class Project:
             raise TypeError("Project.run resources must be Resources")
         return run(
             plan,
-            Backends() if self._backends is None else self._backends,
+            self._selected_backends(),
             selected,
             artifact_root=self.artifact_root,
             project_root=self.project_root,
@@ -189,9 +221,12 @@ class Project:
             progress=progress,
         )
 
-    def _require_canonical_plan(self, plan) -> None:
+    def _require_canonical_plan(self, plan, *, require_current: bool = True) -> None:
         """Reject plans not compiled from this Project's current owner contract."""
 
+        expected = self._authorize_plan(replace(plan, _authorization=""))
+        if not hmac.compare_digest(plan._authorization, expected):
+            raise ValueError("execution plan was not authorized by this Project")
         owner = self.owner(plan.owner)
         for source in plan.sources:
             if source.scope == "owner":
@@ -207,9 +242,8 @@ class Project:
                 raise ValueError(
                     "execution plan contains a source outside its owner/shared roots"
                 )
-        issued = self._issued_plans.get(plan.identity)
-        if issued is None or issued != plan.record:
-            raise ValueError("execution plan was not produced by this Project")
+        if require_current and plan.project_identity != self.identity:
+            raise ValueError("execution plan belongs to a different Project composition")
 
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:
@@ -220,7 +254,7 @@ class Project:
         )
 
     @classmethod
-    def from_file(cls, path: Path | str) -> "Project":
+    def _from_file(cls, path: Path | str) -> "Project":
         contract = Path(path).resolve()
         raw = read_toml(contract)
         project = ProjectContext.from_contract(contract, raw)
@@ -369,14 +403,6 @@ class Project:
             ),
         )
 
-    @classmethod
-    def from_project_root(cls, project_root: Path | str) -> "Project":
-        root = Path(project_root).resolve()
-        project = cls.from_file(root / "sigilicon.toml")
-        if project.project_root != root:
-            raise ValueError("sigilicon.toml declares a different project root")
-        return project
-
     def manifest_source_document(self) -> Mapping[str, Any]:
         """Validate and return the manifest source captured with this Project."""
 
@@ -425,6 +451,34 @@ class Project:
             self.project_root / "sigilicon.toml"
             if self._manifest_path is None
             else self._manifest_path
+        )
+
+    @property
+    def identity(self) -> str:
+        """Return the deterministic identity of this Project composition."""
+
+        paths = {
+            self.manifest_path,
+            *(path for _, path in self.catalog_paths),
+            *(owner.component.path for owner in self.owners),
+            *(
+                self.project_root.joinpath(*owner.component.target_catalog.parts)
+                for owner in self.owners
+                if owner.component.target_catalog is not None
+            ),
+        }
+        return canonical_digest(
+            {
+                "sources": [
+                    {
+                        "path": path.relative_to(self.project_root).as_posix(),
+                        "sha256": hashlib.sha256(
+                            read_nofollow_text(path).encode("utf-8")
+                        ).hexdigest(),
+                    }
+                    for path in sorted(paths)
+                ],
+            }
         )
 
     @property
@@ -609,3 +663,12 @@ class Project:
         if len(matches) > 1:
             raise ValueError(f"owner {owner.name!r} has multiple OA assemblies")
         return matches[0] if matches else None
+
+
+def _open_project_for_test(root: Path | str, backends: object) -> Project:
+    """Assemble private test Adapters outside the public Project Interface."""
+
+    from sigilicon.execution.backend import Backends
+
+    selected = backends if isinstance(backends, Backends) else Backends(backends)
+    return replace(Project.open(root), _backend_override=selected)

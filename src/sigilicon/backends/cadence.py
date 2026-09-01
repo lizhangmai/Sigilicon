@@ -277,7 +277,7 @@ class XceliumAmsBackend:
         )
 
     def run(self, context: StepContext) -> StepResult:
-        from sigilicon.domain.repository import Project
+        from sigilicon.project import Project
         from sigilicon.workflows.run_artifacts import RunArtifacts
         from sigilicon.workflows.xcelium_ams import (
             execute_xcelium_ams_cell,
@@ -289,7 +289,7 @@ class XceliumAmsBackend:
         project_root, owner_path = _copy_isolated_project(
             context, owner, shallow_component=True
         )
-        project = Project.from_project_root(project_root)
+        project = Project.open(project_root)
         if project.owner(owner).root.resolve() != project_root / owner_path:
             raise ExecutionError("Xcelium AMS owner identity drift")
         cell = project_root / owner_path / _relative(
@@ -459,7 +459,7 @@ class NativeOaBackend:
         return _capability_checks(resources, _OA_CAPABILITIES)
 
     def run(self, context: StepContext) -> StepResult:
-        from sigilicon.domain.repository import Project
+        from sigilicon.project import Project
         from sigilicon.virtuoso.client import get_client
         from sigilicon.workflows.oa_library import oa_plan_source_paths
         from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
@@ -469,7 +469,7 @@ class NativeOaBackend:
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
         project_root, owner_path = _copy_isolated_project(context, owner)
-        project = Project.from_project_root(project_root)
+        project = Project.open(project_root)
         if project.owner(owner).root.resolve() != project_root / owner_path:
             raise ExecutionError("native OA owner identity drift")
         plan = ProjectOaWorkflow(project, owner).plan()
@@ -566,7 +566,7 @@ class LayoutBackend:
         return _capability_checks(resources, _OA_CAPABILITIES)
 
     def run(self, context: StepContext) -> StepResult:
-        from sigilicon.domain.repository import Project
+        from sigilicon.project import Project
         from sigilicon.virtuoso.client import get_client
         from sigilicon.workflows.layout_generation import generate_layout, plan_layout_spec
         from sigilicon.workflows.run_artifacts import RunArtifacts
@@ -574,7 +574,7 @@ class LayoutBackend:
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
         project_root, owner_path = _copy_isolated_project(context, owner)
-        project = Project.from_project_root(project_root)
+        project = Project.open(project_root)
         if project.owner(owner).root.resolve() != project_root / owner_path:
             raise ExecutionError("layout owner identity drift")
         spec = project_root / owner_path / _relative(_text(config, "spec"), "layout spec")
@@ -655,7 +655,7 @@ class LayoutVerificationBackend:
         )
 
     def run(self, context: StepContext) -> StepResult:
-        from sigilicon.domain.repository import Project
+        from sigilicon.project import Project
         from sigilicon.virtuoso.client import get_client
         from sigilicon.workflows.layout_generation import plan_layout_spec
         from sigilicon.workflows.layout_verification import run_layout_verification
@@ -664,7 +664,7 @@ class LayoutVerificationBackend:
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
         project_root, owner_path = _copy_isolated_project(context, owner)
-        project = Project.from_project_root(project_root)
+        project = Project.open(project_root)
         if project.owner(owner).root.resolve() != project_root / owner_path:
             raise ExecutionError("layout verification owner identity drift")
         spec = (

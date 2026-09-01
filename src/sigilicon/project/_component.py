@@ -1,4 +1,4 @@
-"""Small, technology-neutral component ownership contracts."""
+"""Private owner composition contracts used by the Project module."""
 
 from __future__ import annotations
 
@@ -8,12 +8,11 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     require_config_header,
 )
-from sigilicon.domain.ip_release import safe_relative
 
 
 COMPONENT_KINDS = {
@@ -30,6 +29,19 @@ def _string(value: object, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty string")
     return value
+
+
+def _safe_relative(value: object, label: str) -> PurePosixPath:
+    text = _string(value, label)
+    path = PurePosixPath(text)
+    if (
+        path.is_absolute()
+        or "\\" in text
+        or path.as_posix() != text
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"{label} must be a safe project-relative path: {text!r}")
+    return path
 
 
 @dataclass(frozen=True)
@@ -78,7 +90,7 @@ def parse_component_contract(
     public_interface = (
         None
         if interface_value is None
-        else safe_relative(interface_value, "public_interface")
+        else _safe_relative(interface_value, "public_interface")
     )
 
     filesets_raw = document.get("filesets", {})
@@ -91,7 +103,7 @@ def parse_component_contract(
         if not isinstance(values, (list, tuple)) or not values:
             raise ValueError(f"filesets.{name} must be a non-empty array")
         filesets[name] = tuple(
-            safe_relative(value, f"filesets.{name} entry") for value in values
+            _safe_relative(value, f"filesets.{name} entry") for value in values
         )
 
     dependencies_raw = document.get("component", [])
@@ -109,7 +121,7 @@ def parse_component_contract(
         dependencies.append(
             ComponentDependency(
                 name=name,
-                contract=safe_relative(
+                contract=_safe_relative(
                     value.get("contract"), f"component[{index}].contract"
                 ),
             )
@@ -119,7 +131,7 @@ def parse_component_contract(
     target_catalog = (
         None
         if target_catalog_value is None
-        else safe_relative(target_catalog_value, "target_catalog")
+        else _safe_relative(target_catalog_value, "target_catalog")
     )
 
     result = ComponentContract(

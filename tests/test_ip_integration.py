@@ -17,7 +17,7 @@ from sigilicon.domain.ip_integration import (
     RtlReleaseInterfaceReference,
     load_ip_integration_contract,
 )
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.workflows.ip_integration import (
     check_ip_integration,
     ip_catalog_contract_path,
@@ -743,7 +743,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
 
     result = check_ip_integration(
         contract,
-        project=Project.from_project_root(project_root),
+        project=Project.open(project_root),
         artifact_root=artifact_root,
         variant_name="default",
     )
@@ -764,7 +764,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
 
     resolved = resolve_ip_integration_fileset(
         contract,
-        project=Project.from_project_root(project_root),
+        project=Project.open(project_root),
         artifact_root=artifact_root,
         variant_name="default",
     )
@@ -814,13 +814,13 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
 
     plan = plan_ip_integration(
         contract,
-        project=Project.from_project_root(project_root),
+        project=Project.open(project_root),
         artifact_root=tmp_path / "artifacts",
     )
 
     result = check_ip_integration(
         contract,
-        project=Project.from_project_root(project_root),
+        project=Project.open(project_root),
         artifact_root=tmp_path / "artifacts",
         variant_name="default",
     )
@@ -850,7 +850,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     contract_path = _write_ip_fixture(project_root, release_id, manifest)
     _select_rtl_dependency(contract_path)
 
-    project = Project.from_project_root(project_root).with_artifact_root(
+    project = Project.open(project_root).with_artifact_root(
         artifact_root
     )
     contract = load_ip_integration_contract(
@@ -930,7 +930,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     with pytest.raises(RuntimeError, match="interface does not match"):
         check_ip_integration(
             contract_path,
-            project=Project.from_project_root(project_root).with_artifact_root(
+            project=Project.open(project_root).with_artifact_root(
                 artifact_root
             ),
             variant_name="default",
@@ -950,7 +950,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
         artifact_root=artifact_root,
         manifest=manifest,
     )
-    project = Project.from_project_root(project_root).with_artifact_root(
+    project = Project.open(project_root).with_artifact_root(
         artifact_root
     )
 
@@ -1056,7 +1056,7 @@ def test_native_oa_planner_rejects_provider_interface_identity_drift(
         artifact_root=artifact_root,
         manifest=manifest,
     )
-    project = Project.from_project_root(project_root).with_artifact_root(
+    project = Project.open(project_root).with_artifact_root(
         artifact_root
     )
     producer_path = project_root / "ip/fixture/configs/release.toml"
@@ -1129,7 +1129,7 @@ def test_ip_catalog_never_selects_an_uncataloged_project_file(
         ),
         encoding="utf-8",
     )
-    project = Project.from_project_root(project_root)
+    project = Project.open(project_root)
 
     with pytest.raises(ValueError, match="no cataloged owner"):
         ip_catalog_contract_path(
@@ -1164,7 +1164,7 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
 
     result = check_ip_integration(
         contract,
-        project=Project.from_project_root(project_root),
+        project=Project.open(project_root),
         artifact_root=artifact_root,
         variant_name="default",
     )
@@ -1187,7 +1187,7 @@ def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="stay inside owner 'demo' root"):
         check_ip_integration(
             contract,
-            project=Project.from_project_root(project_root),
+            project=Project.open(project_root),
             artifact_root=artifact_root,
             variant_name="default",
             lock_path=foreign_lock,
@@ -1216,7 +1216,7 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
     with pytest.raises(ValueError, match="filelist.*inside owner 'demo' root"):
         ip_integration.plan_ip_integration_fileset(
             contract,
-            project=Project.from_project_root(project_root),
+            project=Project.open(project_root),
             variant_name="default",
         )
 
@@ -1228,7 +1228,7 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
     with pytest.raises(RuntimeError, match="safe project-relative path"):
         ip_integration.plan_ip_integration_fileset(
             contract,
-            project=Project.from_project_root(project_root),
+            project=Project.open(project_root),
             variant_name="default",
         )
 
@@ -1252,7 +1252,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     with pytest.raises(RuntimeError, match="unavailable for synthesis"):
         check_ip_integration(
             contract,
-            project=Project.from_project_root(project_root),
+            project=Project.open(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )
@@ -1267,7 +1267,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     with pytest.raises(RuntimeError, match="physical binding is blocked"):
         check_ip_integration(
             contract,
-            project=Project.from_project_root(project_root),
+            project=Project.open(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )
@@ -1332,7 +1332,7 @@ def test_ip_integration_rejects_invalid_locked_release_state(
     with pytest.raises((RuntimeError, FileNotFoundError), match=message):
         check_ip_integration(
             contract,
-            project=Project.from_project_root(project_root),
+            project=Project.open(project_root),
             artifact_root=artifact_root,
             variant_name="default",
         )

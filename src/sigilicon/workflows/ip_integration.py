@@ -8,7 +8,7 @@ from pathlib import Path
 import tomllib
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.domain.config_contracts import require_config_header, thaw_toml_document
+from sigilicon.contracts import require_config_header, thaw_toml_document
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
     IpIntegrationDependency,
@@ -32,7 +32,7 @@ from sigilicon.domain.ip_release import (
 )
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
-from sigilicon.domain.repository import Project
+from sigilicon.project import Project
 from sigilicon.project_modules import project_import_path
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,

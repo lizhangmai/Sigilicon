@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-import sigilicon.domain.component as component_domain
-from sigilicon.domain.component import (
+import sigilicon.project._component as component_domain
+from sigilicon.project._component import (
     load_component_contract,
     load_component_graph,
     resolve_component_contract,

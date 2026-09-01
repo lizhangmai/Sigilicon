@@ -8,14 +8,14 @@ import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
-from sigilicon.domain.component import (
+from sigilicon.project._component import (
     ComponentContract,
     load_component_contract,
     load_component_graph,
     resolve_component_contract,
     resolve_component_graph,
 )
-from sigilicon.domain.config_contracts import (
+from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     require_config_header,
@@ -23,7 +23,7 @@ from sigilicon.domain.config_contracts import (
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
 
 if TYPE_CHECKING:
-    from sigilicon.domain.repository import Project
+    from sigilicon.project import Project
 
 
 _CAPABILITIES = frozenset({"simulation", "synthesis", "physical_implementation"})
@@ -688,7 +688,7 @@ def load_ip_integration_contract(
 ) -> IpIntegrationContract:
     """Load composite-IP integration intent from its canonical component manifest."""
 
-    from sigilicon.domain.repository import Project
+    from sigilicon.project import Project
 
     repository = project
     root = repository.project_root

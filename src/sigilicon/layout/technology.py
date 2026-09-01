@@ -8,7 +8,7 @@ import re
 import tomllib
 from typing import Mapping
 
-from sigilicon.domain.config_contracts import require_config_header
+from sigilicon.contracts import require_config_header
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")

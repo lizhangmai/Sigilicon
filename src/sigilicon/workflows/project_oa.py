@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from sigilicon.domain.repository import Project, RepositoryOwner
+from sigilicon.project import Project
+from sigilicon.project._project import RepositoryOwner
 from sigilicon.workflows.oa_check import check_oa_library
 from sigilicon.workflows.oa_library import (
     OALibraryRebuildPlan,
