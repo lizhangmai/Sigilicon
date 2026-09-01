@@ -376,7 +376,8 @@ class ExecutionPlan:
             "backend_bindings": [
                 {"step": step.id, **self._backend_record(step)}
                 for step in self.steps
-            ] if self._backends else [],
+                if step.id in self._backends
+            ],
         }
 
     @property

@@ -8,6 +8,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from collections.abc import Callable
 import tomllib
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
@@ -57,6 +58,23 @@ class XceliumAmsCellPlan(XceliumCellPlan):
     model_sha256: Mapping[Path, str]
     integration_check: Mapping[str, Any]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source_records",
+            MappingProxyType(dict(self.source_records)),
+        )
+        object.__setattr__(
+            self,
+            "model_sha256",
+            MappingProxyType(dict(self.model_sha256)),
+        )
+        object.__setattr__(
+            self,
+            "integration_check",
+            MappingProxyType(dict(self.integration_check)),
+        )
+
     def render_ams_control(
         self,
         *,
@@ -94,21 +112,24 @@ class XceliumAmsCellPlan(XceliumCellPlan):
                 "dependency": ams.dependency,
                 "role": ams.circuit_role,
                 "cell": self.native_cell,
-                "circuit_netlist": self.circuit_netlist.name,
+                "circuit_netlist": str(self.circuit_netlist.resolve()),
                 "circuit_sha256": self.circuit_sha256,
                 "integration_check": dict(self.integration_check),
             },
             "platform_model": {
                 "platform": self.platform.key,
                 "model_set": self.model_set.name,
-                "file": self.model_set.file.name,
+                "file": str(self.model_set.file.resolve()),
                 "section": self.model_set.single_section,
                 "support_files": [
-                    path.name for path in self.model_set.support_files
+                    str(path.resolve()) for path in self.model_set.support_files
                 ],
-                "sha256": {
-                    path.name: digest for path, digest in self.model_sha256.items()
-                },
+                "sha256": [
+                    {"path": str(path.resolve()), "digest": digest}
+                    for path, digest in sorted(
+                        self.model_sha256.items(), key=lambda item: str(item[0])
+                    )
+                ],
             },
             "command_template": list(self.command_template),
             "product_qualification_conclusion": False,
