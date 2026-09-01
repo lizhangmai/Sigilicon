@@ -9,21 +9,17 @@ import sys
 
 _COMMANDS = (
     "artifact-path",
-    "candidate",
-    "read",
-    "execute",
-    "campaign",
     "flow",
     "oa",
     "ip",
 )
 
-_HELP = """usage: sigilicon [-h] {artifact-path,candidate,read,execute,campaign,flow,oa,ip} ...
+_HELP = """usage: sigilicon [-h] {artifact-path,flow,oa,ip} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {artifact-path,candidate,read,execute,campaign,flow,oa,ip}
+  {artifact-path,flow,oa,ip}
 
 options:
   -h, --help            show this help message and exit
@@ -54,22 +50,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from sigilicon.cli.artifact_path import main as artifact_path_main
 
         return artifact_path_main(arguments[1:])
-    if command == "candidate":
-        from sigilicon.cli.candidate import main as candidate_main
-
-        return candidate_main(arguments[1:])
-    if command == "read":
-        from sigilicon.cli.agentic_read import main as agentic_read_main
-
-        return agentic_read_main(arguments[1:])
-    if command == "execute":
-        from sigilicon.cli.agentic_execute import main as agentic_execute_main
-
-        return agentic_execute_main(arguments[1:])
-    if command == "campaign":
-        from sigilicon.cli.campaign import main as campaign_main
-
-        return campaign_main(arguments[1:])
     if command == "oa" or command == "ip":
         from sigilicon.cli.flow import main as flow_main
 

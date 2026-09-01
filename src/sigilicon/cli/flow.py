@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Sequence
+import os
 from pathlib import Path
 import sys
 from typing import Any
 
 from sigilicon.cli.common import add_json_arg, die, emit_json
-from sigilicon.domain.repository import Project
-from sigilicon.flow import (
-    ExecutionEnvironment,
-    ResolvedCapability,
-)
+from sigilicon.execution import Resources
+from sigilicon.project import Project
 from sigilicon.paths import discover_project_contract
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.ip_integration import (
@@ -28,7 +26,6 @@ from sigilicon.workflows.ip_packaging import (
     publish_ip_release,
 )
 from sigilicon.workflows.oa_check import UnavailableBridge
-from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 
@@ -297,26 +294,23 @@ def _run_oa(
             plan = workflow.plan()
             payload = plan.as_dict()
         elif args.action == "simulate":
-            project_runner = ProjectRunner(workflow.project, workflow.owner_name)
-            planned = project_runner.plan(args.target, args.operation)
-            result = planned.run(
-                ExecutionEnvironment(
-                    capabilities={
-                        "tool.virtuoso-bridge": ResolvedCapability(
-                            "current-process:tool.virtuoso-bridge"
-                        ),
-                        "license.cadence-oa": ResolvedCapability(
-                            "current-process:license.cadence-oa"
-                        ),
-                    }
+            planned = workflow.project.plan(
+                f"{workflow.owner_name}/{args.target}:{args.operation}"
+            )
+            result = workflow.project.run(
+                planned,
+                Resources(
+                    frozenset({"tool.virtuoso-bridge", "license.cadence-oa"}),
+                    dict(os.environ),
                 ),
             )
-            payload = workflow.project.runs.read(
-                owner=planned.owner,
-                target=planned.target,
-                operation=planned.operation,
+            stored = workflow.project.runs.read(
+                owner=result.owner,
+                target=result.target,
+                operation=result.operation,
                 run_id=result.run_id,
             )
+            payload = stored.record
         else:
             client = client_factory()
             if args.action == "attest":
@@ -364,8 +358,8 @@ def _run_oa(
             )
         elif args.action == "simulate":
             print(
-                f"OA Maestro Flow completed: {payload['flow']}/"
-                f"{payload['target']} status={payload['status']}"
+                f"OA Maestro operation completed: {payload['target']}/"
+                f"{payload['operation']} status={payload['status']}"
             )
             print(f"managed run: {payload['run_id']}")
         else:
@@ -378,7 +372,7 @@ def _run_oa(
             else:
                 print(f"OA library {payload['library']} differs from canonical source")
     if args.action == "simulate":
-        return 0 if payload.get("status") == "accepted" else 1
+        return 0 if payload.get("status") == "succeeded" else 1
     return 0 if bool(payload.get("passed")) else 1
 
 
@@ -389,7 +383,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     project_contract = discover_project_contract(__file__)
-    project = Project.from_file(project_contract)
+    project = Project.open(project_contract)
     if args.domain == "oa":
         try:
             workflow = ProjectOaWorkflow(project, args.owner)

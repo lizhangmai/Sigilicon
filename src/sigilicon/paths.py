@@ -272,67 +272,6 @@ class ArtifactLayout:
             result /= validate_artifact_component(component, "export component")
         return result
 
-    def agentic_execution(
-        self,
-        *,
-        owner: str,
-        target: str,
-        flow: str,
-        identity: str,
-    ) -> ArtifactExecutionPaths:
-        """Resolve private control/audit storage for one managed Flow Run."""
-
-        owner_name = validate_artifact_component(owner, "owner")
-        target_name = validate_artifact_component(target, "target")
-        flow_name = validate_artifact_component(flow, "flow")
-        run_id = validate_artifact_id(identity, "run id")
-        namespace = (
-            self.root
-            / "system"
-            / "agentic-target-runs"
-            / owner_name
-            / target_name
-            / flow_name
-        )
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=namespace,
-            root=namespace / run_id,
-            artifact_kind="agentic-target-run",
-            identity_kind="run_id",
-            identity=run_id,
-            roles=("control", "audit"),
-        )
-
-    def agentic_campaign(
-        self,
-        *,
-        owner: str,
-        campaign: str,
-        identity: str,
-    ) -> ArtifactExecutionPaths:
-        """Resolve private durable state for one feedback-driven Campaign."""
-
-        owner_name = validate_artifact_component(owner, "owner")
-        campaign_name = validate_artifact_component(campaign, "campaign")
-        run_id = validate_artifact_id(identity, "run id")
-        namespace = (
-            self.root
-            / "system"
-            / "agentic-design-campaigns"
-            / owner_name
-            / campaign_name
-        )
-        return ArtifactExecutionPaths.build(
-            artifact_root=self.root,
-            namespace_root=namespace,
-            root=namespace / run_id,
-            artifact_kind="agentic-design-campaign",
-            identity_kind="run_id",
-            identity=run_id,
-            roles=("control", "audit", "inputs", "outputs"),
-        )
-
     def system_operation(self, operation_id: str) -> OperationIncidentPaths:
         operation = validate_artifact_id(operation_id, "operation id")
         return OperationIncidentPaths(

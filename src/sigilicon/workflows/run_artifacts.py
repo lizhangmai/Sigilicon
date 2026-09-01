@@ -1,4 +1,4 @@
-"""Artifact workspace seam owned by one parent Flow execution."""
+"""Tool workspace helper owned by one managed execution Step."""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from sigilicon.artifacts import (
     read_nofollow_text,
     write_immutable_text,
 )
-from sigilicon.flow import ActionContext
+from sigilicon.execution import StepContext
 from sigilicon.paths import validate_artifact_component
 
 
 @dataclass(frozen=True)
 class RunArtifacts:
-    """Artifact directories owned by one Flow Action execution."""
+    """Artifact directories owned by one execution Step."""
 
     run_id: str
     root: Path
@@ -31,20 +31,21 @@ class RunArtifacts:
     source: Mapping[str, Any]
 
     @classmethod
-    def from_action_context(
+    def from_step_context(
         cls,
-        context: ActionContext,
+        context: StepContext,
         output_role: str,
         source: Mapping[str, Any],
     ) -> RunArtifacts:
-        context.action.output(output_role)
+        role = validate_artifact_component(output_role, "output role")
+        run_root = context.output_root.parents[1]
         return cls(
-            run_id=context.run_root.name,
-            root=context.run_root,
+            run_id=context.run_id,
+            root=run_root,
             input_root=context.work_root / "inputs",
             work_root=context.work_root / "tool",
-            output_root=context.output_root / output_role,
-            log_root=context.log_root,
+            output_root=context.output_root / role,
+            log_root=context.work_root / "logs",
             source=source,
         )
 
@@ -130,25 +131,26 @@ _MANAGED_ARTIFACT_CONTEXT = "SIGILICON_MANAGED_RUN_ARTIFACTS"
 
 
 def managed_run_artifact_environment(
-    context: ActionContext,
+    context: StepContext,
     output_role: str,
     source: Mapping[str, Any],
 ) -> dict[str, str]:
-    """Write the exact child-process boundary for one current Flow Action."""
+    """Write the exact child-process boundary for one current Step."""
 
-    context.action.output(output_role)
+    role = validate_artifact_component(output_role, "output role")
+    run_root = context.output_root.parents[1]
     path = context.work_root / "managed-run-artifacts.json"
     write_immutable_text(
         path,
         json.dumps(
             {
                 "schema": 1,
-                "run_id": context.run_root.name,
-                "run_root": str(context.run_root),
+                "run_id": context.run_id,
+                "run_root": str(run_root),
                 "input_root": str(context.work_root / "inputs"),
                 "work_root": str(context.work_root / "tool"),
-                "output_root": str(context.output_root / output_role),
-                "log_root": str(context.log_root),
+                "output_root": str(context.output_root / role),
+                "log_root": str(context.work_root / "logs"),
                 "source": dict(source),
             },
             indent=2,

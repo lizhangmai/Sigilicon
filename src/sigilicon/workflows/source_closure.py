@@ -6,8 +6,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from sigilicon.domain.repository import Project
-from sigilicon.flow.model import SourceMember
-from sigilicon.flow.source_assets import snapshot_source_member
+from sigilicon.execution.model import Source
 
 
 def project_source_members(
@@ -17,7 +16,7 @@ def project_source_members(
     label: str,
     records: Mapping[Path, str] | None = None,
     external_roots: tuple[tuple[str, Path], ...] = (),
-) -> tuple[SourceMember, ...]:
+) -> tuple[Source, ...]:
     """Snapshot planner-selected source bytes within explicitly declared roots."""
 
     normalized_records: dict[Path, str] | None = None
@@ -60,21 +59,18 @@ def project_source_members(
                 )
             scope, root = matches[0]
             selected.add((scope, root, resolved))
-    return tuple(
-        snapshot_source_member(
-            path,
-            source_root=root,
-            scope=scope,
-            record_text=(
-                None if normalized_records is None else normalized_records[path]
-            ),
-            source_label=label,
-        )
+    result = tuple(
+        Source.capture(path, root=root, scope=scope)
         for scope, root, path in sorted(
             selected,
             key=lambda item: (item[0], item[2].as_posix()),
         )
     )
+    if normalized_records is not None and any(
+        normalized_records[source.location] != source.text for source in result
+    ):
+        raise ValueError(f"{label} source changed after its typed plan was loaded")
+    return result
 
 
 __all__ = ["project_source_members"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import stat
@@ -37,6 +38,7 @@ ARTIFACT_ROLES = {
         "oa_maestro_simulation",
         "netlist_import",
         "analysis",
+        "execution-run",
     )
 }
 ARTIFACT_IDENTITY_KINDS = {
@@ -49,6 +51,7 @@ ARTIFACT_IDENTITY_KINDS = {
     "oa_maestro_simulation": "run_id",
     "netlist_import": "attempt_id",
     "analysis": "run_id",
+    "execution-run": "run_id",
 }
 ARTIFACT_ENTITY_FIELDS = {
     "design_sync": ({"library", "cell"}, {"library", "cell"}),
@@ -81,6 +84,7 @@ ARTIFACT_ENTITY_FIELDS = {
         {"library", "cell", "analysis", "model"},
         {"library", "cell", "analysis", "model"},
     ),
+    "execution-run": ({"owner", "target"}, {"owner", "target"}),
 }
 
 
@@ -156,6 +160,61 @@ def _read_nofollow_bytes(path: Path) -> bytes:
         ):
             raise RuntimeError(f"artifact input changed while reading: {absolute}")
         return b"".join(chunks)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_fd)
+
+
+def _inspect_nofollow_file(path: Path) -> tuple[os.stat_result, str]:
+    """Hash one held regular inode and prove its visible pathname identity."""
+
+    absolute = Path(os.path.abspath(path))
+    parent_fd = _open_nofollow_directory(absolute.parent, create_missing=False)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            absolute.name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        before = os.fstat(descriptor)
+        visible = os.stat(absolute.name, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISDIR(before.st_mode):
+            raise IsADirectoryError(absolute)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or (visible.st_dev, visible.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise RuntimeError(f"artifact file identity is unsafe: {absolute}")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        visible_after = os.stat(
+            absolute.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_nlink,
+        ) or (visible_after.st_dev, visible_after.st_ino) != (
+            after.st_dev,
+            after.st_ino,
+        ):
+            raise RuntimeError(f"artifact file changed while hashing: {absolute}")
+        return after, digest.hexdigest()
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -437,15 +496,27 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ArtifactManifestError("manifest file reference has invalid kind")
             size = reference.get("size")
             if kind == "file" and (
-                set(reference).difference({"path", "kind", "size", "label"})
+                set(reference).difference({"path", "kind", "size", "sha256", "label"})
                 or not isinstance(size, int)
                 or isinstance(size, bool)
                 or size < 0
+                or (
+                    "sha256" in reference
+                    and (
+                        not isinstance(reference["sha256"], str)
+                        or len(reference["sha256"]) != 64
+                        or any(
+                            character not in "0123456789abcdef"
+                            for character in reference["sha256"]
+                        )
+                    )
+                )
             ):
                 raise ArtifactManifestError("manifest file reference has invalid metadata")
             if kind == "directory" and (
                 set(reference).difference({"path", "kind", "label"})
                 or "size" in reference
+                or "sha256" in reference
             ):
                 raise ArtifactManifestError(
                     "manifest directory reference cannot have file metadata"
@@ -597,7 +668,7 @@ class ArtifactRecord:
     paths: ArtifactExecutionPaths
     manifest: dict[str, Any]
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
-    _file_states: dict[str, tuple[int, int, int]] = field(
+    _file_states: dict[str, tuple[int, int, int, str]] = field(
         default_factory=dict, repr=False
     )
 
@@ -670,17 +741,23 @@ class ArtifactRecord:
             candidate = _resolved_artifact_member(
                 role_root, Path(path), f"{role} file reference"
             )
-            metadata = candidate.stat(follow_symlinks=False)
+            try:
+                metadata, digest = _inspect_nofollow_file(candidate)
+            except IsADirectoryError:
+                metadata = candidate.stat(follow_symlinks=False)
+                digest = ""
             if stat.S_ISREG(metadata.st_mode):
                 reference = {
                     "path": candidate.relative_to(self.paths.root).as_posix(),
                     "kind": "file",
                     "size": metadata.st_size,
+                    "sha256": digest,
                 }
                 self._file_states[reference["path"]] = (
                     metadata.st_ino,
                     metadata.st_size,
                     metadata.st_mtime_ns,
+                    digest,
                 )
             elif stat.S_ISDIR(metadata.st_mode):
                 descriptor = _open_nofollow_directory(candidate, create_missing=False)
@@ -701,6 +778,30 @@ class ArtifactRecord:
             entries.append(reference)
             self._persist_candidate(candidate_manifest)
             return reference
+
+    def _verify_registered_files(self) -> None:
+        for entries in self.manifest["files"].values():
+            for reference in entries:
+                path = self.paths.root / reference["path"]
+                if reference["kind"] == "directory":
+                    descriptor = _open_nofollow_directory(path, create_missing=False)
+                    os.close(descriptor)
+                    continue
+                metadata, digest = _inspect_nofollow_file(path)
+                state = (
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                    digest,
+                )
+                if (
+                    reference.get("sha256") != digest
+                    or reference.get("size") != metadata.st_size
+                    or self._file_states.get(reference["path"]) != state
+                ):
+                    raise RuntimeError(
+                        f"artifact file changed after registration: {reference['path']}"
+                    )
 
     def write_text(
         self,
@@ -778,6 +879,8 @@ class ArtifactRecord:
                     raise ValueError(
                         f"reserved manifest detail fields: {', '.join(sorted(reserved))}"
                     )
+            if status == "succeeded":
+                self._verify_registered_files()
             proof: list[str] = []
             for path in completion_evidence:
                 candidate = _resolved_artifact_member(
@@ -801,11 +904,12 @@ class ArtifactRecord:
                     raise RuntimeError(
                         f"completion evidence is not registered in manifest: {relative}"
                     )
-                metadata = candidate.stat(follow_symlinks=False)
+                metadata, digest = _inspect_nofollow_file(candidate)
                 current_state = (
                     metadata.st_ino,
                     metadata.st_size,
                     metadata.st_mtime_ns,
+                    digest,
                 )
                 if (
                     registered["kind"] != "file"

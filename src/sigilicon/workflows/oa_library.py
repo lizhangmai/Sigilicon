@@ -35,8 +35,7 @@ from sigilicon.domain.platform import (
 )
 from sigilicon.domain.repository import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
-from sigilicon.flow.model import SourceMember
-from sigilicon.flow.serialization import json_value
+from sigilicon.execution.model import Source, json_value
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.virtuoso.attestation import attest_native_setup
@@ -352,11 +351,11 @@ def _oa_plan_source_expectations(
 
 def validate_oa_plan_source_members(
     plan: OALibraryRebuildPlan,
-    members: Sequence[SourceMember],
+    members: Sequence[Source],
 ) -> None:
     """Prove that Action sources are complete and match the typed OA snapshots."""
 
-    records = {member.location: member.record_text for member in members}
+    records = {member.location: member.text for member in members}
     required = oa_plan_source_paths(plan)
     if not required.issubset(records):
         missing = sorted(path.as_posix() for path in required - records.keys())

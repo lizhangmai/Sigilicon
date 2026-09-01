@@ -14,14 +14,13 @@ from sigilicon.domain.config_contracts import (
     inspect_project_configuration_sources,
     read_toml,
     require_config_header,
-    thaw_toml_document,
 )
+from sigilicon.execution.operations import compile_operation
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platform_inventory
 from sigilicon.domain.repository import Project
-from sigilicon.domain.targets import load_owner_target_catalog
 from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
 from sigilicon.workflows.ip_integration import plan_ip_integration_contract
@@ -143,16 +142,18 @@ def inspect_repository_designs(
     context = project
     root = context.project_root
     source_inventory = RepositorySourceInventory.for_project(context)
-    target_catalog_inventory = tuple(
-        context.owner_target_catalog(owner)
+    operation_catalog_inventory = {
+        owner.name: context.project_root.joinpath(
+            *owner.component.target_catalog.parts
+        ).resolve()
         for owner in context.owners
         if owner.component.target_catalog is not None
-    )
+    }
     source_inventory.verify(
-        "owner target catalog snapshot",
+        "owner operation catalog snapshot",
         {
-            snapshot.path: snapshot.document
-            for snapshot in target_catalog_inventory
+            path: source_inventory.resolve(path)
+            for path in operation_catalog_inventory.values()
         },
     )
     ip_catalog = context.ip_catalog_snapshot()
@@ -372,43 +373,56 @@ def inspect_repository_designs(
     )
     configuration = inspect_project_configuration_sources(
         context,
-        target_catalog_inventory=target_catalog_inventory,
+        operation_catalog_inventory=operation_catalog_inventory,
         sources=source_inventory,
     )
 
     targets: dict[str, Any] = {}
-    snapshots_by_owner = {
-        snapshot.owner: snapshot for snapshot in target_catalog_inventory
-    }
     for owner in context.owners:
         if owner.component.target_catalog is None:
             continue
-        catalog = load_owner_target_catalog(
-            context,
-            owner,
-            catalog_snapshot=snapshots_by_owner[owner.name],
-        )
-        targets[owner.name] = {
-            target.name: {
-                "description": target.description,
-                "inputs": thaw_toml_document(target.inputs),
+        catalog_path = operation_catalog_inventory[owner.name]
+        document = source_inventory.resolve(catalog_path)
+        target_rows = document.get("targets")
+        if not isinstance(target_rows, Mapping):
+            raise ValueError(f"{catalog_path}: targets must be a table")
+        owner_targets: dict[str, Any] = {}
+        for target_name, target_row in target_rows.items():
+            if not isinstance(target_name, str) or not isinstance(target_row, Mapping):
+                raise ValueError(f"{catalog_path}: target declarations are invalid")
+            operations = target_row.get("operations")
+            if not isinstance(operations, Mapping):
+                raise ValueError(f"{catalog_path}: target {target_name!r} has no operations")
+            compiled = {
+                operation_name: compile_operation(
+                    catalog_path,
+                    owner=owner.name,
+                    owner_root=owner.root,
+                    target=target_name,
+                    operation=operation_name,
+                )
+                for operation_name in operations
+            }
+            owner_targets[target_name] = {
+                "description": target_row.get("description"),
                 "operations": {
-                    operation.name: {
-                        "recipe": operation.recipe.as_posix(),
-                        "goals": list(operation.goals),
+                    operation_name: {
+                        "steps": [
+                            {"id": step.id, "uses": step.uses}
+                            for step in plan.steps
+                        ]
                     }
-                    for operation in target.operations.values()
+                    for operation_name, plan in compiled.items()
                 },
             }
-            for target in catalog.targets.values()
-        }
+        targets[owner.name] = owner_targets
 
     catalogs = {
         "ip": ip_catalog_path.relative_to(root).as_posix(),
         "platform": platform_catalog_path.relative_to(root).as_posix(),
         "target_catalogs": {
-            owner: snapshot.path.relative_to(root).as_posix()
-            for owner, snapshot in sorted(snapshots_by_owner.items())
+            owner: path.relative_to(root).as_posix()
+            for owner, path in sorted(operation_catalog_inventory.items())
         },
     }
     return {

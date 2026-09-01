@@ -18,63 +18,43 @@ from sigilicon.virtuoso import (
 
 
 LAYERS = {
-    "assembly",
     "root",
     "project",
     "domain",
     "execution",
-    "flow",
     "layout",
     "virtuoso",
     "workflows",
-    "integrations",
     "cli",
-    "campaigns",
 }
 ALLOWED_DEPENDENCIES = {
-    "assembly": {"flow", "root"},
     "root": {"project", "root"},
-    "project": {"domain", "project", "workflows", "root"},
+    "project": {"domain", "execution", "project", "root"},
     "domain": {"domain", "execution", "root"},
     "execution": {"execution", "root"},
-    "flow": {"execution", "flow", "root"},
     "layout": {"domain", "layout", "root"},
     "virtuoso": {"domain", "layout", "virtuoso", "root"},
     "workflows": {
         "domain",
         "execution",
-        "flow",
         "layout",
+        "project",
         "virtuoso",
         "workflows",
-        "root",
-    },
-    "integrations": {
-        "workflows",
-        "integrations",
         "root",
     },
     "cli": {
         "domain",
-        "flow",
+        "execution",
         "layout",
+        "project",
         "virtuoso",
         "workflows",
         "cli",
         "root",
-        "campaigns",
-    },
-    "campaigns": {
-        "campaigns",
-        "domain",
-        "flow",
-        "workflows",
-        "root",
     },
 }
-COMPOSITION_ROOTS = {
-    Path("workflows/action_registry.py"): "assembly",
-}
+COMPOSITION_ROOTS: dict[Path, str] = {}
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names: set[str] = set()

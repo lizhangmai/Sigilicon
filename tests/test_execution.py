@@ -1,0 +1,554 @@
+from __future__ import annotations
+
+import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
+
+from sigilicon.execution import (
+    Artifact,
+    Backends,
+    ContractError,
+    ExecutionError,
+    PreflightCheck,
+    Resources,
+    RunResult,
+    RunStoreError,
+    Step,
+    StepContext,
+    StepOutcome,
+    StepResult,
+)
+from sigilicon.project import Project
+
+
+def _write_project(root: Path) -> Path:
+    (root / "catalogs").mkdir(parents=True, exist_ok=True)
+    (root / "configs/platform").mkdir(parents=True, exist_ok=True)
+    owner = root / "ip/example"
+    (owner / "configs").mkdir(parents=True)
+    (root / "sigilicon.toml").write_text(
+        """schema = 1
+contract_kind = "sigilicon-project"
+path_scope = "repository"
+owner = "test"
+
+[catalogs]
+ip = "catalogs/ip.toml"
+platform = "configs/platform/catalog.toml"
+
+[paths]
+project_root = "."
+workspace_root = "workspace"
+artifact_root = "artifacts"
+""",
+        encoding="utf-8",
+    )
+    (root / "catalogs/ip.toml").write_text(
+        """schema = 1
+contract_kind = "ip-catalog"
+path_scope = "repository"
+owner = "test"
+
+[targets]
+[components.example]
+contract = "ip/example/component.toml"
+root = "ip/example"
+""",
+        encoding="utf-8",
+    )
+    (root / "configs/platform/catalog.toml").write_text(
+        """schema = 1
+contract_kind = "platform-catalog"
+path_scope = "repository"
+owner = "test"
+
+[platforms]
+""",
+        encoding="utf-8",
+    )
+    (owner / "component.toml").write_text(
+        """schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "example"
+name = "example"
+kind = "rtl-ip"
+target_catalog = "ip/example/configs/operations.toml"
+
+[filesets]
+flow = ["ip/example/configs/operations.toml", "ip/example/configs/value.txt"]
+""",
+        encoding="utf-8",
+    )
+    (owner / "configs/value.txt").write_text("hello\n", encoding="utf-8")
+    operations = owner / "configs/operations.toml"
+    operations.write_text(
+        """schema = 1
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "example"
+
+[targets.smoke]
+description = "Offline execution smoke"
+with = { prefix = "value" }
+sources = ["configs/value.txt"]
+
+[targets.smoke.operations.check]
+uses = "fake.copy"
+with = { text = "hello" }
+evidence = { role = "regression", level = "l0", scope = "source" }
+
+[targets.smoke.operations.all]
+
+[[targets.smoke.operations.all.steps]]
+id = "source"
+uses = "fake.copy"
+with = { text = "hello" }
+
+[[targets.smoke.operations.all.steps]]
+id = "transform"
+uses = "fake.upper"
+needs = ["source"]
+""",
+        encoding="utf-8",
+    )
+    return operations
+
+
+class CopyBackend:
+    name = "fake.copy"
+
+    def preflight(self, step, resources):
+        return (
+            PreflightCheck(
+                "capability",
+                "offline",
+                "ready" if "offline" in resources.capabilities else "blocked",
+            ),
+        )
+
+    def run(self, context: StepContext) -> StepResult:
+        output = context.write_text("source", "value.txt", str(context.step.config["text"]))
+        return StepResult.succeeded(
+            artifacts=(Artifact("source", "text.plain", output),),
+            facts={"length": len(str(context.step.config["text"]))},
+        )
+
+
+class UpperBackend:
+    name = "fake.upper"
+
+    def preflight(self, step, resources):
+        return ()
+
+    def run(self, context: StepContext) -> StepResult:
+        source = context.artifacts("source", "source")[0]
+        output = context.write_text(
+            "result",
+            "value.txt",
+            source.path.read_text(encoding="utf-8").upper(),
+        )
+        return StepResult.succeeded(
+            artifacts=(Artifact("result", "text.plain", output),)
+        )
+
+
+def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
+    tmp_path: Path,
+) -> None:
+    operations = _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(), UpperBackend()))
+
+    plan = project.plan("example/smoke:check")
+
+    assert plan.owner == "example"
+    assert plan.target == "smoke"
+    assert plan.operation == "check"
+    assert [step.uses for step in plan.steps] == ["fake.copy"]
+    assert plan.steps[0].config == {"prefix": "value", "text": "hello"}
+    assert plan.steps[0].evidence.record == {
+        "role": "regression",
+        "level": "l0",
+        "scope": "source",
+    }
+    assert not project.artifact_root.exists()
+    assert project.preflight(plan).status == "blocked"
+    checked = project.preflight(plan, Resources(frozenset({"offline"})))
+    assert checked.status == "ready"
+    assert not project.artifact_root.exists()
+
+    operations.write_text(operations.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    assert project.preflight(plan, Resources(frozenset({"offline"}))).status == "blocked"
+
+
+def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(), UpperBackend()))
+    plan = project.plan("example/smoke:all")
+    progress: list[tuple[str, str]] = []
+
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="a" * 32,
+        progress=lambda step, status: progress.append((step, status)),
+    )
+
+    assert result.status == "succeeded"
+    assert [outcome.step for outcome in result.outcomes] == ["source", "transform"]
+    assert result.outcomes[-1].result.artifacts[0].path.read_text(encoding="utf-8") == "HELLO"
+    assert progress == [
+        ("source", "running"),
+        ("source", "succeeded"),
+        ("transform", "running"),
+        ("transform", "succeeded"),
+    ]
+    stored = project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="all",
+        run_id="a" * 32,
+    )
+    assert stored.status == "succeeded"
+    assert stored.plan_identity == plan.identity
+
+    project.runs.clean(
+        owner="example",
+        target="smoke",
+        operation="all",
+        run_id="a" * 32,
+    )
+    assert not result.run_root.exists()
+    with pytest.raises(RunStoreError):
+        project.runs.read(
+            owner="example",
+            target="smoke",
+            operation="all",
+            run_id="a" * 32,
+        )
+
+
+def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = Project.open(tmp_path)
+    plan = project.plan("example/smoke:check")
+
+    assert project.preflight(plan).status == "blocked"
+    with pytest.raises(ExecutionError, match="preflight is blocked"):
+        project.run(plan)
+
+
+def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    source = tmp_path / "ip/example/configs/value.txt"
+
+    class MutatingBackend(CopyBackend):
+        def preflight(self, step, resources):
+            source.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+            return ()
+
+    project = Project.open(tmp_path, backends=(MutatingBackend(),))
+    plan = project.plan("example/smoke:check")
+
+    with pytest.raises(ExecutionError, match="changed immediately before backend"):
+        project.run(plan, run_id="b" * 32)
+    failed = project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id="b" * 32,
+    )
+    assert failed.record["contract_kind"] == "run-failure"
+    assert failed.status == "failed"
+    project.runs.clean(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id="b" * 32,
+    )
+
+
+def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "ip/example/configs/value.txt"
+
+    class SealedSourceBackend(CopyBackend):
+        def run(self, context: StepContext) -> StepResult:
+            live.write_text("later\n", encoding="utf-8")
+            output = context.write_text(
+                "source",
+                "value.txt",
+                context.source_text("configs/value.txt"),
+            )
+            return StepResult.succeeded(
+                artifacts=(Artifact("source", "text.plain", output),)
+            )
+
+    project = Project.open(tmp_path, backends=(SealedSourceBackend(),))
+    plan = project.plan("example/smoke:check")
+
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="f" * 32,
+    )
+
+    assert result.outcomes[0].result.artifacts[0].path.read_text() == "hello\n"
+
+
+def test_project_rejects_a_plan_not_issued_by_that_project(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    plan = project.plan("example/smoke:check")
+    forged_step = replace(plan.steps[0], config={"text": "forged"})
+    forged = replace(plan, steps=(forged_step,))
+
+    with pytest.raises(ValueError, match="not produced by this Project"):
+        project.preflight(forged, Resources(frozenset({"offline"})))
+
+
+def test_project_never_executes_legacy_owner_registration_modules(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    marker = tmp_path / "owner-module-executed"
+    module = tmp_path / "ip/example/register.py"
+    module.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "sigilicon.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + '\n[flow]\naction_modules = { example = "ip/example/register.py" }\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="obsolete|action_modules"):
+        Project.open(tmp_path)
+    assert not marker.exists()
+
+
+def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
+    class InvalidBackend(CopyBackend):
+        name = "Invalid/Backend"
+
+    with pytest.raises(ContractError, match="canonical identity"):
+        Backends((InvalidBackend(),))
+    with pytest.raises(ContractError, match="mapping"):
+        Step("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
+    outcome = StepOutcome("run", "fake.copy", StepResult.succeeded())
+    with pytest.raises(ContractError, match="disagrees"):
+        RunResult(
+            "example",
+            "smoke",
+            "check",
+            "7" * 32,
+            "8" * 32,
+            "9" * 64,
+            "failed",
+            (outcome,),
+            tmp_path / "artifacts/run",
+        )
+
+
+def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class ExtraOutputBackend(CopyBackend):
+        def preflight(self, step, resources):
+            return ()
+
+        def run(self, context: StepContext) -> StepResult:
+            published = context.write_text("source", "published.txt", "published")
+            context.write_text("source", "extra.txt", "extra")
+            return StepResult.succeeded(
+                artifacts=(Artifact("source", "text.plain", published),)
+            )
+
+    project = Project.open(tmp_path, backends=(ExtraOutputBackend(),))
+    plan = project.plan("example/smoke:check")
+
+    with pytest.raises(ExecutionError, match="output inventory"):
+        project.run(plan, run_id="c" * 32)
+
+
+def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class UncertainBackend(CopyBackend):
+        def run(self, context: StepContext) -> StepResult:
+            return StepResult.uncertain("descendant cleanup could not be proven")
+
+    project = Project.open(tmp_path, backends=(UncertainBackend(),))
+    plan = project.plan("example/smoke:check")
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="6" * 32,
+    )
+
+    assert result.status == "uncertain"
+    restored = project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id=result.run_id,
+    )
+    assert restored.status == "uncertain"
+
+
+def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "ip/example/configs/value.txt"
+
+    class DriftingCopyBackend(CopyBackend):
+        def run(self, context: StepContext) -> StepResult:
+            result = super().run(context)
+            live.write_text("changed\n", encoding="utf-8")
+            return result
+
+    project = Project.open(tmp_path, backends=(DriftingCopyBackend(), UpperBackend()))
+    plan = project.plan("example/smoke:all")
+
+    with pytest.raises(ExecutionError, match="changed immediately before backend"):
+        project.run(
+            plan,
+            Resources(frozenset({"offline"})),
+            run_id="5" * 32,
+        )
+    stored = project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="all",
+        run_id="5" * 32,
+    )
+    assert stored.status == "partial"
+    assert stored.provenance["completed_steps"] == ("source",)
+
+
+def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper(
+    tmp_path: Path,
+) -> None:
+    operations = _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    plan = project.plan("example/smoke:check")
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="d" * 32,
+    )
+    operations.unlink()
+
+    stored = project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id=result.run_id,
+    )
+    assert stored.status == "succeeded"
+
+    result_path = result.run_root / "outputs/run-result.json"
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["target"] = "tampered"
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RunStoreError, match="manifest|result"):
+        project.runs.read(
+            owner="example",
+            target="smoke",
+            operation="check",
+            run_id=result.run_id,
+        )
+
+
+def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    plan = project.plan("example/smoke:check")
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="9" * 32,
+    )
+    output = result.outcomes[0].result.artifacts[0].path
+    output.write_text("jello", encoding="utf-8")
+
+    with pytest.raises(RunStoreError, match="metadata"):
+        project.runs.read(
+            owner="example",
+            target="smoke",
+            operation="check",
+            run_id=result.run_id,
+        )
+
+
+def test_run_identity_is_exclusive(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    plan = project.plan("example/smoke:check")
+    resources = Resources(frozenset({"offline"}))
+    project.run(plan, resources, run_id="e" * 32)
+
+    with pytest.raises(FileExistsError):
+        project.run(plan, resources, run_id="e" * 32)
+    assert project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id="e" * 32,
+    ).status == "succeeded"
+
+
+def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = Project.open(tmp_path, backends=(CopyBackend(),))
+    plan = project.plan("example/smoke:check")
+    resources = Resources(frozenset({"offline"}))
+
+    def invoke():
+        try:
+            return project.run(plan, resources, run_id="4" * 32)
+        except BaseException as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        values = tuple(executor.map(lambda _index: invoke(), range(2)))
+
+    assert sum(isinstance(value, RunResult) for value in values) == 1
+    assert sum(isinstance(value, FileExistsError) for value in values) == 1
+    assert project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id="4" * 32,
+    ).status == "succeeded"
+
+
+def test_project_import_does_not_load_tool_capability_modules() -> None:
+    script = """
+import json, sys
+import sigilicon.project
+print(json.dumps(sorted(name for name in sys.modules if name.startswith('sigilicon'))))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    modules = json.loads(completed.stdout)
+
+    assert len(modules) <= 20
+    assert not any(
+        name.startswith((
+            "sigilicon.virtuoso",
+            "sigilicon.workflows.synopsys",
+            "sigilicon.capabilities",
+        ))
+        for name in modules
+    )

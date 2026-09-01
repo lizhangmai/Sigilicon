@@ -1,4 +1,3 @@
-from dataclasses import replace
 from pathlib import Path
 import tomllib
 from typing import Any, Mapping
@@ -58,22 +57,9 @@ root = "ip/example"
     )
     _write(
         root,
-        "ip/example/configs/flows/recipe.toml",
+        "ip/example/configs/operations.toml",
         '''schema = 1
-contract_kind = "execution-recipe"
-path_scope = "owner"
-owner = "example"
-name = "example-check"
-actions = {}
-nodes = []
-policies = []
-''',
-    )
-    _write(
-        root,
-        "ip/example/configs/targets.toml",
-        '''schema = 1
-contract_kind = "owner-targets"
+contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 
@@ -81,8 +67,7 @@ owner = "example"
 description = "Example target"
 
 [targets.example.operations.check]
-recipe = "configs/flows/recipe.toml"
-goals = ["check"]
+uses = "fake.check"
 ''',
     )
     for owner in ("alpha", "beta", "compute"):
@@ -110,11 +95,11 @@ owner = "example"
 name = "example"
 kind = "rtl-ip"
 
-target_catalog = "ip/example/configs/targets.toml"
+target_catalog = "ip/example/configs/operations.toml"
 
 [filesets]
 flow = [
-  "ip/example/configs/flows/recipe.toml",
+  "ip/example/configs/operations.toml",
 ]
 ''',
     )
@@ -126,16 +111,18 @@ def _inspect(
     documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> dict[str, object]:
     sources = RepositorySourceInventory.for_project(project)
-    catalogs = tuple(
-        project.owner_target_catalog(owner)
+    catalogs = {
+        owner.name: project.project_root.joinpath(
+            *owner.component.target_catalog.parts
+        ).resolve()
         for owner in project.owners
         if owner.component.target_catalog is not None
-    )
+    }
     if documents:
         sources.verify("test source snapshot", documents)
     return inspect_project_configuration_sources(
         project,
-        target_catalog_inventory=catalogs,
+        operation_catalog_inventory=catalogs,
         sources=sources,
     )
 
@@ -191,22 +178,20 @@ owner = "beta"
     )
     context = Project.from_project_root(tmp_path)
     inventory = RepositorySourceInventory.for_project(context)
-    catalogs = (
-        context.owner_target_catalog("example"),
-    )
+    catalogs = {
+        "example": (
+            context.project_root / "ip/example/configs/operations.toml"
+        ).resolve()
+    }
     seeded_document = freeze_toml_document(
         tomllib.loads(seeded.read_text(encoding="utf-8"))
     )
     inventory.verify("seeded fixture", {seeded: seeded_document})
 
-    conflicting_catalog = replace(
-        catalogs[0],
-        document=freeze_toml_document({"schema": 999}),
-    )
     with pytest.raises(ValueError, match="disagrees with another source"):
         inventory.verify(
             "conflicting owner catalog snapshot",
-            {conflicting_catalog.path: conflicting_catalog.document},
+            {catalogs["example"]: freeze_toml_document({"schema": 999})},
         )
 
     assert inventory.resolve(seeded) == seeded_document
@@ -246,7 +231,7 @@ owner = "alpha"
     monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
     report = inspect_project_configuration_sources(
         context,
-        target_catalog_inventory=catalogs,
+        operation_catalog_inventory=catalogs,
         sources=inventory,
     )
 
@@ -259,7 +244,7 @@ owner = "alpha"
     with pytest.raises(ValueError, match="another operation"):
         inspect_project_configuration_sources(
             Project.from_project_root(tmp_path),
-            target_catalog_inventory=catalogs,
+            operation_catalog_inventory=catalogs,
             sources=inventory,
         )
 

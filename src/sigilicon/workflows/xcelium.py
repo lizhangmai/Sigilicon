@@ -19,7 +19,7 @@ from sigilicon.external_tools import (
     xrun_env,
 )
 from sigilicon.workflows.run_artifacts import RunArtifacts
-from sigilicon.flow.serialization import json_value
+from sigilicon.execution.model import json_value
 
 
 _HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})

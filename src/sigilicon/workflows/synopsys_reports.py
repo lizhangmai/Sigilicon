@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
-from sigilicon.flow.model import FlowExecutionError
+from sigilicon.execution import ExecutionError
 
 
 _MESSAGE = {
@@ -29,7 +29,7 @@ _DESIGN_SUMMARY = re.compile(
 def _required_numbers(text: str, pattern: str, label: str) -> list[float]:
     values = [float(value) for value in re.findall(pattern, text, re.MULTILINE)]
     if not values:
-        raise FlowExecutionError(
+        raise ExecutionError(
             f"malformed Synopsys {label} report: required observation is missing"
         )
     return values
@@ -38,11 +38,11 @@ def _required_numbers(text: str, pattern: str, label: str) -> list[float]:
 def _required_int(text: str, pattern: str, label: str) -> int:
     values = [int(value) for value in re.findall(pattern, text, re.MULTILINE)]
     if not values:
-        raise FlowExecutionError(
+        raise ExecutionError(
             f"malformed Synopsys {label} report: required observation is missing"
         )
     if len(set(values)) != 1:
-        raise FlowExecutionError(
+        raise ExecutionError(
             f"malformed Synopsys {label} report: conflicting observations"
         )
     return values[0]
@@ -58,12 +58,12 @@ def _required_summary_value(text: str, label: str) -> str:
         )
     ]
     if not values:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys DRC report: "
             f"{label!r} observation is missing"
         )
     if len(set(values)) != 1:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys DRC report: "
             f"{label!r} observations conflict"
         )
@@ -95,7 +95,7 @@ def _route_verification_facts(
             "antenna-check-status": "inactive",
         }
     else:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys DRC report: unsupported antenna status "
             f"{antenna!r}"
         )
@@ -125,7 +125,7 @@ def _route_verification_facts(
             }
         )
     else:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys DRC report: tie-to-rail summary is "
             f"inconsistent ({tie!r}, {tie_direct!r})"
         )
@@ -142,7 +142,7 @@ def _physical_completion_facts(
             re.MULTILINE,
         )
     ) != 1:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys physical-completion report: "
             "version marker is missing or duplicated"
         )
@@ -163,7 +163,7 @@ def _physical_completion_facts(
         "physical-completion",
     )
     if placed + unplaced != required:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys physical-completion report: "
             "placed and unplaced PG port counts do not equal the required count"
         )
@@ -174,7 +174,7 @@ def _physical_completion_facts(
         re.MULTILINE,
     )
     if len(checks) != 1 or checks[0] not in {"performed", "not-performed"}:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys physical-completion report: "
             "PG connectivity check status is missing or unsupported"
         )
@@ -193,13 +193,13 @@ def _physical_completion_facts(
     )
     if checks[0] == "performed":
         if len(violation_values) != 1:
-            raise FlowExecutionError(
+            raise ExecutionError(
                 "malformed Synopsys physical-completion report: "
                 "performed PG connectivity check lacks one violation count"
             )
         facts["pg-connectivity-violation-count"] = int(violation_values[0])
     elif violation_values:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys physical-completion report: "
             "a non-performed PG connectivity check has a violation count"
         )
@@ -221,7 +221,7 @@ def _tie_off_facts(report: str) -> dict[str, bool | int | str]:
         re.MULTILINE,
     )
     if len(headers) != 1 or len(modes) != 1 or len(summaries) != 1:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys tie-off check report: "
             "check identity or completion summary is missing or duplicated"
         )
@@ -241,7 +241,7 @@ def _power_nw(text: str, label: str) -> float:
         re.MULTILINE,
     )
     if match is None:
-        raise FlowExecutionError(
+        raise ExecutionError(
             "malformed Synopsys power report: "
             f"{label!r} observation is missing"
         )
@@ -259,13 +259,13 @@ def _report_text(reports: Mapping[str, Path], role: str) -> str:
     try:
         path = reports[role]
     except KeyError as exc:
-        raise FlowExecutionError(
+        raise ExecutionError(
             f"Synopsys FC report set omitted {role!r}"
         ) from exc
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise FlowExecutionError(
+        raise ExecutionError(
             f"cannot parse Synopsys FC report {role!r}: {exc}"
         ) from exc
 
@@ -280,7 +280,7 @@ def parse_synopsys_fc_report_facts(
         report = _report_text(reports, "library-check-report")
         completions = _WORKSPACE_COMPLETION.findall(report)
         if not completions:
-            raise FlowExecutionError(
+            raise ExecutionError(
                 "malformed Synopsys library-check report: "
                 "workspace completion marker is missing"
             )
@@ -298,7 +298,7 @@ def parse_synopsys_fc_report_facts(
         summaries = list(_DESIGN_SUMMARY.finditer(design))
         summary_kinds = [match.group("kind") for match in summaries]
         if sorted(summary_kinds) != ["EMS", "non-EMS"]:
-            raise FlowExecutionError(
+            raise ExecutionError(
                 "malformed Synopsys design-check report: "
                 "EMS/non-EMS message summary is missing or duplicated"
             )
@@ -345,7 +345,7 @@ def parse_synopsys_fc_report_facts(
             power,
         )
         if activity is None:
-            raise FlowExecutionError(
+            raise ExecutionError(
                 "malformed Synopsys power report: activity mode is missing"
             )
 
@@ -389,7 +389,7 @@ def parse_synopsys_fc_report_facts(
         facts.update(_physical_completion_facts(physical_completion))
         facts.update(_tie_off_facts(tie_off))
         return facts
-    raise FlowExecutionError(
+    raise ExecutionError(
         f"unsupported Synopsys FC report action: {action_kind!r}"
     )
 

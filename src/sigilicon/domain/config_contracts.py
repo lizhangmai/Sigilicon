@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 from sigilicon.artifacts import read_nofollow_text
 
 if TYPE_CHECKING:
-    from sigilicon.domain.repository import OwnerTargetSnapshot, Project
+    from sigilicon.domain.repository import Project
 
 
 CONFIG_SCHEMA = 1
@@ -361,27 +361,27 @@ class RepositorySourceInventory:
 def inspect_project_configuration_sources(
     context: Project,
     *,
-    target_catalog_inventory: tuple[OwnerTargetSnapshot, ...],
+    operation_catalog_inventory: Mapping[str, Path],
     sources: RepositorySourceInventory,
 ) -> dict[str, Any]:
     """Inspect configuration envelopes from one closed source inventory."""
 
-    from sigilicon.domain.repository import OwnerTargetSnapshot
-
     sources.require_project(context)
-    target_catalogs = tuple(target_catalog_inventory)
     expected_owner_names = {
         owner.name
         for owner in context.owners
         if owner.component.target_catalog is not None
     }
-    selected_target_catalogs: dict[str, OwnerTargetSnapshot] = {}
-    for snapshot in target_catalogs:
-        if not isinstance(snapshot, OwnerTargetSnapshot):
-            raise ValueError("owner target catalog inventory contains an invalid snapshot")
-        if not isinstance(snapshot.owner, str):
-            raise ValueError("owner target catalog snapshot owner is invalid")
-        owner = context.owner(snapshot.owner)
+    selected_catalogs = dict(operation_catalog_inventory)
+    if set(selected_catalogs) != expected_owner_names:
+        missing = sorted(expected_owner_names - set(selected_catalogs))
+        extra = sorted(set(selected_catalogs) - expected_owner_names)
+        raise ValueError(
+            "owner operation catalog inventory does not match component selections: "
+            f"missing={missing}, extra={extra}"
+        )
+    for owner_name, path in selected_catalogs.items():
+        owner = context.owner(owner_name)
         configured = owner.component.target_catalog
         if configured is None:
             raise ValueError(
@@ -391,47 +391,34 @@ def inspect_project_configuration_sources(
         resolved = configured_path.resolve()
         if (
             configured_path != resolved
-            or snapshot.path != resolved
-            or snapshot.path != snapshot.path.resolve()
-            or not snapshot.path.is_file()
-            or not snapshot.path.is_relative_to(owner.root)
+            or path != resolved
+            or path != path.resolve()
+            or not path.is_file()
+            or not path.is_relative_to(owner.root)
         ):
             raise ValueError(
-                f"owner target catalog snapshot does not match owner {owner.name!r}"
+                f"owner operation catalog does not match owner {owner.name!r}"
             )
-        if owner.name in selected_target_catalogs:
-            raise ValueError(
-                f"owner {owner.name!r} has multiple target catalog snapshots"
-            )
+        document = sources.resolve(path)
         require_config_header(
-            snapshot.document,
-            snapshot.path,
-            contract_kind="owner-targets",
+            document,
+            path,
+            contract_kind="owner-operations",
             path_scope="owner",
             owner=owner.name,
         )
-        selected_target_catalogs[owner.name] = snapshot
-    if set(selected_target_catalogs) != expected_owner_names:
-        missing = sorted(expected_owner_names - set(selected_target_catalogs))
-        extra = sorted(set(selected_target_catalogs) - expected_owner_names)
-        raise ValueError(
-            "owner target catalog inventory does not match component selections: "
-            f"missing={missing}, extra={extra}"
-        )
     sources.verify(
-        "owner target catalog snapshot",
-        {snapshot.path: snapshot.document for snapshot in target_catalogs},
+        "owner operation catalog snapshot",
+        {path: sources.resolve(path) for path in selected_catalogs.values()},
     )
     root = context.project_root.resolve()
     project_contract = context.manifest_path
     repository_owner = context.manifest_owner
-    target_catalog_paths = {
-        snapshot.path for snapshot in selected_target_catalogs.values()
-    }
+    operation_catalog_paths = set(selected_catalogs.values())
     exact_paths = {
         project_contract,
         *(path for _, path in context.catalog_paths),
-        *target_catalog_paths,
+        *operation_catalog_paths,
     }
     repository_owner_roots = {owner.root for owner in context.owners}
     scan_roots = _repository_configuration_roots(context)
@@ -507,11 +494,13 @@ def inspect_project_configuration_sources(
             raise ValueError(
                 f"{resolved}: obsolete Flow contract kind is not supported: {kind}"
             )
-        if kind == "owner-targets" and resolved not in target_catalog_paths:
+        if kind == "owner-operations" and resolved not in operation_catalog_paths:
             raise ValueError(
-                f"{resolved}: owner-targets must be selected by a component "
+                f"{resolved}: owner-operations must be selected by a component "
                 "target_catalog"
             )
+        if kind in {"owner-targets", "execution-recipe"}:
+            raise ValueError(f"{resolved}: obsolete execution contract kind: {kind}")
         if resolved in repository_sources:
             allowed_scopes: str | tuple[str, ...] = "repository"
             expected_owner = repository_owner
@@ -542,20 +531,6 @@ def inspect_project_configuration_sources(
             path_scope=allowed_scopes,
             owner=expected_owner,
         )
-        if kind == "execution-recipe":
-            if header.path_scope != "owner":
-                raise ValueError(
-                    f"{resolved}: execution-recipe path_scope must be 'owner'"
-                )
-            owner = next(
-                (item for item in context.owners if item.name == expected_owner),
-                None,
-            )
-            if owner is None or resolved not in owner.files("flow"):
-                raise ValueError(
-                    f"{resolved}: execution-recipe must be declared in its owner "
-                    "flow fileset"
-                )
         if header.contract_kind == "verification-cell":
             from sigilicon.domain.verification_cell import parse_verification_cell
 

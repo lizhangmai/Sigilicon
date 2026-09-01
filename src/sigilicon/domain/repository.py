@@ -12,7 +12,6 @@ from sigilicon.domain.config_contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
-    read_toml_record,
     require_config_header,
 )
 from sigilicon.paths import (
@@ -55,42 +54,6 @@ class RepositoryOwner:
             for path in self.component.filesets.get(fileset, ())
         )
 
-    def flow_implementation_files(self) -> tuple[Path, ...]:
-        """Return manifest-declared owner code that may implement a Flow."""
-
-        implementation: set[Path] = {
-            path
-            for fileset in self.component.filesets
-            for path in self.files(fileset)
-            if path.suffix == ".py"
-        }
-        implementation.update(
-            path
-            for path in self.files("flow")
-            if path.suffix not in {".toml", ".json", ".yaml", ".yml"}
-        )
-        return tuple(sorted(implementation))
-
-
-@dataclass(frozen=True)
-class RepositoryActionModule:
-    """One project-selected, owner-owned action module source."""
-
-    owner: str
-    source: Path
-
-
-@dataclass(frozen=True)
-class OwnerTargetSnapshot:
-    """One owner-selected configuration source read for an operation."""
-
-    owner: str
-    path: Path
-    contract_kind: str
-    record_text: str
-    document: Mapping[str, Any]
-
-
 @dataclass(frozen=True)
 class RepositoryCatalogSnapshot:
     """One validated repository-level catalog source snapshot."""
@@ -104,13 +67,12 @@ class RepositoryCatalogSnapshot:
 
 @dataclass(frozen=True)
 class Project:
-    """Canonical project paths, catalogs, owners and action modules."""
+    """Canonical project paths, catalogs, owners, and execution seam."""
 
     _paths: ProjectContext
     manifest_owner: str
     catalog_paths: tuple[tuple[str, Path], ...]
     owners: tuple[RepositoryOwner, ...]
-    action_modules: tuple[RepositoryActionModule, ...]
     manifest_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
@@ -127,6 +89,111 @@ class Project:
         repr=False,
         compare=False,
     )
+    _backends: object | None = field(default=None, repr=False, compare=False)
+    _issued_plans: dict[str, Mapping[str, Any]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def open(
+        cls,
+        root: Path | str,
+        *,
+        backends: object = (),
+    ) -> "Project":
+        """Open one project and bind its explicit execution backends."""
+
+        from sigilicon.execution.backend import Backends
+
+        location = Path(root).resolve()
+        project = (
+            cls.from_file(location)
+            if location.is_file()
+            else cls.from_project_root(location)
+        )
+        selected = backends if isinstance(backends, Backends) else Backends(backends)
+        return replace(project, _backends=selected)
+
+    def plan(self, selector: str):
+        """Compile one canonical ``owner/target:operation`` selector."""
+
+        from sigilicon.execution.operations import compile_operation, parse_selector
+
+        owner_name, target, operation = parse_selector(selector)
+        owner = self.owner(owner_name)
+        relative = owner.component.target_catalog
+        if relative is None:
+            raise ValueError(f"owner {owner.name!r} has no operation catalog")
+        catalog = self.project_root.joinpath(*relative.parts).absolute()
+        plan = compile_operation(
+            catalog,
+            owner=owner.name,
+            owner_root=owner.root,
+            target=target,
+            operation=operation,
+        )
+        self._issued_plans[plan.identity] = plan.record
+        return plan
+
+    def preflight(self, plan, resources=None):
+        """Check a plan without creating a run or starting a backend."""
+
+        from sigilicon.execution.backend import Backends
+        from sigilicon.execution.engine import preflight
+        from sigilicon.execution.model import ExecutionPlan, Resources
+
+        if not isinstance(plan, ExecutionPlan):
+            raise TypeError("Project.preflight requires an ExecutionPlan")
+        self._require_canonical_plan(plan)
+        selected = Resources() if resources is None else resources
+        if not isinstance(selected, Resources):
+            raise TypeError("Project.preflight resources must be Resources")
+        return preflight(
+            plan,
+            Backends() if self._backends is None else self._backends,
+            selected,
+        )
+
+    def run(
+        self,
+        plan,
+        resources=None,
+        *,
+        run_id: str | None = None,
+        progress=None,
+    ):
+        """Execute one source-current plan through its selected backends."""
+
+        from sigilicon.execution.backend import Backends
+        from sigilicon.execution.engine import run
+        from sigilicon.execution.model import ExecutionPlan, Resources
+
+        if not isinstance(plan, ExecutionPlan):
+            raise TypeError("Project.run requires an ExecutionPlan")
+        self._require_canonical_plan(plan)
+        selected = Resources() if resources is None else resources
+        if not isinstance(selected, Resources):
+            raise TypeError("Project.run resources must be Resources")
+        return run(
+            plan,
+            Backends() if self._backends is None else self._backends,
+            selected,
+            artifact_root=self.artifact_root,
+            run_id=run_id,
+            progress=progress,
+        )
+
+    def _require_canonical_plan(self, plan) -> None:
+        """Reject plans not compiled from this Project's current owner contract."""
+
+        owner = self.owner(plan.owner)
+        if any(source.root != owner.root for source in plan.sources):
+            raise ValueError("execution plan contains a source outside its owner root")
+        issued = self._issued_plans.get(plan.identity)
+        if issued is None or issued != plan.record:
+            raise ValueError("execution plan was not produced by this Project")
 
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:
@@ -269,57 +336,16 @@ class Project:
             for right in owners:
                 if left is not right and left.root.is_relative_to(right.root):
                     raise ValueError("repository owner roots must not overlap")
-        flow = raw.get("flow", {})
-        if not isinstance(flow, Mapping):
-            raise ValueError(f"{contract}: flow must be a table")
-        unknown_flow_fields = set(flow) - {"action_modules"}
-        if unknown_flow_fields:
+        if "flow" in raw:
             raise ValueError(
-                f"{contract}: flow contains unknown fields: "
-                f"{sorted(unknown_flow_fields)}"
+                f"{contract}: flow.action_modules is obsolete; operations select "
+                "explicit backends and cannot execute owner registration code"
             )
-        modules = flow.get("action_modules", {})
-        if not isinstance(modules, Mapping):
-            raise ValueError(
-                f"{contract}: flow.action_modules must be a table"
-            )
-        owners_by_name = {owner.name: owner for owner in owners}
-        action_modules: list[RepositoryActionModule] = []
-        for name, value in modules.items():
-            if not isinstance(name, str) or name not in owners_by_name:
-                raise ValueError(
-                    f"{contract}: Flow action module names unknown owner {name!r}"
-                )
-            owner = owners_by_name[name]
-            source = _project_file(
-                project.project_root,
-                value,
-                f"{contract}: flow.action_modules.{name}",
-            )
-            if not source.is_relative_to(owner.root):
-                raise ValueError(
-                    f"{contract}: Flow action module for {name!r} must stay "
-                    "inside its owner root"
-                )
-            if source.suffix != ".py":
-                raise ValueError(
-                    f"{contract}: Flow action module for {name!r} must be "
-                    "a Python source"
-                )
-            if source not in owner.files("flow"):
-                raise ValueError(
-                    f"{contract}: Flow action module for {name!r} must be "
-                    "declared in its owner flow fileset"
-                )
-            action_modules.append(RepositoryActionModule(name, source))
         return cls(
             _paths=project,
             manifest_owner=manifest_owner,
             catalog_paths=catalog_paths,
             owners=tuple(sorted(owners, key=lambda item: item.name)),
-            action_modules=tuple(
-                sorted(action_modules, key=lambda item: item.owner)
-            ),
             manifest_document=freeze_toml_document(raw),
             _manifest_path=contract,
             _manifest_context=project,
@@ -376,34 +402,7 @@ class Project:
                 for name, value in catalogs.items()
             )
         )
-        flow = raw.get("flow", {})
-        if not isinstance(flow, Mapping) or set(flow) - {"action_modules"}:
-            raise ValueError("project manifest snapshot Flow selection drift")
-        modules = flow.get("action_modules", {})
-        if not isinstance(modules, Mapping):
-            raise ValueError("project manifest snapshot Flow selection drift")
-        selected_modules = tuple(
-            sorted(
-                (
-                    RepositoryActionModule(
-                        owner,
-                        _project_file(
-                            self.project_root,
-                            value,
-                            f"{contract}: flow.action_modules.{owner}",
-                        ),
-                    )
-                    for owner, value in modules.items()
-                    if isinstance(owner, str)
-                ),
-                key=lambda item: item.owner,
-            )
-        )
-        if (
-            catalog_paths != self.catalog_paths
-            or selected_modules != self.action_modules
-            or len(selected_modules) != len(modules)
-        ):
+        if "flow" in raw or catalog_paths != self.catalog_paths:
             raise ValueError("project manifest snapshot source document drift")
         return raw
 
@@ -565,62 +564,6 @@ class Project:
             raise ValueError(f"{field} does not exist inside its owner root")
         return resolved, relative
 
-    def owner_target_catalog(
-        self,
-        owner: RepositoryOwner | str,
-    ) -> OwnerTargetSnapshot:
-        """Read the one explicitly selected target catalog for an owner.
-
-        Target catalogs are selected by the owner component contract rather than
-        discovered by scanning a fileset.  The configured path is project
-        relative, while the target catalog's own entries use owner-relative
-        paths.  Both the catalog path and every parent directory must be
-        canonical regular filesystem objects so a symlink cannot alter the
-        selected source after project assembly.
-        """
-
-        selected = self.owner(owner) if isinstance(owner, str) else owner
-        if selected not in self.owners:
-            raise ValueError(
-                f"repository does not contain owner {selected.name!r}"
-            )
-        relative = selected.component.target_catalog
-        if relative is None:
-            raise ValueError(
-                f"cataloged owner {selected.name!r} has no target_catalog"
-            )
-        configured = self.project_root.joinpath(*relative.parts)
-        resolved = configured.resolve()
-        if configured != resolved:
-            raise ValueError(
-                f"target_catalog for owner {selected.name!r} must not be a symlink"
-            )
-        if not resolved.is_relative_to(selected.root):
-            raise ValueError(
-                f"target_catalog for owner {selected.name!r} must stay inside "
-                "its owner root"
-            )
-        if not resolved.is_file():
-            raise FileNotFoundError(
-                f"target_catalog for owner {selected.name!r} does not exist: "
-                f"{relative}"
-            )
-        raw, record_text = read_toml_record(resolved)
-        require_config_header(
-            raw,
-            resolved,
-            contract_kind="owner-targets",
-            path_scope="owner",
-            owner=selected.name,
-        )
-        return OwnerTargetSnapshot(
-            owner=selected.name,
-            path=resolved,
-            contract_kind="owner-targets",
-            record_text=record_text,
-            document=freeze_toml_document(raw),
-        )
-
     def scope(self, owner: RepositoryOwner | str) -> ProjectScope:
         """Bind one cataloged owner to this project's explicit runtime paths."""
 
@@ -633,20 +576,6 @@ class Project:
             self._paths,
             selected.name,
             selected.root,
-        )
-
-    def action_module(self, owner: RepositoryOwner) -> Path | None:
-        """Return the explicitly selected action module source for one owner."""
-
-        if owner not in self.owners:
-            raise ValueError(f"repository does not contain owner {owner.name!r}")
-        return next(
-            (
-                module.source
-                for module in self.action_modules
-                if module.owner == owner.name
-            ),
-            None,
         )
 
     def owner_file(self, path: Path | str, fileset: str) -> Path | None:

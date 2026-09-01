@@ -42,10 +42,6 @@ from sigilicon.domain.systemverilog import (
     named_port_connections,
 )
 from sigilicon.external_tools import owned_directory, run_process_group
-from sigilicon.flow.model import (
-    PolicyCheck,
-    PolicySpec,
-)
 from sigilicon.paths import ArtifactLayout
 
 if TYPE_CHECKING:

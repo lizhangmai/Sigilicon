@@ -14,7 +14,9 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   编译为 typed steps，executor 只按 plan 调用 backend。不得重新引入 target/recipe/node/
   action/binding/adapter/policy 多层转述，也不得为 owner 动态执行 Python 注册模块。
 - `Project` 是外部 composition seam。公共执行接口只有 open、plan、preflight 和 run；
-  backend 是 EDA/tool seam，只有存在真实变化的实现时才建立。旧接口迁移采用替换并删除，
+  backend 是 package-owned trusted code，不是同进程插件沙箱；owner 不能注入 backend Python。
+  backend 启动的工具必须使用公共 no-follow/process supervisor 边界，不能把裸路径检查冒充
+  外部进程隔离。只有存在真实变化的实现时才建立 backend。旧接口迁移采用替换并删除，
   不提供 alias、兼容 schema、双写或弃用期。
 - 公共 import namespace 是 `sigilicon`，实现采用 `src/sigilicon` layout。
 - 需要 owner、catalog 或 artifact inventory 的 domain loader 与 workflow 接收同一个显式
