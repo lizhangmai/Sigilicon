@@ -65,8 +65,9 @@ owner = "example"
 
 [targets.example]
 description = "Example target"
+operations = ["check"]
 
-[targets.example.operations.check]
+[operations.check]
 uses = "fake.check"
 ''',
     )

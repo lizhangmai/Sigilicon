@@ -23,7 +23,9 @@ from sigilicon.paths import (
 )
 
 
-ARTIFACT_STATUSES = frozenset({"running", "succeeded", "failed", "partial", "uncertain"})
+ARTIFACT_STATUSES = frozenset(
+    {"running", "succeeded", "failed", "partial", "uncertain", "cancelled"}
+)
 TERMINAL_STATUSES = ARTIFACT_STATUSES - {"running"}
 _EXECUTION_ROLES = frozenset({"inputs", "work", "outputs", "logs"})
 ARTIFACT_ROLES = {
@@ -574,8 +576,6 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ArtifactManifestError("succeeded artifact requires completion evidence")
         if partial_failure is not None or uncertain_reason is not None:
             raise ArtifactManifestError("succeeded artifact cannot contain failure provenance")
-    elif completion_evidence:
-        raise ArtifactManifestError("non-success artifact cannot contain completion evidence")
     if status == "failed" and (
         partial_failure is not None or uncertain_reason is not None
     ):
@@ -879,7 +879,7 @@ class ArtifactRecord:
                     raise ValueError(
                         f"reserved manifest detail fields: {', '.join(sorted(reserved))}"
                     )
-            if status == "succeeded":
+            if completion_evidence:
                 self._verify_registered_files()
             proof: list[str] = []
             for path in completion_evidence:
@@ -950,6 +950,25 @@ class ArtifactRecord:
     ) -> Path:
         return self._transition(
             "succeeded", completion_evidence=completion_evidence, details=details
+        )
+
+    def complete(
+        self,
+        status: str,
+        *,
+        completion_evidence: Sequence[Path],
+        partial_failure: Mapping[str, Any] | None = None,
+        uncertain_reason: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> Path:
+        """Close a fully recorded result without conflating outcome with success."""
+
+        return self._transition(
+            status,
+            completion_evidence=completion_evidence,
+            partial_failure=partial_failure,
+            uncertain_reason=uncertain_reason,
+            details=details,
         )
 
     def fail(

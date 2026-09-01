@@ -118,13 +118,8 @@ class RunStore:
                 if (
                     not path.is_file()
                     or metadata.st_nlink != 1
-                    or (
-                        manifest.get("status") == "succeeded"
-                        and (
-                            metadata.st_size != reference["size"]
-                            or digest != reference.get("sha256")
-                        )
-                    )
+                    or metadata.st_size != reference["size"]
+                    or digest != reference.get("sha256")
                 ):
                     raise RunStoreError("run file metadata disagrees with its manifest")
             elif not path.is_dir():
@@ -148,7 +143,8 @@ class RunStore:
             != {"owner": selected.owner, "target": selected.target}
             or manifest.get("operation") != selected.operation
             or manifest.get("run_id") != selected.run_id
-            or manifest.get("status") not in {"succeeded", "failed", "partial", "uncertain"}
+            or manifest.get("status")
+            not in {"succeeded", "failed", "partial", "uncertain", "cancelled"}
             or not isinstance(source, Mapping)
             or not isinstance(source.get("plan_identity"), str)
         ):
@@ -162,8 +158,6 @@ class RunStore:
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         root = selected.paths.root
         manifest = self._manifest(selected)
-        if manifest.get("status") != "succeeded":
-            raise RunStoreError("execution did not persist a complete run result")
         try:
             plan = read_json_object(
                 selected.paths.role("inputs") / "execution-plan.json",
@@ -206,6 +200,7 @@ class RunStore:
             or any(result.get(name) != value for name, value in expected.items())
             or result.get("status")
             not in {"succeeded", "failed", "partial", "uncertain", "cancelled"}
+            or manifest.get("status") != result.get("status")
             or manifest.get("operation_id") != result.get("operation_id")
         ):
             raise RunStoreError("persisted run result identity drift")
@@ -332,7 +327,7 @@ class RunStore:
 
     def _read_selected(self, selected: _SelectedRun) -> RunResult | RunFailure:
         manifest = self._manifest(selected)
-        if manifest["status"] == "succeeded":
+        if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
             _manifest, _plan, result = self._records(selected)
             return self._typed_result(result, selected.paths.root)
         details = manifest.get("details")
@@ -369,11 +364,15 @@ class RunStore:
             run_id=run_id,
         )
         manifest = self._manifest(selected)
-        if manifest["status"] == "succeeded":
+        if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
             self._records(selected)
         root = selected.paths.root
         self._validate_inventory(selected.paths, manifest)
         actual = {path.relative_to(root) for path in root.rglob("*")}
+        for relative in sorted(actual, key=lambda path: len(path.parts)):
+            path = root / relative
+            if path.is_dir() and not path.is_symlink():
+                path.chmod(0o700)
         for relative in sorted(actual, key=lambda path: len(path.parts), reverse=True):
             path = root / relative
             if path.is_dir() and not path.is_symlink():

@@ -13,9 +13,15 @@ from sigilicon.paths import validate_artifact_component
 
 
 _HEADER = frozenset({"schema", "contract_kind", "path_scope", "owner"})
-_TARGET_FIELDS = frozenset({"description", "with", "sources", "operations"})
-_OPERATION_FIELDS = frozenset({"uses", "with", "sources", "evidence", "steps"})
-_STEP_FIELDS = frozenset({"id", "uses", "needs", "with", "sources", "evidence"})
+_TARGET_FIELDS = frozenset(
+    {"description", "with", "sources", "source_groups", "operations"}
+)
+_OPERATION_FIELDS = frozenset(
+    {"uses", "with", "sources", "source_groups", "evidence", "steps"}
+)
+_STEP_FIELDS = frozenset(
+    {"id", "uses", "needs", "with", "sources", "source_groups", "evidence"}
+)
 
 
 def _table(value: object, field: str) -> Mapping[str, Any]:
@@ -99,6 +105,26 @@ def _sources(
     )
 
 
+def _selected_sources(
+    owner_root: Path,
+    raw: Mapping[str, Any],
+    *,
+    field: str,
+    source_groups: Mapping[str, tuple[str, ...]],
+) -> tuple[Source, ...]:
+    names = list(_strings(raw.get("sources"), f"{field}.sources"))
+    for group in _strings(raw.get("source_groups"), f"{field}.source_groups"):
+        try:
+            names.extend(source_groups[group])
+        except KeyError as exc:
+            raise ContractError(
+                f"{field}.source_groups references unknown group {group!r}"
+            ) from exc
+    if len(names) != len(set(names)):
+        raise ContractError(f"{field} selects duplicate sources")
+    return _sources(owner_root, tuple(names), f"{field}.sources")
+
+
 def _step(
     raw: Mapping[str, Any],
     *,
@@ -106,6 +132,7 @@ def _step(
     owner_root: Path,
     inherited_config: Mapping[str, Any],
     inherited_sources: tuple[Source, ...],
+    source_groups: Mapping[str, tuple[str, ...]],
     default_id: str | None = None,
 ) -> Step:
     unknown = set(raw) - _STEP_FIELDS
@@ -115,10 +142,11 @@ def _step(
     uses = raw.get("uses")
     if not isinstance(uses, str):
         raise ContractError(f"{field}.uses must be a backend identity")
-    own_sources = _sources(
+    own_sources = _selected_sources(
         owner_root,
-        _strings(raw.get("sources"), f"{field}.sources"),
-        f"{field}.sources",
+        raw,
+        field=field,
+        source_groups=source_groups,
     )
     return Step(
         step_id,
@@ -160,10 +188,56 @@ def compile_operation(
             f"{path}: expected schema=1, contract_kind='owner-operations', "
             f"path_scope='owner', owner={owner!r}"
         )
-    unknown = set(raw) - _HEADER - {"targets"}
+    unknown = set(raw) - _HEADER - {"source_groups", "operations", "targets"}
     if unknown:
         raise ContractError(f"{path}: unknown owner operation fields: {sorted(unknown)}")
+    raw_groups = _table(raw.get("source_groups", {}), "source_groups")
+    source_groups = {
+        _name(name, "source group"): _strings(value, f"source_groups.{name}")
+        for name, value in raw_groups.items()
+    }
+    operation_definitions = _table(raw.get("operations"), "operations")
     targets = _table(raw.get("targets"), "targets")
+    enabled_by_targets: set[str] = set()
+    for configured_target, value in targets.items():
+        configured_name = _name(configured_target, "target")
+        configured = _table(value, f"targets.{configured_name}")
+        unknown_target = set(configured) - _TARGET_FIELDS
+        if unknown_target:
+            raise ContractError(
+                f"targets.{configured_name} contains unknown fields: "
+                f"{sorted(unknown_target)}"
+            )
+        if not isinstance(configured.get("description"), str) or not str(
+            configured["description"]
+        ).strip():
+            raise ContractError(
+                f"targets.{configured_name}.description must be non-empty text"
+            )
+        enabled_by_targets.update(
+            _name(name, f"targets.{configured_name}.operations entry")
+            for name in _strings(
+                configured.get("operations"),
+                f"targets.{configured_name}.operations",
+            )
+        )
+    defined_operations: set[str] = set()
+    for configured_operation, value in operation_definitions.items():
+        configured_name = _name(configured_operation, "operation")
+        configured = _table(value, f"operations.{configured_name}")
+        unknown_operation = set(configured) - _OPERATION_FIELDS
+        if unknown_operation:
+            raise ContractError(
+                f"operation {configured_name!r} contains unknown fields: "
+                f"{sorted(unknown_operation)}"
+            )
+        defined_operations.add(configured_name)
+    if enabled_by_targets != defined_operations:
+        raise ContractError(
+            "defined and enabled owner operations must form the same closed set; "
+            f"undefined={sorted(enabled_by_targets - defined_operations)}, "
+            f"unused={sorted(defined_operations - enabled_by_targets)}"
+        )
     target_name = _name(target, "target")
     operation_name = _name(operation, "operation")
     try:
@@ -178,16 +252,22 @@ def compile_operation(
     description = target_raw.get("description")
     if not isinstance(description, str) or not description.strip():
         raise ContractError(f"targets.{target_name}.description must be non-empty text")
-    operations = _table(target_raw.get("operations"), f"targets.{target_name}.operations")
+    enabled_operations = _strings(
+        target_raw.get("operations"), f"targets.{target_name}.operations"
+    )
+    if operation_name not in enabled_operations:
+        raise ContractError(
+            f"target {target_name!r} has no operation {operation_name!r}; "
+            f"available: {sorted(enabled_operations)}"
+        )
     try:
         operation_raw = _table(
-            operations[operation_name],
-            f"targets.{target_name}.operations.{operation_name}",
+            operation_definitions[operation_name],
+            f"operations.{operation_name}",
         )
     except KeyError as exc:
         raise ContractError(
-            f"target {target_name!r} has no operation {operation_name!r}; "
-            f"available: {sorted(operations)}"
+            f"target {target_name!r} enables undefined operation {operation_name!r}"
         ) from exc
     unknown_operation = set(operation_raw) - _OPERATION_FIELDS
     if unknown_operation:
@@ -197,18 +277,20 @@ def compile_operation(
     target_config = _config(target_raw.get("with"), f"targets.{target_name}.with")
     operation_config = _config(
         operation_raw.get("with"),
-        f"targets.{target_name}.operations.{operation_name}.with",
+        f"operations.{operation_name}.with",
     )
     inherited_sources = (
-        *_sources(
+        *_selected_sources(
             root,
-            _strings(target_raw.get("sources"), f"targets.{target_name}.sources"),
-            f"targets.{target_name}.sources",
+            target_raw,
+            field=f"targets.{target_name}",
+            source_groups=source_groups,
         ),
-        *_sources(
+        *_selected_sources(
             root,
-            _strings(operation_raw.get("sources"), f"operations.{operation_name}.sources"),
-            f"operations.{operation_name}.sources",
+            operation_raw,
+            field=f"operations.{operation_name}",
+            source_groups=source_groups,
         ),
     )
     steps_raw = operation_raw.get("steps")
@@ -231,6 +313,7 @@ def compile_operation(
                 owner_root=root,
                 inherited_config=inherited_config,
                 inherited_sources=inherited_sources,
+                source_groups=source_groups,
                 default_id="run",
             ),
         )
@@ -246,6 +329,7 @@ def compile_operation(
                 owner_root=root,
                 inherited_config=inherited_config,
                 inherited_sources=inherited_sources,
+                source_groups=source_groups,
             )
             for index, value in enumerate(steps_raw)
         )

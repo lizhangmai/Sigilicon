@@ -24,6 +24,7 @@ from sigilicon.execution.model import (
     StepResult,
     json_value,
 )
+from sigilicon.external_tools import process_group_cleanup_uncertainty
 from sigilicon.paths import ArtifactLayout
 
 
@@ -124,10 +125,17 @@ def _seal_sources(record: ArtifactRecord, plan: ExecutionPlan) -> Path:
         path = record.write_text("inputs", components, source.text)
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
         try:
-            os.fchmod(descriptor, 0o755 if source.executable else 0o644)
+            os.fchmod(descriptor, 0o555 if source.executable else 0o444)
         finally:
             os.close(descriptor)
         record.add_file("inputs", path)
+    for directory in sorted(
+        (path for path in root.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        directory.chmod(0o555)
+    root.chmod(0o555)
     return root
 
 
@@ -266,7 +274,12 @@ def run(
                 except (KeyboardInterrupt, SystemExit):
                     raise
                 except Exception as exc:
-                    result = StepResult.failed(f"{type(exc).__name__}: {exc}")
+                    uncertainty = process_group_cleanup_uncertainty(exc)
+                    result = (
+                        StepResult.uncertain(uncertainty)
+                        if uncertainty is not None
+                        else StepResult.failed(f"{type(exc).__name__}: {exc}")
+                    )
                 published = {artifact.path for artifact in result.artifacts}
                 actual_outputs = {
                     path.absolute()
@@ -334,7 +347,26 @@ def run(
             ("run-result.json",),
             result.record,
         )
-        record.succeed(
+        terminal_arguments: dict[str, Any] = {}
+        if result.status == "partial":
+            terminal_arguments["partial_failure"] = {
+                "completed_steps": [
+                    outcome.step
+                    for outcome in outcomes
+                    if outcome.result.status == "succeeded"
+                ],
+                "step_statuses": {
+                    outcome.step: outcome.result.status for outcome in outcomes
+                },
+            }
+        elif result.status == "uncertain":
+            terminal_arguments["uncertain_reason"] = "; ".join(
+                outcome.result.message
+                for outcome in outcomes
+                if outcome.result.status == "uncertain"
+            ) or "one or more execution steps have an uncertain outcome"
+        record.complete(
+            result.status,
             completion_evidence=(result_path,),
             details={
                 "run_status": result.status,
@@ -342,6 +374,7 @@ def run(
                     read_nofollow_text(result_path).encode("utf-8")
                 ).hexdigest(),
             },
+            **terminal_arguments,
         )
         return result
 

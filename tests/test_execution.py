@@ -23,6 +23,7 @@ from sigilicon.execution import (
     StepOutcome,
     StepResult,
 )
+from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
 
 
@@ -93,24 +94,28 @@ contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 
+[source_groups]
+value = ["configs/value.txt"]
+
 [targets.smoke]
 description = "Offline execution smoke"
 with = { prefix = "value" }
-sources = ["configs/value.txt"]
+source_groups = ["value"]
+operations = ["check", "all"]
 
-[targets.smoke.operations.check]
+[operations.check]
 uses = "fake.copy"
 with = { text = "hello" }
 evidence = { role = "regression", level = "l0", scope = "source" }
 
-[targets.smoke.operations.all]
+[operations.all]
 
-[[targets.smoke.operations.all.steps]]
+[[operations.all.steps]]
 id = "source"
 uses = "fake.copy"
 with = { text = "hello" }
 
-[[targets.smoke.operations.all.steps]]
+[[operations.all.steps]]
 id = "transform"
 uses = "fake.upper"
 needs = ["source"]
@@ -184,6 +189,20 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
 
     operations.write_text(operations.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     assert project.preflight(plan, Resources(frozenset({"offline"}))).status == "blocked"
+
+
+def test_operation_rejects_an_unknown_source_group(tmp_path: Path) -> None:
+    operations = _write_project(tmp_path)
+    operations.write_text(
+        operations.read_text(encoding="utf-8").replace(
+            'source_groups = ["value"]',
+            'source_groups = ["missing"]',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractError, match="unknown group 'missing'"):
+        Project.open(tmp_path).plan("example/smoke:check")
 
 
 def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Path) -> None:
@@ -301,6 +320,9 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     )
 
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "hello\n"
+    sealed = result.run_root / "inputs/sources/configs/value.txt"
+    assert sealed.stat().st_mode & 0o777 == 0o444
+    assert sealed.parent.stat().st_mode & 0o777 == 0o555
 
 
 def test_project_rejects_a_plan_not_issued_by_that_project(tmp_path: Path) -> None:
@@ -394,6 +416,9 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     )
 
     assert result.status == "uncertain"
+    assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
+        "uncertain"
+    )
     restored = project.runs.read(
         owner="example",
         target="smoke",
@@ -401,6 +426,94 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
         run_id=result.run_id,
     )
     assert restored.status == "uncertain"
+
+
+def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+
+    class CleanupUnknownBackend(CopyBackend):
+        def run(self, context: StepContext) -> StepResult:
+            raise ProcessGroupCleanupUncertainError(
+                "descendant cleanup could not be proven"
+            )
+
+    project = Project.open(tmp_path, backends=(CleanupUnknownBackend(),))
+    plan = project.plan("example/smoke:check")
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="2" * 32,
+    )
+
+    assert result.status == "uncertain"
+    assert result.outcomes[0].result.message == (
+        "descendant cleanup could not be proven"
+    )
+
+
+def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class CancelledBackend(CopyBackend):
+        def run(self, context: StepContext) -> StepResult:
+            return StepResult.cancelled("operator cancelled the tool")
+
+    project = Project.open(tmp_path, backends=(CancelledBackend(),))
+    plan = project.plan("example/smoke:check")
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="3" * 32,
+    )
+
+    assert result.status == "cancelled"
+    assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
+        "cancelled"
+    )
+    assert project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id=result.run_id,
+    ).status == "cancelled"
+
+
+def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class RejectingBackend(CopyBackend):
+        def run(self, context: StepContext) -> StepResult:
+            evidence = context.write_text("evidence", "failure.json", "{}\n")
+            return StepResult(
+                "failed",
+                (Artifact("evidence", "evidence.failure", evidence),),
+                {"passed": False},
+                "qualification failed",
+            )
+
+    project = Project.open(tmp_path, backends=(RejectingBackend(),))
+    plan = project.plan("example/smoke:check")
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="4" * 32,
+    )
+
+    assert result.status == "failed"
+    assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
+        "failed"
+    )
+    assert result.outcomes[0].result.artifacts[0].path.read_text() == "{}\n"
+    restored = project.runs.read(
+        owner="example",
+        target="smoke",
+        operation="check",
+        run_id=result.run_id,
+    )
+    assert restored.outcomes[0].result.facts == {"passed": False}
+    assert restored.outcomes[0].result.artifacts[0].role == "evidence"
 
 
 def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Path) -> None:

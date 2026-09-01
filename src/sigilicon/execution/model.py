@@ -27,7 +27,7 @@ _STEP_STATUSES = frozenset(
     {"succeeded", "failed", "blocked", "partial", "uncertain", "cancelled"}
 )
 _RUN_STATUSES = frozenset({"succeeded", "failed", "partial", "uncertain", "cancelled"})
-_RUN_FAILURE_STATUSES = frozenset({"failed", "partial", "uncertain"})
+_RUN_FAILURE_STATUSES = frozenset({"failed", "partial", "uncertain", "cancelled"})
 
 
 class ContractError(ValueError):
@@ -434,8 +434,8 @@ class StepResult:
             not isinstance(artifact, Artifact) for artifact in self.artifacts
         ):
             raise ContractError("step result artifacts must be Artifact values")
-        if self.status != "succeeded" and self.artifacts:
-            raise ContractError("non-successful steps cannot publish artifacts")
+        if self.status in {"blocked", "cancelled"} and self.artifacts:
+            raise ContractError("blocked or cancelled steps cannot publish artifacts")
         if not isinstance(self.facts, Mapping):
             raise ContractError("step facts must be a mapping")
         if not isinstance(self.message, str):

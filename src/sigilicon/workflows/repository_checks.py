@@ -391,8 +391,16 @@ def inspect_repository_designs(
             if not isinstance(target_name, str) or not isinstance(target_row, Mapping):
                 raise ValueError(f"{catalog_path}: target declarations are invalid")
             operations = target_row.get("operations")
-            if not isinstance(operations, Mapping):
-                raise ValueError(f"{catalog_path}: target {target_name!r} has no operations")
+            if (
+                not isinstance(operations, list)
+                or not operations
+                or any(not isinstance(name, str) or not name for name in operations)
+                or len(operations) != len(set(operations))
+            ):
+                raise ValueError(
+                    f"{catalog_path}: target {target_name!r} operations must be "
+                    "a non-empty unique text array"
+                )
             compiled = {
                 operation_name: compile_operation(
                     catalog_path,
