@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from sigilicon.cli.common import add_json_arg, die, emit_json
+from sigilicon.backends import trusted_backends
 from sigilicon.execution import Resources
 from sigilicon.project import Project
 from sigilicon.paths import discover_project_contract
@@ -383,7 +384,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     project_contract = discover_project_contract(__file__)
-    project = Project.open(project_contract)
+    project = Project.open(project_contract, backends=trusted_backends())
     if args.domain == "oa":
         try:
             workflow = ProjectOaWorkflow(project, args.owner)

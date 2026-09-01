@@ -13,6 +13,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -697,6 +698,75 @@ def owned_directory(
             os.close(descriptor)
 
 
+def _clear_directory_at(descriptor: int) -> None:
+    """Remove children of one held directory without following links."""
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    for name in os.listdir(descriptor):
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child = os.open(name, flags, dir_fd=descriptor)
+            try:
+                os.fchmod(child, stat.S_IRWXU)
+                _clear_directory_at(child)
+            finally:
+                os.close(child)
+            os.rmdir(name, dir_fd=descriptor)
+        else:
+            os.unlink(name, dir_fd=descriptor)
+
+
+@contextmanager
+def owned_scratch_directory(
+    *,
+    prefix: str,
+    retain_on_error: Callable[[BaseException], bool] | None = None,
+) -> Iterator[OwnedDirectoryDescriptor]:
+    """Create an fd-owned tool scratch tree and remove it only when safe.
+
+    Process cleanup uncertainty retains the scratch outside the managed run so
+    a possibly live tool never races artifact finalization or recursive cleanup.
+    """
+
+    if not prefix or Path(prefix).name != prefix:
+        raise ValueError("scratch prefix must be one non-empty path component")
+    root = Path(tempfile.mkdtemp(prefix=prefix)).absolute()
+    parent_fd = _open_nofollow_directory(root.parent, create_missing=False)
+    expected = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+    retained = False
+    cleared = False
+    try:
+        with owned_directory(root) as directory:
+            try:
+                yield directory
+            except BaseException as exc:
+                retained = (
+                    retain_on_error(exc)
+                    if retain_on_error is not None
+                    else process_group_cleanup_uncertainty(exc) is not None
+                )
+                if not retained:
+                    _clear_directory_at(directory.fd)
+                    cleared = True
+                raise
+            else:
+                _clear_directory_at(directory.fd)
+                cleared = True
+    finally:
+        try:
+            if cleared:
+                visible = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(visible.st_mode)
+                    or (visible.st_dev, visible.st_ino)
+                    != (expected.st_dev, expected.st_ino)
+                ):
+                    raise RuntimeError(f"owned scratch identity changed: {root}")
+                os.rmdir(root.name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+
+
 @contextmanager
 def owned_output_file(
     directory: OwnedDirectoryDescriptor,
@@ -800,9 +870,13 @@ def find_xrun(explicit: Path | None = None) -> Path:
     )
 
 
-def _xcelium_home(xrun: Path) -> Path:
+def _xcelium_home(
+    xrun: Path,
+    environment: Mapping[str, str] | None = None,
+) -> Path:
     resolved = xrun.resolve()
-    configured = os.environ.get("XCELIUM_HOME") or os.environ.get("IUS_HOME")
+    source = os.environ if environment is None else environment
+    configured = source.get("XCELIUM_HOME") or source.get("IUS_HOME")
     candidates = ([Path(configured)] if configured else []) + list(resolved.parents)
     for installation in candidates:
         for launcher in (
@@ -814,11 +888,14 @@ def _xcelium_home(xrun: Path) -> Path:
     raise RuntimeError(f"cannot determine Xcelium installation root from {xrun}")
 
 
-def xrun_env(xrun: Path) -> dict[str, str]:
+def xrun_env(
+    xrun: Path,
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Build the bounded child environment for one resolved Xcelium install."""
 
-    env = cadence_subprocess_env()
-    installation = _xcelium_home(xrun)
+    env = cadence_subprocess_env(base)
+    installation = _xcelium_home(xrun, env)
     path_entries = (installation / "tools" / "bin", installation / "bin")
     lib_entries = (
         installation / "tools" / "inca" / "lib",

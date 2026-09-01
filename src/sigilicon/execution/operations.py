@@ -14,13 +14,22 @@ from sigilicon.paths import validate_artifact_component
 
 _HEADER = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _TARGET_FIELDS = frozenset(
-    {"description", "with", "sources", "source_groups", "operations"}
+    {
+        "description", "with", "sources", "source_groups", "source_globs",
+        "project_sources", "project_source_globs", "operations",
+    }
 )
 _OPERATION_FIELDS = frozenset(
-    {"uses", "with", "sources", "source_groups", "evidence", "steps"}
+    {
+        "uses", "with", "sources", "source_groups", "source_globs",
+        "project_sources", "project_source_globs", "evidence", "steps",
+    }
 )
 _STEP_FIELDS = frozenset(
-    {"id", "uses", "needs", "with", "sources", "source_groups", "evidence"}
+    {
+        "id", "uses", "needs", "with", "sources", "source_groups",
+        "source_globs", "project_sources", "project_source_globs", "evidence",
+    }
 )
 
 
@@ -91,22 +100,52 @@ def _source_path(owner_root: Path, value: str, field: str) -> Path:
 
 
 def _sources(
-    owner_root: Path,
+    root: Path,
     values: tuple[str, ...],
     field: str,
+    *,
+    scope: str,
 ) -> tuple[Source, ...]:
     return tuple(
         Source.capture(
-            _source_path(owner_root, value, f"{field}[{index}]"),
-            root=owner_root,
-            scope="owner",
+            _source_path(root, value, f"{field}[{index}]"),
+            root=root,
+            scope=scope,
         )
         for index, value in enumerate(values)
     )
 
 
+def _glob_sources(
+    root: Path,
+    values: tuple[str, ...],
+    field: str,
+    *,
+    scope: str,
+) -> tuple[Source, ...]:
+    selected: list[Source] = []
+    for index, value in enumerate(values):
+        pattern = PurePosixPath(value)
+        if (
+            not value
+            or pattern.is_absolute()
+            or "\\" in value
+            or pattern.as_posix() != value
+            or any(part in {"", ".", ".."} for part in pattern.parts)
+        ):
+            raise ContractError(f"{field}[{index}] must be a canonical source glob")
+        matches = sorted(path for path in root.glob(value) if path.is_file())
+        if not matches:
+            raise ContractError(f"{field}[{index}] matched no source files")
+        selected.extend(
+            Source.capture(path, root=root, scope=scope) for path in matches
+        )
+    return tuple(selected)
+
+
 def _selected_sources(
     owner_root: Path,
+    project_root: Path,
     raw: Mapping[str, Any],
     *,
     field: str,
@@ -122,7 +161,38 @@ def _selected_sources(
             ) from exc
     if len(names) != len(set(names)):
         raise ContractError(f"{field} selects duplicate sources")
-    return _sources(owner_root, tuple(names), f"{field}.sources")
+    selected = (
+        *_sources(
+            owner_root, tuple(names), f"{field}.sources", scope="owner"
+        ),
+        *_glob_sources(
+            owner_root,
+            _strings(raw.get("source_globs"), f"{field}.source_globs"),
+            f"{field}.source_globs",
+            scope="owner",
+        ),
+        *_sources(
+            project_root,
+            _strings(raw.get("project_sources"), f"{field}.project_sources"),
+            f"{field}.project_sources",
+            scope="project",
+        ),
+        *_glob_sources(
+            project_root,
+            _strings(
+                raw.get("project_source_globs"),
+                f"{field}.project_source_globs",
+            ),
+            f"{field}.project_source_globs",
+            scope="project",
+        ),
+    )
+    identities = {(source.root, source.path) for source in selected}
+    if len(identities) != len(selected):
+        raise ContractError(f"{field} selects overlapping source trees")
+    if len({source.path for source in selected}) != len(selected):
+        raise ContractError(f"{field} source paths collide across scopes")
+    return selected
 
 
 def _step(
@@ -130,6 +200,7 @@ def _step(
     *,
     field: str,
     owner_root: Path,
+    project_root: Path,
     inherited_config: Mapping[str, Any],
     inherited_sources: tuple[Source, ...],
     source_groups: Mapping[str, tuple[str, ...]],
@@ -144,6 +215,7 @@ def _step(
         raise ContractError(f"{field}.uses must be a backend identity")
     own_sources = _selected_sources(
         owner_root,
+        project_root,
         raw,
         field=field,
         source_groups=source_groups,
@@ -163,6 +235,7 @@ def compile_operation(
     *,
     owner: str,
     owner_root: Path,
+    project_root: Path,
     target: str,
     operation: str,
 ) -> ExecutionPlan:
@@ -170,6 +243,9 @@ def compile_operation(
 
     path = Path(catalog_path).absolute()
     root = Path(owner_root).resolve()
+    repository_root = Path(project_root).resolve()
+    if not root.is_relative_to(repository_root):
+        raise ContractError("operation owner root must stay inside its project")
     if path.resolve() != path or not path.is_relative_to(root):
         raise ContractError("operation catalog must be a non-symlink owner source")
     try:
@@ -282,12 +358,14 @@ def compile_operation(
     inherited_sources = (
         *_selected_sources(
             root,
+            repository_root,
             target_raw,
             field=f"targets.{target_name}",
             source_groups=source_groups,
         ),
         *_selected_sources(
             root,
+            repository_root,
             operation_raw,
             field=f"operations.{operation_name}",
             source_groups=source_groups,
@@ -311,6 +389,7 @@ def compile_operation(
                 },
                 field=f"operations.{operation_name}",
                 owner_root=root,
+                project_root=repository_root,
                 inherited_config=inherited_config,
                 inherited_sources=inherited_sources,
                 source_groups=source_groups,
@@ -327,25 +406,42 @@ def compile_operation(
                 _table(value, f"operations.{operation_name}.steps[{index}]"),
                 field=f"operations.{operation_name}.steps[{index}]",
                 owner_root=root,
+                project_root=repository_root,
                 inherited_config=inherited_config,
                 inherited_sources=inherited_sources,
                 source_groups=source_groups,
             )
             for index, value in enumerate(steps_raw)
         )
+    selected_step_sources = (
+        ()
+        if not isinstance(steps_raw, list)
+        else tuple(
+            source
+            for index, value in enumerate(steps_raw)
+            for source in _selected_sources(
+                root,
+                repository_root,
+                _table(value, f"operations.{operation_name}.steps[{index}]"),
+                field=f"operations.{operation_name}.steps[{index}]",
+                source_groups=source_groups,
+            )
+        )
+    )
     catalog_source = Source.capture(path, root=root, scope="owner")
     if catalog_source.text != record_text:
         raise ContractError("operation catalog changed while it was being parsed")
     unique_sources: dict[str, Source] = {catalog_source.path: catalog_source}
-    for source in inherited_sources:
+    for source in (*inherited_sources, *selected_step_sources):
+        if source.path in unique_sources and unique_sources[source.path].root != source.root:
+            raise ContractError("operation source paths collide across scopes")
         unique_sources[source.path] = source
     for step in steps:
         for source_name in step.sources:
             if source_name not in unique_sources:
-                unique_sources[source_name] = Source.capture(
-                    _source_path(root, source_name, f"steps.{step.id}.sources"),
-                    root=root,
-                    scope="owner",
+                raise ContractError(
+                    f"step {step.id!r} source is absent from the compiled closure: "
+                    f"{source_name}"
                 )
     return ExecutionPlan(owner, target_name, operation_name, steps, tuple(unique_sources.values()))
 

@@ -205,6 +205,36 @@ def test_operation_rejects_an_unknown_source_group(tmp_path: Path) -> None:
         Project.open(tmp_path).plan("example/smoke:check")
 
 
+def test_operation_globs_capture_owner_and_shared_project_sources(
+    tmp_path: Path,
+) -> None:
+    operations = _write_project(tmp_path)
+    (tmp_path / "ip/example/rtl").mkdir()
+    (tmp_path / "ip/example/rtl/design.sv").write_text(
+        "module design; endmodule\n", encoding="utf-8"
+    )
+    (tmp_path / "configs/platform/tool.toml").write_text(
+        "tool = 'fixture'\n", encoding="utf-8"
+    )
+    operations.write_text(
+        operations.read_text(encoding="utf-8").replace(
+            '[operations.check]\nuses = "fake.copy"',
+            '[operations.check]\n'
+            'uses = "fake.copy"\n'
+            'source_globs = ["rtl/**/*.sv"]\n'
+            'project_source_globs = ["configs/platform/**/*.toml"]',
+        ),
+        encoding="utf-8",
+    )
+
+    plan = Project.open(tmp_path).plan("example/smoke:check")
+    sources = {(source.scope, source.path) for source in plan.sources}
+
+    assert ("owner", "rtl/design.sv") in sources
+    assert ("project", "configs/platform/catalog.toml") in sources
+    assert ("project", "configs/platform/tool.toml") in sources
+
+
 def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = Project.open(tmp_path, backends=(CopyBackend(), UpperBackend()))

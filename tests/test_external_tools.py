@@ -13,7 +13,9 @@ from sigilicon.external_tools import (
     owned_directory,
     owned_input_file,
     owned_output_file,
+    owned_scratch_directory,
     owned_sealed_input,
+    ProcessGroupCleanupUncertainError,
     run_process_group,
     run_process_group_until_confirmed,
     xrun_env,
@@ -58,6 +60,64 @@ def test_xrun_resolution_and_environment_use_one_installation(
         str(installation / "tools/bin"),
         str(installation / "bin"),
     ]
+
+
+def test_xrun_environment_uses_the_supplied_resource_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    installation = tmp_path / "selected-xcelium"
+    launcher = installation / "tools/bin/xrun"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("launcher\n", encoding="utf-8")
+    monkeypatch.setenv("CDS_LIC_FILE", "global-license")
+
+    environment = xrun_env(
+        launcher,
+        {
+            "PATH": "/snapshot/bin",
+            "CDS_LIC_FILE": "snapshot-license",
+            "XCELIUM_HOME": str(installation),
+        },
+    )
+
+    assert environment["CDS_LIC_FILE"] == "snapshot-license"
+    assert environment["PATH"].endswith(":/snapshot/bin")
+
+
+def test_owned_scratch_removes_links_without_following_them(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.write_text("preserved\n", encoding="utf-8")
+
+    with owned_scratch_directory(prefix="sigilicon-test-") as scratch:
+        root = scratch.path
+        (root / "cache").mkdir()
+        (root / "cache/link").symlink_to(outside)
+
+    assert not root.exists()
+    assert outside.read_text(encoding="utf-8") == "preserved\n"
+
+
+def test_owned_scratch_is_retained_when_process_cleanup_is_uncertain() -> None:
+    with pytest.raises(ProcessGroupCleanupUncertainError):
+        with owned_scratch_directory(prefix="sigilicon-uncertain-") as scratch:
+            root = scratch.path
+            (root / "live-tool-state").write_text("unknown\n", encoding="utf-8")
+            raise ProcessGroupCleanupUncertainError("process state unknown")
+
+    assert (root / "live-tool-state").is_file()
+    (root / "live-tool-state").unlink()
+    root.rmdir()
+
+
+def test_owned_scratch_is_removed_after_an_ordinary_failure() -> None:
+    with pytest.raises(RuntimeError, match="tool failed"):
+        with owned_scratch_directory(prefix="sigilicon-failed-") as scratch:
+            root = scratch.path
+            (root / "tool.log").write_text("failed\n", encoding="utf-8")
+            raise RuntimeError("tool failed")
+
+    assert not root.exists()
 
 
 def test_sealed_child_input_is_immutable_and_exact() -> None:

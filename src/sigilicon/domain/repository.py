@@ -131,6 +131,7 @@ class Project:
             catalog,
             owner=owner.name,
             owner_root=owner.root,
+            project_root=self.project_root,
             target=target,
             operation=operation,
         )
@@ -181,6 +182,9 @@ class Project:
             Backends() if self._backends is None else self._backends,
             selected,
             artifact_root=self.artifact_root,
+            project_root=self.project_root,
+            owner_root=self.owner(plan.owner).root,
+            workspace_root=self.workspace_root,
             run_id=run_id,
             progress=progress,
         )
@@ -189,8 +193,20 @@ class Project:
         """Reject plans not compiled from this Project's current owner contract."""
 
         owner = self.owner(plan.owner)
-        if any(source.root != owner.root for source in plan.sources):
-            raise ValueError("execution plan contains a source outside its owner root")
+        for source in plan.sources:
+            if source.scope == "owner":
+                valid = source.root == owner.root
+            elif source.scope == "project":
+                valid = source.root == self.project_root and not any(
+                    source.location.is_relative_to(candidate.root)
+                    for candidate in self.owners
+                )
+            else:
+                valid = False
+            if not valid:
+                raise ValueError(
+                    "execution plan contains a source outside its owner/shared roots"
+                )
         issued = self._issued_plans.get(plan.identity)
         if issued is None or issued != plan.record:
             raise ValueError("execution plan was not produced by this Project")

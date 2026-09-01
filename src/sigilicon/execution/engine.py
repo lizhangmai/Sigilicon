@@ -156,6 +156,9 @@ def run(
     resources: Resources,
     *,
     artifact_root: Path,
+    project_root: Path,
+    owner_root: Path,
+    workspace_root: Path,
     run_id: str | None = None,
     progress: Progress | None = None,
 ) -> RunResult:
@@ -249,15 +252,26 @@ def run(
                     },
                 )
                 context = StepContext(
-                    plan.identity,
-                    step,
-                    identity,
-                    operation_id,
-                    work_root,
-                    output_root,
-                    source_root,
-                    resources,
-                    dependencies,
+                    plan_identity=plan.identity,
+                    step=step,
+                    run_id=identity,
+                    operation_id=operation_id,
+                    work_root=work_root,
+                    output_root=output_root,
+                    source_root=source_root,
+                    resources=resources,
+                    dependencies=dependencies,
+                    project_root=project_root,
+                    owner_root=owner_root,
+                    workspace_root=workspace_root,
+                    source_scopes={
+                        source.path: source.scope
+                        for source in plan.sources
+                        if source.path in step.sources
+                    },
+                    _register_operation=(
+                        lambda operation: operation.register_artifact(record)
+                    ),
                 )
                 backend = backends[step.uses]
                 try:

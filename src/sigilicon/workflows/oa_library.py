@@ -135,14 +135,22 @@ class OALibraryRebuildPlan:
 
     def as_dict(self) -> dict[str, object]:
         root = self.source.project_root
+
+        def project_path(path: Path) -> str:
+            return (
+                path.relative_to(root).as_posix()
+                if path.is_relative_to(root)
+                else str(path)
+            )
+
         return {
             "passed": True,
             "manifest": self.source.manifest_path.relative_to(root).as_posix(),
             "source_library": self.source.name,
             "target_library": self.library,
             "pdk": self.source.pdk,
-            "workspace_template": self.source.workspace_template.relative_to(root).as_posix(),
-            "oa_library": self.source.oa_library.relative_to(root).as_posix(),
+            "workspace_template": project_path(self.source.workspace_template),
+            "oa_library": project_path(self.source.oa_library),
             "primitive_masters": list(self.source.primitive_masters),
             "physical_verification": (
                 None

@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import (
     ensure_nofollow_directory,
@@ -303,6 +303,8 @@ class ExecutionPlan:
         closure = {(source.root, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
+        if len({source.path for source in self.sources}) != len(self.sources):
+            raise ContractError("execution plan source paths collide across scopes")
         for step in self.steps:
             for source in step.sources:
                 if source not in {item.path for item in self.sources}:
@@ -488,6 +490,19 @@ class StepContext:
     source_root: Path
     resources: Resources
     dependencies: Mapping[str, StepResult]
+    project_root: Path | None = field(default=None, repr=False, compare=False)
+    owner_root: Path | None = field(default=None, repr=False, compare=False)
+    workspace_root: Path | None = field(default=None, repr=False, compare=False)
+    source_scopes: Mapping[str, str] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    _register_operation: Callable[[Any], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         validate_artifact_id(self.run_id, "run id")
@@ -496,6 +511,28 @@ class StepContext:
         object.__setattr__(self, "work_root", Path(self.work_root).absolute())
         object.__setattr__(self, "output_root", Path(self.output_root).absolute())
         object.__setattr__(self, "source_root", Path(self.source_root).absolute())
+        runtime_roots = (self.project_root, self.owner_root, self.workspace_root)
+        if any(root is None for root in runtime_roots) and any(
+            root is not None for root in runtime_roots
+        ):
+            raise ContractError("step context runtime roots must be supplied together")
+        if all(root is not None for root in runtime_roots):
+            assert self.project_root is not None
+            assert self.owner_root is not None
+            assert self.workspace_root is not None
+            project_root = Path(self.project_root).resolve()
+            owner_root = Path(self.owner_root).resolve()
+            workspace_root = Path(self.workspace_root).resolve()
+            if not owner_root.is_relative_to(project_root):
+                raise ContractError("step context owner root escaped its project")
+            object.__setattr__(self, "project_root", project_root)
+            object.__setattr__(self, "owner_root", owner_root)
+            object.__setattr__(self, "workspace_root", workspace_root)
+        if not isinstance(self.source_scopes, Mapping) or any(
+            name not in self.step.sources or scope not in {"owner", "project"}
+            for name, scope in self.source_scopes.items()
+        ):
+            raise ContractError("step context source scopes disagree with its step")
         if not isinstance(self.dependencies, Mapping) or any(
             not isinstance(name, str) or not isinstance(result, StepResult)
             for name, result in self.dependencies.items()
@@ -511,6 +548,11 @@ class StepContext:
         ):
             raise ContractError("step context roots disagree with the managed run layout")
         object.__setattr__(self, "dependencies", MappingProxyType(dict(self.dependencies)))
+        object.__setattr__(
+            self,
+            "source_scopes",
+            MappingProxyType(dict(self.source_scopes)),
+        )
 
     def source_path(self, source: str) -> Path:
         """Return a run-local tool path for trusted package Backend code."""
@@ -541,6 +583,35 @@ class StepContext:
         """Read a step source through the held-fd no-follow input primitive."""
 
         return read_nofollow_text(self.source_path(source))
+
+    def scoped_source_path(self, scope: str, source: str) -> Path:
+        """Resolve one owner- or project-relative source from the sealed closure."""
+
+        matches = tuple(
+            name
+            for name in self.step.sources
+            if self.source_scopes.get(name) == scope and name == source
+        )
+        if len(matches) != 1:
+            raise ExecutionError(
+                f"step source {scope}:{source} is missing or ambiguous"
+            )
+        return self.source_path(matches[0])
+
+    def owner_source_path(self, source: str) -> Path:
+        return self.scoped_source_path("owner", source)
+
+    def project_source_path(self, source: str) -> Path:
+        return self.scoped_source_path("project", source)
+
+    def bind_workspace_operation(self, operation: Any) -> None:
+        """Bind one trusted OA operation to this run before it accesses tools."""
+
+        if self._register_operation is None:
+            raise ExecutionError("step context cannot bind a workspace operation")
+        if getattr(operation, "operation_id", None) != self.operation_id:
+            raise ExecutionError("workspace operation identity disagrees with this run")
+        self._register_operation(operation)
 
     def output_path(self, role: str, filename: str) -> Path:
         """Reserve a tool path; external tools must use held-fd output helpers."""

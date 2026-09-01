@@ -78,6 +78,7 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
             return False
 
         def view_lease(self, *args, **kwargs):
+            assert bound == [self]
             return nullcontext()
 
         def mutation_scope(self, *args, **kwargs):

@@ -406,6 +406,7 @@ def inspect_repository_designs(
                     catalog_path,
                     owner=owner.name,
                     owner_root=owner.root,
+                    project_root=context.project_root,
                     target=target_name,
                     operation=operation_name,
                 )

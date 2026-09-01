@@ -36,6 +36,8 @@ class RunArtifacts:
         context: StepContext,
         output_role: str,
         source: Mapping[str, Any],
+        *,
+        tool_work_root: Path | None = None,
     ) -> RunArtifacts:
         role = validate_artifact_component(output_role, "output role")
         run_root = context.output_root.parents[1]
@@ -43,7 +45,11 @@ class RunArtifacts:
             run_id=context.run_id,
             root=run_root,
             input_root=context.work_root / "inputs",
-            work_root=context.work_root / "tool",
+            work_root=(
+                context.work_root / "tool"
+                if tool_work_root is None
+                else Path(tool_work_root).absolute()
+            ),
             output_root=context.output_root / role,
             log_root=context.work_root / "logs",
             source=source,

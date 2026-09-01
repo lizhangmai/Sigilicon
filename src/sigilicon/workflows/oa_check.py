@@ -262,8 +262,11 @@ def _recommendation(
             return "uncertain"
     bridge_errors = [key for key in bridge if key.endswith("_error")]
     process = bridge.get("process")
-    if isinstance(process, Mapping) and process.get("error"):
-        bridge_errors.append("process.error")
+    if isinstance(process, Mapping):
+        if process.get("error"):
+            bridge_errors.append("process.error")
+        elif process.get("alive") is False:
+            bridge_errors.append("process.not-alive")
     if bridge_errors:
         return "uncertain"
     if bridge.get("active_maestro_sessions"):

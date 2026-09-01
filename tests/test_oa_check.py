@@ -107,6 +107,23 @@ def test_current_clean_check_is_clean() -> None:
     )
 
 
+def test_dead_bridge_process_makes_live_state_uncertain() -> None:
+    assert (
+        _recommendation(
+            plan_error=None,
+            parity={"passed": True},
+            ownership={"conflicts": []},
+            bridge={
+                "active_maestro_sessions": [],
+                "open_cell_views": [],
+                "process": {"pid": 123, "alive": False},
+            },
+            locks={"edit_locks": [], "errors": []},
+        )
+        == "uncertain"
+    )
+
+
 def test_check_proves_live_library_path_is_the_manifest_target(
     monkeypatch, tmp_path: Path
 ) -> None:

@@ -33,7 +33,14 @@ ALLOWED_DEPENDENCIES = {
     "project": {"domain", "execution", "project", "root"},
     "domain": {"domain", "execution", "root"},
     "execution": {"execution", "root"},
-    "backends": {"backends", "execution", "root"},
+    "backends": {
+        "backends",
+        "domain",
+        "execution",
+        "virtuoso",
+        "workflows",
+        "root",
+    },
     "layout": {"domain", "layout", "root"},
     "virtuoso": {"domain", "layout", "virtuoso", "root"},
     "workflows": {
@@ -46,6 +53,7 @@ ALLOWED_DEPENDENCIES = {
         "root",
     },
     "cli": {
+        "backends",
         "domain",
         "execution",
         "layout",

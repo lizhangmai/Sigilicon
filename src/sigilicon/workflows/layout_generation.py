@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.repository import Project
@@ -111,6 +111,7 @@ def generate_layout(
     artifacts: RunArtifacts | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    record_uncertainty: Callable[[str], None] | None = None,
 ) -> LayoutGenerationResult:
     if not disposable and artifacts is None:
         raise ValueError("persistent layout generation requires Flow-owned artifacts")
@@ -126,6 +127,7 @@ def generate_layout(
             artifacts=artifacts,
             operation_id=operation_id,
             bind_operation=bind_operation,
+            record_uncertainty=record_uncertainty,
         )
     with DisposableWork.create(prefix="sigilicon-oa-layout-") as work:
         return _generate_layout_impl(
@@ -149,6 +151,7 @@ def _generate_layout_impl(
     artifacts: RunArtifacts | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    record_uncertainty: Callable[[str], None] | None = None,
 ) -> LayoutGenerationResult:
     """Run layout generation under its caller-owned work scope."""
 
@@ -189,68 +192,73 @@ def _generate_layout_impl(
             ("layout-plan.json",),
             execution_plan.canonical_json(),
         )
-    with (
-        workspace_operation(
+    operation = None
+    try:
+        with workspace_operation(
             client,
             spec.project.workspace_root,
             "generate-layout",
             policy=OperationPolicy.DIRECT_MUTATION,
             operation_id=operation_id,
-        ) as operation,
-        operation.view_lease(
-            spec.library,
-            cells=(spec.cell,),
-            views=((spec.cell, spec.view),),
-        ),
-    ):
-        if not disposable:
-            if not callable(bind_operation):
-                raise RuntimeError("managed layout generation requires operation binding")
-            bind_operation(operation)
-        operation.require_project_library_target(client, spec.library)
-        info = client.library.get(spec.library, timeout=30)
-        if str(info.technology_library or "") != spec.pdk.oa.technology_library:
-            raise RuntimeError(
-                f"library {spec.library} uses technology {info.technology_library!r}, "
-                f"expected {spec.pdk.oa.technology_library!r}"
-            )
+        ) as operation:
+            if not disposable:
+                if not callable(bind_operation):
+                    raise RuntimeError("managed layout generation requires operation binding")
+                bind_operation(operation)
+            with operation.view_lease(
+                spec.library,
+                cells=(spec.cell,),
+                views=((spec.cell, spec.view),),
+            ):
+                operation.require_project_library_target(client, spec.library)
+                info = client.library.get(spec.library, timeout=30)
+                if str(info.technology_library or "") != spec.pdk.oa.technology_library:
+                    raise RuntimeError(
+                        f"library {spec.library} uses technology {info.technology_library!r}, "
+                        f"expected {spec.pdk.oa.technology_library!r}"
+                    )
 
-        def commit() -> Path:
-            completion_payload = {
-                "library": spec.library,
-                "cell": spec.cell,
-                "view": spec.view,
-                "stage": execution_plan.stage,
-                "instance_count": len(execution_plan.instances),
-                "oa_completion_confirmed": True,
-            }
-            completion = attempt.write_json(
-                "outputs",
-                ("completion.json",),
-                completion_payload,
-            )
-            return completion
+                def commit() -> Path:
+                    completion_payload = {
+                        "library": spec.library,
+                        "cell": spec.cell,
+                        "view": spec.view,
+                        "stage": execution_plan.stage,
+                        "instance_count": len(execution_plan.instances),
+                        "oa_completion_confirmed": True,
+                    }
+                    completion = attempt.write_json(
+                        "outputs",
+                        ("completion.json",),
+                        completion_payload,
+                    )
+                    return completion
 
-        deferred = operation.defer_commit(commit) if not disposable else None
-        with operation.mutation_scope(
-            spec.library,
-            cells=(spec.cell,),
-            views=((spec.cell, spec.view),),
-            phase=f"create generated {spec.view} view",
-        ):
-            write_layout_plan(
-                client,
-                execution_plan,
-                operation=operation,
-                overwrite=overwrite,
-                timeout=timeout,
-            )
-        validate_layout_plan(
-            client,
-            execution_plan,
-            operation=operation,
-            timeout=timeout,
-        )
+                deferred = operation.defer_commit(commit) if not disposable else None
+                with operation.mutation_scope(
+                    spec.library,
+                    cells=(spec.cell,),
+                    views=((spec.cell, spec.view),),
+                    phase=f"create generated {spec.view} view",
+                ):
+                    write_layout_plan(
+                        client,
+                        execution_plan,
+                        operation=operation,
+                        overwrite=overwrite,
+                        timeout=timeout,
+                    )
+                validate_layout_plan(
+                    client,
+                    execution_plan,
+                    operation=operation,
+                    timeout=timeout,
+                )
+    except BaseException:
+        reason = getattr(operation, "uncertain_reason", None)
+        if isinstance(reason, str) and reason and callable(record_uncertainty):
+            record_uncertainty(reason)
+        raise
     if not disposable and (deferred is None or not deferred.completed):
         raise RuntimeError("layout generation completed without committing its artifact")
     return LayoutGenerationResult(

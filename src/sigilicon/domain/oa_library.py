@@ -58,8 +58,6 @@ _ASSEMBLY_FIELDS = {
     "path_scope",
     "name",
     "pdk",
-    "workspace_template",
-    "oa_library",
     "additional_source_manifests",
     "primitive_masters",
     "physical_verification",
@@ -487,15 +485,10 @@ def load_oa_library_source(
     assembly_owner = _token(raw.get("owner"), f"{manifest_path}: owner")
     if assembly_owner != repository_owner.name:
         raise ValueError("OA assembly owner disagrees with its repository catalog")
-    workspace_template = _project_path(
-        root, raw.get("workspace_template"), "workspace_template", file=False
-    )
-    if workspace_template != context.workspace_root or not workspace_template.is_dir():
-        raise ValueError("workspace_template must match the project workspace root")
-    oa_library = _project_path(root, raw.get("oa_library"), "oa_library", file=False)
-    expected_library = workspace_template / name
-    if oa_library != expected_library:
-        raise ValueError("oa_library must be the named library below workspace_template")
+    workspace_template = context.workspace_root
+    if not workspace_template.is_dir():
+        raise ValueError("project workspace root does not exist")
+    oa_library = workspace_template / name
     primitive_masters = tuple(
         _identifier(value, "primitive_masters[]")
         for value in _strings(
@@ -721,18 +714,8 @@ def resolve_oa_library_source(
                 manifest_document.get("pdk"),
                 f"{source_root.manifest_path}: pdk",
             )
-            declared_workspace = _project_path(
-                context.project_root,
-                manifest_document.get("workspace_template"),
-                "workspace_template",
-                file=False,
-            )
-            declared_library = _project_path(
-                context.project_root,
-                manifest_document.get("oa_library"),
-                "oa_library",
-                file=False,
-            )
+            declared_workspace = context.workspace_root
+            declared_library = declared_workspace / declared_name
             declared_primitives = tuple(
                 _identifier(value, "primitive_masters[]")
                 for value in _strings(
