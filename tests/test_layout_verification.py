@@ -89,6 +89,9 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
         drc_waiver_layers=("SRAMDMY", "SRM_3"),
     )
     project = SimpleNamespace(workspace_root=tmp_path / "workspace")
+    layermap = tmp_path / "external/layermap"
+    drc_deck = tmp_path / "external/drc.deck"
+    lvs_deck = tmp_path / "external/lvs.deck"
     spec = SimpleNamespace(
         physical_verification=policy,
         oa_assembly_manifest=tmp_path / "oa.toml",
@@ -98,6 +101,11 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
         view="layout",
         pdk=SimpleNamespace(
             oa=SimpleNamespace(technology_library="example-tech")
+        ),
+        layout_pdk=SimpleNamespace(
+            layermap=layermap,
+            drc_deck=drc_deck,
+            lvs_deck=lvs_deck,
         ),
     )
     plan = SimpleNamespace(
@@ -179,6 +187,10 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
         xstream=tmp_path / "strmout",
         calibre=tmp_path / "calibre",
         environment={},
+        external_sources={
+            layermap.resolve(): "bound layermap\n",
+            drc_deck.resolve(): "bound drc deck\n",
+        },
         operation_id="2" * 64,
         bind_operation=bound.append,
     )

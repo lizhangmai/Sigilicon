@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -210,6 +211,104 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
 
     operations.write_text(operations.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     assert project.preflight(plan, Resources(frozenset({"offline"}))).status == "blocked"
+
+
+def test_backend_discovered_sources_have_canonical_plan_order(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    owner = tmp_path / "ip/example"
+    first = owner / "configs/discovered-a.txt"
+    second = owner / "configs/discovered-b.txt"
+    first.write_text("a\n", encoding="utf-8")
+    second.write_text("b\n", encoding="utf-8")
+
+    class DiscoveringBackend(CopyBackend):
+        def __init__(self, paths: tuple[Path, ...]) -> None:
+            self.binding_sources = {
+                path: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in paths
+            }
+
+        def bind(self, project, step):
+            return self
+
+    forward = _project(
+        tmp_path,
+        DiscoveringBackend((first, second)),
+    ).plan("example/smoke:check")
+    reverse = _project(
+        tmp_path,
+        DiscoveringBackend((second, first)),
+    ).plan("example/smoke:check")
+
+    assert forward.identity == reverse.identity
+    assert forward.steps[0].sources[-2:] == (
+        "configs/discovered-a.txt",
+        "configs/discovered-b.txt",
+    )
+
+
+def test_backend_cannot_discover_another_owners_source(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    catalog = tmp_path / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8")
+        + """
+[components.foreign]
+contract = "ip/foreign/component.toml"
+root = "ip/foreign"
+""",
+        encoding="utf-8",
+    )
+    foreign = tmp_path / "ip/foreign"
+    foreign.mkdir()
+    (foreign / "component.toml").write_text(
+        """schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "foreign"
+name = "foreign"
+kind = "rtl-ip"
+
+[filesets]
+source = ["ip/foreign/value.txt"]
+""",
+        encoding="utf-8",
+    )
+    value = foreign / "value.txt"
+    value.write_text("foreign\n", encoding="utf-8")
+
+    class ForeignSourceBackend(CopyBackend):
+        binding_sources = {
+            value: hashlib.sha256(value.read_bytes()).hexdigest(),
+        }
+
+        def bind(self, project, step):
+            return self
+
+    project = _project(tmp_path, ForeignSourceBackend())
+    with pytest.raises(ContractError, match="source owned by 'foreign'"):
+        project.plan("example/smoke:check")
+
+
+def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    owner = tmp_path / "ip/example/configs"
+    target = owner / "real.txt"
+    target.write_text("real\n", encoding="utf-8")
+    link = owner / "linked.txt"
+    link.symlink_to(target.name)
+
+    class SymlinkSourceBackend(CopyBackend):
+        binding_sources = {
+            link: hashlib.sha256(target.read_bytes()).hexdigest(),
+        }
+
+        def bind(self, project, step):
+            return self
+
+    project = _project(tmp_path, SymlinkSourceBackend())
+    with pytest.raises(ContractError, match="symlinked source"):
+        project.plan("example/smoke:check")
 
 
 def test_operation_rejects_an_unknown_source_group(tmp_path: Path) -> None:

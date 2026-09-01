@@ -73,6 +73,8 @@ def sync_oa_testbench(
     *,
     overwrite: bool = False,
     timeout: int = 300,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> None:
     """Build all generated testbench views directly from Git-owned source.
 
@@ -90,6 +92,8 @@ def sync_oa_testbench(
             overwrite=overwrite,
             timeout=timeout,
             _work=work,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
 
 
@@ -101,6 +105,8 @@ def _sync_oa_testbench_impl(
     overwrite: bool = False,
     timeout: int = 300,
     _work: DisposableWork | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> None:
     """Materialize one testbench under its caller-owned temporary scope."""
 
@@ -134,10 +140,13 @@ def _sync_oa_testbench_impl(
         project.workspace_root,
         "rebuild-oa-testbench",
         policy=OperationPolicy.DIRECT_MUTATION,
+        operation_id=operation_id,
     ) as operation, operation.view_lease(
         spec.library,
         cells=(spec.cell,),
     ):
+        if callable(bind_operation):
+            bind_operation(operation)
         visible = client.library.list(timeout=30)
         if spec.library not in visible:
             raise RuntimeError(

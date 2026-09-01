@@ -1026,7 +1026,7 @@ def workspace_operation(
 ) -> Iterator[WorkspaceOperation]:
     """Require local, correctly rooted, session-free automation.
 
-    A read-only inventory such as ``sigilicon oa check`` may set
+    A read-only inventory such as a ``check-oa`` operation may set
     ``acquire_flow_lock=False``.  That mode is deliberately restricted to the
     read-only policy so the diagnostic command cannot alter the shared lock
     file or accidentally become a write path.  Such diagnostics may also set

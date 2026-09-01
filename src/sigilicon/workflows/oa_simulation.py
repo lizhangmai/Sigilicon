@@ -254,6 +254,8 @@ def _run_native_oa_maestro_testbench_impl(
         timeout=min(timeout, 300),
         acquire_flow_lock=False,
         record_incident=False,
+        operation_id=operation_id,
+        bind_operation=bind_operation,
     )
     if oa_check.get("passed") is not True:
         raise RuntimeError(

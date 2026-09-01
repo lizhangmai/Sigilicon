@@ -4,15 +4,17 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from sigilicon.backends.cadence import (
     LayoutBackend,
     LayoutVerificationBackend,
     NativeOaBackend,
+    OaBackend,
     XceliumBackend,
     XceliumAmsBackend,
-    _copy_isolated_project,
 )
-from sigilicon.execution import Evidence, Resources, Step, StepContext
+from sigilicon.execution import ContractError, Evidence, Resources, Step, StepContext
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -201,48 +203,6 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     }
 
 
-def test_cadence_isolated_project_preserves_owner_and_project_scopes(
-    tmp_path: Path,
-) -> None:
-    project = tmp_path / "source-project"
-    owner = project / "ip/example"
-    workspace = project / "workspace"
-    owner.mkdir(parents=True)
-    workspace.mkdir()
-    project_source = _file(project / "configs/platform/catalog.toml")
-    owner_source = _file(owner / "configs/ip.toml")
-    step = Step(
-        "oa",
-        "cadence.native-oa",
-        {"owner": "example", "testbench": "tb", "timeout_seconds": 10},
-        sources=("configs/ip.toml", "configs/platform/catalog.toml"),
-    )
-    context = _context(
-        tmp_path,
-        step,
-        Resources(),
-        project_root=project,
-        owner_root=owner,
-        workspace_root=workspace,
-        scopes={
-            "configs/ip.toml": "owner",
-            "configs/platform/catalog.toml": "project",
-        },
-    )
-    _file(context.source_root / "configs/ip.toml", owner_source.read_text())
-    _file(
-        context.source_root / "configs/platform/catalog.toml",
-        project_source.read_text(),
-    )
-
-    isolated, owner_path = _copy_isolated_project(context, "example")
-
-    assert owner_path == "ip/example"
-    assert (isolated / "ip/example/configs/ip.toml").is_file()
-    assert (isolated / "configs/platform/catalog.toml").is_file()
-    assert "[components.example]" in (isolated / "ip/catalog.toml").read_text()
-
-
 def _oa_context(
     tmp_path: Path,
     step: Step,
@@ -266,35 +226,8 @@ def _oa_context(
     )
     for source in step.sources:
         _file(context.source_root / source)
+        _file(owner / source)
     return context
-
-
-def _patch_isolated_owner(monkeypatch, tmp_path: Path):
-    isolated = tmp_path / "isolated"
-    owner_root = isolated / "ip/example"
-    owner_root.mkdir(parents=True)
-    _file(
-        owner_root / "configs/ip.toml",
-        '''schema = 1
-contract_kind = "ip-component"
-path_scope = "owner"
-owner = "example"
-name = "example"
-kind = "composite-ip"
-''',
-    )
-    project = SimpleNamespace(
-        owner=lambda _name: SimpleNamespace(root=owner_root),
-    )
-    monkeypatch.setattr(
-        "sigilicon.backends.cadence._copy_isolated_project",
-        lambda _context, _owner, **_kwargs: (isolated, "ip/example"),
-    )
-    monkeypatch.setattr(
-        "sigilicon.project.Project.open",
-        lambda _root: project,
-    )
-    return project
 
 
 def test_native_oa_backend_binds_operation_and_publishes_evidence(
@@ -326,7 +259,14 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
         lambda _manifest, *, project: plan,
     )
-    monkeypatch.setattr("sigilicon.workflows.oa_library.oa_plan_source_paths", lambda _plan: ())
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.oa_plan_source_paths",
+        lambda _plan: frozenset(),
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.validate_oa_plan_source_members",
+        lambda _plan, _members: None,
+    )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
 
     def execute(_plan, _selected, _client, *, artifacts, bind_operation, **_kwargs):
@@ -351,6 +291,63 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     assert registered[0].operation_id == context.operation_id
 
 
+def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = Step(
+        "oa",
+        "cadence.oa",
+        {"owner": "example", "action": "rebuild", "timeout_seconds": 10},
+        sources=("configs/oa.toml",),
+    )
+    registered: list[object] = []
+    context = _oa_context(tmp_path, step, registered=registered)
+    assert context.project_root is not None and context.owner_root is not None
+    planning = SimpleNamespace(
+        library="example",
+        testbenches=(),
+        source=SimpleNamespace(
+            manifest_path=context.owner_root / "configs/oa.toml",
+            project=object(),
+        ),
+        as_dict=lambda: {"library": "example"},
+    )
+    project = SimpleNamespace(
+        project_root=context.project_root,
+        owner=lambda _name: SimpleNamespace(root=context.owner_root),
+        oa_assembly_for=lambda _root: context.owner_root / "configs/oa.toml",
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
+        lambda _manifest, *, project: planning,
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.oa_plan_source_paths",
+        lambda _plan: frozenset(),
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.validate_oa_plan_source_members",
+        lambda _plan, _members: None,
+    )
+    monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+
+    def rebuild(_plan, _client, *, operation_id, bind_operation, **_kwargs):
+        operation = SimpleNamespace(operation_id=operation_id)
+        bind_operation(operation)
+        return {"passed": True}
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.rebuild_oa_library",
+        rebuild,
+    )
+
+    result = OaBackend().bind(project, step).run(context)
+
+    assert result.status == "succeeded"
+    assert registered[0].operation_id == context.operation_id
+
+
 def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     monkeypatch,
     tmp_path: Path,
@@ -367,10 +364,19 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     )
     registered: list[object] = []
     context = _oa_context(tmp_path, step, registered=registered)
-    project = _patch_isolated_owner(monkeypatch, tmp_path)
+    assert context.project_root is not None and context.owner_root is not None
+    project = SimpleNamespace(
+        project_root=context.project_root,
+        owner=lambda _name: SimpleNamespace(root=context.owner_root),
+    )
+    source = context.owner_root / "design/CELL/layout.toml"
+    planning = SimpleNamespace(
+        source_records={source: source.read_text(encoding="utf-8")},
+        plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
+    )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
-        lambda _spec, *, project: SimpleNamespace(project=project),
+        lambda _spec, *, project: planning,
     )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
 
@@ -385,7 +391,8 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         generate,
     )
 
-    result = LayoutBackend().run(context)
+    backend = LayoutBackend().bind(project, step)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {"instance_count": 3}
@@ -401,11 +408,44 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         uncertain,
     )
     second = _oa_context(tmp_path / "uncertain", step, registered=[])
-    result = LayoutBackend().run(second)
+    result = backend.run(second)
     assert result.status == "uncertain"
     assert result.facts["workspace_uncertainty"] == (
         "workspace cleanup could not be proven",
     )
+
+
+def test_layout_backend_rejects_typed_source_snapshot_drift(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = Step(
+        "layout",
+        "cadence.layout",
+        {
+            "owner": "example",
+            "spec": "design/CELL/layout.toml",
+            "timeout_seconds": 10,
+        },
+        sources=("design/CELL/layout.toml",),
+    )
+    context = _oa_context(tmp_path, step, registered=[])
+    assert context.project_root is not None and context.owner_root is not None
+    source = context.owner_root / "design/CELL/layout.toml"
+    project = SimpleNamespace(
+        project_root=context.project_root,
+        owner=lambda _name: SimpleNamespace(root=context.owner_root),
+    )
+    planning = SimpleNamespace(
+        source_records={source: "stale typed snapshot\n"},
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        lambda _spec, *, project: planning,
+    )
+
+    with pytest.raises(ContractError, match="typed backend source snapshot drift"):
+        LayoutBackend().bind(project, step)
 
 
 def test_layout_verification_backend_publishes_classified_evidence(
@@ -458,9 +498,25 @@ def test_layout_verification_backend_publishes_classified_evidence(
         register_operation=registered.append,
     )
     _file(context.source_root / "design/CELL/layout.toml")
-    project = _patch_isolated_owner(monkeypatch, tmp_path)
+    source = _file(owner_root / "design/CELL/layout.toml")
+    project = SimpleNamespace(
+        project_root=project_root,
+        owner=lambda _name: SimpleNamespace(root=owner_root),
+    )
+    layermap = _file(project_root / "configs/platform/pdk/layermap", "map\n")
+    drc_deck = _file(project_root / "configs/platform/pdk/drc.deck", "drc\n")
+    lvs_deck = _file(project_root / "configs/platform/pdk/lvs.deck", "lvs\n")
     planning = SimpleNamespace(
-        spec=SimpleNamespace(pdk=SimpleNamespace(key="tsmc28"))
+        spec=SimpleNamespace(
+            pdk=SimpleNamespace(key="tsmc28"),
+            layout_pdk=SimpleNamespace(
+                layermap=layermap,
+                drc_deck=drc_deck,
+                lvs_deck=lvs_deck,
+            ),
+        ),
+        source_records={source: source.read_text(encoding="utf-8")},
+        plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
@@ -468,7 +524,19 @@ def test_layout_verification_backend_publishes_classified_evidence(
     )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
 
-    def verify(_planning, _client, *, artifacts, bind_operation, **_kwargs):
+    def verify(
+        _planning,
+        _client,
+        *,
+        artifacts,
+        bind_operation,
+        external_sources,
+        **_kwargs,
+    ):
+        assert external_sources == {
+            layermap: "map\n",
+            lvs_deck: "lvs\n",
+        }
         operation = SimpleNamespace(operation_id=context.operation_id)
         bind_operation(operation)
         artifacts.write_json("outputs", ("typed-evidence.json",), {"passed": True})
@@ -482,7 +550,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         "sigilicon.workflows.layout_verification.run_layout_verification",
         verify,
     )
-    backend = LayoutVerificationBackend()
+    backend = LayoutVerificationBackend().bind(project, step)
 
     assert all(check.status == "ready" for check in backend.preflight(step, resources))
     result = backend.run(context)

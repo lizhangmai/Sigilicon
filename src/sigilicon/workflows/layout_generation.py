@@ -137,6 +137,9 @@ def generate_layout(
             timeout=timeout,
             disposable=True,
             _disposable_work=work,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
+            record_uncertainty=record_uncertainty,
         )
 
 
@@ -201,10 +204,10 @@ def _generate_layout_impl(
             policy=OperationPolicy.DIRECT_MUTATION,
             operation_id=operation_id,
         ) as operation:
-            if not disposable:
-                if not callable(bind_operation):
-                    raise RuntimeError("managed layout generation requires operation binding")
+            if callable(bind_operation):
                 bind_operation(operation)
+            elif not disposable:
+                raise RuntimeError("managed layout generation requires operation binding")
             with operation.view_lease(
                 spec.library,
                 cells=(spec.cell,),

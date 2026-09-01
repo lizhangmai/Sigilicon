@@ -111,21 +111,31 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
 def _library_ownership(
     plan: OALibraryRebuildPlan,
     client: Any,
+    *,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
+    operation: Any | None = None,
 ) -> dict[str, Any]:
     """Prove that the live library resolves to the manifest-owned OA path."""
 
     expected = plan.source.oa_library.resolve()
     project = plan.source.project
     try:
-        with workspace_operation(
-            client,
-            project.workspace_root,
-            "check-oa-library-ownership",
-            policy=OperationPolicy.READ_ONLY,
-            acquire_flow_lock=False,
-            record_incident=False,
-        ) as operation:
+        if operation is not None:
             registered = operation.require_project_library_target(client, plan.library)
+        else:
+            with workspace_operation(
+                client,
+                project.workspace_root,
+                "check-oa-library-ownership",
+                policy=OperationPolicy.READ_ONLY,
+                acquire_flow_lock=False,
+                record_incident=False,
+                operation_id=operation_id,
+            ) as current:
+                if callable(bind_operation):
+                    bind_operation(current)
+                registered = current.require_project_library_target(client, plan.library)
     except (OSError, RuntimeError, ValueError) as exc:
         return {
             "passed": False,
@@ -296,24 +306,30 @@ def check_oa_library(
     library: str | None,
     client: Any,
     timeout: int = 300,
+    plan: OALibraryRebuildPlan | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
+    operation: Any | None = None,
 ) -> dict[str, Any]:
     """Check only current source/OA parity and live safety state.
 
     Native setup semantic attestation is intentionally not part of this
-    command.  Use ``sigilicon oa attest --testbench ...`` when one testbench needs
+    operation. Use the target's ``attest-oa`` operation when one testbench needs
     the Cadence API-level check.
     """
 
-    plan: OALibraryRebuildPlan | None = None
     plan_error: BaseException | None = None
-    try:
-        plan = plan_oa_library_rebuild(
-            manifest_path,
-            project=project,
-            library=library,
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        plan_error = exc
+    if plan is None:
+        try:
+            plan = plan_oa_library_rebuild(
+                manifest_path,
+                project=project,
+                library=library,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            plan_error = exc
+    elif plan.source.project is not project or plan.source.manifest_path != manifest_path:
+        raise ValueError("OA check plan belongs to a different Project or assembly")
 
     bridge = _bridge_state(client)
     if plan is None:
@@ -342,7 +358,13 @@ def check_oa_library(
             },
         }
         if bridge_errors
-        else _library_ownership(plan, client)
+        else _library_ownership(
+            plan,
+            client,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
+            operation=operation,
+        )
     )
     thin_contract = all(step.simulation.contract_schema == 3 for step in plan.testbenches)
     source_contract = {
@@ -370,6 +392,9 @@ def check_oa_library(
             timeout=timeout,
             acquire_flow_lock=False,
             record_incident=False,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
+            operation=operation,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         parity = {"passed": False, "error": _exception(exc)}

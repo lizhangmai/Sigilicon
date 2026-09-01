@@ -94,6 +94,8 @@ def synchronize_design(
     quarantine_stale_locks: bool = False,
     artifact_root: Path | None = None,
     disposable: bool = False,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> DesignSyncResult | TargetOnlyDesignSyncResult:
     """Synchronize the exact inspected hierarchy through the shared OA sigilicon."""
 
@@ -110,6 +112,8 @@ def synchronize_design(
         timeout=timeout,
         quarantine_stale_locks=quarantine_stale_locks,
         disposable=disposable,
+        operation_id=operation_id,
+        bind_operation=bind_operation,
     )
 
 
@@ -120,6 +124,9 @@ def attest_oa_design(
     timeout: int = 60,
     acquire_flow_lock: bool = False,
     record_incident: bool = False,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
+    operation: Any | None = None,
     instance_parameters: Mapping[
         str, tuple[str, Mapping[str, str]]
     ] | None = None,
@@ -127,35 +134,46 @@ def attest_oa_design(
     """Fail unless OA schematic+symbol match the canonical source."""
 
     spec = inspection.spec
-    project = spec.project
-    with workspace_operation(
-        client,
-        project.workspace_root,
-        "attest-design-source-parity",
-        policy=OperationPolicy.READ_ONLY,
-        acquire_flow_lock=acquire_flow_lock,
-        record_incident=record_incident,
-    ) as operation, operation.view_lease(
-        spec.library,
-        cells=(spec.cell,),
-        views=((spec.cell, "schematic"), (spec.cell, "symbol")),
-    ):
-        validate_cell_port_directions(
-            client,
+
+    def attest(current: Any) -> Mapping[str, object]:
+        with current.view_lease(
             spec.library,
-            spec.cell,
-            spec.directions,
-            operation=operation,
-            timeout=timeout,
-        )
-        parameter_report = validate_instance_parameters(
+            cells=(spec.cell,),
+            views=((spec.cell, "schematic"), (spec.cell, "symbol")),
+        ):
+            validate_cell_port_directions(
+                client,
+                spec.library,
+                spec.cell,
+                spec.directions,
+                operation=current,
+                timeout=timeout,
+            )
+            return validate_instance_parameters(
+                client,
+                spec.library,
+                spec.cell,
+                instance_parameters or {},
+                operation=current,
+                timeout=timeout,
+            )
+
+    if operation is not None:
+        parameter_report = attest(operation)
+    else:
+        project = spec.project
+        with workspace_operation(
             client,
-            spec.library,
-            spec.cell,
-            instance_parameters or {},
-            operation=operation,
-            timeout=timeout,
-        )
+            project.workspace_root,
+            "attest-design-source-parity",
+            policy=OperationPolicy.READ_ONLY,
+            acquire_flow_lock=acquire_flow_lock,
+            record_incident=record_incident,
+            operation_id=operation_id,
+        ) as current:
+            if callable(bind_operation):
+                bind_operation(current)
+            parameter_report = attest(current)
     return {
         "passed": True,
         "library": spec.library,

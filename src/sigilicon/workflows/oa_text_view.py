@@ -24,6 +24,8 @@ def sync_oa_text_view(
     source: Path | TextSourceSnapshot,
     overwrite: bool = False,
     timeout: int = 300,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> None:
     """Materialize one source-owned OA model view.
 
@@ -48,6 +50,8 @@ def sync_oa_text_view(
             overwrite=overwrite,
             timeout=timeout,
             _work=work,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
 
 
@@ -63,6 +67,8 @@ def _sync_oa_text_view_impl(
     overwrite: bool = False,
     timeout: int = 300,
     _work: DisposableWork | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> None:
     """Materialize one text view under its caller-owned temporary scope."""
 
@@ -77,11 +83,14 @@ def _sync_oa_text_view_impl(
         project.workspace_root,
         "sync-oa-text-view",
         policy=OperationPolicy.DIRECT_MUTATION,
+        operation_id=operation_id,
     ) as operation, operation.view_lease(
         library,
         cells=(cell,),
         views=((cell, view),),
     ):
+        if callable(bind_operation):
+            bind_operation(operation)
         if cell_view_exists(client, library, cell, view) and not overwrite:
             raise RuntimeError(
                 f"refusing to replace existing OA text view {library}/{cell}/{view}"

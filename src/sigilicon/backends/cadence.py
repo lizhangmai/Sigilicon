@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -11,12 +11,15 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from sigilicon.artifacts import read_nofollow_text
+from sigilicon.canonical import canonical_digest
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
     PreflightCheck,
     Resources,
+    Source,
     Step,
     StepContext,
     StepResult,
@@ -139,7 +142,7 @@ def _bind_source_paths(
     project: Any,
     owner_name: str,
     step: Step,
-    paths: tuple[Path, ...] | frozenset[Path],
+    paths: Mapping[Path, str] | tuple[Path, ...] | frozenset[Path],
 ) -> Mapping[Path, tuple[str, str]]:
     """Bind Project-owned inputs; package code and PDK files stay runtime resources."""
 
@@ -147,22 +150,54 @@ def _bind_source_paths(
     owner_root = project.owner(owner_name).root.resolve()
     selected: dict[Path, tuple[str, str]] = {}
     for source in paths:
-        path = Path(source).resolve()
+        path = Path(source).absolute()
+        if path != path.resolve():
+            raise ContractError(f"backend source must not traverse a symlink: {path}")
         if path.is_relative_to(owner_root):
             name = path.relative_to(owner_root).as_posix()
         elif path.is_relative_to(project_root):
             name = path.relative_to(project_root).as_posix()
         else:
             continue
-        if name not in step.sources:
-            raise ContractError(
-                f"{step.uses} source closure omits its planned input: {name}"
-            )
+        snapshot = read_nofollow_text(path)
+        if isinstance(paths, Mapping):
+            expected = paths[source]
+            if snapshot != expected:
+                raise ContractError(f"typed backend source snapshot drift: {path}")
         selected[path] = (
             name,
-            hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
+            hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
         )
     return MappingProxyType(selected)
+
+
+def _validate_oa_plan_sources(
+    project: Any,
+    owner_name: str,
+    planning: Any,
+    paths: frozenset[Path],
+) -> Mapping[Path, str]:
+    from sigilicon.workflows.oa_library import validate_oa_plan_source_members
+
+    project_root = project.project_root.resolve()
+    owner_root = project.owner(owner_name).root.resolve()
+    members: list[Source] = []
+    for source in paths:
+        path = Path(source).absolute()
+        if path != path.resolve():
+            raise ContractError(f"OA plan source must not traverse a symlink: {path}")
+        if path.is_relative_to(owner_root):
+            root, scope = owner_root, "owner"
+        elif path.is_relative_to(project_root):
+            root, scope = project_root, "project"
+        else:
+            root, scope = path.parent, "resource"
+        members.append(Source.capture(path, root=root, scope=scope))
+    try:
+        validate_oa_plan_source_members(planning, members)
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    return MappingProxyType({member.location: member.text for member in members})
 
 
 def _require_bound_sources(
@@ -175,6 +210,47 @@ def _require_bound_sources(
         ).hexdigest()
         if current != digest:
             raise ExecutionError(f"sealed backend source identity drift: {name}")
+
+
+def _external_file_records(
+    project: Any,
+    source_records: Mapping[Path, str],
+    extra_paths: tuple[Path, ...] = (),
+) -> Mapping[Path, tuple[str, str]]:
+    project_root = project.project_root.resolve()
+    selected: dict[Path, tuple[str, str]] = {}
+    entries = (
+        *((source, False) for source in source_records),
+        *((source, True) for source in extra_paths),
+    )
+    for source, include_project in entries:
+        path = Path(source).absolute()
+        if path != path.resolve():
+            raise ContractError(f"external resource must not traverse a symlink: {path}")
+        if path.is_relative_to(project_root) and not include_project:
+            continue
+        snapshot = (
+            source_records[source]
+            if isinstance(source_records, Mapping) and source in source_records
+            else read_nofollow_text(path)
+        )
+        selected[path] = (
+            hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
+            snapshot,
+        )
+    return MappingProxyType(selected)
+
+
+def _require_external_files(sources: Mapping[Path, tuple[str, str]]) -> None:
+    for path, (digest, _snapshot) in sources.items():
+        try:
+            current = hashlib.sha256(
+                read_nofollow_text(path).encode("utf-8")
+            ).hexdigest()
+        except OSError as exc:
+            raise ExecutionError(f"bound external resource is unavailable: {path}") from exc
+        if current != digest:
+            raise ExecutionError(f"bound external resource identity drift: {path}")
 
 
 class XceliumBackend:
@@ -356,6 +432,12 @@ class _BoundXceliumAmsBackend(XceliumAmsBackend):
         object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
 
     @property
+    def binding_sources(self) -> Mapping[Path, str]:
+        return MappingProxyType(
+            {path: digest for path, (_name, digest) in self._sources.items()}
+        )
+
+    @property
     def binding_record(self) -> Mapping[str, Any]:
         return {
             "schema": 1,
@@ -457,63 +539,6 @@ class _BoundXceliumAmsBackend(XceliumAmsBackend):
         )
 
 
-def _copy_isolated_project(
-    context: StepContext,
-    owner: str,
-) -> tuple[Path, str]:
-    """Legacy layout-only source view pending the layout Adapter migration."""
-
-    if (
-        context.project_root is None
-        or context.owner_root is None
-        or context.workspace_root is None
-    ):
-        raise ExecutionError("Cadence owner backend requires project identity")
-    owner_path = context.owner_root.relative_to(context.project_root).as_posix()
-    root = context.work_root / "project"
-    root.mkdir()
-    for source in context.step.sources:
-        scope = context.source_scopes.get(source)
-        if scope == "owner":
-            destination = root / owner_path / source
-        elif scope == "project":
-            destination = root / source
-        else:
-            raise ExecutionError(f"Cadence source has no declared scope: {source}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(context.source_path(source), destination)
-    manifest = root / "sigilicon.toml"
-    manifest.write_text(
-        "schema = 1\n"
-        "contract_kind = \"sigilicon-project\"\n"
-        "path_scope = \"repository\"\n"
-        "owner = \"repository\"\n\n"
-        "[catalogs]\n"
-        "ip = \"ip/catalog.toml\"\n"
-        "platform = \"configs/platform/catalog.toml\"\n\n"
-        "[paths]\n"
-        "project_root = \".\"\n"
-        f"workspace_root = {json.dumps(str(context.workspace_root))}\n"
-        'artifact_root = "artifacts"\n',
-        encoding="utf-8",
-    )
-    catalog = root / "ip/catalog.toml"
-    catalog.parent.mkdir(parents=True, exist_ok=True)
-    component = f"{owner_path}/configs/ip.toml"
-    catalog.write_text(
-        "schema = 1\n"
-        "contract_kind = \"ip-catalog\"\n"
-        "path_scope = \"repository\"\n"
-        "owner = \"repository\"\n\n"
-        "[targets]\n\n"
-        f"[components.{owner}]\n"
-        f"contract = {json.dumps(component)}\n"
-        f"root = {json.dumps(owner_path)}\n",
-        encoding="utf-8",
-    )
-    return root, owner_path
-
-
 class NativeOaBackend:
     """Run one source-owned native Maestro testbench through a bound OA session."""
 
@@ -547,13 +572,23 @@ class NativeOaBackend:
         matches = tuple(item for item in planning.testbenches if item.cell == testbench)
         if len(matches) != 1:
             raise ContractError(f"unknown native OA testbench: {testbench}")
+        required = _validate_oa_plan_sources(
+            project,
+            owner,
+            planning,
+            oa_plan_source_paths(planning),
+        )
         sources = _bind_source_paths(
             project,
             owner,
             step,
-            oa_plan_source_paths(planning),
+            required,
         )
-        return _BoundNativeOaBackend(planning, matches[0], sources)
+        external = _external_file_records(
+            project,
+            required,
+        )
+        return _BoundNativeOaBackend(planning, matches[0], sources, external)
 
     def run(self, context: StepContext) -> StepResult:
         raise ExecutionError("native OA Step was not bound by Project.plan")
@@ -564,20 +599,37 @@ class _BoundNativeOaBackend(NativeOaBackend):
     _planning: Any
     _selected: Any
     _sources: Mapping[Path, tuple[str, str]]
+    _external: Mapping[Path, tuple[str, str]]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+        object.__setattr__(self, "_external", MappingProxyType(dict(self._external)))
+
+    @property
+    def binding_sources(self) -> Mapping[Path, str]:
+        return MappingProxyType(
+            {path: digest for path, (_name, digest) in self._sources.items()}
+        )
 
     @property
     def binding_record(self) -> Mapping[str, Any]:
         return {
             "schema": 1,
             "backend": self.name,
-            "request": self._planning.as_dict(),
-            "testbench": self._selected.cell,
+            "request": {
+                "assembly_identity": canonical_digest(self._planning.as_dict()),
+                "library": self._planning.library,
+                "testbench": self._selected.cell,
+            },
             "project_sources": [
                 {"path": name, "sha256": digest}
                 for name, digest in sorted(self._sources.values())
+            ],
+            "external_sources": [
+                {"path": str(path), "sha256": record[0]}
+                for path, record in sorted(
+                    self._external.items(), key=lambda item: str(item[0])
+                )
             ],
         }
 
@@ -595,6 +647,7 @@ class _BoundNativeOaBackend(NativeOaBackend):
         plan = self._planning
         selected = self._selected
         _require_bound_sources(context, self._sources)
+        _require_external_files(self._external)
         uncertainty: list[str] = []
         try:
             with owned_scratch_directory(
@@ -646,6 +699,197 @@ class _BoundNativeOaBackend(NativeOaBackend):
         )
 
 
+class OaBackend:
+    """Check, rebuild, or attest one plan-bound native OA assembly."""
+
+    name = "cadence.oa"
+    _base_fields = frozenset({"owner", "action", "timeout_seconds"})
+
+    def _config(self, step: Step) -> Mapping[str, Any]:
+        action = _text(step.config, "action")
+        fields = self._base_fields | ({"testbench"} if action == "attest" else set())
+        config = _strict_config(step, frozenset(fields))
+        if action not in {"check", "rebuild", "attest"}:
+            raise ContractError("OA action must be check, rebuild, or attest")
+        _text(config, "owner")
+        _positive_integer(config, "timeout_seconds")
+        if action == "attest":
+            _text(config, "testbench")
+        if "configs/oa.toml" not in step.sources:
+            raise ContractError("OA management step must close over configs/oa.toml")
+        return config
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        self._config(step)
+        return _capability_checks(resources, _OA_CAPABILITIES)
+
+    def bind(self, project: Any, step: Step) -> "_BoundOaBackend":
+        from sigilicon.workflows.oa_library import (
+            oa_plan_source_paths,
+            plan_oa_library_rebuild,
+        )
+
+        self.preflight(step, Resources())
+        config = self._config(step)
+        owner = _text(config, "owner")
+        manifest = project.oa_assembly_for(project.owner(owner).root)
+        if manifest is None:
+            raise ContractError(f"owner {owner!r} has no OA assembly")
+        planning = plan_oa_library_rebuild(manifest, project=project)
+        selected = None
+        if _text(config, "action") == "attest":
+            testbench = _text(config, "testbench")
+            matches = tuple(
+                item for item in planning.testbenches if item.cell == testbench
+            )
+            if len(matches) != 1:
+                raise ContractError(f"unknown native OA testbench: {testbench}")
+            selected = matches[0]
+        required = _validate_oa_plan_sources(
+            project,
+            owner,
+            planning,
+            oa_plan_source_paths(planning),
+        )
+        sources = _bind_source_paths(project, owner, step, required)
+        external = _external_file_records(
+            project,
+            required,
+        )
+        return _BoundOaBackend(
+            planning,
+            _text(config, "action"),
+            selected,
+            sources,
+            external,
+        )
+
+    def run(self, context: StepContext) -> StepResult:
+        raise ExecutionError("OA management Step was not bound by Project.plan")
+
+
+@dataclass(frozen=True)
+class _BoundOaBackend(OaBackend):
+    _planning: Any
+    _action: str
+    _selected: Any
+    _sources: Mapping[Path, tuple[str, str]]
+    _external: Mapping[Path, tuple[str, str]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+        object.__setattr__(self, "_external", MappingProxyType(dict(self._external)))
+
+    @property
+    def binding_sources(self) -> Mapping[Path, str]:
+        return MappingProxyType(
+            {path: digest for path, (_name, digest) in self._sources.items()}
+        )
+
+    @property
+    def binding_record(self) -> Mapping[str, Any]:
+        return {
+            "schema": 1,
+            "backend": self.name,
+            "request": {
+                "assembly_identity": canonical_digest(self._planning.as_dict()),
+                "library": self._planning.library,
+                "action": self._action,
+                "testbench": (
+                    None if self._selected is None else self._selected.cell
+                ),
+            },
+            "project_sources": [
+                {"path": name, "sha256": digest}
+                for name, digest in sorted(self._sources.values())
+            ],
+            "external_sources": [
+                {"path": str(path), "sha256": record[0]}
+                for path, record in sorted(
+                    self._external.items(), key=lambda item: str(item[0])
+                )
+            ],
+        }
+
+    def bind(self, project: Any, step: Step) -> "_BoundOaBackend":
+        raise ContractError("OA management Step is already bound")
+
+    def run(self, context: StepContext) -> StepResult:
+        from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.oa_check import check_oa_library
+        from sigilicon.workflows.oa_library import (
+            attest_oa_testbench,
+            rebuild_oa_library,
+        )
+
+        _require_bound_sources(context, self._sources)
+        _require_external_files(self._external)
+        timeout = _positive_integer(self._config(context.step), "timeout_seconds")
+        client = get_client()
+        if self._action == "check":
+            from sigilicon.virtuoso.workspace import (
+                OperationPolicy,
+                workspace_operation,
+            )
+
+            with workspace_operation(
+                client,
+                self._planning.source.project.workspace_root,
+                "check-oa-library",
+                policy=OperationPolicy.READ_ONLY,
+                acquire_flow_lock=False,
+                record_incident=False,
+                operation_id=context.operation_id,
+            ) as operation:
+                context.bind_workspace_operation(operation)
+                payload = check_oa_library(
+                    self._planning.source.manifest_path,
+                    project=self._planning.source.project,
+                    library=None,
+                    client=client,
+                    timeout=timeout,
+                    plan=self._planning,
+                    operation=operation,
+                )
+        elif self._action == "rebuild":
+            payload = rebuild_oa_library(
+                self._planning,
+                client,
+                timeout=timeout,
+                operation_id=context.operation_id,
+                bind_operation=context.bind_workspace_operation,
+            )
+        else:
+            if self._selected is None:
+                raise ExecutionError("OA attest binding lost its testbench")
+            payload = attest_oa_testbench(
+                self._planning,
+                self._selected,
+                client,
+                timeout=timeout,
+                operation_id=context.operation_id,
+                bind_operation=context.bind_workspace_operation,
+            )
+        output = context.write_text(
+            "oa",
+            f"{self._action}.json",
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        )
+        passed = bool(payload.get("passed"))
+        artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
+        facts = {"passed": passed, "action": self._action}
+        return (
+            StepResult.succeeded(artifacts=artifacts, facts=facts)
+            if passed
+            else StepResult(
+                "failed",
+                artifacts,
+                facts,
+                f"OA {self._action} did not pass",
+            )
+        )
+
+
 class LayoutBackend:
     """Generate one source-authored layout through a bound OA mutation lease."""
 
@@ -661,20 +905,35 @@ class LayoutBackend:
         _positive_integer(config, "timeout_seconds")
         return _capability_checks(resources, _OA_CAPABILITIES)
 
+    def bind(self, project: Any, step: Step) -> "_BoundLayoutBackend":
+        from sigilicon.workflows.layout_generation import plan_layout_spec
+
+        self.preflight(step, Resources())
+        config = _strict_config(step, self._fields)
+        owner = _text(config, "owner")
+        spec = project.owner(owner).root / _relative(
+            _text(config, "spec"), "layout spec"
+        )
+        planning = plan_layout_spec(spec, project=project)
+        sources = _bind_source_paths(
+            project,
+            owner,
+            step,
+            planning.source_records,
+        )
+        external = _external_file_records(project, planning.source_records)
+        return _BoundLayoutBackend(planning, sources, external)
+
     def run(self, context: StepContext) -> StepResult:
-        from sigilicon.project import Project
+        raise ExecutionError("layout Step was not bound by Project.plan")
+
+    def _execute(self, context: StepContext, planning: Any) -> StepResult:
         from sigilicon.virtuoso.client import get_client
-        from sigilicon.workflows.layout_generation import generate_layout, plan_layout_spec
+        from sigilicon.workflows.layout_generation import generate_layout
         from sigilicon.workflows.run_artifacts import RunArtifacts
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
-        project_root, owner_path = _copy_isolated_project(context, owner)
-        project = Project.open(project_root)
-        if project.owner(owner).root.resolve() != project_root / owner_path:
-            raise ExecutionError("layout owner identity drift")
-        spec = project_root / owner_path / _relative(_text(config, "spec"), "layout spec")
-        planning = plan_layout_spec(spec, project=project)
         uncertainty: list[str] = []
         try:
             with owned_scratch_directory(
@@ -716,6 +975,49 @@ class LayoutBackend:
         )
 
 
+@dataclass(frozen=True)
+class _BoundLayoutBackend(LayoutBackend):
+    _planning: Any
+    _sources: Mapping[Path, tuple[str, str]]
+    _external: Mapping[Path, tuple[str, str]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+        object.__setattr__(self, "_external", MappingProxyType(dict(self._external)))
+
+    @property
+    def binding_sources(self) -> Mapping[Path, str]:
+        return MappingProxyType(
+            {path: digest for path, (_name, digest) in self._sources.items()}
+        )
+
+    @property
+    def binding_record(self) -> Mapping[str, Any]:
+        return {
+            "schema": 1,
+            "backend": self.name,
+            "request": json.loads(self._planning.plan.canonical_json()),
+            "project_sources": [
+                {"path": name, "sha256": digest}
+                for name, digest in sorted(self._sources.values())
+            ],
+            "external_sources": [
+                {"path": str(path), "sha256": record[0]}
+                for path, record in sorted(
+                    self._external.items(), key=lambda item: str(item[0])
+                )
+            ],
+        }
+
+    def bind(self, project: Any, step: Step) -> "_BoundLayoutBackend":
+        raise ContractError("layout Step is already bound")
+
+    def run(self, context: StepContext) -> StepResult:
+        _require_bound_sources(context, self._sources)
+        _require_external_files(self._external)
+        return self._execute(context, self._planning)
+
+
 class LayoutVerificationBackend:
     """Verify one existing routed OA layout with XStream and Calibre."""
 
@@ -750,25 +1052,60 @@ class LayoutVerificationBackend:
             *_capability_checks(resources, _LAYOUT_VERIFICATION_CAPABILITIES),
         )
 
-    def run(self, context: StepContext) -> StepResult:
-        from sigilicon.project import Project
-        from sigilicon.virtuoso.client import get_client
+    def bind(
+        self,
+        project: Any,
+        step: Step,
+    ) -> "_BoundLayoutVerificationBackend":
         from sigilicon.workflows.layout_generation import plan_layout_spec
+
+        self.preflight(step, Resources())
+        config = _strict_config(step, self._fields)
+        owner = _text(config, "owner")
+        spec = project.owner(owner).root / _relative(
+            _text(config, "spec"), "layout spec"
+        )
+        planning = plan_layout_spec(spec, project=project)
+        if planning.spec.layout_pdk is None:
+            raise ContractError("layout verification requires a layout PDK")
+        deck = (
+            planning.spec.layout_pdk.drc_deck
+            if _text(config, "check") == "drc"
+            else planning.spec.layout_pdk.lvs_deck
+        )
+        sources = _bind_source_paths(
+            project,
+            owner,
+            step,
+            planning.source_records,
+        )
+        external = _external_file_records(
+            project,
+            planning.source_records,
+            (planning.spec.layout_pdk.layermap, deck),
+        )
+        return _BoundLayoutVerificationBackend(
+            planning,
+            _text(config, "check"),
+            sources,
+            external,
+        )
+
+    def run(self, context: StepContext) -> StepResult:
+        raise ExecutionError("layout verification Step was not bound by Project.plan")
+
+    def _execute(
+        self,
+        context: StepContext,
+        planning: Any,
+        external_sources: Mapping[Path, str],
+    ) -> StepResult:
+        from sigilicon.virtuoso.client import get_client
         from sigilicon.workflows.layout_verification import run_layout_verification
         from sigilicon.workflows.run_artifacts import RunArtifacts
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
-        project_root, owner_path = _copy_isolated_project(context, owner)
-        project = Project.open(project_root)
-        if project.owner(owner).root.resolve() != project_root / owner_path:
-            raise ExecutionError("layout verification owner identity drift")
-        spec = (
-            project_root
-            / owner_path
-            / _relative(_text(config, "spec"), "layout spec")
-        )
-        planning = plan_layout_spec(spec, project=project)
         xstream = _configured_executable(context.resources, _XSTREAM)
         calibre = _configured_executable(context.resources, _CALIBRE)
         if xstream is None or calibre is None:
@@ -800,6 +1137,7 @@ class LayoutVerificationBackend:
                     xstream=xstream,
                     calibre=calibre,
                     environment=context.resources.environment,
+                    external_sources=external_sources,
                     operation_id=context.operation_id,
                     bind_operation=context.bind_workspace_operation,
                     record_uncertainty=uncertainty.append,
@@ -874,10 +1212,75 @@ class LayoutVerificationBackend:
         )
 
 
+@dataclass(frozen=True)
+class _BoundLayoutVerificationBackend(LayoutVerificationBackend):
+    _planning: Any
+    _check: str
+    _sources: Mapping[Path, tuple[str, str]]
+    _external: Mapping[Path, tuple[str, str]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+        object.__setattr__(self, "_external", MappingProxyType(dict(self._external)))
+
+    @property
+    def binding_sources(self) -> Mapping[Path, str]:
+        project_root = self._planning.spec.project_root.resolve()
+        sources = {
+            path: digest for path, (_name, digest) in self._sources.items()
+        }
+        sources.update(
+            {
+                path: record[0]
+                for path, record in self._external.items()
+                if path.is_relative_to(project_root)
+            }
+        )
+        return MappingProxyType(sources)
+
+    @property
+    def binding_record(self) -> Mapping[str, Any]:
+        return {
+            "schema": 1,
+            "backend": self.name,
+            "request": {
+                "layout": json.loads(self._planning.plan.canonical_json()),
+                "check": self._check,
+            },
+            "project_sources": [
+                {"path": name, "sha256": digest}
+                for name, digest in sorted(self._sources.values())
+            ],
+            "external_sources": [
+                {"path": str(path), "sha256": record[0]}
+                for path, record in sorted(
+                    self._external.items(), key=lambda item: str(item[0])
+                )
+            ],
+        }
+
+    def bind(
+        self,
+        project: Any,
+        step: Step,
+    ) -> "_BoundLayoutVerificationBackend":
+        raise ContractError("layout verification Step is already bound")
+
+    def run(self, context: StepContext) -> StepResult:
+        _require_bound_sources(context, self._sources)
+        _require_external_files(self._external)
+        return self._execute(
+            context,
+            self._planning,
+            {path: record[1] for path, record in self._external.items()},
+        )
+
+
 def cadence_backends() -> tuple[
     XceliumBackend,
     XceliumAmsBackend,
     NativeOaBackend,
+    OaBackend,
     LayoutBackend,
     LayoutVerificationBackend,
 ]:
@@ -885,6 +1288,7 @@ def cadence_backends() -> tuple[
         XceliumBackend(),
         XceliumAmsBackend(),
         NativeOaBackend(),
+        OaBackend(),
         LayoutBackend(),
         LayoutVerificationBackend(),
     )
@@ -894,6 +1298,7 @@ __all__ = [
     "LayoutBackend",
     "LayoutVerificationBackend",
     "NativeOaBackend",
+    "OaBackend",
     "XceliumBackend",
     "XceliumAmsBackend",
     "cadence_backends",

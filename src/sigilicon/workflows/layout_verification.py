@@ -418,11 +418,12 @@ def _run_xstream(
     record: RunArtifacts,
     spec: LayoutSpec,
     *,
+    layermap_source: str,
     executable: Path,
     environment: Mapping[str, str],
     timeout: int,
 ) -> Path:
-    layermap = record.copy_file("inputs", ("layermap",), spec.layout_pdk.layermap)
+    layermap = record.write_text("inputs", ("layermap",), layermap_source)
     cds_lib = spec.project.workspace_root / "cds.lib"
     if not cds_lib.is_file() or cds_lib.is_symlink():
         raise RuntimeError(f"workspace cds.lib is unavailable: {cds_lib}")
@@ -466,19 +467,17 @@ def _run_calibre(
     plan: LayoutPlan,
     *,
     check: str,
+    deck_source: str,
     executable: Path,
     environment: Mapping[str, str],
     gds: Path,
     timeout: int,
 ) -> PhysicalVerificationEvidence:
     assert spec.physical_verification is not None
-    source_deck = (
-        spec.layout_pdk.drc_deck if check == "drc" else spec.layout_pdk.lvs_deck
-    )
-    staged_deck = record.copy_file(
+    staged_deck = record.write_text(
         "inputs",
         ("foundry.drc" if check == "drc" else "foundry.lvs",),
-        source_deck,
+        deck_source,
     )
     source_text = read_nofollow_text(staged_deck)
     source_cdl: Path | None = None
@@ -649,6 +648,7 @@ def run_layout_verification(
     xstream: Path,
     calibre: Path,
     environment: Mapping[str, str],
+    external_sources: Mapping[Path, str],
     operation_id: str,
     bind_operation: Callable[[Any], None],
     record_uncertainty: Callable[[str], None] | None = None,
@@ -667,6 +667,17 @@ def run_layout_verification(
         )
     if plan.stage != "routed":
         raise ValueError("layout verification requires a routed layout plan")
+    layermap_path = spec.layout_pdk.layermap.resolve()
+    deck_path = (
+        spec.layout_pdk.drc_deck if check == "drc" else spec.layout_pdk.lvs_deck
+    ).resolve()
+    try:
+        layermap_source = external_sources[layermap_path]
+        deck_source = external_sources[deck_path]
+    except KeyError as exc:
+        raise ValueError(
+            f"layout verification lacks a bound external snapshot: {exc.args[0]}"
+        ) from exc
     artifacts.write_text(
         "inputs", ("layout-plan.json",), plan.canonical_json()
     )
@@ -701,6 +712,7 @@ def run_layout_verification(
                 gds = _run_xstream(
                     artifacts,
                     spec,
+                    layermap_source=layermap_source,
                     executable=xstream,
                     environment=environment,
                     timeout=xstream_timeout,
@@ -710,6 +722,7 @@ def run_layout_verification(
                     spec,
                     plan,
                     check=check,
+                    deck_source=deck_source,
                     executable=calibre,
                     environment=environment,
                     gds=gds,

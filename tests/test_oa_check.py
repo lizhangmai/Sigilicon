@@ -3,9 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
-from sigilicon.cli.flow import _parser, _print_oa_check_summary
 from sigilicon.project import Project
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_check import (
@@ -14,29 +11,6 @@ from sigilicon.workflows.oa_check import (
     _recommendation,
     check_oa_library,
 )
-
-
-def test_oa_check_is_a_parser_action_with_no_mutating_arguments() -> None:
-    args = _parser().parse_args(
-        [
-            "oa",
-            "check",
-            "--owner",
-            "fixture",
-        ]
-    )
-
-    assert args.action == "check"
-    assert not hasattr(args, "testbench")
-    assert not hasattr(args, "cell")
-
-
-@pytest.mark.parametrize("retired_action", ("audit", "doctor"))
-def test_oa_check_has_no_alias_actions(retired_action: str) -> None:
-    with pytest.raises(SystemExit):
-        _parser().parse_args(
-            ["oa", retired_action, "--owner", "fixture"]
-        )
 
 
 def test_read_only_check_workspace_does_not_create_flow_lock(
@@ -205,44 +179,3 @@ def test_released_flow_marker_is_not_reported_as_live_lock() -> None:
         )
         == "blocked"
     )
-
-
-def test_plain_check_summary_exposes_current_operator_state(capsys) -> None:
-    _print_oa_check_summary(
-        {
-            "status": "clean",
-            "source_contract": {
-                "passed": True,
-                "library": "fixture_lib",
-                "cell_count": 33,
-                "view_count": 135,
-                "testbench_count": 7,
-            },
-            "ownership": {
-                "library": {"passed": True, "registered_path": "/tmp/virtuoso/fixture_lib"}
-            },
-            "parity": {
-                "passed": True,
-                "missing_cells": [],
-                "missing_views": {},
-                "extra_cells": [],
-                "extra_views": {},
-                "stale_or_modified_views": {},
-            },
-            "live": {
-                "active_maestro_sessions": [],
-                "open_cell_views": [],
-                "process": {"alive": True},
-            },
-            "locks": {
-                "edit_locks": [],
-                "flow_operation_lock": {"held": False},
-            },
-        }
-    )
-
-    output = capsys.readouterr().out
-    assert "OA check: clean" in output
-    assert "recommendation" not in output
-    assert "flow_lock_held=False" in output
-    assert "native_attestation: explicit --testbench only" in output

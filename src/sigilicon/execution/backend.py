@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
@@ -14,6 +16,7 @@ from sigilicon.execution.model import (
     StepContext,
     StepResult,
     ExecutionPlan,
+    Source,
     backend_identity,
 )
 
@@ -73,9 +76,12 @@ def bind_plan(
 ) -> ExecutionPlan:
     """Bind every Step once to package-owned implementation and domain data."""
 
-    from dataclasses import replace
-
     selected: dict[str, Backend] = {}
+    captured = {(source.root, source.path): source for source in plan.sources}
+    captured_names = {source.path: source.root for source in plan.sources}
+    steps = []
+    owner_root = project.owner(plan.owner).root.resolve()
+    project_root = project.project_root.resolve()
     for step in plan.steps:
         try:
             backend = backends[step.uses]
@@ -88,7 +94,56 @@ def bind_plan(
                 f"backend {step.uses!r} produced an invalid Step binding"
             )
         selected[step.id] = bound
-    return replace(plan, _backends=selected)
+        source_names = list(step.sources)
+        bindings = getattr(bound, "binding_sources", {})
+        if not isinstance(bindings, Mapping) or any(
+            not isinstance(path, Path) or not isinstance(digest, str)
+            for path, digest in bindings.items()
+        ):
+            raise ContractError(
+                f"backend {step.uses!r} produced invalid source bindings"
+            )
+        for raw_path, digest in sorted(
+            bindings.items(), key=lambda item: str(item[0])
+        ):
+            path = raw_path.absolute()
+            if path != path.resolve():
+                raise ContractError(
+                    f"backend {step.uses!r} bound a symlinked source: {path}"
+                )
+            source_owner = project.owner_for(path)
+            if source_owner is not None and source_owner.name != plan.owner:
+                raise ContractError(
+                    f"backend {step.uses!r} bound source owned by "
+                    f"{source_owner.name!r}: {path}"
+                )
+            if source_owner is not None:
+                root, scope = owner_root, "owner"
+            elif path.is_relative_to(project_root):
+                root, scope = project_root, "project"
+            else:
+                raise ContractError(
+                    f"backend {step.uses!r} bound a source outside the Project: {path}"
+                )
+            source = Source.capture(path, root=root, scope=scope)
+            if source.sha256 != digest:
+                raise ContractError(
+                    f"backend {step.uses!r} source changed during binding: {source.path}"
+                )
+            previous_root = captured_names.get(source.path)
+            if previous_root is not None and previous_root != source.root:
+                raise ContractError("backend source paths collide across scopes")
+            captured[(source.root, source.path)] = source
+            captured_names[source.path] = source.root
+            if source.path not in source_names:
+                source_names.append(source.path)
+        steps.append(replace(step, sources=tuple(source_names)))
+    return replace(
+        plan,
+        steps=tuple(steps),
+        sources=tuple(captured.values()),
+        _backends=selected,
+    )
 
 
 __all__ = ["Backend", "Backends", "bind_plan"]

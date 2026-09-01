@@ -87,6 +87,8 @@ def sync_design(
     timeout: int = 300,
     quarantine_stale_locks: bool = False,
     disposable: bool = False,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> DesignSyncResult:
     """Make the OA library/schematic/symbol match the canonical design source."""
 
@@ -99,6 +101,8 @@ def sync_design(
             timeout=timeout,
             quarantine_stale_locks=quarantine_stale_locks,
             disposable=False,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
     with DisposableWork.create(prefix="sigilicon-oa-design-") as work:
         return _sync_design_impl(
@@ -110,6 +114,8 @@ def sync_design(
             quarantine_stale_locks=quarantine_stale_locks,
             disposable=True,
             _disposable_work=work,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
 
 
@@ -123,6 +129,8 @@ def _sync_design_impl(
     quarantine_stale_locks: bool = False,
     disposable: bool = False,
     _disposable_work: DisposableWork | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> DesignSyncResult:
     """Run the shared design synchronizer under its caller-owned work scope."""
 
@@ -173,8 +181,11 @@ def _sync_design_impl(
             project.workspace_root,
             "sync-design",
             policy=OperationPolicy.RECURSIVE_OA,
+            operation_id=operation_id,
         ) as operation,
     ):
+        if callable(bind_operation):
+            bind_operation(operation)
         if not disposable:
             operation.register_artifact(attempt)
 
@@ -318,6 +329,8 @@ def sync_existing_design_target_only(
     timeout: int = 300,
     quarantine_stale_locks: bool = False,
     disposable: bool = False,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> TargetOnlyDesignSyncResult:
     """Synchronize one canonical single-subckt design into an existing library.
 
@@ -337,6 +350,8 @@ def sync_existing_design_target_only(
             timeout=timeout,
             quarantine_stale_locks=quarantine_stale_locks,
             disposable=False,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
     with DisposableWork.create(prefix="sigilicon-oa-design-") as work:
         return _sync_existing_design_target_only_impl(
@@ -348,6 +363,8 @@ def sync_existing_design_target_only(
             quarantine_stale_locks=quarantine_stale_locks,
             disposable=True,
             _disposable_work=work,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
 
 
@@ -361,6 +378,8 @@ def _sync_existing_design_target_only_impl(
     quarantine_stale_locks: bool = False,
     disposable: bool = False,
     _disposable_work: DisposableWork | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> TargetOnlyDesignSyncResult:
     """Run target-only synchronization under its caller-owned work scope."""
 
@@ -427,6 +446,7 @@ def _sync_existing_design_target_only_impl(
             project.workspace_root,
             "sync-existing-design-target-only",
             policy=OperationPolicy.DIRECT_MUTATION,
+            operation_id=operation_id,
         ) as operation,
         operation.view_lease(
             spec.library,
@@ -437,6 +457,8 @@ def _sync_existing_design_target_only_impl(
             ),
         ),
     ):
+        if callable(bind_operation):
+            bind_operation(operation)
         if not disposable:
             operation.register_artifact(attempt)
         current_stage = "verify-existing-library"

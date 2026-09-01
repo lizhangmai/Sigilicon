@@ -911,6 +911,8 @@ def attest_oa_testbench(
     client: Any,
     *,
     timeout: int = 300,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> dict[str, object]:
     """Check one current native setup through Cadence's read-only API."""
 
@@ -927,11 +929,14 @@ def attest_oa_testbench(
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=False,
         record_incident=False,
+        operation_id=operation_id,
     ) as operation, operation.view_lease(
         plan.library,
         cells=(step.cell,),
         views=((step.cell, "config"), (step.cell, "maestro")),
     ):
+        if callable(bind_operation):
+            bind_operation(operation)
         if not (
             cell_view_exists(client, plan.library, step.cell, "config")
             and cell_view_exists(client, plan.library, step.cell, "maestro")
@@ -996,6 +1001,9 @@ def check_oa_parity(
     acquire_flow_lock: bool = True,
     record_incident: bool = False,
     testbench: str | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
+    operation: Any | None = None,
 ) -> dict[str, object]:
     """Check current OA inventory/content against the Git assembly.
 
@@ -1061,6 +1069,9 @@ def check_oa_parity(
                 timeout=timeout,
                 acquire_flow_lock=acquire_flow_lock,
                 record_incident=record_incident,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
+                operation=operation,
                 instance_parameters={
                     item.instance: (item.master, dict(item.parameters))
                     for item in step.instance_parameters
@@ -1096,6 +1107,9 @@ def check_oa_parity(
                 timeout=timeout,
                 acquire_flow_lock=acquire_flow_lock,
                 record_incident=record_incident,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
+                operation=operation,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             stale_or_modified["canonical-layouts"] = str(exc)
@@ -1173,16 +1187,37 @@ def _attest_layout_steps(
     timeout: int,
     acquire_flow_lock: bool = True,
     record_incident: bool = True,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
+    operation: Any | None = None,
 ) -> None:
     """Validate exact generated views through the common read-only boundary."""
 
     if not steps:
         return
-    project = plan.source.project
     layout_cells = tuple(dict.fromkeys(step.spec.cell for step in steps))
     layout_views = tuple(
         dict.fromkeys((step.spec.cell, step.spec.view) for step in steps)
     )
+
+    def attest(current: Any) -> None:
+        with current.view_lease(
+            plan.library,
+            cells=layout_cells,
+            views=layout_views,
+        ):
+            for step in steps:
+                validate_layout_plan(
+                    client,
+                    step.plan,
+                    operation=current,
+                    timeout=timeout,
+                )
+
+    if operation is not None:
+        attest(operation)
+        return
+    project = plan.source.project
     with workspace_operation(
         client,
         project.workspace_root,
@@ -1190,18 +1225,11 @@ def _attest_layout_steps(
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=acquire_flow_lock,
         record_incident=record_incident,
-    ) as operation, operation.view_lease(
-        plan.library,
-        cells=layout_cells,
-        views=layout_views,
-    ):
-        for step in steps:
-            validate_layout_plan(
-                client,
-                step.plan,
-                operation=operation,
-                timeout=timeout,
-            )
+        operation_id=operation_id,
+    ) as current:
+        if callable(bind_operation):
+            bind_operation(current)
+        attest(current)
 
 
 def _discard_undeclared_oa_cache(
@@ -1210,6 +1238,8 @@ def _discard_undeclared_oa_cache(
     client: Any,
     *,
     timeout: int,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> None:
     """Remove only OA cells/views absent from the current Git assembly."""
 
@@ -1234,10 +1264,13 @@ def _discard_undeclared_oa_cache(
         project.workspace_root,
         "discard-undeclared-oa-cache",
         policy=OperationPolicy.DIRECT_MUTATION,
+        operation_id=operation_id,
     ) as operation, operation.view_lease(
         plan.library,
         cells=target_cells,
     ):
+        if callable(bind_operation):
+            bind_operation(operation)
         for cell in extra_cells:
             with operation.mutation_scope(
                 plan.library,
@@ -1279,6 +1312,8 @@ def rebuild_oa_library(
     testbench: str | None = None,
     timeout: int = 300,
     report: Callable[[str], None] | None = None,
+    operation_id: str | None = None,
+    bind_operation: Any | None = None,
 ) -> dict[str, object]:
     """Rebuild the selected source-defined OA objects from the current Git tree.
 
@@ -1327,6 +1362,8 @@ def rebuild_oa_library(
                 actual,
                 client,
                 timeout=timeout,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
             )
             if set(actual) - set(plan.expected_views) or any(
                 set(views) - set(plan.expected_views.get(actual_cell, ()))
@@ -1356,6 +1393,8 @@ def rebuild_oa_library(
                 overwrite=True,
                 timeout=timeout,
                 disposable=True,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
             )
             actual[design_cell] = ("netlist", "schematic", "symbol")
         text_steps = tuple(
@@ -1382,6 +1421,8 @@ def rebuild_oa_library(
                 source=step.source_snapshot,
                 overwrite=True,
                 timeout=timeout,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
             )
         layout_steps = tuple(
             step
@@ -1404,6 +1445,8 @@ def rebuild_oa_library(
                 overwrite=True,
                 timeout=timeout,
                 disposable=True,
+                operation_id=operation_id,
+                bind_operation=bind_operation,
             )
     for index, step in enumerate(selected_testbenches, start=1):
         emit(
@@ -1416,6 +1459,8 @@ def rebuild_oa_library(
             client,
             overwrite=True,
             timeout=timeout,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
         actual[step.cell] = tuple(plan.expected_views[step.cell])
     emit(f"check: {plan.library}")
@@ -1426,10 +1471,14 @@ def rebuild_oa_library(
             testbench=testbench,
             timeout=timeout,
             record_incident=False,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
         )
     return check_oa_parity(
         plan,
         client,
         timeout=timeout,
         record_incident=False,
+        operation_id=operation_id,
+        bind_operation=bind_operation,
     )
