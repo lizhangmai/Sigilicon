@@ -10,9 +10,9 @@ import stat
 from typing import Any
 
 from sigilicon.artifacts import ArtifactRecord, new_identity, read_nofollow_text
-from sigilicon.execution.backend import Backends
 from sigilicon.execution.model import (
     Artifact,
+    ContractError,
     ExecutionError,
     ExecutionPlan,
     PreflightCheck,
@@ -33,7 +33,6 @@ Progress = Callable[[str, str], None]
 
 def preflight(
     plan: ExecutionPlan,
-    backends: Backends,
     resources: Resources,
 ) -> PreflightResult:
     """Check exact sources and only the backends selected by this plan."""
@@ -57,8 +56,9 @@ def preflight(
             )
         )
     for step in plan.steps:
-        backend = backends.get(step.uses)
-        if backend is None:
+        try:
+            backend = plan._backend_for(step)
+        except ContractError:
             checks.append(
                 PreflightCheck(
                     "backend",
@@ -152,7 +152,6 @@ def _register_tree(record: ArtifactRecord, role: str, root: Path) -> None:
 
 def run(
     plan: ExecutionPlan,
-    backends: Backends,
     resources: Resources,
     *,
     artifact_root: Path,
@@ -164,7 +163,7 @@ def run(
 ) -> RunResult:
     """Run a preflighted plan once and persist a closed immutable result."""
 
-    checked = preflight(plan, backends, resources)
+    checked = preflight(plan, resources)
     if not checked.ready:
         blocked = "; ".join(
             f"{check.kind}:{check.subject}: {check.detail}"
@@ -273,7 +272,7 @@ def run(
                         lambda operation: operation.register_artifact(record)
                     ),
                 )
-                backend = backends[step.uses]
+                backend = plan._backend_for(step)
                 try:
                     result = backend.run(context)
                     if not isinstance(result, StepResult):

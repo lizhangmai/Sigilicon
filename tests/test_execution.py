@@ -25,7 +25,19 @@ from sigilicon.execution import (
 )
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
-from sigilicon.project._project import _open_project_for_test
+
+
+_TEST_BACKENDS: tuple[object, ...] = ()
+
+
+@pytest.fixture(autouse=True)
+def _bind_test_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+    global _TEST_BACKENDS
+    _TEST_BACKENDS = ()
+    monkeypatch.setattr(
+        "sigilicon.backends.trusted_backends",
+        lambda: _TEST_BACKENDS,
+    )
 
 
 def _write_project(root: Path) -> Path:
@@ -165,9 +177,11 @@ class UpperBackend:
 
 
 def _project(root: Path, *backends) -> Project:
-    """Assemble private test Adapters without widening Project.open."""
+    """Select test-only implementations through pytest's private assembly."""
 
-    return _open_project_for_test(root, backends)
+    global _TEST_BACKENDS
+    _TEST_BACKENDS = backends
+    return Project.open(root)
 
 
 def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
@@ -234,7 +248,7 @@ def test_operation_globs_capture_owner_and_shared_project_sources(
         encoding="utf-8",
     )
 
-    plan = Project.open(tmp_path).plan("example/smoke:check")
+    plan = _project(tmp_path, CopyBackend()).plan("example/smoke:check")
     sources = {(source.scope, source.path) for source in plan.sources}
 
     assert ("owner", "rtl/design.sv") in sources
@@ -259,7 +273,7 @@ def test_source_group_can_share_owner_and_project_globs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    plan = Project.open(tmp_path).plan("example/smoke:check")
+    plan = _project(tmp_path, CopyBackend()).plan("example/smoke:check")
     sources = {(source.scope, source.path) for source in plan.sources}
 
     assert ("owner", "configs/value.txt") in sources
@@ -317,11 +331,8 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
 def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = Project.open(tmp_path)
-    plan = project.plan("example/smoke:check")
-
-    assert project.preflight(plan).status == "blocked"
-    with pytest.raises(ExecutionError, match="preflight is blocked"):
-        project.run(plan)
+    with pytest.raises(ContractError, match="unknown trusted backend"):
+        project.plan("example/smoke:check")
 
 
 def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
@@ -405,6 +416,16 @@ def test_project_rejects_an_authorized_plan_modified_by_the_caller(
     plan = project.plan("example/smoke:check")
     forged_step = replace(plan.steps[0], config={"text": "forged"})
     forged = replace(plan, steps=(forged_step,))
+
+    with pytest.raises(ValueError, match="not authorized by this Project"):
+        project.preflight(forged, Resources(frozenset({"offline"})))
+
+
+def test_project_rejects_a_replaced_backend_binding(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyBackend())
+    plan = project.plan("example/smoke:check")
+    forged = replace(plan, _backends={plan.steps[0].id: UpperBackend()})
 
     with pytest.raises(ValueError, match="not authorized by this Project"):
         project.preflight(forged, Resources(frozenset({"offline"})))

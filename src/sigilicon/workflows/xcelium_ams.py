@@ -444,6 +444,7 @@ def execute_xcelium_ams_cell(
     plan: XceliumAmsCellPlan,
     *,
     artifacts: RunArtifacts,
+    source_paths: Mapping[Path, Path] | None = None,
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
@@ -452,19 +453,26 @@ def execute_xcelium_ams_cell(
     """Execute a resolved AMS cell without creating or completing a run record."""
 
     staged: dict[str, Path] = {}
+    bound = {} if source_paths is None else {
+        Path(source).resolve(): Path(value).resolve()
+        for source, value in source_paths.items()
+    }
+
+    def selected(path: Path) -> Path:
+        return bound.get(path.resolve(), path)
 
     def prepare_inputs() -> None:
         staged["circuit"] = artifacts.copy_file(
             "inputs",
             ("release", plan.circuit_netlist.name),
-            plan.circuit_netlist,
+            selected(plan.circuit_netlist),
         )
         staged.update(
             {
                 f"model:{path.name}": artifacts.copy_file(
                     "inputs",
                     ("pdk", path.name),
-                    path,
+                    selected(path),
                 )
                 for path in plan.model_set.files
             }
@@ -493,10 +501,10 @@ def execute_xcelium_ams_cell(
             xcelium_path,
             "-log",
             f"{work_path}/xrun.log",
-            *(str(path) for path in plan.sources),
+            *(str(selected(path)) for path in plan.sources),
             str(staged["control"]),
         ],
-        validate_inputs=lambda: _require_ams_inputs(plan),
+        validate_inputs=lambda: _require_ams_inputs(plan, source_paths=bound),
         summary_fields={
             "product_qualification_conclusion": False,
         },
@@ -509,19 +517,28 @@ def execute_xcelium_ams_cell(
     )
 
 
-def _require_ams_inputs(plan: XceliumAmsCellPlan) -> None:
+def _require_ams_inputs(
+    plan: XceliumAmsCellPlan,
+    *,
+    source_paths: Mapping[Path, Path] | None = None,
+) -> None:
+    bound = {} if source_paths is None else source_paths
+
+    def selected(path: Path) -> Path:
+        return bound.get(path.resolve(), path)
+
     required = (
         *plan.spec.source_inputs,
         *plan.platform.source_paths,
         *plan.model_set.files,
         plan.circuit_netlist,
     )
-    if any(not path.is_file() for path in required):
+    if any(not selected(path).is_file() for path in required):
         raise FileNotFoundError("Xcelium AMS source input disappeared")
-    if _sha256(plan.circuit_netlist) != plan.circuit_sha256:
+    if _sha256(selected(plan.circuit_netlist)) != plan.circuit_sha256:
         raise RuntimeError("Xcelium AMS locked circuit identity drift")
     if any(
-        _sha256(path) != digest
+        _sha256(selected(path)) != digest
         for path, digest in plan.model_sha256.items()
     ):
         raise RuntimeError("Xcelium AMS platform model identity drift")

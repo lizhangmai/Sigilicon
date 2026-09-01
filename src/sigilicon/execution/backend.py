@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from sigilicon.execution.model import (
     ContractError,
@@ -13,6 +13,7 @@ from sigilicon.execution.model import (
     Step,
     StepContext,
     StepResult,
+    ExecutionPlan,
     backend_identity,
 )
 
@@ -64,4 +65,30 @@ class Backends(Mapping[str, Backend]):
         return len(self._values)
 
 
-__all__ = ["Backend", "Backends"]
+def bind_plan(
+    plan: ExecutionPlan,
+    *,
+    project: Any,
+    backends: Backends,
+) -> ExecutionPlan:
+    """Bind every Step once to package-owned implementation and domain data."""
+
+    from dataclasses import replace
+
+    selected: dict[str, Backend] = {}
+    for step in plan.steps:
+        try:
+            backend = backends[step.uses]
+        except KeyError as exc:
+            raise ContractError(f"unknown trusted backend: {step.uses!r}") from exc
+        binder = getattr(backend, "bind", None)
+        bound = backend if binder is None else binder(project, step)
+        if not isinstance(bound, Backend) or bound.name != step.uses:
+            raise ContractError(
+                f"backend {step.uses!r} produced an invalid Step binding"
+            )
+        selected[step.id] = bound
+    return replace(plan, _backends=selected)
+
+
+__all__ = ["Backend", "Backends", "bind_plan"]

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.execution.model import (
@@ -130,6 +133,48 @@ def _publish_tree(context: StepContext, role: str, kind: str) -> tuple[Artifact,
         for path in sorted(root.rglob("*"))
         if path.is_file() and not path.is_symlink()
     )
+
+
+def _bind_source_paths(
+    project: Any,
+    owner_name: str,
+    step: Step,
+    paths: tuple[Path, ...] | frozenset[Path],
+) -> Mapping[Path, tuple[str, str]]:
+    """Bind Project-owned inputs; package code and PDK files stay runtime resources."""
+
+    project_root = project.project_root.resolve()
+    owner_root = project.owner(owner_name).root.resolve()
+    selected: dict[Path, tuple[str, str]] = {}
+    for source in paths:
+        path = Path(source).resolve()
+        if path.is_relative_to(owner_root):
+            name = path.relative_to(owner_root).as_posix()
+        elif path.is_relative_to(project_root):
+            name = path.relative_to(project_root).as_posix()
+        else:
+            continue
+        if name not in step.sources:
+            raise ContractError(
+                f"{step.uses} source closure omits its planned input: {name}"
+            )
+        selected[path] = (
+            name,
+            hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
+        )
+    return MappingProxyType(selected)
+
+
+def _require_bound_sources(
+    context: StepContext,
+    sources: Mapping[Path, tuple[str, str]],
+) -> None:
+    for name, digest in sources.values():
+        current = hashlib.sha256(
+            context.source_text(name).encode("utf-8")
+        ).hexdigest()
+        if current != digest:
+            raise ExecutionError(f"sealed backend source identity drift: {name}")
 
 
 class XceliumBackend:
@@ -276,26 +321,63 @@ class XceliumAmsBackend:
             *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
         )
 
-    def run(self, context: StepContext) -> StepResult:
-        from sigilicon.project import Project
-        from sigilicon.workflows.run_artifacts import RunArtifacts
-        from sigilicon.workflows.xcelium_ams import (
-            execute_xcelium_ams_cell,
-            plan_xcelium_ams_cell,
+    def bind(self, project: Any, step: Step) -> "_BoundXceliumAmsBackend":
+        from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
+
+        self.preflight(step, Resources())
+        config = _strict_config(step, self._fields)
+        owner = _text(config, "owner")
+        selected_owner = project.owner(owner)
+        contract = selected_owner.root / _relative(
+            _text(config, "cell"), "verification cell"
         )
+        planning = plan_xcelium_ams_cell(contract, project=project)
+        required = frozenset(
+            {
+                *planning.source_records,
+                *planning.sources,
+                planning.circuit_netlist,
+                *planning.model_set.files,
+            }
+        )
+        bindings = _bind_source_paths(project, owner, step, required)
+        return _BoundXceliumAmsBackend(planning, bindings)
+
+    def run(self, context: StepContext) -> StepResult:
+        raise ExecutionError("Xcelium AMS Step was not bound by Project.plan")
+
+
+@dataclass(frozen=True)
+class _BoundXceliumAmsBackend(XceliumAmsBackend):
+    _planning: Any
+    _sources: Mapping[Path, tuple[str, str]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+
+    @property
+    def binding_record(self) -> Mapping[str, Any]:
+        return {
+            "schema": 1,
+            "backend": self.name,
+            "request": self._planning.as_dict(),
+            "project_sources": [
+                {"path": name, "sha256": digest}
+                for name, digest in sorted(self._sources.values())
+            ],
+        }
+
+    def bind(self, project: Any, step: Step) -> "_BoundXceliumAmsBackend":
+        raise ContractError("Xcelium AMS Step is already bound")
+
+    def run(self, context: StepContext) -> StepResult:
+        from sigilicon.workflows.run_artifacts import RunArtifacts
+        from sigilicon.workflows.xcelium_ams import execute_xcelium_ams_cell
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
-        project_root, owner_path = _copy_isolated_project(
-            context, owner, shallow_component=True
-        )
-        project = Project.open(project_root)
-        if project.owner(owner).root.resolve() != project_root / owner_path:
-            raise ExecutionError("Xcelium AMS owner identity drift")
-        cell = project_root / owner_path / _relative(
-            _text(config, "cell"), "verification cell"
-        )
-        planning = plan_xcelium_ams_cell(cell, project=project)
+        planning = self._planning
+        _require_bound_sources(context, self._sources)
         root_environment = planning.platform.installation_root_environment
         if root_environment is not None and context.resources.environment.get(
             root_environment
@@ -324,6 +406,10 @@ class XceliumAmsBackend:
                 planning,
                 artifacts=artifacts,
                 xrun=xrun,
+                source_paths={
+                    path: context.source_path(name)
+                    for path, (name, _digest) in self._sources.items()
+                },
                 environment_values=context.resources.environment,
                 timeout=_positive_integer(config, "timeout_seconds"),
             )
@@ -374,10 +460,8 @@ class XceliumAmsBackend:
 def _copy_isolated_project(
     context: StepContext,
     owner: str,
-    *,
-    shallow_component: bool = False,
 ) -> tuple[Path, str]:
-    """Build a source-only project view while keeping the real OA workspace."""
+    """Legacy layout-only source view pending the layout Adapter migration."""
 
     if (
         context.project_root is None
@@ -416,19 +500,6 @@ def _copy_isolated_project(
     catalog = root / "ip/catalog.toml"
     catalog.parent.mkdir(parents=True, exist_ok=True)
     component = f"{owner_path}/configs/ip.toml"
-    if shallow_component:
-        component = f"{owner_path}/configs/.sigilicon-runtime-component.toml"
-        runtime_component = root / component
-        runtime_component.parent.mkdir(parents=True, exist_ok=True)
-        runtime_component.write_text(
-            "schema = 1\n"
-            'contract_kind = "ip-component"\n'
-            'path_scope = "owner"\n'
-            f"owner = {json.dumps(owner)}\n\n"
-            f"name = {json.dumps(owner)}\n"
-            'kind = "composite-ip"\n',
-            encoding="utf-8",
-        )
     catalog.write_text(
         "schema = 1\n"
         "contract_kind = \"ip-catalog\"\n"
@@ -458,47 +529,72 @@ class NativeOaBackend:
             raise ContractError("native OA step must close over configs/oa.toml")
         return _capability_checks(resources, _OA_CAPABILITIES)
 
+    def bind(self, project: Any, step: Step) -> "_BoundNativeOaBackend":
+        from sigilicon.workflows.oa_library import (
+            oa_plan_source_paths,
+            plan_oa_library_rebuild,
+        )
+
+        self.preflight(step, Resources())
+        config = _strict_config(step, self._fields)
+        owner = _text(config, "owner")
+        selected_owner = project.owner(owner)
+        manifest = project.oa_assembly_for(selected_owner.root)
+        if manifest is None:
+            raise ContractError(f"owner {owner!r} has no OA assembly")
+        planning = plan_oa_library_rebuild(manifest, project=project)
+        testbench = _text(config, "testbench")
+        matches = tuple(item for item in planning.testbenches if item.cell == testbench)
+        if len(matches) != 1:
+            raise ContractError(f"unknown native OA testbench: {testbench}")
+        sources = _bind_source_paths(
+            project,
+            owner,
+            step,
+            oa_plan_source_paths(planning),
+        )
+        return _BoundNativeOaBackend(planning, matches[0], sources)
+
     def run(self, context: StepContext) -> StepResult:
-        from sigilicon.project import Project
+        raise ExecutionError("native OA Step was not bound by Project.plan")
+
+
+@dataclass(frozen=True)
+class _BoundNativeOaBackend(NativeOaBackend):
+    _planning: Any
+    _selected: Any
+    _sources: Mapping[Path, tuple[str, str]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_sources", MappingProxyType(dict(self._sources)))
+
+    @property
+    def binding_record(self) -> Mapping[str, Any]:
+        return {
+            "schema": 1,
+            "backend": self.name,
+            "request": self._planning.as_dict(),
+            "testbench": self._selected.cell,
+            "project_sources": [
+                {"path": name, "sha256": digest}
+                for name, digest in sorted(self._sources.values())
+            ],
+        }
+
+    def bind(self, project: Any, step: Step) -> "_BoundNativeOaBackend":
+        raise ContractError("native OA Step is already bound")
+
+    def run(self, context: StepContext) -> StepResult:
         from sigilicon.virtuoso.client import get_client
-        from sigilicon.workflows.oa_library import oa_plan_source_paths
         from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
-        from sigilicon.workflows.project_oa import ProjectOaWorkflow
         from sigilicon.workflows.run_artifacts import RunArtifacts
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
-        project_root, owner_path = _copy_isolated_project(context, owner)
-        project = Project.open(project_root)
-        if project.owner(owner).root.resolve() != project_root / owner_path:
-            raise ExecutionError("native OA owner identity drift")
-        plan = ProjectOaWorkflow(project, owner).plan()
-        available = {step.cell: step for step in plan.testbenches}
         testbench = _text(config, "testbench")
-        try:
-            selected = available[testbench]
-        except KeyError as exc:
-            raise ExecutionError(f"unknown native OA testbench: {testbench}") from exc
-        declared = {
-            (scope, name)
-            for name, scope in context.source_scopes.items()
-        }
-        required: set[tuple[str, str]] = set()
-        for path in oa_plan_source_paths(plan):
-            if not path.is_relative_to(project_root):
-                continue
-            relative = path.relative_to(project_root).as_posix()
-            prefix = f"{owner_path}/"
-            required.add(
-                ("owner", relative.removeprefix(prefix))
-                if relative.startswith(prefix)
-                else ("project", relative)
-            )
-        missing = required - declared
-        if missing:
-            raise ExecutionError(
-                f"native OA source closure is incomplete: {sorted(missing)}"
-            )
+        plan = self._planning
+        selected = self._selected
+        _require_bound_sources(context, self._sources)
         uncertainty: list[str] = []
         try:
             with owned_scratch_directory(

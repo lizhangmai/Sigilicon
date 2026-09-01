@@ -289,6 +289,11 @@ class ExecutionPlan:
     operation: str
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
+    _backends: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
     _authorization: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -309,6 +314,15 @@ class ExecutionPlan:
             raise ContractError("execution plan sources must be Source values")
         if not isinstance(self._authorization, str):
             raise ContractError("execution plan authorization must be text")
+        if not isinstance(self._backends, Mapping) or any(
+            not isinstance(name, str) for name in self._backends
+        ):
+            raise ContractError("execution plan backend bindings must be a mapping")
+        object.__setattr__(
+            self,
+            "_backends",
+            MappingProxyType(dict(self._backends)),
+        )
         closure = {(source.root, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
@@ -322,6 +336,32 @@ class ExecutionPlan:
                     )
         object.__setattr__(self, "steps", _topology(self.steps))
 
+    def _backend_for(self, step: Step) -> Any:
+        try:
+            return self._backends[step.id]
+        except KeyError as exc:
+            raise ContractError(
+                f"execution plan step {step.id!r} has no trusted backend binding"
+            ) from exc
+
+    def _backend_record(self, step: Step) -> dict[str, Any]:
+        backend = self._backend_for(step)
+        prepared = getattr(backend, "binding_record", None)
+        record = (
+            {
+                "schema": 1,
+                "backend": step.uses,
+                "implementation": (
+                    f"{type(backend).__module__}.{type(backend).__qualname__}"
+                ),
+            }
+            if prepared is None
+            else prepared
+        )
+        if not isinstance(record, Mapping):
+            raise ContractError("backend binding record must be a mapping")
+        return json_value(record)
+
     @property
     def record(self) -> dict[str, Any]:
         return {
@@ -333,6 +373,10 @@ class ExecutionPlan:
             "operation": self.operation,
             "sources": [source.record for source in self.sources],
             "steps": [step.record for step in self.steps],
+            "backend_bindings": [
+                {"step": step.id, **self._backend_record(step)}
+                for step in self.steps
+            ] if self._backends else [],
         }
 
     @property

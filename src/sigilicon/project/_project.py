@@ -94,7 +94,6 @@ class Project:
         repr=False,
         compare=False,
     )
-    _backend_override: object | None = field(default=None, repr=False, compare=False)
     _plan_key: bytes = field(
         default_factory=lambda: secrets.token_bytes(32),
         repr=False,
@@ -116,17 +115,11 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
-    def _selected_backends(self):
-        from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import Backends
-
-        if self._backend_override is not None:
-            return self._backend_override
-        return Backends(trusted_backends())
-
     def plan(self, selector: str):
         """Compile one canonical ``owner/target:operation`` selector."""
 
+        from sigilicon.backends import trusted_backends
+        from sigilicon.execution.backend import Backends, bind_plan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
         owner_name, target, operation = parse_selector(selector)
@@ -143,6 +136,11 @@ class Project:
             target=target,
             operation=operation,
             project_identity=self.identity,
+        )
+        plan = bind_plan(
+            plan,
+            project=self,
+            backends=Backends(trusted_backends()),
         )
         return replace(plan, _authorization=self._authorize_plan(plan))
 
@@ -172,7 +170,6 @@ class Project:
             raise TypeError("Project.preflight resources must be Resources")
         checked = preflight(
             plan,
-            self._selected_backends(),
             selected,
         )
         if plan.project_identity == self.identity:
@@ -211,7 +208,6 @@ class Project:
             raise TypeError("Project.run resources must be Resources")
         return run(
             plan,
-            self._selected_backends(),
             selected,
             artifact_root=self.artifact_root,
             project_root=self.project_root,
@@ -663,12 +659,3 @@ class Project:
         if len(matches) > 1:
             raise ValueError(f"owner {owner.name!r} has multiple OA assemblies")
         return matches[0] if matches else None
-
-
-def _open_project_for_test(root: Path | str, backends: object) -> Project:
-    """Assemble private test Adapters outside the public Project Interface."""
-
-    from sigilicon.execution.backend import Backends
-
-    selected = backends if isinstance(backends, Backends) else Backends(backends)
-    return replace(Project.open(root), _backend_override=selected)

@@ -149,6 +149,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     workspace = tmp_path / "workspace"
     owner.mkdir(parents=True)
     workspace.mkdir()
+    contract = _file(owner / "dv/tb_ams/cell.toml")
     context = _context(
         tmp_path,
         step,
@@ -159,10 +160,17 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         scopes={"dv/tb_ams/cell.toml": "owner"},
     )
     _file(context.source_root / "dv/tb_ams/cell.toml")
-    selected_project = _patch_isolated_owner(monkeypatch, tmp_path)
+    selected_project = SimpleNamespace(
+        project_root=project,
+        owner=lambda name: SimpleNamespace(root=owner) if name == "example" else None,
+    )
     planning = SimpleNamespace(
         platform=SimpleNamespace(installation_root_environment=None),
         spec=SimpleNamespace(cell="tb_ams"),
+        source_records={contract: "snapshot"},
+        sources=(contract,),
+        circuit_netlist=contract,
+        model_set=SimpleNamespace(files=(contract,)),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.xcelium_ams.plan_xcelium_ams_cell",
@@ -181,7 +189,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     backend = XceliumAmsBackend()
 
     assert all(check.status == "ready" for check in backend.preflight(step, resources))
-    result = backend.run(context)
+    result = backend.bind(selected_project, step).run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {
@@ -233,43 +241,6 @@ def test_cadence_isolated_project_preserves_owner_and_project_scopes(
     assert (isolated / "ip/example/configs/ip.toml").is_file()
     assert (isolated / "configs/platform/catalog.toml").is_file()
     assert "[components.example]" in (isolated / "ip/catalog.toml").read_text()
-
-
-def test_ams_isolation_uses_a_derived_shallow_owner_component(tmp_path: Path) -> None:
-    project = tmp_path / "source-project"
-    owner = project / "ip/example"
-    workspace = project / "workspace"
-    owner.mkdir(parents=True)
-    workspace.mkdir()
-    step = Step(
-        "ams",
-        "cadence.xcelium-ams",
-        {"owner": "example", "cell": "dv/cell.toml", "timeout_seconds": 10},
-        sources=("configs/ip.toml", "dv/cell.toml"),
-        evidence=Evidence("diagnostic", "l2", "ams"),
-    )
-    context = _context(
-        tmp_path,
-        step,
-        Resources(),
-        project_root=project,
-        owner_root=owner,
-        workspace_root=workspace,
-        scopes={source: "owner" for source in step.sources},
-    )
-    _file(context.source_root / "configs/ip.toml", "unparsed consumer source\n")
-    _file(context.source_root / "dv/cell.toml")
-
-    isolated, _ = _copy_isolated_project(
-        context, "example", shallow_component=True
-    )
-
-    catalog = (isolated / "ip/catalog.toml").read_text(encoding="utf-8")
-    assert ".sigilicon-runtime-component.toml" in catalog
-    assert (isolated / "ip/example/configs/ip.toml").is_file()
-    assert "name = \"example\"" in (
-        isolated / "ip/example/configs/.sigilicon-runtime-component.toml"
-    ).read_text(encoding="utf-8")
 
 
 def _oa_context(
@@ -338,14 +309,22 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     )
     registered: list[object] = []
     context = _oa_context(tmp_path, step, registered=registered)
-    project = _patch_isolated_owner(monkeypatch, tmp_path)
+    source_project = context.project_root
+    assert source_project is not None
+    owner_root = context.owner_root
+    assert owner_root is not None
     selected = SimpleNamespace(cell="tb_EXAMPLE")
     plan = SimpleNamespace(testbenches=(selected,))
+    project = SimpleNamespace(
+        project_root=source_project,
+        owner=lambda name: SimpleNamespace(root=owner_root)
+        if name == "example"
+        else None,
+        oa_assembly_for=lambda _root: owner_root / "configs/oa.toml",
+    )
     monkeypatch.setattr(
-        "sigilicon.workflows.project_oa.ProjectOaWorkflow",
-        lambda selected_project, owner: SimpleNamespace(
-            plan=lambda: plan if selected_project is project and owner == "example" else None
-        ),
+        "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
+        lambda _manifest, *, project: plan,
     )
     monkeypatch.setattr("sigilicon.workflows.oa_library.oa_plan_source_paths", lambda _plan: ())
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
@@ -364,7 +343,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         execute,
     )
 
-    result = NativeOaBackend().run(context)
+    result = NativeOaBackend().bind(project, step).run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {"passed": True, "evidence_status": "passed"}
