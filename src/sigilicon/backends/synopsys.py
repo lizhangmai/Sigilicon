@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -334,7 +335,15 @@ def _run_script(
         )
 
 
-class VcsBackend:
+class _PreparedSynopsysBackend:
+    """Validate each package-owned Synopsys request during Project.plan."""
+
+    def bind(self, _project: Any, step: Step):
+        self.preflight(step, Resources())
+        return self
+
+
+class VcsBackend(_PreparedSynopsysBackend):
     name = "synopsys.vcs"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -407,7 +416,7 @@ class VcsBackend:
         return StepResult.succeeded(artifacts=logs)
 
 
-class DcBackend:
+class DcBackend(_PreparedSynopsysBackend):
     name = "synopsys.dc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -504,7 +513,7 @@ class DcBackend:
             return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
 
 
-class FcBackend:
+class FcBackend(_PreparedSynopsysBackend):
     name = "synopsys.fc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -709,7 +718,7 @@ class FcBackend:
             return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 
-class HspiceBackend:
+class HspiceBackend(_PreparedSynopsysBackend):
     name = "synopsys.hspice"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -862,7 +871,7 @@ class HspiceBackend:
             return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
-class StructuralLinkBackend:
+class StructuralLinkBackend(_PreparedSynopsysBackend):
     """Link owner RTL against one locked, uncharacterized macro release."""
 
     name = "synopsys.structural-link"
@@ -968,16 +977,19 @@ class StructuralLinkBackend:
         )
         return tuple(checks)
 
-    def run(self, context: StepContext) -> StepResult:
-        from sigilicon.workflows.run_artifacts import RunArtifacts
-        from sigilicon.workflows.structural_link import (
-            execute_structural_link,
-            plan_structural_link,
-        )
+    def bind(self, project: Any, step: Step) -> "_BoundStructuralLinkBackend":
+        from sigilicon.workflows.structural_link import plan_structural_link
 
-        config = self._config(context.step)
+        self.preflight(step, Resources())
+        config = self._config(step)
+        owner = _text(config, "owner")
+        owner_root = project.owner(owner).root
+        project_root = project.project_root
         lock_name = _safe_relative(
             _text(config, "dependency_lock"), "dependency lock"
+        )
+        variant_name = _safe_relative(
+            _text(config, "variant_contract"), "structural-link variant contract"
         )
         compile_name = _safe_relative(
             _text(config, "compile_script"), "Liberty compile script"
@@ -985,23 +997,25 @@ class StructuralLinkBackend:
         link_name = _safe_relative(
             _text(config, "link_script"), "structural link script"
         )
-        variant = _text(config, "variant")
-        variant_name = _safe_relative(
-            _text(config, "variant_contract"), "structural-link variant contract"
-        )
         rtl_names = tuple(
             _safe_relative(name, "structural-link RTL source")
             for name in _strings(config, "rtl_sources")
         )
+        manifest_name = _safe_relative(
+            _text(config, "release_manifest"), "release manifest"
+        )
+        liberty_name = _safe_relative(
+            _text(config, "release_liberty"), "release Liberty"
+        )
         planning = plan_structural_link(
-            owner=_text(config, "owner"),
+            owner=owner,
             dependency=_text(config, "dependency"),
-            dependency_lock_path=context.owner_source_path(lock_name),
-            variant_path=context.owner_source_path(variant_name),
-            variant=variant,
-            rtl_sources=tuple(context.owner_source_path(name) for name in rtl_names),
-            compile_script=context.owner_source_path(compile_name),
-            link_script=context.owner_source_path(link_name),
+            dependency_lock_path=owner_root / lock_name,
+            variant_path=owner_root / variant_name,
+            variant=_text(config, "variant"),
+            rtl_sources=tuple(owner_root / name for name in rtl_names),
+            compile_script=owner_root / compile_name,
+            link_script=owner_root / link_name,
             library_name=_text(config, "library_name"),
             macro_cell=_text(config, "macro_cell"),
             parameter_overrides=_mapping(config, "parameter_overrides"),
@@ -1013,13 +1027,25 @@ class StructuralLinkBackend:
             ),
             release_export=_text(config, "release_export"),
             liberty_role=_text(config, "liberty_role"),
-            release_manifest=context.project_source_path(
-                _safe_relative(_text(config, "release_manifest"), "release manifest")
-            ),
-            release_liberty=context.project_source_path(
-                _safe_relative(_text(config, "release_liberty"), "release Liberty")
-            ),
+            release_manifest=project_root / manifest_name,
+            release_liberty=project_root / liberty_name,
         )
+        return _BoundStructuralLinkBackend(
+            planning,
+            rtl_names,
+            compile_name,
+            link_name,
+            liberty_name,
+        )
+
+    def run(self, context: StepContext) -> StepResult:
+        raise ExecutionError("structural-link Step was not bound by Project.plan")
+
+    def _execute(self, context: StepContext, planning: Any) -> StepResult:
+        from sigilicon.workflows.run_artifacts import RunArtifacts
+        from sigilicon.workflows.structural_link import execute_structural_link
+
+        config = self._config(context.step)
         library_compiler = Path(
             _text(
                 context.resources.environment,
@@ -1092,6 +1118,59 @@ class StructuralLinkBackend:
                 "Synopsys structural link did not prove the declared macro seam",
             )
         )
+
+
+@dataclass(frozen=True)
+class _BoundStructuralLinkBackend(StructuralLinkBackend):
+    _planning: Any
+    _rtl_sources: tuple[str, ...]
+    _compile_script: str
+    _link_script: str
+    _release_liberty: str
+
+    @property
+    def binding_record(self) -> Mapping[str, Any]:
+        plan = self._planning
+        return {
+            "schema": 1,
+            "backend": self.name,
+            "request": {
+                "owner": plan.owner,
+                "variant": plan.variant,
+                "top": plan.top,
+                "rtl_sources": list(self._rtl_sources),
+                "compile_script": self._compile_script,
+                "link_script": self._link_script,
+                "library_name": plan.library_name,
+                "macro_cell": plan.macro_cell,
+                "parameter_overrides": dict(plan.parameter_overrides),
+                "expected_macro_instances": plan.expected_macro_instances,
+                "expected_unresolved_references": (
+                    plan.expected_unresolved_references
+                ),
+                "release_id": plan.release_id,
+                "release_source_commit": plan.release_source_commit,
+                "release_manifest": plan.release_manifest,
+                "release_manifest_sha256": plan.release_manifest_sha256,
+                "release_liberty": self._release_liberty,
+                "release_liberty_sha256": plan.release_liberty_sha256,
+            },
+        }
+
+    def bind(self, project: Any, step: Step) -> "_BoundStructuralLinkBackend":
+        raise ContractError("structural-link Step is already bound")
+
+    def run(self, context: StepContext) -> StepResult:
+        planning = replace(
+            self._planning,
+            rtl_sources=tuple(
+                context.owner_source_path(name) for name in self._rtl_sources
+            ),
+            compile_script=context.owner_source_path(self._compile_script),
+            link_script=context.owner_source_path(self._link_script),
+            release_liberty=context.project_source_path(self._release_liberty),
+        )
+        return self._execute(context, planning)
 
 
 def synopsys_backends() -> tuple[
