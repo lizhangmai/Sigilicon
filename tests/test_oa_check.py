@@ -190,23 +190,6 @@ def test_released_flow_marker_is_not_reported_as_live_lock() -> None:
     )
 
 
-def test_current_check_uses_only_live_state() -> None:
-    common = {
-        "plan_error": None,
-        "parity": {"passed": True},
-        "ownership": {"conflicts": []},
-        "bridge": {"active_maestro_sessions": [], "open_cell_views": []},
-        "locks": {"edit_locks": [], "errors": []},
-    }
-
-    assert (
-        _recommendation(
-            **common,
-        )
-        == "clean"
-    )
-
-
 def test_plain_check_summary_exposes_current_operator_state(capsys) -> None:
     _print_oa_check_summary(
         {

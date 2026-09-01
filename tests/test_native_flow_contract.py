@@ -8,17 +8,10 @@ import pytest
 
 from sigilicon.domain.repository import Project
 from sigilicon.flow import (
-    ActionBinding,
     ActionContext,
     ActionPlan,
-    AdapterResult,
-    ArtifactBinding,
     EvidenceEnvelope,
-    FlowEngine,
     FlowExecutionError,
-    FlowNode,
-    FlowSpec,
-    FlowTarget,
     InputArtifact,
     ResolvedCapability,
     SourceMember,
@@ -117,11 +110,6 @@ def _context(
     )
 
 
-class _PlanningAdapter:
-    def run(self, _context: ActionContext) -> AdapterResult:
-        return AdapterResult.succeeded()
-
-
 def test_native_adapters_keep_one_run_operation_and_require_project_binding() -> None:
     registry = build_action_registry()
 
@@ -133,62 +121,6 @@ def test_native_adapters_keep_one_run_operation_and_require_project_binding() ->
     ):
         assert not registry.has_adapter(name)
         assert callable(implementation.run)
-        assert not hasattr(implementation, "validate_inputs")
-        assert not hasattr(implementation, "prepare")
-        assert not hasattr(implementation, "execute")
-        assert not hasattr(implementation, "collect_result")
-    assert not vars(NativeOaPlanAdapter())
-    assert not vars(XceliumVerificationAdapter())
-    assert not vars(XceliumAmsVerificationAdapter())
-
-
-def test_native_oa_vertical_slice_plans_as_one_typed_dag(tmp_path: Path) -> None:
-    registry = build_action_registry()
-    registry.register_adapter(NATIVE_OA_PLAN_ADAPTER, _PlanningAdapter())
-    registry.register_adapter(NATIVE_OA_SIMULATION_ADAPTER, _PlanningAdapter())
-    engine = FlowEngine(registry)
-    spec = FlowSpec(
-        owner="native-owner",
-        flow_id="native-oa-l1",
-        recipe_id="native-oa-l1-recipe",
-        nodes=(
-            FlowNode("oa-plan", NATIVE_OA_PLAN_ACTION),
-            FlowNode(
-                "simulate",
-                NATIVE_OA_SIMULATION_ACTION,
-                {"testbench": "tb_cell", **_EVIDENCE_CONFIG},
-                bindings=(ArtifactBinding("plan", "oa-plan", "plan"),),
-                order_after=("oa-plan",),
-            ),
-        ),
-        targets=(FlowTarget("simulation", ("simulate",)),),
-        action_bindings=(
-            ActionBinding(NATIVE_OA_PLAN_ACTION, NATIVE_OA_PLAN_ADAPTER),
-            ActionBinding(
-                NATIVE_OA_SIMULATION_ACTION,
-                NATIVE_OA_SIMULATION_ADAPTER,
-            ),
-        ),
-    )
-
-    typed = ActionPlan(
-        NATIVE_OA_ACTION_PLAN,
-        object(),
-        {},
-        (_source_member(tmp_path / "oa.toml", root=tmp_path),),
-    )
-    registry.register_action_planner(
-        NATIVE_OA_PLAN_ACTION,
-        lambda _node: typed,
-    )
-    registry.register_action_planner(
-        NATIVE_OA_SIMULATION_ACTION,
-        lambda _node: typed,
-    )
-    plan = engine.plan(spec, "simulation")
-
-    assert plan.topology == ("oa-plan", "simulate")
-    assert plan.nodes[1].execution_capability == "mutate-workspace"
 
 
 def test_native_oa_adapters_preserve_plan_and_evidence_identity(
@@ -305,7 +237,6 @@ def test_native_oa_adapters_preserve_plan_and_evidence_identity(
     assert payload["native_maestro_field"] == "preserved"
     assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
     assert not {"run_id", "run_dir", "manifest"} & payload.keys()
-    assert not hasattr(result.collected, "details")
     assert payload["product_qualification_conclusion"] is False
 
 
@@ -419,83 +350,6 @@ def test_native_oa_simulation_rechecks_sources_before_backend_access(
     with pytest.raises(FlowExecutionError, match="source changed after preflight"):
         NativeOaSimulationAdapter(client_factory=object).run(context)
     assert not backend_started
-
-
-def test_xcelium_adapter_preserves_native_payload_and_owner_evidence_role(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = _project(tmp_path)
-    context = _context(
-        project,
-        XCELIUM_VERIFICATION_ACTION,
-        action_config=MappingProxyType(
-            {"cell": "ip/native/cell.toml", **_EVIDENCE_CONFIG}
-        ),
-        capabilities={
-            "tool.cadence-xcelium": ResolvedCapability("site.xcelium")
-        },
-    )
-    plan = SimpleNamespace(
-        contract=project.project_root / "ip/native-owner/cell.toml",
-        source_records={
-            project.project_root / "ip/native-owner/cell.toml": "source = true\n"
-        },
-        spec=SimpleNamespace(
-            simulator="xcelium",
-            project=project,
-            owner="native-owner",
-        ),
-        as_dict=lambda: {"native_xcelium_field": "preserved"},
-    )
-    context = _context(
-        project,
-        XCELIUM_VERIFICATION_ACTION,
-        action_config=MappingProxyType(
-            {"cell": "ip/native-owner/cell.toml", **_EVIDENCE_CONFIG}
-        ),
-        capabilities={
-            "tool.cadence-xcelium": ResolvedCapability("site.xcelium")
-        },
-        action_plan=ActionPlan(
-            XCELIUM_ACTION_PLAN,
-            plan,
-            plan.as_dict(),
-            (
-                _source_member(
-                    plan.contract,
-                    root=project.project_root,
-                ),
-            ),
-        ),
-    )
-
-    def execute_cell(selected_plan, *, artifacts, xrun, before_spawn, timeout):
-        assert selected_plan is plan
-        assert xrun is None
-        assert timeout == 17
-        before_spawn()
-        summary = artifacts.write_json("outputs", ("summary.json",), {"schema": 1})
-        return SimpleNamespace(
-            plan=plan,
-            returncode=0,
-            passed=True,
-            run_summary=summary,
-        )
-
-    monkeypatch.setattr(native_flow, "XceliumCellPlan", SimpleNamespace)
-    monkeypatch.setattr(native_flow, "execute_xcelium_cell", execute_cell)
-
-    result = XceliumVerificationAdapter().run(context)
-
-    assert result.collected is not None
-    assert result.collected.facts["evidence-role"] == "diagnostic"
-    assert result.collected.facts["evidence-level"] == "l2"
-    payload = json.loads(result.collected.artifacts[0].path.read_text(encoding="utf-8"))
-    assert payload["native_xcelium_field"] == "preserved"
-    assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
-    assert not {"run_id", "run_dir", "manifest"} & payload.keys()
-    assert not hasattr(result.collected, "details")
 
 
 @pytest.mark.parametrize(
@@ -630,21 +484,20 @@ def test_xcelium_adapters_recheck_sources_at_spawn_boundary(
     assert not spawned
 
 
-def test_xcelium_action_declares_rtl_tool_and_evidence_contract() -> None:
-    action = build_action_registry().action(XCELIUM_VERIFICATION_ACTION)
+def test_xcelium_actions_declare_their_evidence_contract() -> None:
+    registry = build_action_registry()
+    rtl = registry.action(XCELIUM_VERIFICATION_ACTION)
+    ams = registry.action(XCELIUM_AMS_VERIFICATION_ACTION)
 
-    assert action.kind == "verification.xcelium-rtl"
-    assert action.required_capabilities == ("tool.cadence-xcelium",)
-    assert action.fact_schema is not None
-    assert tuple(field.name for field in action.fact_schema.fields) == (
-        "passed",
-        "simulator",
-        "evidence-role",
-        "evidence-level",
-        "evidence-scope",
-        "product-qualification-conclusion",
+    assert rtl.kind == "verification.xcelium-rtl"
+    assert ams.kind == "verification.xcelium-ams"
+    assert rtl.required_capabilities == ams.required_capabilities == (
+        "tool.cadence-xcelium",
     )
-    assert action.output("evidence").kind == "evidence.xcelium-rtl-verification"
+    assert rtl.fact_schema is not None
+    assert ams.fact_schema is not None
+    assert rtl.output("evidence").kind == "evidence.xcelium-rtl-verification"
+    assert ams.output("evidence").kind == "evidence.xcelium-ams-verification"
 
 
 def test_xcelium_ams_adapter_uses_same_flow_lifecycle(
@@ -652,16 +505,6 @@ def test_xcelium_ams_adapter_uses_same_flow_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _project(tmp_path)
-    context = _context(
-        project,
-        XCELIUM_AMS_VERIFICATION_ACTION,
-        action_config=MappingProxyType(
-            {"cell": "ip/native/ams.toml", **_EVIDENCE_CONFIG}
-        ),
-        capabilities={
-            "tool.cadence-xcelium": ResolvedCapability("site.xcelium")
-        },
-    )
     plan = SimpleNamespace(
         contract=project.project_root / "ip/native-owner/ams.toml",
         source_records={
@@ -720,11 +563,3 @@ def test_xcelium_ams_adapter_uses_same_flow_lifecycle(
     assert payload["native_xcelium_ams_field"] == "preserved"
     assert payload["run_summary"].startswith("artifact://fixture-flow-run/outputs/")
     assert not {"run_id", "run_dir", "manifest"} & payload.keys()
-
-
-def test_xcelium_ams_action_declares_mixed_signal_contract() -> None:
-    action = build_action_registry().action(XCELIUM_AMS_VERIFICATION_ACTION)
-
-    assert action.kind == "verification.xcelium-ams"
-    assert action.required_capabilities == ("tool.cadence-xcelium",)
-    assert action.output("evidence").kind == "evidence.xcelium-ams-verification"

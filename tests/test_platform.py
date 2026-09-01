@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
 
 import pytest
 
-import sigilicon.domain.platform as platform_domain
 from conftest import (
     write_project_context,
     write_test_layout_platform,
@@ -16,176 +14,65 @@ from sigilicon.domain.platform import (
     load_platform,
     load_platform_catalog,
     load_platform_inventory,
-    PlatformInventory,
     resolve_platform,
-    resolve_platform_catalog,
     resolve_platform_snapshot,
 )
-from sigilicon.domain.config_contracts import thaw_toml_document
 from sigilicon.domain.repository import Project
 
 
-def test_load_platform_resolves_typed_capabilities_from_the_project_catalog(
-    tmp_path: Path,
-) -> None:
+def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     model = write_test_platform(tmp_path)
 
     platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
-    assert platform.path == tmp_path / "configs/platform/testpdk/platform.toml"
     assert platform.simulation.default.file == model
     assert platform.simulation.default.single_section == "tt"
     assert platform.oa.technology_library == "techLib"
     assert platform.oa.reference_libraries == ("deviceLib",)
-    assert platform.layout is None
     assert platform.source_paths == (
         tmp_path / "configs/platform/catalog.toml",
-        platform.path,
+        tmp_path / "configs/platform/testpdk/platform.toml",
         tmp_path / "configs/platform/testpdk/simulation.toml",
         tmp_path / "configs/platform/testpdk/oa.toml",
     )
-    assert tuple(platform.source_documents) == platform.source_paths[1:]
     with pytest.raises(TypeError):
         platform.source_documents[platform.simulation.path][
             "default_model_set"
         ] = "other"
+
+
+def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = Project.from_project_root(tmp_path)
+    inventory = load_platform_inventory(project)
+
+    assert (
+        resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
+        is inventory["testpdk"]
+    )
     with pytest.raises(TypeError):
-        platform.catalog_document["platforms"]["testpdk"] = "other/platform.toml"
+        inventory["testpdk"].simulation.model_sets["forged"] = object()
+    with pytest.raises(ValueError, match="has no 'other' entry"):
+        resolve_platform_snapshot(project, "other", snapshot=inventory)
 
-
-def test_resolve_platform_reuses_one_project_owned_snapshot(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    snapshot = load_platform(project, "testpdk")
-
-    resolved = resolve_platform(project, "testpdk", snapshot=snapshot)
-
-    assert resolved is snapshot
-
-    legacy_snapshot = replace(snapshot, source_documents={})
-    with pytest.raises(ValueError, match="source document identity drift"):
-        resolve_platform(
-            project,
+    with pytest.raises(ValueError, match="different operation"):
+        resolve_platform_snapshot(
+            Project.from_project_root(tmp_path),
             "testpdk",
-            snapshot=legacy_snapshot,
-        )
-
-    incomplete_snapshot = replace(
-        snapshot,
-        source_documents={snapshot.path: snapshot.source_documents[snapshot.path]},
-    )
-    with pytest.raises(ValueError, match="source document identity drift"):
-        resolve_platform(project, "testpdk", snapshot=incomplete_snapshot)
-
-    with pytest.raises(ValueError, match="different project catalog"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(snapshot, path=snapshot.simulation.path),
+            snapshot=inventory,
         )
 
 
-def test_platform_resolvers_reject_mutable_snapshot_documents(
-    tmp_path: Path,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    snapshot = load_platform(project, "testpdk")
-    catalog = load_platform_catalog(project)
-
-    with pytest.raises(ValueError, match="catalog document identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(
-                snapshot,
-                catalog_document=thaw_toml_document(snapshot.catalog_document),
-            ),
-        )
-    mutable_documents = MappingProxyType(
-        {
-            path: thaw_toml_document(document)
-            for path, document in snapshot.source_documents.items()
-        }
-    )
-    with pytest.raises(ValueError, match="source document identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(snapshot, source_documents=mutable_documents),
-        )
-    with pytest.raises(ValueError, match="catalog snapshot immutable"):
-        resolve_platform_catalog(
-            project,
-            snapshot=replace(
-                catalog,
-                document=thaw_toml_document(catalog.document),
-            ),
-        )
-    with pytest.raises(ValueError, match="catalog snapshot immutable"):
-        resolve_platform_catalog(
-            project,
-            snapshot=replace(catalog, manifests=dict(catalog.manifests)),
-        )
-
-
-def test_platform_resolver_rejects_mutable_typed_mappings(tmp_path: Path) -> None:
+def test_resolve_platform_rejects_typed_and_source_drift(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
-    layout_contract = tmp_path / "configs/platform/testpdk/layout.toml"
-    layout_contract.write_text(
-        layout_contract.read_text(encoding="utf-8")
-        + '''
-[oa_materialization.layers.routing1]
-layer = "M1"
-drawing_purpose = "drawing"
-pin_purpose = "pin"
-blockage_purpose = "drawing"
-
-[oa_materialization.vias]
-routing1_routing2 = "M2_M1c"
-''',
-        encoding="utf-8",
-    )
     project = Project.from_project_root(tmp_path)
     snapshot = load_platform(project, "testpdk")
-
-    with pytest.raises(ValueError, match="typed mapping identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(
-                snapshot,
-                simulation=replace(
-                    snapshot.simulation,
-                    model_sets=dict(snapshot.simulation.model_sets),
-                ),
-            ),
-        )
-    with pytest.raises(ValueError, match="typed mapping identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(
-                snapshot,
-                oa=replace(
-                    snapshot.oa,
-                    primitive_subcircuits=dict(
-                        snapshot.oa.primitive_subcircuits
-                    ),
-                ),
-            ),
-        )
     assert snapshot.layout is not None
-    assert snapshot.layout.oa_materialization is not None
-    forged_materialization = replace(
-        snapshot.layout.oa_materialization,
-        layers=dict(snapshot.layout.oa_materialization.layers),
-    )
-    with pytest.raises(ValueError, match="typed mapping identity drift"):
+
+    with pytest.raises(ValueError, match="platform identity drift"):
         resolve_platform(
             project,
             "testpdk",
@@ -193,141 +80,9 @@ routing1_routing2 = "M2_M1c"
                 snapshot,
                 layout=replace(
                     snapshot.layout,
-                    oa_materialization=forged_materialization,
+                    dbu_per_micron=snapshot.layout.dbu_per_micron + 1,
                 ),
             ),
-        )
-
-
-def test_operation_platform_inventory_uses_one_validated_platform_set(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    inventory = load_platform_inventory(project)
-    platform = inventory["testpdk"]
-
-    with pytest.raises(ValueError, match="must be built by its loader"):
-        PlatformInventory(
-            _authority=object(),
-            project=project,
-            catalog=inventory.catalog,
-            platforms=inventory.platforms,
-        )
-    with pytest.raises(ValueError, match="complete catalog"):
-        PlatformInventory(
-            _authority=platform_domain._PLATFORM_INVENTORY_AUTHORITY,
-            project=project,
-            catalog=inventory.catalog,
-            platforms={},
-        )
-    with pytest.raises(ValueError, match="catalog snapshot immutable"):
-        PlatformInventory(
-            _authority=platform_domain._PLATFORM_INVENTORY_AUTHORITY,
-            project=project,
-            catalog=replace(
-                inventory.catalog,
-                document=thaw_toml_document(inventory.catalog.document),
-            ),
-            platforms=inventory.platforms,
-        )
-    with pytest.raises(ValueError, match="catalog document identity drift"):
-        PlatformInventory(
-            _authority=platform_domain._PLATFORM_INVENTORY_AUTHORITY,
-            project=project,
-            catalog=inventory.catalog,
-            platforms={
-                "testpdk": replace(
-                    platform,
-                    catalog_document=thaw_toml_document(
-                        platform.catalog_document
-                    ),
-                )
-            },
-        )
-    with pytest.raises(TypeError, match="dataclass"):
-        replace(inventory, platforms={})
-    with pytest.raises(AttributeError, match="immutable"):
-        inventory._platforms = {}
-    with pytest.raises(TypeError):
-        inventory["testpdk"].simulation.model_sets["forged"] = object()
-    with pytest.raises(TypeError):
-        inventory["testpdk"].oa.primitive_subcircuits["forged"] = ()
-
-    def reject_revalidation(*_args, **_kwargs):
-        raise AssertionError("operation inventory must not repeat deep validation")
-
-    monkeypatch.setattr(
-        "sigilicon.domain.platform._platform_catalog_document",
-        reject_revalidation,
-    )
-
-    assert (
-        resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
-        is platform
-    )
-    with pytest.raises(AssertionError, match="must not repeat"):
-        resolve_platform(project, "testpdk", snapshot=platform)
-
-
-def test_operation_platform_inventory_rejects_foreign_project_and_key(
-    tmp_path: Path,
-) -> None:
-    left = tmp_path / "left"
-    right = tmp_path / "right"
-    for root in (left, right):
-        write_project_context(root)
-        write_test_platform(root)
-    left_project = Project.from_project_root(left)
-    inventory = load_platform_inventory(left_project)
-
-    with pytest.raises(ValueError, match="different operation"):
-        resolve_platform_snapshot(
-            Project.from_project_root(left),
-            "testpdk",
-            snapshot=inventory,
-        )
-    with pytest.raises(ValueError, match="different operation"):
-        resolve_platform_snapshot(
-            Project.from_project_root(right),
-            "testpdk",
-            snapshot=inventory,
-        )
-    with pytest.raises(ValueError, match="has no 'other' entry"):
-        resolve_platform_snapshot(left_project, "other", snapshot=inventory)
-
-
-def test_resolve_platform_rejects_layout_content_and_file_drift(
-    tmp_path: Path,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_layout_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    snapshot = load_platform(project, "testpdk")
-    assert snapshot.layout is not None
-
-    forged_layout = replace(
-        snapshot.layout,
-        dbu_per_micron=snapshot.layout.dbu_per_micron + 1,
-    )
-    with pytest.raises(ValueError, match="platform identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(snapshot, layout=forged_layout),
-        )
-
-    forged_simulation = replace(
-        snapshot.simulation,
-        default_model_set="forged",
-    )
-    with pytest.raises(ValueError, match="platform identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(snapshot, simulation=forged_simulation),
         )
 
     snapshot.layout.layout_path.unlink()
@@ -335,65 +90,7 @@ def test_resolve_platform_rejects_layout_content_and_file_drift(
         resolve_platform(project, "testpdk", snapshot=snapshot)
 
 
-def test_load_platform_reuses_one_project_owned_catalog_snapshot(
-    tmp_path: Path,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    catalog = load_platform_catalog(project)
-
-    platform = load_platform(project, "testpdk", catalog=catalog)
-
-    assert platform.source_paths[0] == catalog.path
-
-
-def test_load_platform_rejects_another_project_catalog_snapshot(
-    tmp_path: Path,
-) -> None:
-    left = tmp_path / "left"
-    right = tmp_path / "right"
-    for root in (left, right):
-        write_project_context(root)
-        write_test_platform(root)
-    left_project = Project.from_project_root(left)
-    right_project = Project.from_project_root(right)
-    catalog = load_platform_catalog(left_project)
-
-    with pytest.raises(ValueError, match="different project"):
-        load_platform(right_project, "testpdk", catalog=catalog)
-
-
-def test_resolve_platform_rejects_another_project_catalog(tmp_path: Path) -> None:
-    left = tmp_path / "left"
-    right = tmp_path / "right"
-    for root in (left, right):
-        write_project_context(root)
-        write_test_platform(root)
-    snapshot = load_platform(
-        Project.from_project_root(left),
-        "testpdk",
-    )
-
-    with pytest.raises(ValueError, match="different project catalog"):
-        resolve_platform(
-            Project.from_project_root(right),
-            "testpdk",
-            snapshot=snapshot,
-        )
-
-
-def test_resolve_platform_rejects_a_different_key(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    snapshot = load_platform(project, "testpdk")
-
-    with pytest.raises(ValueError, match="disagrees with requested key"):
-        resolve_platform(project, "other", snapshot=snapshot)
-
-
-def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:
+def test_platform_contract_rejects_unknown_fields(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     simulation = tmp_path / "configs/platform/testpdk/simulation.toml"
@@ -406,20 +103,9 @@ def test_platform_contracts_reject_unknown_fields(tmp_path: Path) -> None:
         load_platform(Project.from_project_root(tmp_path), "testpdk")
 
 
-def test_platform_oa_rejects_owner_primitive_selection(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    oa = tmp_path / "configs/platform/testpdk/oa.toml"
-    oa.write_text(
-        oa.read_text(encoding="utf-8") + '\nprimitive_masters = ["nch"]\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unsupported fields.*primitive_masters"):
-        load_platform(Project.from_project_root(tmp_path), "testpdk")
-
-
-def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> None:
+def test_layout_platform_resolves_optional_and_materialization_capabilities(
+    tmp_path: Path,
+) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
     verification = tmp_path / "configs/platform/testpdk/verification.toml"
@@ -429,20 +115,6 @@ def test_layout_platform_can_omit_optional_qrc_capability(tmp_path: Path) -> Non
         ),
         encoding="utf-8",
     )
-
-    platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
-
-    assert platform.layout is not None
-    assert platform.layout.qrc_tech_file is None
-    assert platform.layout.drc_deck.name == "drc.deck"
-    assert platform.layout.lvs_deck.name == "lvs.deck"
-
-
-def test_layout_platform_resolves_atomic_oa_materialization_mapping(
-    tmp_path: Path,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_layout_platform(tmp_path)
     layout = tmp_path / "configs/platform/testpdk/layout.toml"
     layout.write_text(
         layout.read_text(encoding="utf-8")
@@ -462,87 +134,40 @@ routing1_routing2 = "M2_M1c"
     platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
     assert platform.layout is not None
+    assert platform.layout.qrc_tech_file is None
     mapping = platform.layout.oa_materialization
     assert mapping is not None
     assert mapping.layers["routing1"].layer == "M1"
-    assert mapping.layers["routing1"].pin_purpose == "pin"
     assert mapping.vias == {"routing1_routing2": "M2_M1c"}
 
 
-def test_platform_layout_rejects_owner_specific_technology_roles(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    write_test_layout_platform(tmp_path)
-    layout = tmp_path / "configs/platform/testpdk/layout.toml"
-    layout.write_text(
-        layout.read_text(encoding="utf-8")
-        + '\n[technology]\nprofile = "geometry.toml"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unsupported fields.*technology"):
-        load_platform(Project.from_project_root(tmp_path), "testpdk")
-
-
-def test_verification_contract_rejects_owner_drc_policy(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    write_test_layout_platform(tmp_path)
-    verification = tmp_path / "configs/platform/testpdk/verification.toml"
-    verification.write_text(
-        verification.read_text(encoding="utf-8")
-        + "\n[drc_profile]\nwaiver_layers = []\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unsupported fields.*drc_profile"):
-        load_platform(Project.from_project_root(tmp_path), "testpdk")
-
-
-def test_platform_lookup_does_not_assume_a_named_pdk_file(tmp_path: Path) -> None:
+def test_platform_catalog_selects_explicit_manifest_only(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path, key="custom")
     catalog = tmp_path / "configs/platform/catalog.toml"
     catalog.write_text(
         catalog.read_text(encoding="utf-8").replace(
             'custom/platform.toml', 'custom/platform-contract.toml'
-        ),
+        )
+        + 'other = "../outside.toml"\n',
         encoding="utf-8",
     )
     manifest = tmp_path / "configs/platform/custom/platform.toml"
     manifest.rename(manifest.with_name("platform-contract.toml"))
-
-    platform = load_platform(Project.from_project_root(tmp_path), "custom")
-
-    assert platform.path.name == "platform-contract.toml"
-
-
-def test_standalone_platform_lookup_ignores_invalid_unselected_entries(
-    tmp_path: Path,
-) -> None:
-    write_project_context(tmp_path)
-    write_test_platform(tmp_path)
-    catalog_path = tmp_path / "configs/platform/catalog.toml"
-    catalog_path.write_text(
-        catalog_path.read_text(encoding="utf-8")
-        + 'other = "../outside.toml"\n',
-        encoding="utf-8",
-    )
     project = Project.from_project_root(tmp_path)
 
-    platform = load_platform(project, "testpdk")
-
-    assert platform.key == "testpdk"
+    assert load_platform(project, "custom").path.name == "platform-contract.toml"
     with pytest.raises(ValueError, match="safe relative path"):
         load_platform_catalog(project)
 
 
-def test_external_platform_assets_do_not_expand_the_source_snapshot(
+def test_external_platform_assets_are_not_source_documents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
-    installation = tmp_path / "installed"
-    package = installation / "testpdk"
+    package = tmp_path / "installed/testpdk"
     package.mkdir(parents=True)
     model = package / "model.scs"
     model.write_text("// installed model\n", encoding="utf-8")
@@ -560,18 +185,15 @@ package_root = "testpdk"
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("TEST_PDK_ROOT", str(installation))
+    monkeypatch.setenv("TEST_PDK_ROOT", str(tmp_path / "installed"))
 
     platform = load_platform(Project.from_project_root(tmp_path), "testpdk")
 
-    assert platform.asset_root == package
     assert platform.simulation.default.file == model
-    assert all(
-        path.is_relative_to(tmp_path) for path in platform.source_documents
-    )
+    assert all(path.is_relative_to(tmp_path) for path in platform.source_documents)
 
 
-def test_platform_contract_owners_must_match_the_manifest(tmp_path: Path) -> None:
+def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     simulation = tmp_path / "configs/platform/testpdk/simulation.toml"

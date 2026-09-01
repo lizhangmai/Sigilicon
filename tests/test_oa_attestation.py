@@ -121,33 +121,6 @@ def test_calculator_comparison_normalizes_cadence_numeric_spelling_only() -> Non
     ) == _normalize_calculator_expression(dynamic_cadence)
 
 
-def test_attestation_rows_are_structured_without_python_setup_parsing() -> None:
-    observations = _parse_rows(
-        "\n".join(
-            (
-                "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
-                "BIND||DUT0|fixture_lib|dut|schematic|true|true|true|fixture_lib|dut|schematic|1",
-                "TEST|tran_main|fixture_lib|tb_main|config|spectre|active|$AXL",
-                "ANALYSIS|tran_main|tran|tran",
-                "ENV|tran_main|modelFiles|((toplevel.scs top_tt))",
-                "OUTPUT|tran_main|wave|net|/OUT|||true|false|undefined",
-                'OUTPUT|tran_main|scalar|point||value(VT("/OUT") 1u)||true|true|undefined',
-                "MODEL|tt|toplevel.scs|/pdk/toplevel.scs|top_tt",
-                "SPEC_OVERALL|tran_main|undefined",
-                "SESSION|before|nil",
-                "SESSION|opened|fnxSession1",
-                "SESSION|closed|nil",
-                "PERSISTENCE|tests|1|setup=(tran_main)",
-            )
-        )
-    )
-
-    assert observations["config"]["top_view"] == "schematic"
-    assert observations["bindings"][0]["bound_cell"] == "dut"
-    assert observations["outputs"][1]["expression"] == 'value(VT("/OUT") 1u)'
-    assert observations["sessions"][-1]["state"] == "closed"
-
-
 def test_bridge_quoted_attestation_fixture_decodes_before_row_parsing() -> None:
     fixture = Path(__file__).parent / "fixtures" / "oa_native_attestation_output.txt"
     decoded = decode_skill_output(fixture.read_text(encoding="utf-8"))

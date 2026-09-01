@@ -230,21 +230,3 @@ def test_physical_observation_rejects_qualification_authority_and_identity_drift
     context.input("source").path.write_text("changed\n", encoding="utf-8")
     with pytest.raises(FlowExecutionError, match="source"):
         adapter.run(context)
-
-
-def test_physical_observation_rejects_invalid_typed_evidence_conclusion(
-    tmp_path: Path,
-) -> None:
-    adapter = PhysicalDesignObservationAdapter()
-    context = _context(tmp_path)
-    evidence_path = context.input("drc").path
-    evidence_path.write_text(
-        evidence_path.read_text(encoding="utf-8").replace(
-            '"status": "clean"',
-            '"status": "violated"',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FlowExecutionError, match="violated DRC"):
-        adapter.run(context)

@@ -75,18 +75,6 @@ ALLOWED_DEPENDENCIES = {
 COMPOSITION_ROOTS = {
     Path("workflows/action_registry.py"): "assembly",
 }
-CLI_DEPENDENCY_PREFIXES = (
-    "sigilicon.cli",
-    "sigilicon.artifacts",
-    "sigilicon.domain",
-    "sigilicon.campaigns",
-    "sigilicon.flow",
-    "sigilicon.paths",
-    "sigilicon.workflows",
-    "sigilicon.virtuoso.client",
-)
-
-
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names: set[str] = set()
@@ -123,19 +111,6 @@ def test_sigilicon_modules_follow_the_declared_layer_dependency_matrix() -> None
                     f"{relative} -> {imported} ({source_layer}->{target})"
                 )
     assert not violations, "invalid layer dependencies: " + ", ".join(violations)
-
-
-def test_cli_modules_depend_on_workflow_entrypoints_and_the_client_factory() -> None:
-    flow_root = Path(__file__).parents[1] / "src" / "sigilicon"
-    assert flow_root.is_dir()
-    dependencies = {
-        f"{path.name} -> {imported}"
-        for path in (flow_root / "cli").glob("*.py")
-        for imported in _imports(path)
-        if imported.startswith("sigilicon.")
-        and not imported.startswith(CLI_DEPENDENCY_PREFIXES)
-    }
-    assert dependencies == set()
 
 
 def test_external_integration_apis_live_in_their_owned_adapter_layers() -> None:

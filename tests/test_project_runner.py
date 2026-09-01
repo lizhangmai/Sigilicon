@@ -17,7 +17,6 @@ from sigilicon.flow import (
     FactSet,
     FactSource,
     FactSpec,
-    FlowExecutionError,
     FlowRegistry,
 )
 from sigilicon.execution import RunStoreError
@@ -107,17 +106,6 @@ def _write_project(root: Path) -> tuple[Project, Path, Path, Path]:
         encoding="utf-8",
     )
     return Project.from_project_root(root), targets, recipe, implementation
-
-
-def test_project_rejects_removed_registry_extension_schema(tmp_path: Path) -> None:
-    contract = write_project_context(tmp_path)
-    contract.write_text(
-        contract.read_text(encoding="utf-8") + "\n[flow.registry_extensions]\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"unknown fields.*registry_extensions"):
-        Project.from_project_root(tmp_path)
 
 
 class _SimpleDesignPlan:
@@ -354,23 +342,6 @@ def test_project_execution_owns_preflight_run_restore_read_and_clean_lifecycle(
         )
 
 
-def test_project_execution_identity_is_deterministic_plan_digest(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project, _targets, _recipe, implementation = _write_project(tmp_path)
-    _install_simple_design_seam(monkeypatch, project, implementation)
-
-    first = ProjectRunner(project, "example").plan("smoke", "check")
-    second = ProjectRunner(project, "example").plan("smoke", "check")
-
-    assert first.plan_identity == second.plan_identity
-    assert re.fullmatch(r"sha256-[0-9a-f]{64}", first.plan_identity)
-    assert first.owner == "example"
-    assert first.target == "smoke"
-    assert first.operation == "check"
-
-
 def test_project_runner_retains_exact_target_and_recipe_sources_for_preflight_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -406,26 +377,3 @@ def test_project_runner_retains_exact_target_and_recipe_sources_for_preflight_dr
             )
         finally:
             source.write_text(original, encoding="utf-8")
-
-
-def test_project_runner_has_no_legacy_request_flow_execution_or_profile_catalog_surface(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project, _targets, _recipe, implementation = _write_project(tmp_path)
-    _install_simple_design_seam(monkeypatch, project, implementation)
-    runner = ProjectRunner(project, "example")
-    execution = runner.plan("smoke", "check")
-
-    assert set(project_runner_module.__all__) == {
-        "ProjectRunner",
-        "ProjectExecution",
-    }
-    assert not hasattr(project_runner_module, "RunRequest")
-    assert not hasattr(project_runner_module, "FlowExecution")
-    assert not hasattr(ProjectRunner, "catalog")
-    assert not hasattr(ProjectRunner, "profile")
-    assert not hasattr(execution, "flow")
-    assert not hasattr(execution, "profile")
-    assert not hasattr(execution, "plan")
-    assert not hasattr(execution, "engine")

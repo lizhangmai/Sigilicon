@@ -9,7 +9,6 @@ import pytest
 import sigilicon.workflows.agentic_runs as agentic_runs_module
 import sigilicon.workflows.agentic_execution as agentic_execution_module
 
-from sigilicon.cli.agentic_execute import main as agentic_execute_cli_main
 from sigilicon.domain.agentic_execution import (
     AGENTIC_EXECUTION_GRANT_KIND,
     AgenticExecutionBudget,
@@ -139,12 +138,10 @@ def test_execution_grant_is_canonical_strict_and_time_bounded(tmp_path: Path) ->
     assert not expired.valid_at(datetime.now(timezone.utc))
 
 
-def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) -> None:
+def test_execution_records_one_durable_plan_and_public_result(tmp_path: Path) -> None:
     write_read_only_flow_project(tmp_path)
     plan_identity = _plan_identity(tmp_path)
     grant = _grant(tmp_path, plan_identity)
-    grant_path = tmp_path / "grant.json"
-    grant_path.write_text(grant.canonical_json(), encoding="utf-8")
     grant_record = json.loads(grant.canonical_json())
     assert "plan_identity" in grant_record["approved_plans"][0]
     assert "plan_id" not in grant_record["approved_plans"][0]
@@ -185,33 +182,11 @@ def test_python_and_cli_execute_the_same_durable_plan(tmp_path: Path, capsys) ->
     )
     assert duplicate == result
 
-    assert agentic_execute_cli_main(
-        [
-            "--project-root",
-            str(tmp_path),
-            "--grant",
-            str(grant_path),
-            "target-run",
-            plan_identity,
-            "--maximum-seconds",
-            "30",
-            "--maximum-nodes",
-            "1",
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == result
-
     (tmp_path / "ip/example/configs/flows/pipeline.toml").unlink()
     (tmp_path / "ip/example/configs/targets.toml").unlink()
-    assert agentic_execute_cli_main(
-        [
-            "--project-root",
-            str(tmp_path),
-            "run-inspect",
-            result["data"]["management"]["run_id"],
-        ]
-    ) == 0
-    inspected = json.loads(capsys.readouterr().out)
+    inspected = interface.inspect_run(
+        run_id=result["data"]["management"]["run_id"]
+    )
     assert inspected["operation"] == "run.inspect"
     assert inspected["data"] == result["data"]
 

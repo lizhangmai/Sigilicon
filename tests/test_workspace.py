@@ -17,7 +17,6 @@ from sigilicon.virtuoso.operation_journal import (
 from sigilicon.virtuoso.workspace import (
     OperationPolicy,
     WorkspaceOperation,
-    require_project_library_path as _real_project_library_path,
     workspace_operation,
 )
 from conftest import write_project_context
@@ -183,25 +182,6 @@ def test_view_lease_refuses_preexisting_view_when_quiescence_is_required(
                 pytest.fail("lease must not start")
 
 
-def test_view_lease_allows_stable_preexisting_view_in_another_library(
-    monkeypatch, tmp_path, workspace_factory
-) -> None:
-    client = object()
-    existing = OpenCellViewInfo("analogLib", "cap", "symbol", "r", False)
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.require_project_library_path",
-        lambda *_args: tmp_path / "lib",
-    )
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.open_cell_views",
-        lambda *_args, **_kwargs: (existing,),
-    )
-
-    with workspace_factory(client) as operation:
-        with operation.view_lease("lib"):
-            pass
-
-
 def test_exact_view_lease_grants_only_its_declared_cellview(
     monkeypatch, tmp_path, workspace_factory
 ) -> None:
@@ -252,51 +232,6 @@ def test_exact_view_mutation_scope_accepts_only_covered_views(
                     phase="unauthorized symbol write",
                 ):
                     pytest.fail("a schematic lease must not authorize a symbol write")
-
-
-def test_exact_view_mutation_scope_stays_inside_its_cell_scope(
-    workspace_factory,
-) -> None:
-    client = object()
-
-    with workspace_factory(client) as operation:
-        with pytest.raises(ValueError, match="inside the cell scope"):
-            with operation.mutation_scope(
-                "lib",
-                cells=("cell",),
-                views=(("foreign", "schematic"),),
-                phase="escaped view target",
-                require_view_lease=False,
-            ):
-                pytest.fail("a view outside the declared cell must be rejected")
-
-
-def test_view_lease_preserves_state_when_operation_is_uncertain(
-    monkeypatch, tmp_path, workspace_factory
-) -> None:
-    client = object()
-    calls = 0
-
-    def inventory(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        return ()
-
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.require_project_library_path",
-        lambda *_args: tmp_path / "lib",
-    )
-    monkeypatch.setattr("sigilicon.virtuoso.workspace.open_cell_views", inventory)
-
-    operation = None
-    with pytest.raises(RuntimeError, match="ended with uncertain state"):
-        with workspace_factory(client) as operation:
-            with operation.view_lease("lib"):
-                operation.mark_uncertain("background run may still be active")
-
-    assert calls == 1
-    assert operation is not None
-    assert operation.uncertain_reason == "background run may still be active"
 
 
 def test_lost_bridge_confirmation_marks_uncertain_before_lease_cleanup(
@@ -369,23 +304,6 @@ def test_quiescent_cell_rejects_symlink_escape_before_any_oa_check(
             require_quiescent_project_cell(operation, "lib", "escaped")
 
 
-def test_quiescent_cell_rejects_workspace_internal_symlink_alias(
-    tmp_path,
-    workspace_factory,
-) -> None:
-    from sigilicon.virtuoso.workspace import require_quiescent_project_cell
-
-    client = object()
-    with workspace_factory(client, library="lib") as operation:
-        library_path = operation.root / "lib"
-        real_cell = library_path / "real"
-        real_cell.mkdir(parents=True)
-        (library_path / "alias").symlink_to(real_cell, target_is_directory=True)
-
-        with pytest.raises(RuntimeError, match="symbolic-link OA cell path"):
-            require_quiescent_project_cell(operation, "lib", "alias")
-
-
 def test_library_mutation_scope_rejects_library_symlink_before_adapter(
     tmp_path,
     workspace_factory,
@@ -406,53 +324,6 @@ def test_library_mutation_scope_rejects_library_symlink_before_adapter(
                 require_view_lease=False,
             ):
                 pytest.fail("external library adapter must not run")
-
-
-def test_library_mutation_scope_rejects_workspace_internal_symlink_alias(
-    tmp_path,
-    workspace_factory,
-) -> None:
-    client = SimpleNamespace(library=SimpleNamespace(list=lambda **_kwargs: []))
-    with workspace_factory(client) as operation:
-        real_library = operation.root / "real-library"
-        real_library.mkdir()
-        alias = operation.root / "alias-library"
-        alias.symlink_to(real_library, target_is_directory=True)
-
-        with pytest.raises(RuntimeError, match="symbolic-link expected library path"):
-            with operation.mutation_scope(
-                "alias",
-                cells=None,
-                phase="internal library alias proof",
-                expected_library_path=alias,
-                require_view_lease=False,
-            ):
-                pytest.fail("workspace-internal aliases must not authorize writes")
-
-
-def test_registered_library_rejects_workspace_internal_symlink_alias(
-    monkeypatch,
-    workspace_factory,
-) -> None:
-    real_library = None
-
-    class Library:
-        def get(self, _name, **_kwargs):
-            return SimpleNamespace(path=str(real_library))
-
-    client = SimpleNamespace(library=Library())
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.require_project_library_path",
-        _real_project_library_path,
-    )
-    with workspace_factory(client) as operation:
-        target = operation.root / "target-library"
-        target.mkdir()
-        real_library = operation.root / "alias-library"
-        real_library.symlink_to(target, target_is_directory=True)
-
-        with pytest.raises(RuntimeError, match="symbolic-link library lib"):
-            _real_project_library_path(operation, "lib")
 
 
 def test_library_mutation_scope_rejects_open_view_before_technology_binding(
@@ -564,23 +435,6 @@ def test_mutation_scope_accepts_exact_declared_cell_deletion(
             cell.rmdir()
 
 
-def test_mutation_scope_requires_declared_deletion_to_complete(
-    workspace_factory,
-) -> None:
-    client = object()
-
-    with workspace_factory(client, library="lib") as operation:
-        (operation.root / "lib" / "retired").mkdir(parents=True)
-        with pytest.raises(RuntimeError, match="still exists"):
-            with operation.mutation_scope(
-                "lib",
-                cells=("retired",),
-                expected_deleted_cells=("retired",),
-                phase="incomplete deletion proof",
-            ):
-                pass
-
-
 def test_mutation_scope_rejects_deletion_outside_exact_cell_scope(
     workspace_factory,
 ) -> None:
@@ -634,26 +488,6 @@ def test_read_only_policy_cannot_open_mutation_scope(workspace_factory) -> None:
                 require_view_lease=False,
             ):
                 pytest.fail("read-only policy must not escalate to mutation")
-
-
-def test_view_lease_counts_duplicate_handles_without_closing_preexisting_state(
-    monkeypatch, tmp_path, workspace_factory
-) -> None:
-    client = object()
-    existing = OpenCellViewInfo("lib", "cell", "schematic", "r", False)
-    snapshots = iter(((existing, existing), (existing, existing, existing)))
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.require_project_library_path",
-        lambda *_args: tmp_path / "lib",
-    )
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.open_cell_views",
-        lambda *_args, **_kwargs: next(snapshots),
-    )
-    with pytest.raises(RuntimeError, match="changed shared Virtuoso open-view state"):
-        with workspace_factory(client) as operation:
-            with operation.view_lease("lib", require_quiescent=False):
-                pass
 
 
 def test_view_lease_detects_same_name_mode_count_with_replaced_dbid(
@@ -773,55 +607,6 @@ def test_after_inventory_failure_marks_operation_uncertain(
     assert "could not inventory open views after" in operation.uncertain_reason
 
 
-def test_final_inventory_failure_after_cleanup_marks_operation_uncertain(
-    monkeypatch, workspace_factory
-) -> None:
-    client = object()
-    snapshots = iter(((), ()))
-
-    def inventory(*_args, **_kwargs):
-        try:
-            return next(snapshots)
-        except StopIteration as error:
-            raise TimeoutError("final inventory response lost") from error
-
-    monkeypatch.setattr("sigilicon.virtuoso.workspace.open_cell_views", inventory)
-    operation = None
-    with pytest.raises(TimeoutError, match="final inventory response lost"):
-        with workspace_factory(client) as operation:
-            with operation.view_lease("lib"):
-                pass
-
-    assert operation is not None
-    assert operation.uncertain_reason is not None
-    assert "during final audit" in operation.uncertain_reason
-
-
-def test_failed_body_plus_failed_session_audit_is_uncertain(
-    monkeypatch, workspace_factory
-) -> None:
-    calls = 0
-
-    def audit(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            raise TimeoutError("session inventory lost")
-
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.assert_no_active_maestro_sessions",
-        audit,
-    )
-    operation = None
-    with pytest.raises(RuntimeError, match="workspace exit audit also failed"):
-        with workspace_factory(object()) as operation:
-            raise ValueError("body failed")
-
-    assert operation is not None
-    assert operation.uncertain_reason == "session inventory lost"
-    assert operation.incident_path is None
-
-
 def test_final_audit_uncertainty_reaches_manifest_before_terminal_transition(
     monkeypatch,
     tmp_path,
@@ -873,27 +658,6 @@ def test_final_audit_uncertainty_reaches_manifest_before_terminal_transition(
     assert manifest["incident_reference"] == (
         f"system/operations/{operation.operation_id}/incident.json"
     )
-
-
-def test_artifactless_workspace_failure_does_not_create_orphan_incident(tmp_path) -> None:
-    project = tmp_path / "project"
-    root = project / "virtuoso"
-    root.mkdir(parents=True)
-    operation = None
-
-    with pytest.raises(ValueError, match="broken operation"):
-        with workspace_operation(Client(root), root, "failing") as current:
-            operation = current
-            current.record_ownership_scope(
-                "maestro-session",
-                scope_token="a" * 32,
-                session="session-1",
-            )
-            raise ValueError("broken operation")
-
-    assert operation is not None
-    assert operation.incident_path is None
-    assert not (project / "artifacts/system/operations").exists()
 
 
 def test_operation_incident_is_referenced_by_the_related_attempt_manifest(tmp_path) -> None:

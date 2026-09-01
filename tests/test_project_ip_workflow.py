@@ -3,11 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from sigilicon.domain.repository import Project
 from sigilicon.workflows import ip_integration
-from sigilicon.workflows.project_oa import ProjectOaWorkflow
 
 from conftest import write_component_owner, write_project_context
 
@@ -30,25 +27,6 @@ owner = "fixture"
         filesets={"oa_source": ("ip/fixture/configs/oa.toml",)},
     )
     return Project.from_file(project_contract), component
-
-
-def test_project_oa_workflow_exposes_one_public_project(tmp_path: Path) -> None:
-    project, _component = _project(tmp_path)
-
-    workflow = ProjectOaWorkflow(project, "fixture")
-
-    assert workflow.project is project
-    assert workflow.owner.name == "fixture"
-
-
-def test_project_oa_workflow_requires_one_owner_assembly(tmp_path: Path) -> None:
-    root = tmp_path / "without-oa"
-    project_contract = write_project_context(root)
-    write_component_owner(root, "rtl-only", filesets={})
-    project = Project.from_file(project_contract)
-
-    with pytest.raises(ValueError, match="has no OA assembly"):
-        ProjectOaWorkflow(project, "rtl-only")
 
 
 def test_project_ip_catalog_reuses_bound_project(

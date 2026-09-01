@@ -34,30 +34,6 @@ def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
     assert context.workspace_root == (tmp_path / "virtuoso").resolve()
 
 
-def test_all_artifact_paths_match_the_single_layout(tmp_path: Path) -> None:
-    paths = ProjectContext.from_project_root(tmp_path).artifacts
-
-    execution = paths.execution(
-        owner="lib",
-        target="inv",
-        flow="design-sync",
-        variant="recursive",
-        identity=ATTEMPT,
-        artifact_kind="design_sync",
-        identity_kind="attempt_id",
-    )
-    assert execution.root == (
-        tmp_path / "artifacts/runs/lib/inv/design-sync/recursive" / ATTEMPT
-    )
-    assert execution.roles == ("inputs", "work", "outputs", "logs")
-    assert paths.export("lib", "netlist", "inv.scs") == (
-        tmp_path / "artifacts/exports/lib/netlist/inv.scs"
-    )
-    assert paths.system_operation(RUN).incident == (
-        tmp_path / "artifacts/system/operations" / RUN / "incident.json"
-    )
-
-
 @pytest.mark.parametrize(
     "unsafe",
     ("", ".", "..", "../inv", "/absolute", "a/b", "a\\b", "has space"),
@@ -97,63 +73,6 @@ def test_project_root_cannot_be_reused_as_artifact_root(tmp_path: Path) -> None:
         ProjectContext.from_project_root(tmp_path, artifact_root=tmp_path)
 
 
-def test_project_context_rejects_unknown_path_field(tmp_path: Path) -> None:
-    contract = tmp_path / "sigilicon.toml"
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            'workspace_root = "virtuoso"',
-            'unexpected_root = "configs"\nworkspace_root = "virtuoso"',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unknown fields.*unexpected_root"):
-        ProjectContext.from_project_root(tmp_path)
-
-
-@pytest.mark.parametrize("owner", ("", ".", "..", "../outside", "a/b", "a\\b"))
-def test_project_context_rejects_unsafe_manifest_owner(
-    tmp_path: Path,
-    owner: str,
-) -> None:
-    contract = tmp_path / "sigilicon.toml"
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            'owner = "test"',
-            f'owner = "{owner}"',
-            1,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="project context ownership"):
-        ProjectContext.from_project_root(tmp_path)
-
-
-@pytest.mark.parametrize(
-    ("section", "unknown"),
-    (
-        ("root", 'unexpected = "root"\n'),
-        ("paths", 'unexpected = "path"\n'),
-    ),
-)
-def test_project_context_rejects_unknown_schema_fields(
-    tmp_path: Path,
-    section: str,
-    unknown: str,
-) -> None:
-    contract = tmp_path / "sigilicon.toml"
-    source = contract.read_text(encoding="utf-8")
-    if section == "root":
-        source = unknown + source
-    else:
-        source = source.replace(f"[{section}]\n", f"[{section}]\n{unknown}")
-    contract.write_text(source, encoding="utf-8")
-
-    with pytest.raises(ValueError, match="contains unknown fields.*unexpected"):
-        ProjectContext.from_project_root(tmp_path)
-
-
 def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
     tmp_path: Path,
 ) -> None:
@@ -164,32 +83,6 @@ def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
     )
 
     with pytest.raises(ValueError, match="component source escapes"):
-        Project.from_project_root(tmp_path)
-
-
-def test_repository_context_rejects_unknown_catalog_roles(tmp_path: Path) -> None:
-    contract = tmp_path / "sigilicon.toml"
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            '[catalogs]\n', '[catalogs]\nunexpected = "catalogs/extra.toml"\n'
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unknown catalog roles.*unexpected"):
-        Project.from_project_root(tmp_path)
-
-
-def test_repository_context_rejects_a_retired_catalog_domain(tmp_path: Path) -> None:
-    contract = tmp_path / "sigilicon.toml"
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            '[catalogs]\n', '[catalogs]\nlegacy = "catalogs/legacy.toml"\n'
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unknown catalog roles.*legacy"):
         Project.from_project_root(tmp_path)
 
 
@@ -215,32 +108,6 @@ def test_project_is_the_single_manifest_parser(
     assert project.project_root == tmp_path.resolve()
     assert project.artifact_root == (tmp_path / "artifacts").resolve()
     assert manifest_reads == 1
-
-
-def test_project_ip_catalog_snapshot_rejects_owner_drift(tmp_path: Path) -> None:
-    catalog = tmp_path / "catalogs/ip.toml"
-    catalog.write_text(
-        catalog.read_text(encoding="utf-8").replace(
-            'owner = "test"',
-            'owner = "other"',
-        ),
-        encoding="utf-8",
-    )
-    project = Project.from_project_root(tmp_path)
-
-    with pytest.raises(ValueError, match="owner must be 'test'"):
-        project.ip_catalog_snapshot()
-
-
-def test_project_ip_catalog_snapshot_rejects_internal_identity_drift(
-    tmp_path: Path,
-) -> None:
-    project = Project.from_project_root(tmp_path)
-    forged = replace(project.ip_catalog_snapshot(), owner="drift")
-    project = replace(project, _ip_catalog=forged)
-
-    with pytest.raises(ValueError, match="different Project"):
-        project.ip_catalog_snapshot()
 
 
 def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:

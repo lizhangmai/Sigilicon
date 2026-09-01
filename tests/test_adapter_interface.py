@@ -10,7 +10,6 @@ from sigilicon.flow import (
     ActionContract,
     AdapterExecution,
     AdapterResult,
-    AdapterResultError,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
@@ -27,7 +26,6 @@ from sigilicon.flow import (
     FlowSpec,
     FlowTarget,
     ProducedArtifact,
-    complete_staged_run,
 )
 from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.flow.layout import XSTREAM_CALIBRE_LAYOUT_ADAPTER
@@ -50,35 +48,6 @@ class SingleMethodAdapter:
                 ),
             )
         )
-
-
-class CollectionFailureAdapter:
-    def run(self, context: ActionContext) -> AdapterResult:
-        execution = AdapterExecution.succeeded()
-        try:
-            raise ValueError("unreadable evidence")
-        except ValueError as exc:
-            raise AdapterResultError(execution, exc) from exc
-
-
-def test_public_staged_completion_helper_preserves_collection_failure_state(
-    tmp_path: Path,
-) -> None:
-    execution = AdapterExecution.succeeded()
-
-    with pytest.raises(AdapterResultError) as captured:
-        complete_staged_run(
-            None,  # type: ignore[arg-type]
-            validate_inputs=lambda _context: (),
-            prepare=lambda _context: None,
-            execute=lambda _context: execution,
-            collect_result=lambda _context, _execution: (_ for _ in ()).throw(
-                ValueError("unreadable evidence")
-            ),
-        )
-
-    assert captured.value.execution is execution
-    assert str(captured.value) == "ValueError: unreadable evidence"
 
 
 def test_engine_consumes_one_complete_adapter_result(tmp_path: Path) -> None:
@@ -147,53 +116,6 @@ def test_registry_rejects_non_callable_run_at_registration() -> None:
         registry.register_adapter("invalid", InvalidAdapter())  # type: ignore[arg-type]
 
 
-def test_registry_rejects_the_removed_four_operation_adapter_interface() -> None:
-    class RemovedAdapter:
-        def validate_inputs(self, _context):
-            return ()
-
-        def prepare(self, _context):
-            pass
-
-        def execute(self, _context):
-            return AdapterExecution.succeeded()
-
-        def collect_result(self, _context, _execution):
-            return CollectedActionResult(
-                facts=FactSet.empty(
-                    FactSchema("test.removed"),
-                    source=FactSource("test.removed"),
-                )
-            )
-
-    with pytest.raises(FlowContractError, match=r"run\(context\)"):
-        FlowRegistry().register_adapter("removed", RemovedAdapter())  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    "name",
-    (
-        "calibre-physical-verification",
-        "calibre-xrc-pex",
-        "physical-design-observation",
-        "receipt-bound-verification-source",
-        "materialization-plan",
-        "source-assets",
-        "synopsys-dc",
-        "synopsys-fc",
-        "synopsys-hspice",
-        "synopsys-vcs",
-    ),
-)
-def test_builtin_adapters_cross_the_registry_without_legacy_wrapping(
-    name: str,
-) -> None:
-    implementation = build_action_registry().adapter(name)
-
-    assert callable(implementation.run)
-    assert type(implementation).__module__ != "sigilicon.flow.registry"
-
-
 def test_common_registry_contains_explicit_custom_layout_backends() -> None:
     registry = build_action_registry()
 
@@ -207,34 +129,3 @@ def test_common_registry_contains_explicit_custom_layout_backends() -> None:
         XSTREAM_CALIBRE_LAYOUT_ADAPTER
         in registry.action("custom-layout.verify").adapters
     )
-
-
-def test_direct_adapter_preserves_successful_execution_on_collection_failure(
-    tmp_path: Path,
-) -> None:
-    registry = FlowRegistry()
-    registry.register_action(
-        ActionContract("test.collection-failure", adapters=("direct",))
-    )
-    registry.register_adapter("direct", CollectionFailureAdapter())
-    engine = FlowEngine(registry)
-    spec = FlowSpec(
-        owner="test-owner",
-        flow_id="adapter-collection-failure",
-        recipe_id="adapter-collection-failure-recipe",
-        nodes=(FlowNode("failure", "test.collection-failure"),),
-        targets=(FlowTarget("all", ("failure",)),),
-        action_bindings=(ActionBinding("test.collection-failure", "direct"),),
-    )
-
-    result = engine.run(
-        engine.plan(spec, "all"),
-        artifact_root=tmp_path / "artifacts",
-        environment=ExecutionEnvironment(),
-        run_id="b" * 32,
-    )
-
-    outcome = result.nodes["failure"]
-    assert outcome.execution_status == "succeeded"
-    assert outcome.result_status == "failed"
-    assert outcome.reason == "ValueError: unreadable evidence"

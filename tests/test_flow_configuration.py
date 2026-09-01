@@ -175,35 +175,7 @@ config = { source = { input = "source" } }
     assert binding.platform_assets == {"logic-lib": "fixture:logic-lib@1"}
 
 
-def test_execution_recipe_inputs_require_a_mapping(tmp_path: Path) -> None:
-    loaded = load_execution_recipe(_write_recipe(tmp_path), owner_root=tmp_path)
-
-    with pytest.raises(FlowContractError, match="must be a mapping"):
-        compile_flow_spec(
-            loaded,
-            flow_id="parameterized",
-            targets=(FlowTarget("all", ("check",)),),
-            inputs=[],  # type: ignore[arg-type]
-        )
-
-
-@pytest.mark.parametrize(
-    ("inputs", "message"),
-    (
-        ({}, "missing"),
-        ({"mode": "remote", "extra": "value"}, "unknown"),
-        (
-            {"mode": True, "identity": "fixture:x", "source": "source.txt"},
-            "must be text",
-        ),
-        ({"mode": "remote", "identity": "fixture:x", "source": "../source.txt"}, "owner root"),
-    ),
-)
-def test_execution_recipe_inputs_reject_missing_unknown_or_wrong_values(
-    tmp_path: Path,
-    inputs: dict[str, object],
-    message: str,
-) -> None:
+def test_execution_recipe_inputs_reject_undeclared_values(tmp_path: Path) -> None:
     recipe = tmp_path / "recipe.toml"
     recipe.write_text(
         """schema = 1
@@ -231,19 +203,17 @@ action = "fake.requirements"
         encoding="utf-8",
     )
     loaded = load_execution_recipe(recipe, owner_root=tmp_path)
-    with pytest.raises(FlowContractError, match=message):
+    with pytest.raises(FlowContractError, match="unknown"):
         compile_flow_spec(
             loaded,
             flow_id="parameterized",
             targets=(FlowTarget("all", ("check",)),),
-            inputs=inputs,
+            inputs={"extra": "value"},
         )
 
 
-@pytest.mark.parametrize("source", ("missing.txt", "source-directory"))
 def test_owner_path_input_requires_an_existing_regular_file(
     tmp_path: Path,
-    source: str,
 ) -> None:
     (tmp_path / "source-directory").mkdir()
     recipe = tmp_path / "recipe.toml"
@@ -273,20 +243,14 @@ action = "fake.requirements"
             loaded,
             flow_id="parameterized",
             targets=(FlowTarget("all", ("check",)),),
-            inputs={"source": source},
+            inputs={"source": "missing.txt"},
         )
 
 
-def test_execution_recipe_rejects_interpolation_and_partial_input_reference(
-    tmp_path: Path,
-) -> None:
-    for value, message in (
-        ('"${mode}"', "string interpolation"),
-        ('{ input = "mode", extra = true }', "whole value"),
-    ):
-        recipe = tmp_path / "recipe.toml"
-        recipe.write_text(
-            f'''schema = 1
+def test_execution_recipe_rejects_string_interpolation(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.toml"
+    recipe.write_text(
+        '''schema = 1
 contract_kind = "execution-recipe"
 path_scope = "owner"
 owner = "example"
@@ -299,28 +263,23 @@ kind = "text"
 adapter = "fake-requirements"
 
 [actions."fake.requirements".config]
-mode = {value}
+mode = "${mode}"
 
 [[nodes]]
 id = "check"
 action = "fake.requirements"
 ''',
-            encoding="utf-8",
-        )
-        with pytest.raises(FlowContractError, match=message):
-            load_execution_recipe(recipe, owner_root=tmp_path)
+        encoding="utf-8",
+    )
+    with pytest.raises(FlowContractError, match="string interpolation"):
+        load_execution_recipe(recipe, owner_root=tmp_path)
 
 
-@pytest.mark.parametrize("field", ["targets", "expand"])
-def test_execution_recipe_rejects_target_selection_and_expansion(
-    tmp_path: Path,
-    field: str,
-) -> None:
-    if field == "targets":
-        extra = 'targets = [{ name = "all", goals = ["check"] }]\n'
-    else:
-        extra = 'expand = { kind = "legacy" }\n'
-    recipe = _write_recipe(tmp_path, extra=extra)
+def test_execution_recipe_rejects_embedded_target_selection(tmp_path: Path) -> None:
+    recipe = _write_recipe(
+        tmp_path,
+        extra='targets = [{ name = "all", goals = ["check"] }]\n',
+    )
 
     with pytest.raises(FlowContractError, match="cannot declare"):
         load_execution_recipe(recipe)

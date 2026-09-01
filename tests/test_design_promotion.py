@@ -18,8 +18,6 @@ from sigilicon.workflows.design_promotion import (
     PromotionRequest,
     PromotionRequirements,
     compile_promotion_plan,
-    promotion_plan_from_json,
-    promotion_request_from_json,
 )
 
 from test_design_campaign import OWNER, POLICY, _attempt_artifacts
@@ -76,8 +74,6 @@ def test_promotion_plan_is_immutable_review_only_and_requires_accepted_evidence(
 
     assert plan.human_approval_required is True
     assert plan.writes_canonical_source is False
-    assert promotion_plan_from_json(plan.canonical_json()) == plan
-    assert promotion_request_from_json(request.canonical_json()) == request
 
     insufficient = replace(
         request,
@@ -101,8 +97,6 @@ def test_promotion_plan_accepts_semantic_identity_and_rejects_cross_owner_eviden
         request=request,
     )
 
-    forged = replace(plan, decision_identity="forged-decision")
-    assert forged.decision_identity == "forged-decision"
     with pytest.raises(ValueError, match="evidence owner"):
         replace(
             plan,

@@ -7,11 +7,7 @@ from contextlib import nullcontext
 import pytest
 
 from sigilicon.domain.repository import Project
-from sigilicon.workflows import (
-    design_lifecycle,
-    layout_generation,
-    layout_verification,
-)
+from sigilicon.workflows import layout_generation
 from sigilicon.workflows.layout_generation import LayoutPlanningResult
 from sigilicon.workflows.run_artifacts import RunArtifacts
 
@@ -21,12 +17,6 @@ from conftest import write_component_owner
 def _project(tmp_path: Path) -> Project:
     write_component_owner(tmp_path, "example", filesets={})
     return Project.from_project_root(tmp_path)
-
-
-def test_layout_execution_has_no_standalone_wrappers() -> None:
-    assert not hasattr(layout_generation, "execute_layout_generation_spec")
-    assert not hasattr(layout_verification, "execute_layout_verification_spec")
-    assert not hasattr(layout_verification, "execute_layout_verification_set")
 
 
 def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
@@ -134,38 +124,3 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
     assert bound == [operation]
     assert result.instance_count == 2
     assert artifacts.path("outputs", "completion.json").is_file()
-
-
-def test_design_set_attestation_binds_project_once(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    project = _project(tmp_path)
-    paths = (tmp_path / "first.toml", tmp_path / "second.toml")
-    client = object()
-    inspections: list[tuple[Path, Project]] = []
-
-    def inspect(path: Path, *, project: Project) -> Path:
-        inspections.append((path, project))
-        return path
-
-    def attest(path: Path, oa_client: object, *, timeout: int) -> dict[str, object]:
-        assert oa_client is client
-        return {"path": path, "timeout": timeout}
-
-    monkeypatch.setattr(design_lifecycle, "inspect_design", inspect)
-    monkeypatch.setattr(design_lifecycle, "attest_oa_design", attest)
-
-    result = design_lifecycle.attest_design_set(
-        paths,
-        client,
-        project=project,
-        timeout=17,
-    )
-
-    assert inspections == [(path, project) for path in paths]
-    assert all(bound is project for _path, bound in inspections)
-    assert result == {
-        "passed": True,
-        "designs": tuple({"path": path, "timeout": 17} for path in paths),
-    }

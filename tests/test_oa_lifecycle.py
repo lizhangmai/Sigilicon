@@ -4,14 +4,12 @@ from types import SimpleNamespace
 
 from sigilicon.virtuoso.oa import (
     _instance_parameter_value_matches,
-    _owned_db_open_cellview_skill,
     own_synchronous_cellview_delta_skill,
     set_cell_port_directions,
     validate_cell_port_directions,
     validate_instance_parameters,
 )
 from sigilicon.virtuoso.importer import check_and_save_schematic
-from sigilicon.virtuoso.maestro import build_owned_maestro_setup_transaction_skill
 
 
 class RecordingClient:
@@ -70,20 +68,6 @@ def test_imported_schematic_is_checked_and_saved_under_mutation_lease(
     assert "target became busy before atomic SKILL dispatch" in source
 
 
-def test_exact_open_helper_closes_its_own_let_scope() -> None:
-    source = _owned_db_open_cellview_skill(
-        library="lib",
-        cell="cell",
-        view_expression='"schematic"',
-        view_type="",
-        mode="r",
-        result_variable="cv",
-        label="test open",
-    )
-
-    assert source.rstrip().endswith("\n))")
-
-
 def test_synchronous_scope_closes_only_hidden_exact_delta_handles() -> None:
     source = own_synchronous_cellview_delta_skill("list(\"done\")", label="test")
 
@@ -99,20 +83,6 @@ def test_synchronous_scope_closes_only_hidden_exact_delta_handles() -> None:
     assert "member(flowSyncCv dbGetOpenCellViews())" in source
     assert "exact synchronous handle cleanup failed" in source
     assert "unwindProtect(" in source
-
-
-def test_maestro_cleanup_checks_only_graphics_windows_for_visible_views() -> None:
-    source = build_owned_maestro_setup_transaction_skill(
-        "lib",
-        "cell",
-        scope_token="a" * 32,
-        body="t",
-    )
-
-    assert "geGetWindowCellView(flowWindow)" in source
-    assert "flowWindow != hiGetCIWindow()" in source
-    assert 'equal(hiGetWidgetType(flowWindow) "graphics")' in source
-
 
 
 def test_every_open_cellview_is_protected_by_unwind_cleanup(workspace_factory) -> None:

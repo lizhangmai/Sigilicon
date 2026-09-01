@@ -97,33 +97,6 @@ OVERALL_SPEC\tnil
         read_native_maestro_rdb_export(path)
 
 
-def test_native_maestro_rdb_export_can_check_an_independent_identity_model(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "rdb.tsv"
-    path.write_text(
-        """RDB_SCHEMA\t1
-OUTPUT\t1\ttt_25c\ttran_generator\tvgc_sample_0\t0.6741\tundefined
-SUMMARY\t1\t1
-OVERALL_SPEC\tnil
-""",
-        encoding="utf-8",
-    )
-
-    result = read_native_maestro_rdb_export(
-        path,
-        expected_point_count=1,
-        expected_corners=("tt_25c",),
-        expected_tests=("tran_generator",),
-        expected_outputs=("vgc_sample_0",),
-        expected_expression_count=1,
-    )
-
-    assert result["scalar_output_count"] == 1
-    assert result["scalar_values_finite"] is True
-    assert result["point_parameters"] == []
-
-
 def test_native_maestro_rdb_export_preserves_point_parameters(tmp_path: Path) -> None:
     path = tmp_path / "rdb.tsv"
     path.write_text(

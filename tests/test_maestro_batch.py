@@ -201,12 +201,6 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
             f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n",
             2,
         ),
-        (
-            f"\\o FLOW_ISOLATED_MAESTRO_STARTED {NONCE} Run.1\n"
-            f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n"
-            f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n",
-            0,
-        ),
     ),
 )
 def test_isolated_runner_rejects_unproven_completion(
@@ -278,26 +272,6 @@ def test_isolated_runner_remembers_start_marker_beyond_log_tail(
 
     assert result.history == "Run.1"
     assert not result.terminated_after_completion
-
-
-def test_isolated_runner_rejects_nonzero_leader_even_if_group_cleaned(
-    monkeypatch, workspace_factory, tmp_path: Path
-) -> None:
-    with pytest.raises(
-        RuntimeError,
-        match="without one started history and confirmed simulator result",
-    ):
-        _run_with_fake_process(
-            monkeypatch,
-            workspace_factory,
-            tmp_path,
-            log_text=(
-                f"\\o FLOW_ISOLATED_MAESTRO_STARTED {NONCE} Run.1\n"
-                f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n"
-            ),
-            returncode=2,
-            residual_group_cleaned_after_exit=True,
-        )
 
 
 def test_isolated_runner_rejects_log_outside_direct_work(

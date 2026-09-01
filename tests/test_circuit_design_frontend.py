@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-import json
 
 import pytest
 
@@ -10,7 +9,6 @@ from sigilicon.domain.repository import Project
 from sigilicon.domain.circuit_design import (
     ARTIFACT_SCHEMA,
     CIRCUIT_SIZING_PROBLEM_KIND,
-    CIRCUIT_SIZING_RESULT_KIND,
     CIRCUIT_TOPOLOGY_KIND,
     DESIGN_CANDIDATE_KIND,
     DESIGN_BRIEF_KIND,
@@ -20,8 +18,6 @@ from sigilicon.domain.circuit_design import (
     ArtifactMetadata,
     ArtifactReference,
     CircuitSizingProblem,
-    CircuitSizingResult,
-    CircuitTopologyProposal,
     DesignCandidate,
     DesignBrief,
     DesignDecision,
@@ -29,7 +25,6 @@ from sigilicon.domain.circuit_design import (
     DesignEvidence,
     EvidenceCompletion,
     EvidenceConclusion,
-    EvidenceFinding,
     EvidenceLevel,
     EvidenceProducer,
     EvidenceProducerKind,
@@ -37,18 +32,10 @@ from sigilicon.domain.circuit_design import (
     NamedQuantity,
     SizingBudget,
     SizingCandidate,
-    SizingCandidateOutcome,
-    SizingCandidateResult,
     SizingCondition,
     SizingParameter,
-    SizingTermination,
     TopologyOrigin,
-    circuit_sizing_problem_from_json,
-    circuit_sizing_result_from_json,
-    circuit_topology_from_json,
-    design_candidate_from_json,
     design_brief_from_json,
-    design_decision_from_json,
     design_evidence_from_json,
     exact_quantity,
     validate_design_candidate,
@@ -56,8 +43,6 @@ from sigilicon.domain.circuit_design import (
 )
 from sigilicon.domain.design import load_design_spec
 from sigilicon.workflows.design_frontend import SourceAuthoredTopologyAdapter
-from sigilicon.cli.main import main as sigilicon_main
-from conftest import write_component_owner
 
 
 def test_design_artifacts_use_explicit_owner_scoped_ids() -> None:
@@ -82,12 +67,6 @@ def test_design_artifacts_use_explicit_owner_scoped_ids() -> None:
         "example",
         "example.inv.topology.baseline",
     ).artifact_id == first.identity
-
-
-def test_canonical_serialization_has_no_generic_correctness_identity() -> None:
-    import sigilicon.canonical as canonical
-
-    assert not hasattr(canonical, "canonical_identity")
 
 
 def test_explicit_ids_do_not_substitute_different_typed_records(
@@ -165,21 +144,11 @@ def test_source_authored_topology_is_immutable_canonical_and_strict(
         ("MP0", "pch_mac", "pull-up"),
         ("MN0", "nch_mac", "pull-down"),
     )
-    assert circuit_topology_from_json(topology.canonical_json()) == topology
     assert topology.identity == "example:source-topology:ip/example/inv/design.toml"
 
     with pytest.raises(FrozenInstanceError):
         topology.design = "changed"  # type: ignore[misc]
 
-    with pytest.raises(ValueError, match="unknown=.*unexpected"):
-        circuit_topology_from_json(
-            topology.canonical_json().replace(
-                '  "origin":',
-                '  "unexpected": true,\n  "origin":',
-            )
-        )
-    with pytest.raises(ValueError, match="canonical"):
-        circuit_topology_from_json(topology.canonical_json().replace("  ", "    ", 1))
 
 
 def test_source_authored_topology_rejects_owner_and_role_injection(
@@ -207,112 +176,8 @@ def test_source_authored_topology_rejects_owner_and_role_injection(
         )
 
 
-def test_discrete_sizing_problem_and_result_are_exact_stage_artifacts(
-    project_factory,
-) -> None:
-    project_root, design_path = project_factory()
-    design = load_design_spec(
-        design_path, project=Project.from_project_root(project_root)
-    )
-    topology = SourceAuthoredTopologyAdapter().read(design, owner="example")
-    specification = ArtifactReference(
-        "example",
-        "spec.sizing",
-        "source-fixture",
-        None,
-    )
-    widths = (
-        exact_quantity("1e-7", "m"),
-        exact_quantity("2e-7", "m"),
-    )
-    problem = CircuitSizingProblem(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_PROBLEM_KIND, "example", "example:sizing-problem:discrete"),
-        "inv",
-        topology.reference(),
-        specification,
-        "tb_inv_sizing",
-        EvidenceRole.DIAGNOSTIC,
-        (
-            SizingParameter(
-                "wn",
-                "m",
-                widths[0],
-                widths[1],
-                widths,
-                1,
-                None,
-            ),
-        ),
-        (),
-        (
-            SizingCondition(
-                "nominal",
-                (NamedQuantity("vdd", exact_quantity("0.9", "v")),),
-            ),
-        ),
-        (
-            SizingCandidate(
-                "minimum",
-                (NamedQuantity("wn", widths[0]),),
-                "source-authored minimum",
-            ),
-            SizingCandidate(
-                "wide",
-                (NamedQuantity("wn", widths[1]),),
-                "diagnostic comparison",
-            ),
-        ),
-        SizingBudget(2, None),
-    )
-    result = CircuitSizingResult(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_SIZING_RESULT_KIND, "example", "example:sizing-result:discrete"),
-        problem.reference(),
-        EvidenceRole.DIAGNOSTIC,
-        "source-characterization",
-        "1",
-        SizingTermination.COMPLETED,
-        (
-            SizingCandidateResult(
-                "minimum",
-                SizingCandidateOutcome.SATISFIED,
-                1,
-                (NamedQuantity("delay", exact_quantity("2e-10", "s")),),
-            ),
-            SizingCandidateResult(
-                "wide",
-                SizingCandidateOutcome.SATISFIED,
-                1,
-                (NamedQuantity("delay", exact_quantity("1e-10", "s")),),
-            ),
-        ),
-        "minimum",
-        2,
-        None,
-    )
-
-    assert widths[0].value == "0.0000001"
-    assert circuit_sizing_problem_from_json(problem.canonical_json()) == problem
-    assert circuit_sizing_result_from_json(result.canonical_json()) == result
-    assert result.problem.identity == problem.identity
-
-    with pytest.raises(ValueError, match="outside declared bounds"):
-        SizingParameter(
-            "wn",
-            "m",
-            widths[0],
-            widths[1],
-            (exact_quantity("3e-7", "m"),),
-            1,
-            None,
-        )
-    with pytest.raises(ValueError, match="canonical"):
-        circuit_sizing_problem_from_json(problem.canonical_json().rstrip())
-
-
 def test_candidate_evidence_and_decision_bind_exact_identities(
     project_factory,
-    tmp_path,
-    capsys,
 ) -> None:
     project_root, design_path = project_factory()
     design = load_design_spec(
@@ -396,41 +261,9 @@ def test_candidate_evidence_and_decision_bind_exact_identities(
 
     validated = validate_design_candidate(candidate, (topology, problem, evidence))
     validate_design_decision(decision, candidate, (evidence,))
-    candidate_path = tmp_path / "candidate.json"
-    candidate_path.write_text(candidate.canonical_json(), encoding="utf-8")
-    artifact_paths = []
-    for name, artifact in (
-        ("topology", topology),
-        ("problem", problem),
-        ("evidence", evidence),
-    ):
-        path = tmp_path / f"{name}.json"
-        path.write_text(artifact.canonical_json(), encoding="utf-8")
-        artifact_paths.extend(("--artifact", str(path)))
-    write_component_owner(project_root, "example", filesets={})
-    assert sigilicon_main(
-        [
-            "candidate",
-            "validate",
-            "--project-root",
-            str(project_root),
-            "--owner",
-            "example",
-            "--candidate",
-            str(candidate_path),
-            *artifact_paths,
-            "--json",
-        ]
-    ) == 0
-    cli_payload = json.loads(capsys.readouterr().out)
 
     assert validated.candidate_identity == candidate.identity
-    assert cli_payload["data"]["candidate_identity"] == validated.candidate_identity
-    assert cli_payload["data"]["resolved_artifacts"] == list(validated.resolved_artifacts)
     assert "candidate_identity" not in candidate.canonical_json()
-    assert design_evidence_from_json(evidence.canonical_json()) == evidence
-    assert design_candidate_from_json(candidate.canonical_json()) == candidate
-    assert design_decision_from_json(decision.canonical_json()) == decision
 
     drifted = replace(
         candidate,

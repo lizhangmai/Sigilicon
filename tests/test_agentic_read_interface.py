@@ -10,27 +10,8 @@ from conftest import (
     write_fake_action_module,
     write_project_context,
 )
-import sigilicon.domain.repository as repository_module
-from sigilicon.cli.agentic_read import main as agentic_read_cli_main
-from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.repository import Project
-from sigilicon.domain.circuit_design import (
-    ARTIFACT_SCHEMA,
-    CIRCUIT_TOPOLOGY_KIND,
-    DESIGN_CANDIDATE_KIND,
-    SOURCE_NETLIST_KIND,
-    ArtifactMetadata,
-    ArtifactReference,
-    CircuitPort,
-    CircuitTopologyProposal,
-    DesignCandidate,
-    PortDirection,
-    ProposalProvenance,
-    TopologyOrigin,
-)
-from sigilicon.flow import ExecutionEnvironment
 from sigilicon.workflows.agentic_read import AgenticReadInterface, _public_value
-from sigilicon.workflows.project_runner import ProjectRunner
 from sigilicon.workflows.run_read import RunReadInterface
 from sigilicon.workflows.project import bind_run_read, bind_run_store
 
@@ -107,7 +88,6 @@ def test_read_interface_inspects_project_targets_and_plans_without_writing(
     interface = _read(tmp_path)
 
     assert interface.project_id == f"test.{tmp_path.name}"
-    assert not hasattr(interface, "plan_flow")
 
     project = interface.inspect_project(owner="example")
     plan = interface.plan_target(
@@ -141,27 +121,6 @@ def test_read_interface_inspects_project_targets_and_plans_without_writing(
     assert not (tmp_path / "artifacts").exists()
 
 
-def test_project_inspection_reads_each_target_catalog_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    catalog = write_read_only_flow_project(tmp_path)
-    interface = _read(tmp_path)
-    original = repository_module.read_toml_record
-    reads = 0
-
-    def counted(path: Path):
-        nonlocal reads
-        if path.resolve() == catalog.resolve():
-            reads += 1
-        return original(path)
-
-    monkeypatch.setattr(repository_module, "read_toml_record", counted)
-
-    interface.inspect_project(owner="example")
-
-    assert reads == 1
-
 def test_project_rejects_owner_from_another_project(
     tmp_path: Path,
 ) -> None:
@@ -176,81 +135,6 @@ def test_project_rejects_owner_from_another_project(
 
     with pytest.raises(ValueError, match="does not contain owner"):
         first.owner_target_catalog(second.owner("example"))
-
-
-def test_cli_python_and_run_inspection_share_the_exact_interface(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    catalog = write_read_only_flow_project(tmp_path)
-    interface = _read(tmp_path)
-    python_plan = interface.plan_target(
-        owner="example",
-        target="pipeline",
-        operation="all",
-    )
-
-    assert agentic_read_cli_main(
-        [
-            "--project-root",
-            str(tmp_path),
-            "target-plan",
-            "example",
-            "pipeline",
-            "all",
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == python_plan
-
-    project_runner = ProjectRunner(interface.project, "example")
-    planned = project_runner.plan("pipeline", "all")
-    result = planned.run(
-        ExecutionEnvironment(),
-        run_id="a" * 32,
-    )
-    recipe = tmp_path / "ip/example/configs/flows/pipeline.toml"
-    recipe.unlink()
-    original = repository_module.read_toml_record
-    catalog_reads = 0
-
-    def counted(path: Path):
-        nonlocal catalog_reads
-        if path.resolve() == catalog.resolve():
-            catalog_reads += 1
-        return original(path)
-
-    monkeypatch.setattr(repository_module, "read_toml_record", counted)
-    python_run = RunReadInterface.from_project(
-        interface.project,
-    ).inspect(
-        owner="example",
-        target="pipeline",
-        operation="all",
-        run_id=result.run_id,
-    )
-    assert catalog_reads == 0
-    assert python_run["operation"] == "run.inspect"
-    assert python_run["authority"] == "recorded-target-operation-result"
-    assert python_run["conclusion"] == "recorded"
-    assert python_run["data"]["result"]["status"] == "accepted"
-    assert python_run["resources"] == [
-        "sigilicon://owners/example/targets/pipeline/operations/all/runs/"
-        f"{result.run_id}/manifest"
-    ]
-
-    assert agentic_read_cli_main(
-        [
-            "--project-root",
-            str(tmp_path),
-            "run-inspect",
-            "example",
-            "pipeline",
-            "all",
-            result.run_id,
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == python_run
 
 
 def test_read_interface_rejects_injection_cross_owner_and_identity_drift(
@@ -313,68 +197,3 @@ def test_historical_run_binders_reject_redirected_project_root(tmp_path: Path) -
         bind_run_read(declared)
     with pytest.raises(ValueError, match="different project root"):
         bind_run_store(declared)
-
-
-def test_candidate_validation_has_python_cli_parity(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    write_read_only_flow_project(tmp_path)
-    interface = _read(tmp_path)
-    topology = CircuitTopologyProposal(
-        ArtifactMetadata(ARTIFACT_SCHEMA, CIRCUIT_TOPOLOGY_KIND, "example", "example:topology:agentic-read"),
-        "inv",
-        "source-fixture",
-        TopologyOrigin.PROPOSED,
-        (CircuitPort("IN", PortDirection.INPUT, "signal"),),
-        (),
-        (),
-        (),
-        ProposalProvenance("test-proposal", "1"),
-    )
-    candidate = DesignCandidate(
-        ArtifactMetadata(ARTIFACT_SCHEMA, DESIGN_CANDIDATE_KIND, "example", "example:candidate:agentic-read"),
-        "inv",
-        ArtifactReference("example", SOURCE_NETLIST_KIND, "source-fixture", None),
-        None,
-        (),
-        topology.reference(),
-        None,
-        None,
-        (),
-        None,
-        topology.provenance,
-    )
-    candidate_path = tmp_path / "candidate.json"
-    topology_path = tmp_path / "topology.json"
-    candidate_path.write_text(candidate.canonical_json(), encoding="utf-8")
-    topology_path.write_text(topology.canonical_json(), encoding="utf-8")
-
-    expected = interface.validate_candidate(
-        owner="example",
-        candidate_json=candidate.canonical_json(),
-        artifact_json=(topology.canonical_json(),),
-    )
-    assert sigilicon_cli_main(
-        [
-            "candidate",
-            "validate",
-            "--project-root",
-            str(tmp_path),
-            "--owner",
-            "example",
-            "--candidate",
-            str(candidate_path),
-            "--artifact",
-            str(topology_path),
-            "--json",
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == expected
-
-    with pytest.raises(ValueError, match="owner"):
-        interface.validate_candidate(
-            owner="other",
-            candidate_json=candidate.canonical_json(),
-            artifact_json=(topology.canonical_json(),),
-        )

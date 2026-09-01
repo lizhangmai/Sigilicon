@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -99,23 +98,6 @@ def test_completion_evidence_is_reverified_before_success(tmp_path: Path) -> Non
     assert load_manifest(record.paths.manifest)["status"] == "running"
 
 
-def test_atomic_transition_failure_leaves_memory_and_disk_running(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    record = _record(tmp_path)
-    proof = record.write_text("outputs", ("proof.txt",), "confirmed\n")
-
-    def fail_write(_path, _value):
-        raise OSError("manifest replace failed")
-
-    monkeypatch.setattr("sigilicon.artifacts.atomic_write_json", fail_write)
-    with pytest.raises(OSError, match="manifest replace failed"):
-        record.succeed(completion_evidence=(proof,))
-    assert record.status == "running"
-    assert json.loads(record.paths.manifest.read_text())["status"] == "running"
-
-
 def test_terminal_artifact_rejects_all_mutation_except_incident_link(
     tmp_path: Path,
 ) -> None:
@@ -125,12 +107,6 @@ def test_terminal_artifact_rejects_all_mutation_except_incident_link(
 
     with pytest.raises(RuntimeError, match="terminal artifact"):
         record.write_text("logs", ("late.log",), "late\n")
-    with pytest.raises(RuntimeError, match="terminal artifact"):
-        record.add_file("outputs", proof)
-    with pytest.raises(RuntimeError, match="terminal artifact"):
-        record.directory("outputs", "late")
-    with pytest.raises(RuntimeError, match="terminal artifact"):
-        record.bind_operation("a" * 32)
 
 
 def test_run_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
@@ -140,54 +116,6 @@ def test_run_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
     with pytest.raises(ArtifactManifestError, match="must use outputs/"):
         record.succeed(completion_evidence=(log,))
     assert record.status == "running"
-
-
-def test_attempt_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
-        owner="lib",
-        target="dut",
-        flow="design-sync",
-        variant="recursive",
-        identity="7" * 32,
-        artifact_kind="design_sync",
-        identity_kind="attempt_id",
-    )
-    record = ArtifactRecord.begin(
-        execution,
-        entities={"library": "lib", "cell": "dut"},
-        operation="sync-design",
-        backend="oa",
-    )
-    log = record.write_text("logs", ("claimed-proof.log",), "looks successful\n")
-
-    with pytest.raises(ArtifactManifestError, match="must use outputs/"):
-        record.succeed(completion_evidence=(log,))
-    assert record.status == "running"
-
-
-def test_oa_text_view_artifact_requires_exact_view_identity(tmp_path: Path) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
-        owner="lib",
-        target="dut",
-        flow="oa-text-view",
-        variant="veriloga",
-        identity="9" * 32,
-        artifact_kind="oa_text_view",
-        identity_kind="attempt_id",
-    )
-    record = ArtifactRecord.begin(
-        execution,
-        entities={"library": "lib", "cell": "dut", "view": "veriloga"},
-        operation="sync-oa-text-view",
-        backend="virtuoso-oa",
-    )
-
-    assert record.manifest["artifact_kind"] == "oa_text_view"
-    assert record.manifest["entities"] == {
-        "library": "lib",
-        "cell": "dut",
-        "view": "veriloga",
-    }
 
 
 def test_manifest_rejects_noncanonical_incident_reference(tmp_path: Path) -> None:

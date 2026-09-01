@@ -24,7 +24,6 @@ from sigilicon.flow import (
     FactSet,
     FactSource,
     FlowEngine,
-    FlowExecutionError,
     FlowNode,
     FlowSpec,
     FlowTarget,

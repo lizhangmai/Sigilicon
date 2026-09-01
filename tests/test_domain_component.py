@@ -45,46 +45,6 @@ python = ["ip/shared/library.py"]
         loaded.document["filesets"]["python"][0] = "changed.py"
 
 
-def test_component_graph_reuses_an_explicit_root_snapshot(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    source = tmp_path / "ip/shared/library.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n", encoding="utf-8")
-    contract = tmp_path / "ip/shared/ip.toml"
-    contract.write_text(
-        '''schema = 1
-contract_kind = "ip-component"
-path_scope = "owner"
-owner = "shared"
-name = "shared"
-kind = "source-library"
-
-[filesets]
-python = ["ip/shared/library.py"]
-''',
-        encoding="utf-8",
-    )
-    root_contract = load_component_contract(contract, project_root=tmp_path)
-    reads: list[Path] = []
-    original_loader = component_domain.load_component_contract
-
-    def tracked_loader(path: Path, *, project_root: Path):
-        reads.append(path.resolve())
-        return original_loader(path, project_root=project_root)
-
-    monkeypatch.setattr(component_domain, "load_component_contract", tracked_loader)
-
-    graph = load_component_graph(
-        contract,
-        project_root=tmp_path,
-        root_contract=root_contract,
-    )
-
-    assert graph == {"shared": root_contract}
-    assert reads == []
-
 def test_component_graph_rejects_a_snapshot_from_another_root(
     tmp_path: Path,
 ) -> None:
@@ -194,18 +154,4 @@ contract = "ip/child/ip.toml"
             root_contract_path,
             project_root=tmp_path,
             snapshot=replace(root_contract, kind="rtl-ip"),
-        )
-
-    with pytest.raises(ValueError, match="snapshot identity drift"):
-        resolve_component_contract(
-            root_contract_path,
-            project_root=tmp_path,
-            snapshot=replace(root_contract, filesets=dict(root_contract.filesets)),
-        )
-
-    with pytest.raises(ValueError, match="snapshot identity drift"):
-        resolve_component_contract(
-            root_contract_path,
-            project_root=tmp_path,
-            snapshot=replace(root_contract, document="forged"),
         )

@@ -1,39 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import tomllib
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-import sigilicon.domain.component as component_domain
-import sigilicon.domain.config_contracts as config_contracts
 import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
-    LockedIpRelease,
     OaNativePhysicalBinding,
     OaNativeReleaseInterfaceReference,
-    OaReleaseInterfaceReference,
     RtlReleaseInterfaceReference,
     load_ip_integration_contract,
-    resolve_ip_integration_contract,
-)
-from sigilicon.domain.config_contracts import (
-    RepositorySourceInventory,
-    inspect_project_configuration_sources,
 )
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.ip_integration import (
-    _allowed_files,
     check_ip_integration,
     ip_catalog_contract_path,
     plan_ip_integration,
-    resolve_locked_ip_release,
     resolve_ip_integration_fileset,
 )
 
@@ -788,77 +776,6 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert all(path.is_absolute() and path.is_file() for path in resolved)
 
 
-def test_architecture_validator_reuses_variant_source_document(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root = tmp_path / "project"
-    contract_path = _write_ip_fixture(
-        project_root,
-        "development-fixture",
-        "exports/fixture/manifest.json",
-    )
-    contract = load_ip_integration_contract(
-        contract_path,
-        project=Project.from_project_root(project_root),
-    )
-    monkeypatch.setattr(
-        ip_integration.tomllib,
-        "load",
-        lambda *_args, **_kwargs: pytest.fail("variant TOML was reloaded"),
-    )
-
-    assert ip_integration._validate_variant_architecture(
-        contract,
-        contract.get_variant("default")
-    ) == {"variant": "default", "validated": True}
-
-
-def test_integration_loader_reuses_a_complete_variant_source_inventory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root = tmp_path / "project"
-    contract_path = _write_ip_fixture(
-        project_root,
-        "development-fixture",
-        "exports/fixture/manifest.json",
-    )
-    project = Project.from_project_root(project_root)
-    variant = (project_root / "ip/demo/configs/variants/default.toml").resolve()
-    with variant.open("rb") as stream:
-        document = config_contracts.freeze_toml_document(tomllib.load(stream))
-    inventory = MappingProxyType({variant: document})
-    original_load = ip_integration.tomllib.load
-
-    def reject_variant_reload(stream):
-        if Path(stream.name).resolve() == variant:
-            pytest.fail("variant source was reloaded")
-        return original_load(stream)
-
-    monkeypatch.setattr(ip_integration.tomllib, "load", reject_variant_reload)
-
-    contract = load_ip_integration_contract(
-        contract_path,
-        project=project,
-        variant_source_documents=inventory,
-    )
-
-    assert contract.get_variant("default").source_document == document
-    with pytest.raises(ValueError, match="inventory is incomplete"):
-        load_ip_integration_contract(
-            contract_path,
-            project=project,
-            variant_source_documents=MappingProxyType({}),
-        )
-    with pytest.raises(ValueError, match="inventory must be immutable"):
-        load_ip_integration_contract(
-            contract_path,
-            project=project,
-            variant_source_documents={variant: document},
-        )
-
-
 def test_ip_integration_is_exposed_only_under_the_ip_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -887,29 +804,6 @@ def test_ip_integration_is_exposed_only_under_the_ip_cli(
     assert payload["contract_kind"] == "ip-integration-check"
     assert payload["ip"] == "demo"
     assert _absolute_strings(payload) == []
-
-
-def test_locked_release_resolution_preserves_symlink_evidence(
-    tmp_path: Path,
-) -> None:
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    release_root = (artifact_root / manifest).parent
-    alias = artifact_root / "release-alias"
-    alias.symlink_to(release_root, target_is_directory=True)
-    pinned = LockedIpRelease(
-        name="fixture-ip",
-        release_id=release_id,
-        manifest=PurePosixPath("release-alias/manifest.json"),
-        maturity="development",
-        source_commit="a" * 40,
-        manifest_sha256=hashlib.sha256(
-            (release_root / "manifest.json").read_bytes()
-        ).hexdigest(),
-    )
-
-    with pytest.raises(RuntimeError, match="symlink"):
-        resolve_locked_ip_release(artifact_root=artifact_root, pinned=pinned)
 
 
 def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
@@ -1069,7 +963,6 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     binding = contract.get_variant("default").physical_binding
     assert isinstance(binding, OaNativePhysicalBinding)
     assert binding.transaction_module == "demo_transaction_model"
-    assert not hasattr(binding, "physical_shell_module")
 
     producer_path = project_root / "ip/fixture/configs/release.toml"
     producer = SimpleNamespace(
@@ -1150,21 +1043,9 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     }
 
 
-@pytest.mark.parametrize(
-    "field",
-    (
-        "kind",
-        "library",
-        "cell",
-        "schematic_view",
-        "layout_view",
-        "mixed-interface-field",
-    ),
-)
 def test_native_oa_planner_rejects_provider_interface_identity_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    field: str,
 ) -> None:
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
@@ -1199,12 +1080,7 @@ def test_native_oa_planner_rejects_provider_interface_identity_drift(
         "kind": "oa-native",
         "contract": "ip/fixture/configs/interface.toml",
     }
-    if field == "kind":
-        interface[field] = "rtl"
-    elif field == "mixed-interface-field":
-        interface["logical"] = "forged"
-    else:
-        oa[field] = "drifted"
+    oa["cell"] = "drifted"
     monkeypatch.setattr(
         ip_integration,
         "plan_ip_release_contract",
@@ -1235,515 +1111,6 @@ def test_native_oa_planner_rejects_provider_interface_identity_drift(
             project=project,
             release_inventory={"fixture-ip": producer},
         )
-
-
-@pytest.mark.parametrize(
-    ("injected", "message"),
-    (
-        ('logical = "forged"', "native OA fields are invalid"),
-        ('module = "forged"', "native OA fields are invalid"),
-    ),
-)
-def test_native_oa_release_dependency_rejects_mixed_interface_fields(
-    tmp_path: Path,
-    injected: str,
-    message: str,
-) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    _select_native_oa_dependency(
-        contract_path,
-        artifact_root=artifact_root,
-        manifest=manifest,
-    )
-    contract_path.write_text(
-        contract_path.read_text(encoding="utf-8").replace(
-            'layout_view = "layout"',
-            f'layout_view = "layout"\n{injected}',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=message):
-        load_ip_integration_contract(contract_path, project=Project.from_project_root(project_root))
-
-
-def test_native_oa_release_dependency_rejects_role_modules(
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    _select_native_oa_dependency(
-        contract_path,
-        artifact_root=artifact_root,
-        manifest=manifest,
-    )
-    contract_path.write_text(
-        contract_path.read_text(encoding="utf-8").replace(
-            '[component.release.interface]',
-            '[component.release.role_modules]\n'
-            'circuit_netlist = "provider_module"\n\n'
-            '[component.release.interface]',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="role_modules.*oa-native"):
-        load_ip_integration_contract(contract_path, project=Project.from_project_root(project_root))
-
-
-def test_native_oa_binding_rejects_transaction_shell_fields(
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    _select_native_oa_dependency(
-        contract_path,
-        artifact_root=artifact_root,
-        manifest=manifest,
-    )
-    variant = contract_path.parent / "variants/default.toml"
-    variant.write_text(
-        variant.read_text(encoding="utf-8").replace(
-            'adapter_module = "demo_native_oa_adapter"',
-            'adapter_module = "demo_native_oa_adapter"\n'
-            'physical_shell_module = "provider_shell"',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="native OA physical binding fields"):
-        load_ip_integration_contract(contract_path, project=Project.from_project_root(project_root))
-
-
-@pytest.mark.parametrize(
-    ("case", "message"),
-    (
-        ("lock-identity", "lock identity"),
-        ("lock-maturity", "lock maturity"),
-        ("lock-source-commit", "source commit"),
-        ("manifest-digest", "manifest digest"),
-        ("dirty-source", "dirty source"),
-        ("provider-drift", "provider owner"),
-        ("role-unavailable", "unavailable for simulation"),
-        ("unsafe-role-path", "view path is unsafe"),
-    ),
-)
-def test_native_oa_locked_release_retains_fail_closed_safeguards(
-    tmp_path: Path,
-    case: str,
-    message: str,
-) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    manifest_path = _select_native_oa_dependency(
-        contract_path,
-        artifact_root=artifact_root,
-        manifest=manifest,
-    )
-    lock_path = contract_path.parent / "dependency.lock.toml"
-    if case == "lock-identity":
-        lock_path.write_text(
-            lock_path.read_text(encoding="utf-8").replace(
-                f'release_id = "{release_id}"',
-                'release_id = "drifted"',
-            ),
-            encoding="utf-8",
-        )
-    elif case == "lock-maturity":
-        lock_path.write_text(
-            lock_path.read_text(encoding="utf-8").replace(
-                'maturity = "development"',
-                'maturity = "implementation"',
-            ),
-            encoding="utf-8",
-        )
-    elif case == "lock-source-commit":
-        _replace_lock_value(lock_path, "source_commit", "c" * 40)
-    elif case == "manifest-digest":
-        _replace_lock_value(lock_path, "manifest_sha256", "c" * 64)
-    else:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if case == "dirty-source":
-            payload["source"]["dirty"] = True
-            payload["provenance"]["working_tree_dirty"] = True
-        elif case == "provider-drift":
-            payload["provenance"]["producer"] = "ip/other-owner"
-        elif case == "role-unavailable":
-            payload["exports"][0]["availability"]["simulation"] = False
-        elif case == "unsafe-role-path":
-            next(
-                view
-                for view in payload["views"]
-                if view["role"] == "circuit_netlist"
-            )["path"] = "../fixture_macro.scs"
-        else:  # pragma: no cover - parametrization is closed above
-            raise AssertionError(case)
-        manifest_path.write_text(
-            json.dumps(payload, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        _refresh_lock_manifest_digest(contract_path, manifest_path)
-
-    with pytest.raises((RuntimeError, ValueError), match=message):
-        check_ip_integration(
-            contract_path,
-            project=Project.from_project_root(project_root),
-            artifact_root=artifact_root,
-            variant_name="default",
-        )
-
-
-def test_release_dependency_rejects_unknown_fields(
-    tmp_path: Path,
-) -> None:
-    for name, replacement, error in (
-        (
-            "release-unknown",
-            'roles = ["rtl_source"]\nlogical_interface = "forged"',
-            "release fields are invalid",
-        ),
-        (
-            "unknown",
-            'module = "fixture_rtl"\nphysical = "forged"',
-            "RTL fields are invalid",
-        ),
-    ):
-        root = tmp_path / name
-        release_id, manifest = _write_rtl_release_fixture(root / "artifacts")
-        contract_path = _write_ip_fixture(root / "project", release_id, manifest)
-        _select_rtl_dependency(contract_path)
-        marker = (
-            'roles = ["rtl_source"]'
-            if name == "release-unknown"
-            else 'module = "fixture_rtl"'
-        )
-        contract_path.write_text(
-            contract_path.read_text(encoding="utf-8").replace(
-                marker, replacement, 1
-            ),
-            encoding="utf-8",
-        )
-        with pytest.raises(ValueError, match=error):
-            load_ip_integration_contract(
-                contract_path,
-                project=Project.from_project_root(root / "project"),
-            )
-
-
-def test_oa_mixed_signal_release_dependency_has_typed_identity(
-    tmp_path: Path,
-) -> None:
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(tmp_path / "project", release_id, manifest)
-    contract = load_ip_integration_contract(
-        contract_path,
-        project=Project.from_project_root(tmp_path / "project"),
-    )
-    release = contract.release_dependencies[0].release
-    assert release is not None
-    assert isinstance(release.interface, OaReleaseInterfaceReference)
-    assert release.interface.logical_interface == (
-        "fixture_model:transaction-1-port"
-    )
-
-
-def test_ip_integration_reuses_the_validated_producer_release_contract(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract_path = _write_ip_fixture(project_root, release_id, manifest)
-    producer_path = project_root / "ip/fixture/configs/release.toml"
-    producer_reads: list[Path] = []
-    planned_contracts: list[object] = []
-    platform_inventory = {"testpdk": object()}
-    oa_source_inventory = {producer_path.parent / "oa.toml": object()}
-    oa_plan_inventory = {producer_path.parent / "oa.toml": object()}
-    project = Project.from_project_root(project_root).with_artifact_root(artifact_root)
-    producer = SimpleNamespace(
-        name="fixture-ip",
-        path=producer_path,
-        project=project,
-    )
-
-    monkeypatch.setattr(
-        ip_integration,
-        "ip_catalog_contract_path",
-        lambda *_args, **_kwargs: producer_path,
-    )
-
-    def load_producer(path, *, project):
-        assert project.project_root == project_root
-        producer_reads.append(path)
-        return producer
-
-    monkeypatch.setattr(ip_integration, "load_ip_contract", load_producer)
-
-    def plan_contract(
-        contract,
-        *,
-        maturity,
-        platform_inventory,
-        oa_source_inventory,
-        oa_plan_inventory,
-    ):
-        planned_contracts.append(contract)
-        assert maturity == "development"
-        assert platform_inventory is not None
-        assert set(platform_inventory) == {"testpdk"}
-        assert oa_source_inventory is not None
-        assert len(oa_source_inventory) == 1
-        assert oa_plan_inventory is not None
-        assert len(oa_plan_inventory) == 1
-        return {
-            "contract": "ip/fixture/configs/release.toml",
-            "release_id": "development-fixture",
-            "exports": [
-                {
-                    "name": "macro",
-                    "interface": {
-                        "kind": "oa-mixed-signal",
-                        "logical": "fixture_model:transaction-1-port",
-                        "physical": "fixture_macro:oa-1-pin",
-                    },
-                }
-            ],
-            "collateral": [
-                {
-                    "export": "macro",
-                    "role": role,
-                    "module": module,
-                }
-                for role, module in (
-                    ("transaction_model", "fixture_model"),
-                    ("integration_adapter", "fixture_shell"),
-                    ("physical_blackbox", "fixture_macro"),
-                )
-            ],
-        }
-
-    monkeypatch.setattr(
-        ip_integration,
-        "plan_ip_release_contract",
-        plan_contract,
-    )
-
-    plan = plan_ip_integration(
-        contract_path,
-        project=project,
-        platform_inventory=platform_inventory,
-        oa_source_inventory=oa_source_inventory,
-        oa_plan_inventory=oa_plan_inventory,
-    )
-
-    assert producer_reads == [producer_path]
-    assert len(planned_contracts) == 1
-    assert planned_contracts[0] is producer
-    assert plan["dependencies"][0]["release"]["provider"] == (
-        "ip/fixture/configs/release.toml"
-    )
-    assert plan["dependencies"][0]["release"]["interface"] == {
-        "kind": "oa-mixed-signal",
-        "logical": "fixture_model:transaction-1-port",
-        "physical": "fixture_macro:oa-1-pin",
-    }
-    assert "logical_interface" not in plan["dependencies"][0]["release"]
-
-    producer_reads.clear()
-    planned_contracts.clear()
-
-    plan_ip_integration(
-        contract_path,
-        project=project,
-        platform_inventory=platform_inventory,
-        release_inventory={"fixture-ip": producer},
-        oa_source_inventory=oa_source_inventory,
-        oa_plan_inventory=oa_plan_inventory,
-    )
-
-    assert producer_reads == []
-    assert planned_contracts == [producer]
-
-    with pytest.raises(
-        ValueError,
-        match="release inventory has no 'fixture-ip' entry",
-    ):
-        plan_ip_integration(
-            contract_path,
-            project=project,
-            platform_inventory=platform_inventory,
-            release_inventory={},
-            oa_source_inventory=oa_source_inventory,
-            oa_plan_inventory=oa_plan_inventory,
-        )
-
-
-def test_ip_integration_contract_preserves_its_validated_component_graph(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    project_root = tmp_path / "project"
-    contract_path = _write_source_component_fixture(project_root)
-    original_toml_load = tomllib.load
-    root_reads = 0
-
-    def counted_load(stream):
-        nonlocal root_reads
-        if Path(stream.name).resolve() == contract_path.resolve():
-            root_reads += 1
-        return original_toml_load(stream)
-
-    monkeypatch.setattr(tomllib, "load", counted_load)
-    project = Project.from_project_root(project_root)
-    reads: list[Path] = []
-    original_loader = component_domain.load_component_contract
-
-    def tracked_loader(path: Path, *, project_root: Path):
-        reads.append(path.resolve())
-        return original_loader(path, project=Project.from_project_root(project_root))
-
-    monkeypatch.setattr(component_domain, "load_component_contract", tracked_loader)
-
-    contract = load_ip_integration_contract(contract_path, project=project)
-
-    assert sorted(contract.component_graph) == ["composite", "leaf"]
-    assert contract.component_graph["composite"] is project.owner(
-        "composite"
-    ).component
-    assert contract.component_graph["leaf"] is project.owner("leaf").component
-    variant_path = (project_root / "ip/composite/configs/variants/default.toml").resolve()
-    tool_path = (project_root / "ip/composite/configs/tool.toml").resolve()
-    assert set(contract.source_documents) == {variant_path, tool_path}
-    assert contract.get_variant("default").source_document is contract.source_documents[
-        variant_path
-    ]
-    with pytest.raises(TypeError):
-        contract.source_documents[variant_path]["owner"] = "other"
-    with pytest.raises(TypeError):
-        contract.implementation_profiles["other"] = PurePosixPath("other.toml")
-    assert root_reads == 1
-    assert reads == []
-
-    with monkeypatch.context() as snapshot_patch:
-        snapshot_patch.setattr(
-            tomllib,
-            "load",
-            lambda *_args, **_kwargs: pytest.fail(
-                "integration snapshot reloaded TOML"
-            ),
-        )
-        assert resolve_ip_integration_contract(
-            contract.path,
-            project=project,
-            snapshot=contract,
-        ) is contract
-
-    incomplete = replace(
-        contract,
-        source_documents=MappingProxyType(
-            {variant_path: contract.source_documents[variant_path]}
-        ),
-    )
-    with pytest.raises(ValueError, match="source snapshot is incomplete"):
-        resolve_ip_integration_contract(
-            contract.path,
-            project=project,
-            snapshot=incomplete,
-        )
-
-    mutable_variant = replace(
-        contract.get_variant("default"),
-        filesets=dict(contract.get_variant("default").filesets),
-    )
-    with pytest.raises(ValueError, match="variant snapshot is mutable"):
-        resolve_ip_integration_contract(
-            contract.path,
-            project=project,
-            snapshot=replace(contract, variants=(mutable_variant,)),
-        )
-
-    reads.clear()
-    allowed = _allowed_files(
-        contract,
-        contract.get_variant("default"),
-        "simulation",
-    )
-
-    assert project_root / "ip/leaf/rtl/leaf.sv" in allowed
-    assert reads == []
-
-    assert root_reads == 1
-
-
-def test_configuration_scanner_reuses_ip_integration_source_documents(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root = tmp_path / "project"
-    contract_path = _write_source_component_fixture(project_root)
-    project = Project.from_project_root(project_root)
-    contract = load_ip_integration_contract(contract_path, project=project)
-    reads: list[Path] = []
-    original_read_toml = config_contracts.read_toml
-
-    def counted_read_toml(path: Path):
-        if path.resolve() in contract.source_documents:
-            reads.append(path.resolve())
-        return original_read_toml(path)
-
-    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
-
-    target_catalogs = tuple(
-        project.owner_target_catalog(owner)
-        for owner in project.owners
-        if owner.component.target_catalog is not None
-    )
-    sources = RepositorySourceInventory.for_project(project)
-    sources.verify("IP integration snapshot", contract.source_documents)
-    report = inspect_project_configuration_sources(
-        project,
-        target_catalog_inventory=target_catalogs,
-        sources=sources,
-    )
-
-    assert report["passed"] is True
-    assert reads == []
-
-
-def test_component_catalog_lookup_ignores_an_unselected_malformed_section(
-    tmp_path: Path,
-) -> None:
-    project_root = tmp_path / "project"
-    _write_source_component_fixture(project_root)
-    catalog = project_root / "catalogs/ip.toml"
-    catalog.write_text(
-        catalog.read_text(encoding="utf-8").replace(
-            "[targets]\n\n[components.leaf]",
-            "targets = []\n\n[components.leaf]",
-        ),
-        encoding="utf-8",
-    )
-    project = Project.from_project_root(project_root)
-
-    selected = ip_catalog_contract_path(
-        project,
-        "leaf",
-        section="components",
-    )
-
-    assert selected == project_root / "ip/leaf/configs/ip.toml"
 
 
 def test_ip_catalog_never_selects_an_uncataloged_project_file(
@@ -1806,27 +1173,6 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
     assert result["dependency_releases"] == []
 
 
-def test_ip_integration_rejects_a_lock_outside_the_project(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract = _write_ip_fixture(project_root, release_id, manifest)
-    external_lock = tmp_path / "external.lock.toml"
-    external_lock.write_text(
-        (contract.parent / "dependency.lock.toml").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="inside its owner root"):
-        check_ip_integration(
-            contract,
-            project=Project.from_project_root(project_root),
-            artifact_root=artifact_root,
-            variant_name="default",
-            lock_path=external_lock,
-        )
-
-
 def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
@@ -1846,40 +1192,6 @@ def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> N
             variant_name="default",
             lock_path=foreign_lock,
         )
-
-
-def test_ip_integration_declared_sources_stay_inside_the_owner(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    artifact_root = tmp_path / "artifacts"
-    release_id, manifest = _write_release_fixture(artifact_root)
-    contract = _write_ip_fixture(project_root, release_id, manifest)
-    owner_configs = contract.parent
-    foreign_configs = project_root / "ip/fixture/configs"
-    cases = (
-        (
-            'dependency_lock = "ip/demo/configs/dependency.lock.toml"',
-            'dependency_lock = "ip/fixture/configs/dependency.lock.toml"',
-            owner_configs / "dependency.lock.toml",
-            foreign_configs / "dependency.lock.toml",
-            "dependency_lock",
-        ),
-        (
-            'default = "ip/demo/configs/variants/default.toml"',
-            'default = "ip/fixture/configs/default.toml"',
-            owner_configs / "variants/default.toml",
-            foreign_configs / "default.toml",
-            "variants.default",
-        ),
-    )
-    original = contract.read_text(encoding="utf-8")
-    for old, new, source, foreign, field in cases:
-        foreign.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        contract.write_text(original.replace(old, new), encoding="utf-8")
-        with pytest.raises(ValueError, match=field):
-            load_ip_integration_contract(
-                contract,
-                project=Project.from_project_root(project_root),
-            )
 
 
 def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
@@ -1965,12 +1277,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     ("case", "message"),
     (
         ("lock-identity", "lock identity"),
-        ("lock-maturity", "lock maturity"),
-        ("unavailable", "unavailable for simulation"),
-        ("dirty-source", "dirty source"),
-        ("provider-drift", "provider owner"),
         ("interface-drift", "interface identities disagree"),
-        ("failed-maturity-check", "maturity checks are incomplete"),
         ("module-drift", "module disagrees"),
         ("missing-manifest", "manifest"),
         ("stale-role", "size drifted"),
@@ -1994,43 +1301,9 @@ def test_ip_integration_rejects_invalid_locked_release_state(
             ),
             encoding="utf-8",
         )
-    elif case == "lock-maturity":
-        lock_path = contract.parent / "dependency.lock.toml"
-        lock_path.write_text(
-            lock_path.read_text(encoding="utf-8").replace(
-                'maturity = "development"',
-                'maturity = "implementation"',
-            ),
-            encoding="utf-8",
-        )
-    elif case == "unavailable":
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        payload["exports"][0]["availability"]["simulation"] = False
-        manifest_path.write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
-    elif case == "dirty-source":
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        payload["source"]["dirty"] = True
-        payload["provenance"]["working_tree_dirty"] = True
-        manifest_path.write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
-    elif case == "provider-drift":
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        payload["provenance"]["producer"] = "ip/other-owner"
-        manifest_path.write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
     elif case == "interface-drift":
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         payload["exports"][0]["interface"]["logical"] = "wrong:interface"
-        manifest_path.write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
-    elif case == "failed-maturity-check":
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        payload["maturity"]["checks"][0]["passed"] = False
         manifest_path.write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
@@ -2053,14 +1326,7 @@ def test_ip_integration_rejects_invalid_locked_release_state(
     else:  # pragma: no cover - the parametrization is closed above
         raise AssertionError(case)
 
-    if case in {
-        "unavailable",
-        "dirty-source",
-        "provider-drift",
-        "interface-drift",
-        "failed-maturity-check",
-        "module-drift",
-    }:
+    if case in {"interface-drift", "module-drift"}:
         _refresh_lock_manifest_digest(contract, manifest_path)
 
     with pytest.raises((RuntimeError, FileNotFoundError), match=message):

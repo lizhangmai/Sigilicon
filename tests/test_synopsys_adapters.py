@@ -2,20 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import StagedAdapterFixture
 from sigilicon.flow import (
     ActionBinding,
-    ActionContext,
     ActionContract,
-    AdapterExecution,
     ArtifactBinding,
     ArtifactPort,
-    CollectedActionResult,
     ExecutionEnvironment,
     FlowEngine,
     FlowExecutionError,
@@ -23,116 +19,13 @@ from sigilicon.flow import (
     FlowRegistry,
     FlowSpec,
     FlowTarget,
-    FactSet,
-    FactSource,
-    ProducedArtifact,
     ResolvedCapability,
     ResolvedPlatformAsset,
     ResolvedPlatformAssetMember,
 )
 from sigilicon.flow.standard_asic import register_standard_asic_actions
+from sigilicon.flow.source_assets import SourceAssetsAdapter
 from sigilicon.workflows.synopsys.dc import SynopsysDCAdapter
-
-
-class SourceAssetsAdapter(StagedAdapterFixture):
-    def __init__(self, owner_root: Path) -> None:
-        self.owner_root = owner_root
-
-    def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
-        return ()
-
-    def prepare(self, context: ActionContext) -> None:
-        pass
-
-    def execute(self, context: ActionContext) -> AdapterExecution:
-        rtl_manifest = context.output_path("rtl-sources", "rtl-sources.json")
-        rtl_snapshot = rtl_manifest.parent / "files/rtl/top.sv"
-        rtl_snapshot.parent.mkdir(parents=True)
-        shutil.copy2(self.owner_root / "rtl/top.sv", rtl_snapshot)
-        rtl_manifest.write_text(
-            json.dumps(
-                {
-                    "schema": 1,
-                    "contract_kind": "source-set-manifest",
-                    "kind": "source-set.systemverilog",
-                    "qualifiers": {
-                        "variant": "variant_b",
-                        "corner": "nominal_b",
-                    },
-                    "members": [
-                        {
-                            "path": "rtl/top.sv",
-                            "file": "files/rtl/top.sv",
-                        }
-                    ],
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        context.output_path("constraints", "constraints.sdc").write_text(
-            "create_clock -period 1 clk\n",
-            encoding="utf-8",
-        )
-        recipe_manifest = context.output_path("synthesis-recipe", "recipe.json")
-        recipe_snapshot = recipe_manifest.parent / "files/run-dc-fixture.py"
-        recipe_snapshot.parent.mkdir(parents=True)
-        shutil.copy2(self.owner_root / "run-dc-fixture.py", recipe_snapshot)
-        recipe_manifest.write_text(
-            json.dumps(
-                {
-                    "schema": 1,
-                    "contract_kind": "source-set-manifest",
-                    "kind": "recipe.synthesis",
-                    "qualifiers": {
-                        "variant": "variant_b",
-                        "corner": "nominal_b",
-                    },
-                    "members": [
-                        {
-                            "path": "run-dc-fixture.py",
-                            "file": "files/run-dc-fixture.py",
-                        }
-                    ],
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return AdapterExecution.succeeded()
-
-    def collect_result(
-        self,
-        context: ActionContext,
-        execution: AdapterExecution,
-    ) -> CollectedActionResult:
-        qualifiers = {"variant": "variant_b", "corner": "nominal_b"}
-        return CollectedActionResult(
-            facts=FactSet.empty(
-                context.action.fact_schema,
-                source=FactSource(context.action.kind, context.node_id),
-            ),
-            artifacts=(
-                ProducedArtifact(
-                    "rtl-sources",
-                    "source-set.systemverilog",
-                    context.output_path("rtl-sources", "rtl-sources.json"),
-                    qualifiers=qualifiers,
-                ),
-                ProducedArtifact(
-                    "constraints",
-                    "constraints.sdc",
-                    context.output_path("constraints", "constraints.sdc"),
-                    qualifiers=qualifiers,
-                ),
-                ProducedArtifact(
-                    "synthesis-recipe",
-                    "recipe.synthesis",
-                    context.output_path("synthesis-recipe", "recipe.json"),
-                    qualifiers=qualifiers,
-                ),
-            )
-        )
 
 
 def _write_runner(owner_root: Path) -> None:
@@ -167,6 +60,53 @@ for name in ("check_design.rpt", "timing.rpt"):
     runner.chmod(0o755)
 
 
+def _write_source_assets(owner_root: Path) -> None:
+    (owner_root / "source-assets.toml").write_text(
+        '''schema = 1
+contract_kind = "source-assets"
+path_scope = "owner"
+owner = "fixture"
+name = "dc-fixture"
+
+[qualifiers]
+variant = "variant_b"
+corner = "nominal_b"
+
+[[artifacts]]
+role = "rtl-sources"
+kind = "source-set.systemverilog"
+materialization = "manifest"
+members = ["rtl/top.sv"]
+
+[[artifacts]]
+role = "constraints"
+kind = "constraints.sdc"
+materialization = "file"
+members = ["constraints.sdc"]
+
+[[artifacts]]
+role = "synthesis-recipe"
+kind = "recipe.synthesis"
+materialization = "manifest"
+members = ["run-dc-fixture.py"]
+''',
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@example.com"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Fixture"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
+    subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
+
+
 def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
     tmp_path: Path,
 ) -> None:
@@ -174,7 +114,11 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
     owner_root.mkdir()
     (owner_root / "rtl").mkdir()
     (owner_root / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    (owner_root / "constraints.sdc").write_text(
+        "create_clock -period 1 clk\n", encoding="utf-8"
+    )
     _write_runner(owner_root)
+    _write_source_assets(owner_root)
     registry = FlowRegistry()
     registry.register_action(
         ActionContract(
@@ -184,18 +128,23 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
                 ArtifactPort("constraints", "constraints.sdc"),
                 ArtifactPort("synthesis-recipe", "recipe.synthesis"),
             ),
-            adapters=("fixture-assets",),
+            adapters=("source-assets",),
+            resolves_source_assets=True,
         )
     )
     register_standard_asic_actions(registry)
-    registry.register_adapter("fixture-assets", SourceAssetsAdapter(owner_root))
+    registry.register_adapter("source-assets", SourceAssetsAdapter())
     registry.register_adapter("synopsys-dc", SynopsysDCAdapter())
     spec = FlowSpec(
         owner="fixture",
         flow_id="dc-managed",
         recipe_id="dc-managed-recipe",
         nodes=(
-            FlowNode("assets", "design.fixture-assets"),
+            FlowNode(
+                "assets",
+                "design.fixture-assets",
+                config={"source": "source-assets.toml"},
+            ),
             FlowNode(
                 "synthesis",
                 "asic.synthesis",
@@ -213,7 +162,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
         ),
         targets=(FlowTarget("synthesis", ("synthesis",)),),
         action_bindings=(
-            ActionBinding("design.fixture-assets", "fixture-assets"),
+            ActionBinding("design.fixture-assets", "source-assets"),
             ActionBinding(
                 "asic.synthesis",
                 "synopsys-dc",
@@ -228,6 +177,7 @@ def test_synopsys_dc_adapter_manages_inputs_outputs_and_qualifiers(
                 },
             ),
         ),
+        owner_root=owner_root,
     )
     timing_root = tmp_path / "timing"
     timing_root.mkdir()

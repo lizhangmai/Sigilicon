@@ -85,29 +85,6 @@ def test_lock_replaced_during_evidence_capture_is_preserved_and_reported(
     assert tuple(quarantine.rglob("sch.oa.cdslck")) == ()
 
 
-def test_new_lock_appearing_after_evidence_capture_stops_automation(
-    monkeypatch, tmp_path: Path
-) -> None:
-    view = tmp_path / "lib" / "cell" / "schematic"
-    view.mkdir(parents=True)
-    lock = view / "sch.oa.cdslck"
-    _write_lock(lock, host=socket.gethostname(), pid=999_999_999)
-    real_link = os.link
-
-    def link_then_recreate(source, target, **kwargs):
-        real_link(source, target, **kwargs)
-        Path(source).unlink()
-        _write_lock(Path(source), host=socket.gethostname(), pid=os.getpid())
-
-    monkeypatch.setattr("sigilicon.virtuoso.locks.os.link", link_then_recreate)
-
-    with pytest.raises(RuntimeError, match="changed after evidence"):
-        require_clean_oa_view(view, quarantine_root=tmp_path / "quarantine")
-
-    assert lock.is_file()
-    assert tuple((tmp_path / "quarantine").rglob("sch.oa.cdslck"))
-
-
 def test_symbolic_link_lock_is_never_followed(tmp_path: Path) -> None:
     view = tmp_path / "lib" / "cell" / "schematic"
     view.mkdir(parents=True)

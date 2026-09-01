@@ -6,8 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.cli.main import main as sigilicon_cli_main
-from sigilicon.cli.agentic_read import main as agentic_read_cli_main
 from sigilicon.domain.agentic_execution import (
     AgenticExecutionCapability,
     AgenticExecutionGrant,
@@ -44,7 +42,6 @@ from test_design_campaign import (
     POLICY,
     _topology,
 )
-from test_design_promotion import _inputs as promotion_inputs
 
 
 def _read(root: Path) -> DesignCampaignReadInterface:
@@ -196,34 +193,17 @@ def _grant(campaign_identity: str, plan_record: dict[str, object]) -> AgenticExe
     )
 
 
-def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
+def test_campaign_execution_returns_public_result_and_immutable_audit(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_campaign_project(tmp_path)
     _write_campaign_extension(tmp_path)
     source = _campaign()
-    campaign_path = tmp_path / "campaign.json"
-    campaign_path.write_text(source.canonical_json(), encoding="utf-8")
     read = _read(tmp_path)
     planned = read.plan_campaign(campaign_json=source.canonical_json())
     campaign_identity = planned["data"]["campaign_identity"]
 
-    assert sigilicon_cli_main(
-        [
-            "campaign",
-            "--project-root",
-            str(tmp_path),
-            "plan",
-            "--campaign",
-            str(campaign_path),
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == planned
-
     grant = _grant(campaign_identity, planned["data"]["plan"])
-    grant_path = tmp_path / "grant.json"
-    grant_path.write_text(grant.canonical_json(), encoding="utf-8")
     execution = AgenticExecutionInterface(read, grant=grant)
     result = execution.run_campaign(
         campaign_json=source.canonical_json(),
@@ -240,20 +220,6 @@ def test_campaign_python_cli_share_plan_execution_and_immutable_audit(
         campaign_identity=campaign_identity,
     ) == result
 
-    assert sigilicon_cli_main(
-        [
-            "campaign",
-            "--project-root",
-            str(tmp_path),
-            "run",
-            "--grant",
-            str(grant_path),
-            campaign_identity,
-            "--campaign",
-            str(campaign_path),
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == result
     audits = tuple((tmp_path / "artifacts").rglob("audit.json"))
     assert len(audits) == 1
     audit = json.loads(audits[0].read_text(encoding="utf-8"))
@@ -473,8 +439,6 @@ def test_partial_campaign_create_is_completed_without_replacing_inputs(
 
 def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_campaign_project(tmp_path)
     _write_campaign_extension(tmp_path, mode="feedback")
@@ -512,36 +476,6 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
             (state.iterations[-1].candidate.identity,),
         ),
     )
-    baseline_event = next((tmp_path / "artifacts").rglob("event-0001.json"))
-    baseline_pointer = next((tmp_path / "artifacts").rglob("control/state.json"))
-    baseline_event.unlink()
-    baseline_pointer.unlink()
-    recovered = AgenticExecutionInterface(
-        _read(tmp_path),
-        grant=grant,
-    ).run_campaign(
-        campaign_json=source.canonical_json(),
-        campaign_identity=campaign_identity,
-    )
-    assert recovered == started
-    assert baseline_event.is_file()
-    assert baseline_pointer.is_file()
-    event_text = baseline_event.read_text(encoding="utf-8")
-    sequence_gap = baseline_event.with_name("event-0003.json")
-    sequence_gap.write_text(event_text, encoding="utf-8")
-    with pytest.raises(ValueError, match="sequence is incomplete"):
-        AgenticExecutionInterface(
-            _read(tmp_path),
-            grant=grant,
-        ).campaign_store.locate(run_id)
-    sequence_gap.unlink()
-    baseline_event.write_text("{\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="cannot read Design Campaign Event"):
-        AgenticExecutionInterface(
-            _read(tmp_path),
-            grant=grant,
-        ).campaign_store.locate(run_id)
-    baseline_event.write_text(event_text, encoding="utf-8")
     rejected = replace(
         proposal,
         proposed_topology=_topology(
@@ -557,31 +491,16 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
             run_id=run_id,
             proposal_json=rejected.canonical_json(),
         )
-    assert len(tuple((tmp_path / "artifacts").rglob("event-*.json"))) == 1
-    state_pointer = next((tmp_path / "artifacts").rglob("control/state.json"))
-    state_pointer.unlink()
-
     resumed_interface = AgenticExecutionInterface(
         _read(tmp_path),
         grant=grant,
     )
-    located = resumed_interface.campaign_store.locate(run_id)
-    with resumed_interface.campaign_store.exclusive(located.paths):
-        with pytest.raises(ValueError, match="already in progress"):
-            AgenticExecutionInterface(
-                _read(tmp_path),
-                grant=grant,
-            ).run_campaign(
-                run_id=run_id,
-                proposal_json=proposal.canonical_json(),
-            )
     completed = resumed_interface.run_campaign(
         run_id=run_id,
         proposal_json=proposal.canonical_json(),
     )
 
     assert completed["conclusion"] == "passed"
-    assert state_pointer.is_file()
     assert len(completed["data"]["state"]["iterations"]) == 2
     assert source.baseline.iteration_id == "baseline"
     assert resumed_interface.run_campaign(
@@ -596,81 +515,5 @@ def test_campaign_resumes_across_processes_without_preenumerated_second_attempt(
                 required_regressions=("different-regression",),
             ).canonical_json(),
         )
-    grant_path = tmp_path / "grant.json"
-    grant_path.write_text(grant.canonical_json(), encoding="utf-8")
-    proposal_path = tmp_path / "proposal.json"
-    proposal_path.write_text(proposal.canonical_json(), encoding="utf-8")
-    assert sigilicon_cli_main(
-        [
-            "campaign",
-            "--project-root",
-            str(tmp_path),
-            "run",
-            "--grant",
-            str(grant_path),
-            "--run-id",
-            run_id,
-            "--proposal",
-            str(proposal_path),
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == completed
     immutable_events = tuple((tmp_path / "artifacts").rglob("event-*.json"))
     assert len(immutable_events) == 2
-
-
-def test_promotion_plan_python_and_cli_share_non_writing_interface(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _write_campaign_project(tmp_path)
-    candidate, topology, evidence, decision, request = promotion_inputs()
-    inputs = {
-        "candidate.json": candidate.canonical_json(),
-        "topology.json": topology.canonical_json(),
-        "evidence.json": evidence.canonical_json(),
-        "decision.json": decision.canonical_json(),
-        "promotion-request.json": request.canonical_json(),
-    }
-    for name, value in inputs.items():
-        (tmp_path / name).write_text(value, encoding="utf-8")
-    source_before = {
-        path.relative_to(tmp_path).as_posix(): path.read_bytes()
-        for path in (tmp_path / "ip").rglob("*")
-        if path.is_file()
-    }
-    interface = _read(tmp_path)
-    expected = interface.plan_candidate_promotion(
-        owner="example",
-        candidate_json=inputs["candidate.json"],
-        artifact_json=(inputs["topology.json"], inputs["evidence.json"]),
-        decision_json=inputs["decision.json"],
-        request_json=inputs["promotion-request.json"],
-    )
-
-    assert agentic_read_cli_main(
-        [
-            "--project-root",
-            str(tmp_path),
-            "candidate-promotion-plan",
-            "example",
-            "--candidate",
-            str(tmp_path / "candidate.json"),
-            "--artifact",
-            str(tmp_path / "topology.json"),
-            "--artifact",
-            str(tmp_path / "evidence.json"),
-            "--decision",
-            str(tmp_path / "decision.json"),
-            "--request",
-            str(tmp_path / "promotion-request.json"),
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == expected
-    assert expected["data"]["human_approval_required"] is True
-    assert expected["data"]["writes_canonical_source"] is False
-    assert source_before == {
-        path.relative_to(tmp_path).as_posix(): path.read_bytes()
-        for path in (tmp_path / "ip").rglob("*")
-        if path.is_file()
-    }

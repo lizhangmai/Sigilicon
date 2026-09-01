@@ -29,7 +29,6 @@ from sigilicon.flow import (
 )
 from sigilicon.flow.physical_design import (
     MATERIALIZED_GDS_KIND,
-    MATERIALIZATION_RECEIPT_KIND,
     PHYSICAL_DESIGN_JOB_KIND,
     PHYSICAL_DESIGN_RESULT_KIND,
     PHYSICAL_MATERIALIZATION_EXECUTION_ACTION,
@@ -55,10 +54,8 @@ from sigilicon.layout.materialization_execution import (
 from sigilicon.layout.physical_design import (
     ResultStatus,
 )
-from sigilicon.flow.physical_design import OA_XSTREAM_MATERIALIZATION_ADAPTER
 from sigilicon.layout.physical_design import PhysicalDesignJob, PhysicalDesignResult
 from physical_design_fixtures import routed_job, typed_result
-from sigilicon.workflows.action_registry import build_action_registry
 from sigilicon.workflows.physical_design import (
     collect_materialization_execution_result,
     read_materialization_execution_request,
@@ -525,15 +522,3 @@ def test_layout_content_accepts_only_zero_tape_padding_after_endlib() -> None:
     assert canonical[len(payload) :] == bytes(2048 - len(payload))
     with pytest.raises(MaterializationExecutionError, match="after ENDLIB"):
         validate_layout_content(payload + b"\0\0BAD!", LayoutArtifactFormat.GDSII)
-
-
-def test_common_registry_keeps_materialization_backend_explicit() -> None:
-    registry = build_action_registry()
-    contract = registry.action(PHYSICAL_MATERIALIZATION_EXECUTION_ACTION)
-
-    assert contract.adapter_extensible
-    assert not registry.has_adapter(_MATERIALIZER)
-    assert registry.has_adapter(OA_XSTREAM_MATERIALIZATION_ADAPTER)
-    assert OA_XSTREAM_MATERIALIZATION_ADAPTER in contract.adapters
-    assert contract.output("layout").kind == MATERIALIZED_GDS_KIND
-    assert contract.output("receipt").kind == MATERIALIZATION_RECEIPT_KIND

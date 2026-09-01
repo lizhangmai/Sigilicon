@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 from typing import Any
 
 import pytest
@@ -103,31 +102,6 @@ def test_plan_design_action_snapshots_runner_spec_and_binds_command(
         "evidence_scope": "leaf-topology",
     }
 
-    command = invocation.bound_command(
-        runner_path="/sealed/runner",
-        spec_path="/sealed/spec",
-    )
-    assert command[:3] == (
-        sys.executable,
-        "-c",
-        "from sigilicon.workflows.design_runner import main;main()",
-    )
-    assert command[3:9] == (
-        "/sealed/runner",
-        str(source.resolve()),
-        "-",
-        "/sealed/spec",
-        str(spec.resolve()),
-        "--spec",
-    )
-    assert command[9:] == (
-        str(spec.resolve()),
-        "--mode",
-        "topology",
-        "--overwrite",
-    )
-
-
 def test_plan_design_action_requires_direct_recipe_fields_and_safe_args(
     tmp_path: Path,
 ) -> None:
@@ -155,49 +129,6 @@ def test_plan_design_action_rejects_source_drift_during_snapshot(
 
     with pytest.raises(ValueError, match="source changed during planning"):
         plan_design_action(project, project.owner("example"), _config(source))
-
-
-def test_plan_design_action_accepts_owner_module_and_one_shared_module(
-    tmp_path: Path,
-) -> None:
-    project, _source, _spec = _project(tmp_path)
-    module = tmp_path / "ip/example/dv/transaction.py"
-    module.write_text("print('{\"passed\": true}')\n", encoding="utf-8")
-    owner_config = _config(module)
-    owner_config.update(
-        {
-            "kind": "module",
-            "entrypoint": "ip.example.dv.transaction",
-        }
-    )
-    owner_plan = plan_design_action(project, project.owner("example"), owner_config)
-    owner_invocation = owner_plan.require_value(DesignInvocation)
-    assert owner_invocation.kind == "module"
-    assert owner_plan.sources[0].location == module.resolve()
-    assert owner_plan.sources[0].scope == "project"
-
-    shared_config = _config(module)
-    shared_config.update(
-        {
-            "kind": "module",
-            "entrypoint": "sigilicon.cli.design_lifecycle",
-        }
-    )
-    shared_plan = plan_design_action(project, project.owner("example"), shared_config)
-    shared_invocation = shared_plan.require_value(DesignInvocation)
-    assert shared_plan.sources[0].scope == "sigilicon-package"
-    assert shared_plan.sources[0].path == "sigilicon/cli/design_lifecycle.py"
-    assert shared_invocation.bound_command(
-        runner_path="/sealed/runner",
-        spec_path=None,
-    )[5] == "sigilicon.cli"
-
-    with pytest.raises(ValueError, match="project-owned module"):
-        plan_design_action(
-            project,
-            project.owner("example"),
-            {**shared_config, "entrypoint": "sigilicon.cli.future_command"},
-        )
 
 
 def test_plan_design_action_rejects_symlinked_owner_source(tmp_path: Path) -> None:

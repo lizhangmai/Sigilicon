@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from sigilicon.domain.netlist import (
-    extract_subckt_body,
     iter_spectre_logical_lines,
     lower_subckt_default_parameters,
     load_netlist_snapshot,
@@ -60,46 +59,36 @@ def test_materialized_snapshot_detects_inode_replacement(tmp_path: Path) -> None
         artifact.verify()
 
 
-def test_materialized_snapshot_detects_parent_symlink_replacement(
+@pytest.mark.parametrize(
+    ("name", "body", "message"),
+    (
+        (
+            "header-parameterized",
+            "subckt cell A Y parameters wdev=120n\n"
+            "M0 (Y A 0 0) nch_mac w=wdev\n"
+            "ends cell\n",
+            "first body statement",
+        ),
+        (
+            "expression",
+            "subckt cell A Y\n"
+            "parameters wdev=baseWidth\n"
+            "M0 (Y A 0 0) nch_mac w=wdev\n"
+            "ends cell\n",
+            "non-literal",
+        ),
+    ),
+)
+def test_lowering_rejects_unsupported_default_parameters(
     tmp_path: Path,
+    name: str,
+    body: str,
+    message: str,
 ) -> None:
-    snapshot = load_netlist_snapshot(_source(tmp_path / "source.scs"))
-    artifact = materialize_netlist_snapshot(
-        snapshot,
-        tmp_path / "run" / "immutable.scs",
-    )
-    original_parent = tmp_path / "run-original"
-    artifact.path.parent.rename(original_parent)
-    artifact.path.parent.symlink_to(original_parent, target_is_directory=True)
+    source = tmp_path / f"{name}.scs"
+    source.write_text(body, encoding="utf-8")
 
-    with pytest.raises(OSError):
-        artifact.verify()
-
-
-def test_lowering_rejects_header_default_parameters(tmp_path: Path) -> None:
-    source = tmp_path / "header-parameterized.scs"
-    source.write_text(
-        "subckt cell A Y parameters wdev=120n\n"
-        "M0 (Y A 0 0) nch_mac w=wdev\n"
-        "ends cell\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="first body statement"):
-        lower_subckt_default_parameters(load_netlist_snapshot(source), "cell")
-
-
-def test_lowering_rejects_nonliteral_default_parameter(tmp_path: Path) -> None:
-    source = tmp_path / "expression.scs"
-    source.write_text(
-        "subckt cell A Y\n"
-        "parameters wdev=baseWidth\n"
-        "M0 (Y A 0 0) nch_mac w=wdev\n"
-        "ends cell\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="non-literal"):
+    with pytest.raises(ValueError, match=message):
         lower_subckt_default_parameters(load_netlist_snapshot(source), "cell")
 
 
@@ -140,21 +129,6 @@ def test_lowering_normalizes_a_continued_subckt_header_for_spicein(
     assert "X0 (A B Y VDD VSS) child" in lowered.text
 
 
-def test_extract_body_excludes_continued_subckt_header_ports(tmp_path: Path) -> None:
-    source = tmp_path / "continued-header-body.scs"
-    source.write_text(
-        "subckt cell A B \\\n"
-        "    Y VDD VSS\n"
-        "X0 (A B Y VDD VSS) child\n"
-        "ends cell\n",
-        encoding="utf-8",
-    )
-
-    body = extract_subckt_body(load_netlist_snapshot(source), "cell")
-
-    assert body == "X0 (A B Y VDD VSS) child"
-
-
 def test_lowering_normalizes_continued_instance_statements_for_spicein(
     tmp_path: Path,
 ) -> None:
@@ -192,19 +166,6 @@ ends cell
 
     with pytest.raises(ValueError, match="unterminated"):
         tuple(iter_spectre_logical_lines("M0 (Y A 0 0) nch_mac \\"))
-
-
-def test_snapshot_parses_a_continued_subckt_header_via_logical_lines(tmp_path: Path) -> None:
-    source = tmp_path / "continued.scs"
-    source.write_text(
-        "subckt cell A \\\n"
-        "// an ignored continuation line\n"
-        "Y parameters drive=1\n"
-        "ends cell\n",
-        encoding="utf-8",
-    )
-
-    assert load_netlist_snapshot(source).interfaces == {"cell": ("A", "Y")}
 
 
 def test_inline_pwl_tables_preserve_exact_ordered_tokens_for_oa_cdf(

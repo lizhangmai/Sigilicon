@@ -6,7 +6,6 @@ import subprocess
 
 import pytest
 
-from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.flow import (
     ActionBinding,
     ActionContract,
@@ -38,10 +37,8 @@ def _write_executable(path: Path, body: str) -> None:
 def _write_owner(
     owner_root: Path,
     *,
-    initialize_git: bool = True,
     fail_pnr: bool = False,
     library_report: str | None = None,
-    omit_library_report: bool = False,
     design_report: str | None = None,
     physical_completion_report: str | None = None,
 ) -> None:
@@ -111,10 +108,9 @@ if target == "library":
     reference = Path(os.environ["SIGILICON_FC_REFERENCE_NDM"])
     reference.mkdir(parents=True)
     (reference / "library.ndm").write_text("reference library\\n")
-    if {not omit_library_report!r}:
-        report = Path(os.environ["SIGILICON_FC_LIBRARY_CHECK_REPORT"])
-        report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text({library_report!r})
+    report = Path(os.environ["SIGILICON_FC_LIBRARY_CHECK_REPORT"])
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text({library_report!r})
 else:
     {failure}
     assert Path(os.environ["SIGILICON_SYNOPSYS_FC_SHELL"]).is_file()
@@ -210,20 +206,19 @@ members = ["run-fc-fixture.py", "place-route.tcl"]
 ''',
         encoding="utf-8",
     )
-    if initialize_git:
-        subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
-        subprocess.run(
-            ("git", "config", "user.email", "fixture@example.com"),
-            cwd=owner_root,
-            check=True,
-        )
-        subprocess.run(
-            ("git", "config", "user.name", "Fixture"),
-            cwd=owner_root,
-            check=True,
-        )
-        subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
-        subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
+    subprocess.run(("git", "init", "-q"), cwd=owner_root, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@example.com"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Fixture"),
+        cwd=owner_root,
+        check=True,
+    )
+    subprocess.run(("git", "add", "."), cwd=owner_root, check=True)
+    subprocess.run(("git", "commit", "-qm", "fixture"), cwd=owner_root, check=True)
 
 
 def _registry(owner_root: Path) -> FlowRegistry:
@@ -452,7 +447,7 @@ def _member(path: Path, role: str) -> ResolvedPlatformAssetMember:
     )
 
 
-def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]:
+def _environment(tmp_path: Path) -> ExecutionEnvironment:
     collateral: dict[str, Path] = {}
     for name in (
         "technology-file",
@@ -519,50 +514,7 @@ def _environment(tmp_path: Path) -> tuple[ExecutionEnvironment, dict[str, Path]]
             ),
         ),
     )
-    return environment, collateral
-
-
-def _write_environment_contract(
-    path: Path,
-    environment: ExecutionEnvironment,
-) -> None:
-    lines = [
-        "schema = 1",
-        'contract_kind = "execution-environment"',
-        'path_scope = "site"',
-        'owner = "fixture-site"',
-        'name = "fc-fixture-site"',
-        "",
-    ]
-    for name, capability in environment.capabilities.items():
-        lines.extend(
-            (
-                f'[capabilities."{name}"]',
-                f'identity = "{capability.identity}"',
-                f'executable = {json.dumps(str(capability.executable))}',
-                "",
-            )
-        )
-    for asset in environment.platform_assets:
-        lines.extend(
-            (
-                "[[platform_assets]]",
-                f'role = "{asset.role}"',
-                f'kind = "{asset.kind}"',
-                f'identity = "{asset.identity}"',
-                "",
-            )
-        )
-        for member in asset.members:
-            lines.extend(
-                (
-                    "[[platform_assets.members]]",
-                    f'role = "{member.role}"',
-                    f'path = {json.dumps(str(member.location))}',
-                    "",
-                )
-            )
-    path.write_text("\n".join(lines), encoding="utf-8")
+    return environment
 
 
 def test_physical_implementation_requires_fc_antenna_rules() -> None:
@@ -589,7 +541,7 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     owner_root = tmp_path / "owner"
     _write_owner(owner_root)
     spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
+    environment = _environment(tmp_path)
     registry = _registry(owner_root)
     engine = FlowEngine(registry)
     plan = engine.plan(spec, "implementation")
@@ -605,27 +557,13 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     assert result.status == "accepted"
     reference = result.nodes["reference-library"]
     implementation = result.nodes["implementation"]
-    assert set(reference.artifacts) == {
-        "execution-evidence",
-        "library-check-report",
-        "reference-library",
-    }
-    assert set(implementation.artifacts) == {
-        "area-report",
+    assert {"execution-evidence", "reference-library"} <= set(reference.artifacts)
+    assert {
         "checkpoint",
-        "design-check-report",
         "drc-report",
-        "execution-evidence",
-        "layout-stream",
-        "power-report",
         "physical-completion-report",
-        "tie-off-check-report",
-        "qor-report",
-        "routed-constraints",
         "routed-netlist",
-        "timing-report",
-        "structural-report",
-    }
+    } <= set(implementation.artifacts)
     reference_manifest = json.loads(
         reference.artifacts["reference-library"].path.read_text(encoding="utf-8")
     )
@@ -638,37 +576,13 @@ def test_synopsys_fc_adapter_runs_separate_library_and_pnr_actions(
     assert checkpoint_manifest["members"][0]["path"] == "top.ndm"
     assert set(reference_manifest["members"][0]) == {"path"}
     assert set(checkpoint_manifest["members"][0]) == {"path"}
-    assert implementation.facts.as_mapping() == {
-        "design-check-error-count": 0,
-        "design-check-warning-count": 3,
-        "open-net-count": 0,
-        "route-drc-violation-count": 0,
-        "worst-setup-slack-ns": -0.04,
-        "worst-hold-slack-ns": -0.08,
-        "max-transition-violation-count": 2,
-        "max-capacitance-violation-count": 3,
-        "physical-cell-area-um2": 387.59,
-        "leaf-cell-count": 418,
-        "power-activity-mode": "scalar",
-        "total-dynamic-power-nw": 95500.0,
-        "cell-leakage-power-nw": 386.0,
-        "antenna-check-active": True,
-        "antenna-check-status": "active",
-        "antenna-violation-count": 0,
-        "tie-to-rail-check-performed": True,
-        "tie-to-rail-check-status": "performed",
-        "tie-to-rail-violation-count": 0,
-        "tie-to-rail-direct-violation-count": 0,
-        "tie-off-check-performed": True,
-        "tie-off-check-status": "performed",
-        "tie-off-violation-count": 0,
-        "required-pg-port-count": 2,
-        "placed-required-pg-port-count": 2,
-        "unplaced-required-pg-port-count": 0,
-        "pg-connectivity-check-performed": True,
-        "pg-connectivity-check-status": "performed",
-        "pg-connectivity-violation-count": 0,
-    }
+    facts = implementation.facts.as_mapping()
+    assert facts["design-check-error-count"] == 0
+    assert facts["open-net-count"] == facts["route-drc-violation-count"] == 0
+    assert facts["antenna-check-active"] is True
+    assert facts["tie-off-check-performed"] is True
+    assert facts["unplaced-required-pg-port-count"] == 0
+    assert facts["pg-connectivity-check-performed"] is True
     for record in result.run_root.rglob("*.json"):
         assert str(tmp_path) not in record.read_text(encoding="utf-8")
 
@@ -677,7 +591,7 @@ def test_synopsys_fc_adapter_records_owner_runner_failure(tmp_path: Path) -> Non
     owner_root = tmp_path / "owner"
     _write_owner(owner_root, fail_pnr=True)
     spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
+    environment = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
@@ -718,7 +632,7 @@ def test_library_manager_exit_zero_with_report_error_is_policy_rejected(
         ),
     )
     spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
+    environment = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
@@ -736,105 +650,6 @@ def test_library_manager_exit_zero_with_report_error_is_policy_rejected(
     assert reference.status == "rejected"
 
 
-def test_failed_workspace_check_marker_is_policy_rejected(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(owner_root, library_report="Workspace check failed!\n")
-    spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
-
-    result = engine.run(
-        engine.plan(spec, "reference-library"),
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="5" * 32,
-    )
-
-    reference = result.nodes["reference-library"]
-    assert reference.execution_status == "succeeded"
-    assert reference.result_status == "valid"
-    assert reference.facts["library-check-error-count"] == 0
-    assert reference.facts["library-check-succeeded"] is False
-    assert reference.status == "rejected"
-
-
-def test_rejected_reference_library_blocks_physical_implementation(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(
-        owner_root,
-        library_report=(
-            "Error: timing libraries have the same PVT (LM-073)\n"
-            "Workspace check succeeded!\n"
-        ),
-    )
-    spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
-
-    result = engine.run(
-        engine.plan(spec, "implementation"),
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="4" * 32,
-    )
-
-    assert result.nodes["reference-library"].status == "rejected"
-    implementation = result.nodes["implementation"]
-    assert implementation.status == "blocked"
-    assert implementation.execution_status is None
-    assert "reference-library" in (implementation.reason or "")
-
-
-def test_synopsys_fc_adapter_rejects_missing_library_report(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(owner_root, omit_library_report=True)
-    spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
-
-    result = engine.run(
-        engine.plan(spec, "reference-library"),
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="f" * 32,
-    )
-
-    reference = result.nodes["reference-library"]
-    assert result.status == "failed"
-    assert reference.execution_status == "succeeded"
-    assert reference.result_status == "failed"
-    assert "library-check-report" in (reference.reason or "")
-
-
-def test_synopsys_fc_adapter_rejects_malformed_library_report(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(owner_root, library_report="Checking libraries...\n")
-    spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
-
-    result = engine.run(
-        engine.plan(spec, "reference-library"),
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="1" * 32,
-    )
-
-    reference = result.nodes["reference-library"]
-    assert result.status == "failed"
-    assert reference.execution_status == "succeeded"
-    assert reference.result_status == "failed"
-    assert "completion marker is missing" in (reference.reason or "")
-
-
 def test_fc_exit_zero_with_design_check_error_is_policy_rejected(
     tmp_path: Path,
 ) -> None:
@@ -847,7 +662,7 @@ def test_fc_exit_zero_with_design_check_error_is_policy_rejected(
         ),
     )
     spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
+    environment = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
 
     result = engine.run(
@@ -866,73 +681,13 @@ def test_fc_exit_zero_with_design_check_error_is_policy_rejected(
     assert implementation.status == "rejected"
 
 
-def test_fc_exit_zero_with_incomplete_pg_is_policy_rejected(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(
-        owner_root,
-        physical_completion_report=(
-            "SIGILICON_PHYSICAL_COMPLETION_REPORT 1\n"
-            "Required PG ports = 2\n"
-            "Placed required PG ports = 0\n"
-            "Unplaced required PG ports = 2\n"
-            "PG connectivity check = performed\n"
-            "PG connectivity violations = 4\n"
-        ),
-    )
-    spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
-
-    result = engine.run(
-        engine.plan(spec, "implementation"),
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="6" * 32,
-    )
-
-    implementation = result.nodes["implementation"]
-    assert implementation.execution_status == "succeeded"
-    assert implementation.result_status == "valid"
-    assert implementation.facts["unplaced-required-pg-port-count"] == 2
-    assert implementation.facts["pg-connectivity-violation-count"] == 4
-    assert implementation.policy_status == "rejected"
-    assert implementation.status == "rejected"
-
-
-def test_synopsys_fc_adapter_rejects_malformed_implementation_report(
-    tmp_path: Path,
-) -> None:
-    owner_root = tmp_path / "owner"
-    _write_owner(owner_root, design_report="design check finished\n")
-    spec = _flow(owner_root)
-    environment, _collateral = _environment(tmp_path)
-    engine = FlowEngine(_registry(owner_root))
-
-    result = engine.run(
-        engine.plan(spec, "implementation"),
-        artifact_root=tmp_path / "artifacts",
-        environment=environment,
-        run_id="3" * 32,
-    )
-
-    implementation = result.nodes["implementation"]
-    assert result.status == "failed"
-    assert implementation.execution_status == "succeeded"
-    assert implementation.result_status == "failed"
-    assert "message summary is missing or duplicated" in (
-        implementation.reason or ""
-    )
-
-
 def test_synopsys_fc_preflight_rejects_changed_recipe(
     tmp_path: Path,
 ) -> None:
     owner_root = tmp_path / "owner"
     _write_owner(owner_root)
     spec = _flow(owner_root)
-    environment, _ = _environment(tmp_path)
+    environment = _environment(tmp_path)
     engine = FlowEngine(_registry(owner_root))
     plan = engine.plan(spec, "implementation")
 

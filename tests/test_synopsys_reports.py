@@ -70,155 +70,74 @@ Cell Leakage Power = 386 nW
     return reports
 
 
-def test_real_fc_report_distinguishes_missing_antenna_rules_and_tie_check(
-    tmp_path: Path,
-) -> None:
-    facts = parse_synopsys_fc_report_facts(
-        "asic.physical-implementation",
-        _physical_reports(
-            tmp_path,
-            FIXTURES / "incomplete_drc.rpt",
-            FIXTURES / "physical_completion_incomplete.rpt",
-        ),
-    )
-
-    assert facts["antenna-check-active"] is False
-    assert facts["antenna-check-status"] == "no-rules"
-    assert "antenna-violation-count" not in facts
-    assert facts["tie-to-rail-check-performed"] is False
-    assert facts["tie-to-rail-check-status"] == "not-performed"
-    assert "tie-to-rail-violation-count" not in facts
-    assert "tie-to-rail-direct-violation-count" not in facts
-
-
-def test_physical_completion_report_exposes_complete_pg_facts(
-    tmp_path: Path,
-) -> None:
-    facts = parse_synopsys_fc_report_facts(
-        "asic.physical-implementation",
-        _physical_reports(
-            tmp_path,
-            FIXTURES / "route_checks_active.rpt",
-            FIXTURES / "physical_completion_complete.rpt",
-        ),
-    )
-
-    assert facts["required-pg-port-count"] == 2
-    assert facts["placed-required-pg-port-count"] == 2
-    assert facts["unplaced-required-pg-port-count"] == 0
-    assert facts["pg-connectivity-check-performed"] is True
-    assert facts["pg-connectivity-check-status"] == "performed"
-    assert facts["pg-connectivity-violation-count"] == 0
-
-
-def test_physical_completion_report_exposes_incomplete_pg_facts(
-    tmp_path: Path,
-) -> None:
-    facts = parse_synopsys_fc_report_facts(
-        "asic.physical-implementation",
-        _physical_reports(
-            tmp_path,
-            FIXTURES / "incomplete_drc.rpt",
-            FIXTURES / "physical_completion_incomplete.rpt",
-        ),
-    )
-
-    assert facts["required-pg-port-count"] == 2
-    assert facts["placed-required-pg-port-count"] == 0
-    assert facts["unplaced-required-pg-port-count"] == 2
-    assert facts["pg-connectivity-check-performed"] is True
-    assert facts["pg-connectivity-violation-count"] == 6
-
-
-def test_missing_physical_completion_report_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(
-        FlowExecutionError,
-        match="omitted 'physical-completion-report'",
-    ):
-        parse_synopsys_fc_report_facts(
-            "asic.physical-implementation",
-            _physical_reports(
-                tmp_path,
-                FIXTURES / "incomplete_drc.rpt",
-            ),
-        )
-
-
-def test_malformed_physical_completion_report_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(
-        FlowExecutionError,
-        match="malformed Synopsys physical-completion report",
-    ):
-        parse_synopsys_fc_report_facts(
-            "asic.physical-implementation",
-            _physical_reports(
-                tmp_path,
-                FIXTURES / "route_checks_active.rpt",
-                FIXTURES / "physical_completion_malformed.rpt",
-            ),
-        )
-
-
-def test_pg_connectivity_not_performed_has_no_violation_count(
-    tmp_path: Path,
-) -> None:
-    facts = parse_synopsys_fc_report_facts(
-        "asic.physical-implementation",
-        _physical_reports(
-            tmp_path,
-            FIXTURES / "route_checks_inactive.rpt",
-            FIXTURES / "physical_completion_not_checked.rpt",
-        ),
-    )
-
-    assert facts["pg-connectivity-check-performed"] is False
-    assert facts["pg-connectivity-check-status"] == "not-performed"
-    assert "pg-connectivity-violation-count" not in facts
-
-
 @pytest.mark.parametrize(
-    ("fixture", "active", "status", "violations"),
+    ("drc", "completion", "antenna", "pg_status", "pg_violations"),
     [
-        ("route_checks_active.rpt", True, "active", 3),
-        ("route_checks_inactive.rpt", False, "inactive", None),
-        ("incomplete_drc.rpt", False, "no-rules", None),
+        (
+            "route_checks_active.rpt",
+            "physical_completion_complete.rpt",
+            "active",
+            "performed",
+            0,
+        ),
+        (
+            "route_checks_inactive.rpt",
+            "physical_completion_not_checked.rpt",
+            "inactive",
+            "not-performed",
+            None,
+        ),
+        (
+            "incomplete_drc.rpt",
+            "physical_completion_incomplete.rpt",
+            "no-rules",
+            "performed",
+            6,
+        ),
     ],
 )
-def test_antenna_check_states_remain_distinct(
+def test_fc_report_states_capture_completion_and_checks(
     tmp_path: Path,
-    fixture: str,
-    active: bool,
-    status: str,
-    violations: int | None,
+    drc: str,
+    completion: str,
+    antenna: str,
+    pg_status: str,
+    pg_violations: int | None,
 ) -> None:
     facts = parse_synopsys_fc_report_facts(
         "asic.physical-implementation",
         _physical_reports(
             tmp_path,
-            FIXTURES / fixture,
-            FIXTURES / "physical_completion_complete.rpt",
+            FIXTURES / drc,
+            FIXTURES / completion,
         ),
     )
 
-    assert facts["antenna-check-active"] is active
-    assert facts["antenna-check-status"] == status
-    if violations is None:
+    assert facts["antenna-check-active"] is (antenna == "active")
+    assert facts["antenna-check-status"] == antenna
+    assert facts["pg-connectivity-check-status"] == pg_status
+    if pg_violations is None:
+        assert facts["pg-connectivity-check-performed"] is False
+        assert "pg-connectivity-violation-count" not in facts
+    else:
+        assert facts["pg-connectivity-check-performed"] is True
+        assert facts["pg-connectivity-violation-count"] == pg_violations
+    if antenna != "active":
         assert "antenna-violation-count" not in facts
     else:
-        assert facts["antenna-violation-count"] == violations
+        assert facts["antenna-violation-count"] == 3
 
 
 @pytest.mark.parametrize(
-    ("fixture", "performed", "status", "violations", "direct"),
+    ("drc", "status", "violations", "direct"),
     [
-        ("route_checks_active.rpt", True, "performed", 4, 1),
-        ("incomplete_drc.rpt", False, "not-performed", None, None),
+        ("route_checks_active.rpt", "performed", 4, 1),
+        ("incomplete_drc.rpt", "not-performed", None, None),
     ],
 )
-def test_tie_to_rail_check_states_remain_distinct(
+def test_fc_report_tie_to_rail_states_remain_distinct(
     tmp_path: Path,
-    fixture: str,
-    performed: bool,
+    drc: str,
     status: str,
     violations: int | None,
     direct: int | None,
@@ -227,12 +146,12 @@ def test_tie_to_rail_check_states_remain_distinct(
         "asic.physical-implementation",
         _physical_reports(
             tmp_path,
-            FIXTURES / fixture,
+            FIXTURES / drc,
             FIXTURES / "physical_completion_complete.rpt",
         ),
     )
 
-    assert facts["tie-to-rail-check-performed"] is performed
+    assert facts["tie-to-rail-check-performed"] is (status == "performed")
     assert facts["tie-to-rail-check-status"] == status
     if violations is None:
         assert "tie-to-rail-violation-count" not in facts
@@ -243,37 +162,26 @@ def test_tie_to_rail_check_states_remain_distinct(
 
 
 @pytest.mark.parametrize(
-    ("fixture", "violations"),
-    [("tieoff_complete.rpt", 0), ("tieoff_violations.rpt", 1)],
-)
-def test_tie_off_check_report_exposes_performed_facts(
-    tmp_path: Path,
-    fixture: str,
-    violations: int,
-) -> None:
-    facts = parse_synopsys_fc_report_facts(
-        "asic.physical-implementation",
-        _physical_reports(
-            tmp_path,
-            FIXTURES / "incomplete_drc.rpt",
-            FIXTURES / "physical_completion_complete.rpt",
-            FIXTURES / fixture,
+    ("completion", "message"),
+    (
+        (None, "omitted 'physical-completion-report'"),
+        (
+            "physical_completion_malformed.rpt",
+            "malformed Synopsys physical-completion report",
         ),
-    )
-
-    assert facts["tie-off-check-performed"] is True
-    assert facts["tie-off-check-status"] == "performed"
-    assert facts["tie-off-violation-count"] == violations
-
-
-def test_missing_tie_off_check_report_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(FlowExecutionError, match="omitted 'tie-off-check-report'"):
+    ),
+)
+def test_fc_report_rejects_missing_or_malformed_completion(
+    tmp_path: Path,
+    completion: str | None,
+    message: str,
+) -> None:
+    with pytest.raises(FlowExecutionError, match=message):
         parse_synopsys_fc_report_facts(
             "asic.physical-implementation",
             _physical_reports(
                 tmp_path,
-                FIXTURES / "incomplete_drc.rpt",
-                FIXTURES / "physical_completion_complete.rpt",
-                None,
+                FIXTURES / "route_checks_active.rpt",
+                None if completion is None else FIXTURES / completion,
             ),
         )

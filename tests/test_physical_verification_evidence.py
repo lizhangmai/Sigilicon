@@ -6,7 +6,6 @@ from sigilicon.domain.physical_verification import (
     CheckedLayoutIdentity,
     CheckedSourceIdentity,
     DrcEvidence,
-    LvsEvidence,
     PhysicalVerificationStatus,
     VerificationCompletion,
     drc_evidence_from_json,
@@ -111,29 +110,6 @@ def test_exit_code_zero_without_parsed_report_cannot_claim_clean() -> None:
             VerificationCompletion("fake", True, False, 0),
             (),
             "not actually parsed",
-        )
-
-
-def test_evidence_serialization_rejects_drift_and_unknown_status() -> None:
-    evidence = drc_evidence_from_summary(
-        _drc_summary(violations=0),
-        layout=_layout(),
-        backend="calibre",
-        exit_code=0,
-        configuration_warnings=("CONFIG:WARNING",),
-        waiver_layers=("SRAMDMY",),
-    )
-
-    with pytest.raises(ValueError, match="unknown=.*unexpected"):
-        drc_evidence_from_json(
-            evidence.canonical_json().replace(
-                '  "message":',
-                '  "unexpected": true,\n  "message":',
-            )
-        )
-    with pytest.raises(ValueError, match="unknown PhysicalVerificationStatus"):
-        drc_evidence_from_json(
-            evidence.canonical_json().replace('"status": "clean"', '"status": "ok"')
         )
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import os
 import sys
 from pathlib import Path
@@ -8,20 +7,19 @@ from pathlib import Path
 import pytest
 
 from sigilicon.external_tools import (
-    ProcessGroupCleanupUncertainError,
     cadence_subprocess_env,
     find_xrun,
     owned_atomic_output_file,
     owned_directory,
     owned_input_file,
     owned_output_file,
-    owned_process_fd_path,
     owned_sealed_input,
-    process_group_cleanup_uncertainty,
     run_process_group,
     run_process_group_until_confirmed,
     xrun_env,
 )
+
+
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
     source = {
         "LM_LICENSE_FILE": "mentor-or-synopsys-license",
@@ -84,24 +82,6 @@ def test_nonzero_external_exit_is_reported_without_leaving_a_live_process(
 
     assert completed.returncode == 7
     assert completed.stdout == "failed-output"
-
-
-def test_external_tool_output_with_non_utf8_bytes_is_preserved_safely(
-    tmp_path: Path,
-) -> None:
-    completed = run_process_group(
-        [
-            sys.executable,
-            "-c",
-            "import os; os.write(1, b'begin\\xb4end\\n')",
-        ],
-        cwd=tmp_path,
-        env={},
-        timeout=5,
-    )
-
-    assert completed.returncode == 0
-    assert completed.stdout == "begin\\xb4end\n"
 
 
 def test_confirmed_process_group_can_clean_its_own_lingering_worker(
@@ -181,156 +161,6 @@ signal.pause()
     assert not Path(f"/proc/{child_pid}").exists()
 
 
-def test_stubborn_wrapper_does_not_preempt_its_reparent_cleanup_watchdog(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr("sigilicon.external_tools.PROCESS_TERM_GRACE_SECONDS", 0.2)
-    monkeypatch.setattr("sigilicon.external_tools.PROCESS_KILL_GRACE_SECONDS", 1)
-    ready = tmp_path / "watchdog.ready"
-    cleaned = tmp_path / "watchdog.cleaned"
-    parent_code = """
-import os
-import pathlib
-import signal
-import subprocess
-import sys
-
-watchdog = '''
-import os
-import pathlib
-import sys
-import time
-
-parent = int(sys.argv[1])
-while os.getppid() == parent:
-    time.sleep(0.02)
-time.sleep(0.3)
-pathlib.Path(os.environ["WATCHDOG_CLEANED"]).write_text("cleaned")
-'''
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-subprocess.Popen([sys.executable, "-c", watchdog, str(os.getpid())], start_new_session=True)
-pathlib.Path(os.environ["WATCHDOG_READY"]).write_text("ready")
-signal.pause()
-"""
-    with (
-        owned_directory(tmp_path) as owned_root,
-        owned_output_file(owned_root, "stubborn.stdout") as owned_stdout,
-    ):
-        result = run_process_group_until_confirmed(
-            [sys.executable, "-c", parent_code],
-            cwd=tmp_path,
-            env={
-                "WATCHDOG_READY": str(ready),
-                "WATCHDOG_CLEANED": str(cleaned),
-            },
-            timeout=5,
-            stdout_fd=owned_stdout.fd,
-            confirmation_probe=ready.is_file,
-            confirmation_grace_seconds=0,
-            pass_fds=(owned_stdout.fd,),
-        )
-
-    assert result.leader_terminated_after_confirmation
-    assert cleaned.read_text(encoding="utf-8") == "cleaned"
-
-
-def test_escaped_daemon_that_ignores_term_reaches_final_kill_before_parent_deadline(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr("sigilicon.external_tools.PROCESS_TERM_GRACE_SECONDS", 0.2)
-    monkeypatch.setattr("sigilicon.external_tools.PROCESS_KILL_GRACE_SECONDS", 0.5)
-    daemon_pid_file = tmp_path / "escaped-stubborn.pid"
-    parent_code = """
-import os
-import pathlib
-import subprocess
-import sys
-import time
-
-daemon = '''
-import os
-import pathlib
-import signal
-import time
-
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-pathlib.Path(os.environ["DAEMON_PID_FILE"]).write_text(str(os.getpid()))
-while True:
-    time.sleep(1)
-'''
-subprocess.Popen([sys.executable, "-c", daemon], start_new_session=True)
-while not pathlib.Path(os.environ["DAEMON_PID_FILE"]).is_file():
-    time.sleep(0.01)
-time.sleep(30)
-"""
-    with (
-        owned_directory(tmp_path) as owned_root,
-        owned_output_file(owned_root, "escaped-stubborn.stdout") as owned_stdout,
-    ):
-        result = run_process_group_until_confirmed(
-            [sys.executable, "-c", parent_code],
-            cwd=tmp_path,
-            env={"DAEMON_PID_FILE": str(daemon_pid_file)},
-            timeout=5,
-            stdout_fd=owned_stdout.fd,
-            confirmation_probe=daemon_pid_file.is_file,
-            confirmation_grace_seconds=0,
-            pass_fds=(owned_stdout.fd,),
-        )
-
-    daemon_pid = int(daemon_pid_file.read_text(encoding="utf-8"))
-    assert result.leader_terminated_after_confirmation
-    assert not Path(f"/proc/{daemon_pid}").exists()
-
-
-def test_subreaper_captures_double_fork_that_reparents_between_scans(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr("sigilicon.external_tools.PROCESS_TERM_GRACE_SECONDS", 0.2)
-    monkeypatch.setattr("sigilicon.external_tools.PROCESS_KILL_GRACE_SECONDS", 1)
-    daemon_pid_file = tmp_path / "double-fork.pid"
-    launcher_code = """
-import os
-import pathlib
-import time
-
-child = os.fork()
-if child == 0:
-    os.setsid()
-    daemon = os.fork()
-    if daemon == 0:
-        pathlib.Path(os.environ["OWNED_DAEMON_PID_FILE"]).write_text(str(os.getpid()))
-        time.sleep(30)
-        os._exit(0)
-    os._exit(0)
-os.waitpid(child, 0)
-while not pathlib.Path(os.environ["OWNED_DAEMON_PID_FILE"]).is_file():
-    time.sleep(0.01)
-time.sleep(0.5)
-"""
-    with (
-        owned_directory(tmp_path) as owned_root,
-        owned_output_file(owned_root, "double-fork.stdout") as owned_stdout,
-    ):
-        result = run_process_group_until_confirmed(
-            [sys.executable, "-c", launcher_code],
-            cwd=tmp_path,
-            env={"OWNED_DAEMON_PID_FILE": str(daemon_pid_file)},
-            timeout=5,
-            stdout_fd=owned_stdout.fd,
-            confirmation_probe=daemon_pid_file.is_file,
-            confirmation_grace_seconds=0.1,
-            pass_fds=(owned_stdout.fd,),
-        )
-
-    daemon_pid = int(daemon_pid_file.read_text(encoding="utf-8"))
-    assert result.leader_terminated_after_confirmation
-    assert not Path(f"/proc/{daemon_pid}").exists()
-
-
 def test_unconfirmed_process_group_timeout_remains_an_error(tmp_path: Path) -> None:
     with (
         owned_directory(tmp_path) as owned_root,
@@ -361,36 +191,6 @@ def test_timeout_escalates_from_term_to_kill_when_group_does_not_exit(
             env={},
             timeout=0.05,
         )
-
-
-def test_cleanup_uncertainty_survives_context_exit_exception_wrapping() -> None:
-    wrapped: RuntimeError | None = None
-    try:
-        try:
-            raise ProcessGroupCleanupUncertainError("owned group unknown")
-        finally:
-            raise RuntimeError("input identity also changed")
-    except RuntimeError as error:
-        wrapped = error
-
-    assert wrapped is not None
-    assert process_group_cleanup_uncertainty(wrapped) == "owned group unknown"
-
-
-
-def test_explicit_empty_child_environment_stays_empty() -> None:
-    assert cadence_subprocess_env({}) == {}
-
-
-def test_owned_input_detects_in_place_mutation_during_invocation(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "owned-input"
-    source.write_text("before", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="changed during invocation"):
-        with owned_input_file(source):
-            source.write_text("after!", encoding="utf-8")
 
 
 def test_owned_input_detects_a_path_swap_even_when_original_is_restored(

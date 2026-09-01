@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +13,6 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
     NativeDiagnosticProcessor,
     NativeDiagnosticReport,
-    load_native_diagnostic_processor,
 )
 from sigilicon.domain.repository import Project
 from sigilicon.domain.source import TextSourceSnapshot
@@ -159,34 +157,6 @@ def test_native_rdb_contract_returns_a_typed_diagnostic_report(
     assert report.as_dict()["contexts"] == [{"passed": False}]
 
 
-def test_native_diagnostic_processor_forwards_optional_source_documents(
-    tmp_path: Path,
-) -> None:
-    contract_path = (tmp_path / "native_rdb.toml").resolve()
-    architecture = (tmp_path / "architecture.toml").resolve()
-    inventory = MappingProxyType({architecture: MappingProxyType({})})
-
-    def snapshot_loader(
-        raw,
-        *,
-        contract_path,
-        project_root,
-        source_documents,
-    ):
-        assert source_documents is inventory
-        return NativeDiagnosticContract("fixture", {}, ())
-
-    processor = NativeDiagnosticProcessor(
-        source=(tmp_path / "processor.py").resolve(),
-        implementation=SimpleNamespace(load_contract=snapshot_loader),
-    )
-    assert processor.load_contract(
-        {},
-        contract_path=contract_path,
-        project_root=tmp_path.resolve(),
-        source_documents=inventory,
-    ).kind == "fixture"
-
 def test_elaborated_netlist_selects_one_completed_history_file(
     tmp_path: Path,
 ) -> None:
@@ -255,8 +225,6 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
     assert spec.native_setup.source.name == "setup.il"
     assert spec.native_setup.rdb_contract is None
     assert spec.simulator == "spectre"
-    assert not hasattr(spec, "measurement_program")
-    assert tuple(spec.source_documents) == (spec_path.resolve(),)
     assert tuple(spec.source_documents) == (spec_path.resolve(),)
     assert spec.source_snapshot.source_path == spec_path.resolve()
     with pytest.raises(TypeError):
@@ -375,55 +343,6 @@ def attestation_requirements(diagnostic, tests):
 ''',
         encoding="utf-8",
     )
-
-
-def test_native_diagnostic_processor_imports_its_selected_project(
-    tmp_path: Path,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    policy = project / "project_diagnostic_policy.py"
-    policy.write_text('KIND = "project-fixture"\n', encoding="utf-8")
-    processor = project / "native_diagnostics.py"
-    processor.write_text(
-        '''from project_diagnostic_policy import KIND
-from sigilicon.domain.native_diagnostics import NativeDiagnosticContract
-
-
-def load_contract(raw, *, contract_path, project_root, source_documents):
-    return NativeDiagnosticContract(KIND, {}, (), (project_root / "project_diagnostic_policy.py",))
-
-
-def validate_contract(diagnostic, *, point_count):
-    return None
-
-
-def validate_source(diagnostic, setup_text):
-    return ()
-
-
-def nullable_scalar_names(diagnostic):
-    return ()
-
-
-def reconstruct(result, contract):
-    return {}
-
-
-def attestation_requirements(diagnostic, tests):
-    return {}
-''',
-        encoding="utf-8",
-    )
-    assert str(project.resolve()) not in sys.path
-
-    loaded = load_native_diagnostic_processor(
-        processor,
-        project_root=project,
-    )
-
-    assert loaded.implementation.KIND == "project-fixture"
-    assert str(project.resolve()) not in sys.path
 
 
 def test_native_rdb_selects_a_testbench_local_diagnostic_processor(

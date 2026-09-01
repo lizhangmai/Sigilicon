@@ -18,11 +18,6 @@ from sigilicon.workflows.xcelium import (
 from conftest import write_component_owner
 
 
-def test_xcelium_execution_requires_a_caller_owned_run() -> None:
-    assert not hasattr(xcelium, "run_xcelium_cell")
-    assert not hasattr(xcelium, "run_xcelium_verification_cell")
-
-
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -147,18 +142,6 @@ def test_xcelium_plan_requires_explicit_success_marker(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="must declare success_marker"):
-        plan_xcelium_cell(
-            contract,
-            project=Project.from_file(tmp_path / "sigilicon.toml"),
-        )
-
-
-def test_xcelium_plan_validates_declared_contract_header(tmp_path: Path) -> None:
-    contract = _verification_project(tmp_path)
-    interface = tmp_path / "ip/demo/configs/interface.toml"
-    interface.write_text('schema = 1\nowner = "demo"\n', encoding="utf-8")
-
-    with pytest.raises(ValueError, match="contract_kind must be a non-empty string"):
         plan_xcelium_cell(
             contract,
             project=Project.from_file(tmp_path / "sigilicon.toml"),

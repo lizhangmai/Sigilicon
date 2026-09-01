@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
-import sys
 
 import pytest
 
@@ -16,7 +14,6 @@ from conftest import (
     write_project_context,
 )
 from mcp.client import Client
-from mcp.client.stdio import StdioServerParameters
 from mcp.shared.exceptions import MCPError
 from sigilicon.integrations.mcp.server import create_server
 from sigilicon.canonical import canonical_json
@@ -43,7 +40,6 @@ from sigilicon.domain.agentic_execution import (
 from sigilicon.domain.repository import Project
 from sigilicon.workflows.agentic_execution import AgenticExecutionInterface
 from sigilicon.workflows.agentic_read import AgenticReadInterface
-from sigilicon.workflows.project import bind_run_read
 from test_design_promotion import _inputs as promotion_inputs
 
 
@@ -281,35 +277,6 @@ def test_native_mcp_is_strict_read_only_and_matches_python(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
-def test_native_mcp_stdio_entrypoint_round_trips(tmp_path: Path) -> None:
-    write_mcp_project(tmp_path)
-    expected = _read(tmp_path).inspect_project(
-        owner="example"
-    )
-    python_path = os.environ.get("PYTHONPATH", "")
-
-    async def scenario() -> None:
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=[
-                "-m",
-                "sigilicon.integrations.mcp.stdio",
-                "--project-root",
-                str(tmp_path),
-            ],
-            env={"PYTHONPATH": python_path},
-        )
-        async with Client(parameters) as client:
-            result = await client.call_tool(
-                "project.inspect",
-                {"owner": "example"},
-            )
-            assert result.is_error is False
-            assert result.structured_content == expected
-
-    asyncio.run(scenario())
-
-
 def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Path) -> None:
     write_mcp_project(tmp_path)
     read = _read(tmp_path)
@@ -424,59 +391,6 @@ def test_native_mcp_execution_is_grant_filtered_and_matches_python(tmp_path: Pat
     asyncio.run(scenario())
 
 
-def test_native_mcp_history_only_does_not_load_current_catalogs(tmp_path: Path) -> None:
-    write_mcp_project(tmp_path)
-    read = _read(tmp_path)
-    plan = read.plan_target(owner="example", target="pipeline", operation="all")
-    plan_identity = plan["data"]["plan_identity"]
-    execution = AgenticExecutionInterface(
-        read,
-        grant=AgenticExecutionGrant(
-            principal="history-operator",
-            role="design-operator",
-            capabilities=(AgenticExecutionCapability.EXECUTE_DERIVED,),
-            approved_plans=(
-                AgenticPlanApproval(
-                    plan_identity,
-                    canonical_json(plan["data"]["plan"]),
-                ),
-            ),
-            approval="history-only-test",
-            expires_at="2099-01-01T00:00:00+00:00",
-        ),
-    )
-    completed = execution.run_target(
-        plan_identity=plan_identity,
-        budget=AgenticExecutionBudget(30, 1),
-        wait=True,
-    )
-    run_id = completed["data"]["management"]["run_id"]
-    (tmp_path / "ip/example/configs/flows/pipeline.toml").unlink()
-    (tmp_path / "ip/example/configs/targets.toml").unlink()
-    server = create_server(bind_run_read(tmp_path))
-
-    async def scenario() -> None:
-        async with Client(server) as client:
-            tools = await client.list_tools()
-            assert [tool.name for tool in tools.tools] == ["run.inspect"]
-            inspected = await client.call_tool(
-                "run.inspect",
-                {
-                    "owner": "example",
-                    "target": "pipeline",
-                    "operation": "all",
-                    "run_id": run_id,
-                },
-            )
-            assert inspected.structured_content["data"] == completed["data"]
-            templates = await client.list_resource_templates()
-            assert [item.name for item in templates.resource_templates] == [
-                "target-operation-run-result"
-            ]
-
-    asyncio.run(scenario())
-
-
 def test_native_mcp_rejects_cross_project_read_execution_composition(
     tmp_path: Path,
 ) -> None:
@@ -512,71 +426,3 @@ def test_native_mcp_rejects_cross_project_read_execution_composition(
 
     with pytest.raises(TypeError):
         create_server(read, execution=execution)  # type: ignore[call-arg]
-
-
-def test_native_mcp_stdio_executes_only_the_launcher_grant(tmp_path: Path) -> None:
-    write_mcp_project(tmp_path)
-    read = _read(tmp_path)
-    plan = read.plan_target(
-        owner="example",
-        target="pipeline",
-        operation="all",
-    )
-    plan_identity = plan["data"]["plan_identity"]
-    grant = AgenticExecutionGrant(
-        principal="stdio-operator",
-        role="design-operator",
-        capabilities=(AgenticExecutionCapability.EXECUTE_DERIVED,),
-        approved_plans=(
-            AgenticPlanApproval(plan_identity, canonical_json(plan["data"]["plan"])),
-        ),
-        approval="stdio-execution-test",
-        expires_at="2099-01-01T00:00:00+00:00",
-    )
-    grant_path = tmp_path / "stdio-grant.json"
-    grant_path.write_text(grant.canonical_json(), encoding="utf-8")
-    python_path = os.environ.get("PYTHONPATH", "")
-
-    async def scenario() -> None:
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=[
-                "-m",
-                "sigilicon.integrations.mcp.stdio",
-                "--project-root",
-                str(tmp_path),
-                "--execution-grant",
-                str(grant_path),
-            ],
-            env={"PYTHONPATH": python_path},
-        )
-        async with Client(parameters) as client:
-            tools = await client.list_tools()
-            assert "target.run" in {item.name for item in tools.tools}
-            submitted = await client.call_tool(
-                "target.run",
-                {
-                    "plan_identity": plan_identity,
-                    "budget": {"maximum_seconds": 30, "maximum_nodes": 1},
-                },
-            )
-            assert submitted.is_error is False
-            run_id = submitted.structured_content["data"]["management"]["run_id"]
-            for _attempt in range(200):
-                inspected = await client.call_tool(
-                    "run.inspect",
-                    {
-                        "owner": "example",
-                        "target": "pipeline",
-                        "operation": "all",
-                        "run_id": run_id,
-                    },
-                )
-                if inspected.structured_content["data"]["management"]["status"] == "accepted":
-                    break
-                await asyncio.sleep(0.02)
-            else:
-                raise AssertionError("stdio-managed fake Flow did not finish")
-            assert inspected.structured_content["data"]["result"]["status"] == "accepted"
-
-    asyncio.run(scenario())

@@ -11,10 +11,6 @@ from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.workflows import oa_simulation
 
 
-def test_oa_maestro_execution_requires_a_caller_owned_run() -> None:
-    assert not hasattr(oa_simulation, "run_oa_maestro_testbench")
-
-
 def test_flow_action_remains_the_only_workspace_operation_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -3,27 +3,14 @@ from __future__ import annotations
 import subprocess
 import sys
 
-import pytest
-
 import sigilicon
-from sigilicon.cli.agentic_execute import _parser as execute_parser
-from sigilicon.cli.agentic_read import _parser as read_parser
 from sigilicon.domain.repository import Project as DomainProject
-from sigilicon.project import (
-    Project,
-    ProjectExecution,
-    ProjectOaWorkflow,
-    ProjectRunner,
-)
+from sigilicon.project import Project
 
 
 def test_top_level_project_author_interface_is_narrow_and_canonical() -> None:
     assert sigilicon.__all__ == []
     assert Project is DomainProject
-    assert not hasattr(sigilicon, "Project")
-    assert not hasattr(sigilicon, "ProjectExecution")
-    assert not hasattr(sigilicon, "ProjectRunner")
-    assert not hasattr(sigilicon, "ProjectOaWorkflow")
 
 
 def test_plain_package_import_does_not_load_virtuoso_modules() -> None:
@@ -71,45 +58,6 @@ def test_generic_flow_interface_does_not_aggregate_domain_action_modules() -> No
     assert result.returncode == 0, result.stderr
 
 
-def test_single_attempt_interfaces_do_not_load_campaign_modules() -> None:
-    result = subprocess.run(
-        (
-            sys.executable,
-            "-c",
-            "import sys; "
-            "import sigilicon.flow; "
-            "import sigilicon.workflows.agentic_read; "
-            "import sigilicon.workflows.agentic_execution; "
-            "import sigilicon.cli.flow_core; "
-            "forbidden = {name for name in sys.modules if name == 'sigilicon.campaigns' "
-            "or name.startswith('sigilicon.campaigns.')}; "
-            "assert not forbidden, sorted(forbidden)",
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_single_attempt_agentic_cli_rejects_campaign_routes() -> None:
-    with pytest.raises(SystemExit):
-        read_parser().parse_args(
-            ["--project-root", "/tmp/project", "campaign-plan"]
-        )
-    with pytest.raises(SystemExit):
-        execute_parser().parse_args(
-            [
-                "--project-root",
-                "/tmp/project",
-                "--grant",
-                "/tmp/grant.json",
-                "campaign-run",
-            ]
-        )
-
-
 def test_action_registry_does_not_import_external_tool_adapters() -> None:
     result = subprocess.run(
         (
@@ -153,23 +101,6 @@ def test_registry_materializes_only_the_selected_synopsys_tool_module() -> None:
             "'sigilicon.workflows.synopsys.vcs'}; "
             "assert forbidden.isdisjoint(sys.modules), "
             "sorted(forbidden & set(sys.modules))",
-        ),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_synopsys_package_does_not_reexport_tool_adapters() -> None:
-    result = subprocess.run(
-        (
-            sys.executable,
-            "-c",
-            "import sigilicon.workflows.synopsys as synopsys; "
-            "assert not hasattr(synopsys, 'SynopsysDCAdapter'); "
-            "assert not hasattr(synopsys, 'SynopsysVCSAdapter')",
         ),
         check=False,
         capture_output=True,

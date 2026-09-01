@@ -468,31 +468,25 @@ def test_synopsys_hspice_adapter_fails_closed_on_invalid_execution_evidence(
     assert result.nodes["electrical-functional"].status == "failed"
 
 
-def test_synopsys_hspice_adapter_leaves_owner_measurement_checks_to_policy(
+@pytest.mark.parametrize(
+    ("mode", "measurement_failures", "check_failures"),
+    (("negative-margin", 0, 1), ("failed-measurement", 1, 1)),
+)
+def test_synopsys_hspice_adapter_reports_measurement_policy_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    measurement_failures: int,
+    check_failures: int,
 ) -> None:
-    result = _run(tmp_path, monkeypatch, "negative-margin")
+    result = _run(tmp_path, monkeypatch, mode)
     outcome = result.nodes["electrical-functional"]
 
     assert result.status == "failed"
     assert outcome.status == "rejected"
     assert outcome.result_status == "valid"
-    assert outcome.facts["measurement-check-failure-count"] == 1
-
-
-def test_synopsys_hspice_adapter_reports_failed_measurements_to_policy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _run(tmp_path, monkeypatch, "failed-measurement")
-    outcome = result.nodes["electrical-functional"]
-
-    assert result.status == "failed"
-    assert outcome.status == "rejected"
-    assert outcome.result_status == "valid"
-    assert outcome.facts["measurement-failure-count"] == 1
-    assert outcome.facts["measurement-check-failure-count"] == 1
+    assert outcome.facts["measurement-failure-count"] == measurement_failures
+    assert outcome.facts["measurement-check-failure-count"] == check_failures
 
 
 def test_hspice_preflight_rejects_wrong_model_identity(tmp_path: Path) -> None:
@@ -565,37 +559,28 @@ def test_managed_diagnostic_is_typed_nonqualification_evidence(
     assert evidence["product_qualification_conclusion"] is False
 
 
-def test_campaign_rejects_framework_environment_override(
+@pytest.mark.parametrize(
+    ("runner_environment", "message"),
+    (
+        ({"SIGILICON_DESIGN_VARIANT": "forged"}, "cannot override SIGILICON_*"),
+        ({"PATH": "/forged"}, "cannot override PATH"),
+    ),
+)
+def test_campaign_rejects_reserved_environment_overrides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    runner_environment: dict[str, str],
+    message: str,
 ) -> None:
     result = _run(
         tmp_path,
         monkeypatch,
         "valid",
         target="campaign",
-        runner_environment={"SIGILICON_DESIGN_VARIANT": "forged"},
+        runner_environment=runner_environment,
     )
 
     assert result.status == "failed"
     outcome = result.nodes["electrical-campaign"]
     assert outcome.status == "failed"
-    assert "cannot override SIGILICON_*" in outcome.reason
-
-
-def test_campaign_rejects_reserved_process_environment_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _run(
-        tmp_path,
-        monkeypatch,
-        "valid",
-        target="campaign",
-        runner_environment={"PATH": "/forged"},
-    )
-
-    assert result.status == "failed"
-    outcome = result.nodes["electrical-campaign"]
-    assert outcome.status == "failed"
-    assert "cannot override PATH" in outcome.reason
+    assert message in outcome.reason

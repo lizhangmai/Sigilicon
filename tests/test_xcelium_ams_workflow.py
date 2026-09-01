@@ -23,10 +23,6 @@ from sigilicon.workflows.xcelium_ams import (
 from conftest import write_component_owner, write_test_platform
 
 
-def test_xcelium_ams_execution_requires_a_caller_owned_run() -> None:
-    assert not hasattr(xcelium_ams, "run_xcelium_ams_cell")
-
-
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

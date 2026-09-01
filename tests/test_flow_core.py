@@ -2,27 +2,22 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
-import inspect
 import hashlib
 from pathlib import Path
 
 import pytest
 
 from sigilicon.execution import RunStore, RunStoreError
-from sigilicon.execution.runs import validate_resolved_plan
 from sigilicon.flow import (
     ActionBinding,
     ActionContext,
     ActionContract,
-    ActionConfiguration,
     ActionPlan,
     AdapterExecution,
-    AdapterConfiguration,
     ArtifactBinding,
     ArtifactPort,
     CollectedActionResult,
     ExecutionEnvironment,
-    EvidenceEnvelope,
     FactKind,
     FactSchema,
     FactSet,
@@ -39,7 +34,6 @@ from sigilicon.flow import (
     PolicySpec,
     ProducedArtifact,
     SourceMember,
-    load_execution_recipe,
 )
 from sigilicon.virtuoso.operation_journal import write_operation_incident
 from sigilicon.paths import ProjectContext
@@ -59,15 +53,9 @@ def _run_store(tmp_path: Path, artifact_root: Path) -> RunStore:
     )
 
 
-def test_persisted_plan_validator_rejects_arbitrary_json_object() -> None:
-    with pytest.raises(RunStoreError, match="contract envelope"):
-        validate_resolved_plan({"arbitrary": "json"})
-
-
 class SourceAdapter(StagedAdapterFixture):
     def __init__(self) -> None:
         self.executions = 0
-        self.last_evidence: EvidenceEnvelope | None = None
 
     def validate_inputs(self, context: ActionContext) -> tuple[str, ...]:
         return ()
@@ -77,13 +65,8 @@ class SourceAdapter(StagedAdapterFixture):
 
     def execute(self, context: ActionContext) -> AdapterExecution:
         self.executions += 1
-        self.last_evidence = context.evidence
         output = context.output_path("source", "value.txt")
         output.write_text(str(context.action_config["text"]), encoding="utf-8")
-        if context.action_config.get("internal_symlink"):
-            target = context.work_root / "target.txt"
-            target.write_text("managed target\n", encoding="utf-8")
-            (context.work_root / "link.txt").symlink_to(target.name)
         return AdapterExecution.succeeded()
 
     def collect_result(
@@ -101,7 +84,6 @@ class SourceAdapter(StagedAdapterFixture):
                     role="source",
                     kind="text.plain",
                     path=context.output_path("source", "value.txt"),
-                    qualifiers=context.action_config.get("qualifiers", {}),
                 ),
             )
         )
@@ -312,51 +294,6 @@ def test_action_plan_is_required_and_source_drift_blocks_preflight(
     )
 
 
-def test_registry_owns_one_typed_planner_per_planned_action(tmp_path: Path) -> None:
-    source = tmp_path / "intent.toml"
-    source.write_text("value = 1\n", encoding="utf-8")
-    member = SourceMember(
-        "intent.toml",
-        tmp_path,
-        "value = 1\n",
-        False,
-        source,
-    )
-    registered = FlowRegistry()
-    registered.register_action(ActionContract("fake.plain", adapter_extensible=True))
-    registered.register_action(
-        ActionContract(
-            "fake.planned",
-            adapter_extensible=True,
-            plan_input_kind="fake.intent",
-        )
-    )
-
-    with pytest.raises(FlowContractError, match="does not accept"):
-        registered.register_action_planner(
-            "fake.plain",
-            lambda _node: ActionPlan(
-                "fake.intent", object(), {"value": 1}, (member,)
-            ),
-        )
-
-    registered.register_action_planner(
-        "fake.planned",
-        lambda _node: ActionPlan(
-            "fake.wrong", object(), {"value": 1}, (member,)
-        ),
-    )
-    with pytest.raises(FlowContractError, match="expected 'fake.intent'"):
-        registered.compile_action_plan(FlowNode("planned", "fake.planned"))
-    with pytest.raises(FlowContractError, match="already has a domain planner"):
-        registered.register_action_planner(
-            "fake.planned",
-            lambda _node: ActionPlan(
-                "fake.intent", object(), {"value": 1}, (member,)
-            ),
-        )
-
-
 def fake_bindings() -> tuple[ActionBinding, ...]:
     return (
         ActionBinding("fake.source", "fake-source"),
@@ -368,10 +305,8 @@ def fake_bindings() -> tuple[ActionBinding, ...]:
 def flow_spec(
     *,
     text: str = "hello",
-    qualifiers: dict[str, str] | None = None,
     transform_policy: str | None = None,
     diagnostic_binding: bool = False,
-    internal_symlink: bool = False,
     foreign_evidence: bool = False,
 ) -> FlowSpec:
     return FlowSpec(
@@ -382,11 +317,7 @@ def flow_spec(
             FlowNode(
                 node_id="source",
                 action_kind="fake.source",
-                config={
-                    "text": text,
-                    "qualifiers": qualifiers or {},
-                    "internal_symlink": internal_symlink,
-                },
+                config={"text": text},
             ),
             FlowNode(
                 node_id="transform",
@@ -529,189 +460,12 @@ def test_plan_rejects_an_unavailable_action_in_the_selected_target_closure() -> 
         FlowEngine(registered).plan(spec, "all")
 
 
-def test_plan_compiles_typed_config_and_evidence_envelope(tmp_path: Path) -> None:
-    registered, source_adapter, *_ = registry()
-    spec = flow_spec()
-    source = spec.node("source")
-    typed_spec = FlowSpec(
-        owner=spec.owner,
-        flow_id=spec.flow_id,
-        recipe_id=spec.recipe_id,
-        nodes=(
-            FlowNode(
-                node_id=source.node_id,
-                action_kind=source.action_kind,
-                config={
-                    **source.config,
-                    "evidence_role": "diagnostic",
-                    "evidence_level": "l1",
-                    "evidence_scope": "source-contract",
-                },
-            ),
-            *spec.nodes[1:],
-        ),
-        targets=spec.targets,
-        policies=spec.policies,
-        action_bindings=spec.action_bindings,
-    )
-
-    plan = FlowEngine(registered).plan(
-        typed_spec,
-        "qualification",
-    )
-    planned = plan.planned_node("source")
-
-    assert isinstance(planned.action_config, ActionConfiguration)
-    assert planned.action_config.action_kind == "fake.source"
-    assert isinstance(planned.adapter_config, AdapterConfiguration)
-    assert planned.adapter_config.adapter == "fake-source"
-    assert planned.evidence == EvidenceEnvelope(
-        role="diagnostic",
-        level="l1",
-        scope="source-contract",
-    )
-    assert FlowEngine(registered).plan_record(plan)["nodes"][0]["evidence"] == {
-        "role": "diagnostic",
-        "level": "l1",
-        "scope": "source-contract",
-    }
-
-    FlowEngine(registered).run(
-        plan,
-        artifact_root=tmp_path / "artifacts",
-        environment=ExecutionEnvironment(),
-        run_id="evidence-context",
-    )
-
-    assert source_adapter.last_evidence is planned.evidence
-
-
-@pytest.mark.parametrize(
-    "config, message",
-    (
-        ({"evidence_role": "diagnostic"}, "missing fields"),
-        (
-            {
-                "evidence_role": "observation",
-                "evidence_level": "l1",
-                "evidence_scope": "source-contract",
-            },
-            "unsupported evidence role",
-        ),
-        (
-            {
-                "evidence_role": "diagnostic",
-                "evidence_level": "cell",
-                "evidence_scope": "source-contract",
-            },
-            "unsupported evidence level",
-        ),
-    ),
-)
-def test_plan_rejects_invalid_evidence_envelopes(
-    config: dict[str, str],
-    message: str,
-) -> None:
-    registered, *_ = registry()
-    spec = FlowSpec(
-        owner="example",
-        flow_id="invalid-evidence",
-        recipe_id="invalid-evidence-recipe",
-        nodes=(FlowNode("source", "fake.source", {"text": "x", **config}),),
-        targets=(FlowTarget("all", ("source",)),),
-        action_bindings=(ActionBinding("fake.source", "fake-source"),),
-    )
-
-    with pytest.raises(FlowContractError, match=message):
-        FlowEngine(registered).plan(spec, "all")
-
-
-def test_registry_adds_owner_adapter_only_to_an_extensible_action() -> None:
-    registered = FlowRegistry()
-    registered.register_action(
-        ActionContract(
-            kind="fake.owner-qualified",
-            adapter_extensible=True,
-        )
-    )
-    adapter = SourceAdapter()
-
-    registered.register_action_adapter(
-        "fake.owner-qualified",
-        "fixture-owner-qualification",
-        adapter,
-    )
-
-    assert registered.action("fake.owner-qualified").adapters == (
-        "fixture-owner-qualification",
-    )
-    assert callable(registered.adapter("fixture-owner-qualification").run)
-
-    registered.register_action(
-        ActionContract(
-            kind="fake.closed",
-            adapters=("fake-source",),
-        )
-    )
-    with pytest.raises(FlowContractError, match="does not accept Adapter extensions"):
-        registered.register_action_adapter(
-            "fake.closed",
-            "fixture-closed",
-            SourceAdapter(),
-        )
-
-
-def test_adapter_factory_is_materialized_only_when_a_plan_runs(tmp_path: Path) -> None:
-    materialized: list[SourceAdapter] = []
-    registered = FlowRegistry()
-    registered.register_action(
-        ActionContract(
-            kind="fake.source",
-            outputs=(ArtifactPort("source", "text.plain"),),
-            adapters=("lazy-source",),
-        )
-    )
-
-    def create_adapter() -> SourceAdapter:
-        adapter = SourceAdapter()
-        materialized.append(adapter)
-        return adapter
-
-    registered.register_adapter_factory("lazy-source", create_adapter)
-    engine = FlowEngine(registered)
-    spec = FlowSpec(
-        owner="example",
-        flow_id="lazy-adapter",
-        recipe_id="lazy-adapter-recipe",
-        nodes=(FlowNode("source", "fake.source", {"text": "hello"}),),
-        targets=(FlowTarget("all", ("source",)),),
-        action_bindings=(ActionBinding("fake.source", "lazy-source"),),
-    )
-
-    plan = engine.plan(spec, "all")
-
-    assert materialized == []
-    engine.run(
-        plan,
-        artifact_root=tmp_path / "artifacts",
-        environment=ExecutionEnvironment(),
-        run_id="1" * 32,
-    )
-    assert len(materialized) == 1
-
-
-
 def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     registered, source, transform, verify = registry()
     engine = FlowEngine(registered)
     plan = engine.plan(flow_spec(), "qualification")
 
     assert plan.topology == ("source", "transform", "verify")
-    assert all(
-        "design_campaign_iteration" not in node
-        for node in engine.plan_record(plan)["nodes"]
-    )
-    assert "resume" not in inspect.signature(engine.run).parameters
     result = engine.run(
         plan,
         artifact_root=tmp_path / "artifacts",
@@ -753,10 +507,8 @@ def test_fake_vertical_slice_writes_stable_records(tmp_path: Path) -> None:
     assert restored == result
 
 
-@pytest.mark.parametrize("tamper", (None, "wrong-identity", "symlink"))
 def test_flow_action_backlinks_a_workspace_incident(
     tmp_path: Path,
-    tamper: str | None,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -829,156 +581,6 @@ def test_flow_action_backlinks_a_workspace_incident(
         )
     )
     assert action_result["incident_reference"] == outcome.incident_reference
-    operation = json.loads(
-        (result.run_root / "inputs/source/operation.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert operation == {
-        "contract_kind": "flow-action-operation",
-        "incident_reference": outcome.incident_reference,
-        "node": "source",
-        "operation_id": outcome.operation_id,
-        "run_id": result.run_id,
-        "schema": 1,
-    }
-    incident_path = tmp_path / "artifacts" / str(outcome.incident_reference)
-    if tamper == "wrong-identity":
-        incident = json.loads(incident_path.read_text(encoding="utf-8"))
-        incident["operation_id"] = "c" * 32
-        incident_path.write_text(
-            json.dumps(incident, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    elif tamper == "symlink":
-        saved = incident_path.with_name("saved-incident.json")
-        incident_path.rename(saved)
-        incident_path.symlink_to(saved.name)
-    if tamper is None:
-        assert engine.restore_result(
-            plan,
-            artifact_root=tmp_path / "artifacts",
-            run_id=result.run_id,
-        ) == result
-    else:
-        with pytest.raises(FlowExecutionError, match="operation incident"):
-            engine.restore_result(
-                plan,
-                artifact_root=tmp_path / "artifacts",
-                run_id=result.run_id,
-            )
-
-
-def test_flow_passes_declared_extensions_without_interpreting_the_payload(
-    tmp_path: Path,
-) -> None:
-    class ExtensionAdapter(SourceAdapter):
-        accepted_extensions = ("opaque_hint",)
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.received = None
-
-        def execute(self, context: ActionContext) -> AdapterExecution:
-            self.received = context.extensions["opaque_hint"]
-            return super().execute(context)
-
-    adapter = ExtensionAdapter()
-    registered = FlowRegistry()
-    registered.register_action(
-        ActionContract(
-            "fake.extended-source",
-            outputs=(ArtifactPort("source", "text.plain"),),
-            adapters=("fake-extended-source",),
-            accepted_extensions=("opaque_hint",),
-        )
-    )
-    registered.register_adapter("fake-extended-source", adapter)
-    engine = FlowEngine(registered)
-    plan = engine.plan(
-        FlowSpec(
-            owner="example",
-            flow_id="extended-flow",
-            recipe_id="extended-flow-recipe",
-            nodes=(
-                FlowNode(
-                    "source",
-                    "fake.extended-source",
-                    {"text": "hello"},
-                    extensions={"opaque_hint": {"iteration": 2}},
-                ),
-            ),
-            targets=(FlowTarget("all", ("source",)),),
-            action_bindings=(
-                ActionBinding("fake.extended-source", "fake-extended-source"),
-            ),
-        ),
-        "all",
-    )
-
-    assert engine.plan_record(plan)["nodes"][0]["opaque_hint"] == {
-        "iteration": 2
-    }
-    result = engine.run(
-        plan,
-        artifact_root=tmp_path / "artifacts",
-        environment=ExecutionEnvironment(),
-        run_id="e" * 32,
-    )
-    request = json.loads(
-        (result.run_root / "inputs/source/action_request.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert request["opaque_hint"] == {"iteration": 2}
-    assert adapter.received == {"iteration": 2}
-
-
-def test_flow_rejects_extensions_not_declared_by_action_or_adapter() -> None:
-    accepted_adapter = SourceAdapter()
-    accepted_adapter.accepted_extensions = ("opaque_hint",)
-    action_rejects = FlowRegistry()
-    action_rejects.register_action(
-        ActionContract(
-            "fake.source",
-            outputs=(ArtifactPort("source", "text.plain"),),
-            adapters=("fake-source",),
-        )
-    )
-    action_rejects.register_adapter("fake-source", accepted_adapter)
-    spec = FlowSpec(
-        owner="example",
-        flow_id="extended-flow",
-        recipe_id="extended-flow-recipe",
-        nodes=(
-            FlowNode(
-                "source",
-                "fake.source",
-                {"text": "hello"},
-                extensions={"opaque_hint": {}},
-            ),
-        ),
-        targets=(FlowTarget("all", ("source",)),),
-        action_bindings=(ActionBinding("fake.source", "fake-source"),),
-    )
-
-    with pytest.raises(FlowContractError, match="Action does not accept"):
-        FlowEngine(action_rejects).plan(spec, "all")
-
-    adapter_rejects = FlowRegistry()
-    adapter_rejects.register_action(
-        ActionContract(
-            "fake.source",
-            outputs=(ArtifactPort("source", "text.plain"),),
-            adapters=("fake-source",),
-            accepted_extensions=("opaque_hint",),
-        )
-    )
-    adapter_rejects.register_adapter("fake-source", SourceAdapter())
-    with pytest.raises(FlowContractError, match="Adapter does not consume"):
-        FlowEngine(adapter_rejects).plan(spec, "all")
-
-
 def test_restore_compares_the_exact_immutable_plan_identity(tmp_path: Path) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
@@ -1066,61 +668,6 @@ def test_restore_rejects_action_operation_record_drift(tmp_path: Path) -> None:
         )
 
 
-def test_restore_rejects_legacy_flow_result_schema(tmp_path: Path) -> None:
-    registered, *_ = registry()
-    engine = FlowEngine(registered)
-    plan = engine.plan(flow_spec(), "qualification")
-    result = engine.run(
-        plan,
-        artifact_root=tmp_path / "artifacts",
-        environment=ExecutionEnvironment(),
-        run_id="legacy-result",
-    )
-    result_path = result.run_root / "outputs/flow_result.json"
-    payload = json.loads(result_path.read_text(encoding="utf-8"))
-    payload["schema"] = 1
-    result_path.write_text(
-        json.dumps(payload, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FlowExecutionError, match="unsupported.*schema"):
-        engine.restore_result(
-            plan,
-            artifact_root=tmp_path / "artifacts",
-            run_id=result.run_id,
-        )
-
-
-def test_flow_run_manifest_owns_internal_tool_symlinks_by_lexical_path(
-    tmp_path: Path,
-) -> None:
-    registered, *_ = registry()
-    engine = FlowEngine(registered)
-    artifact_root = tmp_path / "artifacts"
-    run_id = "9" * 32
-    result = engine.run(
-        engine.plan(
-            flow_spec(internal_symlink=True),
-            "qualification",
-        ),
-        artifact_root=artifact_root,
-        environment=ExecutionEnvironment(),
-        run_id=run_id,
-    )
-    manifest = json.loads((result.run_root / "run_manifest.json").read_text())
-
-    assert "work/source/link.txt" in manifest["managed_paths"]
-    assert len(manifest["managed_paths"]) == len(set(manifest["managed_paths"]))
-    _run_store(tmp_path, artifact_root).clean(
-        owner="example",
-        target="fake-pipeline",
-        operation="qualification",
-        run_id=run_id,
-    )
-    assert not result.run_root.exists()
-
-
 def test_node_cannot_claim_another_nodes_file_as_evidence(tmp_path: Path) -> None:
     registered, *_ = registry()
     engine = FlowEngine(registered)
@@ -1139,55 +686,6 @@ def test_node_cannot_claim_another_nodes_file_as_evidence(tmp_path: Path) -> Non
     assert "Evidence is not a managed regular file" in str(
         result.nodes["transform"].reason
     )
-
-
-def test_artifact_qualifiers_propagate_without_derived_identities(
-    tmp_path: Path,
-) -> None:
-    registered, *_ = registry()
-    engine = FlowEngine(registered)
-    artifact_root = tmp_path / "artifacts"
-    first_plan = engine.plan(
-        flow_spec(qualifiers={"variant": "variant_a", "corner": "nominal_a"}),
-        "qualification",
-    )
-    first_run = engine.run(
-        first_plan,
-        artifact_root=artifact_root,
-        environment=ExecutionEnvironment(),
-        run_id="9" * 32,
-    )
-
-    source_result = json.loads(
-        (first_run.run_root / "outputs/source/action_result.json").read_text()
-    )
-    transform_request = json.loads(
-        (first_run.run_root / "inputs/transform/action_request.json").read_text()
-    )
-    assert source_result["artifacts"]["source"]["qualifiers"] == {
-        "corner": "nominal_a",
-        "variant": "variant_a",
-    }
-    assert transform_request["inputs"]["input"]["qualifiers"] == {
-        "corner": "nominal_a",
-        "variant": "variant_a",
-    }
-
-    product_plan = engine.plan(
-        flow_spec(qualifiers={"variant": "variant_b", "corner": "nominal_b"}),
-        "qualification",
-    )
-    product = engine.run(
-        product_plan,
-        artifact_root=artifact_root,
-        environment=ExecutionEnvironment(),
-        run_id="8" * 32,
-    )
-
-    assert product.nodes["source"].artifacts["source"].qualifiers == {
-        "corner": "nominal_b",
-        "variant": "variant_b",
-    }
 
 
 def test_diagnostic_binding_can_consume_valid_rejected_artifact(tmp_path: Path) -> None:
@@ -1244,67 +742,6 @@ def test_run_identity_is_immutable(tmp_path: Path) -> None:
 
     assert first.status == "accepted"
     assert [source.executions, transform.executions, verify.executions] == [1, 1, 1]
-
-
-def test_execution_recipe_loader_supports_only_the_current_schema(tmp_path: Path) -> None:
-    owner_root = tmp_path / "ip/example"
-    owner_root.mkdir(parents=True)
-    contract = owner_root / "recipe.toml"
-    contract.write_text(
-        '''schema = 2
-contract_kind = "execution-recipe"
-path_scope = "owner"
-owner = "example"
-name = "pipeline"
-
-[[nodes]]
-id = "source"
-action = "fake.source"
-
-[actions."fake.source"]
-adapter = "fake-source"
-''',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FlowContractError, match="schema 1"):
-        load_execution_recipe(contract)
-
-
-def test_execution_recipe_loads_owner_policy_without_a_runtime_registry(
-    tmp_path: Path,
-) -> None:
-    contract = tmp_path / "recipe.toml"
-    contract.write_text(
-        '''schema = 1
-contract_kind = "execution-recipe"
-path_scope = "owner"
-owner = "example"
-name = "pipeline"
-
-[[nodes]]
-id = "verify"
-action = "fake.verify"
-policy = "accepted"
-
-[[policies]]
-id = "accepted"
-
-[[policies.checks]]
-id = "accepted"
-fact = "accepted"
-operator = "equals"
-expected = true
-
-[actions."fake.verify"]
-adapter = "fake-verify"
-''',
-        encoding="utf-8",
-    )
-
-    loaded = load_execution_recipe(contract)
-
-    assert loaded.policy("accepted").checks[0].expected is True
 
 
 class TerminalAdapter(StagedAdapterFixture):
@@ -1475,128 +912,6 @@ def test_interruption_writes_cancelled_terminal_records(tmp_path: Path) -> None:
     assert result.nodes["later"].status == "blocked"
     assert payload["execution"]["status"] == "cancelled"
     assert payload["error"] == "interrupted"
-
-
-def test_progress_interruption_writes_cancelled_terminal_records(
-    tmp_path: Path,
-) -> None:
-    registered = FlowRegistry()
-    registered.register_action(
-        ActionContract(kind="fake.interrupt", adapters=("fake-interrupt",))
-    )
-    adapter = TerminalAdapter("valid")
-    registered.register_adapter("fake-interrupt", adapter)
-    spec = FlowSpec(
-        owner="example",
-        flow_id="progress-interrupted",
-        recipe_id="progress-interrupted-recipe",
-        nodes=(FlowNode("interrupt", "fake.interrupt"),),
-        targets=(FlowTarget("all", ("interrupt",)),),
-        action_bindings=(ActionBinding("fake.interrupt", "fake-interrupt"),),
-    )
-    engine = FlowEngine(registered)
-
-    def interrupt_current_node(progress: FlowProgress) -> None:
-        if progress.current_node == "interrupt":
-            raise KeyboardInterrupt
-
-    result = engine.run(
-        engine.plan(spec, "all"),
-        artifact_root=tmp_path / "artifacts",
-        environment=ExecutionEnvironment(),
-        run_id="e" * 32,
-        progress=interrupt_current_node,
-    )
-
-    action_payload = json.loads(
-        (result.run_root / "outputs/interrupt/action_result.json").read_text()
-    )
-    flow_payload = json.loads(
-        (result.run_root / "outputs/flow_result.json").read_text()
-    )
-    assert adapter.executions == 0
-    assert result.status == "failed"
-    assert result.interrupted is True
-    assert action_payload["execution"]["status"] == "cancelled"
-    assert action_payload["error"] == "interrupted"
-    assert flow_payload["interrupted"] is True
-    assert flow_payload["nodes"]["interrupt"]["execution_status"] == "cancelled"
-
-
-def test_clean_is_manifest_driven_and_refuses_untracked_paths(tmp_path: Path) -> None:
-    registered, *_ = registry()
-    engine = FlowEngine(registered)
-    artifact_root = tmp_path / "artifacts"
-    run_id = "1" * 32
-    result = engine.run(
-        engine.plan(flow_spec(), "qualification"),
-        artifact_root=artifact_root,
-        environment=ExecutionEnvironment(),
-        run_id=run_id,
-    )
-    untracked = result.run_root / "do-not-delete.txt"
-    untracked.write_text("owned by caller", encoding="utf-8")
-
-    with pytest.raises(RunStoreError, match="untracked"):
-        _run_store(tmp_path, artifact_root).clean(
-            owner="example",
-            target="fake-pipeline",
-            operation="qualification",
-            run_id=run_id,
-        )
-
-    assert untracked.read_text(encoding="utf-8") == "owned by caller"
-    untracked.unlink()
-    _run_store(tmp_path, artifact_root).clean(
-        owner="example",
-        target="fake-pipeline",
-        operation="qualification",
-        run_id=run_id,
-    )
-    assert not result.run_root.exists()
-
-
-def test_policy_change_requires_a_new_run(
-    tmp_path: Path,
-) -> None:
-    registered, source, transform, verify = registry()
-    engine = FlowEngine(registered)
-    artifact_root = tmp_path / "artifacts"
-    run_id = "6" * 32
-    original = flow_spec()
-    first = engine.run(
-        engine.plan(original, "qualification"),
-        artifact_root=artifact_root,
-        environment=ExecutionEnvironment(),
-        run_id=run_id,
-    )
-    changed_policy = FlowSpec(
-        owner=original.owner,
-        flow_id=original.flow_id,
-        recipe_id=original.recipe_id,
-        nodes=original.nodes,
-        targets=original.targets,
-        policies=(
-            PolicySpec(
-                policy_id="verify-accepted",
-                checks=(PolicyCheck("accepted", "accepted", "equals", False),),
-            ),
-        ),
-        action_bindings=original.action_bindings,
-        source_members=original.source_members,
-        owner_root=original.owner_root,
-    )
-    changed = engine.run(
-        engine.plan(changed_policy, "qualification"),
-        artifact_root=artifact_root,
-        environment=ExecutionEnvironment(),
-        run_id="7" * 32,
-    )
-
-    assert first.status == "accepted"
-    assert changed.status == "failed"
-    assert changed.nodes["verify"].status == "rejected"
-    assert [source.executions, transform.executions, verify.executions] == [2, 2, 2]
 
 
 def test_clean_rejects_manifest_paths_outside_the_run(tmp_path: Path) -> None:

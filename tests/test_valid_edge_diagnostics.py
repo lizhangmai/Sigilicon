@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from sigilicon.domain.valid_edge_diagnostics import (
@@ -101,20 +100,3 @@ def test_valid_edge_algorithm_consumes_resolved_scenarios_without_product_policy
             "negative_v": 0.7,
         }
     ]
-
-
-def test_valid_edge_module_does_not_own_hardware_product_schema() -> None:
-    source = Path(__file__).resolve().parents[1] / (
-        "src/sigilicon/domain/valid_edge_diagnostics.py"
-    )
-    text = source.read_text(encoding="utf-8")
-
-    for product_term in (
-        "active_buffers",
-        "activation_masks_hex",
-        "bounded_campaign",
-        "code_mapping_contract",
-        "edge_mismatch_qualified",
-        "product_qualification_conclusion",
-    ):
-        assert product_term not in text

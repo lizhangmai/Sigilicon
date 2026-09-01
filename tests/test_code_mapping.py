@@ -35,27 +35,6 @@ def test_affine_saturating_mapping_clamps_both_ends() -> None:
     ]
 
 
-def test_affine_saturating_mapping_is_configurable_without_caller_changes() -> None:
-    mapping = load_integer_code_mapping(
-        {
-            "kind": "affine_saturating",
-            "score_multiplier": 2,
-            "code_offset": 7,
-            "minimum_code": 1,
-            "maximum_code": 14,
-        },
-        "mapping",
-    )
-
-    assert [mapping.code_for(score) for score in (-8, -1, 0, 2, 8)] == [
-        1,
-        5,
-        7,
-        11,
-        14,
-    ]
-
-
 def _write_behavior_contract(path: Path, *, owner: str) -> None:
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -93,21 +72,6 @@ def test_mapping_contract_uses_explicit_kind_and_table_path(
     assert mapping.code_for(-33) == 0
     assert mapping.code_for(0) == 32
     assert mapping.code_for(32) == 63
-
-
-def test_mapping_contract_does_not_infer_owner_from_repository_layout(
-    tmp_path: Path,
-) -> None:
-    contract = tmp_path / "ip/example/configs/behavior.toml"
-    _write_behavior_contract(contract, owner="fixture-owner")
-
-    mapping = load_integer_code_mapping_contract(
-        contract,
-        contract_kind="ip-architecture-behavior",
-        table_path=("adc", "code_mapping"),
-    )
-
-    assert mapping.code_for(0) == 32
 
 
 def test_mapping_contract_reuses_an_immutable_source_snapshot(

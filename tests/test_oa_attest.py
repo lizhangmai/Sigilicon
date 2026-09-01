@@ -9,7 +9,6 @@ from sigilicon.execution import RunStore
 
 from sigilicon.cli import flow as flow_cli
 from sigilicon.cli.flow import _parser
-from sigilicon.cli.main import main as sigilicon_cli_main
 from conftest import write_component_owner
 
 
@@ -48,52 +47,6 @@ def test_attest_is_a_current_testbench_setup_check() -> None:
     assert args.timeout == 300
 
 
-def test_simulation_has_no_temporary_work_retention_option() -> None:
-    args = _parser().parse_args(
-        [
-            "oa",
-            "simulate",
-            "--owner",
-            "fixture",
-            "--target",
-            "tb-main",
-            "--operation",
-            "electrical",
-        ]
-    )
-
-    assert args.target == "tb-main"
-    assert args.operation == "electrical"
-    assert not hasattr(args, "testbench")
-    assert not hasattr(args, "keep_work")
-    assert not hasattr(args, "timeout")
-    with pytest.raises(SystemExit):
-        _parser().parse_args(
-            [
-                "oa",
-                "simulate",
-                "--owner",
-                "fixture",
-                "--target",
-                "tb-main",
-                "--operation",
-                "electrical",
-                "--keep-work",
-            ]
-        )
-    with pytest.raises(SystemExit):
-        _parser().parse_args(
-            [
-                "oa",
-                "simulate",
-                "--owner",
-                "fixture",
-                "--testbench",
-                "tb_main",
-            ]
-        )
-
-
 def test_rebuild_can_select_exactly_one_design_cell() -> None:
     args = _parser().parse_args(
         [
@@ -108,14 +61,6 @@ def test_rebuild_can_select_exactly_one_design_cell() -> None:
 
     assert args.cell == "FIXTURE_CELL"
     assert args.testbench is None
-
-
-@pytest.mark.parametrize("retired_domain", ("design", "layout"))
-def test_top_level_cli_rejects_retired_domains(retired_domain: str) -> None:
-    with pytest.raises(SystemExit) as error:
-        sigilicon_cli_main([retired_domain])
-
-    assert error.value.code == 2
 
 
 def test_cli_attest_reports_current_check_without_prior_state(
@@ -194,8 +139,6 @@ def test_cli_simulate_resolves_and_runs_the_unique_typed_target(
             "status": "accepted",
         },
     )
-    assert not hasattr(flow_cli.ProjectOaWorkflow, "simulate")
-
     assert (
         flow_cli.main(
             [

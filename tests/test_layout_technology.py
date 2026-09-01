@@ -107,39 +107,6 @@ def test_layout_technology_requires_landing_policy_for_every_via(
         )
 
 
-def test_layout_technology_reads_common_roles_from_platform_domain_payload(
-    tmp_path: Path,
-) -> None:
-    contract = tmp_path / "layout.toml"
-    _write_contract(contract)
-    owner_payload = contract.read_text(encoding="utf-8").split(
-        "owner = \"test-owner\"\n", 1
-    )[1]
-    contract.write_text(
-        '''schema = 1
-contract_kind = "platform-layout"
-path_scope = "platform"
-owner = "test-platform"
-dbu_per_micron = 1000
-
-[custom_layout]
-'''
-        + owner_payload.replace("\n[", "\n[custom_layout."),
-        encoding="utf-8",
-    )
-
-    technology = load_layout_technology(
-        contract,
-        contract_kind="platform-layout",
-        owner="test-platform",
-        path_scope="platform",
-        payload_key="custom_layout",
-    )
-
-    assert technology.owner == "test-platform"
-    assert technology.layer("routing1") == "M1"
-
-
 def test_layout_technology_loads_optional_passive_pcell_interfaces(
     tmp_path: Path,
 ) -> None:

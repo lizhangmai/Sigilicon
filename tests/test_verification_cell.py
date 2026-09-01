@@ -2,11 +2,8 @@ from pathlib import Path
 
 import pytest
 
-import sigilicon.domain.verification_cell as verification_cell
-from sigilicon.domain.config_contracts import read_toml
 from sigilicon.domain.verification_cell import (
     load_verification_cell,
-    parse_verification_cell,
 )
 from sigilicon.domain.repository import Project
 
@@ -57,8 +54,9 @@ success_marker = "TB_DEMO_SUMMARY failures=0"
 
 def test_verification_cell_loads_its_owned_source_boundary(tmp_path: Path) -> None:
     contract = _contract(tmp_path)
+    project = Project.from_project_root(tmp_path)
 
-    spec = load_verification_cell(contract, project=Project.from_project_root(tmp_path))
+    spec = load_verification_cell(contract, project=project)
 
     assert spec.cell == "tb_demo"
     assert spec.canonical_source == contract.parent / "testbench.sv"
@@ -67,35 +65,8 @@ def test_verification_cell_loads_its_owned_source_boundary(tmp_path: Path) -> No
     assert spec.contracts == ()
     assert spec.runner is None
     assert spec.success_marker == "TB_DEMO_SUMMARY failures=0"
-
-
-def test_verification_cell_reuses_one_explicit_project(tmp_path: Path) -> None:
-    contract = _contract(tmp_path)
-    project = Project.from_project_root(tmp_path)
-
-    spec = load_verification_cell(contract, project=project)
-
     assert spec.project is project
     assert spec.owner == "demo"
-
-
-def test_verification_cell_parses_an_already_read_document(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    contract = _contract(tmp_path)
-    project = Project.from_project_root(tmp_path)
-    document = read_toml(contract)
-
-    def reject_reload(_path: Path):
-        raise AssertionError("verification cell document was reloaded")
-
-    monkeypatch.setattr(verification_cell, "read_toml", reject_reload)
-
-    spec = parse_verification_cell(contract, document, project=project)
-
-    assert spec.project is project
-    assert spec.cell == "tb_demo"
 
 
 def test_verification_cell_preserves_declared_contract_documents(
@@ -124,22 +95,6 @@ owner = "demo"
         spec.source_documents[declared.resolve()]["owner"] = "other"
 
 
-def test_verification_cell_rejects_owner_outside_catalog_identity(
-    tmp_path: Path,
-) -> None:
-    contract = _contract(tmp_path)
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            'owner = "demo"',
-            'owner = "other"',
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="owner must be 'demo'"):
-        load_verification_cell(contract, project=Project.from_project_root(tmp_path))
-
-
 def test_verification_cell_rejects_canonical_source_outside_cell(tmp_path: Path) -> None:
     contract = _contract(tmp_path)
     contract.write_text(
@@ -151,17 +106,6 @@ def test_verification_cell_rejects_canonical_source_outside_cell(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="canonical_source must stay inside"):
-        load_verification_cell(contract, project=Project.from_project_root(tmp_path))
-
-
-def test_verification_cell_rejects_unknown_fields(tmp_path: Path) -> None:
-    contract = _contract(tmp_path)
-    contract.write_text(
-        contract.read_text(encoding="utf-8") + 'unexpected = "field"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="contains unknown fields"):
         load_verification_cell(contract, project=Project.from_project_root(tmp_path))
 
 

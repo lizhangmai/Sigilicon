@@ -12,7 +12,6 @@ from sigilicon.layout.materialization import (
     MaterializationReason,
     MaterializationTarget,
     compile_materialization_plan,
-    materialization_plan_from_json,
     validate_materialization_plan,
 )
 from sigilicon.layout.physical_design import (
@@ -48,7 +47,6 @@ def test_closed_result_compiles_an_executable_database_neutral_plan() -> None:
         == MaterializationOwner(MaterializationOwnerKind.NET, (item.net,))
         for item in plan.route_segments
     )
-    assert materialization_plan_from_json(plan.canonical_json()) == plan
 
 
 def test_budget_exhaustion_retains_only_a_diagnostic_plan() -> None:
@@ -66,25 +64,23 @@ def test_budget_exhaustion_retains_only_a_diagnostic_plan() -> None:
     )
 
 
-def test_unsupported_and_infeasible_results_never_become_executable() -> None:
-    unsupported_result, unsupported = _compile(
-        routed_job("materialization-unsupported"),
-        status=ResultStatus.UNSUPPORTED,
-    )
-    infeasible_result, infeasible = _compile(
-        routed_job("materialization-infeasible"),
-        status=ResultStatus.FAILED,
-    )
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    (
+        (ResultStatus.UNSUPPORTED, MaterializationReason.UNSUPPORTED),
+        (ResultStatus.FAILED, MaterializationReason.INFEASIBLE),
+    ),
+)
+def test_non_success_results_never_become_executable(
+    status: ResultStatus,
+    reason: MaterializationReason,
+) -> None:
+    result, plan = _compile(routed_job(f"materialization-{status.value}"), status=status)
 
-    assert unsupported_result.status is ResultStatus.UNSUPPORTED
-    assert unsupported.acceptance.decision is MaterializationDecision.REJECTED
-    assert unsupported.acceptance.reason is MaterializationReason.UNSUPPORTED
-    assert not unsupported.executable
-    assert infeasible_result.status is ResultStatus.FAILED
-    assert infeasible.acceptance.decision is MaterializationDecision.REJECTED
-    assert infeasible.acceptance.reason is MaterializationReason.INFEASIBLE
-    assert not infeasible.executable
-    assert not infeasible.routing_blockages
+    assert result.status is status
+    assert plan.acceptance.decision is MaterializationDecision.REJECTED
+    assert plan.acceptance.reason is reason
+    assert not plan.executable
 
 
 def test_materialization_rejects_result_identity_mismatch() -> None:

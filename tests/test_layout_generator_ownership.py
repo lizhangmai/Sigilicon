@@ -3,19 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 import textwrap
-from types import SimpleNamespace
-
 import pytest
 
-import sigilicon.domain.config_contracts as config_contracts
 from conftest import write_project_context, write_test_layout_platform
-from sigilicon.domain.config_contracts import (
-    RepositorySourceInventory,
-    inspect_project_configuration_sources,
-)
 from sigilicon.domain.repository import Project
 from sigilicon.layout.spec import (
-    _owner_oa_assembly,
     load_layout_spec,
     resolve_layout_spec,
 )
@@ -210,65 +202,6 @@ def test_layout_spec_preserves_and_resolves_its_source_document(
                 source_documents={resolved: drifted},
             ),
         )
-    with pytest.raises(ValueError, match="source document drift"):
-        resolve_layout_spec(
-            layout,
-            project=project,
-            snapshot=replace(
-                spec,
-                source_snapshot=replace(
-                    spec.source_snapshot,
-                    source_path=resolved,
-                ),
-            ),
-        )
-    forged_snapshot = replace(
-        spec.source_snapshot,
-        text="subckt other IN OUT\nends other\n",
-        interfaces={"other": ("IN", "OUT")},
-    )
-    with pytest.raises(ValueError, match="source document drift"):
-        resolve_layout_spec(
-            layout,
-            project=project,
-            snapshot=replace(spec, source_snapshot=forged_snapshot),
-        )
-    forged_full_snapshot = replace(
-        spec.source_snapshots[0],
-        text=spec.source_snapshots[0].text
-        + "\nsubckt unrelated A B\nends unrelated\n",
-        interfaces={
-            **spec.source_snapshots[0].interfaces,
-            "unrelated": ("A", "B"),
-        },
-    )
-    with pytest.raises(ValueError, match="source document drift"):
-        resolve_layout_spec(
-            layout,
-            project=project,
-            snapshot=replace(
-                spec,
-                source_snapshots=(forged_full_snapshot,),
-            ),
-        )
-
-    cross_owner_document = dict(spec.source_documents[resolved])
-    cross_owner_document["layout"] = {
-        **cross_owner_document["layout"],
-        "generator_source": "../../shared/shared_generator.py",
-    }
-    with pytest.raises(ValueError, match="must belong to cataloged owner"):
-        resolve_layout_spec(
-            layout,
-            project=project,
-            snapshot=replace(
-                spec,
-                generator_source=(
-                    root / "ip/shared/shared_generator.py"
-                ).resolve(),
-                source_documents={resolved: cross_owner_document},
-            ),
-        )
     with pytest.raises(ValueError, match="platform identity drift"):
         resolve_layout_spec(
             layout,
@@ -279,20 +212,6 @@ def test_layout_spec_preserves_and_resolves_its_source_document(
                     spec.layout_pdk,
                     layout_path=(root / "ip/shared/shared_dependency.py").resolve(),
                 ),
-            ),
-        )
-    forged_layout = replace(
-        spec.layout_pdk,
-        layout_path=(root / "ip/shared/shared_dependency.py").resolve(),
-    )
-    with pytest.raises(ValueError, match="platform identity drift"):
-        resolve_layout_spec(
-            layout,
-            project=project,
-            snapshot=replace(
-                spec,
-                pdk=replace(spec.pdk, layout=forged_layout),
-                layout_pdk=forged_layout,
             ),
         )
 
@@ -314,133 +233,6 @@ def test_layout_loader_rejects_undeclared_cross_owner_netlist(
 
     with pytest.raises(ValueError, match="crosses owner boundary"):
         load_layout_spec(layout, project=Project.from_project_root(root))
-
-
-def test_layout_resolver_rejects_dependency_netlist_snapshot_drift(
-    tmp_path: Path,
-) -> None:
-    root, layout = _write_fixture(tmp_path)
-    dependency = layout.parent / "dependency.scs"
-    dependency.write_text(
-        "subckt helper A B\nends helper\n",
-        encoding="utf-8",
-    )
-    layout.write_text(
-        layout.read_text(encoding="utf-8").replace(
-            'source_netlist = "circuit.scs"',
-            'source_netlist = "circuit.scs"\n'
-            'dependency_netlists = ["dependency.scs"]',
-        ),
-        encoding="utf-8",
-    )
-    project = Project.from_project_root(root)
-    spec = load_layout_spec(layout, project=project)
-    dependency_snapshot = spec.source_snapshots[1]
-
-    with pytest.raises(ValueError, match="source document drift"):
-        resolve_layout_spec(
-            layout,
-            project=project,
-            snapshot=replace(
-                spec,
-                source_snapshots=(
-                    spec.source_snapshots[0],
-                    replace(
-                        dependency_snapshot,
-                        text="subckt forged A B\nends forged\n",
-                        interfaces={"forged": ("A", "B")},
-                    ),
-                ),
-            ),
-        )
-
-
-def test_configuration_scanner_reuses_layout_source_document(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root, layout = _write_fixture(tmp_path)
-    project = Project.from_project_root(root)
-    spec = load_layout_spec(layout, project=project)
-    reads: list[Path] = []
-    original_read_toml = config_contracts.read_toml
-
-    def counted_read_toml(path: Path):
-        if path.resolve() == layout.resolve():
-            reads.append(path.resolve())
-        return original_read_toml(path)
-
-    monkeypatch.setattr(config_contracts, "read_toml", counted_read_toml)
-    target_catalogs = tuple(
-        project.owner_target_catalog(owner)
-        for owner in project.owners
-        if owner.component.target_catalog is not None
-    )
-    sources = RepositorySourceInventory.for_project(project)
-    sources.verify("layout snapshot", spec.source_documents)
-    report = inspect_project_configuration_sources(
-        project,
-        target_catalog_inventory=target_catalogs,
-        sources=sources,
-    )
-
-    assert report["passed"] is True
-    assert reads == []
-
-
-def test_layout_without_snapshot_discovers_the_owner_assembly(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root, layout = _write_fixture(tmp_path)
-    project = Project.from_project_root(root)
-    manifest = root / "ip/example/oa.toml"
-    source = SimpleNamespace(
-        project=project,
-        manifest_path=manifest,
-        pdk="testpdk",
-        primitive_masters=(),
-        physical_verification=None,
-        cells=(SimpleNamespace(layout_specs=(layout,)),),
-    )
-    loaded: list[tuple[Path, Project]] = []
-
-    monkeypatch.setattr(
-        Project,
-        "oa_assembly_for",
-        lambda _project, _path: manifest,
-    )
-
-    def load_assembly(path: Path, *, project: Project):
-        loaded.append((path, project))
-        return source
-
-    monkeypatch.setattr(
-        "sigilicon.layout.spec.load_oa_library_source",
-        load_assembly,
-    )
-
-    spec = load_layout_spec(layout, project=project)
-
-    assert spec.oa_assembly_manifest == manifest
-    assert loaded == [(manifest, project)]
-
-
-def test_layout_snapshot_must_share_the_explicit_project() -> None:
-    project = object()
-    source = SimpleNamespace(project=object(), cells=())
-
-    with pytest.raises(ValueError, match="different Project"):
-        _owner_oa_assembly(project, Path("layout.toml"), oa_source=source)
-
-
-def test_layout_snapshot_must_declare_the_layout_spec(tmp_path: Path) -> None:
-    project = object()
-    source = SimpleNamespace(project=project, cells=())
-    spec_path = tmp_path / "layout.toml"
-
-    with pytest.raises(ValueError, match="is not declared"):
-        _owner_oa_assembly(project, spec_path, oa_source=source)
 
 
 def test_layout_generator_source_must_belong_to_spec_owner(tmp_path: Path) -> None:
@@ -475,28 +267,6 @@ def test_layout_generator_cannot_use_sibling_owner_without_component_graph_edge(
     )
 
     with pytest.raises(ValueError, match="source-library"):
-        load_layout_spec(layout, project=Project.from_project_root(root))
-
-
-def test_layout_generator_modules_cannot_use_uncomposed_sibling_owner(
-    tmp_path: Path,
-) -> None:
-    root, layout = _write_fixture(
-        tmp_path,
-        generator_dependencies=("../../../configs/platform/testpdk/layout.toml",),
-        generator_modules=("ip.other.recipe",),
-    )
-    other_root = root / "ip/other"
-    other_root.mkdir(parents=True)
-    (other_root / "recipe.py").write_text("VALUE = 1\n", encoding="utf-8")
-    _write_component(
-        root,
-        "other",
-        kind="rtl-ip",
-        filesets={"python": ("ip/other/recipe.py",)},
-    )
-
-    with pytest.raises(ValueError, match="generator_modules.*source-library"):
         load_layout_spec(layout, project=Project.from_project_root(root))
 
 

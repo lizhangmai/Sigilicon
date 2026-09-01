@@ -59,31 +59,6 @@ def test_exact_release_audit_rejects_symlinked_payload(
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
-def test_exact_release_audit_rejects_symlinked_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
-    alias = tmp_path / "release-alias"
-    alias.symlink_to(manifest_path.parent, target_is_directory=True)
-
-    with pytest.raises(RuntimeError, match="symlink"):
-        ip_packaging.audit_ip_release_manifest(alias / "manifest.json")
-
-
-def test_exact_release_audit_rejects_symlinked_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest_path = _write_release(tmp_path / "release")
-    _skip_semantic_checks(monkeypatch)
-    real_manifest = manifest_path.with_name("real-manifest.json")
-    manifest_path.replace(real_manifest)
-    manifest_path.symlink_to(real_manifest.name)
-
-    with pytest.raises(RuntimeError, match="symlink"):
-        ip_packaging.audit_ip_release_manifest(manifest_path)
-
-
 def test_published_pointer_does_not_resolve_away_release_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

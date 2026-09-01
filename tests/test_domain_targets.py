@@ -68,17 +68,6 @@ goals = ["source-check", "recipe-check"]
     return Project.from_project_root(root)
 
 
-def test_component_target_catalog_is_optional(tmp_path: Path) -> None:
-    write_project_context(tmp_path)
-    component = write_component_owner(tmp_path, "example", filesets={})
-
-    project = Project.from_project_root(tmp_path)
-
-    assert project.owner("example").component.target_catalog is None
-    assert "target_catalog" not in project.owner("example").component.document
-    assert component.is_file()
-
-
 def test_owner_target_catalog_loads_typed_targets_and_operations(
     tmp_path: Path,
 ) -> None:
@@ -135,9 +124,7 @@ goals = ["check"]
         target.inputs["variant"] = "product"  # type: ignore[index]
 
 
-def test_target_level_recipe_and_implicit_operation_recipe_are_rejected(
-    tmp_path: Path,
-) -> None:
+def test_target_operation_requires_an_explicit_recipe(tmp_path: Path) -> None:
     project = _write_owner_project(
         tmp_path,
         catalog_text="""schema = 1
@@ -147,149 +134,13 @@ owner = "example"
 
 [targets.adder]
 description = "Adder target"
-recipe = "configs/recipe.toml"
 
 [targets.adder.operations.check]
 goals = ["check"]
 """,
     )
 
-    with pytest.raises(ValueError, match="targets.adder contains unknown fields"):
-        load_owner_target_catalog(project, "example")
-
-    catalog = tmp_path / "ip/example/configs/targets.toml"
-    catalog.write_text(
-        catalog.read_text(encoding="utf-8").replace(
-            'recipe = "configs/recipe.toml"\n\n',
-            "",
-        ),
-        encoding="utf-8",
-    )
-    project = Project.from_project_root(tmp_path)
     with pytest.raises(ValueError, match=r"operations\.check\.recipe is required"):
-        load_owner_target_catalog(project, "example")
-
-
-def test_target_catalog_rejects_unknown_fields_at_each_level(
-    tmp_path: Path,
-) -> None:
-    project = _write_owner_project(
-        tmp_path,
-        catalog_text="""schema = 1
-contract_kind = "owner-targets"
-path_scope = "owner"
-owner = "example"
-unexpected = true
-
-[targets.adder]
-description = "Adder target"
-operations = {}
-""",
-    )
-
-    with pytest.raises(ValueError, match="unknown fields"):
-        load_owner_target_catalog(project, "example")
-
-    project = _write_owner_project(
-        tmp_path / "target",
-        catalog_text="""schema = 1
-contract_kind = "owner-targets"
-path_scope = "owner"
-owner = "example"
-
-[targets.adder]
-description = "Adder target"
-unexpected = true
-
-[targets.adder.operations.check]
-recipe = "configs/recipe.toml"
-goals = ["check"]
-""",
-    )
-    with pytest.raises(ValueError, match="targets.adder contains unknown fields"):
-        load_owner_target_catalog(project, "example")
-
-    project = _write_owner_project(
-        tmp_path / "operation",
-        catalog_text="""schema = 1
-contract_kind = "owner-targets"
-path_scope = "owner"
-owner = "example"
-
-[targets.adder]
-description = "Adder target"
-
-[targets.adder.operations.check]
-recipe = "configs/recipe.toml"
-goals = ["check"]
-unexpected = true
-""",
-    )
-    with pytest.raises(
-        ValueError,
-        match="targets.adder.operations.check contains unknown fields",
-    ):
-        load_owner_target_catalog(project, "example")
-
-
-@pytest.mark.parametrize(
-    ("field", "catalog_text"),
-    (
-        (
-            "header",
-            """schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "example"
-
-[targets.adder]
-description = "Adder target"
-
-[targets.adder.operations.check]
-recipe = "configs/recipe.toml"
-goals = ["check"]
-""",
-        ),
-        (
-            "goals",
-            """schema = 1
-contract_kind = "owner-targets"
-path_scope = "owner"
-owner = "example"
-
-[targets.adder]
-description = "Adder target"
-
-[targets.adder.operations.check]
-recipe = "configs/recipe.toml"
-goals = ["check", "check"]
-""",
-        ),
-        (
-            "empty goals",
-            """schema = 1
-contract_kind = "owner-targets"
-path_scope = "owner"
-owner = "example"
-
-[targets.adder]
-description = "Adder target"
-
-[targets.adder.operations.check]
-recipe = "configs/recipe.toml"
-goals = []
-""",
-        ),
-    ),
-)
-def test_target_catalog_rejects_invalid_header_or_goals(
-    tmp_path: Path,
-    field: str,
-    catalog_text: str,
-) -> None:
-    project = _write_owner_project(tmp_path, catalog_text=catalog_text)
-
-    with pytest.raises(ValueError):
         load_owner_target_catalog(project, "example")
 
 

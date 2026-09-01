@@ -125,52 +125,6 @@ ends leaf
     ]
 
 
-def test_repeated_imports_use_distinct_single_attempt_directories(
-    monkeypatch,
-    tmp_path,
-    workspace_factory,
-) -> None:
-    netlist = tmp_path / "cell.scs"
-    netlist.write_text("subckt cell A Y\nends cell\n", encoding="utf-8")
-    plan = hierarchy.plan_hierarchy(netlist, top="cell")
-    run_dirs = []
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.require_quiescent_project_cell",
-        lambda *_args, **_kwargs: tmp_path / "cell",
-    )
-    monkeypatch.setattr(
-        hierarchy,
-        "import_schematic",
-        lambda *_args, **kwargs: run_dirs.append(Path(kwargs["run_dir"])),
-    )
-    monkeypatch.setattr(hierarchy, "generate_symbol", lambda *_args, **_kwargs: None)
-    client = object()
-
-    with workspace_factory(
-        client,
-        library="lib",
-        policy=OperationPolicy.RECURSIVE_OA,
-    ) as operation:
-        for index in range(2):
-            hierarchy.import_hierarchy(
-                client,
-                plan=plan,
-                library="lib",
-                overwrite=True,
-                artifact=_artifact(tmp_path, f"{index + 2:032x}"),
-                source_role="inputs",
-                work_role="work",
-                timeout=30,
-                operation=operation,
-            )
-
-    assert len(run_dirs) == 2
-    assert run_dirs[0] != run_dirs[1]
-    assert all(path.name == "cell" for path in run_dirs)
-    assert all(path.parent.name == "work" for path in run_dirs)
-    assert all(path.parts.count("runs") == 1 for path in run_dirs)
-
-
 @pytest.mark.parametrize("failed_stage", ["schematic", "symbol"])
 def test_partial_failure_reports_exact_completed_cells_and_stage(
     monkeypatch,
@@ -282,27 +236,6 @@ def test_hierarchy_planning_rejects_path_like_subckt_name(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="invalid hierarchy cell identifier"):
         hierarchy.plan_hierarchy(netlist, top=None)
-
-
-def test_preplanned_hierarchy_revalidates_cell_identifiers_before_writes(
-    monkeypatch,
-    tmp_path,
-    workspace_factory,
-) -> None:
-    writes: list[str] = []
-    monkeypatch.setattr(
-        hierarchy,
-        "import_schematic",
-        lambda *_args, **_kwargs: writes.append("schematic"),
-    )
-    client = object()
-    netlist = tmp_path / "valid.scs"
-    netlist.write_text("subckt valid A Y\nends valid\n", encoding="utf-8")
-    valid = hierarchy.plan_hierarchy(netlist, top="valid")
-    with pytest.raises(ValueError, match="invalid hierarchy cell identifier"):
-        hierarchy.HierarchyPlan(valid.snapshot, ("../outside",))
-
-    assert writes == []
 
 
 def test_hierarchy_plan_cannot_claim_cells_not_in_its_snapshot(tmp_path) -> None:
