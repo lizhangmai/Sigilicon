@@ -6,11 +6,12 @@ from types import SimpleNamespace
 
 from sigilicon.backends.cadence import (
     LayoutBackend,
+    LayoutVerificationBackend,
     NativeOaBackend,
     XceliumBackend,
     _copy_isolated_project,
 )
-from sigilicon.execution import Resources, Step, StepContext
+from sigilicon.execution import Evidence, Resources, Step, StepContext
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -308,3 +309,99 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     assert result.facts["workspace_uncertainty"] == (
         "workspace cleanup could not be proven",
     )
+
+
+def test_layout_verification_backend_publishes_classified_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    xstream = _file(tmp_path / "bin/strmout", executable=True)
+    calibre = _file(tmp_path / "bin/calibre", executable=True)
+    step = Step(
+        "verify",
+        "cadence.layout-verify",
+        {
+            "owner": "example",
+            "spec": "design/CELL/layout.toml",
+            "check": "lvs",
+            "xstream_timeout_seconds": 10,
+            "calibre_timeout_seconds": 20,
+        },
+        sources=("design/CELL/layout.toml",),
+        evidence=Evidence("regression", "l1", "physical-layout"),
+    )
+    resources = Resources(
+        frozenset(
+            {
+                "tool.virtuoso-bridge",
+                "license.cadence-oa",
+                "tool.cadence-xstream",
+                "tool.calibre",
+            }
+        ),
+        {
+            "SIGILICON_CADENCE_XSTREAM": str(xstream),
+            "SIGILICON_CALIBRE": str(calibre),
+        },
+    )
+    project_root = tmp_path / "source-project"
+    owner_root = project_root / "ip/example"
+    workspace_root = tmp_path / "oa-workspace"
+    owner_root.mkdir(parents=True)
+    workspace_root.mkdir()
+    registered: list[object] = []
+    context = _context(
+        tmp_path,
+        step,
+        resources,
+        project_root=project_root,
+        owner_root=owner_root,
+        workspace_root=workspace_root,
+        scopes={"design/CELL/layout.toml": "owner"},
+        register_operation=registered.append,
+    )
+    _file(context.source_root / "design/CELL/layout.toml")
+    project = _patch_isolated_owner(monkeypatch, tmp_path)
+    planning = SimpleNamespace(
+        spec=SimpleNamespace(pdk=SimpleNamespace(key="tsmc28"))
+    )
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        lambda _spec, *, project: planning,
+    )
+    monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+
+    def verify(_planning, _client, *, artifacts, bind_operation, **_kwargs):
+        operation = SimpleNamespace(operation_id=context.operation_id)
+        bind_operation(operation)
+        artifacts.write_json("outputs", ("typed-evidence.json",), {"passed": True})
+        evidence = SimpleNamespace(
+            status=SimpleNamespace(value="clean"),
+            canonical_json=lambda: '{"status":"clean"}\n',
+        )
+        return SimpleNamespace(passed=True, evidence=evidence)
+
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_verification.run_layout_verification",
+        verify,
+    )
+    backend = LayoutVerificationBackend()
+
+    assert all(check.status == "ready" for check in backend.preflight(step, resources))
+    result = backend.run(context)
+
+    assert result.status == "succeeded"
+    assert result.facts == {
+        "passed": True,
+        "check": "lvs",
+        "status": "clean",
+        "evidence_role": "regression",
+        "evidence_level": "l1",
+        "evidence_scope": "physical-layout",
+        "product_qualification_conclusion": False,
+    }
+    flow_evidence = (
+        context.output_root / "verification/flow-evidence.json"
+    ).read_text(encoding="utf-8")
+    assert '"physical_verification":{"status":"clean"}' in flow_evidence
+    assert registered[0].operation_id == context.operation_id

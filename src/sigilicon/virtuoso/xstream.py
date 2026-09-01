@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -251,10 +252,13 @@ def _prepend(environment: dict[str, str], name: str, value: Path) -> None:
     environment[name] = str(value) + (os.pathsep + existing if existing else "")
 
 
-def xstream_environment(executable: Path) -> dict[str, str]:
+def xstream_environment(
+    executable: Path,
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Construct Cadence's subprocess environment from one explicit launcher."""
 
-    environment = cadence_subprocess_env()
+    environment = cadence_subprocess_env(base)
     cds_home = Path(environment.get("CDSHOME", executable.parents[3]))
     environment.setdefault("CDSHOME", str(cds_home))
     environment.setdefault("CDSROOT", str(cds_home))
@@ -290,6 +294,8 @@ def _write_failure_diagnostic(
 
 def run_xstream_export(
     request: XStreamExportRequest,
+    *,
+    environment: Mapping[str, str] | None = None,
 ) -> XStreamExportResult:
     """Export one exact OA cellview and require authoritative XStream completion."""
 
@@ -369,7 +375,7 @@ def run_xstream_export(
             completed = run_process_group(
                 command,
                 cwd=work,
-                env=xstream_environment(executable),
+                env=xstream_environment(executable, environment),
                 timeout=request.timeout_seconds,
                 before_spawn=validate_spawn,
                 pass_fds=(

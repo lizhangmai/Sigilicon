@@ -31,6 +31,9 @@ _STEP_FIELDS = frozenset(
         "source_globs", "project_sources", "project_source_globs", "evidence",
     }
 )
+_SOURCE_GROUP_FIELDS = frozenset(
+    {"sources", "source_globs", "project_sources", "project_source_globs"}
+)
 
 
 def _table(value: object, field: str) -> Mapping[str, Any]:
@@ -149,19 +152,30 @@ def _selected_sources(
     raw: Mapping[str, Any],
     *,
     field: str,
-    source_groups: Mapping[str, tuple[str, ...]],
+    source_groups: Mapping[str, Mapping[str, Any]],
 ) -> tuple[Source, ...]:
     names = list(_strings(raw.get("sources"), f"{field}.sources"))
+    grouped: list[Source] = []
     for group in _strings(raw.get("source_groups"), f"{field}.source_groups"):
         try:
-            names.extend(source_groups[group])
+            group_selection = source_groups[group]
         except KeyError as exc:
             raise ContractError(
                 f"{field}.source_groups references unknown group {group!r}"
             ) from exc
+        grouped.extend(
+            _selected_sources(
+                owner_root,
+                project_root,
+                group_selection,
+                field=f"source_groups.{group}",
+                source_groups={},
+            )
+        )
     if len(names) != len(set(names)):
         raise ContractError(f"{field} selects duplicate sources")
     selected = (
+        *grouped,
         *_sources(
             owner_root, tuple(names), f"{field}.sources", scope="owner"
         ),
@@ -203,7 +217,7 @@ def _step(
     project_root: Path,
     inherited_config: Mapping[str, Any],
     inherited_sources: tuple[Source, ...],
-    source_groups: Mapping[str, tuple[str, ...]],
+    source_groups: Mapping[str, Mapping[str, Any]],
     default_id: str | None = None,
 ) -> Step:
     unknown = set(raw) - _STEP_FIELDS
@@ -268,10 +282,26 @@ def compile_operation(
     if unknown:
         raise ContractError(f"{path}: unknown owner operation fields: {sorted(unknown)}")
     raw_groups = _table(raw.get("source_groups", {}), "source_groups")
-    source_groups = {
-        _name(name, "source group"): _strings(value, f"source_groups.{name}")
-        for name, value in raw_groups.items()
-    }
+    source_groups: dict[str, Mapping[str, Any]] = {}
+    for name, value in raw_groups.items():
+        group = _name(name, "source group")
+        selection = (
+            {"sources": value}
+            if isinstance(value, list)
+            else _table(value, f"source_groups.{group}")
+        )
+        unknown_group = set(selection) - _SOURCE_GROUP_FIELDS
+        if unknown_group:
+            raise ContractError(
+                f"source_groups.{group} contains unknown fields: "
+                f"{sorted(unknown_group)}"
+            )
+        for selection_field in _SOURCE_GROUP_FIELDS:
+            _strings(
+                selection.get(selection_field),
+                f"source_groups.{group}.{selection_field}",
+            )
+        source_groups[group] = selection
     operation_definitions = _table(raw.get("operations"), "operations")
     targets = _table(raw.get("targets"), "targets")
     enabled_by_targets: set[str] = set()

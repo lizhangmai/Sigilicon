@@ -235,6 +235,31 @@ def test_operation_globs_capture_owner_and_shared_project_sources(
     assert ("project", "configs/platform/tool.toml") in sources
 
 
+def test_source_group_can_share_owner_and_project_globs(tmp_path: Path) -> None:
+    operations = _write_project(tmp_path)
+    (tmp_path / "ip/example/rtl").mkdir()
+    (tmp_path / "ip/example/rtl/design.sv").write_text(
+        "module design; endmodule\n", encoding="utf-8"
+    )
+    operations.write_text(
+        operations.read_text(encoding="utf-8").replace(
+            '[source_groups]\nvalue = ["configs/value.txt"]',
+            '[source_groups.value]\n'
+            'sources = ["configs/value.txt"]\n'
+            'source_globs = ["rtl/**/*.sv"]\n'
+            'project_source_globs = ["configs/platform/**/*.toml"]',
+        ),
+        encoding="utf-8",
+    )
+
+    plan = Project.open(tmp_path).plan("example/smoke:check")
+    sources = {(source.scope, source.path) for source in plan.sources}
+
+    assert ("owner", "configs/value.txt") in sources
+    assert ("owner", "rtl/design.sv") in sources
+    assert ("project", "configs/platform/catalog.toml") in sources
+
+
 def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = Project.open(tmp_path, backends=(CopyBackend(), UpperBackend()))

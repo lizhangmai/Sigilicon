@@ -115,11 +115,16 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
         "sigilicon.virtuoso.xstream.run_process_group", runner
     )
 
-    result = run_xstream_export(request)
+    result = run_xstream_export(
+        request,
+        environment={"PATH": "/snapshot/bin", "CDS_LIC_FILE": "snapshot"},
+    )
 
     assert result.exit_code == 0
     assert result.gds_path.read_bytes() == b"non-empty-gds"
     assert observed["cwd"] == request.work_root
+    assert observed["env"]["CDS_LIC_FILE"] == "snapshot"
+    assert observed["env"]["PATH"] == "/snapshot/bin"
     command = tuple(observed["command"])
     assert command[command.index("-library") + 1] == "scratch"
     assert command[command.index("-topCell") + 1] == "neutral"

@@ -28,7 +28,12 @@ from sigilicon.external_tools import (
 
 
 _XRUN = "SIGILICON_CADENCE_XRUN"
+_XSTREAM = "SIGILICON_CADENCE_XSTREAM"
+_CALIBRE = "SIGILICON_CALIBRE"
 _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
+_LAYOUT_VERIFICATION_CAPABILITIES = _OA_CAPABILITIES | frozenset(
+    {"tool.cadence-xstream", "tool.calibre"}
+)
 
 
 def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
@@ -482,12 +487,181 @@ class LayoutBackend:
         )
 
 
-def cadence_backends() -> tuple[XceliumBackend, NativeOaBackend, LayoutBackend]:
-    return XceliumBackend(), NativeOaBackend(), LayoutBackend()
+class LayoutVerificationBackend:
+    """Verify one existing routed OA layout with XStream and Calibre."""
+
+    name = "cadence.layout-verify"
+    _fields = frozenset(
+        {
+            "owner",
+            "spec",
+            "check",
+            "xstream_timeout_seconds",
+            "calibre_timeout_seconds",
+        }
+    )
+
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        config = _strict_config(step, self._fields)
+        if step.evidence is None:
+            raise ContractError("layout verification requires an evidence envelope")
+        _text(config, "owner")
+        spec = _relative(_text(config, "spec"), "layout spec")
+        if spec not in step.sources:
+            raise ContractError(
+                "layout verification spec must be inside the source closure"
+            )
+        if _text(config, "check") not in {"drc", "lvs"}:
+            raise ContractError("layout verification check must be drc or lvs")
+        _positive_integer(config, "xstream_timeout_seconds")
+        _positive_integer(config, "calibre_timeout_seconds")
+        return (
+            _executable_check(resources, _XSTREAM),
+            _executable_check(resources, _CALIBRE),
+            *_capability_checks(resources, _LAYOUT_VERIFICATION_CAPABILITIES),
+        )
+
+    def run(self, context: StepContext) -> StepResult:
+        from sigilicon.domain.repository import Project
+        from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.layout_generation import plan_layout_spec
+        from sigilicon.workflows.layout_verification import run_layout_verification
+        from sigilicon.workflows.run_artifacts import RunArtifacts
+
+        config = _strict_config(context.step, self._fields)
+        owner = _text(config, "owner")
+        project_root, owner_path = _copy_isolated_project(context, owner)
+        project = Project.from_project_root(project_root)
+        if project.owner(owner).root.resolve() != project_root / owner_path:
+            raise ExecutionError("layout verification owner identity drift")
+        spec = (
+            project_root
+            / owner_path
+            / _relative(_text(config, "spec"), "layout spec")
+        )
+        planning = plan_layout_spec(spec, project=project)
+        xstream = _configured_executable(context.resources, _XSTREAM)
+        calibre = _configured_executable(context.resources, _CALIBRE)
+        if xstream is None or calibre is None:
+            raise ExecutionError(
+                "configured XStream and Calibre executables are required"
+            )
+        uncertainty: list[str] = []
+        try:
+            with owned_scratch_directory(
+                prefix=f"sigilicon-physical-{context.run_id}-",
+                retain_on_error=lambda exc: bool(uncertainty)
+                or process_group_cleanup_uncertainty(exc) is not None,
+            ) as scratch:
+                artifacts = RunArtifacts.from_step_context(
+                    context,
+                    "verification",
+                    {
+                        "owner": owner,
+                        "spec": str(config["spec"]),
+                        "check": str(config["check"]),
+                    },
+                    tool_work_root=scratch.path,
+                )
+                result = run_layout_verification(
+                    planning,
+                    get_client(),
+                    check=_text(config, "check"),
+                    artifacts=artifacts,
+                    xstream=xstream,
+                    calibre=calibre,
+                    environment=context.resources.environment,
+                    operation_id=context.operation_id,
+                    bind_operation=context.bind_workspace_operation,
+                    record_uncertainty=uncertainty.append,
+                    xstream_timeout=_positive_integer(
+                        config, "xstream_timeout_seconds"
+                    ),
+                    calibre_timeout=_positive_integer(
+                        config, "calibre_timeout_seconds"
+                    ),
+                )
+        except Exception:
+            published = _publish_tree(
+                context, "verification", "evidence.physical-verification"
+            )
+            if uncertainty:
+                return StepResult(
+                    "uncertain",
+                    published,
+                    {"workspace_uncertainty": tuple(uncertainty)},
+                    " | ".join(uncertainty),
+                )
+            raise
+        envelope = context.step.evidence
+        if envelope is None:
+            raise ExecutionError("layout verification lost its evidence envelope")
+        context.write_text(
+            "verification",
+            "flow-evidence.json",
+            json.dumps(
+                {
+                    "schema": 1,
+                    "contract_kind": "physical-verification-evidence",
+                    "plan_identity": context.plan_identity,
+                    "platform": planning.spec.pdk.key,
+                    "check": str(config["check"]),
+                    "evidence_role": envelope.role,
+                    "evidence_level": envelope.level,
+                    "evidence_scope": envelope.scope,
+                    "physical_verification": json.loads(
+                        result.evidence.canonical_json()
+                    ),
+                    "product_qualification_conclusion": False,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+        )
+        published = _publish_tree(
+            context, "verification", "evidence.physical-verification"
+        )
+        if not published:
+            raise ExecutionError("layout verification produced no managed evidence")
+        facts = {
+            "passed": result.passed,
+            "check": str(config["check"]),
+            "status": result.evidence.status.value,
+            "evidence_role": envelope.role,
+            "evidence_level": envelope.level,
+            "evidence_scope": envelope.scope,
+            "product_qualification_conclusion": False,
+        }
+        return (
+            StepResult.succeeded(artifacts=published, facts=facts)
+            if result.passed
+            else StepResult(
+                "failed",
+                published,
+                facts,
+                f"Calibre {str(config['check']).upper()} did not prove clean",
+            )
+        )
+
+
+def cadence_backends() -> tuple[
+    XceliumBackend,
+    NativeOaBackend,
+    LayoutBackend,
+    LayoutVerificationBackend,
+]:
+    return (
+        XceliumBackend(),
+        NativeOaBackend(),
+        LayoutBackend(),
+        LayoutVerificationBackend(),
+    )
 
 
 __all__ = [
     "LayoutBackend",
+    "LayoutVerificationBackend",
     "NativeOaBackend",
     "XceliumBackend",
     "cadence_backends",
