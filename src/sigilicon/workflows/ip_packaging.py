@@ -1454,6 +1454,7 @@ def _plan_loaded_ip_release(
         "component": {
             "name": component.name,
             "kind": component.kind,
+            "lifecycle": component.lifecycle,
             "contract": component.path.relative_to(contract.project_root).as_posix(),
         },
         "release_id": release_id,

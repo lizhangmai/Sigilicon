@@ -22,6 +22,7 @@ COMPONENT_KINDS = {
     "rtl-ip",
     "source-library",
 }
+COMPONENT_LIFECYCLES = {"active", "legacy"}
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
@@ -57,6 +58,7 @@ class ComponentContract:
     owner: str
     name: str
     kind: str
+    lifecycle: str
     public_interface: PurePosixPath | None
     filesets: Mapping[str, tuple[PurePosixPath, ...]]
     components: tuple[ComponentDependency, ...]
@@ -85,6 +87,9 @@ def parse_component_contract(
     kind = _string(document.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:
         raise ValueError(f"unsupported component kind: {kind}")
+    lifecycle = _string(document.get("lifecycle", "active"), "lifecycle")
+    if lifecycle not in COMPONENT_LIFECYCLES:
+        raise ValueError(f"unsupported component lifecycle: {lifecycle}")
 
     interface_value = document.get("public_interface")
     public_interface = (
@@ -140,6 +145,7 @@ def parse_component_contract(
         owner=header.owner,
         name=_string(document.get("name"), "name"),
         kind=kind,
+        lifecycle=lifecycle,
         public_interface=public_interface,
         filesets=MappingProxyType(filesets),
         components=tuple(dependencies),

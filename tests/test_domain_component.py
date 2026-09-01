@@ -33,6 +33,7 @@ python = ["ip/shared/library.py"]
     loaded = load_component_contract(contract, project_root=tmp_path)
 
     assert loaded.kind == "source-library"
+    assert loaded.lifecycle == "active"
     assert loaded.filesets["python"][0].as_posix() == "ip/shared/library.py"
     with pytest.raises(TypeError):
         loaded.filesets["python"] = ()
@@ -43,6 +44,42 @@ python = ["ip/shared/library.py"]
     )
     with pytest.raises(TypeError):
         loaded.document["filesets"]["python"][0] = "changed.py"
+
+
+def test_component_lifecycle_is_typed_and_frozen(tmp_path: Path) -> None:
+    source = tmp_path / "ip/shared/library.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    contract = tmp_path / "ip/shared/ip.toml"
+    contract.write_text(
+        '''schema = 1
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "shared"
+name = "shared"
+kind = "source-library"
+lifecycle = "legacy"
+
+[filesets]
+python = ["ip/shared/library.py"]
+''',
+        encoding="utf-8",
+    )
+
+    loaded = load_component_contract(contract, project_root=tmp_path)
+
+    assert loaded.lifecycle == "legacy"
+    with pytest.raises(TypeError):
+        loaded.document["lifecycle"] = "active"
+
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'lifecycle = "legacy"', 'lifecycle = "retired"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unsupported component lifecycle"):
+        load_component_contract(contract, project_root=tmp_path)
 
 
 def test_component_graph_rejects_a_snapshot_from_another_root(

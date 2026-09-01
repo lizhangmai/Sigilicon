@@ -268,6 +268,7 @@ def inspect_repository_designs(
         component_result: dict[str, Any] = {
             "contract": path.relative_to(root).as_posix(),
             "kind": component.kind,
+            "lifecycle": component.lifecycle,
             "graph": sorted(graph),
         }
         if "variants" in component.document:
@@ -297,8 +298,10 @@ def inspect_repository_designs(
     oa_assemblies: dict[str, Any] = {}
     for name, contract in release_inventory.items():
         path = contract.path
+        producer = context.require_owner(path)
         release_row = {
             "contract": path.relative_to(root).as_posix(),
+            "producer_lifecycle": producer.component.lifecycle,
             "default_maturity": contract.default_maturity,
             "exports": [item.name for item in contract.exports],
             "interface_kinds": sorted(
