@@ -9,11 +9,10 @@ import pytest
 
 from sigilicon.workflows.run_artifacts import RunArtifacts
 from sigilicon.workflows.structural_link import (
-    _owned_executable,
     execute_structural_link,
     plan_structural_link,
 )
-from sigilicon.external_tools import run_process_group_capture
+from sigilicon.external_tools import owned_executable, run_process_group_capture
 
 
 def _write(path: Path, text: str, *, executable: bool = False) -> Path:
@@ -270,7 +269,7 @@ def test_structural_link_can_hold_a_binary_tool_mode_symlink(tmp_path: Path) -> 
     launcher = dispatcher.with_name("dc_shell")
     launcher.symlink_to(dispatcher.name)
 
-    with _owned_executable(launcher) as held:
+    with owned_executable(launcher) as held:
         completed = run_process_group_capture(
             held.command,
             cwd=tmp_path,

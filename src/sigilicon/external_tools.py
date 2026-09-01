@@ -339,6 +339,44 @@ class OwnedDirectoryDescriptor:
 
 
 @dataclass(frozen=True)
+class OwnedExecutable:
+    """Held regular executable or same-directory tool-mode symlink."""
+
+    command: tuple[str, ...]
+    target: OwnedFileDescriptor
+    directory: OwnedDirectoryDescriptor | None = None
+    symlink: Path | None = None
+    symlink_identity: tuple[int, int, int, int, int] | None = None
+    symlink_target: str | None = None
+
+    def require_visible(self) -> None:
+        self.target.require_visible()
+        if self.directory is None:
+            return
+        self.directory.require_visible()
+        if (
+            self.symlink is None
+            or self.symlink_identity is None
+            or self.symlink_target is None
+        ):
+            raise RuntimeError("held executable symlink lost its identity")
+        metadata = os.lstat(self.symlink)
+        identity = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        )
+        if (
+            identity != self.symlink_identity
+            or not stat.S_ISLNK(metadata.st_mode)
+            or os.readlink(self.symlink) != self.symlink_target
+        ):
+            raise RuntimeError(f"external executable symlink changed: {self.symlink}")
+
+
+@dataclass(frozen=True)
 class OwnedOutputDescriptor:
     """One exclusively created output inode owned through child completion."""
 
@@ -696,6 +734,67 @@ def owned_directory(
                     os.close(parent_fd)
         finally:
             os.close(descriptor)
+
+
+@contextmanager
+def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
+    """Hold a regular launcher or a same-directory tool-mode symlink."""
+
+    absolute = Path(os.path.abspath(path))
+    if not absolute.is_symlink():
+        with owned_input_file(absolute, require_single_link=False) as target:
+            held = OwnedExecutable((target.child_named_path,), target)
+            held.require_visible()
+            yield held
+        return
+    link_target = os.readlink(absolute)
+    if Path(link_target).name != link_target:
+        raise RuntimeError(
+            f"external executable symlink must target its own directory: {absolute}"
+        )
+    metadata = os.lstat(absolute)
+    identity = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+    with (
+        owned_directory(absolute.parent) as directory,
+        owned_input_file(
+            absolute.parent / link_target, require_single_link=False
+        ) as target,
+    ):
+        held = OwnedExecutable(
+            (
+                (
+                    "/bin/sh",
+                    "-c",
+                    'launcher=$1; shift; . "$launcher"',
+                    str(absolute),
+                    target.child_path,
+                )
+                if os.pread(target.fd, 2, 0) == b"#!"
+                else (
+                    "/bin/bash",
+                    "-c",
+                    'launcher=$1; shift; exec -a "$0" "$launcher" "$@"',
+                    str(absolute),
+                    target.child_path,
+                )
+            ),
+            target,
+            directory,
+            absolute,
+            identity,
+            link_target,
+        )
+        held.require_visible()
+        try:
+            yield held
+        finally:
+            held.require_visible()
 
 
 def _clear_directory_at(descriptor: int) -> None:

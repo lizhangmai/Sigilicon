@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import sys
 from typing import Any
 
@@ -33,7 +34,9 @@ from sigilicon.execution.model import (
 )
 from sigilicon.external_tools import (
     owned_directory,
+    owned_executable,
     owned_input_file,
+    owned_output_file,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
     run_process_group_capture,
@@ -217,6 +220,7 @@ def _run_script(
     environment: dict[str, str],
     *,
     argument: str,
+    held_executables: tuple[str, ...],
     held_files: tuple[str, ...],
     held_directories: tuple[str, ...] = (),
 ):
@@ -225,6 +229,7 @@ def _run_script(
     runner = _runner(context.step)
     with ExitStack() as stack:
         source_root = stack.enter_context(owned_directory(context.source_root))
+        work_root = stack.enter_context(owned_directory(context.work_root))
         for source in context.step.sources:
             stack.enter_context(
                 owned_input_file(
@@ -241,6 +246,53 @@ def _run_script(
                     if relative == Path(".")
                     else f"{source_root.child_path}/{relative.as_posix()}"
                 )
+        executables = []
+        launchers = []
+        for name in held_executables:
+            value = environment.get(name)
+            if not value:
+                raise ExecutionError(f"runtime environment omitted {name}")
+            owned = stack.enter_context(owned_executable(Path(value)))
+            if owned.directory is None:
+                environment[name] = owned.target.child_named_path
+            else:
+                launcher_name = f".{name.lower()}.launcher"
+                launcher_path = context.work_root / launcher_name
+                payload = (
+                    "#!/bin/sh\nexec "
+                    + shlex.join(owned.command)
+                    + ' "$@"\n'
+                ).encode("utf-8")
+                with owned_output_file(
+                    work_root,
+                    launcher_name,
+                    mode=0o700,
+                ) as generated:
+                    generated.write_bytes(payload)
+                    expected = os.fstat(generated.fd)
+                launcher = stack.enter_context(
+                    owned_input_file(launcher_path, require_single_link=True)
+                )
+                held = os.fstat(launcher.fd)
+                if (
+                    held.st_dev,
+                    held.st_ino,
+                    held.st_mode,
+                    held.st_size,
+                    held.st_mtime_ns,
+                    os.pread(launcher.fd, len(payload) + 1, 0),
+                ) != (
+                    expected.st_dev,
+                    expected.st_ino,
+                    expected.st_mode,
+                    expected.st_size,
+                    expected.st_mtime_ns,
+                    payload,
+                ):
+                    raise ExecutionError("generated Synopsys launcher identity changed")
+                environment[name] = launcher.child_named_path
+                launchers.append(launcher)
+            executables.append(owned)
         for name in held_files:
             value = environment.get(name)
             if not value:
@@ -265,12 +317,20 @@ def _run_script(
         command = [f"{source_root.child_path}/{runner}"]
         if argument:
             command.append(argument)
+
+        def visible() -> None:
+            source_root.require_visible()
+            work_root.require_visible()
+            for executable in executables:
+                executable.require_visible()
+            for launcher in launchers:
+                launcher.require_visible()
         return run_process_group_capture(
             command,
             cwd=context.work_root,
             env=environment,
             timeout=_positive_integer(context.step.config, "timeout_seconds"),
-            before_spawn=source_root.require_visible,
+            before_spawn=visible,
         )
 
 
@@ -303,7 +363,6 @@ class VcsBackend:
         target = _target(config)
         environment = dict(context.resources.environment)
         environment["SIGILICON_DESIGN_VARIANT"] = _text(config, "variant")
-        environment["SIGILICON_VCS_OUTPUT_ROOT"] = str(context.work_root / "tool")
         rtl = _source_members(context.step, "rtl_root", suffix=".sv")
         testbench = _source_members(context.step, "testbench_root", suffix=".sv")
         if target != "gate":
@@ -314,7 +373,7 @@ class VcsBackend:
             environment["SIGILICON_VCS_TESTBENCH_FILELIST"] = str(
                 _write_filelist(context, "testbench", testbench)
             )
-        held = ["SIGILICON_SYNOPSYS_VCS"]
+        held: list[str] = []
         if target in {"structural", "gate"}:
             held.extend(
                 (
@@ -327,12 +386,19 @@ class VcsBackend:
             artifact = _artifact(context, _text(config, "synthesis_step"), "mapped-netlist")
             environment["SIGILICON_VCS_MAPPED_NETLIST"] = str(artifact.path)
             held.append("SIGILICON_VCS_MAPPED_NETLIST")
-        completed = _run_script(
-            context,
-            environment,
-            argument=target,
-            held_files=tuple(held),
-        )
+        with owned_scratch_directory(
+            prefix=f"sigilicon-vcs-{context.run_id}-",
+            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
+            is not None,
+        ) as scratch:
+            environment["SIGILICON_VCS_OUTPUT_ROOT"] = scratch.child_path
+            completed = _run_script(
+                context,
+                environment,
+                argument=target,
+                held_executables=("SIGILICON_SYNOPSYS_VCS",),
+                held_files=tuple(held),
+            )
         logs = _logs(context, completed.stdout, completed.stderr or "")
         if completed.returncode:
             return StepResult(
@@ -363,12 +429,10 @@ class DcBackend:
 
     def run(self, context: StepContext) -> StepResult:
         config = context.step.config
-        tool_root = ensure_nofollow_directory(context.work_root / "tool")
         environment = dict(context.resources.environment)
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
-                "SIGILICON_DC_OUTPUT_ROOT": str(tool_root),
                 "SIGILICON_DC_RTL_FILELIST": str(
                     _write_filelist(
                         context,
@@ -382,53 +446,62 @@ class DcBackend:
             }
         )
         held = (
-            "SIGILICON_SYNOPSYS_DC_SHELL",
             "SIGILICON_STDCELL_RVT_DB",
             "SIGILICON_STDCELL_HVT_DB",
             "SIGILICON_STDCELL_LVT_DB",
         )
-        completed = _run_script(
-            context, environment, argument="", held_files=held
-        )
-        logs = _logs(context, completed.stdout, completed.stderr or "")
-        if completed.returncode:
-            return StepResult(
-                "failed", logs, message=f"DC runner exited {completed.returncode}"
+        with owned_scratch_directory(
+            prefix=f"sigilicon-dc-{context.run_id}-",
+            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
+            is not None,
+        ) as scratch:
+            environment["SIGILICON_DC_OUTPUT_ROOT"] = scratch.child_path
+            completed = _run_script(
+                context,
+                environment,
+                argument="",
+                held_executables=("SIGILICON_SYNOPSYS_DC_SHELL",),
+                held_files=held,
             )
-        outputs = (
-            _copied(
-                context,
-                role="mapped-netlist",
-                kind="netlist.verilog",
-                source=tool_root / "mapped.v",
-                filename="mapped.v",
-            ),
-            _copied(
-                context,
-                role="mapped-constraints",
-                kind="constraints.sdc",
-                source=tool_root / "mapped.sdc",
-                filename="mapped.sdc",
-            ),
-            _copied(
-                context,
-                role="checkpoint",
-                kind="checkpoint.synopsys-ddc",
-                source=tool_root / "mapped.ddc",
-                filename="mapped.ddc",
-            ),
-        )
-        reports = tuple(
-            _copied(
-                context,
-                role="report",
-                kind="report.synopsys",
-                source=tool_root / relative,
-                filename=relative,
+            logs = _logs(context, completed.stdout, completed.stderr or "")
+            if completed.returncode:
+                return StepResult(
+                    "failed", logs, message=f"DC runner exited {completed.returncode}"
+                )
+            outputs = (
+                _copied(
+                    context,
+                    role="mapped-netlist",
+                    kind="netlist.verilog",
+                    source=scratch.path / "mapped.v",
+                    filename="mapped.v",
+                ),
+                _copied(
+                    context,
+                    role="mapped-constraints",
+                    kind="constraints.sdc",
+                    source=scratch.path / "mapped.sdc",
+                    filename="mapped.sdc",
+                ),
+                _copied(
+                    context,
+                    role="checkpoint",
+                    kind="checkpoint.synopsys-ddc",
+                    source=scratch.path / "mapped.ddc",
+                    filename="mapped.ddc",
+                ),
             )
-            for relative in _strings(config, "reports")
-        )
-        return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
+            reports = tuple(
+                _copied(
+                    context,
+                    role="report",
+                    kind="report.synopsys",
+                    source=scratch.path / relative,
+                    filename=relative,
+                )
+                for relative in _strings(config, "reports")
+            )
+            return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
 
 
 class FcBackend:
@@ -475,7 +548,6 @@ class FcBackend:
         environment = dict(context.resources.environment)
         environment.update(
             {
-                "SIGILICON_FC_WORK_ROOT": str(context.work_root / "tool"),
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
                 "SIGILICON_DESIGN_CORNER": _text(config, "corner"),
                 "SIGILICON_DESIGN_TOP": _text(config, "top"),
@@ -484,6 +556,7 @@ class FcBackend:
         held_files: list[str] = []
         held_directories: list[str] = []
         if target == "library":
+            held_executables = ("SIGILICON_SYNOPSYS_LM_SHELL",)
             name = _safe_relative(
                 _text(config, "reference_library_output"),
                 "reference library output",
@@ -500,7 +573,6 @@ class FcBackend:
             )
             held_files.extend(
                 (
-                    "SIGILICON_SYNOPSYS_LM_SHELL",
                     "SIGILICON_FC_TECH_FILE",
                     "SIGILICON_FC_TECH_LEF",
                     "SIGILICON_STDCELL_RVT_LEF",
@@ -512,6 +584,7 @@ class FcBackend:
                 )
             )
         else:
+            held_executables = ("SIGILICON_SYNOPSYS_FC_SHELL",)
             synthesis = _text(config, "synthesis_step")
             reference = _text(config, "reference_step")
             mapped_netlist = _artifact(context, synthesis, "mapped-netlist")
@@ -578,7 +651,6 @@ class FcBackend:
             )
             held_files.extend(
                 (
-                    "SIGILICON_SYNOPSYS_FC_SHELL",
                     "SIGILICON_FC_GDS_MAP",
                     "SIGILICON_FC_TLUPLUS",
                     "SIGILICON_FC_ANTENNA_RULES",
@@ -587,41 +659,54 @@ class FcBackend:
                 )
             )
             held_directories.append("SIGILICON_FC_REFERENCE_NDM")
-        completed = _run_script(
-            context,
-            environment,
-            argument=target,
-            held_files=tuple(held_files),
-            held_directories=tuple(held_directories),
-        )
-        logs = _logs(context, completed.stdout, completed.stderr or "")
-        if completed.returncode:
-            return StepResult(
-                "failed", logs, message=f"FC runner exited {completed.returncode}"
+        with owned_scratch_directory(
+            prefix=f"sigilicon-fc-{context.run_id}-",
+            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
+            is not None,
+        ) as scratch:
+            environment["SIGILICON_FC_WORK_ROOT"] = scratch.child_path
+            completed = _run_script(
+                context,
+                environment,
+                argument=target,
+                held_executables=held_executables,
+                held_files=tuple(held_files),
+                held_directories=tuple(held_directories),
             )
-        if target == "library":
-            artifacts = (
-                *_tree_artifacts(reference_root, "reference-library", "library.synopsys-ndm"),
-                Artifact("library-check-report", "report.synopsys", report),
-            )
-        else:
-            artifacts = tuple(
-                Artifact(
-                    role,
-                    "checkpoint.synopsys-dlib" if role == "checkpoint" else "result.synopsys-fc",
-                    path.absolute(),
+            logs = _logs(context, completed.stdout, completed.stderr or "")
+            if completed.returncode:
+                return StepResult(
+                    "failed", logs, message=f"FC runner exited {completed.returncode}"
                 )
-                for role in sorted(required)
-                for path in (
-                    sorted((context.output_root / role).rglob("*"))
-                    if role == "checkpoint"
-                    else [context.output_root / role / output_names[role]]
+            if target == "library":
+                artifacts = (
+                    *_tree_artifacts(
+                        reference_root,
+                        "reference-library",
+                        "library.synopsys-ndm",
+                    ),
+                    Artifact("library-check-report", "report.synopsys", report),
                 )
-                if path.is_file() and not path.is_symlink()
-            )
-            if {artifact.role for artifact in artifacts} != required:
-                raise ExecutionError("FC omitted one or more physical result roles")
-        return StepResult.succeeded(artifacts=(*logs, *artifacts))
+            else:
+                artifacts = tuple(
+                    Artifact(
+                        role,
+                        "checkpoint.synopsys-dlib"
+                        if role == "checkpoint"
+                        else "result.synopsys-fc",
+                        path.absolute(),
+                    )
+                    for role in sorted(required)
+                    for path in (
+                        sorted((context.output_root / role).rglob("*"))
+                        if role == "checkpoint"
+                        else [context.output_root / role / output_names[role]]
+                    )
+                    if path.is_file() and not path.is_symlink()
+                )
+                if {artifact.role for artifact in artifacts} != required:
+                    raise ExecutionError("FC omitted one or more physical result roles")
+            return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 
 class HspiceBackend:
@@ -692,12 +777,10 @@ class HspiceBackend:
     def run(self, context: StepContext) -> StepResult:
         config = context.step.config
         target = _target(config)
-        tool_root = ensure_nofollow_directory(context.work_root / "tool")
         environment = dict(context.resources.environment)
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
-                "SIGILICON_HSPICE_OUTPUT_ROOT": str(tool_root),
                 "SIGILICON_HSPICE_SOURCE_ROOT": str(context.source_root),
                 "SIGILICON_HSPICE_DECK_ROOT": str(context.source_root),
                 "SIGILICON_HSPICE_MODEL_SECTION": _text(config, "model_section"),
@@ -712,12 +795,6 @@ class HspiceBackend:
                 for name, value in _mapping(config, "source_environment").items()
             }
         )
-        environment.update(
-            {
-                str(name): str(tool_root / str(value))
-                for name, value in _mapping(config, "output_environment").items()
-            }
-        )
         if _boolean(config, "requires_python"):
             environment["SIGILICON_PYTHON"] = str(
                 Path(sys.executable).resolve(strict=True)
@@ -725,7 +802,6 @@ class HspiceBackend:
         if "corner" in config:
             environment["SIGILICON_DESIGN_CORNER"] = _text(config, "corner")
         held = [
-            "SIGILICON_SYNOPSYS_HSPICE",
             "SIGILICON_HSPICE_NOMINAL_MODEL",
             "SIGILICON_STDCELL_RVT_SPICE",
             "SIGILICON_STDCELL_HVT_SPICE",
@@ -737,36 +813,53 @@ class HspiceBackend:
             held.append("SIGILICON_STDCELL_12T_RVT_SPICE")
         if _boolean(config, "requires_python"):
             held.append("SIGILICON_PYTHON")
-        completed = _run_script(
-            context,
-            environment,
-            argument=target,
-            held_files=tuple(held),
-        )
-        logs = _logs(context, completed.stdout, completed.stderr or "")
-        artifacts: list[Artifact] = list(logs)
-        for role, relative in _mapping(config, "collect").items():
-            source = tool_root / str(relative)
-            if not source.is_file() and completed.returncode:
-                continue
-            if not source.is_file():
-                raise ExecutionError(f"HSPICE omitted collected output {relative!r}")
-            artifacts.append(
-                _copied(
-                    context,
-                    role=str(role),
-                    kind="evidence.hspice",
-                    source=source,
-                    filename=Path(str(relative)).name,
+        with owned_scratch_directory(
+            prefix=f"sigilicon-hspice-{context.run_id}-",
+            retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
+            is not None,
+        ) as scratch:
+            environment["SIGILICON_HSPICE_OUTPUT_ROOT"] = scratch.child_path
+            environment.update(
+                {
+                    str(name): f"{scratch.child_path}/{value}"
+                    for name, value in _mapping(
+                        config, "output_environment"
+                    ).items()
+                }
+            )
+            completed = _run_script(
+                context,
+                environment,
+                argument=target,
+                held_executables=("SIGILICON_SYNOPSYS_HSPICE",),
+                held_files=tuple(held),
+            )
+            logs = _logs(context, completed.stdout, completed.stderr or "")
+            artifacts: list[Artifact] = list(logs)
+            for role, relative in _mapping(config, "collect").items():
+                source = scratch.path / str(relative)
+                if not source.is_file() and completed.returncode:
+                    continue
+                if not source.is_file():
+                    raise ExecutionError(
+                        f"HSPICE omitted collected output {relative!r}"
+                    )
+                artifacts.append(
+                    _copied(
+                        context,
+                        role=str(role),
+                        kind="evidence.hspice",
+                        source=source,
+                        filename=Path(str(relative)).name,
+                    )
                 )
-            )
-        if completed.returncode:
-            return StepResult(
-                "failed",
-                tuple(artifacts),
-                message=f"HSPICE runner exited {completed.returncode}",
-            )
-        return StepResult.succeeded(artifacts=tuple(artifacts))
+            if completed.returncode:
+                return StepResult(
+                    "failed",
+                    tuple(artifacts),
+                    message=f"HSPICE runner exited {completed.returncode}",
+                )
+            return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
 class StructuralLinkBackend:

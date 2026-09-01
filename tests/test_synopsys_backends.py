@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.backends.synopsys import DcBackend, HspiceBackend, VcsBackend
+from sigilicon.backends.synopsys import DcBackend, FcBackend, HspiceBackend, VcsBackend
 from sigilicon.execution import Resources, Step, StepContext
 
 
@@ -53,6 +53,9 @@ test "$1" = rtl
 test -x "$SIGILICON_SYNOPSYS_VCS"
 test -s "$SIGILICON_VCS_RTL_FILELIST"
 test -s "$SIGILICON_VCS_TESTBENCH_FILELIST"
+mkdir -p "$SIGILICON_VCS_OUTPUT_ROOT/csrc" "$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir"
+printf 'archive\n' >"$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir/archive.so"
+ln -s ../simv.daidir/archive.so "$SIGILICON_VCS_OUTPUT_ROOT/csrc/archive.so"
 printf 'managed vcs\n'
 """,
         executable=True,
@@ -87,6 +90,7 @@ printf 'managed vcs\n'
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {"log"}
     assert "managed vcs" in result.artifacts[0].path.read_text()
+    assert not (context.work_root / "tool").exists()
 
 
 def test_owner_runner_cannot_mutate_a_watched_step_source(tmp_path: Path) -> None:
@@ -135,13 +139,30 @@ mkdir -p "$SIGILICON_DC_OUTPUT_ROOT"
 for output in mapped.v mapped.sdc mapped.ddc check_design.rpt area.rpt; do
   printf '%s\n' "$output" >"$SIGILICON_DC_OUTPUT_ROOT/$output"
 done
+mkdir -p "$SIGILICON_DC_OUTPUT_ROOT/cache"
+ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
 """,
         executable=True,
     )
     _file(sources / "rtl/design.sv")
     _file(sources / "impl/syn/constraints.sdc")
     site = tmp_path / "site"
-    executable = _file(site / "dc_shell", "#!/bin/sh\nexit 0\n", executable=True)
+    executable = site / "dc_shell"
+    target = _file(
+        site / "snps_shell",
+        f'''#!/bin/sh
+test "$0" = "{executable}"
+''',
+        executable=True,
+    )
+    executable.symlink_to(target.name)
+    runner.write_text(
+        runner.read_text(encoding="utf-8").replace(
+            'test -x "$SIGILICON_SYNOPSYS_DC_SHELL"',
+            '"$SIGILICON_SYNOPSYS_DC_SHELL"',
+        ),
+        encoding="utf-8",
+    )
     environment = dict(os.environ)
     environment["SIGILICON_SYNOPSYS_DC_SHELL"] = str(executable)
     for flavor in ("RVT", "HVT", "LVT"):
@@ -183,6 +204,7 @@ done
         "report",
     }
     assert len(result.artifacts) == 7
+    assert not (context.work_root / "tool").exists()
 
 
 def test_hspice_failure_preserves_campaign_and_qualification_evidence(
@@ -195,6 +217,7 @@ def test_hspice_failure_preserves_campaign_and_qualification_evidence(
 set -euo pipefail
 mkdir -p "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified"
 printf '{}\n' >"$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/statistics.json"
+ln -s statistics.json "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/latest.json"
 "$SIGILICON_PYTHON" "$SIGILICON_COMPARATOR_QUALIFICATION_EVALUATOR"
 """,
         executable=True,
@@ -270,3 +293,73 @@ raise SystemExit(1)
         "campaign-summary",
         "qualification-evidence",
     }
+    assert not (context.work_root / "tool").exists()
+
+
+def test_fc_backend_keeps_tool_scratch_outside_the_managed_run(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "run/inputs/sources"
+    runner = _file(
+        sources / "impl/pnr/run_fc.sh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+test "$1" = library
+mkdir -p "$SIGILICON_FC_WORK_ROOT/cache" "$SIGILICON_FC_REFERENCE_NDM"
+printf 'cache\n' >"$SIGILICON_FC_WORK_ROOT/cache/data"
+ln -s data "$SIGILICON_FC_WORK_ROOT/cache/current"
+printf 'ndm\n' >"$SIGILICON_FC_REFERENCE_NDM/library.ndm"
+printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
+""",
+        executable=True,
+    )
+    site = tmp_path / "site"
+    environment = dict(os.environ)
+    for name in (
+        "SIGILICON_SYNOPSYS_LM_SHELL",
+        "SIGILICON_FC_TECH_FILE",
+        "SIGILICON_FC_TECH_LEF",
+        "SIGILICON_STDCELL_RVT_LEF",
+        "SIGILICON_STDCELL_HVT_LEF",
+        "SIGILICON_STDCELL_LVT_LEF",
+        "SIGILICON_STDCELL_RVT_DB",
+        "SIGILICON_STDCELL_HVT_DB",
+        "SIGILICON_STDCELL_LVT_DB",
+    ):
+        environment[name] = str(
+            _file(
+                site / name.lower(),
+                "#!/bin/sh\nexit 0\n" if name.endswith("LM_SHELL") else "fixture\n",
+                executable=name.endswith("LM_SHELL"),
+            )
+        )
+    step = Step(
+        "reference-library",
+        "synopsys.fc",
+        {
+            "runner": runner.relative_to(sources).as_posix(),
+            "target": "library",
+            "variant": "test",
+            "corner": "tt",
+            "top": "design",
+            "reference_library_output": "test.ndm",
+            "timeout_seconds": 10,
+        },
+        sources=("impl/pnr/run_fc.sh",),
+    )
+    context = _context(tmp_path, step, environment)
+    backend = FcBackend()
+
+    assert all(
+        check.status == "ready"
+        for check in backend.preflight(step, context.resources)
+    )
+    result = backend.run(context)
+
+    assert result.status == "succeeded"
+    assert {artifact.role for artifact in result.artifacts} == {
+        "log",
+        "reference-library",
+        "library-check-report",
+    }
+    assert not (context.work_root / "tool").exists()

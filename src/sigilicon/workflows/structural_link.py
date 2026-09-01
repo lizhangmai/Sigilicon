@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import stat
 import tomllib
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 from sigilicon.external_tools import (
     owned_directory,
+    owned_executable,
     owned_input_file,
     run_process_group_capture,
 )
@@ -23,103 +23,6 @@ from sigilicon.workflows.run_artifacts import RunArtifacts
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
-
-
-@dataclass(frozen=True)
-class _HeldExecutable:
-    command: tuple[str, ...]
-    target: Any
-    directory: Any | None = None
-    symlink: Path | None = None
-    symlink_identity: tuple[int, int, int, int, int] | None = None
-    symlink_target: str | None = None
-
-    def require_visible(self) -> None:
-        self.target.require_visible()
-        if self.directory is None:
-            return
-        self.directory.require_visible()
-        if (
-            self.symlink is None
-            or self.symlink_identity is None
-            or self.symlink_target is None
-        ):
-            raise RuntimeError("held executable symlink lost its identity")
-        metadata = os.lstat(self.symlink)
-        identity = (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_size,
-            metadata.st_mtime_ns,
-        )
-        if (
-            identity != self.symlink_identity
-            or not stat.S_ISLNK(metadata.st_mode)
-            or os.readlink(self.symlink) != self.symlink_target
-        ):
-            raise RuntimeError(f"external executable symlink changed: {self.symlink}")
-
-
-@contextmanager
-def _owned_executable(path: Path) -> Iterator[_HeldExecutable]:
-    """Hold a regular launcher or a same-directory tool-mode symlink."""
-
-    absolute = Path(os.path.abspath(path))
-    if not absolute.is_symlink():
-        with owned_input_file(absolute, require_single_link=False) as target:
-            held = _HeldExecutable((target.child_named_path,), target)
-            held.require_visible()
-            yield held
-        return
-    link_target = os.readlink(absolute)
-    if Path(link_target).name != link_target:
-        raise RuntimeError(
-            f"external executable symlink must target its own directory: {absolute}"
-        )
-    metadata = os.lstat(absolute)
-    identity = (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-    )
-    with (
-        owned_directory(absolute.parent) as directory,
-        owned_input_file(
-            absolute.parent / link_target, require_single_link=False
-        ) as target,
-    ):
-        held = _HeldExecutable(
-            (
-                (
-                    "/bin/sh",
-                    "-c",
-                    'launcher=$1; shift; . "$launcher"',
-                    str(absolute),
-                    target.child_path,
-                )
-                if os.pread(target.fd, 2, 0) == b"#!"
-                else (
-                    "/bin/bash",
-                    "-c",
-                    'launcher=$1; shift; exec -a "$0" "$launcher" "$@"',
-                    str(absolute),
-                    target.child_path,
-                )
-            ),
-            target,
-            directory,
-            absolute,
-            identity,
-            link_target,
-        )
-        held.require_visible()
-        try:
-            yield held
-        finally:
-            held.require_visible()
 
 
 def _sha256(path: Path) -> str:
@@ -401,8 +304,8 @@ def execute_structural_link(
     )
     with ExitStack() as stack:
         held_work = stack.enter_context(owned_directory(work))
-        held_lc = stack.enter_context(_owned_executable(library_compiler))
-        held_dc = stack.enter_context(_owned_executable(design_compiler))
+        held_lc = stack.enter_context(owned_executable(library_compiler))
+        held_dc = stack.enter_context(owned_executable(design_compiler))
         held_compile = stack.enter_context(
             owned_input_file(plan.compile_script, require_single_link=False)
         )
