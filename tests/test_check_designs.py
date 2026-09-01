@@ -186,28 +186,3 @@ def test_architecture_inventory_rejects_cross_owner_sources(
         repository_checks._architecture_source_documents(
             Project.from_project_root(tmp_path)
         )
-
-
-def test_project_configuration_rejects_legacy_flow_contract_kind(
-    tmp_path: Path,
-) -> None:
-    legacy = tmp_path / "ip/alpha/legacy.toml"
-    legacy.parent.mkdir(parents=True)
-    legacy.write_text(
-        '''schema = 1
-contract_kind = "flow-catalog"
-path_scope = "owner"
-owner = "alpha"
-''',
-        encoding="utf-8",
-    )
-    write_component_owner(
-        tmp_path,
-        "alpha",
-        filesets={"flow": ("ip/alpha/legacy.toml",)},
-    )
-
-    with pytest.raises(ValueError, match="obsolete Flow contract kind"):
-        repository_checks.inspect_repository_designs(
-            Project.from_project_root(tmp_path)
-        )

@@ -25,15 +25,6 @@ CONFIG_SCHEMA = 1
 PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
 )
-_OBSOLETE_FLOW_CONTRACT_KINDS = frozenset(
-    {
-        "flow",
-        "flow-catalog",
-        "flow-design-registry",
-        "flow-layout-registry",
-        "execution-profile",
-    }
-)
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
@@ -490,17 +481,11 @@ def inspect_project_configuration_sources(
             missing = sorted(envelope_fields - present)
             raise ValueError(f"{resolved}: incomplete configuration header: {missing}")
         kind = _text(raw.get("contract_kind"), f"{resolved}: contract_kind")
-        if kind in _OBSOLETE_FLOW_CONTRACT_KINDS:
-            raise ValueError(
-                f"{resolved}: obsolete Flow contract kind is not supported: {kind}"
-            )
         if kind == "owner-operations" and resolved not in operation_catalog_paths:
             raise ValueError(
                 f"{resolved}: owner-operations must be selected by a component "
                 "target_catalog"
             )
-        if kind in {"owner-targets", "execution-recipe"}:
-            raise ValueError(f"{resolved}: obsolete execution contract kind: {kind}")
         if resolved in repository_sources:
             allowed_scopes: str | tuple[str, ...] = "repository"
             expected_owner = repository_owner

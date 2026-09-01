@@ -391,7 +391,9 @@ def test_project_rejects_a_plan_not_issued_by_that_project(tmp_path: Path) -> No
         project.preflight(forged, Resources(frozenset({"offline"})))
 
 
-def test_project_never_executes_legacy_owner_registration_modules(tmp_path: Path) -> None:
+def test_project_rejects_owner_python_registration_fields_without_importing(
+    tmp_path: Path,
+) -> None:
     _write_project(tmp_path)
     marker = tmp_path / "owner-module-executed"
     module = tmp_path / "ip/example/register.py"
@@ -406,7 +408,7 @@ def test_project_never_executes_legacy_owner_registration_modules(tmp_path: Path
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="obsolete|action_modules"):
+    with pytest.raises(ValueError, match="unknown fields.*flow"):
         Project.open(tmp_path)
     assert not marker.exists()
 

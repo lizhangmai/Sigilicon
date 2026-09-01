@@ -352,11 +352,6 @@ class Project:
             for right in owners:
                 if left is not right and left.root.is_relative_to(right.root):
                     raise ValueError("repository owner roots must not overlap")
-        if "flow" in raw:
-            raise ValueError(
-                f"{contract}: flow.action_modules is obsolete; operations select "
-                "explicit backends and cannot execute owner registration code"
-            )
         return cls(
             _paths=project,
             manifest_owner=manifest_owner,
@@ -418,7 +413,7 @@ class Project:
                 for name, value in catalogs.items()
             )
         )
-        if "flow" in raw or catalog_paths != self.catalog_paths:
+        if catalog_paths != self.catalog_paths:
             raise ValueError("project manifest snapshot source document drift")
         return raw
 
