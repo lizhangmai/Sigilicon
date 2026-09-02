@@ -43,7 +43,7 @@ def _write_success(cwd: Path) -> None:
         encoding="utf-8",
     )
     (cwd / "strmout.sum").write_text("complete\n", encoding="utf-8")
-    (cwd / "layout.gds").write_bytes(b"non-empty-gds")
+    (cwd / "layout.gds").write_bytes(_xstream_pcell_gds("787838128820"))
 
 
 def _record(record_type: int, data_type: int = 0, data: bytes = b"") -> bytes:
@@ -55,9 +55,9 @@ def _gds_string(value: str) -> bytes:
     return encoded + (b"\0" if len(encoded) % 2 else b"")
 
 
-def _xstream_pcell_gds(volatile_identity: str) -> bytes:
+def _xstream_pcell_gds(volatile_identity: str, *, year: int = 2026) -> bytes:
     generated = f"unit_CDNS_{volatile_identity}"
-    date = struct.pack(">12H", *(2026, 8, 27, 1, 2, 3) * 2)
+    date = struct.pack(">12H", *(year, 8, 27, 1, 2, 3) * 2)
     return b"".join(
         (
             _record(0x00, 0x02, struct.pack(">H", 600)),
@@ -98,6 +98,23 @@ def test_xstream_gdsii_canonicalizes_volatile_pcell_hierarchy_names() -> None:
     assert b"787838266050" not in second
 
 
+def test_xstream_gdsii_canonicalizes_timestamps() -> None:
+    first = canonicalize_xstream_gdsii(
+        _xstream_pcell_gds("787838128820", year=2025)
+    )
+    second = canonicalize_xstream_gdsii(
+        _xstream_pcell_gds("787838128820", year=2026)
+    )
+
+    assert first == second
+
+
+@pytest.mark.parametrize("payload", (b"", b"\x00\x04\x00", b"not-gds"))
+def test_xstream_gdsii_rejects_malformed_content(payload: bytes) -> None:
+    with pytest.raises(ValueError, match="XStream GDSII"):
+        canonicalize_xstream_gdsii(payload)
+
+
 def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
     monkeypatch,
     tmp_path: Path,
@@ -121,7 +138,9 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
     )
 
     assert result.exit_code == 0
-    assert result.gds_path.read_bytes() == b"non-empty-gds"
+    assert result.gds_path.read_bytes() == canonicalize_xstream_gdsii(
+        _xstream_pcell_gds("787838128820")
+    )
     assert observed["cwd"] == request.work_root
     assert observed["env"]["CDS_LIC_FILE"] == "snapshot"
     assert observed["env"]["PATH"] == "/snapshot/bin"
@@ -181,6 +200,7 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
         ("missing-summary", "regular summary"),
         ("unproven", "does not prove"),
         ("symlink-gds", "regular GDSII output"),
+        ("malformed-gds", "invalid GDSII"),
     ),
 )
 def test_xstream_export_separates_failed_or_unproven_outputs(
@@ -209,6 +229,8 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
             (cwd / "strmout.sum").unlink()
         elif failure == "unproven":
             (cwd / "strmout.log").write_text("no completion proof\n", encoding="utf-8")
+        elif failure == "malformed-gds":
+            (cwd / "layout.gds").write_bytes(b"not-gds")
         return subprocess.CompletedProcess(
             command,
             9 if failure == "nonzero" else 0,

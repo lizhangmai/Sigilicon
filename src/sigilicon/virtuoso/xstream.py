@@ -16,35 +16,44 @@ from sigilicon.external_tools import (
     owned_input_file,
     run_process_group,
 )
-from sigilicon.layout.materialization_execution import (
-    LayoutArtifactFormat,
-    MaterializationExecutionError,
-    canonicalize_gdsii_timestamps,
-    validate_layout_content,
-)
 
 
 _XSTREAM_COMPLETE = re.compile(
     r"Translation completed\.\s+'0' error\(s\) and '0' warning\(s\) found\."
 )
 _CADENCE_GENERATED_STRUCTURE = re.compile(rb"^(?P<prefix>.+_CDNS_)[0-9]+$")
+_CANONICAL_GDS_DATE = (2000, 1, 1, 0, 0, 0) * 2
+
+
+class _GdsError(ValueError):
+    """XStream produced malformed or ambiguous GDSII content."""
 
 
 @dataclass(frozen=True)
 class _GdsRecord:
+    offset: int
+    length: int
     record_type: int
     data_type: int
     data: bytes
 
 
 def _gds_records(payload: bytes) -> tuple[tuple[_GdsRecord, ...], bool]:
+    if not isinstance(payload, bytes) or not payload:
+        raise _GdsError("XStream GDSII must contain non-empty binary content")
     records: list[_GdsRecord] = []
     offset = 0
     while offset < len(payload):
+        if len(payload) - offset < 4:
+            raise _GdsError("XStream GDSII ends inside a record header")
         length = int.from_bytes(payload[offset : offset + 2], "big")
+        if length < 4 or length % 2 or offset + length > len(payload):
+            raise _GdsError("XStream GDSII contains an invalid record length")
         record_type = payload[offset + 2]
         records.append(
             _GdsRecord(
+                offset,
+                length,
                 record_type,
                 payload[offset + 3],
                 payload[offset + 4 : offset + length],
@@ -52,8 +61,37 @@ def _gds_records(payload: bytes) -> tuple[tuple[_GdsRecord, ...], bool]:
         )
         offset += length
         if record_type == 0x04:
+            if any(payload[offset:]):
+                raise _GdsError("XStream GDSII contains nonzero data after ENDLIB")
             break
+    record_types = tuple(record.record_type for record in records)
+    required = {0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x04}
+    if (
+        not record_types
+        or record_types[0] != 0x00
+        or record_types[-1] != 0x04
+        or not required.issubset(record_types)
+    ):
+        raise _GdsError("XStream GDSII lacks required library and structure records")
+    if {0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x15, 0x2D}.isdisjoint(record_types):
+        raise _GdsError("XStream GDSII contains no geometry elements")
     return tuple(records), offset < len(payload)
+
+
+def _canonicalize_gdsii_timestamps(payload: bytes) -> bytes:
+    records, _padded = _gds_records(payload)
+    canonical_date = b"".join(
+        value.to_bytes(2, "big", signed=False) for value in _CANONICAL_GDS_DATE
+    )
+    result = bytearray(payload)
+    for record in records:
+        if record.record_type in {0x01, 0x05}:
+            if record.length != 28 or record.data_type != 0x02:
+                raise _GdsError("XStream GDSII timestamp record has an invalid shape")
+            result[record.offset + 4 : record.offset + record.length] = canonical_date
+    canonical = bytes(result)
+    _gds_records(canonical)
+    return canonical
 
 
 def _gds_name(data: bytes) -> bytes:
@@ -80,7 +118,7 @@ def _structure_records(
                 if item.record_type == 0x06
             )
             if len(names) != 1 or names[0] in structures:
-                raise MaterializationExecutionError(
+                raise _GdsError(
                     "XStream GDSII has ambiguous structure definitions"
                 )
             structures[names[0]] = structure
@@ -103,7 +141,7 @@ def _canonical_generated_structure_names(
         if name in normalized:
             return normalized[name]
         if name in visiting:
-            raise MaterializationExecutionError(
+            raise _GdsError(
                 "XStream GDSII generated structure hierarchy is cyclic"
             )
         visiting.add(name)
@@ -118,7 +156,7 @@ def _canonical_generated_structure_names(
                 if reference in generated:
                     data = generated[reference] + normalized_structure(reference)
                 elif _CADENCE_GENERATED_STRUCTURE.fullmatch(reference) is not None:
-                    raise MaterializationExecutionError(
+                    raise _GdsError(
                         "XStream GDSII references an undefined generated structure"
                     )
             chunks.append(len(data).to_bytes(4, "big"))
@@ -136,7 +174,7 @@ def _canonical_generated_structure_names(
         for index, name in enumerate(ordered)
     }
     if len(set(replacements.values())) != len(replacements):
-        raise MaterializationExecutionError(
+        raise _GdsError(
             "XStream GDSII generated structure identities are ambiguous"
         )
     return replacements
@@ -145,7 +183,7 @@ def _canonical_generated_structure_names(
 def canonicalize_xstream_gdsii(payload: bytes) -> bytes:
     """Remove timestamp and generated-PCell identity variance from XStream GDSII."""
 
-    canonical = canonicalize_gdsii_timestamps(payload)
+    canonical = _canonicalize_gdsii_timestamps(payload)
     records, padded = _gds_records(canonical)
     replacements = _canonical_generated_structure_names(
         _structure_records(records)
@@ -167,7 +205,7 @@ def canonicalize_xstream_gdsii(payload: bytes) -> bytes:
     result = b"".join(rewritten)
     if padded:
         result += bytes((-len(result)) % 2048)
-    validate_layout_content(result, LayoutArtifactFormat.GDSII)
+    _gds_records(result)
     return result
 
 
@@ -438,12 +476,15 @@ def run_xstream_export(
             executed=True,
             exit_code=0,
         )
-    if gds.stat().st_size <= 0:
+    try:
+        canonical_gds = canonicalize_xstream_gdsii(gds.read_bytes())
+    except (OSError, _GdsError) as exc:
         raise XStreamExportError(
-            "XStream produced an empty GDSII output",
+            f"XStream produced invalid GDSII: {exc}",
             executed=True,
             exit_code=0,
-        )
+        ) from exc
+    gds.write_bytes(canonical_gds)
     return XStreamExportResult(
         command=command,
         exit_code=completed.returncode,

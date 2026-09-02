@@ -39,7 +39,11 @@ def _repository_configuration_roots(project: Project) -> frozenset[Path]:
     return frozenset(
         {
             *(owner.root for owner in project.owners),
-            *(path.parent for _, path in project.catalog_paths),
+            *(
+                path.parent
+                for role, path in project.catalog_paths
+                if role != "ip"
+            ),
         }
     )
 
