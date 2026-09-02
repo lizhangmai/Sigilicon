@@ -44,7 +44,7 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
 - Sigilicon 不内置 placement、routing 或 physical closure engine；执行内核保持单轮确定
   DAG executor，阶段只交换严格 typed artifacts，不从 report metric 或任意 dict 恢复状态。
   只有 closed result 可生成 executable
-  Materialization Plan；DRC/LVS clean 必须同时具有 checked identity、已执行 backend、
+  Materialization Plan；DRC/LVS clean 必须同时具有 checked identity、已执行 adapter、
   已解析报告和零退出码。测试用 offline/fake Adapter 只能产生非结论状态。
 - 重构提交至少运行 package tests、调用项目的配置/集成测试与 `git diff --check`。wheel
   build 和 clean-wheel smoke 只在发布准备时执行；真实 EDA 只通过调用项目授权的受管入口。

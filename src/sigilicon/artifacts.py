@@ -499,7 +499,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "operation",
         "variant",
         "operation_id",
-        "backend",
+        "adapter",
         "run_id",
         "created_at",
         "completed_at",
@@ -514,7 +514,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     if set(value) != required:
         raise ArtifactManifestError("run manifest fields are invalid")
-    if value.get("schema") != 1 or value.get("contract_kind") != "run-manifest":
+    if value.get("schema") != 2 or value.get("contract_kind") != "run-manifest":
         raise ArtifactManifestError("run manifest header is invalid")
     status = value.get("status")
     if status not in ARTIFACT_STATUSES:
@@ -529,7 +529,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     source = value.get("source")
     if source is not None and not isinstance(source, dict):
         raise ArtifactManifestError("manifest source must be an object or null")
-    for field_name in ("owner", "operation", "backend", "created_at"):
+    for field_name in ("owner", "operation", "adapter", "created_at"):
         if not isinstance(value.get(field_name), str) or not value[field_name]:
             raise ArtifactManifestError(f"manifest {field_name} must be a non-empty string")
     for field_name in ("owner", "operation"):
@@ -755,18 +755,18 @@ class RunRecord:
         cls,
         paths: RunPaths,
         *,
-        backend: str,
+        adapter: str,
         source: Mapping[str, Any] | None = None,
     ) -> "RunRecord":
         files = {role: [] for role in paths.roles}
         manifest = {
-            "schema": 1,
+            "schema": 2,
             "contract_kind": "run-manifest",
             "owner": paths.owner,
             "operation": paths.operation,
             "variant": paths.variant,
             "operation_id": None,
-            "backend": backend,
+            "adapter": adapter,
             "run_id": paths.run_id,
             "created_at": utc_now(),
             "completed_at": None,

@@ -213,7 +213,7 @@ def _bind_source_paths(
     for source in paths:
         path = Path(source).absolute()
         if path != path.resolve():
-            raise ContractError(f"backend source must not traverse a symlink: {path}")
+            raise ContractError(f"adapter source must not traverse a symlink: {path}")
         if path.is_relative_to(artifact_root):
             continue
         if path.is_relative_to(owner_root):
@@ -226,7 +226,7 @@ def _bind_source_paths(
         if isinstance(paths, Mapping):
             expected = paths[source]
             if snapshot != expected:
-                raise ContractError(f"typed backend source snapshot drift: {path}")
+                raise ContractError(f"typed adapter source snapshot drift: {path}")
         selected[path] = (
             name,
             hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
@@ -272,7 +272,7 @@ def _require_bound_sources(
             context.source_text(name).encode("utf-8")
         ).hexdigest()
         if current != digest:
-            raise ExecutionError(f"sealed backend source identity drift: {name}")
+            raise ExecutionError(f"sealed adapter source identity drift: {name}")
 
 
 def _external_file_records(
@@ -619,7 +619,7 @@ class _CadenceDomainAdapter:
         return domain_plan
 
 
-class XceliumBackend(DirectAdapter):
+class XceliumAdapter(DirectAdapter):
     """Execute one explicit, source-closed Verilog/SystemVerilog testbench."""
 
     name = "cadence.xcelium"
@@ -766,7 +766,7 @@ class XceliumBackend(DirectAdapter):
         )
 
 
-class XceliumAmsBackend(_CadenceDomainAdapter):
+class XceliumAmsAdapter(_CadenceDomainAdapter):
     """Execute one locked-release Verilog-AMS migration cell."""
 
     name = "cadence.xcelium-ams"
@@ -917,7 +917,7 @@ class XceliumAmsBackend(_CadenceDomainAdapter):
         )
 
 
-class NativeOaBackend(_CadenceDomainAdapter):
+class NativeOaAdapter(_CadenceDomainAdapter):
     """Run one source-owned native Maestro testbench through a bound OA session."""
 
     name = "cadence.native-oa"
@@ -1080,7 +1080,7 @@ class NativeOaBackend(_CadenceDomainAdapter):
         )
 
 
-class _OaBackend(_CadenceDomainAdapter):
+class _OaAdapter(_CadenceDomainAdapter):
     """Execute one fixed native-OA operation against a plan-bound assembly."""
 
     _base_fields = frozenset({"owner", "timeout_seconds"})
@@ -1305,7 +1305,7 @@ class _OaBackend(_CadenceDomainAdapter):
         )
 
 
-class LayoutBackend(_CadenceDomainAdapter):
+class LayoutAdapter(_CadenceDomainAdapter):
     """Generate one source-authored layout through a bound OA mutation lease."""
 
     name = "cadence.layout"
@@ -1434,7 +1434,7 @@ class LayoutBackend(_CadenceDomainAdapter):
         )
 
 
-class LayoutVerificationBackend(_CadenceDomainAdapter):
+class LayoutVerificationAdapter(_CadenceDomainAdapter):
     """Verify one existing routed OA layout with XStream and Calibre."""
 
     name = "cadence.layout-verify"
@@ -1671,33 +1671,33 @@ class LayoutVerificationBackend(_CadenceDomainAdapter):
         )
 
 
-def cadence_backends() -> tuple[
-    XceliumBackend,
-    XceliumAmsBackend,
-    NativeOaBackend,
-    _OaBackend,
-    _OaBackend,
-    _OaBackend,
-    LayoutBackend,
-    LayoutVerificationBackend,
+def cadence_adapters() -> tuple[
+    XceliumAdapter,
+    XceliumAmsAdapter,
+    NativeOaAdapter,
+    _OaAdapter,
+    _OaAdapter,
+    _OaAdapter,
+    LayoutAdapter,
+    LayoutVerificationAdapter,
 ]:
     return (
-        XceliumBackend(),
-        XceliumAmsBackend(),
-        NativeOaBackend(),
-        _OaBackend("check"),
-        _OaBackend("rebuild"),
-        _OaBackend("attest"),
-        LayoutBackend(),
-        LayoutVerificationBackend(),
+        XceliumAdapter(),
+        XceliumAmsAdapter(),
+        NativeOaAdapter(),
+        _OaAdapter("check"),
+        _OaAdapter("rebuild"),
+        _OaAdapter("attest"),
+        LayoutAdapter(),
+        LayoutVerificationAdapter(),
     )
 
 
 __all__ = [
-    "LayoutBackend",
-    "LayoutVerificationBackend",
-    "NativeOaBackend",
-    "XceliumBackend",
-    "XceliumAmsBackend",
-    "cadence_backends",
+    "LayoutAdapter",
+    "LayoutVerificationAdapter",
+    "NativeOaAdapter",
+    "XceliumAdapter",
+    "XceliumAmsAdapter",
+    "cadence_adapters",
 ]

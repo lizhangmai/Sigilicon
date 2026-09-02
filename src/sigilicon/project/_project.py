@@ -281,7 +281,7 @@ class Project:
         self,
         plan: ExecutionPlan,
     ) -> PreflightResult:
-        """Check a plan without creating a run or starting a backend."""
+        """Check a plan without creating a run or starting an adapter."""
 
         from sigilicon.execution.engine import _preflight
         from sigilicon.execution.model import ExecutionPlan
@@ -299,7 +299,7 @@ class Project:
         run_id: str | None = None,
         progress: Callable[[str, str], None] | None = None,
     ) -> RunResult:
-        """Execute one source-current plan through its selected backends."""
+        """Execute one source-current plan through its selected adapters."""
 
         from sigilicon.execution.engine import _run
         from sigilicon.execution.model import ExecutionPlan

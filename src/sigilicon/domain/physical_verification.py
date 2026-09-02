@@ -39,7 +39,7 @@ class PhysicalVerificationStatus(str, Enum):
     CLEAN = "clean"
     VIOLATED = "violated"
     UNSUPPORTED = "unsupported"
-    BACKEND_UNAVAILABLE = "backend_unavailable"
+    ADAPTER_UNAVAILABLE = "adapter_unavailable"
     EXECUTION_FAILED = "execution_failed"
 
 
@@ -95,14 +95,14 @@ class CheckedSourceIdentity:
 
 @dataclass(frozen=True)
 class VerificationCompletion:
-    backend: str
+    adapter: str
     executed: bool
     report_parsed: bool
     exit_code: int | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.backend, str) or not self.backend:
-            raise ValueError("verification backend identity must be non-empty")
+        if not isinstance(self.adapter, str) or not self.adapter:
+            raise ValueError("verification adapter identity must be non-empty")
         if type(self.executed) is not bool or type(self.report_parsed) is not bool:
             raise ValueError("verification completion flags must be booleans")
         if self.exit_code is not None and type(self.exit_code) is not int:
@@ -157,7 +157,7 @@ def _validate_conclusion(
             )
     elif status in {
         PhysicalVerificationStatus.UNSUPPORTED,
-        PhysicalVerificationStatus.BACKEND_UNAVAILABLE,
+        PhysicalVerificationStatus.ADAPTER_UNAVAILABLE,
     }:
         if completion.executed or completion.report_parsed or completion.exit_code is not None:
             raise ValueError(f"{status.value} {label} cannot claim execution")
@@ -247,14 +247,14 @@ PhysicalVerificationEvidence = DrcEvidence | LvsEvidence
 def drc_evidence_id(evidence: DrcEvidence) -> str:
     return (
         f"{evidence.layout.owner}:{evidence.layout.name}:"
-        f"drc:{evidence.completion.backend}"
+        f"drc:{evidence.completion.adapter}"
     )
 
 
 def lvs_evidence_id(evidence: LvsEvidence) -> str:
     return (
         f"{evidence.layout.owner}:{evidence.layout.name}:"
-        f"lvs:{evidence.completion.backend}"
+        f"lvs:{evidence.completion.adapter}"
     )
 
 

@@ -1,4 +1,4 @@
-"""Guarded XStream GDSII export for OA layout backends."""
+"""Guarded XStream GDSII export for OA layout adapters."""
 
 from __future__ import annotations
 
@@ -425,7 +425,7 @@ def run_xstream_export(
             ))
         except FileNotFoundError as exc:
             raise XStreamExportError(
-                f"XStream backend unavailable: {exc}",
+                f"XStream adapter unavailable: {exc}",
                 executed=False,
                 exit_code=None,
             ) from exc

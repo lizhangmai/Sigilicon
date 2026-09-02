@@ -144,7 +144,7 @@ def _import_artifact(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
             variant="hierarchy",
             run_id=identity,
         ),
-        backend="offline",
+        adapter="offline",
     )
 
 

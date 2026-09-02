@@ -15,7 +15,7 @@ from sigilicon.execution.model import (
     RuntimeEnvironment,
     Source,
     Step,
-    backend_identity,
+    adapter_identity,
 )
 from sigilicon.paths import validate_artifact_component
 
@@ -185,7 +185,7 @@ def _step(
     step_id = default_id if default_id is not None else _name(raw.get("id"), f"{field}.id")
     uses = raw.get("uses")
     if not isinstance(uses, str):
-        raise ContractError(f"{field}.uses must be a backend identity")
+        raise ContractError(f"{field}.uses must be an adapter identity")
     filesets = _strings(raw.get("filesets"), f"{field}.filesets", required=True)
     sources = _fileset_sources(
         filesets,
@@ -260,7 +260,7 @@ def compile_operation(
     )
     runtime_defaults: dict[str, str] = {}
     for adapter, profile in runtime_defaults_raw.items():
-        identity = backend_identity(adapter)
+        identity = adapter_identity(adapter)
         profile_name = _name(
             profile, f"runtime_defaults.{adapter}"
         )

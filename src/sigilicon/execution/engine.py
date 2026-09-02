@@ -287,7 +287,7 @@ def _run(
     )
     record = RunRecord.begin(
         paths,
-        backend="sigilicon.execution",
+        adapter="sigilicon.execution",
         source={"plan_identity": plan.identity},
     )
     outcomes: list[StepOutcome] = []

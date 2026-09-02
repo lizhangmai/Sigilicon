@@ -24,7 +24,7 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
     )
     return RunRecord.begin(
         execution,
-        backend="standalone",
+        adapter="standalone",
     )
 
 
@@ -39,7 +39,7 @@ def test_artifact_manifest_records_git_source(
     )
     record = RunRecord.begin(
         execution,
-        backend="virtuoso-oa",
+        adapter="virtuoso-oa",
         source={
             "project": {
                 "commit": "a" * 40,

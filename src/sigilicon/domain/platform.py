@@ -938,7 +938,7 @@ def _parse_oa_materialization(
 def load_oa_materialization_mapping(
     path: Path,
 ) -> tuple[int, OaMaterializationMapping]:
-    """Load one atomic platform layout contract for an OA backend."""
+    """Load one atomic platform layout contract for an OA adapter."""
 
     contract_path = Path(path).resolve()
     raw = read_toml(contract_path)

@@ -4,10 +4,10 @@
 def trusted_adapters():
     """Return the explicit built-in adapter set used by operator CLIs."""
 
-    from sigilicon.backends.cadence import cadence_backends
-    from sigilicon.backends.synopsys import synopsys_backends
+    from sigilicon.backends.cadence import cadence_adapters
+    from sigilicon.backends.synopsys import synopsys_adapters
 
-    return (*synopsys_backends(), *cadence_backends())
+    return (*synopsys_adapters(), *cadence_adapters())
 
 
 __all__ = ["trusted_adapters"]

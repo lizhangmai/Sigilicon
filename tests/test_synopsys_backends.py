@@ -8,11 +8,11 @@ import sys
 import pytest
 
 from sigilicon.backends.synopsys import (
-    DcBackend,
-    FcBackend,
-    HspiceBackend,
-    StructuralLinkBackend,
-    VcsBackend,
+    DcAdapter,
+    FcAdapter,
+    HspiceAdapter,
+    StructuralLinkAdapter,
+    VcsAdapter,
 )
 from sigilicon.execution import RuntimeEnvironment, Step, StepContext, StepResult
 from sigilicon.execution.model import Resources
@@ -107,7 +107,7 @@ printf 'managed vcs\n'
         },
     )
     context = _context(tmp_path, step, resources)
-    backend = VcsBackend()
+    backend = VcsAdapter()
 
     assert all(
         check.status == "ready"
@@ -160,7 +160,7 @@ printf 'tampered\n' >>"$source_file"
     )
 
     with pytest.raises(RuntimeError, match="changed during invocation"):
-        VcsBackend().run(_context(tmp_path, step, resources), step)
+        VcsAdapter().run(_context(tmp_path, step, resources), step)
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
@@ -263,7 +263,7 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
             liberty_resource: "file",
         },
     )
-    backend = StructuralLinkBackend()
+    backend = StructuralLinkAdapter()
     observed = []
     monkeypatch.setattr(
         "sigilicon.workflows.structural_link.plan_structural_link",
@@ -362,7 +362,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
             environment=dict(os.environ),
         ),
     )
-    backend = DcBackend()
+    backend = DcAdapter()
 
     assert all(
         check.status == "ready"
@@ -479,7 +479,7 @@ raise SystemExit(1)
             environment=dict(os.environ),
         ),
     )
-    backend = HspiceBackend()
+    backend = HspiceAdapter()
 
     assert all(
         check.status == "ready"
@@ -570,7 +570,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
             environment=dict(os.environ),
         ),
     )
-    backend = FcBackend()
+    backend = FcAdapter()
 
     assert all(
         check.status == "ready"

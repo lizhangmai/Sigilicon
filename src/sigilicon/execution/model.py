@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from sigilicon.execution.step_files import StepFiles
 
 
-_BACKEND = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
+_ADAPTER = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 _DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
 _RESOURCE = re.compile(r"[A-Za-z][A-Za-z0-9._:/-]{0,255}\Z")
 _ENVIRONMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -39,7 +39,7 @@ _RUN_STATUSES = frozenset({"succeeded", "failed", "partial", "uncertain", "cance
 _RUN_FAILURE_STATUSES = frozenset({"failed", "partial", "uncertain", "cancelled"})
 
 class ContractError(ValueError):
-    """An operation, plan, or backend value violates the execution contract."""
+    """An operation, plan, or adapter value violates the execution contract."""
 
 
 class ExecutionError(RuntimeError):
@@ -55,9 +55,9 @@ def _identifier(value: object, label: str) -> str:
         raise ContractError(str(exc)) from exc
 
 
-def backend_identity(value: object) -> str:
-    if not isinstance(value, str) or _BACKEND.fullmatch(value) is None:
-        raise ContractError(f"invalid backend identity: {value!r}")
+def adapter_identity(value: object) -> str:
+    if not isinstance(value, str) or _ADAPTER.fullmatch(value) is None:
+        raise ContractError(f"invalid adapter identity: {value!r}")
     return value
 
 
@@ -181,7 +181,7 @@ class Source:
             raise ContractError("source location disagrees with its root or traverses a symlink")
         if not isinstance(self.text, str) or not isinstance(self.executable, bool):
             raise ContractError("source snapshot fields have invalid types")
-        if not isinstance(self.scope, str) or _BACKEND.fullmatch(self.scope) is None:
+        if not isinstance(self.scope, str) or _ADAPTER.fullmatch(self.scope) is None:
             raise ContractError("source scope must be a semantic identity")
         if any(type(value) is not int for value in (self.device, self.inode, self.mtime_ns)):
             raise ContractError("source filesystem identity fields must be integers")
@@ -742,7 +742,7 @@ class Step:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _identifier(self.id, "step id"))
-        object.__setattr__(self, "uses", backend_identity(self.uses))
+        object.__setattr__(self, "uses", adapter_identity(self.uses))
         if not isinstance(self.request, Mapping):
             raise ContractError("prepared step request must be a mapping")
         if not isinstance(self.needs, tuple):
@@ -919,7 +919,7 @@ class Resources:
 
     def __post_init__(self) -> None:
         if not isinstance(self.capabilities, frozenset) or any(
-            not isinstance(item, str) or _BACKEND.fullmatch(item) is None
+            not isinstance(item, str) or _ADAPTER.fullmatch(item) is None
             for item in self.capabilities
         ):
             raise ContractError("resource capabilities must be semantic identities")
@@ -1178,7 +1178,7 @@ class Artifact:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", _identifier(self.role, "artifact role"))
-        object.__setattr__(self, "kind", backend_identity(self.kind))
+        object.__setattr__(self, "kind", adapter_identity(self.kind))
         if not isinstance(self.qualifiers, Mapping):
             raise ContractError("artifact qualifiers must be a mapping")
         object.__setattr__(self, "path", Path(self.path).absolute())
@@ -1419,7 +1419,7 @@ class StepContext:
         """Reject an adapter call whose request disagrees with this context."""
 
         if not isinstance(step, Step) or step != self.step:
-            raise ExecutionError("backend Step disagrees with its StepContext")
+            raise ExecutionError("adapter Step disagrees with its StepContext")
 
     def source_text(self, source: str) -> str:
         """Read a step source through the held-fd no-follow input primitive."""
@@ -1565,12 +1565,12 @@ class StepContext:
 @dataclass(frozen=True)
 class StepOutcome:
     step: str
-    backend: str
+    adapter: str
     result: StepResult
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "step", _identifier(self.step, "outcome step"))
-        object.__setattr__(self, "backend", backend_identity(self.backend))
+        object.__setattr__(self, "adapter", adapter_identity(self.adapter))
         if not isinstance(self.result, StepResult):
             raise ContractError("step outcome requires a StepResult")
 
@@ -1645,7 +1645,7 @@ class RunResult:
             "steps": [
                 {
                     "id": outcome.step,
-                    "uses": outcome.backend,
+                    "uses": outcome.adapter,
                     "status": outcome.result.status,
                     "message": outcome.result.message,
                     "facts": json_value(outcome.result.facts),
@@ -1740,7 +1740,7 @@ __all__ = [
     "StepOutcome",
     "StepResult",
     "json_value",
-    "backend_identity",
+    "adapter_identity",
     "resource_identity",
     "resource_materialization_key",
 ]

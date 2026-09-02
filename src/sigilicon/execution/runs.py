@@ -23,7 +23,7 @@ from sigilicon.execution.model import (
     RunResult,
     StepOutcome,
     StepResult,
-    backend_identity,
+    adapter_identity,
     resource_identity,
     resource_materialization_key,
 )
@@ -146,7 +146,7 @@ class RunStore:
             raise RunStoreError(str(exc)) from exc
         source = manifest.get("source")
         if (
-            manifest.get("schema") != 1
+            manifest.get("schema") != 2
             or manifest.get("contract_kind") != "run-manifest"
             or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
@@ -192,7 +192,7 @@ class RunStore:
             "plan_identity": identity,
         }
         if (
-            manifest.get("schema") != 1
+            manifest.get("schema") != 2
             or manifest.get("contract_kind") != "run-manifest"
             or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
@@ -334,7 +334,7 @@ class RunStore:
                 configured_identities.add(identity)
         try:
             for capability in capabilities:
-                backend_identity(capability)
+                adapter_identity(capability)
         except ContractError as exc:
             raise RunStoreError("persisted runtime capability is invalid") from exc
 

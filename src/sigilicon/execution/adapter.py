@@ -18,7 +18,7 @@ from sigilicon.execution.model import (
     Step,
     StepContext,
     StepResult,
-    backend_identity,
+    adapter_identity,
 )
 
 
@@ -76,7 +76,7 @@ class AdapterRegistry(Mapping[str, Adapter]):
         for adapter in values:
             name = getattr(adapter, "name", None)
             try:
-                name = backend_identity(name)
+                name = adapter_identity(name)
             except ContractError as exc:
                 raise ContractError("adapter must expose a canonical identity") from exc
             if not isinstance(adapter, Adapter):

@@ -1,6 +1,6 @@
-"""Direct Synopsys process backends with one owner-script boundary.
+"""Direct Synopsys process adapters with one owner-script boundary.
 
-The backend owns process safety, runtime resources, and artifact collection.
+The adapter owns process safety, runtime resources, and artifact collection.
 The selected owner owns the small VCS/DC/FC/HSPICE launcher scripts and their
 tool-specific inputs.  No registration module or generic command executor is
 involved.
@@ -400,7 +400,7 @@ def _run_script(
         ))
 
 
-class VcsBackend(DirectAdapter):
+class VcsAdapter(DirectAdapter):
     name = "synopsys.vcs"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -455,7 +455,7 @@ class VcsBackend(DirectAdapter):
         return StepResult.succeeded(artifacts=logs)
 
 
-class DcBackend(DirectAdapter):
+class DcAdapter(DirectAdapter):
     name = "synopsys.dc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -543,7 +543,7 @@ class DcBackend(DirectAdapter):
             return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
 
 
-class FcBackend(DirectAdapter):
+class FcAdapter(DirectAdapter):
     name = "synopsys.fc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -704,7 +704,7 @@ class FcBackend(DirectAdapter):
             return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 
-class HspiceBackend(DirectAdapter):
+class HspiceAdapter(DirectAdapter):
     name = "synopsys.hspice"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -832,7 +832,7 @@ class HspiceBackend(DirectAdapter):
             return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
-class StructuralLinkBackend(DirectAdapter):
+class StructuralLinkAdapter(DirectAdapter):
     """Link owner RTL against one locked, uncharacterized macro release."""
 
     name = "synopsys.structural-link"
@@ -1227,29 +1227,29 @@ class StructuralLinkBackend(DirectAdapter):
         return self._execute(context, planning)
 
 
-def synopsys_backends() -> tuple[
-    VcsBackend,
-    DcBackend,
-    FcBackend,
-    HspiceBackend,
-    StructuralLinkBackend,
+def synopsys_adapters() -> tuple[
+    VcsAdapter,
+    DcAdapter,
+    FcAdapter,
+    HspiceAdapter,
+    StructuralLinkAdapter,
 ]:
-    """Return the fixed trusted standard-ASIC backend pack."""
+    """Return the fixed trusted standard-ASIC adapter pack."""
 
     return (
-        VcsBackend(),
-        DcBackend(),
-        FcBackend(),
-        HspiceBackend(),
-        StructuralLinkBackend(),
+        VcsAdapter(),
+        DcAdapter(),
+        FcAdapter(),
+        HspiceAdapter(),
+        StructuralLinkAdapter(),
     )
 
 
 __all__ = [
-    "DcBackend",
-    "FcBackend",
-    "HspiceBackend",
-    "StructuralLinkBackend",
-    "VcsBackend",
-    "synopsys_backends",
+    "DcAdapter",
+    "FcAdapter",
+    "HspiceAdapter",
+    "StructuralLinkAdapter",
+    "VcsAdapter",
+    "synopsys_adapters",
 ]

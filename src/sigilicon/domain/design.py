@@ -1,4 +1,4 @@
-"""Canonical design and PDK configuration independent of any simulator backend."""
+"""Canonical design and PDK configuration independent of any simulator adapter."""
 
 from __future__ import annotations
 

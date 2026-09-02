@@ -614,7 +614,7 @@ def test_final_audit_uncertainty_reaches_manifest_before_terminal_transition(
     root.mkdir(parents=True)
     record = RunRecord.begin(
         _design_execution(project, "1" * 32),
-        backend="virtuoso-oa",
+        adapter="virtuoso-oa",
     )
     calls = 0
 
@@ -662,7 +662,7 @@ def test_operation_incident_is_referenced_by_the_related_attempt_manifest(tmp_pa
     root.mkdir(parents=True)
     record = RunRecord.begin(
         _design_execution(project, "1" * 32),
-        backend="virtuoso-oa",
+        adapter="virtuoso-oa",
     )
 
     with pytest.raises(RuntimeError, match="write failed"):
@@ -692,7 +692,7 @@ def test_wrapped_process_cleanup_failure_marks_workspace_artifact_uncertain(
     root.mkdir(parents=True)
     record = RunRecord.begin(
         _design_execution(project, "3" * 32),
-        backend="virtuoso-oa",
+        adapter="virtuoso-oa",
     )
 
     with pytest.raises(RuntimeError, match="input identity also changed"):
@@ -727,7 +727,7 @@ def test_incident_link_failure_rolls_back_unreferenced_journal(
     root.mkdir(parents=True)
     record = RunRecord.begin(
         _design_execution(project, "2" * 32),
-        backend="virtuoso-oa",
+        adapter="virtuoso-oa",
     )
     monkeypatch.setattr(
         record,

@@ -518,7 +518,7 @@ def execute_oa_maestro_testbench(
     bind_operation: Callable[[Any], None],
     resources: Any,
     record_uncertainty: Callable[[str], None] | None = None,
-    before_backend: Callable[[], None] | None = None,
+    before_adapter: Callable[[], None] | None = None,
     timeout: int = 600,
 ) -> OAMaestroExecutionResult:
     """Execute one resolved Maestro view inside a caller-owned run lifecycle."""
@@ -529,8 +529,8 @@ def execute_oa_maestro_testbench(
         raise ValueError(
             f"OA testbench {step.cell} is not a schema-3 native simulation contract"
         )
-    if before_backend is not None:
-        before_backend()
+    if before_adapter is not None:
+        before_adapter()
     _validate_native_oa_maestro_inputs(step)
     return _run_native_oa_maestro_testbench_impl(
         plan,

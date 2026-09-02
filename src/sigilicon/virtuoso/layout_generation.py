@@ -411,7 +411,7 @@ def validate_layout_plan(
         raise RuntimeError(f"generated layout validation was not confirmed: {output}")
     return {
         "passed": True,
-        "backend": "Cadence SKILL dbOpenCellViewByType/read",
+        "adapter": "Cadence SKILL dbOpenCellViewByType/read",
         "checks": [
             "instance_names",
             "top_level_terminals",

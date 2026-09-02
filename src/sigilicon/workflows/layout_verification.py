@@ -53,7 +53,7 @@ _ORIGINAL_LAYER = re.compile(
     r"(?P<count>\d+)\s+\(\d+\)$",
     re.MULTILINE,
 )
-_BACKEND = "cadence.xstream+calibre"
+_ADAPTER = "cadence.xstream+calibre"
 
 
 @dataclass(frozen=True)
@@ -296,7 +296,7 @@ def _failed_evidence(
     exit_code: int | None,
     message: str,
 ) -> PhysicalVerificationEvidence:
-    completion = VerificationCompletion(_BACKEND, True, False, exit_code)
+    completion = VerificationCompletion(_ADAPTER, True, False, exit_code)
     if check == "drc":
         return DrcEvidence(
             PhysicalVerificationStatus.EXECUTION_FAILED,
@@ -323,7 +323,7 @@ def _parsed_evidence(
     check: str,
     report: str,
 ) -> PhysicalVerificationEvidence:
-    completion = VerificationCompletion(_BACKEND, True, True, 0)
+    completion = VerificationCompletion(_ADAPTER, True, True, 0)
     if check == "drc":
         assert spec.physical_verification is not None
         parsed = parse_drc_summary(
