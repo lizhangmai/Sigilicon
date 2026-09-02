@@ -414,6 +414,10 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         lambda _plan, _members: None,
     )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.build_oa_layout_ir",
+        lambda plan, **_kwargs: plan,
+    )
 
     def execute(_plan, _selected, _client, *, artifacts, bind_operation, **_kwargs):
         operation = SimpleNamespace(operation_id=context.operation_id)
@@ -493,6 +497,10 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         },
     )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.workflows.oa_library.build_oa_layout_ir",
+        lambda plan, **_kwargs: plan,
+    )
 
     def rebuild(
         _plan,
@@ -555,14 +563,29 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     source = context.owner_root / "design/CELL/layout.toml"
     planning = SimpleNamespace(
         source_records={source: source.read_text(encoding="utf-8")},
+        plan=None,
+        spec=SimpleNamespace(
+            library="example",
+            cell="CELL",
+            view="layout",
+            generator="fixture",
+            stage="routed",
+            pdk=SimpleNamespace(),
+        ),
+    )
+    generated = SimpleNamespace(
+        spec=planning.spec,
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
-        spec=SimpleNamespace(pdk=SimpleNamespace()),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
         lambda _spec, *, project: planning,
     )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.build_managed_layout_ir",
+        lambda _planning, **_kwargs: generated,
+    )
 
     def generate(_planning, _client, *, artifacts, bind_operation, **_kwargs):
         operation = SimpleNamespace(operation_id=context.operation_id)
@@ -699,6 +722,11 @@ def test_layout_verification_backend_publishes_classified_evidence(
     lvs_deck = _file(project_root / "configs/platform/pdk/lvs.deck", "lvs\n")
     planning = SimpleNamespace(
         spec=SimpleNamespace(
+            library="example",
+            cell="CELL",
+            view="layout",
+            generator="fixture",
+            stage="routed",
             pdk=SimpleNamespace(key="tsmc28"),
             layout_pdk=SimpleNamespace(
                 layermap=layermap,
@@ -707,6 +735,10 @@ def test_layout_verification_backend_publishes_classified_evidence(
             ),
         ),
         source_records={source: source.read_text(encoding="utf-8")},
+        plan=None,
+    )
+    generated = SimpleNamespace(
+        spec=planning.spec,
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
@@ -714,6 +746,10 @@ def test_layout_verification_backend_publishes_classified_evidence(
         lambda _spec, *, project: planning,
     )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.build_managed_layout_ir",
+        lambda _planning, **_kwargs: generated,
+    )
 
     def verify(
         _planning,

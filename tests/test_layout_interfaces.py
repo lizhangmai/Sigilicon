@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.layout.generator import build_layout_plan
+from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.layout.generator import build_layout_plan_from_sources
+from sigilicon.workflows.layout_generation import (
+    LayoutPlanningResult,
+    build_managed_layout_ir,
+)
 from sigilicon.layout.ir import LayoutInstance, LayoutPlan
 from sigilicon.layout.pcell import apply_pcell_semantics
 from sigilicon.layout.routing import RoutingStack
@@ -92,11 +98,243 @@ def build_layout_plan(spec):
         generator="project_recipe",
     )
 
-    assert build_layout_plan(spec).dbu_per_micron == 1007
+    assert build_layout_plan_from_sources(
+        spec,
+        project_root=project_root,
+        source_project_root=project_root,
+        generator_source=generator,
+        dependency_sources=(),
+        project_modules=(("project_recipe", recipe),),
+    ).dbu_per_micron == 1007
     assert str(project_root) not in sys.path
+    assert Path.cwd() == outside
 
     recipe.write_text("OFFSET = 11\n", encoding="utf-8")
-    assert build_layout_plan(spec).dbu_per_micron == 1011
+    assert build_layout_plan_from_sources(
+        spec,
+        project_root=project_root,
+        source_project_root=project_root,
+        generator_source=generator,
+        dependency_sources=(),
+        project_modules=(("project_recipe", recipe),),
+    ).dbu_per_micron == 1011
+
+
+def test_managed_layout_ir_uses_only_sealed_owner_code(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    recipe = project_root / "project_recipe.py"
+    recipe.write_text("OFFSET = 7\n", encoding="utf-8")
+    netlist = project_root / "circuit.scs"
+    netlist.write_text("subckt test_cell A Y\nends test_cell\n", encoding="utf-8")
+    generator = project_root / "layout_generator.py"
+    generator.write_text(
+        """from sigilicon.layout.ir import LayoutPlan
+
+def build_layout_plan(spec):
+    assert not hasattr(spec, "project")
+    assert not hasattr(spec, "project_root")
+    assert not hasattr(spec, "path")
+    from project_recipe import OFFSET
+    return LayoutPlan(
+        library=spec.library,
+        cell=spec.cell,
+        view=spec.view,
+        stage=spec.stage,
+        generator=spec.generator,
+        dbu_per_micron=1000 + OFFSET,
+        instances=(),
+    )
+""",
+        encoding="utf-8",
+    )
+    source_snapshot = NetlistSnapshot(
+        source_path=netlist,
+        text=netlist.read_text(encoding="utf-8"),
+        interfaces={"test_cell": ("A", "Y")},
+    )
+    spec = SimpleNamespace(
+        project_root=project_root,
+        generator_source=generator,
+        generator_dependencies=(),
+        generator_modules=("project_recipe",),
+        generator_module_sources=(recipe,),
+        library="test_lib",
+        cell="test_cell",
+        view="layout",
+        stage="routed",
+        generator="sealed_recipe",
+        source_snapshot=source_snapshot,
+        source_snapshots=(source_snapshot,),
+        ports=("A", "Y"),
+        directions={"A": "input", "Y": "output"},
+        primitive_masters=(),
+        pdk=SimpleNamespace(
+            oa=SimpleNamespace(technology_library="test_tech")
+        ),
+        layout_pdk=SimpleNamespace(dbu_per_micron=1007),
+    )
+    snapshots = {
+        generator: generator.read_text(encoding="utf-8"),
+        recipe: recipe.read_text(encoding="utf-8"),
+        netlist: netlist.read_text(encoding="utf-8"),
+    }
+    planning = LayoutPlanningResult(spec, source_records=snapshots)
+    assert planning.plan is None
+    sealed_generator = tmp_path / "sealed/generator.py"
+    sealed_recipe = tmp_path / "sealed/recipe.py"
+    sealed_netlist = tmp_path / "sealed/circuit.scs"
+    sealed_generator.parent.mkdir()
+    sealed_generator.write_text(snapshots[generator], encoding="utf-8")
+    sealed_recipe.write_text(snapshots[recipe], encoding="utf-8")
+    sealed_netlist.write_text(snapshots[netlist], encoding="utf-8")
+    generator.write_text("raise RuntimeError('read original generator')\n", encoding="utf-8")
+    recipe.write_text("OFFSET = 99\n", encoding="utf-8")
+    netlist.write_text("mutated\n", encoding="utf-8")
+
+    managed = build_managed_layout_ir(
+        planning,
+        source_paths={
+            generator: sealed_generator,
+            recipe: sealed_recipe,
+            netlist: sealed_netlist,
+        },
+        managed_project_root=tmp_path / "managed",
+    )
+
+    assert managed.plan is not None
+    assert managed.plan.dbu_per_micron == 1007
+
+
+def test_layout_generator_cannot_import_unsealed_project_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    managed_root = tmp_path / "managed"
+    source_root.mkdir()
+    managed_root.mkdir()
+    (source_root / "unsealed.py").write_text("OFFSET = 99\n", encoding="utf-8")
+    generator = managed_root / "layout_generator.py"
+    generator.write_text(
+        "from pathlib import Path\n"
+        "from sigilicon.layout.ir import LayoutPlan\n"
+        "def build_layout_plan(spec):\n"
+        f"    assert Path.cwd() == Path({str(managed_root)!r})\n"
+        "    from unsealed import OFFSET\n"
+        "    return LayoutPlan(library=spec.library, cell=spec.cell, "
+        "view=spec.view, stage=spec.stage, generator=spec.generator, "
+        "dbu_per_micron=OFFSET, instances=())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "unsealed", raising=False)
+    monkeypatch.syspath_prepend(str(source_root))
+    monkeypatch.chdir(source_root)
+    importlib.import_module("unsealed")
+    spec = SimpleNamespace(
+        library="test_lib",
+        cell="test_cell",
+        view="layout",
+        stage="routed",
+        generator="sealed_recipe",
+    )
+
+    with pytest.raises(ModuleNotFoundError, match="unsealed"):
+        build_layout_plan_from_sources(
+            spec,
+            project_root=managed_root,
+            source_project_root=source_root,
+            generator_source=generator,
+            dependency_sources=(),
+            project_modules=(),
+        )
+    assert Path.cwd() == source_root
+
+
+def test_layout_generator_discards_unsealed_namespace_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    managed_root = tmp_path / "managed"
+    package = source_root / "unsealed_package"
+    package.mkdir(parents=True)
+    managed_root.mkdir()
+    (package / "payload.py").write_text("OFFSET = 99\n", encoding="utf-8")
+    generator = managed_root / "layout_generator.py"
+    generator.write_text(
+        "from unsealed_package.payload import OFFSET\n"
+        "from sigilicon.layout.ir import LayoutPlan\n"
+        "def build_layout_plan(spec):\n"
+        "    return LayoutPlan(library=spec.library, cell=spec.cell, "
+        "view=spec.view, stage=spec.stage, generator=spec.generator, "
+        "dbu_per_micron=OFFSET, instances=())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "unsealed_package", raising=False)
+    monkeypatch.delitem(sys.modules, "unsealed_package.payload", raising=False)
+    monkeypatch.syspath_prepend(str(source_root))
+    importlib.import_module("unsealed_package")
+    spec = SimpleNamespace(
+        library="test_lib",
+        cell="test_cell",
+        view="layout",
+        stage="routed",
+        generator="sealed_recipe",
+    )
+
+    with pytest.raises(ModuleNotFoundError, match="unsealed_package"):
+        build_layout_plan_from_sources(
+            spec,
+            project_root=managed_root,
+            source_project_root=source_root,
+            generator_source=generator,
+            dependency_sources=(),
+            project_modules=(),
+        )
+
+
+def test_explicit_source_exclusion_wins_inside_runtime_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    source_root = runtime_root / "owner"
+    managed_root = tmp_path / "managed"
+    source_root.mkdir(parents=True)
+    managed_root.mkdir()
+    (source_root / "unsealed.py").write_text("OFFSET = 99\n", encoding="utf-8")
+    generator = managed_root / "layout_generator.py"
+    generator.write_text(
+        "from unsealed import OFFSET\n"
+        "from sigilicon.layout.ir import LayoutPlan\n"
+        "def build_layout_plan(spec):\n"
+        "    return LayoutPlan(library=spec.library, cell=spec.cell, "
+        "view=spec.view, stage=spec.stage, generator=spec.generator, "
+        "dbu_per_micron=OFFSET, instances=())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "unsealed", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(runtime_root))
+    monkeypatch.syspath_prepend(str(source_root))
+    importlib.import_module("unsealed")
+    spec = SimpleNamespace(
+        library="test_lib",
+        cell="test_cell",
+        view="layout",
+        stage="routed",
+        generator="sealed_recipe",
+    )
+
+    with pytest.raises(ModuleNotFoundError, match="unsealed"):
+        build_layout_plan_from_sources(
+            spec,
+            project_root=managed_root,
+            source_project_root=source_root,
+            generator_source=generator,
+            dependency_sources=(),
+            project_modules=(),
+        )
 
 
 def test_pcell_semantics_apply_terminal_alias_and_callback_policy() -> None:

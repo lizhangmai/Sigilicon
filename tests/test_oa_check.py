@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from sigilicon.project import Project
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_check import (
@@ -11,6 +13,7 @@ from sigilicon.workflows.oa_check import (
     _recommendation,
     check_oa_library,
 )
+from sigilicon.workflows.oa_library import OALibraryRebuildPlan, rebuild_oa_library
 
 
 def test_read_only_check_workspace_does_not_create_flow_lock(
@@ -39,33 +42,37 @@ def test_read_only_check_workspace_does_not_create_flow_lock(
     assert not (root / ".flow-operation.lock").exists()
 
 
-def test_invalid_manifest_is_reported_as_blocked_without_artifact_write(
-    monkeypatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(
-        "sigilicon.workflows.oa_check.active_maestro_sessions", lambda _client: ()
+def test_oa_check_rejects_pure_layout_snapshot() -> None:
+    step = SimpleNamespace(
+        spec=SimpleNamespace(cell="CELL", view="layout"),
+        planning=SimpleNamespace(plan=None),
     )
-    monkeypatch.setattr(
-        "sigilicon.workflows.oa_check.open_cell_views", lambda _client: ()
-    )
-    monkeypatch.setattr(
-        "sigilicon.workflows.oa_check.virtuoso_workdir", lambda _client: tmp_path
-    )
-    monkeypatch.setattr(
-        "sigilicon.workflows.oa_check.virtuoso_pid", lambda _client: 1
-    )
-    report = check_oa_library(
-        tmp_path / "missing-oa.toml",
-        project=Project.open(tmp_path),
-        library="fixture_lib",
-        client=SimpleNamespace(),
+    plan = SimpleNamespace(layouts=(step,))
+    plan.require_layout_ir = lambda operation: OALibraryRebuildPlan.require_layout_ir(
+        plan, operation
     )
 
-    assert report["status"] == "blocked"
-    assert report["source_contract"]["passed"] is False
-    assert "simulation_run" not in report
-    assert "product_qualification_conclusion" not in report
-    assert not (tmp_path / "artifacts").exists()
+    with pytest.raises(ValueError, match="requires managed LayoutIR"):
+        check_oa_library(plan, client=SimpleNamespace())
+
+
+def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access() -> None:
+    step = SimpleNamespace(
+        spec=SimpleNamespace(cell="CELL", view="layout"),
+        planning=SimpleNamespace(plan=None),
+    )
+    plan = SimpleNamespace(layouts=(step,))
+    plan.require_layout_ir = lambda operation: OALibraryRebuildPlan.require_layout_ir(
+        plan, operation
+    )
+    client = SimpleNamespace(
+        library=SimpleNamespace(
+            list=lambda **_kwargs: pytest.fail("live OA accessed before IR validation")
+        )
+    )
+
+    with pytest.raises(ValueError, match="OA rebuild requires managed LayoutIR"):
+        rebuild_oa_library(plan, client, source_paths={}, resource_paths={})
 
 
 def test_current_clean_check_is_clean() -> None:

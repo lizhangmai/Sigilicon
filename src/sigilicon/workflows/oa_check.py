@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sigilicon.project import Project
 from sigilicon.virtuoso.locks import discover_oa_locks, inspect_flow_operation_lock
 from sigilicon.virtuoso.maestro import active_maestro_sessions
 from sigilicon.virtuoso.oa import open_cell_views, virtuoso_pid, virtuoso_workdir
@@ -15,7 +14,6 @@ from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_library import (
     OALibraryRebuildPlan,
     check_oa_parity,
-    plan_oa_library_rebuild,
 )
 
 
@@ -300,13 +298,10 @@ def _recommendation(
 
 
 def check_oa_library(
-    manifest_path: Path,
+    plan: OALibraryRebuildPlan,
     *,
-    project: Project,
-    library: str | None,
     client: Any,
     timeout: int = 300,
-    plan: OALibraryRebuildPlan | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
     operation: Any | None = None,
@@ -318,31 +313,10 @@ def check_oa_library(
     the Cadence API-level check.
     """
 
-    plan_error: BaseException | None = None
-    if plan is None:
-        try:
-            plan = plan_oa_library_rebuild(
-                manifest_path,
-                project=project,
-                library=library,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            plan_error = exc
-    elif plan.source.project is not project or plan.source.manifest_path != manifest_path:
-        raise ValueError("OA check plan belongs to a different Project or assembly")
+    plan.require_layout_ir("OA check")
+    manifest_path = plan.source.manifest_path
 
     bridge = _bridge_state(client)
-    if plan is None:
-        return {
-            "passed": False,
-            "status": "blocked",
-            "source_contract": {"passed": False, "error": _exception(plan_error)},
-            "ownership": {},
-            "parity": {"passed": False, "error": "plan failed"},
-            "live": bridge,
-            "locks": {},
-        }
-
     ownership = _ownership(plan)
     bridge_errors = [key for key in bridge if key.endswith("_error")]
     process = bridge.get("process")
@@ -400,7 +374,7 @@ def check_oa_library(
         parity = {"passed": False, "error": _exception(exc)}
     locks = _locks(plan)
     status = _recommendation(
-        plan_error=plan_error,
+        plan_error=None,
         parity=parity,
         ownership=ownership,
         bridge=bridge,

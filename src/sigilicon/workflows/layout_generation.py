@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.project import Project
-from sigilicon.layout.generator import build_layout_plan
+from sigilicon.layout.generator import (
+    LayoutGeneratorInput,
+    build_layout_plan_from_sources,
+)
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
 from sigilicon.layout.spec import load_layout_spec, resolve_layout_spec
@@ -29,17 +32,19 @@ class LayoutGenerationResult:
 
 @dataclass(frozen=True)
 class LayoutPlanningResult:
-    """A layout spec paired with the plan built from that exact object."""
+    """Pure source snapshot awaiting managed LayoutIR generation."""
 
     spec: LayoutSpec
     source_records: Mapping[Path, str] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
     )
-    plan: LayoutPlan = field(init=False)
+    plan: LayoutPlan | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        plan = build_layout_plan(self.spec)
+        plan = self.plan
+        if plan is None:
+            return
         identity = (
             plan.library,
             plan.cell,
@@ -67,7 +72,11 @@ def _layout_source_paths(spec: LayoutSpec) -> tuple[Path, ...]:
         *spec.pdk.source_paths,
         spec.generator_source,
         *spec.generator_dependencies,
-        *spec.generator_module_sources,
+        *(
+            source
+            for source in spec.generator_module_sources
+            if source.is_relative_to(spec.project_root)
+        ),
         *(snapshot.source_path for snapshot in spec.source_snapshots),
     }
     if spec.oa_assembly_manifest is not None:
@@ -78,7 +87,7 @@ def _layout_source_paths(spec: LayoutSpec) -> tuple[Path, ...]:
 
 
 def plan_layout_snapshot(spec: LayoutSpec) -> LayoutPlanningResult:
-    """Build a plan while proving that one resolved spec snapshot stayed exact."""
+    """Freeze layout inputs without executing owner-authored Python."""
     paths = _layout_source_paths(spec)
     before = {path: read_nofollow_text(path) for path in paths}
     planning = LayoutPlanningResult(
@@ -90,6 +99,108 @@ def plan_layout_snapshot(spec: LayoutSpec) -> LayoutPlanningResult:
     if after != before:
         raise ValueError("layout source changed while its typed plan was built")
     return planning
+
+
+def with_layout_ir(
+    planning: LayoutPlanningResult,
+    plan: LayoutPlan,
+) -> LayoutPlanningResult:
+    """Attach one generated LayoutIR value after checking its source identity."""
+
+    if planning.plan is not None:
+        raise ValueError("layout planning result already contains LayoutIR")
+    return LayoutPlanningResult(
+        planning.spec,
+        source_records=planning.source_records,
+        plan=plan,
+    )
+
+
+def build_managed_layout_ir(
+    planning: LayoutPlanningResult,
+    *,
+    source_paths: Mapping[Path, Path],
+    managed_project_root: Path,
+) -> LayoutPlanningResult:
+    """Generate LayoutIR from sealed inputs inside one managed work tree."""
+
+    if planning.plan is not None:
+        raise ValueError("managed LayoutIR generation requires a pure snapshot")
+    root = Path(managed_project_root).absolute()
+    if root.exists():
+        raise ValueError("managed layout project root must be new")
+    root.mkdir(parents=True)
+    original_root = planning.spec.project_root.resolve()
+    materialized: dict[Path, Path] = {}
+    for original, expected in planning.source_records.items():
+        source = Path(original).resolve()
+        if not source.is_relative_to(original_root):
+            continue
+        try:
+            sealed = source_paths[source]
+        except KeyError as exc:
+            raise ValueError("layout source is outside the sealed closure") from exc
+        text = read_nofollow_text(sealed)
+        if text != expected:
+            raise ValueError("sealed layout source disagrees with its snapshot")
+        target = root / source.relative_to(original_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        materialized[source] = target
+
+    def bound(source: Path) -> Path:
+        original = Path(source).resolve()
+        if original.is_relative_to(original_root):
+            try:
+                return materialized[original]
+            except KeyError as exc:
+                raise ValueError("layout generator input is outside the sealed closure") from exc
+        return original
+
+    snapshots = tuple(
+        replace(snapshot, source_path=bound(snapshot.source_path))
+        for snapshot in planning.spec.source_snapshots
+    )
+    by_source = {snapshot.source_path.resolve(): snapshot for snapshot in snapshots}
+    source_snapshot_path = bound(planning.spec.source_snapshot.source_path).resolve()
+    try:
+        source_snapshot = by_source[source_snapshot_path]
+    except KeyError as exc:
+        raise ValueError("layout source snapshot closure is incomplete") from exc
+    generator_input = LayoutGeneratorInput(
+        library=planning.spec.library,
+        cell=planning.spec.cell,
+        view=planning.spec.view,
+        generator=planning.spec.generator,
+        stage=planning.spec.stage,
+        source_snapshot=source_snapshot,
+        source_snapshots=snapshots,
+        ports=planning.spec.ports,
+        directions=planning.spec.directions,
+        primitive_masters=planning.spec.primitive_masters,
+        technology_library=planning.spec.pdk.oa.technology_library,
+        dbu_per_micron=planning.spec.layout_pdk.dbu_per_micron,
+    )
+    module_sources = tuple(
+        bound(source) for source in planning.spec.generator_module_sources
+    )
+    plan = build_layout_plan_from_sources(
+        generator_input,
+        project_root=root,
+        source_project_root=original_root,
+        generator_source=bound(planning.spec.generator_source),
+        dependency_sources=tuple(
+            bound(source) for source in planning.spec.generator_dependencies
+        ),
+        project_modules=tuple(
+            zip(
+                planning.spec.generator_modules,
+                module_sources,
+                strict=True,
+            )
+        ),
+    )
+    return with_layout_ir(planning, plan)
 
 
 def plan_layout_spec(
@@ -160,6 +271,8 @@ def _generate_layout_impl(
 
     spec = planning.spec
     execution_plan = planning.plan
+    if execution_plan is None:
+        raise ValueError("layout generation requires managed LayoutIR")
     if disposable:
         if _disposable_work is None:
             raise RuntimeError("disposable layout generation requires a work scope")

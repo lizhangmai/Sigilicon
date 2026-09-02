@@ -935,13 +935,18 @@ class NativeOaBackend(_CadenceDomainBackend):
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.oa_library import build_oa_layout_ir
         from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
         testbench = _text(config, "testbench")
         prepared = self._prepared_domain_plan(context)
-        plan = prepared.plan
+        plan = build_oa_layout_ir(
+            prepared.plan,
+            source_paths=prepared.source_paths(context),
+            managed_project_root=context.work_root / "layout-ir",
+        )
         matches = tuple(item for item in plan.testbenches if item.cell == testbench)
         if len(matches) != 1:
             raise ExecutionError(f"prepared native OA testbench is invalid: {testbench}")
@@ -1088,6 +1093,7 @@ class _OaBackend(_CadenceDomainBackend):
         from sigilicon.workflows.oa_check import check_oa_library
         from sigilicon.workflows.oa_library import (
             attest_oa_testbench,
+            build_oa_layout_ir,
             rebuild_oa_library,
         )
 
@@ -1097,6 +1103,12 @@ class _OaBackend(_CadenceDomainBackend):
             raise ExecutionError("OA management requires Project runtime roots")
         prepared = self._prepared_domain_plan(context)
         planning = prepared.plan
+        if self.operation in {"check", "rebuild"}:
+            planning = build_oa_layout_ir(
+                planning,
+                source_paths=prepared.source_paths(context),
+                managed_project_root=context.work_root / "layout-ir",
+            )
         selected = None
         if self.operation == "attest":
             testbench = _text(config, "testbench")
@@ -1123,12 +1135,9 @@ class _OaBackend(_CadenceDomainBackend):
             ) as operation:
                 context.bind_workspace_operation(operation)
                 payload = check_oa_library(
-                    planning.source.manifest_path,
-                    project=planning.source.project,
-                    library=None,
+                    planning,
                     client=client,
                     timeout=timeout,
-                    plan=planning,
                     operation=operation,
                 )
         elif self.operation == "rebuild":
@@ -1211,7 +1220,11 @@ class LayoutBackend(_CadenceDomainBackend):
         )
         captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
-            "identity": canonical_digest(json.loads(planning.plan.canonical_json()))
+            "library": planning.spec.library,
+            "cell": planning.spec.cell,
+            "view": planning.spec.view,
+            "generator": planning.spec.generator,
+            "stage": planning.spec.stage,
         }
         prepared = self._bind_domain_plan(
             step,
@@ -1227,9 +1240,15 @@ class LayoutBackend(_CadenceDomainBackend):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
+        from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
         prepared = self._prepared_domain_plan(context)
-        return self._execute(context, prepared.plan)
+        planning = build_managed_layout_ir(
+            prepared.plan,
+            source_paths=prepared.source_paths(context),
+            managed_project_root=context.work_root / "layout-ir",
+        )
+        return self._execute(context, planning)
 
     def _execute(self, context: StepContext, planning: Any) -> StepResult:
         from sigilicon.virtuoso.client import get_client
@@ -1348,9 +1367,11 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
         check = _text(config, "check")
         captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
-            "layout_identity": canonical_digest(
-                json.loads(planning.plan.canonical_json())
-            ),
+            "library": planning.spec.library,
+            "cell": planning.spec.cell,
+            "view": planning.spec.view,
+            "generator": planning.spec.generator,
+            "stage": planning.spec.stage,
             "check": check,
         }
         prepared = self._bind_domain_plan(
@@ -1367,13 +1388,19 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
+        from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
         config = _strict_config(step, self._fields)
         check = _text(config, "check")
         prepared = self._prepared_domain_plan(context)
+        planning = build_managed_layout_ir(
+            prepared.plan,
+            source_paths=prepared.source_paths(context),
+            managed_project_root=context.work_root / "layout-ir",
+        )
         return self._execute(
             context,
-            prepared.plan,
+            planning,
             prepared.resource_text(context),
         )
 

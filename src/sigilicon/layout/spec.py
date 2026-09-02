@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import importlib.util
 from pathlib import Path
+import sysconfig
 import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -31,6 +31,8 @@ from sigilicon.project._project import RepositoryOwner
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
+_PACKAGE_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+_STDLIB_SOURCE_ROOT = Path(sysconfig.get_path("stdlib")).resolve()
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,25 @@ def _required_file(value: Any, field: str, *, base: Path) -> Path:
     if not result.is_file():
         raise ValueError(f"{field} does not exist: {result}")
     return result
+
+
+def _module_source(project_root: Path, module: str) -> Path | None:
+    """Resolve declared project or trusted Sigilicon code without importing it."""
+
+    parts = module.split(".")
+    roots = (
+        [_PACKAGE_SOURCE_ROOT]
+        if parts[0] == "sigilicon"
+        else [project_root, _STDLIB_SOURCE_ROOT]
+    )
+    for root in roots:
+        module_file = root.joinpath(*parts).with_suffix(".py")
+        package_file = root.joinpath(*parts, "__init__.py")
+        if module_file.is_file():
+            return module_file.resolve()
+        if package_file.is_file():
+            return package_file.resolve()
+    return None
 
 
 def _owner_oa_assembly(
@@ -346,20 +367,12 @@ def load_layout_spec(
         raise ValueError("layout.generator_modules contains duplicate names")
     module_sources: list[Path] = []
     for module in generator_modules:
-        project_module = root.joinpath(*module.split(".")).with_suffix(".py")
-        project_package = root.joinpath(*module.split("."), "__init__.py")
-        if project_module.is_file():
-            source = project_module.resolve()
-        elif project_package.is_file():
-            source = project_package.resolve()
-        else:
-            module_spec = importlib.util.find_spec(module)
-            origin = None if module_spec is None else module_spec.origin
-            if origin is None or origin in {"built-in", "frozen"}:
-                raise ValueError(
-                    f"layout.generator_modules cannot resolve source: {module}"
-                )
-            source = Path(origin).resolve()
+        source = _module_source(root, module)
+        if source is None:
+            raise ValueError(
+                "layout.generator_modules must name project, Sigilicon, or "
+                f"standard-library code: {module}"
+            )
         if not source.is_file() or source.suffix != ".py":
             raise ValueError(
                 f"layout.generator_modules must resolve to Python source: {module}"
@@ -615,18 +628,9 @@ def resolve_layout_spec(
         for module in module_names:
             if not isinstance(module, str) or not module:
                 break
-            project_module = root.joinpath(*module.split(".")).with_suffix(".py")
-            project_package = root.joinpath(*module.split("."), "__init__.py")
-            if project_module.is_file():
-                module_source = project_module.resolve()
-            elif project_package.is_file():
-                module_source = project_package.resolve()
-            else:
-                module_spec = importlib.util.find_spec(module)
-                origin = None if module_spec is None else module_spec.origin
-                if origin is None or origin in {"built-in", "frozen"}:
-                    break
-                module_source = Path(origin).resolve()
+            module_source = _module_source(root, module)
+            if module_source is None:
+                break
             if not module_source.is_file() or module_source.suffix != ".py":
                 break
             resolved_module_sources.append(module_source)

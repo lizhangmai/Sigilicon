@@ -175,6 +175,20 @@ def test_layout_generators_allow_owned_source_library_and_exact_platform_contrac
     assert root / "configs/platform/testpdk/layout.toml" in spec.generator_dependencies
 
 
+def test_layout_module_resolution_never_executes_owner_packages(tmp_path: Path) -> None:
+    root, layout = _write_fixture(tmp_path)
+    marker = tmp_path / "planning-executed-owner-code"
+    (root / "ip/example/__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    load_layout_spec(layout, project=Project.open(root))
+
+    assert not marker.exists()
+
+
 def test_layout_spec_preserves_and_resolves_its_source_document(
     tmp_path: Path,
 ) -> None:

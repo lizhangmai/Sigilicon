@@ -51,6 +51,7 @@ from sigilicon.workflows.design_lifecycle import (
 )
 from sigilicon.workflows.layout_generation import (
     LayoutPlanningResult,
+    build_managed_layout_ir,
     generate_layout,
     plan_layout_snapshot,
 )
@@ -94,6 +95,8 @@ class LayoutRebuildStep:
 
     @property
     def plan(self) -> LayoutPlan:
+        if self.planning.plan is None:
+            raise ValueError("OA layout execution requires managed LayoutIR")
         return self.planning.plan
 
 
@@ -132,6 +135,17 @@ class OALibraryRebuildPlan:
         repr=False,
         compare=False,
     )
+
+    def require_layout_ir(self, operation: str) -> None:
+        missing = tuple(
+            f"{step.spec.cell}/{step.spec.view}"
+            for step in self.layouts
+            if step.planning.plan is None
+        )
+        if missing:
+            raise ValueError(
+                f"{operation} requires managed LayoutIR for: " + ", ".join(missing)
+            )
 
     def as_dict(self) -> dict[str, object]:
         root = self.source.project_root
@@ -731,20 +745,24 @@ def _plan_layouts(
     dependencies: dict[tuple[str, str], set[tuple[str, str]]] = {
         key: set() for key in keys
     }
-    primitive_masters = source.primitive_masters
-    for spec in specs:
-        key = (spec.cell, spec.view)
-        for instance in planning_by_key[key].plan.instances:
-            master = (instance.cell, instance.view)
-            if instance.library != library:
-                continue
-            if master in key_set:
-                dependencies[key].add(master)
-            elif instance.view.startswith("layout"):
+    declared_layouts = {
+        (cell.cell, view.name): view
+        for cell in source.cells
+        for view in cell.views
+        if view.kind == "layout"
+    }
+    if set(declared_layouts) != key_set:
+        raise ValueError("OA layout views and layout specs disagree")
+    for key, view in declared_layouts.items():
+        for dependency in view.dependencies:
+            master = (dependency.cell, dependency.view)
+            if master not in key_set:
                 raise ValueError(
                     f"canonical layout {key} requires undeclared generated master {master}"
                 )
+            dependencies[key].add(master)
 
+    primitive_masters = source.primitive_masters
     layout_relevant_cells = {cell.cell for cell in source.cells if cell.role == "design"}
     for cell, definition in definitions.items():
         if cell not in layout_relevant_cells:
@@ -907,6 +925,31 @@ def plan_oa_library_rebuild(
     )
 
 
+def build_oa_layout_ir(
+    plan: OALibraryRebuildPlan,
+    *,
+    source_paths: Mapping[Path, Path],
+    managed_project_root: Path,
+) -> OALibraryRebuildPlan:
+    """Generate every owner layout from sealed sources during managed execution."""
+
+    layouts = tuple(
+        replace(
+            step,
+            planning=build_managed_layout_ir(
+                step.planning,
+                source_paths=source_paths,
+                managed_project_root=(
+                    Path(managed_project_root)
+                    / f"{index:03d}-{step.spec.cell}-{step.spec.view}"
+                ),
+            ),
+        )
+        for index, step in enumerate(plan.layouts)
+    )
+    return replace(plan, layouts=layouts)
+
+
 def attest_oa_testbench(
     plan: OALibraryRebuildPlan,
     step: TestbenchRebuildStep,
@@ -1013,6 +1056,8 @@ def check_oa_parity(
     The unscoped form checks the full assembly; neither form performs native
     setup semantic attestation.
     """
+
+    plan.require_layout_ir("OA parity")
 
     if testbench is not None and testbench not in plan.expected_views:
         raise ValueError(f"unknown OA testbench in assembly: {testbench}")
@@ -1326,6 +1371,7 @@ def rebuild_oa_library(
     a full rebuild refreshes every source-defined object.
     """
 
+    plan.require_layout_ir("OA rebuild")
     target_cell = cell
     if target_cell is not None and testbench is not None:
         raise ValueError("select at most one OA rebuild target")

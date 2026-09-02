@@ -4,14 +4,34 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 from types import ModuleType
+from typing import Mapping
 import uuid
 
+from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.layout.ir import LayoutPlan
-from sigilicon.layout.spec import LayoutSpec
 from sigilicon.project_modules import project_import_path
+
+
+@dataclass(frozen=True)
+class LayoutGeneratorInput:
+    """Sealed design facts exposed to owner-authored layout code."""
+
+    library: str
+    cell: str
+    view: str
+    generator: str
+    stage: str
+    source_snapshot: NetlistSnapshot
+    source_snapshots: tuple[NetlistSnapshot, ...]
+    ports: tuple[str, ...]
+    directions: Mapping[str, str]
+    primitive_masters: tuple[str, ...]
+    technology_library: str
+    dbu_per_micron: int
 
 
 def _purge_project_modules(
@@ -22,9 +42,14 @@ def _purge_project_modules(
     """Discard caller modules so one process cannot execute stale recipes."""
 
     root = project_root.resolve()
-    owned_names = tuple(
+    declared_names = tuple(
         name for name, source in modules if source.resolve().is_relative_to(root)
     )
+    owned_names = {
+        ".".join(name.split(".")[:index])
+        for name in declared_names
+        for index in range(1, len(name.split(".")) + 1)
+    }
     owned_sources = {
         source.resolve()
         for source in dependency_sources
@@ -38,9 +63,8 @@ def _purge_project_modules(
                 loaded_from_dependency = Path(module_file).resolve() in owned_sources
             except (OSError, RuntimeError):
                 pass
-        if any(
-            loaded_name == name or loaded_name.startswith(f"{name}.")
-            for name in owned_names
+        if loaded_name in owned_names or any(
+            loaded_name.startswith(f"{name}.") for name in declared_names
         ) or loaded_from_dependency:
             sys.modules.pop(loaded_name, None)
     importlib.invalidate_caches()
@@ -83,34 +107,47 @@ def _load_generator_module(
     return module
 
 
-def build_layout_plan(spec: LayoutSpec) -> LayoutPlan:
-    """Load the design-owned generator and enforce the stable IR boundary."""
+def build_layout_plan_from_sources(
+    spec: LayoutGeneratorInput,
+    *,
+    project_root: Path,
+    source_project_root: Path,
+    generator_source: Path,
+    dependency_sources: tuple[Path, ...],
+    project_modules: tuple[tuple[str, Path], ...],
+) -> LayoutPlan:
+    """Execute one generator from an explicitly materialized source closure."""
 
-    with project_import_path(spec.project_root):
+    module_sources = tuple(source for _name, source in project_modules)
+    owned_module_names = tuple(
+        name
+        for name, source in project_modules
+        if source.resolve().is_relative_to(project_root.resolve())
+    )
+    with project_import_path(
+        project_root,
+        module_names=owned_module_names,
+        excluded_roots=(source_project_root,),
+        working_directory=project_root,
+    ):
         module = _load_generator_module(
-            spec.generator_source,
-            project_root=spec.project_root,
-            dependency_sources=(
-                *getattr(spec, "generator_dependencies", ()),
-                *getattr(spec, "generator_module_sources", ()),
-            ),
-            project_modules=tuple(
-                zip(
-                    getattr(spec, "generator_modules", ()),
-                    getattr(spec, "generator_module_sources", ()),
-                    strict=True,
-                )
-            ),
+            generator_source,
+            project_root=project_root,
+            dependency_sources=(*dependency_sources, *module_sources),
+            project_modules=project_modules,
         )
-        entrypoint = getattr(module, "build_layout_plan", None)
-        if not callable(entrypoint):
-            raise ValueError(
-                f"layout generator {spec.generator_source} must export build_layout_plan"
-            )
-        plan = entrypoint(spec)
+        try:
+            entrypoint = getattr(module, "build_layout_plan", None)
+            if not callable(entrypoint):
+                raise ValueError(
+                    f"layout generator {generator_source} must export build_layout_plan"
+                )
+            plan = entrypoint(spec)
+        finally:
+            sys.modules.pop(module.__name__, None)
     if not isinstance(plan, LayoutPlan):
         raise TypeError(
-            f"layout generator {spec.generator_source} returned {type(plan).__name__}, "
+            f"layout generator {generator_source} returned {type(plan).__name__}, "
             "expected LayoutPlan"
         )
     identity = (plan.library, plan.cell, plan.view, plan.generator, plan.stage)

@@ -11,7 +11,7 @@ from sigilicon.domain.netlist import (
     iter_spectre_logical_lines,
     lower_subckt_default_parameters,
 )
-from sigilicon.layout.spec import LayoutSpec
+from sigilicon.layout.generator import LayoutGeneratorInput
 from sigilicon.layout.technology import LayoutTechnology
 
 
@@ -45,7 +45,7 @@ class HierarchicalDevice:
 
 
 def parse_mos_devices(
-    spec: LayoutSpec,
+    spec: LayoutGeneratorInput,
     *,
     allowed_hierarchical_instances: tuple[str, ...] = (),
 ) -> tuple[MosDevice, ...]:
@@ -95,7 +95,9 @@ def parse_mos_devices(
     return tuple(devices)
 
 
-def parse_hierarchical_devices(spec: LayoutSpec) -> tuple[HierarchicalDevice, ...]:
+def parse_hierarchical_devices(
+    spec: LayoutGeneratorInput,
+) -> tuple[HierarchicalDevice, ...]:
     """Parse hierarchical instances while resolving subcircuit defaults."""
 
     body = extract_subckt_body(spec.source_snapshot, spec.cell)
@@ -175,7 +177,7 @@ def validate_static_logic(
 
 
 def create_mos_pcell_instance(
-    spec: LayoutSpec,
+    spec: LayoutGeneratorInput,
     device: MosDevice,
     *,
     technology: LayoutTechnology,
@@ -208,7 +210,7 @@ def create_mos_pcell_instance(
         )
     return laygo2.object.physical.Instance(
         xy=list(origin_dbu),
-        libname=spec.pdk.oa.technology_library,
+        libname=spec.technology_library,
         cellname=device.model,
         name=device.name,
         params={"pcell_params": parameters},
