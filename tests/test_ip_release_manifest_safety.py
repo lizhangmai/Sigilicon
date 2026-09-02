@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ def _write_release(root: Path) -> Path:
     payload = root / "payload.txt"
     payload.write_text("payload\n", encoding="utf-8")
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture",
@@ -29,6 +30,7 @@ def _write_release(root: Path) -> Path:
                 "role": "payload",
                 "path": "payload.txt",
                 "size": payload.stat().st_size,
+                "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
             }
         ],
     }
@@ -56,6 +58,18 @@ def test_exact_release_audit_rejects_symlinked_payload(
     payload.symlink_to(external)
 
     with pytest.raises(RuntimeError, match="symlink"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
+def test_exact_release_audit_hashes_same_size_payload_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_release(tmp_path / "release")
+    _skip_semantic_checks(monkeypatch)
+    payload = manifest_path.parent / "payload.txt"
+    payload.write_text("PAYLOAD\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="content drifted"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 

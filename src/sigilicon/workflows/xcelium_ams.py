@@ -12,7 +12,7 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.artifacts import read_nofollow_text
+from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_text
 from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platform
 from sigilicon.project import Project
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
@@ -22,6 +22,7 @@ from sigilicon.external_tools import (
     xrun_env,
 )
 from sigilicon.execution.step_files import StepFiles
+from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
@@ -165,18 +166,11 @@ def _toml(path: Path, label: str) -> dict[str, Any]:
 def _manifest(path: Path) -> tuple[dict[str, Any], str]:
     try:
         snapshot = read_nofollow_text(path)
-        value = json.loads(snapshot)
+        value = audit_ip_release_manifest(path)
+        if json.loads(snapshot) != value:
+            raise RuntimeError("release manifest changed while auditing")
     except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
         raise ValueError("Xcelium AMS release manifest is invalid JSON") from exc
-    if not isinstance(value, dict) or any(
-        value.get(name) != expected
-        for name, expected in (
-            ("schema", 1),
-            ("contract_kind", "ip-release-manifest"),
-            ("release_kind", "source-package"),
-        )
-    ):
-        raise ValueError("Xcelium AMS release manifest identity is invalid")
     return value, hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
 
@@ -204,23 +198,6 @@ def _locked_native_release(
             f"Xcelium AMS dependency is not one released dependency: {ams.dependency}"
         )
     release = matches[0]["release"]
-    interface = release.get("interface")
-    if (
-        not isinstance(interface, Mapping)
-        or interface.get("kind") != "oa-native"
-        or any(
-            not isinstance(interface.get(field), str) or not interface.get(field)
-            for field in (
-                "library",
-                "cell",
-                "schematic_view",
-                "layout_view",
-            )
-        )
-    ):
-        raise ValueError(
-            f"Xcelium AMS dependency {ams.dependency} is not oa-native"
-        )
     variants = component.get("variants")
     if not isinstance(variants, Mapping) or ams.variant not in variants:
         raise ValueError("Xcelium AMS integration contract omits its variant")
@@ -299,16 +276,17 @@ def _locked_native_release(
         raise ValueError("Xcelium AMS release export is missing or ambiguous")
     exported = selected_exports[0]
     exported_interface = exported.get("interface")
+    oa = exported.get("oa")
     if (
         not isinstance(exported_interface, Mapping)
-        or exported_interface.get("kind") != interface["kind"]
+        or exported_interface.get("kind") != "oa-native"
+        or not isinstance(oa, Mapping)
+        or any(
+            not isinstance(oa.get(field), str) or not oa.get(field)
+            for field in ("library", "cell", "schematic_view", "layout_view")
+        )
     ):
-        raise ValueError("Xcelium AMS release interface kind differs from intent")
-    if exported.get("oa") != {
-        field: interface[field]
-        for field in ("library", "cell", "schematic_view", "layout_view")
-    }:
-        raise ValueError("Xcelium AMS release OA identity differs from intent")
+        raise ValueError("Xcelium AMS release export is not a native OA interface")
     availability = exported.get("availability")
     if (
         not isinstance(availability, Mapping)
@@ -354,7 +332,6 @@ def _locked_native_release(
     )
     if (
         not isinstance(provenance, Mapping)
-        or provenance.get("working_tree_dirty") is not False
         or provenance.get("producer") != expected_producer
     ):
         raise ValueError("Xcelium AMS release provenance differs from its provider")
@@ -380,6 +357,17 @@ def _locked_native_release(
         selected.get("path"),
         "release circuit",
     )
+    try:
+        circuit_metadata, circuit_digest = _inspect_nofollow_file(circuit)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Xcelium AMS release circuit is missing or unsafe") from exc
+    if (
+        selected.get("size") != circuit_metadata.st_size
+        or selected.get("sha256") != circuit_digest
+    ):
+        raise ValueError(
+            "Xcelium AMS release circuit content differs from its manifest"
+        )
     result = {
         "schema": 1,
         "contract_kind": "locked-release-selection",
@@ -399,10 +387,10 @@ def _locked_native_release(
     release_sources = MappingProxyType(
         {
             manifest_path: manifest_digest,
-            circuit: _sha256(circuit),
+            circuit: circuit_digest,
         }
     )
-    return interface["cell"], circuit, result, release_sources
+    return str(oa["cell"]), circuit, result, release_sources
 
 
 def plan_xcelium_ams_cell(

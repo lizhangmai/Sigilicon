@@ -12,9 +12,8 @@ import pytest
 import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
+    LockedIpRelease,
     OaNativePhysicalBinding,
-    OaNativeReleaseInterfaceReference,
-    RtlReleaseInterfaceReference,
     load_ip_integration_contract,
 )
 from sigilicon.project import Project
@@ -22,15 +21,11 @@ from sigilicon.workflows.ip_integration import (
     check_ip_integration,
     ip_catalog_contract_path,
     plan_ip_integration,
+    resolve_locked_ip_release,
     resolve_ip_integration_fileset,
 )
 
 from conftest import write_project_context
-
-
-def _fixture_architecture_validator(raw: dict[str, Any]) -> dict[str, Any]:
-    assert isinstance(raw["physical_binding"]["blockers"], list)
-    return {"variant": raw["integration"]["variant"], "validated": True}
 
 
 def _write_release_fixture(artifact_root: Path) -> tuple[str, str]:
@@ -91,18 +86,18 @@ endmodule
             "path": relative,
             "format": "systemverilog" if path.suffix == ".sv" else path.suffix[1:],
             "size": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
         if module is not None:
             view["module"] = module
         views.append(view)
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
         "release_id": release_id,
         "source_commit": "a" * 40,
-        "source": {"commit": "a" * 40, "dirty": False},
         "exports": [
             {
                 "name": "macro",
@@ -133,7 +128,6 @@ endmodule
         },
         "provenance": {
             "producer": "ip/fixture",
-            "working_tree_dirty": False,
         },
     }
     (release_root / "manifest.json").write_text(
@@ -171,6 +165,7 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
             "source": "ip/fixture/configs/interface.toml",
             "format": "toml",
             "size": interface.stat().st_size,
+            "sha256": hashlib.sha256(interface.read_bytes()).hexdigest(),
         },
         {
             "export": "rtl",
@@ -180,10 +175,11 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
             "format": "systemverilog",
             "module": "fixture_rtl",
             "size": source.stat().st_size,
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         },
     ]
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "contract_kind": "ip-release-manifest",
         "release_kind": "source-package",
         "ip_name": "fixture-ip",
@@ -216,13 +212,35 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
         },
         "provenance": {
             "producer": "ip/fixture",
-            "working_tree_dirty": False,
         },
     }
     (release_root / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     return release_id, (relative_root / "manifest.json").as_posix()
+
+
+def test_locked_release_rejects_a_symlinked_manifest_parent(tmp_path: Path) -> None:
+    real_artifacts = tmp_path / "real-artifacts"
+    release_id, relative_manifest = _write_release_fixture(real_artifacts)
+    manifest = real_artifacts / relative_manifest
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    (artifact_root / "exports").symlink_to(
+        real_artifacts / "exports",
+        target_is_directory=True,
+    )
+    pinned = LockedIpRelease(
+        name="fixture-ip",
+        release_id=release_id,
+        manifest=Path(relative_manifest),
+        maturity="development",
+        source_commit="a" * 40,
+        manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(FileNotFoundError, match="unavailable"):
+        resolve_locked_ip_release(artifact_root=artifact_root, pinned=pinned)
 
 
 def _select_rtl_dependency(contract: Path) -> None:
@@ -232,40 +250,17 @@ def _select_rtl_dependency(contract: Path) -> None:
 export = "macro"
 required_maturity = "development"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
-
-[component.release.interface]
-kind = "oa-mixed-signal"
-logical = "fixture_model:transaction-1-port"
-physical = "fixture_macro:oa-1-pin"
-
-[component.release.role_modules]
-transaction_model = "fixture_model"
-integration_adapter = "fixture_shell"
-physical_blackbox = "fixture_macro"
 ''',
         '''[component.release]
 export = "rtl"
 required_maturity = "development"
 roles = ["rtl_source"]
-
-[component.release.interface]
-kind = "rtl"
-module = "fixture_rtl"
-
-[component.release.role_modules]
-rtl_source = "fixture_rtl"
 ''',
     )
     contract.write_text(source, encoding="utf-8")
     variant = contract.parent / "variants/default.toml"
     variant_source = variant.read_text(encoding="utf-8")
     variant_source = variant_source.replace(
-        '''[architecture_validation]
-validator = "test_ip_integration:_fixture_architecture_validator"
-
-''',
-        "",
-    ).replace(
         'fixture-ip = ["transaction_model"]',
         'fixture-ip = ["rtl_source"]',
     )
@@ -285,28 +280,11 @@ def _select_native_oa_dependency(
 export = "macro"
 required_maturity = "development"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
-
-[component.release.interface]
-kind = "oa-mixed-signal"
-logical = "fixture_model:transaction-1-port"
-physical = "fixture_macro:oa-1-pin"
-
-[component.release.role_modules]
-transaction_model = "fixture_model"
-integration_adapter = "fixture_shell"
-physical_blackbox = "fixture_macro"
 ''',
         '''[component.release]
 export = "macro"
 required_maturity = "development"
 roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
-
-[component.release.interface]
-kind = "oa-native"
-library = "fixture"
-cell = "fixture_macro"
-schematic_view = "schematic"
-layout_view = "layout"
 ''',
     )
     contract.write_text(source, encoding="utf-8")
@@ -395,7 +373,9 @@ domains = []
     ]
     for view in payload["views"]:
         view["source"] = selected_roles[view["role"]]
-        view["size"] = (release_root / view["path"]).stat().st_size
+        selected = release_root / view["path"]
+        view["size"] = selected.stat().st_size
+        view["sha256"] = hashlib.sha256(selected.read_bytes()).hexdigest()
         if view["role"] == "circuit_netlist":
             view["format"] = "spectre-source"
             circuit = (release_root / view["path"]).read_bytes()
@@ -464,9 +444,6 @@ owner = "demo"
 variant = "default"
 default_fileset = "simulation"
 
-[architecture_validation]
-validator = "test_ip_integration:_fixture_architecture_validator"
-
 [filesets.simulation]
 filelist = "ip/demo/rtl/simulation.f"
 required_capability = "simulation"
@@ -529,16 +506,6 @@ contract = "ip/fixture/configs/ip.toml"
 export = "macro"
 required_maturity = "development"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
-
-[component.release.interface]
-kind = "oa-mixed-signal"
-logical = "fixture_model:transaction-1-port"
-physical = "fixture_macro:oa-1-pin"
-
-[component.release.role_modules]
-transaction_model = "fixture_model"
-integration_adapter = "fixture_shell"
-physical_blackbox = "fixture_macro"
 
 [variants]
 default = "ip/demo/configs/variants/default.toml"
@@ -753,7 +720,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert result["owner"] == "demo"
     assert result["passed"] is True
     assert catalog_reads == 1
-    assert result["architecture"] == {"variant": "default", "validated": True}
+    assert "architecture" not in result
     assert _absolute_strings(result) == []
     assert "sources" not in result
     assert result["source_files"] == ["ip/demo/rtl/top.sv"]
@@ -855,8 +822,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     )
     release = contract.release_dependencies[0].release
     assert release is not None
-    assert isinstance(release.interface, RtlReleaseInterfaceReference)
-    assert release.interface.module == "fixture_rtl"
+    assert release.export == "rtl"
 
     producer_path = project_root / "ip/fixture/configs/release.toml"
     producer = SimpleNamespace(
@@ -895,10 +861,7 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
         project=project,
         release_inventory={"fixture-ip": producer},
     )
-    assert plan["dependencies"][0]["release"]["interface"] == {
-        "kind": "rtl",
-        "module": "fixture_rtl",
-    }
+    assert "interface" not in plan["dependencies"][0]["release"]
 
     result = check_ip_integration(
         contract_path,
@@ -916,22 +879,6 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     assert result["release_sources"] == [
         "exports/fixture-ip/package/development-rtl-fixture/rtl/fixture_rtl.sv"
     ]
-
-    contract_path.write_text(
-        contract_path.read_text(encoding="utf-8").replace(
-            'module = "fixture_rtl"', 'module = "wrong_rtl"', 1
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(RuntimeError, match="interface does not match"):
-        check_ip_integration(
-            contract_path,
-            project=Project.open(project_root).with_artifact_root(
-                artifact_root
-            ),
-            variant_name="default",
-        )
-
 
 def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     tmp_path: Path,
@@ -953,9 +900,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     contract = load_ip_integration_contract(contract_path, project=project)
     release = contract.release_dependencies[0].release
     assert release is not None
-    assert isinstance(release.interface, OaNativeReleaseInterfaceReference)
-    assert release.interface.library == "fixture"
-    assert release.role_modules == {}
+    assert release.export == "macro"
     binding = contract.get_variant("default").physical_binding
     assert isinstance(binding, OaNativePhysicalBinding)
     assert binding.transaction_module == "demo_transaction_model"
@@ -1004,13 +949,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
         project=project,
         release_inventory={"fixture-ip": producer},
     )
-    assert plan["dependencies"][0]["release"]["interface"] == {
-        "kind": "oa-native",
-        "library": "fixture",
-        "cell": "fixture_macro",
-        "schematic_view": "schematic",
-        "layout_view": "layout",
-    }
+    assert "interface" not in plan["dependencies"][0]["release"]
     assert plan["dependencies"][0]["release"]["roles"] == [
         "interface_contract",
         "oa_port_contract",
@@ -1039,7 +978,7 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
     }
 
 
-def test_native_oa_planner_rejects_provider_interface_identity_drift(
+def test_native_oa_planner_takes_interface_identity_from_provider_export(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1101,12 +1040,12 @@ def test_native_oa_planner_rejects_provider_interface_identity_drift(
         },
     )
 
-    with pytest.raises(ValueError, match="interface does not match"):
-        plan_ip_integration(
-            contract_path,
-            project=project,
-            release_inventory={"fixture-ip": producer},
-        )
+    plan = plan_ip_integration(
+        contract_path,
+        project=project,
+        release_inventory={"fixture-ip": producer},
+    )
+    assert "interface" not in plan["dependencies"][0]["release"]
 
 
 def test_ip_catalog_never_selects_an_uncataloged_project_file(
@@ -1276,7 +1215,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
         ("interface-drift", "interface identities disagree"),
         ("module-drift", "module disagrees"),
         ("missing-manifest", "manifest"),
-        ("stale-role", "size drifted"),
+        ("stale-role", "content drifted"),
     ),
 )
 def test_ip_integration_rejects_invalid_locked_release_state(

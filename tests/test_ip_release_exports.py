@@ -511,6 +511,17 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     )
     manifest = contract.project.artifact_root / built["manifest"]
     audited = ip_packaging.audit_ip_release_manifest(manifest)
+    assert audited["schema"] == 2
+    assert audited["release_id"] == f"development-{'d' * 40}"
+    assert set(audited["provenance"]) == {"contract", "producer", "generator"}
+    assert all(len(view["sha256"]) == 64 for view in audited["views"])
+    snapshot = manifest.read_bytes()
+    repeated = ip_packaging.build_ip_release(
+        contract_path,
+        project=contract.project,
+    )
+    assert repeated["manifest"] == built["manifest"]
+    assert manifest.read_bytes() == snapshot
     assert audited["exports"] == plan["exports"]
     circuit_path = ip_packaging.resolve_release_role(
         audited,
@@ -667,6 +678,7 @@ module = "forged"
         encoding="utf-8",
     )
     interface_view["size"] = interface_path.stat().st_size
+    interface_view["sha256"] = hashlib.sha256(interface_path.read_bytes()).hexdigest()
     tampered_manifest.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",

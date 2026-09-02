@@ -60,44 +60,12 @@ def _hex_digest(
 
 
 @dataclass(frozen=True)
-class OaReleaseInterfaceReference:
-    kind: Literal["oa-mixed-signal"]
-    logical_interface: str
-    physical_interface: str
-
-
-@dataclass(frozen=True)
-class OaNativeReleaseInterfaceReference:
-    """Exact native OA boundary selected from a producer release."""
-
-    kind: Literal["oa-native"]
-    library: str
-    cell: str
-    schematic_view: str
-    layout_view: str
-
-
-@dataclass(frozen=True)
-class RtlReleaseInterfaceReference:
-    kind: Literal["rtl"]
-    module: str
-
-
-ReleaseInterfaceReference = (
-    OaReleaseInterfaceReference
-    | OaNativeReleaseInterfaceReference
-    | RtlReleaseInterfaceReference
-)
-
-
-@dataclass(frozen=True)
 class IpReleaseDependency:
+    """One producer export and the roles consumed from that same export."""
+
     export: str
     required_maturity: str
-    interface: ReleaseInterfaceReference
     roles: tuple[str, ...]
-    role_modules: Mapping[str, str]
-    role_exports: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -155,7 +123,6 @@ class IpOperatingVariant:
     default_fileset: str
     filesets: Mapping[str, IpIntegrationFileset]
     physical_binding: PhysicalBinding | None
-    architecture_validator: str | None
     source_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
@@ -231,15 +198,9 @@ class IpDependencyLock:
 
 def _release_dependency(value: object, label: str) -> IpReleaseDependency:
     item = _table(value, label)
-    if set(item) - {
-        "export",
-        "required_maturity",
-        "roles",
-        "role_modules",
-        "role_exports",
-        "interface",
-    }:
-        raise ValueError(f"{label} fields are invalid")
+    required_fields = {"export", "required_maturity", "roles"}
+    if set(item) != required_fields:
+        raise ValueError(f"{label} fields must be exactly {sorted(required_fields)}")
     maturity = _string(item.get("required_maturity"), f"{label}.required_maturity")
     if maturity not in RELEASE_MATURITY_LEVELS:
         raise ValueError(f"{label}.required_maturity is unsupported: {maturity}")
@@ -252,97 +213,11 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
     ):
         raise ValueError(f"{label}.roles must be unique non-empty strings")
     roles = tuple(roles_raw)
-    modules_raw = _table(item.get("role_modules", {}), f"{label}.role_modules")
-    role_modules = {
-        _string(role, f"{label}.role_modules key"): _string(
-            module, f"{label}.role_modules.{role}"
-        )
-        for role, module in modules_raw.items()
-    }
-    unknown_module_roles = set(role_modules) - set(roles)
-    if unknown_module_roles:
-        raise ValueError(
-            f"{label}.role_modules names undeclared roles: {sorted(unknown_module_roles)}"
-        )
     export = _string(item.get("export"), f"{label}.export")
-    exports_raw = _table(item.get("role_exports", {}), f"{label}.role_exports")
-    role_exports = {role: export for role in roles}
-    for role, role_export in exports_raw.items():
-        role = _string(role, f"{label}.role_exports key")
-        if role not in roles:
-            raise ValueError(f"{label}.role_exports names undeclared role: {role}")
-        role_exports[role] = _string(role_export, f"{label}.role_exports.{role}")
-    interface_table = _table(item.get("interface"), f"{label}.interface")
-    interface_kind = interface_table.get("kind")
-    interface: ReleaseInterfaceReference
-    if interface_kind == "oa-mixed-signal":
-        if set(interface_table) != {"kind", "logical", "physical"}:
-            raise ValueError(f"{label}.interface OA fields are invalid")
-        interface = OaReleaseInterfaceReference(
-            kind="oa-mixed-signal",
-            logical_interface=_string(
-                interface_table.get("logical"),
-                f"{label}.interface.logical",
-            ),
-            physical_interface=_string(
-                interface_table.get("physical"),
-                f"{label}.interface.physical",
-            ),
-        )
-    elif interface_kind == "oa-native":
-        expected_fields = {
-            "kind",
-            "library",
-            "cell",
-            "schematic_view",
-            "layout_view",
-        }
-        if set(interface_table) != expected_fields:
-            raise ValueError(f"{label}.interface native OA fields are invalid")
-        interface = OaNativeReleaseInterfaceReference(
-            kind="oa-native",
-            library=_string(
-                interface_table.get("library"),
-                f"{label}.interface.library",
-            ),
-            cell=_string(
-                interface_table.get("cell"),
-                f"{label}.interface.cell",
-            ),
-            schematic_view=_string(
-                interface_table.get("schematic_view"),
-                f"{label}.interface.schematic_view",
-            ),
-            layout_view=_string(
-                interface_table.get("layout_view"),
-                f"{label}.interface.layout_view",
-            ),
-        )
-    elif interface_kind == "rtl":
-        if set(interface_table) != {"kind", "module"}:
-            raise ValueError(f"{label}.interface RTL fields are invalid")
-        interface = RtlReleaseInterfaceReference(
-            kind="rtl",
-            module=_string(
-                interface_table.get("module"),
-                f"{label}.interface.module",
-            ),
-        )
-    else:
-        raise ValueError(
-            f"{label}.interface.kind is unsupported: {interface_kind!r}"
-        )
-    if isinstance(interface, OaNativeReleaseInterfaceReference) and role_modules:
-        raise ValueError(
-            f"{label}.role_modules are invalid for an oa-native interface"
-        )
     return IpReleaseDependency(
         export=export,
         required_maturity=maturity,
-        interface=interface,
         roles=roles,
-        role_modules=MappingProxyType(role_modules),
-        role_exports=MappingProxyType(role_exports),
     )
 
 
@@ -506,21 +381,11 @@ def _operating_variant(
     if default_fileset not in filesets:
         raise ValueError(f"variant {name} default_fileset is undeclared")
 
-    validator: str | None = None
-    if raw.get("architecture_validation") is not None:
-        validation = _table(
-            raw["architecture_validation"],
-            f"variant {name}.architecture_validation",
+    if "architecture_validation" in raw:
+        raise ValueError(
+            f"variant {name}.architecture_validation was removed; "
+            "owner architecture checks belong in owner tests"
         )
-        validator = _string(
-            validation.get("validator"),
-            f"variant {name}.architecture_validation.validator",
-        )
-        module_name, separator, function_name = validator.partition(":")
-        if separator != ":" or not module_name or not function_name or ":" in function_name:
-            raise ValueError(
-                f"variant {name} architecture validator must be module:function"
-            )
 
     physical_binding: PhysicalBinding | None = None
     if raw.get("physical_binding") is not None:
@@ -563,13 +428,6 @@ def _operating_variant(
                 raise ValueError(
                     f"variant {name} native OA physical binding fields are invalid"
                 )
-            if not isinstance(
-                dependency.release.interface, OaNativeReleaseInterfaceReference
-            ):
-                raise ValueError(
-                    f"variant {name} native OA physical binding requires an "
-                    "oa-native release interface"
-                )
             physical_binding = OaNativePhysicalBinding(
                 kind="oa-native",
                 dependency=dependency_name,
@@ -594,13 +452,6 @@ def _operating_variant(
                 raise ValueError(
                     f"variant {name} mixed-signal physical binding fields are invalid"
                 )
-            if not isinstance(
-                dependency.release.interface, OaReleaseInterfaceReference
-            ):
-                raise ValueError(
-                    f"variant {name} mixed-signal physical binding requires an "
-                    "oa-mixed-signal release interface"
-                )
             physical_binding = OaMixedSignalPhysicalBinding(
                 dependency=dependency_name,
                 transaction_module=_string(
@@ -622,18 +473,6 @@ def _operating_variant(
                 status=status,
                 blockers=tuple(blockers_raw),
             )
-            expected_modules = {
-                "transaction_model": physical_binding.transaction_module,
-                "integration_adapter": physical_binding.physical_shell_module,
-                "physical_blackbox": physical_binding.raw_macro_module,
-            }
-            if any(
-                dependency.release.role_modules.get(role) != module
-                for role, module in expected_modules.items()
-            ):
-                raise ValueError(
-                    f"variant {name} physical binding disagrees with dependency modules"
-                )
         else:
             raise ValueError(
                 f"variant {name} physical binding kind is unsupported: "
@@ -646,7 +485,6 @@ def _operating_variant(
         default_fileset=default_fileset,
         filesets=MappingProxyType(filesets),
         physical_binding=physical_binding,
-        architecture_validator=validator,
         source_document=freeze_toml_document(raw),
     )
 
@@ -819,13 +657,6 @@ def resolve_ip_integration_contract(
         or not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE)
     ):
         raise ValueError("IP integration snapshot mappings are mutable")
-    for dependency in snapshot.dependencies:
-        release = dependency.release
-        if release is not None and (
-            not isinstance(release.role_modules, _MAPPING_PROXY_TYPE)
-            or not isinstance(release.role_exports, _MAPPING_PROXY_TYPE)
-        ):
-            raise ValueError("IP integration dependency snapshot is mutable")
     for variant in snapshot.variants:
         if (
             not isinstance(variant.filesets, _MAPPING_PROXY_TYPE)

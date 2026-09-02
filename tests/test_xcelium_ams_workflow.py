@@ -118,6 +118,167 @@ def _patch_native_resolution(
     )
 
 
+def _configure_locked_native_release(root: Path, circuit: Path) -> None:
+    _write(
+        root / "ip/native-provider/configs/release.toml",
+        '''schema = 1
+contract_kind = "ip-release"
+path_scope = "owner"
+owner = "native-provider"
+''',
+    )
+    component = root / "ip/demo/component.toml"
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            "[filesets]\n",
+            'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n\n[filesets]\n',
+        )
+        + '''
+[[component]]
+name = "native-provider"
+contract = "ip/native-provider/configs/release.toml"
+
+[component.release]
+export = "native-top"
+required_maturity = "development"
+roles = ["circuit_netlist"]
+
+[variants]
+no-recovery = "ip/demo/configs/variants/no_recovery.toml"
+''',
+        encoding="utf-8",
+    )
+    _write(
+        root / "ip/demo/configs/variants/no_recovery.toml",
+        '''schema = 1
+contract_kind = "ip-operating-variant"
+path_scope = "variant"
+owner = "demo"
+
+[filesets.ams]
+[filesets.ams.dependency_roles]
+native-provider = ["circuit_netlist"]
+''',
+    )
+    release_root = circuit.parent
+    interface = _write(
+        release_root / "interface.toml",
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "native-provider"
+
+[physical]
+library = "native"
+cell = "NATIVE_TOP"
+port_count = 2
+canonical_port_contract = "ip/native-provider/configs/ports.toml"
+
+[behavior]
+result = "native response"
+
+[supplies]
+domains = []
+''',
+    )
+    ports = _write(
+        release_root / "ports.toml",
+        '''[ports]
+order = ["A", "VSS"]
+
+[ports.directions]
+A = "input"
+VSS = "inout"
+''',
+    )
+    manifest = release_root / "manifest.json"
+    payload = {
+        "schema": 2,
+        "contract_kind": "ip-release-manifest",
+        "release_kind": "source-package",
+        "ip_name": "native-provider",
+        "owner": "native-provider",
+        "release_id": "development-" + "a" * 40,
+        "source_commit": "a" * 40,
+        "exports": [
+            {
+                "name": "native-top",
+                "oa": {
+                    "library": "native",
+                    "cell": "NATIVE_TOP",
+                    "schematic_view": "schematic",
+                    "layout_view": "layout",
+                },
+                "interface": {
+                    "kind": "oa-native",
+                    "contract": "ip/native-provider/configs/interface.toml",
+                },
+                "maturity": {
+                    "required_roles": [
+                        "interface_contract",
+                        "oa_port_contract",
+                        "circuit_netlist",
+                    ]
+                },
+                "availability": {"simulation": True},
+            }
+        ],
+        "views": [
+            {
+                "export": "native-top",
+                "role": "interface_contract",
+                "path": interface.name,
+                "source": "ip/native-provider/configs/interface.toml",
+                "format": "toml",
+                "size": interface.stat().st_size,
+                "sha256": hashlib.sha256(interface.read_bytes()).hexdigest(),
+            },
+            {
+                "export": "native-top",
+                "role": "oa_port_contract",
+                "path": ports.name,
+                "source": "ip/native-provider/configs/ports.toml",
+                "format": "toml",
+                "size": ports.stat().st_size,
+                "sha256": hashlib.sha256(ports.read_bytes()).hexdigest(),
+            },
+            {
+                "export": "native-top",
+                "role": "circuit_netlist",
+                "path": circuit.name,
+                "format": "spectre-source",
+                "composition": "reachable-spectre-hierarchy",
+                "subcircuits": ["NATIVE_TOP"],
+                "primitive_masters": [],
+                "size": circuit.stat().st_size,
+                "sha256": hashlib.sha256(circuit.read_bytes()).hexdigest(),
+            }
+        ],
+        "maturity": {
+            "level": "development",
+            "checks": [{"name": "fixture", "passed": True}],
+        },
+        "provenance": {"producer": "ip/native-provider"},
+    }
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    _write(
+        root / "ip/demo/configs/dependency.lock.toml",
+        f'''schema = 1
+contract_kind = "ip-dependency-lock"
+path_scope = "owner"
+owner = "demo"
+
+[[dependency]]
+name = "native-provider"
+release_id = "development-{'a' * 40}"
+manifest = "releases/native-provider/manifest.json"
+source_commit = "{'a' * 40}"
+manifest_sha256 = "{hashlib.sha256(manifest.read_bytes()).hexdigest()}"
+maturity = "development"
+''',
+    )
+
+
 def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -138,6 +299,40 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     assert "config cell=NATIVE_TOP use=spice" in control
     assert "tran tran stop=1u" in control
     assert plan.as_dict()["product_qualification_conclusion"] is False
+
+
+def test_xcelium_ams_rejects_same_size_release_tampering(
+    tmp_path: Path,
+) -> None:
+    contract, circuit = _ams_project(tmp_path)
+    _configure_locked_native_release(tmp_path, circuit)
+    payload = bytearray(circuit.read_bytes())
+    payload[0] ^= 1
+    circuit.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="release manifest"):
+        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
+
+
+def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
+    tmp_path: Path,
+) -> None:
+    contract, circuit = _ams_project(tmp_path)
+    _configure_locked_native_release(tmp_path, circuit)
+    manifest = circuit.parent / "manifest.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload.pop("exports")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    lock = tmp_path / "ip/demo/configs/dependency.lock.toml"
+    source = lock.read_text(encoding="utf-8")
+    marker = 'manifest_sha256 = "'
+    start = source.index(marker) + len(marker)
+    end = source.index('"', start)
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    lock.write_text(source[:start] + digest + source[end:], encoding="utf-8")
+
+    with pytest.raises(ValueError, match="release manifest"):
+        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
 
 
 def test_xcelium_ams_plan_rejects_spectre_compile_input(

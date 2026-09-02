@@ -12,7 +12,7 @@ import re
 import tomllib
 from typing import Any, Mapping
 
-from sigilicon.artifacts import read_nofollow_text
+from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_text
 from sigilicon.external_tools import (
     owned_directory,
     owned_executable,
@@ -20,6 +20,7 @@ from sigilicon.external_tools import (
     run_process_group_capture,
 )
 from sigilicon.execution.step_files import StepFiles
+from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -77,18 +78,11 @@ def _toml(path: Path, label: str) -> dict[str, Any]:
 def _manifest(path: Path) -> tuple[dict[str, Any], str]:
     try:
         snapshot = read_nofollow_text(path)
-        value = json.loads(snapshot)
+        value = audit_ip_release_manifest(path)
+        if json.loads(snapshot) != value:
+            raise RuntimeError("release manifest changed while auditing")
     except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
         raise ValueError("cannot read structural-link release manifest") from exc
-    if not isinstance(value, dict) or any(
-        value.get(name) != expected
-        for name, expected in (
-            ("schema", 1),
-            ("contract_kind", "ip-release-manifest"),
-            ("release_kind", "source-package"),
-        )
-    ):
-        raise ValueError("structural-link release manifest identity is invalid")
     return value, hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
 
@@ -226,14 +220,11 @@ def plan_structural_link(
     ):
         raise ValueError("structural-link release identity differs from its lock")
     maturity = manifest.get("maturity")
-    provenance = manifest.get("provenance")
     if (
         not isinstance(maturity, Mapping)
         or maturity.get("level") != pinned.get("maturity")
-        or not isinstance(provenance, Mapping)
-        or provenance.get("working_tree_dirty") is not False
     ):
-        raise ValueError("structural-link release maturity or provenance is invalid")
+        raise ValueError("structural-link release maturity is invalid")
     artifacts = manifest.get("views")
     matches = (
         [
@@ -259,9 +250,17 @@ def plan_structural_link(
         raise ValueError("structural-link Liberty escapes its release package")
     if release_liberty.resolve() != expected_liberty:
         raise ValueError("structural-link Liberty path differs from the release manifest")
-    liberty_snapshot = read_nofollow_text(release_liberty)
-    if released.get("size") != len(liberty_snapshot.encode("utf-8")):
-        raise ValueError("structural-link Liberty size differs from the release manifest")
+    try:
+        liberty_metadata, liberty_digest = _inspect_nofollow_file(release_liberty)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("structural-link Liberty is missing or unsafe") from exc
+    if (
+        released.get("size") != liberty_metadata.st_size
+        or released.get("sha256") != liberty_digest
+    ):
+        raise ValueError(
+            "structural-link Liberty content differs from the release manifest"
+        )
     if not rtl_sources or len(set(rtl_sources)) != len(rtl_sources):
         raise ValueError("structural-link requires unique RTL sources")
     if any(path.suffix.lower() not in {".sv", ".v"} for path in rtl_sources):
@@ -284,9 +283,7 @@ def plan_structural_link(
         release_source_commit=pinned["source_commit"],
         release_manifest=pinned["manifest"],
         release_manifest_sha256=manifest_digest,
-        release_liberty_sha256=hashlib.sha256(
-            liberty_snapshot.encode("utf-8")
-        ).hexdigest(),
+        release_liberty_sha256=liberty_digest,
         release_sources=(release_manifest, release_liberty),
     )
 

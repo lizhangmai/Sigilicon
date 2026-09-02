@@ -13,7 +13,7 @@ import tomllib
 import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.artifacts import atomic_write_json, read_json_object, utc_now
+from sigilicon.artifacts import _inspect_nofollow_file, atomic_write_json, read_json_object
 from sigilicon.contracts import require_config_header
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
@@ -1355,9 +1355,7 @@ def _plan_loaded_ip_release(
         resolved_oa_source=oa_library,
     )
     commit, dirty = _source_control(contract.project_root)
-    release_id = f"{level}-{commit[:12]}"
-    if dirty:
-        release_id += "-dirty"
+    release_id = f"{level}-{commit}"
     role_missing = _missing_roles(contract, level)
     component_path = _project_path(
         contract.project_root,
@@ -1652,12 +1650,14 @@ def build_ip_release(
                     destination.write_text(text, encoding="utf-8")
                 else:
                     shutil.copyfile(source, destination)
+                packaged_metadata, packaged_digest = _inspect_nofollow_file(destination)
                 view = {
                     "export": item.export,
                     "role": item.role,
                     "path": item.package_path.as_posix(),
                     "source": item.source.as_posix(),
-                    "size": destination.stat().st_size,
+                    "size": packaged_metadata.st_size,
+                    "sha256": packaged_digest,
                     "format": item.format,
                     "module": item.module,
                     "library": item.library,
@@ -1676,7 +1676,7 @@ def build_ip_release(
                         view[field] = expected[field]
                 views.append(view)
             manifest: dict[str, Any] = {
-                "schema": 1,
+                "schema": 2,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "ip_name": plan["ip_name"],
@@ -1695,9 +1695,7 @@ def build_ip_release(
                 "provenance": {
                     "contract": plan["contract"],
                     "producer": plan["producer"],
-                    "generated_at": utc_now(),
                     "generator": "flow-ip-packaging",
-                    "working_tree_dirty": plan["working_tree_dirty"],
                 },
                 "availability": plan["availability"],
             }
@@ -2290,7 +2288,7 @@ def _audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
             raise RuntimeError(f"IP release cannot contain symlinks: {path}")
     manifest = read_json_object(manifest_path, "IP release manifest")
     if (
-        manifest.get("schema") != 1
+        manifest.get("schema") != 2
         or manifest.get("contract_kind") != "ip-release-manifest"
     ):
         raise RuntimeError("unsupported IP release manifest schema")
@@ -2322,8 +2320,16 @@ def _audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
         path = (release_root / relative).resolve()
         if not path.is_relative_to(release_root) or not path.is_file():
             raise RuntimeError(f"IP release view is missing: {relative}")
-        if path.stat().st_size != view.get("size"):
-            raise RuntimeError(f"IP release view size drifted: {relative}")
+        digest = view.get("sha256")
+        metadata, actual_digest = _inspect_nofollow_file(path)
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or metadata.st_size != view.get("size")
+            or actual_digest != digest
+        ):
+            raise RuntimeError(f"IP release view content drifted: {relative}")
         expected_files.add(relative)
     actual_files = {
         path.relative_to(release_root)
@@ -2417,7 +2423,6 @@ def _audit_loaded_ip_release(
                     "composition",
                     "subcircuits",
                     "primitive_masters",
-                    "sha256",
                 )
             )
         ):
@@ -2453,7 +2458,7 @@ def _audit_loaded_ip_release(
         "manifest": (release_root / "manifest.json")
         .relative_to(repository.artifact_root)
         .as_posix(),
-        "audit": {"passed": True, "audited_at": utc_now()},
+        "audit": {"passed": True},
     }
 
 

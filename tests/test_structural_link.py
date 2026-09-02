@@ -23,7 +23,12 @@ def _write(path: Path, text: str, *, executable: bool = False) -> Path:
     return path
 
 
-def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tamper_liberty: bool = False,
+):
     owner = tmp_path / "ip/consumer"
     compile_script = _write(owner / "implementation/compile.tcl", "exit\n")
     link_script = _write(owner / "implementation/link.tcl", "exit\n")
@@ -50,28 +55,114 @@ variant = "no-recovery"
         release / "exports/native/synthesis/native.lib",
         "library(native_macro) {}\n",
     )
+    interface = _write(
+        release / "exports/native/interface.toml",
+        '''schema = 1
+contract_kind = "ip-interface"
+path_scope = "owner"
+owner = "cim-compute-v2"
+
+[physical]
+library = "native_macro"
+cell = "NATIVE_TOP"
+port_count = 1
+canonical_port_contract = "ip/cim_compute_v2/configs/ports.toml"
+
+[behavior]
+result = "native response"
+
+[supplies]
+domains = []
+''',
+    )
+    ports = _write(
+        release / "exports/native/ports.toml",
+        '''[ports]
+order = ["A"]
+
+[ports.directions]
+A = "input"
+''',
+    )
+    circuit = _write(
+        release / "exports/native/circuit.scs",
+        "subckt NATIVE_TOP A\nends NATIVE_TOP\n",
+    )
+    views = [
+        {
+            "export": "mx-block-v2",
+            "role": "interface_contract",
+            "path": "exports/native/interface.toml",
+            "source": "ip/cim_compute_v2/configs/interface.toml",
+            "format": "toml",
+            "size": interface.stat().st_size,
+            "sha256": hashlib.sha256(interface.read_bytes()).hexdigest(),
+        },
+        {
+            "export": "mx-block-v2",
+            "role": "oa_port_contract",
+            "path": "exports/native/ports.toml",
+            "source": "ip/cim_compute_v2/configs/ports.toml",
+            "format": "toml",
+            "size": ports.stat().st_size,
+            "sha256": hashlib.sha256(ports.read_bytes()).hexdigest(),
+        },
+        {
+            "export": "mx-block-v2",
+            "role": "circuit_netlist",
+            "path": "exports/native/circuit.scs",
+            "format": "spectre-source",
+            "composition": "reachable-spectre-hierarchy",
+            "subcircuits": ["NATIVE_TOP"],
+            "primitive_masters": [],
+            "size": circuit.stat().st_size,
+            "sha256": hashlib.sha256(circuit.read_bytes()).hexdigest(),
+        },
+        {
+            "export": "mx-block-v2",
+            "role": "raw_macro_liberty_or_db",
+            "path": "exports/native/synthesis/native.lib",
+            "format": "liberty",
+            "size": liberty.stat().st_size,
+            "sha256": hashlib.sha256(liberty.read_bytes()).hexdigest(),
+        },
+    ]
     manifest = release / "manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         json.dumps(
             {
-                "schema": 1,
+                "schema": 2,
                 "contract_kind": "ip-release-manifest",
                 "release_kind": "source-package",
                 "release_id": "development-0123456789ab",
                 "source_commit": "0" * 40,
                 "ip_name": "cim-compute-v2",
                 "owner": "cim-compute-v2",
-                "maturity": {"level": "development"},
-                "provenance": {"working_tree_dirty": False},
-                "views": [
+                "exports": [
                     {
-                        "export": "mx-block-v2",
-                        "role": "raw_macro_liberty_or_db",
-                        "path": "exports/native/synthesis/native.lib",
-                        "size": liberty.stat().st_size,
+                        "name": "mx-block-v2",
+                        "oa": {
+                            "library": "native_macro",
+                            "cell": "NATIVE_TOP",
+                            "schematic_view": "schematic",
+                            "layout_view": "layout",
+                        },
+                        "interface": {
+                            "kind": "oa-native",
+                            "contract": "ip/cim_compute_v2/configs/interface.toml",
+                        },
+                        "maturity": {"required_roles": [
+                            "interface_contract",
+                            "oa_port_contract",
+                            "circuit_netlist",
+                            "raw_macro_liberty_or_db",
+                        ]},
+                        "availability": {"synthesis": True},
                     }
                 ],
+                "maturity": {"level": "development"},
+                "views": views,
             },
             sort_keys=True,
         ),
@@ -93,6 +184,10 @@ manifest_sha256 = "{digest}"
 maturity = "development"
 ''',
     )
+    if tamper_liberty:
+        payload = bytearray(liberty.read_bytes())
+        payload[0] ^= 1
+        liberty.write_bytes(payload)
     plan = plan_structural_link(
         owner="consumer",
         dependency="cim-compute-v2",
@@ -123,6 +218,14 @@ maturity = "development"
         source={},
     )
     return plan, artifacts
+
+
+def test_structural_link_rejects_same_size_release_tampering(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="release manifest"):
+        _fixture(tmp_path, monkeypatch, tamper_liberty=True)
 
 
 def test_structural_link_executes_both_tools_and_publishes_typed_evidence(

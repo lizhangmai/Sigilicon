@@ -3,23 +3,19 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
+import os
 from pathlib import Path
-import tomllib
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.contracts import require_config_header, thaw_toml_document
+from sigilicon.artifacts import _read_nofollow_bytes
+from sigilicon.contracts import require_config_header
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
     IpIntegrationDependency,
     IpOperatingVariant,
-    IpReleaseDependency,
     LockedIpRelease,
     OaMixedSignalPhysicalBinding,
     OaNativePhysicalBinding,
-    OaNativeReleaseInterfaceReference,
-    OaReleaseInterfaceReference,
-    RtlReleaseInterfaceReference,
     load_ip_dependency_lock,
     load_ip_integration_contract,
     resolve_ip_integration_contract,
@@ -33,11 +29,9 @@ from sigilicon.domain.ip_release import (
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
 from sigilicon.project import Project
-from sigilicon.project_modules import project_import_path
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
     plan_ip_release_contract,
-    release_role_view,
     resolve_release_role,
 )
 
@@ -115,57 +109,6 @@ def _producer_contract(
     return producer
 
 
-def _role_export(release: IpReleaseDependency, role: str) -> str:
-    return release.role_exports.get(role, release.export)
-
-
-def _interface_reference_row(release: IpReleaseDependency) -> dict[str, str]:
-    interface = release.interface
-    if isinstance(interface, OaReleaseInterfaceReference):
-        return {
-            "kind": interface.kind,
-            "logical": interface.logical_interface,
-            "physical": interface.physical_interface,
-        }
-    if isinstance(interface, OaNativeReleaseInterfaceReference):
-        return {
-            "kind": interface.kind,
-            "library": interface.library,
-            "cell": interface.cell,
-            "schematic_view": interface.schematic_view,
-            "layout_view": interface.layout_view,
-        }
-    return {"kind": interface.kind, "module": interface.module}
-
-
-def _interface_reference_matches(
-    exported: Mapping[str, Any], release: IpReleaseDependency
-) -> bool:
-    interface = exported.get("interface")
-    if not isinstance(interface, Mapping):
-        return False
-    expected = _interface_reference_row(release)
-    if isinstance(release.interface, OaReleaseInterfaceReference):
-        return interface.get("kind") in {None, "oa-mixed-signal"} and all(
-            interface.get(field) == value
-            for field, value in expected.items()
-            if field != "kind"
-        )
-    if isinstance(release.interface, OaNativeReleaseInterfaceReference):
-        oa = exported.get("oa")
-        return (
-            interface.get("kind") == "oa-native"
-            and set(interface) == {"kind", "contract"}
-            and isinstance(oa, Mapping)
-            and all(
-                oa.get(field) == value
-                for field, value in expected.items()
-                if field != "kind"
-            )
-        )
-    return all(interface.get(field) == value for field, value in expected.items())
-
-
 def _release_export(
     manifest: Mapping[str, Any], export_name: str
 ) -> Mapping[str, Any]:
@@ -180,26 +123,6 @@ def _release_export(
     if len(matches) != 1:
         raise RuntimeError(
             f"IP release must contain exactly one {export_name!r} export"
-        )
-    return matches[0]
-
-
-def _planned_role_view(
-    plan: Mapping[str, Any], role: str, *, export: str
-) -> Mapping[str, Any]:
-    collateral = plan.get("collateral")
-    if not isinstance(collateral, list):
-        raise RuntimeError("IP release plan has no collateral")
-    matches = [
-        item
-        for item in collateral
-        if isinstance(item, Mapping)
-        and item.get("export") == export
-        and item.get("role") == role
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"IP release plan must contain exactly one {export}/{role} collateral"
         )
     return matches[0]
 
@@ -316,46 +239,12 @@ def _variant_source_plan(
         "name": variant.name,
         "contract": variant.path.relative_to(contract.project_root).as_posix(),
         "default_fileset": variant.default_fileset,
-        "architecture_validator": variant.architecture_validator,
         "filesets": {
             name: _fileset_source_plan(contract, variant, name)
             for name in variant.filesets
         },
         "physical_binding": _binding_plan(variant),
     }
-
-
-def _validate_variant_architecture(
-    contract: IpIntegrationContract,
-    variant: IpOperatingVariant,
-) -> dict[str, Any] | None:
-    reference = variant.architecture_validator
-    if reference is None:
-        return None
-    module_name, function_name = reference.split(":", 1)
-    with project_import_path(
-        contract.project_root,
-        module_names=(module_name,),
-    ):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as exc:
-            raise RuntimeError(
-                f"IP architecture validator module cannot be imported: {module_name}"
-            ) from exc
-        validator = getattr(module, function_name, None)
-        if not callable(validator):
-            raise RuntimeError(
-                f"IP architecture validator is not callable: {reference}"
-            )
-        raw = variant.source_document
-        if not raw:
-            with variant.path.open("rb") as stream:
-                raw = tomllib.load(stream)
-        result = validator(thaw_toml_document(raw))
-    if not isinstance(result, Mapping):
-        raise RuntimeError(f"IP architecture validator returned no mapping: {reference}")
-    return dict(result)
 
 
 def _integration_project(
@@ -432,33 +321,11 @@ def plan_ip_integration_contract(
                 oa_plan_inventory=oa_plan_inventory,
             )
             exported = _release_export(expected, release.export)
-            if not _interface_reference_matches(exported, release):
-                raise ValueError(
-                    f"IP dependency {dependency.name}/{release.export} interface "
-                    "does not match its release contract"
-                )
-            for role in release.roles:
-                role_export = _role_export(release, role)
-                _release_export(expected, role_export)
-                expected_module = release.role_modules.get(role)
-                if (
-                    expected_module is not None
-                    and _planned_role_view(
-                        expected, role, export=role_export
-                    ).get("module") != expected_module
-                ):
-                    raise ValueError(
-                        f"IP dependency role {role!r} module does not match its "
-                        f"{role_export!r} release export"
-                    )
             row["release"] = {
                 "export": release.export,
                 "provider": expected["contract"],
                 "required_maturity": release.required_maturity,
-                "interface": _interface_reference_row(release),
                 "roles": list(release.roles),
-                "role_modules": dict(release.role_modules),
-                "role_exports": dict(release.role_exports),
                 "expected_release_id": expected["release_id"],
             }
         dependencies.append(row)
@@ -510,13 +377,18 @@ def resolve_locked_ip_release(
 ) -> tuple[Path, Mapping[str, Any]]:
     """Resolve one exact cross-owner release without following producer state."""
 
-    root = artifact_root.resolve()
-    manifest_path = root / Path(pinned.manifest)
-    if not manifest_path.resolve().is_relative_to(root):
+    root = Path(os.path.abspath(artifact_root))
+    relative = Path(*pinned.manifest.parts)
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
         raise RuntimeError("IP dependency lock escapes the artifact root")
+    manifest_path = root / relative
     try:
-        manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    except OSError as exc:
+        manifest_digest = hashlib.sha256(
+            _read_nofollow_bytes(manifest_path)
+        ).hexdigest()
+    except (OSError, RuntimeError) as exc:
         raise FileNotFoundError(
             f"IP dependency release manifest is unavailable: {manifest_path}"
         ) from exc
@@ -539,16 +411,6 @@ def resolve_locked_ip_release(
         raise RuntimeError("IP dependency release has no maturity record")
     if maturity.get("level") != pinned.maturity:
         raise RuntimeError("IP dependency lock maturity does not match its manifest")
-    source = manifest.get("source")
-    provenance = manifest.get("provenance")
-    source_clean = (
-        isinstance(source, Mapping) and source.get("dirty") is False
-    ) or (
-        isinstance(provenance, Mapping)
-        and provenance.get("working_tree_dirty") is False
-    )
-    if not source_clean:
-        raise RuntimeError("IP cannot consume a dependency release built from dirty source")
     return manifest_path, manifest
 
 
@@ -580,11 +442,7 @@ def _locked_release_manifest(
         provenance.get("producer") != expected_producer
     ):
         raise RuntimeError("IP dependency release does not match its provider owner")
-    exported = _release_export(manifest, release.export)
-    if not _interface_reference_matches(exported, release):
-        raise RuntimeError(
-            "IP dependency release export interface does not match integration intent"
-        )
+    _release_export(manifest, release.export)
     maturity = manifest.get("maturity")
     assert isinstance(maturity, Mapping)
     checks = maturity.get("checks")
@@ -625,7 +483,6 @@ def check_ip_integration(
     root = contract.project_root
     artifact_root = contract.project.artifact_root
     variant = contract.get_variant(variant_name)
-    architecture = _validate_variant_architecture(contract, variant)
     fileset = variant.get_fileset(fileset_name)
     binding = variant.physical_binding
     if (
@@ -687,32 +544,20 @@ def check_ip_integration(
                 )
         relative_paths: list[str] = []
         for role in roles:
-            role_export = _role_export(release, role)
-            role_exported = _release_export(manifest, role_export)
+            role_exported = _release_export(manifest, release.export)
             availability = role_exported.get("availability")
             if not isinstance(availability, Mapping) or availability.get(
                 fileset.required_capability
             ) is not True:
                 raise RuntimeError(
                     f"IP dependency role {role!r} is unavailable from export "
-                    f"{role_export!r} for {fileset.required_capability}"
-                )
-            expected_module = release.role_modules.get(role)
-            if (
-                expected_module is not None
-                and release_role_view(
-                    manifest, role, export=role_export
-                ).get("module") != expected_module
-            ):
-                raise RuntimeError(
-                    f"IP dependency role {role!r} module does not match "
-                    "integration intent"
+                    f"{release.export!r} for {fileset.required_capability}"
                 )
             role_path = resolve_release_role(
                 manifest,
                 manifest_path,
                 role,
-                export=role_export,
+                export=release.export,
             )
             relative_paths.append(role_path.relative_to(artifact_root).as_posix())
         release_sources.extend(relative_paths)
@@ -725,9 +570,6 @@ def check_ip_integration(
                 "manifest_sha256": pinned.manifest_sha256,
                 "maturity": actual_level,
                 "manifest": manifest_path.relative_to(artifact_root).as_posix(),
-                "role_exports": {
-                    role: _role_export(release, role) for role in roles
-                },
                 "roles": {
                     role: path
                     for role, path in zip(roles, relative_paths, strict=True)
@@ -745,7 +587,6 @@ def check_ip_integration(
             None if lock is None else lock.path.relative_to(root).as_posix()
         ),
         "passed": True,
-        "architecture": architecture,
         "dependency_releases": resolved_dependencies,
         "source_files": source_plan["sources"],
         "release_sources": release_sources,
