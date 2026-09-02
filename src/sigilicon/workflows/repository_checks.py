@@ -160,9 +160,14 @@ def inspect_repository_designs(
             for path in operation_catalog_inventory.values()
         },
     )
-    ip_catalog = context.ip_catalog_snapshot()
-    ip_catalog_path = ip_catalog.path
-    component_rows = ip_catalog.document.get("components", {})
+    ip_catalog = (
+        None
+        if context.find_catalog("ip") is None
+        else context.ip_catalog_snapshot()
+    )
+    component_rows = (
+        {} if ip_catalog is None else ip_catalog.document.get("components", {})
+    )
     if not isinstance(component_rows, Mapping):
         raise ValueError("ip catalog components must be a table")
     component_paths = _contract_entries(
@@ -172,9 +177,12 @@ def inspect_repository_designs(
         owner_roots=True,
     )
 
-    platform_inventory = load_platform_contract_inventory(context)
-    platform_catalog = platform_inventory.catalog
-    platform_catalog_path = platform_catalog.path
+    platform_inventory = (
+        {}
+        if context.find_catalog("platform") is None
+        else load_platform_contract_inventory(context)
+    )
+    platform_catalog = getattr(platform_inventory, "catalog", None)
 
     architecture_source_documents = _architecture_source_documents(context)
 
@@ -331,10 +339,11 @@ def inspect_repository_designs(
         "component graph snapshot",
         component_source_documents,
     )
-    source_inventory.verify(
-        "platform catalog snapshot",
-        {platform_catalog.path: platform_catalog.document},
-    )
+    if platform_catalog is not None:
+        source_inventory.verify(
+            "platform catalog snapshot",
+            {platform_catalog.path: platform_catalog.document},
+        )
     for platform in platform_inventory.values():
         source_inventory.verify(
             "platform source snapshot",
@@ -419,12 +428,12 @@ def inspect_repository_designs(
         operations[owner.name] = owner_operations
 
     catalogs = {
-        "ip": ip_catalog_path.relative_to(root).as_posix(),
-        "platform": platform_catalog_path.relative_to(root).as_posix(),
-        "operation_catalogs": {
-            owner: path.relative_to(root).as_posix()
-            for owner, path in sorted(operation_catalog_inventory.items())
-        },
+        role: path.relative_to(root).as_posix()
+        for role, path in context.catalog_paths
+    }
+    catalogs["operation_catalogs"] = {
+        owner: path.relative_to(root).as_posix()
+        for owner, path in sorted(operation_catalog_inventory.items())
     }
     return {
         "passed": True,

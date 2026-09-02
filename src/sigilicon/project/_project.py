@@ -372,18 +372,6 @@ class Project:
         catalogs = source_raw.get("catalogs")
         if not isinstance(catalogs, Mapping):
             raise ValueError(f"{contract}: catalogs must be a table")
-        catalog_names = set(catalogs)
-        missing = {"ip", "platform"} - catalog_names
-        if missing:
-            raise ValueError(
-                f"{contract}: catalogs must contain ip and platform; "
-                f"missing {sorted(missing)}"
-            )
-        unknown = catalog_names - {"ip", "platform"}
-        if unknown:
-            raise ValueError(
-                f"{contract}: unknown catalog roles: {sorted(unknown)}"
-            )
         catalog_paths = tuple(
             sorted(
                 (
@@ -397,22 +385,26 @@ class Project:
                 for name, value in catalogs.items()
             )
         )
-        ip_catalog = dict(catalog_paths)["ip"]
-        ip_raw = read_toml(ip_catalog)
-        require_config_header(
-            ip_raw,
-            ip_catalog,
-            contract_kind="ip-catalog",
-            path_scope="repository",
-        )
-        unknown = set(ip_raw) - _HEADER_FIELDS - {"components"}
-        if unknown:
-            raise ValueError(
-                f"{ip_catalog}: IP catalog contains unknown fields: {sorted(unknown)}"
+        ip_catalog = dict(catalog_paths).get("ip")
+        ip_raw: Mapping[str, Any] | None = None
+        components: Mapping[str, Any] = {}
+        if ip_catalog is not None:
+            ip_raw = read_toml(ip_catalog)
+            require_config_header(
+                ip_raw,
+                ip_catalog,
+                contract_kind="ip-catalog",
+                path_scope="repository",
             )
-        components = ip_raw.get("components")
-        if not isinstance(components, Mapping):
-            raise ValueError(f"{ip_catalog}: components must be a table")
+            unknown = set(ip_raw) - _HEADER_FIELDS - {"components"}
+            if unknown:
+                raise ValueError(
+                    f"{ip_catalog}: IP catalog contains unknown fields: {sorted(unknown)}"
+                )
+            raw_components = ip_raw.get("components")
+            if not isinstance(raw_components, Mapping):
+                raise ValueError(f"{ip_catalog}: components must be a table")
+            components = raw_components
         owners: list[RepositoryOwner] = []
         roots: set[Path] = set()
         for name, value in components.items():
@@ -518,12 +510,16 @@ class Project:
             manifest_document=freeze_toml_document(source_raw),
             _manifest_path=contract,
             _manifest_context=project,
-            _ip_catalog=RepositoryCatalogSnapshot(
-                role="ip",
-                path=ip_catalog,
-                contract_kind="ip-catalog",
-                owner=cast(str, ip_raw["owner"]),
-                document=freeze_toml_document(ip_raw),
+            _ip_catalog=(
+                None
+                if ip_catalog is None or ip_raw is None
+                else RepositoryCatalogSnapshot(
+                    role="ip",
+                    path=ip_catalog,
+                    contract_kind="ip-catalog",
+                    owner=cast(str, ip_raw["owner"]),
+                    document=freeze_toml_document(ip_raw),
+                )
             ),
             _runtime=runtime,
         )
@@ -557,7 +553,7 @@ class Project:
         ):
             raise ValueError("project manifest snapshot identity drift")
         catalogs = raw.get("catalogs")
-        if not isinstance(catalogs, Mapping) or set(catalogs) != {"ip", "platform"}:
+        if not isinstance(catalogs, Mapping):
             raise ValueError("project manifest snapshot catalog drift")
         catalog_paths = tuple(
             sorted(

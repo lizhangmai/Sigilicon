@@ -14,6 +14,76 @@ from sigilicon.project import Project
 import sigilicon.workflows.repository_checks as repository_checks
 
 
+def test_core_project_and_check_do_not_require_domain_catalogs(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sigilicon.toml").write_text(
+        '''schema = 1
+contract_kind = "sigilicon-project"
+path_scope = "repository"
+owner = "standalone"
+
+[catalogs]
+
+[paths]
+project_root = "."
+workspace_root = "workspace"
+artifact_root = "artifacts"
+''',
+        encoding="utf-8",
+    )
+
+    project = Project.open(tmp_path)
+    report = repository_checks.inspect_repository_designs(project)
+
+    assert project.catalog_paths == ()
+    assert project.owners == ()
+    assert report["passed"] is True
+    assert report["catalogs"] == {"operation_catalogs": {}}
+    assert report["components"] == {}
+    assert report["platforms"] == {}
+
+
+def test_core_project_preserves_an_arbitrary_domain_catalog(
+    tmp_path: Path,
+) -> None:
+    catalog = tmp_path / "domains/custom.toml"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(
+        '''schema = 1
+contract_kind = "custom-circuit-catalog"
+path_scope = "repository"
+owner = "standalone"
+''',
+        encoding="utf-8",
+    )
+    (tmp_path / "sigilicon.toml").write_text(
+        '''schema = 1
+contract_kind = "sigilicon-project"
+path_scope = "repository"
+owner = "standalone"
+
+[catalogs]
+custom = "domains/custom.toml"
+
+[paths]
+project_root = "."
+workspace_root = "workspace"
+artifact_root = "artifacts"
+''',
+        encoding="utf-8",
+    )
+
+    project = Project.open(tmp_path)
+    report = repository_checks.inspect_repository_designs(project)
+
+    assert project.catalog("custom") == catalog.resolve()
+    assert report["catalogs"] == {
+        "custom": "domains/custom.toml",
+        "operation_catalogs": {},
+    }
+
+
 def test_check_designs_parses_the_project_manifest_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

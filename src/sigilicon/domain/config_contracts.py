@@ -43,7 +43,7 @@ def _repository_configuration_roots(project: Project) -> frozenset[Path]:
             *(
                 path.parent
                 for role, path in project.catalog_paths
-                if role != "ip"
+                if role == "platform"
             ),
         }
     )
@@ -159,12 +159,13 @@ class RepositorySourceInventory:
                 owner.component.path,
                 owner.component.document,
             )
-        ip_catalog = project.ip_catalog_snapshot()
-        seed(
-            "IP catalog snapshot",
-            ip_catalog.path,
-            ip_catalog.document,
-        )
+        if project.find_catalog("ip") is not None:
+            ip_catalog = project.ip_catalog_snapshot()
+            seed(
+                "IP catalog snapshot",
+                ip_catalog.path,
+                ip_catalog.document,
+            )
         paths = {
             project.manifest_path,
             *(path for _, path in project.catalog_paths),
@@ -318,38 +319,39 @@ def inspect_project_configuration_sources(
     resolved_owner_roots = {
         owner.root: owner.name for owner in context.owners
     }
-    platform_catalog_path = context.catalog("platform")
-    platform_catalog_document = sources.resolve(platform_catalog_path)
-    platforms = platform_catalog_document.get("platforms")
-    if not isinstance(platforms, Mapping):
-        raise ValueError("platform catalog platforms must be a table")
-    for key, value in platforms.items():
-        if not isinstance(key, str) or not key:
-            raise ValueError("platform catalog keys must be non-empty strings")
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"platforms.{key} must be a non-empty relative path")
-        relative = PurePosixPath(value)
-        if (
-            relative.is_absolute()
-            or "\\" in value
-            or relative.as_posix() != value
-            or any(part in {"", ".", ".."} for part in relative.parts)
-        ):
-            raise ValueError(
-                f"platforms.{key} must be a canonical relative path"
-            )
-        manifest = platform_catalog_path.parent.joinpath(*relative.parts).resolve()
-        if not manifest.is_relative_to(root):
-            raise ValueError(f"platforms.{key} manifest is missing or unsafe")
-        document = sources.resolve(manifest)
-        owner = _text(document.get("owner"), f"{manifest}: owner")
-        platform_owner_root = manifest.parent
-        previous = resolved_owner_roots.get(platform_owner_root)
-        if previous is not None and previous != owner:
-            raise ValueError(
-                "platform and component catalogs disagree on an owner root"
-            )
-        resolved_owner_roots[platform_owner_root] = owner
+    platform_catalog_path = context.find_catalog("platform")
+    if platform_catalog_path is not None:
+        platform_catalog_document = sources.resolve(platform_catalog_path)
+        platforms = platform_catalog_document.get("platforms")
+        if not isinstance(platforms, Mapping):
+            raise ValueError("platform catalog platforms must be a table")
+        for key, value in platforms.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("platform catalog keys must be non-empty strings")
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"platforms.{key} must be a non-empty relative path")
+            relative = PurePosixPath(value)
+            if (
+                relative.is_absolute()
+                or "\\" in value
+                or relative.as_posix() != value
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise ValueError(
+                    f"platforms.{key} must be a canonical relative path"
+                )
+            manifest = platform_catalog_path.parent.joinpath(*relative.parts).resolve()
+            if not manifest.is_relative_to(root):
+                raise ValueError(f"platforms.{key} manifest is missing or unsafe")
+            document = sources.resolve(manifest)
+            owner = _text(document.get("owner"), f"{manifest}: owner")
+            platform_owner_root = manifest.parent
+            previous = resolved_owner_roots.get(platform_owner_root)
+            if previous is not None and previous != owner:
+                raise ValueError(
+                    "platform and component catalogs disagree on an owner root"
+                )
+            resolved_owner_roots[platform_owner_root] = owner
 
     for path in (*exact_paths, *scan_roots, *resolved_owner_roots):
         resolved = path.resolve()
@@ -368,7 +370,9 @@ def inspect_project_configuration_sources(
     native_documents = 0
     envelope_fields = frozenset({"contract_kind", "path_scope", "owner"})
     repository_sources = {project_contract, *(path for _, path in context.catalog_paths)}
-    platform_root = context.catalog("platform").parent
+    platform_root = (
+        None if platform_catalog_path is None else platform_catalog_path.parent
+    )
     for path in sorted(documents):
         resolved = path.resolve()
         if not resolved.is_relative_to(root):
@@ -404,7 +408,7 @@ def inspect_project_configuration_sources(
             )
             if owner_root in repository_owner_roots:
                 allowed_scopes = ("owner", "cell", "verification", "variant")
-            elif owner_root.is_relative_to(platform_root):
+            elif platform_root is not None and owner_root.is_relative_to(platform_root):
                 allowed_scopes = "platform"
             else:
                 raise ValueError(
