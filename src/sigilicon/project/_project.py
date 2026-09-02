@@ -474,11 +474,7 @@ class Project:
                         f"{component.path}: release_contract must stay inside its "
                         f"owner root: {component.release_contract}"
                     )
-            owned_sources = [
-                path
-                for files in component.filesets.values()
-                for path in files
-            ]
+            owned_sources = list(component.sources.values())
             if component.public_interface is not None:
                 owned_sources.append(component.public_interface)
             for relative in owned_sources:

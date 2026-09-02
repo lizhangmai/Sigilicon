@@ -432,7 +432,7 @@ def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Pat
     (owner_root / "rtl").mkdir()
     (dependency_root / "configs").mkdir(parents=True)
     (dependency_root / "configs/ip.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture"
@@ -441,13 +441,16 @@ name = "fixture-ip"
 kind = "rtl-ip"
 release_contract = "ip/fixture/configs/release.toml"
 
+[sources]
+manifest = "ip/fixture/configs/ip.toml"
+
 [filesets]
-source = ["ip/fixture/configs/ip.toml"]
+source = ["manifest"]
 ''',
         encoding="utf-8",
     )
     (dependency_root / "configs/release.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture"
@@ -516,7 +519,7 @@ manifest_sha256 = "{manifest_sha256}"
     )
     contract = owner_root / "configs/ip.toml"
     contract.write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "demo"
@@ -537,12 +540,13 @@ roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
 [variants]
 default = "ip/demo/configs/variants/default.toml"
 
+[sources]
+top = "ip/demo/rtl/top.sv"
+simulation_filelist = "ip/demo/rtl/simulation.f"
+default_variant = "ip/demo/configs/variants/default.toml"
+
 [filesets]
-rtl = [
-  "ip/demo/rtl/top.sv",
-  "ip/demo/rtl/simulation.f",
-  "ip/demo/configs/variants/default.toml",
-]
+rtl = ["top", "simulation_filelist", "default_variant"]
 """,
         encoding="utf-8",
     )
@@ -615,7 +619,7 @@ def _write_source_component_fixture(project_root: Path) -> Path:
         "module leaf(input logic clk); endmodule\n", encoding="utf-8"
     )
     (dependency / "configs/ip.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
@@ -623,8 +627,11 @@ owner = "leaf"
 name = "leaf"
 kind = "rtl-ip"
 
+[sources]
+rtl = "ip/leaf/rtl/leaf.sv"
+
 [filesets]
-rtl = ["ip/leaf/rtl/leaf.sv"]
+rtl = ["rtl"]
 ''',
         encoding="utf-8",
     )
@@ -665,7 +672,7 @@ owner = "composite"
     )
     contract = owner / "configs/ip.toml"
     contract.write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "composite"
@@ -679,12 +686,13 @@ fixture = "ip/composite/configs/tool.toml"
 [variants]
 default = "ip/composite/configs/variants/default.toml"
 
+[sources]
+top = "ip/composite/rtl/top.sv"
+simulation_filelist = "ip/composite/rtl/simulation.f"
+default_variant = "ip/composite/configs/variants/default.toml"
+
 [filesets]
-rtl = [
-  "ip/composite/rtl/top.sv",
-  "ip/composite/rtl/simulation.f",
-  "ip/composite/configs/variants/default.toml",
-]
+rtl = ["top", "simulation_filelist", "default_variant"]
 
 [[component]]
 name = "leaf"

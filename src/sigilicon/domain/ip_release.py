@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.contracts import (
+    contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
     require_config_header,
@@ -53,7 +54,7 @@ class IpCollateral:
     export: str
     role: str
     component: str
-    fileset: str
+    source_id: str
     source: PurePosixPath
     package_path: PurePosixPath
     format: str
@@ -168,6 +169,7 @@ def _parse_ip_contract(
         contract_kind="ip-release",
         path_scope="owner",
         owner=cataloged_owner.name,
+        schema=contract_schema("ip-release"),
     )
     unknown = set(raw) - _HEADER_FIELDS - {
         "name",
@@ -187,7 +189,7 @@ def _parse_ip_contract(
     )
     from sigilicon.project._component import (
         load_component_graph,
-        resolve_component_fileset,
+        resolve_component_source,
         resolve_component_graph,
     )
 
@@ -359,12 +361,10 @@ def _parse_ip_contract(
         component = _string(
             entry.get("component"), f"collateral[{index}].component"
         )
-        fileset = _string(entry.get("fileset"), f"collateral[{index}].fileset")
-        sources = resolve_component_fileset(component_graph, component, fileset)
-        if len(sources) != 1:
-            raise ValueError(
-                f"collateral[{index}] fileset must resolve to exactly one file"
-            )
+        source_id = _string(
+            entry.get("source"), f"collateral[{index}].source"
+        )
+        source = resolve_component_source(component_graph, component, source_id)
         package_path = safe_relative(
             entry.get("package_path"), f"collateral[{index}].package_path"
         )
@@ -404,8 +404,8 @@ def _parse_ip_contract(
             export=export,
             role=role,
             component=component,
-            fileset=fileset,
-            source=sources[0],
+            source_id=source_id,
+            source=source,
             package_path=package_path,
             format=_string(entry.get("format"), f"collateral[{index}].format"),
             module=module,

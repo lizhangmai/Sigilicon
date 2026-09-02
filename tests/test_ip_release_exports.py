@@ -56,7 +56,7 @@ def _contract_fixture(root: Path) -> Path:
             f"name = '{name}'\n", encoding="utf-8"
         )
     (configs / "ip.toml").write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "fixture"
@@ -65,16 +65,19 @@ name = "fixture-ip"
 kind = "composite-ip"
 release_contract = "ip/fixture/configs/release.toml"
 
+[sources]
+oa = "ip/fixture/configs/oa.toml"
+left = "ip/fixture/sources/left.toml"
+right = "ip/fixture/sources/right.toml"
+
 [filesets]
-oa_source = ["ip/fixture/configs/oa.toml"]
-left = ["ip/fixture/sources/left.toml"]
-right = ["ip/fixture/sources/right.toml"]
+oa_source = ["oa"]
 """,
         encoding="utf-8",
     )
     contract = configs / "release.toml"
     contract.write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "fixture"
@@ -124,7 +127,7 @@ required_roles = ["interface_contract"]
 export = "left"
 role = "interface_contract"
 component = "fixture-ip"
-fileset = "left"
+source = "left"
 package_path = "exports/left/interface.toml"
 format = "toml"
 
@@ -132,7 +135,7 @@ format = "toml"
 export = "right"
 role = "interface_contract"
 component = "fixture-ip"
-fileset = "right"
+source = "right"
 package_path = "exports/right/interface.toml"
 format = "toml"
 
@@ -183,7 +186,7 @@ ports = [
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "rtl-fixture"
@@ -193,15 +196,15 @@ kind = "rtl-ip"
 public_interface = "ip/rtl_fixture/configs/interface.toml"
 release_contract = "ip/rtl_fixture/configs/release.toml"
 
-[filesets]
-interface = ["ip/rtl_fixture/configs/interface.toml"]
-rtl = ["ip/rtl_fixture/rtl/top.sv"]
+[sources]
+interface = "ip/rtl_fixture/configs/interface.toml"
+rtl = "ip/rtl_fixture/rtl/top.sv"
 ''',
         encoding="utf-8",
     )
     contract = configs / "release.toml"
     contract.write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "rtl-fixture"
@@ -232,7 +235,7 @@ required_roles = [
 export = "rtl-top"
 role = "interface_contract"
 component = "rtl-fixture"
-fileset = "interface"
+source = "interface"
 package_path = "exports/rtl-top/interface.toml"
 format = "toml"
 
@@ -240,7 +243,7 @@ format = "toml"
 export = "rtl-top"
 role = "rtl_source"
 component = "rtl-fixture"
-fileset = "rtl"
+source = "rtl"
 package_path = "exports/rtl-top/rtl_top.sv"
 format = "systemverilog"
 module = "rtl_top"
@@ -377,7 +380,7 @@ OUT = "output"
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "native-fixture"
@@ -386,18 +389,21 @@ name = "native-fixture"
 kind = "hard-macro"
 release_contract = "ip/native_fixture/configs/release.toml"
 
+[sources]
+oa = "ip/native_fixture/configs/oa.toml"
+interface = "ip/native_fixture/configs/interface.toml"
+ports = "ip/native_fixture/sources/design.toml"
+circuit = "ip/native_fixture/sources/circuit.scs"
+circuit_dependency = "ip/native_fixture/sources/child.scs"
+
 [filesets]
-oa_source = ["ip/native_fixture/configs/oa.toml"]
-interface = ["ip/native_fixture/configs/interface.toml"]
-ports = ["ip/native_fixture/sources/design.toml"]
-circuit = ["ip/native_fixture/sources/circuit.scs"]
-circuit_dependencies = ["ip/native_fixture/sources/child.scs"]
+oa_source = ["oa"]
 ''',
         encoding="utf-8",
     )
     contract = configs / "release.toml"
     contract.write_text(
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "native-fixture"
@@ -426,7 +432,7 @@ required_roles = ["interface_contract", "oa_port_contract", "circuit_netlist"]
 export = "native-top"
 role = "interface_contract"
 component = "native-fixture"
-fileset = "interface"
+source = "interface"
 package_path = "exports/native-top/interface.toml"
 format = "toml"
 
@@ -434,7 +440,7 @@ format = "toml"
 export = "native-top"
 role = "oa_port_contract"
 component = "native-fixture"
-fileset = "ports"
+source = "ports"
 package_path = "exports/native-top/design.toml"
 format = "toml"
 
@@ -442,7 +448,7 @@ format = "toml"
 export = "native-top"
 role = "circuit_netlist"
 component = "native-fixture"
-fileset = "circuit"
+source = "circuit"
 package_path = "exports/native-top/circuit.scs"
 format = "spectre-source"
 capabilities = ["circuit_simulation"]
@@ -678,8 +684,12 @@ def test_native_oa_release_exposes_only_structural_synthesis_with_liberty(
     )
     component = owner / "configs/ip.toml"
     component.write_text(
-        component.read_text(encoding="utf-8")
-        + 'structural_liberty = ["ip/native_fixture/sources/NATIVE_TOP_structural.lib"]\n',
+        component.read_text(encoding="utf-8").replace(
+            "\n[filesets]\n",
+            "\nstructural_liberty = "
+            '"ip/native_fixture/sources/NATIVE_TOP_structural.lib"\n\n'
+            "[filesets]\n",
+        ),
         encoding="utf-8",
     )
     contract_path.write_text(
@@ -689,7 +699,7 @@ def test_native_oa_release_exposes_only_structural_synthesis_with_liberty(
 export = "native-top"
 role = "raw_macro_liberty_or_db"
 component = "native-fixture"
-fileset = "structural_liberty"
+source = "structural_liberty"
 package_path = "exports/native-top/synthesis/NATIVE_TOP_structural.lib"
 format = "liberty"
 library = "native-lib"

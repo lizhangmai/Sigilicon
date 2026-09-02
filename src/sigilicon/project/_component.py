@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.contracts import (
+    contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
     require_config_header,
@@ -60,6 +61,7 @@ class ComponentContract:
     kind: str
     lifecycle: str
     public_interface: PurePosixPath | None
+    sources: Mapping[str, PurePosixPath]
     filesets: Mapping[str, tuple[PurePosixPath, ...]]
     components: tuple[ComponentDependency, ...]
     document: Mapping[str, Any] = field(repr=False, compare=False)
@@ -84,6 +86,7 @@ def parse_component_contract(
         contract_path,
         contract_kind="ip-component",
         path_scope="owner",
+        schema=contract_schema("ip-component"),
     )
     kind = _string(document.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:
@@ -99,6 +102,20 @@ def parse_component_contract(
         else _safe_relative(interface_value, "public_interface")
     )
 
+    sources_raw = document.get("sources", {})
+    if not isinstance(sources_raw, Mapping):
+        raise ValueError("sources must be a TOML table")
+    sources: dict[str, PurePosixPath] = {}
+    source_paths: set[PurePosixPath] = set()
+    for name, value in sources_raw.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("source names must be non-empty strings")
+        source = _safe_relative(value, f"sources.{name}")
+        if source in source_paths:
+            raise ValueError(f"source path has multiple identities: {source}")
+        sources[name] = source
+        source_paths.add(source)
+
     filesets_raw = document.get("filesets", {})
     if not isinstance(filesets_raw, Mapping):
         raise ValueError("filesets must be a TOML table")
@@ -108,9 +125,18 @@ def parse_component_contract(
             raise ValueError("fileset names must be non-empty strings")
         if not isinstance(values, (list, tuple)) or not values:
             raise ValueError(f"filesets.{name} must be a non-empty array")
-        filesets[name] = tuple(
-            _safe_relative(value, f"filesets.{name} entry") for value in values
+        identities = tuple(
+            _string(value, f"filesets.{name} entry") for value in values
         )
+        if len(set(identities)) != len(identities):
+            raise ValueError(f"filesets.{name} contains duplicate sources")
+        unknown_sources = set(identities) - sources.keys()
+        if unknown_sources:
+            raise ValueError(
+                f"filesets.{name} references unknown sources: "
+                f"{sorted(unknown_sources)}"
+            )
+        filesets[name] = tuple(sources[identity] for identity in identities)
 
     dependencies_raw = document.get("component", [])
     if not isinstance(dependencies_raw, (list, tuple)):
@@ -156,13 +182,14 @@ def parse_component_contract(
         kind=kind,
         lifecycle=lifecycle,
         public_interface=public_interface,
+        sources=MappingProxyType(sources),
         filesets=MappingProxyType(filesets),
         components=tuple(dependencies),
         operation_catalog=operation_catalog,
         release_contract=release_contract,
         document=freeze_toml_document(document),
     )
-    referenced = [path for values in result.filesets.values() for path in values]
+    referenced = list(result.sources.values())
     if result.public_interface is not None:
         referenced.append(result.public_interface)
     if result.release_contract is not None:
@@ -215,6 +242,7 @@ def resolve_component_contract(
     if (
         snapshot.path != contract_path
         or snapshot.project_root != root
+        or not isinstance(snapshot.sources, _MAPPING_PROXY_TYPE)
         or not isinstance(snapshot.filesets, _MAPPING_PROXY_TYPE)
         or not isinstance(snapshot.document, Mapping)
         or not is_frozen_toml_document(snapshot.document)
@@ -379,3 +407,18 @@ def resolve_component_fileset(
     if values is None:
         raise ValueError(f"component {component!r} has no fileset {fileset!r}")
     return values
+
+
+def resolve_component_source(
+    graph: Mapping[str, ComponentContract], component: str, source: str
+) -> PurePosixPath:
+    """Resolve one source identity through an already validated component graph."""
+
+    if component not in graph:
+        raise ValueError(f"unknown component in release contract: {component}")
+    try:
+        return graph[component].sources[source]
+    except KeyError as exc:
+        raise ValueError(
+            f"component {component!r} has no source {source!r}"
+        ) from exc

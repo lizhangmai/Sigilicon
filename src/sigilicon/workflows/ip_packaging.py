@@ -666,20 +666,14 @@ def _source_inputs(
 
     for component in sorted(graph.values(), key=lambda item: item.name):
         paths.add(component.path)
-        referenced = [path for values in component.filesets.values() for path in values]
-        if component.public_interface is not None:
-            referenced.append(component.public_interface)
-        for relative in referenced:
-            paths.add(_project_path(root, Path(relative), "component input"))
         if component.public_interface is not None:
             add_source(
                 _project_path(root, Path(component.public_interface), "public interface"),
             )
-        for _, values in sorted(component.filesets.items()):
-            for relative in values:
-                add_source(
-                    _project_path(root, Path(relative), "component fileset input"),
-                )
+        for relative in component.sources.values():
+            add_source(
+                _project_path(root, Path(relative), "component source input"),
+            )
     oa_exports = [
         exported
         for exported in contract.exports
@@ -1493,7 +1487,7 @@ def _plan_loaded_ip_release(
                 "export": item.export,
                 "role": item.role,
                 "component": item.component,
-                "fileset": item.fileset,
+                "source_id": item.source_id,
                 "source": item.source.as_posix(),
                 "package_path": item.package_path.as_posix(),
                 "format": item.format,

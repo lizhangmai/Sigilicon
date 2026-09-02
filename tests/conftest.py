@@ -71,18 +71,28 @@ def write_component_owner(
     owner_root = root / "ip" / owner
     owner_root.mkdir(parents=True, exist_ok=True)
     component = owner_root / "component.toml"
+    source_ids: dict[str, str] = {}
+    for values in filesets.values():
+        for value in values:
+            source_ids.setdefault(value, f"source_{len(source_ids)}")
+    source_lines = [
+        f'{source_id} = "{path}"' for path, source_id in source_ids.items()
+    ]
     fileset_lines: list[str] = []
     for name, values in filesets.items():
-        rendered = ", ".join(f'"{value}"' for value in values)
+        rendered = ", ".join(f'"{source_ids[value]}"' for value in values)
         fileset_lines.append(f"{name} = [{rendered}]")
     component.write_text(
-        f'''schema = 1
+        f'''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
 
 name = "{owner}"
 kind = "rtl-ip"
+
+[sources]
+{chr(10).join(source_lines)}
 
 [filesets]
 {chr(10).join(fileset_lines)}

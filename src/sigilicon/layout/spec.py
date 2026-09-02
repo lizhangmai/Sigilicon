@@ -160,10 +160,9 @@ def _component_source_files(
     for component in graph.values():
         if component.kind != "source-library":
             continue
-        for fileset, values in component.filesets.items():
-            for relative in values:
-                source = (project_root / Path(relative)).resolve()
-                declared.setdefault(source, []).append((component, fileset))
+        for source_id, relative in component.sources.items():
+            source = (project_root / Path(relative)).resolve()
+            declared.setdefault(source, []).append((component, source_id))
     return {
         source: tuple(declarations)
         for source, declarations in declared.items()
@@ -221,16 +220,16 @@ def _validate_generator_ownership(
             declarations
             if source_owner is None
             else tuple(
-                (component, fileset)
-                for component, fileset in declarations
+                (component, source_id)
+                for component, source_id in declarations
                 if component.name == source_owner.name
             )
         )
         if not matching:
             if declarations:
                 declared = ", ".join(
-                    f"{component.name!r} ({fileset})"
-                    for component, fileset in declarations
+                    f"{component.name!r} ({source_id})"
+                    for component, source_id in declarations
                 )
                 if source_owner is None:
                     reason = (
@@ -245,7 +244,7 @@ def _validate_generator_ownership(
             else:
                 reason = (
                     "the path is absent from the current owner component graph's "
-                    "source-library filesets"
+                    "source-library inventory"
                 )
             raise ValueError(
                 f"{field} crosses owner boundary at {source}; {reason}"

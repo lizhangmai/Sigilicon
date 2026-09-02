@@ -98,8 +98,7 @@ def _allowed_files(
     root = contract.project_root
     allowed = {
         (root / Path(relative)).resolve()
-        for values in contract.component.filesets.values()
-        for relative in values
+        for relative in contract.component.sources.values()
     }
     graph = contract.component_graph
     fileset = variant.get_fileset(fileset_name)

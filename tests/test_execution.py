@@ -189,7 +189,7 @@ owner = "test"
         encoding="utf-8",
     )
     (owner / "component.toml").write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
@@ -197,9 +197,13 @@ name = "example"
 kind = "rtl-ip"
 operation_catalog = "ip/example/configs/operations.toml"
 
+[sources]
+operations = "ip/example/configs/operations.toml"
+value = "ip/example/configs/value.txt"
+
 [filesets]
-operation_catalog = ["ip/example/configs/operations.toml"]
-value = ["ip/example/configs/value.txt"]
+operation_catalog = ["operations"]
+value = ["value"]
 """,
         encoding="utf-8",
     )
@@ -579,15 +583,18 @@ root = "ip/foreign"
     foreign = tmp_path / "ip/foreign"
     foreign.mkdir()
     (foreign / "component.toml").write_text(
-        """schema = 1
+        """schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
 name = "foreign"
 kind = "rtl-ip"
 
+[sources]
+value = "ip/foreign/value.txt"
+
 [filesets]
-source = ["ip/foreign/value.txt"]
+source = ["value"]
 """,
         encoding="utf-8",
     )

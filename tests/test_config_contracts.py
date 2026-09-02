@@ -69,21 +69,24 @@ filesets = ["flow"]
         _write(
             root,
             f"ip/{owner}/component.toml",
-            f'''schema = 1
+            f'''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
 name = "{owner}"
 kind = "rtl-ip"
 
+[sources]
+manifest = "ip/{owner}/component.toml"
+
 [filesets]
-source = ["ip/{owner}/component.toml"]
+source = ["manifest"]
 ''',
         )
     _write(
         root,
         "ip/example/component.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
@@ -92,10 +95,11 @@ kind = "rtl-ip"
 
 operation_catalog = "ip/example/configs/operations.toml"
 
+[sources]
+operations = "ip/example/configs/operations.toml"
+
 [filesets]
-flow = [
-  "ip/example/configs/operations.toml",
-]
+flow = ["operations"]
 ''',
     )
 

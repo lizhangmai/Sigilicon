@@ -23,8 +23,12 @@ def _write_component(
 ) -> Path:
     owner_root = root / "ip" / name
     owner_root.mkdir(parents=True, exist_ok=True)
+    source_ids: dict[str, str] = {}
+    for values in filesets.values():
+        for value in values:
+            source_ids.setdefault(value, f"source_{len(source_ids)}")
     rows = [
-        "schema = 1",
+        "schema = 2",
         'contract_kind = "ip-component"',
         'path_scope = "owner"',
         f'owner = "{name}"',
@@ -41,9 +45,12 @@ def _write_component(
                 f'contract = "{contract}"',
             ]
         )
+    rows.extend(["", "[sources]"])
+    for path, source_id in source_ids.items():
+        rows.append(f'{source_id} = "{path}"')
     rows.extend(["", "[filesets]"])
     for fileset, values in filesets.items():
-        rendered = ", ".join(f'"{value}"' for value in values)
+        rendered = ", ".join(f'"{source_ids[value]}"' for value in values)
         rows.append(f"{fileset} = [{rendered}]")
     contract = owner_root / "component.toml"
     contract.write_text("\n".join(rows) + "\n", encoding="utf-8")

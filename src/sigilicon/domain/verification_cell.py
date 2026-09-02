@@ -408,6 +408,7 @@ def _parse_verification_cell(
             contract_kind="ip-component",
             path_scope="owner",
             owner=owner,
+            schema=contract_schema("ip-component"),
         )
         source_documents[ams.integration_contract] = freeze_toml_document(
             integration_raw

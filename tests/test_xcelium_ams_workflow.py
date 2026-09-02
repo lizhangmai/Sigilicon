@@ -124,7 +124,7 @@ def _patch_native_resolution(
 def _configure_locked_native_release(root: Path, circuit: Path) -> Path:
     _write(
         root / "ip/native-provider/configs/release.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
 owner = "native-provider"
@@ -133,8 +133,8 @@ owner = "native-provider"
     component = root / "ip/demo/component.toml"
     component.write_text(
         component.read_text(encoding="utf-8").replace(
-            "[filesets]\n",
-            'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n\n[filesets]\n',
+            "[sources]\n",
+            'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n\n[sources]\n',
         )
         + '''
 [[component]]
