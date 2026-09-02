@@ -85,15 +85,16 @@ def _create_artifact_identity_directory(artifact_root: Path, root: Path) -> int:
 
 
 @dataclass(frozen=True)
-class ArtifactExecutionPaths:
-    """One run/attempt directory with an explicit set of file roles."""
+class RunPaths:
+    """Canonical directories for one managed operation run."""
 
     artifact_root: Path
     namespace_root: Path
     root: Path
-    artifact_kind: str
-    identity_kind: str
-    identity: str
+    owner: str
+    operation: str
+    variant: str | None
+    run_id: str
     _roles: Mapping[str, Path]
 
     @classmethod
@@ -103,11 +104,11 @@ class ArtifactExecutionPaths:
         artifact_root: Path,
         namespace_root: Path,
         root: Path,
-        artifact_kind: str,
-        identity_kind: str,
-        identity: str,
-        roles: tuple[str, ...],
-    ) -> "ArtifactExecutionPaths":
+        owner: str,
+        operation: str,
+        variant: str | None,
+        run_id: str,
+    ) -> "RunPaths":
         resolved_artifacts = artifact_root.resolve()
         namespace = Path(os.path.abspath(namespace_root))
         candidate = Path(os.path.abspath(root))
@@ -119,19 +120,25 @@ class ArtifactExecutionPaths:
             or not candidate.is_relative_to(namespace)
         ):
             raise RuntimeError(f"artifact namespace escapes artifact root: {namespace}")
-        if identity_kind not in {"run_id", "attempt_id"}:
-            raise ValueError(f"invalid artifact identity kind: {identity_kind!r}")
-        validate_artifact_id(identity, identity_kind)
+        validate_artifact_id(run_id, "run id")
+        owner_name = validate_artifact_component(owner, "owner")
+        operation_name = validate_artifact_component(operation, "operation")
+        variant_name = (
+            None
+            if variant is None
+            else validate_artifact_component(variant, "variant")
+        )
         checked_roles = {
-            validate_artifact_component(role, "role"): candidate / role for role in roles
+            role: candidate / role for role in ("inputs", "work", "outputs", "logs")
         }
         return cls(
             artifact_root=resolved_artifacts,
             namespace_root=namespace,
             root=candidate,
-            artifact_kind=artifact_kind,
-            identity_kind=identity_kind,
-            identity=identity,
+            owner=owner_name,
+            operation=operation_name,
+            variant=variant_name,
+            run_id=run_id,
             _roles=MappingProxyType(checked_roles),
         )
 
@@ -147,9 +154,7 @@ class ArtifactExecutionPaths:
         try:
             return self._roles[role]
         except KeyError as exc:
-            raise ValueError(
-                f"role {role!r} is not valid for {self.artifact_kind}"
-            ) from exc
+            raise ValueError(f"role {role!r} is not valid for a managed run") from exc
 
     def path(self, role: str, *components: str) -> Path:
         result = self.role(role)
@@ -183,17 +188,17 @@ class ArtifactExecutionPaths:
             or self.root.is_symlink()
             or not self.root.resolve().is_relative_to(self.artifact_root)
         ):
-            raise ValueError(f"{self.artifact_kind} partial create path is unsafe")
+            raise ValueError("managed run partial create path is unsafe")
         known_roles = set(self.roles)
         entries = {item.name: item for item in os.scandir(self.root)}
         if set(entries) - known_roles:
-            raise ValueError(f"{self.artifact_kind} partial create inventory conflicts")
+            raise ValueError("managed run partial create inventory conflicts")
         for role in self.roles:
             target = self.role(role)
             if not target.exists():
                 target.mkdir()
             if not target.is_dir() or target.is_symlink():
-                raise ValueError(f"{self.artifact_kind} partial create role conflicts")
+                raise ValueError("managed run partial create role conflicts")
 
 
 @dataclass(frozen=True)
@@ -230,7 +235,7 @@ class ArtifactLayout:
         operation: str,
         variant: str | None,
         run_id: str,
-    ) -> ArtifactExecutionPaths:
+    ) -> RunPaths:
         """Resolve one owner operation run from its complete public identity."""
 
         owner_name = validate_artifact_component(owner, "owner")
@@ -242,14 +247,14 @@ class ArtifactLayout:
         else:
             namespace /= "variants"
             namespace /= validate_artifact_component(variant, "variant")
-        return ArtifactExecutionPaths.build(
+        return RunPaths.build(
             artifact_root=self.root,
             namespace_root=namespace,
             root=namespace / identity,
-            artifact_kind="execution-run",
-            identity_kind="run_id",
-            identity=identity,
-            roles=("inputs", "work", "outputs", "logs"),
+            owner=owner_name,
+            operation=operation_name,
+            variant=variant,
+            run_id=identity,
         )
 
     def export(self, owner: str, name: str, *components: str) -> Path:
@@ -415,11 +420,6 @@ class ProjectContext:
             artifact_root=artifact_root,
             workspace_root=self.workspace_root,
         )
-
-    @property
-    def artifacts(self) -> ArtifactLayout:
-        return ArtifactLayout(self.artifact_root)
-
 
 @dataclass(frozen=True, init=False)
 class ProjectScope:

@@ -21,7 +21,7 @@ from sigilicon.workflows.oa_library import (
     TestbenchRebuildStep,
     check_oa_parity,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 
 
 @dataclass(frozen=True)
@@ -229,7 +229,7 @@ def _run_native_oa_maestro_testbench_impl(
     client: Any,
     *,
     timeout: int,
-    artifacts: RunArtifacts,
+    artifacts: StepFiles,
     operation_id: str,
     bind_operation: Callable[[Any], None],
     record_uncertainty: Callable[[str], None] | None = None,
@@ -427,7 +427,7 @@ def _run_native_oa_maestro_testbench_impl(
 
 
 def _record_native_oa_maestro_inputs(
-    record: RunArtifacts,
+    record: StepFiles,
     step: TestbenchRebuildStep,
 ) -> None:
     """Persist the exact plan-owned sources consumed by one Maestro run."""
@@ -511,7 +511,7 @@ def execute_oa_maestro_testbench(
     step: TestbenchRebuildStep,
     client: Any,
     *,
-    artifacts: RunArtifacts,
+    artifacts: StepFiles,
     operation_id: str,
     bind_operation: Callable[[Any], None],
     record_uncertainty: Callable[[str], None] | None = None,

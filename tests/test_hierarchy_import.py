@@ -6,21 +6,19 @@ from types import SimpleNamespace
 import pytest
 
 import sigilicon.workflows.hierarchy_import as hierarchy
-from sigilicon.artifacts import ArtifactRecord
-from sigilicon.paths import ProjectContext
+from sigilicon.artifacts import RunRecord
+from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
 
 
-def _artifact(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
-    return ArtifactRecord.begin(
-        ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
+def _artifact(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
+    return RunRecord.begin(
+        ArtifactLayout(tmp_path / "artifacts").operation_run(
             owner="lib",
             operation="netlist-import",
             variant="hierarchy",
             run_id=identity,
         ),
-        entities={"owner": "lib", "variant": "hierarchy"},
-        operation="netlist-import",
         backend="offline",
     )
 

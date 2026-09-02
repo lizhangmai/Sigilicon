@@ -18,7 +18,6 @@ from sigilicon.execution.model import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.runs import RunStore, RunStoreError
 
 
 __all__ = [
@@ -34,8 +33,6 @@ __all__ = [
     "Resources",
     "RunFailure",
     "RunResult",
-    "RunStore",
-    "RunStoreError",
     "Source",
     "StepContext",
     "StepOutcome",

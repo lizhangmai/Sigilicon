@@ -9,7 +9,7 @@ import pytest
 from sigilicon.project import Project
 import sigilicon.project._project as repository_module
 from sigilicon.workflows import xcelium
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.xcelium import (
     execute_xcelium_cell,
     plan_xcelium_cell,
@@ -24,9 +24,9 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _run_artifacts(root: Path) -> RunArtifacts:
+def _run_artifacts(root: Path) -> StepFiles:
     run = root / "run"
-    return RunArtifacts(
+    return StepFiles(
         run_id="managed-run",
         root=run,
         input_root=run / "work/action/inputs",

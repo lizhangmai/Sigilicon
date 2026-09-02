@@ -16,17 +16,13 @@ import re
 import shutil
 from typing import Callable, Mapping, Sequence
 
-from sigilicon.artifacts import new_identity, read_nofollow_text
+from sigilicon.artifacts import read_nofollow_text
+from sigilicon.execution.step_files import StepFiles
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
     owned_input_file,
     run_process_group,
-)
-from sigilicon.workflows.run_artifacts import (
-    RunArtifacts,
-    managed_run_artifacts_from_environment,
-    scoped_run_artifacts,
 )
 
 
@@ -100,7 +96,7 @@ def find_spectre(explicit: Path | None = None) -> Path:
 
 
 def run_spectre_deck(
-    record: RunArtifacts,
+    record: StepFiles,
     *,
     render_deck: Callable[[Mapping[str, str]], str],
     inputs: Mapping[str, Path],
@@ -256,7 +252,7 @@ def run_spectre_deck(
 
 
 def _stage_inputs(
-    record: RunArtifacts,
+    record: StepFiles,
     inputs: Sequence[StagedSpectreInput],
 ) -> Mapping[str, Path]:
     staged: dict[str, Path] = {}
@@ -267,23 +263,6 @@ def _stage_inputs(
             record.directory("inputs", *item.components[:-1])
         staged[item.key] = record.copy_file("inputs", item.components, item.source)
     return staged
-
-
-def _measurement_artifacts(
-    *,
-    artifacts: RunArtifacts | None,
-) -> RunArtifacts:
-    if artifacts is not None:
-        return artifacts
-    inherited = managed_run_artifacts_from_environment()
-    if inherited is None:
-        raise RuntimeError(
-            "Spectre measurements require artifacts owned by a parent Flow Action"
-        )
-    return scoped_run_artifacts(
-        inherited,
-        f"spectre-{new_identity()}",
-    )
 
 
 def run_spectre_measurement(
@@ -299,42 +278,37 @@ def run_spectre_measurement(
     normalized_name: str,
     evaluate: Callable[[Any], Mapping[str, object]],
     timeout: int,
-    artifacts: RunArtifacts | None = None,
+    artifacts: StepFiles,
     spectre: Path | None = None,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
 
     The caller defines its deck, parser, normalizer, and measurement decision;
     this generic workflow stages immutable inputs and invokes the guarded
-    Spectre runner.  A supplied or inherited ``RunArtifacts`` keeps the work
-    inside its parent Flow Action. Direct callers outside a Flow must supply
-    the parent's artifact workspace explicitly.
+    Spectre runner. The caller must supply files owned by its current Step.
     """
 
-    run_artifacts = _measurement_artifacts(
-        artifacts=artifacts,
-    )
-    staged = _stage_inputs(run_artifacts, inputs)
-    run_artifacts.write_json(
+    staged = _stage_inputs(artifacts, inputs)
+    artifacts.write_json(
         "inputs",
         ("external-input-references.json",),
         dict(external_input_references),
     )
     execution = run_spectre_deck(
-        run_artifacts,
+        artifacts,
         render_deck=render,
         inputs=staged,
         output_names=(output_name,),
         timeout=timeout,
         spectre=spectre,
     )
-    raw = run_artifacts.copy_file(
+    raw = artifacts.copy_file(
         "outputs",
         (raw_result_name,),
         execution.raw_outputs[output_name],
     )
     parsed = parse(read_nofollow_text(raw, errors="strict"))
-    run_artifacts.write_text(
+    artifacts.write_text(
         "outputs",
         (normalized_name,),
         normalize(parsed),
@@ -342,12 +316,12 @@ def run_spectre_measurement(
     payload = dict(evaluate(parsed))
     payload.setdefault("contract_version", 1)
     payload.setdefault("condition", dict(condition))
-    measurements = run_artifacts.write_json(
+    measurements = artifacts.write_json(
         "outputs",
         ("measurements.json",),
         payload,
     )
-    run_artifacts.add_file("work", run_artifacts.directory("work"))
+    artifacts.add_file("work", artifacts.directory("work"))
     result = SpectreRunResult(
         measurements=measurements,
         passed=bool(payload.get("passed")),

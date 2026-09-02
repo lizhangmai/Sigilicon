@@ -9,7 +9,7 @@ from pathlib import Path
 import stat
 from typing import Any
 
-from sigilicon.artifacts import ArtifactRecord, new_identity, read_nofollow_text
+from sigilicon.artifacts import RunRecord, new_identity, read_nofollow_text
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
@@ -118,7 +118,7 @@ def _validate_artifact(
         )
 
 
-def _seal_sources(record: ArtifactRecord, plan: ExecutionPlan) -> Path:
+def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
     """Materialize the plan closure once; backends consume only these copies."""
 
     root = record.directory("inputs", "sources")
@@ -141,7 +141,7 @@ def _seal_sources(record: ArtifactRecord, plan: ExecutionPlan) -> Path:
     return root
 
 
-def _register_tree(record: ArtifactRecord, role: str, root: Path) -> None:
+def _register_tree(record: RunRecord, role: str, root: Path) -> None:
     """Close the owned inventory without accepting symlinks or path replacement."""
 
     if root.resolve() != root.absolute() or not root.is_dir() or root.is_symlink():
@@ -182,13 +182,8 @@ def _run(
         variant=plan.variant,
         run_id=identity,
     )
-    entities = {"owner": plan.owner}
-    if plan.variant is not None:
-        entities["variant"] = plan.variant
-    record = ArtifactRecord.begin(
+    record = RunRecord.begin(
         paths,
-        entities=entities,
-        operation=plan.operation,
         backend="sigilicon.execution",
         source={"plan_identity": plan.identity},
     )

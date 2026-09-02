@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
+import stat
 from typing import Any, Mapping
 
-from sigilicon.artifacts import load_manifest, read_json_object, read_nofollow_text
+from sigilicon.artifacts import (
+    _open_nofollow_directory,
+    load_manifest,
+    read_json_object,
+    read_nofollow_text,
+)
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.model import (
     Artifact,
@@ -17,44 +24,92 @@ from sigilicon.execution.model import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.paths import ArtifactExecutionPaths, ArtifactLayout, ProjectContext
+from sigilicon.paths import ArtifactLayout, RunPaths
 
 
 class RunStoreError(ValueError):
     """A requested run is missing, unsafe, or internally inconsistent."""
 
 
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _clear_directory(descriptor: int) -> None:
+    """Remove a held directory tree without resolving any pathname."""
+
+    os.fchmod(descriptor, 0o700)
+    for name in os.listdir(descriptor):
+        visible = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(visible.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            try:
+                held = os.fstat(child)
+                if not _same_inode(visible, held):
+                    raise RunStoreError("run directory changed while cleaning")
+                _clear_directory(child)
+                current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not _same_inode(held, current):
+                    raise RunStoreError("run directory changed while cleaning")
+                os.rmdir(name, dir_fd=descriptor)
+            finally:
+                os.close(child)
+        else:
+            os.unlink(name, dir_fd=descriptor)
+
+
+def _remove_nofollow_tree(root: Path, expected: os.stat_result) -> None:
+    """Remove exactly *expected* below held no-follow parent and root fds."""
+
+    parent = _open_nofollow_directory(root.parent, create_missing=False)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            root.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent,
+        )
+        held = os.fstat(descriptor)
+        visible = os.stat(root.name, dir_fd=parent, follow_symlinks=False)
+        if not _same_inode(expected, held) or not _same_inode(held, visible):
+            raise RunStoreError("run root changed while cleaning")
+        _clear_directory(descriptor)
+        visible = os.stat(root.name, dir_fd=parent, follow_symlinks=False)
+        if not _same_inode(held, visible):
+            raise RunStoreError("run root changed while cleaning")
+        os.rmdir(root.name, dir_fd=parent)
+        os.fsync(parent)
+    except OSError as exc:
+        raise RunStoreError(f"could not safely clean execution run: {exc}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
 @dataclass(frozen=True)
 class _SelectedRun:
-    paths: ArtifactExecutionPaths
+    paths: RunPaths
     owner: str
     operation: str
     variant: str | None
     run_id: str
 
-    @property
-    def entities(self) -> dict[str, str]:
-        result = {"owner": self.owner}
-        if self.variant is not None:
-            result["variant"] = self.variant
-        return result
-
-
 @dataclass(frozen=True)
-class RunStore:
+class _RunStore:
     """Read or clean one exact managed execution result."""
 
-    context: ProjectContext
+    artifact_root: Path
 
     def __post_init__(self) -> None:
-        if not isinstance(self.context, ProjectContext):
-            raise TypeError("RunStore requires an explicit ProjectContext")
-        if self.context.artifact_root == Path(self.context.artifact_root.anchor):
+        root = Path(self.artifact_root).resolve()
+        if root == Path(root.anchor):
             raise RunStoreError("artifact root cannot be a filesystem root")
-
-    @property
-    def artifact_root(self) -> Path:
-        return self.context.artifact_root
+        object.__setattr__(self, "artifact_root", root)
 
     def _select(
         self,
@@ -91,7 +146,7 @@ class RunStore:
     @classmethod
     def _validate_inventory(
         cls,
-        paths: ArtifactExecutionPaths,
+        paths: RunPaths,
         manifest: Mapping[str, Any],
     ) -> None:
         root = paths.root
@@ -142,10 +197,11 @@ class RunStore:
             raise RunStoreError(str(exc)) from exc
         source = manifest.get("source")
         if (
-            manifest.get("artifact_kind") != "execution-run"
-            or manifest.get("entities")
-            != selected.entities
+            manifest.get("schema") != 1
+            or manifest.get("contract_kind") != "run-manifest"
+            or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
+            or manifest.get("variant") != selected.variant
             or manifest.get("run_id") != selected.run_id
             or manifest.get("status")
             not in {"succeeded", "failed", "partial", "uncertain", "cancelled"}
@@ -182,10 +238,11 @@ class RunStore:
             "plan_identity": identity,
         }
         if (
-            manifest.get("artifact_kind") != "execution-run"
-            or manifest.get("entities")
-            != selected.entities
+            manifest.get("schema") != 1
+            or manifest.get("contract_kind") != "run-manifest"
+            or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
+            or manifest.get("variant") != selected.variant
             or manifest.get("run_id") != selected.run_id
             or manifest.get("source") != {"plan_identity": identity}
         ):
@@ -367,23 +424,18 @@ class RunStore:
             variant=variant,
             run_id=run_id,
         )
+        root = selected.paths.root
+        try:
+            expected = root.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise RunStoreError(f"missing execution run: {run_id}") from exc
+        if not stat.S_ISDIR(expected.st_mode):
+            raise RunStoreError(f"missing or unsafe execution run: {run_id}")
         manifest = self._manifest(selected)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
             self._records(selected)
-        root = selected.paths.root
         self._validate_inventory(selected.paths, manifest)
-        actual = {path.relative_to(root) for path in root.rglob("*")}
-        for relative in sorted(actual, key=lambda path: len(path.parts)):
-            path = root / relative
-            if path.is_dir() and not path.is_symlink():
-                path.chmod(0o700)
-        for relative in sorted(actual, key=lambda path: len(path.parts), reverse=True):
-            path = root / relative
-            if path.is_dir() and not path.is_symlink():
-                path.rmdir()
-            else:
-                path.unlink()
-        root.rmdir()
+        _remove_nofollow_tree(root, expected)
 
 
-__all__ = ["RunStore", "RunStoreError"]
+__all__ = ["RunStoreError"]

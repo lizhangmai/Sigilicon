@@ -521,7 +521,6 @@ class XceliumAmsBackend:
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
-        from sigilicon.workflows.run_artifacts import RunArtifacts
         from sigilicon.project import Project
         from sigilicon.workflows.xcelium_ams import (
             execute_xcelium_ams_cell,
@@ -561,8 +560,7 @@ class XceliumAmsBackend:
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
             is not None,
         ) as scratch:
-            artifacts = RunArtifacts.from_step_context(
-                context,
+            artifacts = context.files(
                 "xcelium-ams",
                 {
                     "owner": owner,
@@ -714,7 +712,6 @@ class NativeOaBackend:
             plan_oa_library_rebuild,
         )
         from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
-        from sigilicon.workflows.run_artifacts import RunArtifacts
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
@@ -752,8 +749,7 @@ class NativeOaBackend:
                 retain_on_error=lambda exc: bool(uncertainty)
                 or process_group_cleanup_uncertainty(exc) is not None,
             ) as scratch:
-                artifacts = RunArtifacts.from_step_context(
-                    context,
+                artifacts = context.files(
                     "maestro",
                     {"owner": owner, "testbench": testbench},
                     tool_work_root=scratch.path,
@@ -1060,7 +1056,6 @@ class LayoutBackend:
     def _execute(self, context: StepContext, planning: Any) -> StepResult:
         from sigilicon.virtuoso.client import get_client
         from sigilicon.workflows.layout_generation import generate_layout
-        from sigilicon.workflows.run_artifacts import RunArtifacts
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
@@ -1071,8 +1066,7 @@ class LayoutBackend:
                 retain_on_error=lambda exc: bool(uncertainty)
                 or process_group_cleanup_uncertainty(exc) is not None,
             ) as scratch:
-                artifacts = RunArtifacts.from_step_context(
-                    context,
+                artifacts = context.files(
                     "layout",
                     {"owner": owner, "spec": str(config["spec"])},
                     tool_work_root=scratch.path,
@@ -1229,7 +1223,6 @@ class LayoutVerificationBackend:
     ) -> StepResult:
         from sigilicon.virtuoso.client import get_client
         from sigilicon.workflows.layout_verification import run_layout_verification
-        from sigilicon.workflows.run_artifacts import RunArtifacts
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
@@ -1246,8 +1239,7 @@ class LayoutVerificationBackend:
                 retain_on_error=lambda exc: bool(uncertainty)
                 or process_group_cleanup_uncertainty(exc) is not None,
             ) as scratch:
-                artifacts = RunArtifacts.from_step_context(
-                    context,
+                artifacts = context.files(
                     "verification",
                     {
                         "owner": owner,

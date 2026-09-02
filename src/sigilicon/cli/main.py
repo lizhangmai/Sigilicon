@@ -7,17 +7,14 @@ from collections.abc import Sequence
 import sys
 
 
-_COMMANDS = (
-    "artifact-path",
-    "flow",
-)
+_COMMANDS = ("flow",)
 
-_HELP = """usage: sigilicon [-h] {artifact-path,flow} ...
+_HELP = """usage: sigilicon [-h] {flow} ...
 
 Reusable EDA flow orchestration.
 
 positional arguments:
-  {artifact-path,flow}
+  {flow}
 
 options:
   -h, --help            show this help message and exit
@@ -44,10 +41,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from sigilicon.cli.flow_core import main as flow_core_main
 
         return flow_core_main(arguments[1:])
-    if command == "artifact-path":
-        from sigilicon.cli.artifact_path import main as artifact_path_main
-
-        return artifact_path_main(arguments[1:])
     raise AssertionError(f"unhandled command: {command}")
 
 

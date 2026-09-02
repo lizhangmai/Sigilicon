@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 from virtuoso_bridge import ExecutionStatus, VirtuosoResult
 
-from sigilicon.artifacts import ArtifactRecord
+from sigilicon.artifacts import RunRecord
 from sigilicon.domain.design import load_design_spec
 from sigilicon.project import Project
-from sigilicon.paths import ProjectContext
+from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
 from sigilicon.workflows.design_sync import (
     sync_design,
@@ -130,16 +130,14 @@ def _patch_fake_import(monkeypatch) -> None:
     monkeypatch.setattr("sigilicon.virtuoso.importer._generate_symbol", generate_view)
 
 
-def _import_artifact(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
-    return ArtifactRecord.begin(
-        ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
+def _import_artifact(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
+    return RunRecord.begin(
+        ArtifactLayout(tmp_path / "artifacts").operation_run(
             owner="designLib",
             operation="netlist-import",
             variant="hierarchy",
             run_id=identity,
         ),
-        entities={"owner": "designLib", "variant": "hierarchy"},
-        operation="netlist-import",
         backend="offline",
     )
 

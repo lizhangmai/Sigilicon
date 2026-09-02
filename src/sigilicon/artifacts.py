@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from sigilicon.paths import (
-    ArtifactExecutionPaths,
+    RunPaths,
     operation_incident_reference,
     validate_artifact_component,
     validate_artifact_id,
@@ -27,67 +27,7 @@ ARTIFACT_STATUSES = frozenset(
     {"running", "succeeded", "failed", "partial", "uncertain", "cancelled"}
 )
 TERMINAL_STATUSES = ARTIFACT_STATUSES - {"running"}
-_EXECUTION_ROLES = frozenset({"inputs", "work", "outputs", "logs"})
-ARTIFACT_ROLES = {
-    kind: _EXECUTION_ROLES
-    for kind in (
-        "design_sync",
-        "oa_text_view",
-        "layout_generation",
-        "physical_verification",
-        "netlist_export",
-        "standalone_simulation",
-        "oa_maestro_simulation",
-        "netlist_import",
-        "analysis",
-        "execution-run",
-    )
-}
-ARTIFACT_IDENTITY_KINDS = {
-    "design_sync": "attempt_id",
-    "oa_text_view": "attempt_id",
-    "layout_generation": "attempt_id",
-    "physical_verification": "run_id",
-    "netlist_export": "run_id",
-    "standalone_simulation": "run_id",
-    "oa_maestro_simulation": "run_id",
-    "netlist_import": "attempt_id",
-    "analysis": "run_id",
-    "execution-run": "run_id",
-}
-ARTIFACT_ENTITY_FIELDS = {
-    "design_sync": ({"library", "cell"}, {"library", "cell"}),
-    "oa_text_view": (
-        {"library", "cell", "view"},
-        {"library", "cell", "view"},
-    ),
-    "layout_generation": (
-        {"library", "cell", "view"},
-        {"library", "cell", "view"},
-    ),
-    "physical_verification": (
-        {"library", "cell", "view", "check"},
-        {"library", "cell", "view", "check"},
-    ),
-    "netlist_export": (
-        {"library", "cell", "view", "simulator"},
-        {"library", "cell", "view", "simulator"},
-    ),
-    "standalone_simulation": (
-        {"library", "cell", "testbench"},
-        {"library", "cell", "testbench"},
-    ),
-    "oa_maestro_simulation": (
-        {"library", "cell", "testbench"},
-        {"library", "cell", "testbench"},
-    ),
-    "netlist_import": ({"library", "source"}, {"library", "source", "cell"}),
-    "analysis": (
-        {"library", "cell", "analysis", "model"},
-        {"library", "cell", "analysis", "model"},
-    ),
-    "execution-run": ({"owner"}, {"owner", "variant"}),
-}
+RUN_ROLES = frozenset({"inputs", "work", "outputs", "logs"})
 
 
 class ArtifactManifestError(RuntimeError):
@@ -400,15 +340,16 @@ def _resolved_artifact_member(root: Path, member: Path, label: str) -> Path:
 
 
 def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate the current artifact manifest contract."""
+    """Validate the sole managed run manifest contract."""
     required = {
-        "artifact_kind",
-        "entities",
+        "schema",
+        "contract_kind",
+        "owner",
         "operation",
+        "variant",
         "operation_id",
         "backend",
         "run_id",
-        "attempt_id",
         "created_at",
         "completed_at",
         "status",
@@ -418,70 +359,52 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "uncertain_reason",
         "incident_reference",
         "completion_evidence",
+        "details",
     }
-    missing = required.difference(value)
-    if missing:
-        raise ArtifactManifestError(
-            f"artifact manifest is missing fields: {', '.join(sorted(missing))}"
-        )
+    if set(value) != required:
+        raise ArtifactManifestError("run manifest fields are invalid")
+    if value.get("schema") != 1 or value.get("contract_kind") != "run-manifest":
+        raise ArtifactManifestError("run manifest header is invalid")
     status = value.get("status")
     if status not in ARTIFACT_STATUSES:
         raise ArtifactManifestError(f"invalid artifact status: {status!r}")
     run_id = value.get("run_id")
-    attempt_id = value.get("attempt_id")
-    if (run_id is None) == (attempt_id is None):
-        raise ArtifactManifestError("manifest must contain exactly one run_id or attempt_id")
     try:
-        validate_artifact_id(run_id if run_id is not None else attempt_id, "execution id")
+        validate_artifact_id(run_id, "run id")
     except ValueError as exc:
         raise ArtifactManifestError(str(exc)) from exc
-    for field_name in ("entities", "files"):
-        if not isinstance(value.get(field_name), dict):
-            raise ArtifactManifestError(f"manifest {field_name} must be an object")
+    if not isinstance(value.get("files"), dict):
+        raise ArtifactManifestError("manifest files must be an object")
     source = value.get("source")
     if source is not None and not isinstance(source, dict):
         raise ArtifactManifestError("manifest source must be an object or null")
-    artifact_kind = value.get("artifact_kind")
-    if artifact_kind not in ARTIFACT_ROLES:
-        raise ArtifactManifestError(f"unsupported artifact_kind: {artifact_kind!r}")
-    for field_name in ("operation", "backend", "created_at"):
+    for field_name in ("owner", "operation", "backend", "created_at"):
         if not isinstance(value.get(field_name), str) or not value[field_name]:
             raise ArtifactManifestError(f"manifest {field_name} must be a non-empty string")
+    for field_name in ("owner", "operation"):
+        try:
+            validate_artifact_component(value[field_name], field_name)
+        except ValueError as exc:
+            raise ArtifactManifestError(str(exc)) from exc
+    variant = value.get("variant")
+    if variant is not None:
+        try:
+            validate_artifact_component(variant, "variant")
+        except ValueError as exc:
+            raise ArtifactManifestError(str(exc)) from exc
     try:
         datetime.fromisoformat(value["created_at"])
     except ValueError as exc:
         raise ArtifactManifestError("manifest created_at is not an ISO timestamp") from exc
-    expected_identity_kind = ARTIFACT_IDENTITY_KINDS[artifact_kind]
-    if expected_identity_kind == "run_id" and attempt_id is not None:
-        raise ArtifactManifestError(f"{artifact_kind} requires run_id identity")
-    if expected_identity_kind == "attempt_id" and run_id is not None:
-        raise ArtifactManifestError(f"{artifact_kind} requires attempt_id identity")
     operation_id = value.get("operation_id")
     if operation_id is not None:
         try:
             validate_artifact_id(operation_id, "operation id")
         except ValueError as exc:
             raise ArtifactManifestError(str(exc)) from exc
-    entity_labels = set(value["entities"])
-    required_entities, allowed_entities = ARTIFACT_ENTITY_FIELDS[artifact_kind]
-    if not required_entities.issubset(entity_labels) or not entity_labels.issubset(
-        allowed_entities
-    ):
-        raise ArtifactManifestError(
-            f"manifest entities do not match {artifact_kind}: {sorted(entity_labels)}"
-        )
-    for label, component in value["entities"].items():
-        if not isinstance(label, str):
-            raise ArtifactManifestError("manifest entity labels must be strings")
-        try:
-            validate_artifact_component(component, f"entity {label}")
-        except ValueError as exc:
-            raise ArtifactManifestError(str(exc)) from exc
     files = value["files"]
-    if set(files) != ARTIFACT_ROLES[artifact_kind]:
-        raise ArtifactManifestError(
-            f"manifest file roles do not match {artifact_kind}: {sorted(files)}"
-        )
+    if set(files) != RUN_ROLES:
+        raise ArtifactManifestError(f"run manifest file roles are invalid: {sorted(files)}")
     registered_paths: set[str] = set()
     for role, references in files.items():
         if not isinstance(references, list):
@@ -662,10 +585,10 @@ def load_operation_incident(path: Path, operation_id: str) -> dict[str, Any]:
 
 
 @dataclass
-class ArtifactRecord:
-    """Mutable handle to one immutable-identity run or attempt manifest."""
+class RunRecord:
+    """Mutable handle to one immutable-identity operation run manifest."""
 
-    paths: ArtifactExecutionPaths
+    paths: RunPaths
     manifest: dict[str, Any]
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _file_states: dict[str, tuple[int, int, int, str]] = field(
@@ -675,22 +598,21 @@ class ArtifactRecord:
     @classmethod
     def begin(
         cls,
-        paths: ArtifactExecutionPaths,
+        paths: RunPaths,
         *,
-        entities: Mapping[str, str],
-        operation: str,
         backend: str,
         source: Mapping[str, Any] | None = None,
-    ) -> "ArtifactRecord":
+    ) -> "RunRecord":
         files = {role: [] for role in paths.roles}
         manifest = {
-            "artifact_kind": paths.artifact_kind,
-            "entities": dict(entities),
-            "operation": operation,
+            "schema": 1,
+            "contract_kind": "run-manifest",
+            "owner": paths.owner,
+            "operation": paths.operation,
+            "variant": paths.variant,
             "operation_id": None,
             "backend": backend,
-            "run_id": paths.identity if paths.identity_kind == "run_id" else None,
-            "attempt_id": paths.identity if paths.identity_kind == "attempt_id" else None,
+            "run_id": paths.run_id,
             "created_at": utc_now(),
             "completed_at": None,
             "status": "running",
@@ -700,6 +622,7 @@ class ArtifactRecord:
             "uncertain_reason": None,
             "incident_reference": None,
             "completion_evidence": [],
+            "details": None,
         }
         validate_manifest(manifest)
         paths.create()

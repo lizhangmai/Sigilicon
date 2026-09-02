@@ -9,7 +9,7 @@ import pytest
 from sigilicon.project import Project
 from sigilicon.workflows import layout_generation
 from sigilicon.workflows.layout_generation import LayoutPlanningResult
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 
 from conftest import write_component_owner
 
@@ -50,7 +50,7 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
     object.__setattr__(planning, "spec", spec)
     object.__setattr__(planning, "plan", plan)
     root = tmp_path / "managed-run"
-    artifacts = RunArtifacts(
+    artifacts = StepFiles(
         run_id="managed-run",
         root=root,
         input_root=root / "work/action/inputs",

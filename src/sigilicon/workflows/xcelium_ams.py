@@ -21,7 +21,7 @@ from sigilicon.external_tools import (
     run_process_group_capture,
     xrun_env,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
@@ -501,7 +501,7 @@ def plan_xcelium_ams_cell(
 def execute_xcelium_ams_cell(
     plan: XceliumAmsCellPlan,
     *,
-    artifacts: RunArtifacts,
+    artifacts: StepFiles,
     source_paths: Mapping[Path, Path] | None = None,
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,

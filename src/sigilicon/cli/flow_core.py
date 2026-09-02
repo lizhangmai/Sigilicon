@@ -9,7 +9,8 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json
-from sigilicon.execution import ContractError, ExecutionError, Resources, RunStoreError
+from sigilicon.execution import ContractError, ExecutionError, Resources
+from sigilicon.execution.runs import RunStoreError
 from sigilicon.paths import discover_project_contract
 from sigilicon.project import Project
 
@@ -55,27 +56,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         project = _project(args)
         if args.command == "status":
-            from sigilicon.execution.operations import parse_selector
-
-            owner, operation, variant = parse_selector(args.selector)
-            stored = project.runs.read(
-                owner=owner,
-                operation=operation,
-                variant=variant,
-                run_id=args.run_id,
-            )
+            stored = project._read_run(args.selector, args.run_id)
             emit_json(stored.record)
             return 0 if stored.status == "succeeded" else 1
         if args.command == "clean":
             from sigilicon.execution.operations import parse_selector
 
             owner, operation, variant = parse_selector(args.selector)
-            project.runs.clean(
-                owner=owner,
-                operation=operation,
-                variant=variant,
-                run_id=args.run_id,
-            )
+            project._clean_run(args.selector, args.run_id)
             emit_json(
                 {
                     "schema": 1,
@@ -98,12 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             emit_json(checked.record)
             return 0 if checked.ready else 2
         result = project.run(plan, resources, run_id=args.run_id)
-        stored = project.runs.read(
-            owner=result.owner,
-            operation=result.operation,
-            variant=result.variant,
-            run_id=result.run_id,
-        )
+        stored = project._read_run(args.selector, result.run_id)
         emit_json(stored.record)
         return 0 if result.status == "succeeded" else 1
     except (ContractError, RunStoreError, ValueError) as exc:

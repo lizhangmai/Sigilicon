@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.artifacts import ArtifactRecord, load_manifest
+from sigilicon.artifacts import RunRecord, load_manifest
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
-from sigilicon.paths import ProjectContext
+from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.confirmation import require_bridge_confirmation
 from sigilicon.virtuoso.oa import OpenCellViewInfo
 from sigilicon.virtuoso.operation_journal import (
@@ -33,7 +33,7 @@ class Client:
 
 
 def _design_execution(project, identity):
-    return ProjectContext.from_project_root(project).artifacts.operation_run(
+    return ArtifactLayout(project / "artifacts").operation_run(
         owner="lib",
         operation="design-sync",
         variant="recursive",
@@ -612,10 +612,8 @@ def test_final_audit_uncertainty_reaches_manifest_before_terminal_transition(
     write_project_context(project)
     root = project / "virtuoso"
     root.mkdir(parents=True)
-    record = ArtifactRecord.begin(
+    record = RunRecord.begin(
         _design_execution(project, "1" * 32),
-        entities={"owner": "lib", "variant": "recursive"},
-        operation="design-sync",
         backend="virtuoso-oa",
     )
     calls = 0
@@ -662,10 +660,8 @@ def test_operation_incident_is_referenced_by_the_related_attempt_manifest(tmp_pa
     write_project_context(project)
     root = project / "virtuoso"
     root.mkdir(parents=True)
-    record = ArtifactRecord.begin(
+    record = RunRecord.begin(
         _design_execution(project, "1" * 32),
-        entities={"owner": "lib", "variant": "recursive"},
-        operation="design-sync",
         backend="virtuoso-oa",
     )
 
@@ -694,10 +690,8 @@ def test_wrapped_process_cleanup_failure_marks_workspace_artifact_uncertain(
     write_project_context(project)
     root = project / "virtuoso"
     root.mkdir(parents=True)
-    record = ArtifactRecord.begin(
+    record = RunRecord.begin(
         _design_execution(project, "3" * 32),
-        entities={"owner": "lib", "variant": "recursive"},
-        operation="design-sync",
         backend="virtuoso-oa",
     )
 
@@ -731,10 +725,8 @@ def test_incident_link_failure_rolls_back_unreferenced_journal(
     write_project_context(project)
     root = project / "virtuoso"
     root.mkdir(parents=True)
-    record = ArtifactRecord.begin(
+    record = RunRecord.begin(
         _design_execution(project, "2" * 32),
-        entities={"owner": "lib", "variant": "recursive"},
-        operation="design-sync",
         backend="virtuoso-oa",
     )
     monkeypatch.setattr(

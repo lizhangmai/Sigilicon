@@ -8,24 +8,22 @@ import pytest
 
 from sigilicon.artifacts import (
     ArtifactManifestError,
-    ArtifactRecord,
+    RunRecord,
     load_manifest,
     validate_manifest,
 )
-from sigilicon.paths import ProjectContext
+from sigilicon.paths import ArtifactLayout
 
 
-def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
+def _record(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
+    execution = ArtifactLayout(tmp_path / "artifacts").operation_run(
         owner="lib",
         operation="spectre",
         variant="nominal",
         run_id=identity,
     )
-    return ArtifactRecord.begin(
+    return RunRecord.begin(
         execution,
-        entities={"owner": "lib", "variant": "nominal"},
-        operation="spectre",
         backend="standalone",
     )
 
@@ -33,16 +31,14 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
 def test_artifact_manifest_records_git_source(
     tmp_path: Path,
 ) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
+    execution = ArtifactLayout(tmp_path / "artifacts").operation_run(
         owner="lib",
         operation="spectre",
         variant="nominal",
         run_id="4" * 32,
     )
-    record = ArtifactRecord.begin(
+    record = RunRecord.begin(
         execution,
-        entities={"owner": "lib", "variant": "nominal"},
-        operation="spectre",
         backend="virtuoso-oa",
         source={
             "project": {
@@ -124,21 +120,25 @@ def test_manifest_rejects_noncanonical_incident_reference(tmp_path: Path) -> Non
         validate_manifest(hostile)
 
 
-def test_manifest_binds_kind_to_identity_entities_and_status_provenance(
+def test_manifest_binds_run_identity_and_status_provenance(
     tmp_path: Path,
 ) -> None:
     record = _record(tmp_path)
 
     wrong_identity = copy.deepcopy(record.manifest)
-    wrong_identity["attempt_id"] = wrong_identity["run_id"]
     wrong_identity["run_id"] = None
-    with pytest.raises(ArtifactManifestError, match="requires run_id identity"):
+    with pytest.raises(ArtifactManifestError, match="run id"):
         validate_manifest(wrong_identity)
 
-    missing_entity = copy.deepcopy(record.manifest)
-    del missing_entity["entities"]["owner"]
-    with pytest.raises(ArtifactManifestError, match="entities do not match"):
-        validate_manifest(missing_entity)
+    legacy = copy.deepcopy(record.manifest)
+    legacy["attempt_id"] = legacy["run_id"]
+    with pytest.raises(ArtifactManifestError, match="fields are invalid"):
+        validate_manifest(legacy)
+
+    missing_owner = copy.deepcopy(record.manifest)
+    missing_owner["owner"] = ""
+    with pytest.raises(ArtifactManifestError, match="owner"):
+        validate_manifest(missing_owner)
 
     forged_running = copy.deepcopy(record.manifest)
     forged_running["uncertain_reason"] = "not actually running"

@@ -18,13 +18,13 @@ from sigilicon.execution import (
     PreflightCheck,
     Resources,
     RunResult,
-    RunStoreError,
     Source,
     StepContext,
     StepOutcome,
     StepResult,
 )
 from sigilicon.execution.backend import _Preparation
+from sigilicon.execution.runs import RunStoreError, _RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
 
@@ -415,26 +415,57 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
         ("transform", "running"),
         ("transform", "succeeded"),
     ]
-    stored = project.runs.read(
-        owner="example",
-        operation="all",
-        run_id="a" * 32,
-    )
+    stored = project._read_run("example:all", "a" * 32)
     assert stored.status == "succeeded"
     assert stored.plan_identity == plan.identity
 
-    project.runs.clean(
-        owner="example",
-        operation="all",
-        run_id="a" * 32,
-    )
+    project._clean_run("example:all", "a" * 32)
     assert not result.run_root.exists()
     with pytest.raises(RunStoreError):
-        project.runs.read(
-            owner="example",
-            operation="all",
-            run_id="a" * 32,
-        )
+        project._read_run("example:all", "a" * 32)
+
+
+def test_run_clean_never_follows_a_role_replaced_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyBackend(),)
+    result = project.run(
+        project.plan("example:check"),
+        Resources(frozenset({"offline"})),
+        run_id="7" * 32,
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    original = _RunStore._validate_inventory
+    calls = 0
+
+    def replace_after_validation(_cls, paths, manifest):
+        nonlocal calls
+        original(paths, manifest)
+        calls += 1
+        if calls == 3:
+            outputs = paths.role("outputs")
+            outputs.chmod(0o700)
+            for child in outputs.rglob("*"):
+                if child.is_file():
+                    child.chmod(0o600)
+            for child in sorted(
+                outputs.rglob("*"), key=lambda path: len(path.parts), reverse=True
+            ):
+                child.rmdir() if child.is_dir() else child.unlink()
+            outputs.rmdir()
+            outputs.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(_RunStore, "_validate_inventory", replace_after_validation)
+
+    project._clean_run("example:check", result.run_id)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not result.run_root.exists()
 
 
 def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> None:
@@ -452,18 +483,9 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
     assert result.run_root == (
         tmp_path / "artifacts/runs/example/check/variants/fast" / ("1" * 32)
     )
-    assert project.runs.read(
-        owner="example",
-        operation="check",
-        variant="fast",
-        run_id=result.run_id,
-    ).variant == "fast"
+    assert project._read_run("example:check@fast", result.run_id).variant == "fast"
     with pytest.raises(RunStoreError):
-        project.runs.read(
-            owner="example",
-            operation="check",
-            run_id=result.run_id,
-        )
+        project._read_run("example:check", result.run_id)
 
 
 def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
@@ -487,18 +509,10 @@ def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
 
     with pytest.raises(ExecutionError, match="changed immediately before backend"):
         project.run(plan, run_id="b" * 32)
-    failed = project.runs.read(
-        owner="example",
-        operation="check",
-        run_id="b" * 32,
-    )
+    failed = project._read_run("example:check", "b" * 32)
     assert failed.record["contract_kind"] == "run-failure"
     assert failed.status == "failed"
-    project.runs.clean(
-        owner="example",
-        operation="check",
-        run_id="b" * 32,
-    )
+    project._clean_run("example:check", "b" * 32)
 
 
 def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
@@ -654,11 +668,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
         "uncertain"
     )
-    restored = project.runs.read(
-        owner="example",
-        operation="check",
-        run_id=result.run_id,
-    )
+    restored = project._read_run("example:check", result.run_id)
     assert restored.status == "uncertain"
 
 
@@ -706,11 +716,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
         "cancelled"
     )
-    assert project.runs.read(
-        owner="example",
-        operation="check",
-        run_id=result.run_id,
-    ).status == "cancelled"
+    assert project._read_run("example:check", result.run_id).status == "cancelled"
 
 
 def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
@@ -739,11 +745,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
         "failed"
     )
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "{}\n"
-    restored = project.runs.read(
-        owner="example",
-        operation="check",
-        run_id=result.run_id,
-    )
+    restored = project._read_run("example:check", result.run_id)
     assert restored.outcomes[0].result.facts == {"passed": False}
     assert restored.outcomes[0].result.artifacts[0].role == "evidence"
 
@@ -767,11 +769,7 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
             Resources(frozenset({"offline"})),
             run_id="5" * 32,
         )
-    stored = project.runs.read(
-        owner="example",
-        operation="all",
-        run_id="5" * 32,
-    )
+    stored = project._read_run("example:all", "5" * 32)
     assert stored.status == "partial"
     assert stored.provenance["completed_steps"] == ("source",)
 
@@ -789,11 +787,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     )
     operations.unlink()
 
-    stored = project.runs.read(
-        owner="example",
-        operation="check",
-        run_id=result.run_id,
-    )
+    stored = project._read_run("example:check", result.run_id)
     assert stored.status == "succeeded"
 
     result_path = result.run_root / "outputs/run-result.json"
@@ -801,11 +795,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     payload["variant"] = "tampered"
     result_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RunStoreError, match="manifest|result"):
-        project.runs.read(
-            owner="example",
-            operation="check",
-            run_id=result.run_id,
-        )
+        project._read_run("example:check", result.run_id)
 
 
 def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
@@ -821,11 +811,7 @@ def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
     output.write_text("jello", encoding="utf-8")
 
     with pytest.raises(RunStoreError, match="metadata"):
-        project.runs.read(
-            owner="example",
-            operation="check",
-            run_id=result.run_id,
-        )
+        project._read_run("example:check", result.run_id)
 
 
 def test_run_identity_is_exclusive(tmp_path: Path) -> None:
@@ -837,11 +823,7 @@ def test_run_identity_is_exclusive(tmp_path: Path) -> None:
 
     with pytest.raises(FileExistsError):
         project.run(plan, resources, run_id="e" * 32)
-    assert project.runs.read(
-        owner="example",
-        operation="check",
-        run_id="e" * 32,
-    ).status == "succeeded"
+    assert project._read_run("example:check", "e" * 32).status == "succeeded"
 
 
 def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> None:
@@ -861,11 +843,7 @@ def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> 
 
     assert sum(isinstance(value, RunResult) for value in values) == 1
     assert sum(isinstance(value, FileExistsError) for value in values) == 1
-    assert project.runs.read(
-        owner="example",
-        operation="check",
-        run_id="4" * 32,
-    ).status == "succeeded"
+    assert project._read_run("example:check", "4" * 32).status == "succeeded"
 
 
 def test_project_import_does_not_load_tool_capability_modules() -> None:

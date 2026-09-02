@@ -19,7 +19,7 @@ from sigilicon.external_tools import (
     owned_input_file,
     run_process_group_capture,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -294,7 +294,7 @@ def plan_structural_link(
 def execute_structural_link(
     plan: StructuralLinkPlan,
     *,
-    artifacts: RunArtifacts,
+    artifacts: StepFiles,
     library_compiler: Path,
     design_compiler: Path,
     environment: Mapping[str, str],

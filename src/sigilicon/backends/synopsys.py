@@ -1146,7 +1146,6 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         }
 
     def _execute(self, context: StepContext, planning: Any) -> StepResult:
-        from sigilicon.workflows.run_artifacts import RunArtifacts
         from sigilicon.workflows.structural_link import execute_structural_link
 
         config = self._config(context.step)
@@ -1164,8 +1163,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
             is not None,
         ) as scratch:
-            artifacts = RunArtifacts.from_step_context(
-                context,
+            artifacts = context.files(
                 "structural-link",
                 {"owner": planning.owner, "variant": planning.variant},
                 tool_work_root=scratch.path,

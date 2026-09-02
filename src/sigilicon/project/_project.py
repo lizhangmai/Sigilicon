@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path, PurePosixPath
 import secrets
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping, cast
+from typing import Any, Mapping, cast
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest, canonical_json
@@ -20,15 +20,10 @@ from sigilicon.contracts import (
 )
 from sigilicon.project._component import ComponentContract, load_component_contract
 from sigilicon.paths import (
-    ArtifactLayout,
     ProjectContext,
     ProjectScope,
     validate_artifact_component,
 )
-
-if TYPE_CHECKING:
-    from sigilicon.execution import RunStore
-
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 
@@ -496,23 +491,29 @@ class Project:
     def artifact_root(self) -> Path:
         return self._paths.artifact_root
 
-    @property
-    def artifacts(self) -> ArtifactLayout:
-        return self._paths.artifacts
+    def _read_run(self, selector: str, run_id: str):
+        from sigilicon.execution.operations import parse_selector
+        from sigilicon.execution.runs import _RunStore
 
-    @property
-    def context(self) -> ProjectContext:
-        """Return the explicit paths bound to this project inventory."""
+        owner, operation, variant = parse_selector(selector)
+        return _RunStore(self._paths.artifact_root).read(
+            owner=owner,
+            operation=operation,
+            variant=variant,
+            run_id=run_id,
+        )
 
-        return self._paths
+    def _clean_run(self, selector: str, run_id: str) -> None:
+        from sigilicon.execution.operations import parse_selector
+        from sigilicon.execution.runs import _RunStore
 
-    @property
-    def runs(self) -> RunStore:
-        """Bind immutable run lookup to this project's artifact root."""
-
-        from sigilicon.execution import RunStore
-
-        return RunStore(self.context)
+        owner, operation, variant = parse_selector(selector)
+        _RunStore(self._paths.artifact_root).clean(
+            owner=owner,
+            operation=operation,
+            variant=variant,
+            run_id=run_id,
+        )
 
     def with_artifact_root(self, artifact_root: Path | str) -> "Project":
         """Return this exact project inventory with a run-scoped artifact root."""

@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from sigilicon.artifacts import (
     ensure_nofollow_directory,
@@ -18,6 +18,9 @@ from sigilicon.artifacts import (
 )
 from sigilicon.canonical import canonical_digest
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
+
+if TYPE_CHECKING:
+    from sigilicon.execution.step_files import StepFiles
 
 
 _BACKEND = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
@@ -748,6 +751,24 @@ class StepContext:
         result = self.output_path(role, filename)
         write_immutable_text(result, value)
         return result
+
+    def files(
+        self,
+        output_role: str,
+        source: Mapping[str, Any],
+        *,
+        tool_work_root: Path | None = None,
+    ) -> "StepFiles":
+        """Create the file view owned by this Step."""
+
+        from sigilicon.execution.step_files import StepFiles
+
+        return StepFiles.from_context(
+            self,
+            output_role,
+            source,
+            tool_work_root=tool_work_root,
+        )
 
     def artifacts(self, dependency: str, role: str | None = None) -> tuple[Artifact, ...]:
         try:

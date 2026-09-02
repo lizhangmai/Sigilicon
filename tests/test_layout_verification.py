@@ -8,7 +8,7 @@ import pytest
 
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.workflows import layout_verification
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 
 
 def _drc_summary(*, violation_count: int = 0) -> str:
@@ -73,7 +73,7 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "run"
-    artifacts = RunArtifacts(
+    artifacts = StepFiles(
         run_id="1" * 32,
         root=root,
         input_root=root / "work/verify/inputs",

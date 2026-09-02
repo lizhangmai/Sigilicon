@@ -7,6 +7,7 @@ import pytest
 import sigilicon.project._project as repository_module
 
 from sigilicon.paths import (
+    ArtifactLayout,
     ProjectContext,
     ProjectScope,
     discover_project_context,
@@ -18,9 +19,6 @@ from conftest import write_component_owner
 
 
 RUN = "1" * 32
-ATTEMPT = "2" * 32
-
-
 def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -44,7 +42,7 @@ def test_artifact_components_reject_escape_and_separators(unsafe: str) -> None:
 
 
 def test_ids_and_role_components_are_validated(tmp_path: Path) -> None:
-    paths = ProjectContext.from_project_root(tmp_path).artifacts
+    paths = ArtifactLayout(tmp_path / "artifacts")
     with pytest.raises(ValueError, match="run id"):
         paths.operation_run(
             owner="lib",
@@ -131,7 +129,7 @@ def test_execution_creation_rejects_symlinked_structural_components(
         outside,
         target_is_directory=True,
     )
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
+    execution = ArtifactLayout(tmp_path / "artifacts").operation_run(
         owner="lib",
         operation="spectre",
         variant="nominal",

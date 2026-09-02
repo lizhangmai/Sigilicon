@@ -18,7 +18,7 @@ from sigilicon.external_tools import (
     run_process_group_capture,
     xrun_env,
 )
-from sigilicon.workflows.run_artifacts import RunArtifacts
+from sigilicon.execution.step_files import StepFiles
 from sigilicon.execution.model import json_value
 
 
@@ -191,7 +191,7 @@ def plan_xcelium_cell(
 def execute_xcelium_cell(
     plan: XceliumCellPlan,
     *,
-    artifacts: RunArtifacts,
+    artifacts: StepFiles,
     xrun: Path | None = None,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
@@ -235,7 +235,7 @@ def _require_xcelium_sources(plan: XceliumCellPlan) -> None:
 def _execute_xcelium(
     plan: XceliumCellPlan,
     *,
-    artifacts: RunArtifacts,
+    artifacts: StepFiles,
     command_factory: Callable[[Path, str, str], list[str]],
     prepare_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
