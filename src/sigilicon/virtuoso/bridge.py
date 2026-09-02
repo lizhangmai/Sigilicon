@@ -25,26 +25,26 @@ def _bridge_attribute(module: str, name: str) -> Any:
     return getattr(dependency_module, name)
 
 
-_HOST_RESOURCE = "virtuoso-bridge.host"
-_PORT_RESOURCE = "virtuoso-bridge.port"
+VIRTUOSO_BRIDGE_HOST = "virtuoso-bridge.host"
+VIRTUOSO_BRIDGE_PORT = "virtuoso-bridge.port"
 
 
 def bridge_endpoint(resources: Any) -> tuple[str, int]:
     """Resolve one direct bridge endpoint from an explicit resource snapshot."""
 
-    host = resources.require_value(_HOST_RESOURCE).strip()
+    host = resources.require_value(VIRTUOSO_BRIDGE_HOST).strip()
     if not host:
-        raise ValueError(f"required runtime value is blank: {_HOST_RESOURCE}")
+        raise ValueError(f"required runtime value is blank: {VIRTUOSO_BRIDGE_HOST}")
 
-    port_text = resources.require_value(_PORT_RESOURCE)
+    port_text = resources.require_value(VIRTUOSO_BRIDGE_PORT)
     if not port_text.isascii() or not port_text.isdecimal():
         raise ValueError(
-            f"{_PORT_RESOURCE} must be an ASCII decimal port in the range 1..65535"
+            f"{VIRTUOSO_BRIDGE_PORT} must be an ASCII decimal port in the range 1..65535"
         )
     port = int(port_text, 10)
     if not 1 <= port <= 65535:
         raise ValueError(
-            f"{_PORT_RESOURCE} must be an ASCII decimal port in the range 1..65535"
+            f"{VIRTUOSO_BRIDGE_PORT} must be an ASCII decimal port in the range 1..65535"
         )
 
     return host, port

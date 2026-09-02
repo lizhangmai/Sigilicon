@@ -39,6 +39,10 @@ from sigilicon.external_tools import (
     process_group_cleanup_uncertainty,
     xrun_env,
 )
+from sigilicon.virtuoso.bridge import (
+    VIRTUOSO_BRIDGE_HOST,
+    VIRTUOSO_BRIDGE_PORT,
+)
 
 
 _XRUN = "cadence.xrun"
@@ -47,6 +51,16 @@ _CALIBRE = "mentor.calibre"
 _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_BRIDGE_RESOURCES = (VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT)
+
+
+def _runtime_bindings(
+    resources: Resources,
+    *identities: str,
+) -> tuple[ResourceBinding, ...]:
+    """Capture the exact configured runtime dependencies used by an adapter."""
+
+    return tuple(resources.capture(identity) for identity in identities)
 
 
 def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
@@ -516,9 +530,10 @@ class _PreparedCadencePlan:
             != canonical_digest(json_value(self.prepared))
         ):
             raise ExecutionError("Cadence Domain plan identity drift")
-        if tuple(identity for _path, identity, _digest in self.resources) != (
-            context.step.resources
-        ):
+        external_identities = tuple(
+            identity for _path, identity, _digest in self.resources
+        )
+        if context.step.resources[: len(external_identities)] != external_identities:
             raise ExecutionError("Cadence external resource identity drift")
         _require_bound_sources(context, self.sources)
         for _path, identity, _digest in self.resources:
@@ -565,6 +580,7 @@ class _CadenceDomainAdapter:
         sources: Mapping[Path, tuple[str, str]],
         captured: tuple[Source, ...],
         resources: tuple[ResourceBinding, ...],
+        runtime_bindings: tuple[ResourceBinding, ...] = (),
     ) -> Step:
         domain_plan = _PreparedCadencePlan.create(
             plan,
@@ -576,15 +592,22 @@ class _CadenceDomainAdapter:
         source_snapshots = tuple(
             dict.fromkeys((*operation._source_snapshots, *captured))
         )
+        combined_bindings = tuple(
+            dict.fromkeys((*resources, *runtime_bindings))
+        )
+        if len({binding.identity for binding in combined_bindings}) != len(
+            combined_bindings
+        ):
+            raise ContractError("Cadence plan binds a runtime identity more than once")
         return replace(
             operation,
             request=_portable_request(config, portable),
             sources=tuple(
                 dict.fromkeys((*operation.sources, *(source.path for source in captured)))
             ),
-            resources=tuple(resource.identity for resource in resources),
+            resources=tuple(resource.identity for resource in combined_bindings),
             _source_snapshots=source_snapshots,
-            _resource_bindings=resources,
+            _resource_bindings=combined_bindings,
             _payload=domain_plan,
         )
 
@@ -620,6 +643,19 @@ class XceliumBackend(DirectAdapter):
         _text(config, "success_marker")
         _positive_integer(config, "timeout_seconds")
         return (_executable_check(resources, _XRUN),)
+
+    def plan(
+        self,
+        project: PlanningProject,
+        step: Step,
+        resources: Resources,
+    ) -> Step:
+        del project
+        return replace(
+            step,
+            resources=(_XRUN,),
+            _resource_bindings=_runtime_bindings(resources, _XRUN),
+        )
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -797,6 +833,7 @@ class XceliumAmsBackend(_CadenceDomainAdapter):
             sources=bindings,
             captured=captured,
             resources=external,
+            runtime_bindings=_runtime_bindings(resources, _XRUN),
         )
         self.preflight(prepared, resources)
         return prepared
@@ -963,6 +1000,11 @@ class NativeOaBackend(_CadenceDomainAdapter):
             sources=sources,
             captured=captured,
             resources=external,
+            runtime_bindings=_runtime_bindings(
+                resources,
+                *_BRIDGE_RESOURCES,
+                CADENCE_VIRTUOSO_TOOL,
+            ),
         )
         self.preflight(prepared, resources)
         return prepared
@@ -1158,6 +1200,11 @@ class _OaBackend(_CadenceDomainAdapter):
             sources=sources,
             captured=captured,
             resources=external,
+            runtime_bindings=_runtime_bindings(
+                resources,
+                *_BRIDGE_RESOURCES,
+                *_oa_runtime_executables(planning, self.operation),
+            ),
         )
         self.preflight(prepared, resources)
         return prepared
@@ -1323,6 +1370,7 @@ class LayoutBackend(_CadenceDomainAdapter):
             sources=sources,
             captured=captured,
             resources=external,
+            runtime_bindings=_runtime_bindings(resources, *_BRIDGE_RESOURCES),
         )
         self.preflight(prepared, resources)
         return prepared
@@ -1478,6 +1526,12 @@ class LayoutVerificationBackend(_CadenceDomainAdapter):
             sources=sources,
             captured=captured,
             resources=external,
+            runtime_bindings=_runtime_bindings(
+                resources,
+                *_BRIDGE_RESOURCES,
+                _XSTREAM,
+                _CALIBRE,
+            ),
         )
         self.preflight(prepared, resources)
         return prepared

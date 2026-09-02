@@ -194,6 +194,7 @@ class Project:
         repr=False,
         compare=False,
     )
+    _plan_authority: object = field(default_factory=object, repr=False, compare=False)
 
     def _adapters(self) -> AdapterRegistry:
         """Return this Project's package-owned tool adapters."""
@@ -273,6 +274,7 @@ class Project:
             project=self,
             adapters=self._adapters(),
             resources=self._execution_resources(),
+            authority=self._plan_authority,
         )
 
     def preflight(
@@ -287,7 +289,7 @@ class Project:
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
         resources = self._execution_resources()
-        self._require_project_plan(plan)
+        self._require_project_plan(plan, resources)
         return _preflight(plan, resources, self._adapters())
 
     def run(
@@ -305,7 +307,7 @@ class Project:
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")
         resources = self._execution_resources()
-        self._require_project_plan(plan)
+        self._require_project_plan(plan, resources)
         return _run(
             plan,
             resources,
@@ -318,12 +320,23 @@ class Project:
             progress=progress,
         )
 
-    def _require_project_plan(self, plan: ExecutionPlan) -> None:
+    def _require_project_plan(self, plan: ExecutionPlan, resources: Resources) -> None:
         """Require a plan produced from this exact project composition."""
 
         if plan.project_identity != self.identity:
             raise ContractError("execution plan belongs to another project composition")
-        self.owner(plan.owner)
+        if plan._authority is not self._plan_authority:
+            raise ContractError("execution plan was not produced by this Project")
+        owner_root = self.owner(plan.owner).root.resolve()
+        project_root = self.project_root.resolve()
+        for source in plan.sources:
+            expected_root = owner_root if source.scope == "owner" else project_root
+            if source.root != expected_root or not source.location.is_relative_to(
+                expected_root
+            ):
+                raise ContractError("execution plan source escaped its project scope")
+        if any(not resources.matches(binding) for binding in plan.resources):
+            raise ContractError("execution plan runtime binding drifted")
 
     def _execution_resources(self) -> Resources:
         """Bind project runtime configuration to a sanitized host snapshot."""

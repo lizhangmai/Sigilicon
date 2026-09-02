@@ -58,7 +58,7 @@ def _preflight(
             )
         )
     for resource in plan.resources:
-        current = resource.current()
+        current = resources.matches(resource)
         checks.append(
             PreflightCheck(
                 "external-resource",
@@ -144,12 +144,15 @@ def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
 def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
     """Materialize host resources without persisting their original locations."""
 
-    if not plan.resources:
+    materialized = tuple(
+        resource for resource in plan.resources if resource.kind != "value"
+    )
+    if not materialized:
         return None
     root = record.directory("inputs", "resources")
-    for resource in plan.resources:
+    for resource in materialized:
         components = ("resources", resource.materialization_key)
-        if resource.kind == "file":
+        if resource.kind in {"tool", "file"}:
             item = resource.files[0]
             path = record.write_bytes("inputs", components, item.data)
             path.chmod(0o555 if item.executable else 0o444)
@@ -272,7 +275,7 @@ def _run(
         changed_resources = tuple(
             resource.identity
             for resource in plan.resources
-            if not resource.current()
+            if not resources.matches(resource)
         )
         if changed_resources:
             raise ExecutionError(
@@ -281,6 +284,10 @@ def _run(
             )
         source_root = _seal_sources(record, plan)
         resource_root = _seal_resources(record, plan)
+        execution_resources = resources.for_execution(
+            plan.resources,
+            resource_root,
+        )
         for step in plan.steps:
             if progress is not None:
                 progress(step.id, "running")
@@ -326,7 +333,7 @@ def _run(
                     work_root=work_root,
                     output_root=output_root,
                     source_root=source_root,
-                    resources=resources,
+                    resources=execution_resources,
                     dependencies=dependencies,
                     project_root=project_root,
                     owner_root=owner_root,

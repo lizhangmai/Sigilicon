@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
@@ -103,6 +104,7 @@ def plan_execution(
     project: PlanningProject,
     adapters: AdapterRegistry,
     resources: Resources,
+    authority: object,
 ) -> ExecutionPlan:
     """Resolve every step to one complete, immutable input closure."""
 
@@ -164,8 +166,33 @@ def plan_execution(
             captured[(source.root, source.path)] = source
             captured_names[source.path] = source.root
 
+        declared_resources = tuple(
+            dict.fromkeys(
+                (
+                    *planned.resources,
+                    *planned.runtime.tools.values(),
+                    *planned.runtime.files.values(),
+                    *planned.runtime.directories.values(),
+                    *planned.runtime.values.values(),
+                )
+            )
+        )
+        step_resources = {
+            binding.identity: binding for binding in planned._resource_bindings
+        }
+        for identity in declared_resources:
+            if identity not in step_resources:
+                step_resources[identity] = resources.capture(identity)
+        planned = replace(
+            planned,
+            resources=declared_resources,
+            _resource_bindings=tuple(
+                step_resources[identity] for identity in declared_resources
+            ),
+        )
+
         for resource in planned._resource_bindings:
-            if not resource.current():
+            if not resources.matches(resource):
                 raise ContractError(
                     f"external resource changed during planning: {resource.identity}"
                 )
@@ -192,6 +219,7 @@ def plan_execution(
         resources=tuple(
             captured_resources[name] for name in sorted(captured_resources)
         ),
+        _authority=authority,
     )
 
 

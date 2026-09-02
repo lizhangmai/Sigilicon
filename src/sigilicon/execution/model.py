@@ -284,25 +284,45 @@ class ResourceFile:
 
 @dataclass(frozen=True)
 class ResourceBinding:
-    """Exact file or sealed directory bound to one logical runtime identity."""
+    """Exact tool, file, directory, or value bound to one runtime identity."""
 
     identity: str
     kind: str
     sha256: str
-    location: Path = field(repr=False, compare=False)
+    location: Path | None = field(repr=False, compare=False)
     files: tuple[ResourceFile, ...] = field(repr=False, compare=False)
     directories: tuple[str, ...] = ()
+    value: str | None = field(default=None, repr=False)
     _fingerprint: tuple[tuple[object, ...], ...] = field(
         default=(), repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
         resource_identity(self.identity)
-        if self.kind not in {"file", "directory"}:
-            raise ContractError("resource binding kind must be file or directory")
-        location = Path(self.location).absolute()
-        if location != location.resolve():
+        if self.kind not in {"tool", "file", "directory", "value"}:
+            raise ContractError("unsupported resource binding kind")
+        location = (
+            None if self.location is None else Path(self.location).absolute()
+        )
+        if self.kind == "value":
+            if (
+                location is not None
+                or self.files
+                or self.directories
+                or not isinstance(self.value, str)
+                or not self.value
+            ):
+                raise ContractError("value resource binding has an invalid payload")
+            expected = hashlib.sha256(self.value.encode("utf-8")).hexdigest()
+            if expected != self.sha256:
+                raise ContractError("resource binding digest disagrees with its value")
+            if self._fingerprint:
+                raise ContractError("value resource binding cannot have a fingerprint")
+            return
+        if location is None or location != location.resolve():
             raise ContractError("resource binding must not traverse a symlink")
+        if self.value is not None:
+            raise ContractError("path resource binding cannot contain a value")
         if not isinstance(self.files, tuple) or any(
             not isinstance(item, ResourceFile) for item in self.files
         ):
@@ -322,7 +342,7 @@ class ResourceBinding:
                 raise ContractError(
                     "resource binding directories must be canonical and relative"
                 )
-        if self.kind == "file":
+        if self.kind in {"tool", "file"}:
             if len(self.files) != 1 or self.files[0].path or self.directories:
                 raise ContractError("file resource binding must contain one root payload")
             expected = self.files[0].sha256
@@ -359,12 +379,21 @@ class ResourceBinding:
         object.__setattr__(self, "location", location)
 
     @classmethod
-    def capture(cls, path: Path, *, identity: str) -> "ResourceBinding":
+    def capture(
+        cls,
+        path: Path,
+        *,
+        identity: str,
+        kind: str | None = None,
+    ) -> "ResourceBinding":
         location = Path(path).absolute()
         if location != location.resolve():
             raise ContractError(f"resource binding must not traverse a symlink: {path}")
         metadata = location.stat(follow_symlinks=False)
         if stat.S_ISREG(metadata.st_mode):
+            selected_kind = "file" if kind is None else kind
+            if selected_kind not in {"tool", "file"}:
+                raise ContractError("regular resource must be a tool or file")
             data = read_nofollow_bytes(location)
             current = location.stat(follow_symlinks=False)
             fingerprint = (
@@ -385,7 +414,7 @@ class ResourceBinding:
             )
             return cls(
                 resource_identity(identity),
-                "file",
+                selected_kind,
                 entry.sha256,
                 location,
                 (entry,),
@@ -393,6 +422,8 @@ class ResourceBinding:
             )
         if not stat.S_ISDIR(metadata.st_mode):
             raise ContractError(f"resource binding must be a file or directory: {path}")
+        if kind not in {None, "directory"}:
+            raise ContractError("directory resource must use the directory kind")
 
         directories: list[str] = []
         files: list[ResourceFile] = []
@@ -563,7 +594,20 @@ class ResourceBinding:
             location,
             file_tuple,
             directory_tuple,
-            tuple(fingerprint),
+            _fingerprint=tuple(fingerprint),
+        )
+
+    @classmethod
+    def capture_value(cls, value: str, *, identity: str) -> "ResourceBinding":
+        if not isinstance(value, str) or not value:
+            raise ContractError("runtime value must be non-empty text")
+        return cls(
+            resource_identity(identity),
+            "value",
+            hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            None,
+            (),
+            value=value,
         )
 
     @property
@@ -572,9 +616,16 @@ class ResourceBinding:
             "identity": self.identity,
             "kind": self.kind,
             "sha256": self.sha256,
-            "size": sum(len(item.data) for item in self.files),
+            "size": (
+                len(self.value.encode("utf-8"))
+                if self.kind == "value" and self.value is not None
+                else sum(len(item.data) for item in self.files)
+            ),
         }
-        if self.kind == "file":
+        if self.kind == "value":
+            assert self.value is not None
+            common["value"] = self.value
+        elif self.kind in {"tool", "file"}:
             common["executable"] = self.files[0].executable
         else:
             common["directories"] = list(self.directories)
@@ -587,8 +638,8 @@ class ResourceBinding:
 
     @property
     def data(self) -> bytes:
-        if self.kind != "file":
-            raise ContractError("directory resource has no single payload")
+        if self.kind not in {"tool", "file"}:
+            raise ContractError("resource has no single binary payload")
         return self.files[0].data
 
     def read_text(self) -> str:
@@ -600,8 +651,15 @@ class ResourceBinding:
             ) from exc
 
     def current(self) -> bool:
+        if self.kind == "value":
+            return True
+        assert self.location is not None
         try:
-            current = type(self).capture(self.location, identity=self.identity)
+            current = type(self).capture(
+                self.location,
+                identity=self.identity,
+                kind=self.kind,
+            )
             return (
                 current.record == self.record
                 and current._fingerprint == self._fingerprint
@@ -767,7 +825,8 @@ class ExecutionPlan:
     variant: str | None
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
-    resources: tuple[ResourceBinding, ...] = field(repr=False, compare=False)
+    resources: tuple[ResourceBinding, ...] = field(repr=False)
+    _authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_identity, str) or _DIGEST.fullmatch(
@@ -816,7 +875,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 8,
+            "schema": 9,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
@@ -956,6 +1015,81 @@ class Resources:
         if value is None:
             raise ContractError(f"required runtime value is missing: {identity}")
         return value
+
+    def capture(self, name: str) -> ResourceBinding:
+        """Capture one configured identity without guessing its resource kind."""
+
+        identity = resource_identity(name)
+        if identity in self.tools:
+            return ResourceBinding.capture(
+                self.require_tool(identity), identity=identity, kind="tool"
+            )
+        if identity in self.files:
+            return ResourceBinding.capture(
+                self.require_file(identity), identity=identity, kind="file"
+            )
+        if identity in self.directories:
+            return ResourceBinding.capture(
+                self.require_directory(identity), identity=identity, kind="directory"
+            )
+        if identity in self.values:
+            return ResourceBinding.capture_value(
+                self.require_value(identity), identity=identity
+            )
+        raise ContractError(f"runtime resource is not configured: {identity}")
+
+    def matches(self, binding: ResourceBinding) -> bool:
+        """Return whether this deployment still provides one exact binding."""
+
+        configured = {
+            *self.tools,
+            *self.files,
+            *self.directories,
+            *self.values,
+        }
+        if binding.identity not in configured:
+            return binding.kind in {"file", "directory"} and binding.current()
+        try:
+            return self.capture(binding.identity).record == binding.record
+        except (OSError, RuntimeError, ContractError):
+            return False
+
+    def for_execution(
+        self,
+        bindings: tuple[ResourceBinding, ...],
+        resource_root: Path | None,
+    ) -> "Resources":
+        """Bind adapters to planned values, held tools, and sealed data paths."""
+
+        tables: dict[str, dict[str, str]] = {
+            "tools": {},
+            "files": {},
+            "directories": {},
+            "values": {},
+        }
+        for binding in bindings:
+            if binding.kind == "value":
+                assert binding.value is not None
+                tables["values"][binding.identity] = binding.value
+                continue
+            if binding.kind == "tool":
+                assert binding.location is not None
+                tables["tools"][binding.identity] = str(binding.location)
+                continue
+            if resource_root is None:
+                raise ContractError("sealed runtime resource root is missing")
+            path = resource_root / binding.materialization_key
+            table = "files" if binding.kind == "file" else "directories"
+            tables[table][binding.identity] = str(path)
+        return Resources(
+            capabilities=self.capabilities,
+            tools=tables["tools"],
+            files=tables["files"],
+            directories=tables["directories"],
+            values=tables["values"],
+            inherit_environment=self.inherit_environment,
+            environment=self.environment,
+        )
 
 
 @dataclass(frozen=True)
@@ -1175,7 +1309,11 @@ class StepContext:
         ):
             raise ContractError("step context roots disagree with the managed run layout")
         expected_resource_root = run_root / "inputs" / "resources"
-        if self.step.resources and self.resource_root != expected_resource_root:
+        sealed_data = any(
+            kind in {"file", "directory"}
+            for kind in self.resource_kinds.values()
+        )
+        if sealed_data and self.resource_root != expected_resource_root:
             raise ContractError(
                 "step context resource root disagrees with the managed run layout"
             )
@@ -1195,7 +1333,7 @@ class StepContext:
             not isinstance(self.resource_kinds, Mapping)
             or set(self.resource_kinds) != set(self.step.resources)
             or any(
-                kind not in {"file", "directory"}
+                kind not in {"tool", "file", "directory", "value"}
                 for kind in self.resource_kinds.values()
             )
         ):
@@ -1259,6 +1397,8 @@ class StepContext:
         """Return one sealed external resource selected by this Step."""
 
         name = resource_identity(resource)
+        if self.resource_kinds.get(name) in {"tool", "value"}:
+            raise ExecutionError(f"external resource is not sealed data: {name!r}")
         if name not in self.step.resources or self.resource_root is None:
             raise ExecutionError(f"external resource is outside this step: {name!r}")
         result = self.resource_root / resource_materialization_key(name)

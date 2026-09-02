@@ -154,15 +154,30 @@ def _context(
 
 def _bind_plan(context: StepContext, step: Step) -> StepContext:
     root = context.source_root.parent / "resources"
-    root.mkdir(exist_ok=True)
+    sealed = tuple(
+        resource
+        for resource in step._resource_bindings
+        if resource.kind in {"file", "directory"}
+    )
+    if sealed:
+        root.mkdir(exist_ok=True)
     for resource in step._resource_bindings:
-        assert resource.kind == "file"
-        (root / resource.materialization_key).write_bytes(resource.data)
+        if resource.kind == "file":
+            (root / resource.materialization_key).write_bytes(resource.data)
+        elif resource.kind == "directory":
+            target = root / resource.materialization_key
+            target.mkdir()
+            for directory in resource.directories:
+                (target / directory).mkdir(parents=True)
+            for item in resource.files:
+                path = target / item.path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(item.data)
     return replace(
         context,
         step=step,
         source_scopes={source: "owner" for source in step.sources},
-        resource_root=root if step._resource_bindings else None,
+        resource_root=root if sealed else None,
         resource_digests={
             resource.identity: resource.sha256
             for resource in step._resource_bindings
@@ -390,10 +405,20 @@ def _oa_context(
     owner.mkdir(parents=True)
     workspace.mkdir()
     runtime_step = step
+    virtuoso = _file(tmp_path / "site/virtuoso", executable=True)
     context = _context(
         tmp_path,
         runtime_step,
-        Resources(frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})),
+        Resources(
+            capabilities=frozenset(
+                {"tool.virtuoso-bridge", "license.cadence-oa"}
+            ),
+            tools={"cadence.virtuoso": str(virtuoso)},
+            values={
+                "virtuoso-bridge.host": "127.0.0.1",
+                "virtuoso-bridge.port": "65432",
+            },
+        ),
         project_root=project,
         owner_root=owner,
         workspace_root=workspace,
@@ -567,11 +592,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     )
     backend = NativeOaBackend()
     prepared = backend.plan(project, step, context.resources)
-    context = replace(
-        context,
-        step=prepared,
-        source_scopes={source: "owner" for source in prepared.sources},
-    )
+    context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     result = backend.run(context, prepared)
@@ -747,11 +768,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
 
     backend = LayoutBackend()
     prepared = backend.plan(project, step, context.resources)
-    context = replace(
-        context,
-        step=prepared,
-        source_scopes={source: "owner" for source in prepared.sources},
-    )
+    context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
     result = backend.run(context, prepared)
 
@@ -768,7 +785,10 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         "sigilicon.workflows.layout_generation.generate_layout",
         uncertain,
     )
-    second = _oa_context(tmp_path / "uncertain", prepared, registered=[])
+    second = _bind_plan(
+        _oa_context(tmp_path / "uncertain", step, registered=[]),
+        prepared,
+    )
     result = backend.run(second, prepared)
     assert result.status == "uncertain"
     assert result.facts["workspace_uncertainty"] == (

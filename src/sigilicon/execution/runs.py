@@ -193,7 +193,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 8
+            plan.get("schema") != 9
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -342,17 +342,26 @@ class RunStore:
             ordered_identities.append(identity)
             try:
                 materialization_key = resource_materialization_key(identity)
-                binding = ResourceBinding.capture(
-                    resource_root / materialization_key,
-                    identity=identity,
-                )
+                kind = record.get("kind")
+                if kind == "value":
+                    binding = ResourceBinding.capture_value(
+                        record.get("value"),
+                        identity=identity,
+                    )
+                else:
+                    binding = ResourceBinding.capture(
+                        resource_root / materialization_key,
+                        identity=identity,
+                        kind=kind,
+                    )
             except (OSError, RuntimeError, ContractError) as exc:
                 raise RunStoreError(
                     "persisted runtime resource is missing or unsafe"
                 ) from exc
             if binding.record != dict(record):
                 raise RunStoreError("persisted runtime resource identity drift")
-            expected_members.add(materialization_key)
+            if binding.kind != "value":
+                expected_members.add(materialization_key)
         if ordered_identities != sorted(ordered_identities):
             raise RunStoreError("persisted runtime resources are not canonical")
         if expected_members:
@@ -368,6 +377,8 @@ class RunStore:
                 ) from exc
             if actual_members != expected_members:
                 raise RunStoreError("persisted runtime resource closure drift")
+        elif any(record.get("kind") != "value" for record in resources):
+            raise RunStoreError("persisted runtime resource closure is missing")
         elif resource_root.exists():
             raise RunStoreError("persisted runtime resource closure is unexpected")
 

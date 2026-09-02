@@ -321,9 +321,11 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 8
+    assert json.loads(json.dumps(plan.record))["schema"] == 9
     assert "resources_identity" not in plan.record
-    assert plan.record["resources"] == []
+    assert [resource["identity"] for resource in plan.record["resources"]] == [
+        "test.value"
+    ]
     assert not hasattr(plan, "_adapters")
     assert not project.artifact_root.exists()
     checked = project.preflight(plan)
@@ -351,8 +353,11 @@ def test_project_plan_is_independent_of_runtime_resources(
         encoding="utf-8",
     )
     without_runtime = _project(tmp_path, CopyAdapter())
-    assert without_runtime.plan("example:check").record == plan.record
-    assert without_runtime.preflight(plan).status == "blocked"
+    current = without_runtime.plan("example:check")
+    assert current.record == plan.record
+    assert without_runtime.preflight(current).status == "blocked"
+    with pytest.raises(ContractError, match="not produced by this Project"):
+        without_runtime.preflight(plan)
 
 
 def test_project_runtime_configuration_replaces_sigilicon_environment(
@@ -550,10 +555,13 @@ def test_adapter_planning_closes_over_discovered_sources_deterministically(
         "configs/discovered-a.txt",
         "configs/discovered-b.txt",
     )
-    assert _project(
+    verifier = _project(
         tmp_path,
         DiscoveringAdapter((first, second)),
-    ).preflight(forward).ready
+    )
+    with pytest.raises(ContractError, match="not produced by this Project"):
+        verifier.preflight(forward)
+    assert verifier.preflight(verifier.plan("example:check")).ready
 
 
 def test_planning_rejects_a_compiled_source_change(tmp_path: Path) -> None:
