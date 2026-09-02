@@ -57,6 +57,18 @@ def _preflight(
                 "exact source snapshot" if current else "source changed after planning",
             )
         )
+    for resource in plan.resources:
+        current = resource.current()
+        checks.append(
+            PreflightCheck(
+                "external-resource",
+                resource.identity,
+                "ready" if current else "blocked",
+                "exact resource snapshot"
+                if current
+                else "resource changed after planning",
+            )
+        )
     for step in plan.steps:
         try:
             backend = backends[step.uses]
@@ -141,6 +153,28 @@ def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
     return root
 
 
+def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
+    """Materialize host resources without persisting their original locations."""
+
+    if not plan.resources:
+        return None
+    root = record.directory("inputs", "resources")
+    for resource in plan.resources:
+        path = record.write_text(
+            "inputs",
+            ("resources", resource.materialization_key),
+            resource.text,
+        )
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            os.fchmod(descriptor, 0o444)
+        finally:
+            os.close(descriptor)
+        record.add_file("inputs", path)
+    root.chmod(0o555)
+    return root
+
+
 def _register_tree(record: RunRecord, role: str, root: Path) -> None:
     """Close the owned inventory without accepting symlinks or path replacement."""
 
@@ -210,7 +244,18 @@ def _run(
                 "operation source changed immediately before backend input sealing: "
                 + ", ".join(sorted(set(changed_at_seal)))
             )
+        changed_resources = tuple(
+            resource.identity
+            for resource in plan.resources
+            if not resource.current()
+        )
+        if changed_resources:
+            raise ExecutionError(
+                "external resource changed immediately before input sealing: "
+                + ", ".join(sorted(set(changed_resources)))
+            )
         source_root = _seal_sources(record, plan)
+        resource_root = _seal_resources(record, plan)
         for step in plan.steps:
             if progress is not None:
                 progress(step.id, "running")
@@ -265,6 +310,12 @@ def _run(
                         source.path: source.scope
                         for source in plan.sources
                         if source.path in step.sources
+                    },
+                    resource_root=resource_root,
+                    resource_digests={
+                        resource.identity: resource.sha256
+                        for resource in plan.resources
+                        if resource.identity in step.resources
                     },
                     _register_operation=(
                         lambda operation: operation.register_artifact(record)

@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.contracts import (
+    contract_schema,
     freeze_toml_document,
     read_toml,
     require_config_header,
@@ -365,6 +366,7 @@ def _parse_verification_cell(
             contract_kind=declared_kind,
             path_scope=declared_scope,
             owner=owner,
+            schema=contract_schema(declared_kind),
         )
         source_documents[declared_contract] = freeze_toml_document(declared_raw)
     runner_raw = raw.get("runner")

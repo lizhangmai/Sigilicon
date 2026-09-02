@@ -83,6 +83,26 @@ def _context(
     )
 
 
+def _bind_preparation(context: StepContext, preparation) -> StepContext:
+    root = context.source_root.parent / "resources"
+    root.mkdir(exist_ok=True)
+    for resource in preparation.resources:
+        (root / resource.materialization_key).write_text(
+            resource.text,
+            encoding="utf-8",
+        )
+    return replace(
+        context,
+        step=preparation.step,
+        source_scopes={source: "owner" for source in preparation.step.sources},
+        resource_root=root if preparation.resources else None,
+        resource_digests={
+            resource.identity: resource.sha256
+            for resource in preparation.resources
+        },
+    )
+
+
 def _fake_xrun(tmp_path: Path, marker: str) -> Path:
     return _file(
         tmp_path / "site/xcelium/tools/bin/xrun",
@@ -192,15 +212,29 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         owner=lambda name: SimpleNamespace(root=owner) if name == "example" else None,
     )
     planning = SimpleNamespace(
-        platform=SimpleNamespace(installation_root_environment=None),
-        spec=SimpleNamespace(cell="tb_ams"),
+        platform=SimpleNamespace(
+            key="fixture-pdk",
+            installation_root_environment=None,
+        ),
+        spec=SimpleNamespace(
+            cell="tb_ams",
+            ams=SimpleNamespace(circuit_role="circuit_netlist"),
+        ),
         source_records={
             contract: contract.read_text(encoding="utf-8"),
             model: model.read_text(encoding="utf-8"),
         },
         sources=(contract,),
         circuit_netlist=contract,
-        model_set=SimpleNamespace(files=(model,)),
+        model_set=SimpleNamespace(name="nominal", files=(model,)),
+        integration_check={
+            "dependency_releases": [
+                {
+                    "name": "native-provider",
+                    "release_id": "development-fixture",
+                }
+            ]
+        },
         as_dict=lambda: {"cell": "tb_ams", "model": str(model)},
     )
     monkeypatch.setattr(
@@ -227,13 +261,14 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         execute,
     )
     backend = XceliumAmsBackend()
-    prepared = backend.prepare(selected_project, step).step
-    context = replace(
-        context,
-        step=prepared,
-        source_scopes={source: "owner" for source in prepared.sources},
-    )
+    preparation = backend.prepare(selected_project, step)
+    prepared = preparation.step
+    context = _bind_preparation(context, preparation)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: selected_project)
+
+    record = prepared.record
+    assert str(model) not in str(record)
+    assert "model snapshot" not in str(record)
 
     assert all(
         check.status == "ready" for check in backend.preflight(prepared, resources)
@@ -446,6 +481,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     planning = SimpleNamespace(
         source_records={source: source.read_text(encoding="utf-8")},
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
+        spec=SimpleNamespace(pdk=SimpleNamespace()),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
@@ -631,12 +667,9 @@ def test_layout_verification_backend_publishes_classified_evidence(
         verify,
     )
     backend = LayoutVerificationBackend()
-    prepared = backend.prepare(project, step).step
-    context = replace(
-        context,
-        step=prepared,
-        source_scopes={source: "owner" for source in prepared.sources},
-    )
+    preparation = backend.prepare(project, step)
+    prepared = preparation.step
+    context = _bind_preparation(context, preparation)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
 
     assert all(

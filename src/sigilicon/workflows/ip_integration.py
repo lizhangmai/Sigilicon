@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.artifacts import _read_nofollow_bytes
 from sigilicon.contracts import require_config_header
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
@@ -29,10 +26,10 @@ from sigilicon.domain.ip_release import (
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PdkConfig
 from sigilicon.project import Project
+from sigilicon.release_store import AuditedRelease, ReleaseRef, ReleaseStore
 from sigilicon.workflows.ip_packaging import (
     audit_ip_release_manifest,
     plan_ip_release_contract,
-    resolve_release_role,
 )
 
 if TYPE_CHECKING:
@@ -374,29 +371,14 @@ def resolve_locked_ip_release(
     *,
     artifact_root: Path,
     pinned: LockedIpRelease,
-) -> tuple[Path, Mapping[str, Any]]:
+) -> AuditedRelease:
     """Resolve one exact cross-owner release without following producer state."""
 
-    root = Path(os.path.abspath(artifact_root))
-    relative = Path(*pinned.manifest.parts)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise RuntimeError("IP dependency lock escapes the artifact root")
-    manifest_path = root / relative
-    try:
-        manifest_digest = hashlib.sha256(
-            _read_nofollow_bytes(manifest_path)
-        ).hexdigest()
-    except (OSError, RuntimeError) as exc:
-        raise FileNotFoundError(
-            f"IP dependency release manifest is unavailable: {manifest_path}"
-        ) from exc
-    if manifest_digest != pinned.manifest_sha256:
-        raise RuntimeError(
-            "IP dependency lock manifest digest does not match its package"
-        )
-    manifest = audit_ip_release_manifest(manifest_path)
+    release = ReleaseStore.from_artifact_root(artifact_root).open(
+        ReleaseRef(pinned.store, pinned.object, pinned.manifest_sha256),
+        validate=audit_ip_release_manifest,
+    )
+    manifest = release.manifest
     if (
         manifest.get("ip_name") != pinned.name
         or manifest.get("release_id") != pinned.release_id
@@ -411,7 +393,7 @@ def resolve_locked_ip_release(
         raise RuntimeError("IP dependency release has no maturity record")
     if maturity.get("level") != pinned.maturity:
         raise RuntimeError("IP dependency lock maturity does not match its manifest")
-    return manifest_path, manifest
+    return release
 
 
 def _locked_release_manifest(
@@ -420,14 +402,15 @@ def _locked_release_manifest(
     artifact_root: Path,
     dependency: IpIntegrationDependency,
     pinned: LockedIpRelease,
-) -> tuple[Path, Mapping[str, Any]]:
+) -> AuditedRelease:
     release = dependency.release
     if release is None:
         raise RuntimeError(f"IP dependency {dependency.name} has no release contract")
-    manifest_path, manifest = resolve_locked_ip_release(
+    audited = resolve_locked_ip_release(
         artifact_root=artifact_root,
         pinned=pinned,
     )
+    manifest = audited.manifest
     if manifest.get("ip_name") != dependency.name:
         raise RuntimeError("IP dependency lock identity does not match its dependency")
     component_path = (
@@ -451,7 +434,7 @@ def _locked_release_manifest(
         for check in checks
     ):
         raise RuntimeError("IP dependency release maturity checks are incomplete")
-    return manifest_path, manifest
+    return audited
 
 
 def _selected_lock(
@@ -515,12 +498,13 @@ def check_ip_integration(
         release = dependency.release
         assert release is not None
         pinned = locked_by_name[dependency.name]
-        manifest_path, manifest = _locked_release_manifest(
+        audited = _locked_release_manifest(
             contract=contract,
             artifact_root=artifact_root,
             dependency=dependency,
             pinned=pinned,
         )
+        manifest = audited.manifest
         maturity = manifest.get("maturity")
         assert isinstance(maturity, Mapping)
         actual_level = str(maturity.get("level"))
@@ -553,12 +537,7 @@ def check_ip_integration(
                     f"IP dependency role {role!r} is unavailable from export "
                     f"{release.export!r} for {fileset.required_capability}"
                 )
-            role_path = resolve_release_role(
-                manifest,
-                manifest_path,
-                role,
-                export=release.export,
-            )
+            role_path = audited.role(release.export, role).path
             relative_paths.append(role_path.relative_to(artifact_root).as_posix())
         release_sources.extend(relative_paths)
         resolved_dependencies.append(
@@ -567,9 +546,10 @@ def check_ip_integration(
                 "export": release.export,
                 "release_id": pinned.release_id,
                 "source_commit": pinned.source_commit,
+                "store": pinned.store,
+                "object": pinned.object,
                 "manifest_sha256": pinned.manifest_sha256,
                 "maturity": actual_level,
-                "manifest": manifest_path.relative_to(artifact_root).as_posix(),
                 "roles": {
                     role: path
                     for role, path in zip(roles, relative_paths, strict=True)

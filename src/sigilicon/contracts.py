@@ -13,6 +13,10 @@ from sigilicon.artifacts import read_nofollow_text
 
 
 CONFIG_SCHEMA = 1
+_CONFIG_SCHEMAS = {
+    "ip-dependency-lock": 2,
+    "owner-operations": 2,
+}
 PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
 )
@@ -60,6 +64,12 @@ class ConfigHeader:
     contract_kind: str
     path_scope: str
     owner: str
+
+
+def contract_schema(contract_kind: str) -> int:
+    """Return the one supported schema for a typed configuration domain."""
+
+    return _CONFIG_SCHEMAS.get(contract_kind, CONFIG_SCHEMA)
 
 
 def _text(value: object, field: str) -> str:
@@ -131,6 +141,7 @@ __all__ = [
     "CONFIG_SCHEMA",
     "ConfigHeader",
     "PATH_SCOPES",
+    "contract_schema",
     "freeze_toml_document",
     "is_frozen_toml_document",
     "read_toml",

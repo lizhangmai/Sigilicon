@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from sigilicon.execution import (
     StepResult,
 )
 from sigilicon.execution.backend import _Preparation
+from sigilicon.execution.model import ExternalResource
 from sigilicon.execution.runs import RunStoreError, _RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
@@ -211,7 +213,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 3
+    assert json.loads(json.dumps(plan.record))["schema"] == 4
     assert "backend_bindings" not in plan.record
     assert not hasattr(plan, "_backends")
     assert not project.artifact_root.exists()
@@ -546,6 +548,107 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     sealed = result.run_root / "inputs/sources/configs/value.txt"
     assert sealed.stat().st_mode & 0o777 == 0o444
     assert sealed.parent.stat().st_mode & 0o777 == 0o555
+
+
+def test_external_resource_is_sealed_without_persisting_location_or_text(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "site/pdk/model.scs"
+    live.parent.mkdir(parents=True)
+    live.write_text("proprietary model\n", encoding="utf-8")
+
+    class ResourceBackend(CopyBackend):
+        def prepare(self, _project, step):
+            resource = ExternalResource.capture(
+                live,
+                identity="pdk:fixture:simulation/nominal/model.scs",
+            )
+            prepared = PreparedStep.from_operation(
+                step,
+                resources=(resource.identity,),
+            )
+            return _Preparation(prepared, resources=(resource,))
+
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+            live.write_text("changed after sealing\n", encoding="utf-8")
+            output = context.write_text(
+                "source",
+                "model.scs",
+                context.resource_text(step.resources[0]),
+            )
+            return StepResult.succeeded(
+                artifacts=(Artifact("source", "text.model", output),)
+            )
+
+    project = _project(tmp_path, ResourceBackend())
+    plan = project.plan("example:check")
+
+    assert str(live) not in str(plan.record)
+    assert "proprietary model" not in str(plan.record)
+    assert plan.record["resources"] == [plan.resources[0].record]
+
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="e" * 32,
+    )
+
+    output = result.outcomes[0].result.artifacts[0].path
+    assert output.read_text(encoding="utf-8") == "proprietary model\n"
+    persisted = (result.run_root / "inputs/execution-plan.json").read_text(
+        encoding="utf-8"
+    )
+    assert str(live) not in persisted
+    assert "proprietary model" not in persisted
+
+
+def test_external_resource_reader_rejects_sealed_content_tampering(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "site/pdk/model.scs"
+    live.parent.mkdir(parents=True)
+    live.write_text("trusted model\n", encoding="utf-8")
+
+    class TamperingBackend(CopyBackend):
+        def prepare(self, _project, step):
+            resource = ExternalResource.capture(
+                live,
+                identity="pdk:fixture:simulation/nominal/model.scs",
+            )
+            return _Preparation(
+                PreparedStep.from_operation(
+                    step,
+                    resources=(resource.identity,),
+                ),
+                resources=(resource,),
+            )
+
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+            sealed = context.resource_path(step.resources[0])
+            metadata = sealed.stat()
+            sealed.chmod(0o600)
+            sealed.write_text("forged model!\n", encoding="utf-8")
+            with pytest.raises(ExecutionError, match="resource identity drift"):
+                context.resource_text(step.resources[0])
+            sealed.write_text("trusted model\n", encoding="utf-8")
+            os.utime(
+                sealed,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+            )
+            sealed.chmod(0o444)
+            return StepResult.succeeded(facts={"tamper_rejected": True})
+
+    project = _project(tmp_path, TamperingBackend())
+    plan = project.plan("example:check")
+
+    result = project.run(
+        plan,
+        Resources(frozenset({"offline"})),
+        run_id="7" * 32,
+    )
+    assert result.outcomes[0].result.facts == {"tamper_rejected": True}
 
 
 def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:

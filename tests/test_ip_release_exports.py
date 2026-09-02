@@ -22,6 +22,17 @@ from sigilicon.workflows.ip_packaging import release_role_view
 from conftest import write_project_context
 
 
+def _built_manifest(project: Project, built: dict[str, object]) -> Path:
+    return (
+        project.artifact_root
+        / "release-store"
+        / str(built["store"])
+        / "objects"
+        / str(built["object"])
+        / "manifest.json"
+    )
+
+
 def _contract_fixture(root: Path) -> Path:
     write_project_context(root)
     owner = root / "ip/fixture"
@@ -509,7 +520,10 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         contract_path,
         project=contract.project,
     )
-    manifest = contract.project.artifact_root / built["manifest"]
+    assert built["store"] == "native-fixture"
+    assert built["object"] == f"sha256-{built['manifest_sha256']}"
+    assert "manifest" not in built
+    manifest = _built_manifest(contract.project, built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
     assert audited["schema"] == 2
     assert audited["release_id"] == f"development-{'d' * 40}"
@@ -520,7 +534,11 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         contract_path,
         project=contract.project,
     )
-    assert repeated["manifest"] == built["manifest"]
+    assert {
+        key: repeated[key] for key in ("store", "object", "manifest_sha256")
+    } == {
+        key: built[key] for key in ("store", "object", "manifest_sha256")
+    }
     assert manifest.read_bytes() == snapshot
     assert audited["exports"] == plan["exports"]
     circuit_path = ip_packaging.resolve_release_role(
@@ -601,7 +619,7 @@ capabilities = ["synthesis"]
         contract_path,
         project=contract.project,
     )
-    manifest = contract.project.artifact_root / built["manifest"]
+    manifest = _built_manifest(contract.project, built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
     assert audited["exports"][0]["availability"] == plan["exports"][0][
         "availability"
@@ -656,7 +674,7 @@ def test_native_oa_package_rejects_digital_interface_sections(
         contract_path,
         project=contract.project,
     )
-    manifest_path = contract.project.artifact_root / built["manifest"]
+    manifest_path = _built_manifest(contract.project, built)
     tampered_root = tmp_path / "tampered-native-release"
     shutil.copytree(manifest_path.parent, tampered_root)
     tampered_manifest = tampered_root / "manifest.json"
@@ -715,7 +733,7 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
         contract_path,
         project=contract.project,
     )
-    manifest_path = contract.project.artifact_root / built["manifest"]
+    manifest_path = _built_manifest(contract.project, built)
     tampered_root = tmp_path / "tampered-native-hierarchy"
     shutil.copytree(manifest_path.parent, tampered_root)
     tampered_manifest = tampered_root / "manifest.json"
@@ -799,7 +817,7 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         contract_path,
         project=contract.project,
     )
-    manifest = contract.project.artifact_root / built["manifest"]
+    manifest = _built_manifest(contract.project, built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
     assert audited["exports"] == plan["exports"]
 
@@ -879,7 +897,7 @@ source = "ip/rtl_fixture/rtl/top.sv"
         contract_path,
         project=contract.project,
     )
-    manifest = contract.project.artifact_root / built["manifest"]
+    manifest = _built_manifest(contract.project, built)
     assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
         plan["exports"]
     )

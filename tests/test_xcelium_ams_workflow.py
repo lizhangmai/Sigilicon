@@ -108,7 +108,8 @@ def _patch_native_resolution(
                         "name": "native-provider",
                         "export": "native-top",
                         "release_id": "development-123456789abc",
-                        "manifest": "releases/native-provider/manifest.json",
+                        "store": "native-provider",
+                        "object": "sha256-" + "1" * 64,
                         "roles": {"circuit_netlist": relative},
                     }
                 ],
@@ -118,7 +119,7 @@ def _patch_native_resolution(
     )
 
 
-def _configure_locked_native_release(root: Path, circuit: Path) -> None:
+def _configure_locked_native_release(root: Path, circuit: Path) -> Path:
     _write(
         root / "ip/native-provider/configs/release.toml",
         '''schema = 1
@@ -261,9 +262,18 @@ VSS = "inout"
         "provenance": {"producer": "ip/native-provider"},
     }
     manifest.write_text(json.dumps(payload), encoding="utf-8")
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    object_id = f"sha256-{digest}"
+    published = (
+        root
+        / "artifacts/release-store/native-provider/objects"
+        / object_id
+    )
+    for source in (circuit, interface, ports, manifest):
+        _write(published / source.name, source.read_text(encoding="utf-8"))
     _write(
         root / "ip/demo/configs/dependency.lock.toml",
-        f'''schema = 1
+        f'''schema = 2
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "demo"
@@ -271,12 +281,14 @@ owner = "demo"
 [[dependency]]
 name = "native-provider"
 release_id = "development-{'a' * 40}"
-manifest = "releases/native-provider/manifest.json"
+store = "native-provider"
+object = "{object_id}"
 source_commit = "{'a' * 40}"
-manifest_sha256 = "{hashlib.sha256(manifest.read_bytes()).hexdigest()}"
+manifest_sha256 = "{digest}"
 maturity = "development"
 ''',
     )
+    return published / circuit.name
 
 
 def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
@@ -299,13 +311,31 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     assert "config cell=NATIVE_TOP use=spice" in control
     assert "tran tran stop=1u" in control
     assert plan.as_dict()["product_qualification_conclusion"] is False
+    serialized = json.dumps(plan.as_dict(), sort_keys=True)
+    assert str(tmp_path) not in serialized
+    assert circuit.read_text(encoding="utf-8") not in serialized
+
+
+def test_xcelium_ams_rejects_unknown_dependency_lock_fields(
+    tmp_path: Path,
+) -> None:
+    contract, circuit = _ams_project(tmp_path)
+    _configure_locked_native_release(tmp_path, circuit)
+    lock = tmp_path / "ip/demo/configs/dependency.lock.toml"
+    lock.write_text(
+        lock.read_text(encoding="utf-8") + 'legacy_manifest = "path"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fields must be exactly"):
+        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
 
 
 def test_xcelium_ams_rejects_same_size_release_tampering(
     tmp_path: Path,
 ) -> None:
     contract, circuit = _ams_project(tmp_path)
-    _configure_locked_native_release(tmp_path, circuit)
+    circuit = _configure_locked_native_release(tmp_path, circuit)
     payload = bytearray(circuit.read_bytes())
     payload[0] ^= 1
     circuit.write_bytes(payload)
@@ -318,17 +348,24 @@ def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
     tmp_path: Path,
 ) -> None:
     contract, circuit = _ams_project(tmp_path)
-    _configure_locked_native_release(tmp_path, circuit)
+    circuit = _configure_locked_native_release(tmp_path, circuit)
     manifest = circuit.parent / "manifest.json"
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload.pop("exports")
     manifest.write_text(json.dumps(payload), encoding="utf-8")
+    old_object = manifest.parent.name
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    new_object = f"sha256-{digest}"
+    manifest.parent.rename(manifest.parent.parent / new_object)
     lock = tmp_path / "ip/demo/configs/dependency.lock.toml"
     source = lock.read_text(encoding="utf-8")
+    source = source.replace(
+        f'object = "{old_object}"',
+        f'object = "{new_object}"',
+    )
     marker = 'manifest_sha256 = "'
     start = source.index(marker) + len(marker)
     end = source.index('"', start)
-    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     lock.write_text(source[:start] + digest + source[end:], encoding="utf-8")
 
     with pytest.raises(ValueError, match="release manifest"):

@@ -12,7 +12,8 @@ import re
 import tomllib
 from typing import Any, Mapping
 
-from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_text
+from sigilicon.artifacts import read_nofollow_text
+from sigilicon.domain.ip_integration import parse_locked_ip_release
 from sigilicon.external_tools import (
     owned_directory,
     owned_executable,
@@ -20,6 +21,7 @@ from sigilicon.external_tools import (
     run_process_group_capture,
 )
 from sigilicon.execution.step_files import StepFiles
+from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 
 
@@ -77,17 +79,6 @@ def _toml(path: Path, label: str) -> dict[str, Any]:
         raise ValueError(f"cannot read structural-link {label}") from exc
 
 
-def _manifest(path: Path) -> tuple[dict[str, Any], str]:
-    try:
-        snapshot = read_nofollow_text(path)
-        value = audit_ip_release_manifest(path)
-        if json.loads(snapshot) != value:
-            raise RuntimeError("release manifest changed while auditing")
-    except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
-        raise ValueError("cannot read structural-link release manifest") from exc
-    return value, hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
-
-
 def _text(document: Mapping[str, Any], name: str, label: str) -> str:
     value = document.get(name)
     if not isinstance(value, str) or not value:
@@ -121,7 +112,8 @@ class StructuralLinkPlan:
     release_liberty: Path
     release_id: str
     release_source_commit: str
-    release_manifest: str
+    release_store: str
+    release_object: str
     release_manifest_sha256: str
     release_liberty_sha256: str
     release_sources: tuple[Path, ...]
@@ -152,8 +144,7 @@ def plan_structural_link(
     library_compiler_version: str,
     release_export: str,
     liberty_role: str,
-    release_manifest: Path,
-    release_liberty: Path,
+    artifact_root: Path,
 ) -> StructuralLinkPlan:
     """Validate direct operation inputs and one exact locked release."""
 
@@ -204,7 +195,7 @@ def plan_structural_link(
 
     lock = _toml(dependency_lock_path, "dependency lock")
     if (
-        lock.get("schema") != 1
+        lock.get("schema") != 2
         or lock.get("contract_kind") != "ip-dependency-lock"
         or lock.get("owner") != owner
     ):
@@ -221,61 +212,38 @@ def plan_structural_link(
     )
     if len(matches) != 1:
         raise ValueError("structural-link dependency lock does not select one provider")
-    pinned = matches[0]
-    manifest, manifest_digest = _manifest(release_manifest)
-    if manifest_digest != pinned.get("manifest_sha256"):
-        raise ValueError("structural-link release manifest differs from its lock")
-    if not release_manifest.as_posix().endswith(_text(pinned, "manifest", "lock")):
-        raise ValueError("structural-link release manifest path differs from its lock")
+    pinned = parse_locked_ip_release(
+        matches[0], "structural-link dependency lock entry"
+    )
+    ref = ReleaseRef(pinned.store, pinned.object, pinned.manifest_sha256)
+    audited = ReleaseStore.from_artifact_root(artifact_root).open(
+        ref,
+        validate=audit_ip_release_manifest,
+    )
+    release_manifest = audited.manifest_path
+    manifest = audited.manifest
+    manifest_digest = ref.manifest_sha256
     if (
         manifest.get("ip_name") != dependency
         or manifest.get("owner") != dependency
-        or manifest.get("release_id") != pinned.get("release_id")
-        or manifest.get("source_commit") != pinned.get("source_commit")
+        or manifest.get("release_id") != pinned.release_id
+        or manifest.get("source_commit") != pinned.source_commit
     ):
         raise ValueError("structural-link release identity differs from its lock")
     maturity = manifest.get("maturity")
     if (
         not isinstance(maturity, Mapping)
-        or maturity.get("level") != pinned.get("maturity")
+        or maturity.get("level") != pinned.maturity
     ):
         raise ValueError("structural-link release maturity is invalid")
-    artifacts = manifest.get("views")
-    matches = (
-        [
-            item
-            for item in artifacts
-            if isinstance(item, Mapping)
-            and item.get("export") == release_export
-            and item.get("role") == liberty_role
-        ]
-        if isinstance(artifacts, list)
-        else []
-    )
-    if len(matches) != 1:
-        raise ValueError("structural-link release does not contain one macro Liberty")
-    released = matches[0]
-    released_path = Path(_text(released, "path", "manifest"))
-    if released_path.is_absolute() or any(
-        part in {"", ".", ".."} for part in released_path.parts
-    ):
-        raise ValueError("structural-link Liberty manifest path is unsafe")
-    expected_liberty = (release_manifest.parent / released_path).resolve()
-    if not expected_liberty.is_relative_to(release_manifest.parent.resolve()):
-        raise ValueError("structural-link Liberty escapes its release package")
-    if release_liberty.resolve() != expected_liberty:
-        raise ValueError("structural-link Liberty path differs from the release manifest")
     try:
-        liberty_metadata, liberty_digest = _inspect_nofollow_file(release_liberty)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("structural-link Liberty is missing or unsafe") from exc
-    if (
-        released.get("size") != liberty_metadata.st_size
-        or released.get("sha256") != liberty_digest
-    ):
+        liberty = audited.role(release_export, liberty_role)
+    except RuntimeError as exc:
         raise ValueError(
-            "structural-link Liberty content differs from the release manifest"
-        )
+            "structural-link release does not contain one macro Liberty"
+        ) from exc
+    release_liberty = liberty.path
+    liberty_digest = liberty.sha256
     if not rtl_sources or len(set(rtl_sources)) != len(rtl_sources):
         raise ValueError("structural-link requires unique RTL sources")
     if any(path.suffix.lower() not in {".sv", ".v"} for path in rtl_sources):
@@ -295,9 +263,10 @@ def plan_structural_link(
         expected_unresolved_references=expected_unresolved_references,
         library_compiler_version=library_compiler_version,
         release_liberty=release_liberty,
-        release_id=pinned["release_id"],
-        release_source_commit=pinned["source_commit"],
-        release_manifest=pinned["manifest"],
+        release_id=pinned.release_id,
+        release_source_commit=pinned.source_commit,
+        release_store=ref.store,
+        release_object=ref.object,
         release_manifest_sha256=manifest_digest,
         release_liberty_sha256=liberty_digest,
         release_sources=(release_manifest, release_liberty),
@@ -476,7 +445,8 @@ def execute_structural_link(
             "expected_unresolved_references": plan.expected_unresolved_references,
             "release_id": plan.release_id,
             "release_source_commit": plan.release_source_commit,
-            "manifest": plan.release_manifest,
+            "release_store": plan.release_store,
+            "release_object": plan.release_object,
             "manifest_sha256": plan.release_manifest_sha256,
             "macro_liberty_sha256": plan.release_liberty_sha256,
             **facts,

@@ -31,6 +31,7 @@ def _fixture(
     monkeypatch: pytest.MonkeyPatch,
     *,
     tamper_liberty: bool = False,
+    lock_extra: str = "",
 ):
     owner = tmp_path / "ip/consumer"
     compile_script = _write(owner / "implementation/compile.tcl", "exit\n")
@@ -172,19 +173,28 @@ A = "input"
         encoding="utf-8",
     )
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    object_id = f"sha256-{digest}"
+    published = tmp_path / "artifacts/release-store/fixture/objects" / object_id
+    published.parent.mkdir(parents=True)
+    release.rename(published)
+    release = published
+    manifest = release / "manifest.json"
+    liberty = release / "exports/native/synthesis/native.lib"
     lock = _write(
         owner / "configs/dependency.lock.toml",
-        f'''schema = 1
+        f'''schema = 2
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "consumer"
 [[dependency]]
 name = "cim-compute-v2"
 release_id = "development-0123456789ab"
-manifest = "exports/cim-compute-v2/package/development-0123456789ab/manifest.json"
+store = "fixture"
+object = "{object_id}"
 source_commit = "{'0' * 40}"
 manifest_sha256 = "{digest}"
 maturity = "development"
+{lock_extra}
 ''',
     )
     if tamper_liberty:
@@ -208,8 +218,7 @@ maturity = "development"
         library_compiler_version=_COMPAT_LC_VERSION,
         release_export="mx-block-v2",
         liberty_role="raw_macro_liberty_or_db",
-        release_manifest=manifest,
-        release_liberty=liberty,
+        artifact_root=tmp_path / "artifacts",
     )
     root = tmp_path / "run"
     artifacts = StepFiles(
@@ -224,11 +233,19 @@ maturity = "development"
     return plan, artifacts
 
 
+def test_structural_link_rejects_unknown_dependency_lock_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="fields must be exactly"):
+        _fixture(tmp_path, monkeypatch, lock_extra='legacy_manifest = "path"')
+
+
 def test_structural_link_rejects_same_size_release_tampering(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="release manifest"):
+    with pytest.raises(RuntimeError, match="content drifted"):
         _fixture(tmp_path, monkeypatch, tamper_liberty=True)
 
 

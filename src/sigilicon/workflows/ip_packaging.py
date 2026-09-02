@@ -42,7 +42,7 @@ from sigilicon.domain.systemverilog import (
     named_port_connections,
 )
 from sigilicon.external_tools import owned_directory, run_process_group
-from sigilicon.paths import ArtifactLayout
+from sigilicon.release_store import AuditedRelease, ReleaseRef, ReleaseStore
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
@@ -1456,10 +1456,7 @@ def _plan_loaded_ip_release(
             "contract": component.path.relative_to(contract.project_root).as_posix(),
         },
         "release_id": release_id,
-        "release_root": ArtifactLayout(repository.artifact_root)
-        .export(contract.name, "package", release_id)
-        .relative_to(repository.artifact_root)
-        .as_posix(),
+        "release_store": contract.owner,
         "source_commit": commit,
         "working_tree_dirty": dirty,
         "source_files": list(source_paths),
@@ -1586,22 +1583,9 @@ def build_ip_release(
         raise IpReleaseError(
             "IP releases require a clean source checkout"
         )
-    release_root = repository.artifact_root / Path(plan["release_root"])
-    namespace = release_root.parent
+    store = ReleaseStore.from_artifact_root(repository.artifact_root)
+    namespace = store.root / str(plan["release_store"]) / "objects"
     with owned_directory(namespace, create_missing=True) as release_namespace:
-        try:
-            existing = os.stat(
-                release_root.name,
-                dir_fd=release_namespace.fd,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            pass
-        else:
-            if not stat.S_ISDIR(existing.st_mode):
-                raise RuntimeError(f"IP release path is unsafe: {release_root}")
-            return _audit_loaded_ip_release(contract, plan)
-
         temporary_name = f".{plan['release_id']}.{uuid.uuid4().hex}.tmp"
         os.mkdir(temporary_name, dir_fd=release_namespace.fd)
         temporary = namespace / temporary_name
@@ -1700,21 +1684,42 @@ def build_ip_release(
                 "availability": plan["availability"],
             }
             atomic_write_json(temporary / "manifest.json", manifest)
-            _readonly_tree(temporary)
-            os.rename(
-                temporary_name,
-                release_root.name,
-                src_dir_fd=release_namespace.fd,
-                dst_dir_fd=release_namespace.fd,
+            manifest_digest = hashlib.sha256(
+                (temporary / "manifest.json").read_bytes()
+            ).hexdigest()
+            ref = ReleaseRef(
+                str(plan["release_store"]),
+                f"sha256-{manifest_digest}",
+                manifest_digest,
             )
-            installed = True
+            try:
+                existing = os.stat(
+                    ref.object,
+                    dir_fd=release_namespace.fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                _readonly_tree(temporary)
+                os.rename(
+                    temporary_name,
+                    ref.object,
+                    src_dir_fd=release_namespace.fd,
+                    dst_dir_fd=release_namespace.fd,
+                )
+                installed = True
+            else:
+                if not stat.S_ISDIR(existing.st_mode):
+                    raise RuntimeError(
+                        f"release store object path is unsafe: {ref.object}"
+                    )
         finally:
             if not installed:
                 try:
                     _remove_tree_at(release_namespace.fd, temporary_name)
                 except FileNotFoundError:
                     pass
-    return _audit_loaded_ip_release(contract, plan)
+    audited = store.open(ref, validate=audit_ip_release_manifest)
+    return _audit_loaded_ip_release(contract, plan, audited)
 
 
 def load_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -2346,12 +2351,10 @@ def _audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
 def _audit_loaded_ip_release(
     contract: IpContract,
     plan: Mapping[str, Any],
+    audited: AuditedRelease,
 ) -> dict[str, Any]:
-    repository = contract.project
-    release_root = repository.artifact_root / Path(plan["release_root"])
-    if not release_root.is_dir() or release_root.is_symlink():
-        raise FileNotFoundError(f"IP release has not been built: {release_root}")
-    manifest = audit_ip_release_manifest(release_root / "manifest.json")
+    release_root = audited.manifest_path.parent
+    manifest = audited.manifest
     expected = {
         "ip_name": plan["ip_name"],
         "owner": plan["owner"],
@@ -2455,9 +2458,9 @@ def _audit_loaded_ip_release(
         raise RuntimeError("IP release file inventory does not match its manifest")
     return {
         **manifest,
-        "manifest": (release_root / "manifest.json")
-        .relative_to(repository.artifact_root)
-        .as_posix(),
+        "store": audited.ref.store,
+        "object": audited.ref.object,
+        "manifest_sha256": audited.ref.manifest_sha256,
         "audit": {"passed": True},
     }
 

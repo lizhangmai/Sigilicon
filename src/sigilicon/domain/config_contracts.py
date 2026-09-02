@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.contracts import (
+    contract_schema as _contract_schema,
     freeze_toml_document as _freeze_toml_document,
     is_frozen_toml_document as _is_frozen_toml_document,
     require_config_header as _require_config_header,
@@ -410,7 +411,7 @@ def inspect_project_configuration_sources(
             contract_kind=kind,
             path_scope=allowed_scopes,
             owner=expected_owner,
-            schema=2 if kind == "owner-operations" else 1,
+            schema=_contract_schema(kind),
         )
         if header.contract_kind == "verification-cell":
             from sigilicon.domain.verification_cell import parse_verification_cell

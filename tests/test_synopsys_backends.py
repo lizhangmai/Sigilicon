@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from sigilicon.backends.synopsys import (
     VcsBackend,
 )
 from sigilicon.execution import PreparedStep, Resources, StepContext, StepResult
+from sigilicon.execution.model import resource_materialization_key
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -138,12 +140,12 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    release = (
-        "artifacts/exports/provider/package/development-"
-        + "a" * 40
-    )
-    manifest = f"{release}/manifest.json"
-    liberty = f"{release}/macro.lib"
+    manifest_resource = "release:fixture:object/manifest"
+    liberty_resource = "release:fixture:object/role/raw-macro-liberty"
+    manifest_text = "{}\n"
+    liberty_text = "library(fixture) {}\n"
+    manifest_digest = hashlib.sha256(manifest_text.encode()).hexdigest()
+    liberty_digest = hashlib.sha256(liberty_text.encode()).hexdigest()
     owner_sources = (
         "configs/dependency.lock.toml",
         "configs/variant.toml",
@@ -151,10 +153,12 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "link.tcl",
         "rtl/top.sv",
     )
-    project_sources = (manifest, liberty)
     source_root = tmp_path / "run/inputs/sources"
-    for name in (*owner_sources, *project_sources):
+    for name in owner_sources:
         _file(source_root / name)
+    resource_root = tmp_path / "run/inputs/resources"
+    _file(resource_root / resource_materialization_key(manifest_resource), manifest_text)
+    _file(resource_root / resource_materialization_key(liberty_resource), liberty_text)
     config = {
         "owner": "example",
         "dependency": "provider",
@@ -171,8 +175,6 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "library_compiler_version": "U-2022.12-SP6-T-20250827",
         "release_export": "macro",
         "liberty_role": "raw_macro_liberty_or_db",
-        "release_manifest": manifest,
-        "release_liberty": liberty,
         "timeout_seconds": 10,
     }
     prepared = {
@@ -190,18 +192,19 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "library_compiler_version": "U-2022.12-SP6-T-20250827",
         "release_id": "development-" + "a" * 40,
         "release_source_commit": "a" * 40,
-        "release_manifest": (
-            "exports/provider/package/development-" + "a" * 40 + "/manifest.json"
-        ),
-        "release_manifest_sha256": "b" * 64,
-        "release_liberty": liberty,
-        "release_liberty_sha256": "c" * 64,
+        "release_store": "fixture",
+        "release_object": "sha256-" + manifest_digest,
+        "release_manifest_resource": manifest_resource,
+        "release_manifest_sha256": manifest_digest,
+        "release_liberty_resource": liberty_resource,
+        "release_liberty_sha256": liberty_digest,
     }
     step = PreparedStep(
         "link",
         "synopsys.structural-link",
         {"config": config, "prepared": prepared},
-        sources=(*owner_sources, *project_sources),
+        sources=owner_sources,
+        resources=(manifest_resource, liberty_resource),
     )
     project_root = tmp_path / "project"
     owner_root = project_root / "ip/example"
@@ -221,9 +224,11 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         project_root=project_root,
         owner_root=owner_root,
         workspace_root=workspace_root,
-        source_scopes={
-            **{name: "owner" for name in owner_sources},
-            **{name: "project" for name in project_sources},
+        source_scopes={name: "owner" for name in owner_sources},
+        resource_root=resource_root,
+        resource_digests={
+            manifest_resource: manifest_digest,
+            liberty_resource: liberty_digest,
         },
     )
     backend = StructuralLinkBackend()
@@ -242,7 +247,9 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
 
     assert result.status == "succeeded"
     assert observed[0].top == "top"
-    assert observed[0].release_liberty == source_root / liberty
+    assert observed[0].release_liberty == (
+        resource_root / resource_materialization_key(liberty_resource)
+    )
 
 
 def test_dc_backend_collects_only_declared_delivery_files(tmp_path: Path) -> None:

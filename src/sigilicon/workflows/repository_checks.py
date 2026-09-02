@@ -12,7 +12,12 @@ from sigilicon.domain.config_contracts import (
     RepositorySourceInventory,
     inspect_project_configuration_sources,
 )
-from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
+from sigilicon.contracts import (
+    contract_schema,
+    freeze_toml_document,
+    read_toml,
+    require_config_header,
+)
 from sigilicon.execution.operations import compile_operation, parse_selector
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
@@ -104,6 +109,7 @@ def _architecture_source_documents(
                     contract_kind=contract_kind,
                     path_scope=("owner", "cell", "verification", "variant"),
                     owner=owner.name,
+                    schema=contract_schema(contract_kind),
                 )
             documents[path] = document
     return MappingProxyType(documents)

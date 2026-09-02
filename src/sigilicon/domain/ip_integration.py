@@ -21,6 +21,7 @@ from sigilicon.contracts import (
     require_config_header,
 )
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
+from sigilicon.release_store import ReleaseRef
 
 if TYPE_CHECKING:
     from sigilicon.project import Project
@@ -183,10 +184,14 @@ class IpIntegrationContract:
 class LockedIpRelease:
     name: str
     release_id: str
-    manifest: PurePosixPath
+    store: str
+    object: str
     maturity: str
     source_commit: str
     manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        ReleaseRef(self.store, self.object, self.manifest_sha256)
 
 
 @dataclass(frozen=True)
@@ -194,6 +199,47 @@ class IpDependencyLock:
     path: Path
     ip: str
     dependencies: tuple[LockedIpRelease, ...]
+
+
+_LOCKED_IP_RELEASE_FIELDS = {
+    "name",
+    "release_id",
+    "store",
+    "object",
+    "maturity",
+    "source_commit",
+    "manifest_sha256",
+}
+
+
+def parse_locked_ip_release(value: object, label: str) -> LockedIpRelease:
+    """Parse the one canonical schema-two dependency-lock entry shape."""
+
+    item = _table(value, label)
+    if set(item) != _LOCKED_IP_RELEASE_FIELDS:
+        raise ValueError(
+            f"{label} fields must be exactly {sorted(_LOCKED_IP_RELEASE_FIELDS)}"
+        )
+    maturity = _string(item.get("maturity"), f"{label}.maturity")
+    if maturity not in RELEASE_MATURITY_LEVELS:
+        raise ValueError(f"{label}.maturity is unsupported: {maturity}")
+    return LockedIpRelease(
+        name=_string(item.get("name"), f"{label}.name"),
+        release_id=_string(item.get("release_id"), f"{label}.release_id"),
+        store=_string(item.get("store"), f"{label}.store"),
+        object=_string(item.get("object"), f"{label}.object"),
+        maturity=maturity,
+        source_commit=_hex_digest(
+            item.get("source_commit"),
+            f"{label}.source_commit",
+            lengths=(40, 64),
+        ),
+        manifest_sha256=_hex_digest(
+            item.get("manifest_sha256"),
+            f"{label}.manifest_sha256",
+            lengths=(64,),
+        ),
+    )
 
 
 def _release_dependency(value: object, label: str) -> IpReleaseDependency:
@@ -768,6 +814,7 @@ def load_ip_dependency_lock(
         contract_kind="ip-dependency-lock",
         path_scope="owner",
         owner=contract.owner,
+        schema=2,
     )
     if raw.get("ip") != contract.name:
         raise ValueError("IP dependency lock identity does not match its component")
@@ -776,49 +823,7 @@ def load_ip_dependency_lock(
         raise ValueError("IP dependency lock must declare dependency entries")
     locked: list[LockedIpRelease] = []
     for index, value in enumerate(entries):
-        item = _table(value, f"lock.dependency[{index}]")
-        required_fields = {
-            "name",
-            "release_id",
-            "manifest",
-            "maturity",
-            "source_commit",
-            "manifest_sha256",
-        }
-        if set(item) != required_fields:
-            raise ValueError(
-                f"lock.dependency[{index}] fields must be exactly "
-                f"{sorted(required_fields)}"
-            )
-        maturity = _string(
-            item.get("maturity"), f"lock.dependency[{index}].maturity"
-        )
-        if maturity not in RELEASE_MATURITY_LEVELS:
-            raise ValueError("IP dependency lock has an unsupported maturity")
-        locked.append(
-            LockedIpRelease(
-                name=_string(item.get("name"), f"lock.dependency[{index}].name"),
-                release_id=_string(
-                    item.get("release_id"),
-                    f"lock.dependency[{index}].release_id",
-                ),
-                manifest=safe_relative(
-                    item.get("manifest"),
-                    f"lock.dependency[{index}].manifest",
-                ),
-                maturity=maturity,
-                source_commit=_hex_digest(
-                    item.get("source_commit"),
-                    f"lock.dependency[{index}].source_commit",
-                    lengths=(40, 64),
-                ),
-                manifest_sha256=_hex_digest(
-                    item.get("manifest_sha256"),
-                    f"lock.dependency[{index}].manifest_sha256",
-                    lengths=(64,),
-                ),
-            )
-        )
+        locked.append(parse_locked_ip_release(value, f"lock.dependency[{index}]"))
     expected = {item.name for item in contract.release_dependencies}
     actual = {item.name for item in locked}
     if len(actual) != len(locked) or actual != expected:

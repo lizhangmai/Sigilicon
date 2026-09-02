@@ -9,6 +9,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from sigilicon.execution.model import (
     ContractError,
+    ExternalResource,
     PreflightCheck,
     OperationPlan,
     OperationStep,
@@ -49,6 +50,7 @@ class _Preparation:
 
     step: PreparedStep
     sources: tuple[Source, ...] = ()
+    resources: tuple[ExternalResource, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.step, PreparedStep):
@@ -57,6 +59,12 @@ class _Preparation:
             not isinstance(source, Source) for source in self.sources
         ):
             raise ContractError("backend preparation sources must be Source values")
+        if not isinstance(self.resources, tuple) or any(
+            not isinstance(resource, ExternalResource) for resource in self.resources
+        ):
+            raise ContractError(
+                "backend preparation resources must be ExternalResource values"
+            )
 
 
 class _BackendRegistry(Mapping[str, _Backend]):
@@ -97,6 +105,7 @@ def _prepare_plan(
 
     captured = {(source.root, source.path): source for source in plan.sources}
     captured_names = {source.path: source.root for source in plan.sources}
+    resources: dict[str, ExternalResource] = {}
     steps = []
     owner_root = project.owner(plan.owner).root.resolve()
     project_root = project.project_root.resolve()
@@ -183,6 +192,27 @@ def _prepare_plan(
                 f"backend {step.uses!r} omitted prepared sources: "
                 + ", ".join(sorted(omitted))
             )
+        discovered_resources = {
+            resource.identity for resource in preparation.resources
+        }
+        if set(prepared.resources) != discovered_resources:
+            raise ContractError(
+                f"backend {step.uses!r} external resource closure disagrees "
+                "with its prepared step"
+            )
+        for resource in preparation.resources:
+            if not resource.current():
+                raise ContractError(
+                    "external resource changed during preparation: "
+                    f"{resource.identity}"
+                )
+            previous = resources.get(resource.identity)
+            if previous is not None and previous.sha256 != resource.sha256:
+                raise ContractError(
+                    "external resource identity collision: "
+                    f"{resource.identity}"
+                )
+            resources[resource.identity] = resource
         steps.append(replace(prepared, sources=tuple(source_names)))
     return ExecutionPlan(
         plan.project_identity,
@@ -191,6 +221,7 @@ def _prepare_plan(
         plan.variant,
         tuple(steps),
         tuple(captured.values()),
+        tuple(resources[identity] for identity in sorted(resources)),
     )
 
 

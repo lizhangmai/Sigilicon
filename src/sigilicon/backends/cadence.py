@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -17,6 +18,7 @@ from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
+    ExternalResource,
     OperationStep,
     PreflightCheck,
     Resources,
@@ -42,11 +44,12 @@ _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _LAYOUT_VERIFICATION_CAPABILITIES = _OA_CAPABILITIES | frozenset(
     {"tool.cadence-xstream", "tool.calibre"}
 )
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _strict_config(step: PreparedStep, fields: frozenset[str]) -> Mapping[str, Any]:
     request = step.request
-    if set(request) == {"config", "prepared", "external"}:
+    if set(request) == {"config", "prepared"}:
         nested = request["config"]
         if not isinstance(nested, Mapping):
             raise ContractError("prepared Cadence config must be a mapping")
@@ -164,11 +167,16 @@ def _bind_source_paths(
 
     project_root = project.project_root.resolve()
     owner_root = project.owner(owner_name).root.resolve()
+    artifact_root = Path(
+        getattr(project, "artifact_root", project_root / "artifacts")
+    ).resolve()
     selected: dict[Path, tuple[str, str]] = {}
     for source in paths:
         path = Path(source).absolute()
         if path != path.resolve():
             raise ContractError(f"backend source must not traverse a symlink: {path}")
+        if path.is_relative_to(artifact_root):
+            continue
         if path.is_relative_to(owner_root):
             name = path.relative_to(owner_root).as_posix()
         elif path.is_relative_to(project_root):
@@ -232,9 +240,15 @@ def _external_file_records(
     project: Any,
     source_records: Mapping[Path, str],
     extra_paths: tuple[Path, ...] = (),
-) -> Mapping[Path, tuple[str, str]]:
+    identities: Mapping[Path, str] = MappingProxyType({}),
+) -> tuple[ExternalResource, ...]:
     project_root = project.project_root.resolve()
-    selected: dict[Path, tuple[str, str]] = {}
+    artifact_root = getattr(project, "artifact_root", None)
+    artifact_root = (
+        None if artifact_root is None else Path(artifact_root).resolve()
+    )
+    selected: dict[str, tuple[Path, str | None]] = {}
+    seen: set[Path] = set()
     entries = (
         *((source, False) for source in source_records),
         *((source, True) for source in extra_paths),
@@ -243,30 +257,140 @@ def _external_file_records(
         path = Path(source).absolute()
         if path != path.resolve():
             raise ContractError(f"external resource must not traverse a symlink: {path}")
-        if path.is_relative_to(project_root) and not include_project:
+        if (
+            not (artifact_root is not None and path.is_relative_to(artifact_root))
+            and path.is_relative_to(project_root)
+            and not include_project
+        ):
             continue
-        snapshot = (
-            source_records[source]
-            if isinstance(source_records, Mapping) and source in source_records
-            else read_nofollow_text(path)
-        )
-        selected[path] = (
-            hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
-            snapshot,
+        if path in seen:
+            continue
+        expected = source_records.get(source)
+        if artifact_root is not None and path.is_relative_to(artifact_root):
+            identity = identities.get(
+                path,
+                "release:" + path.relative_to(artifact_root).as_posix(),
+            )
+        elif path.is_relative_to(project_root):
+            identity = "project:" + path.relative_to(project_root).as_posix()
+        elif path in identities:
+            identity = identities[path]
+        else:
+            raise ContractError(
+                f"external resource has no logical identity: {path.name}"
+            )
+        previous = selected.get(identity)
+        if previous is not None and previous[0] != path:
+            raise ContractError(f"external resource identity is ambiguous: {identity}")
+        seen.add(path)
+        selected[identity] = (path, expected)
+    resources = tuple(
+        ExternalResource.capture(path, identity=identity)
+        for identity, (path, _expected) in sorted(selected.items())
+    )
+    for resource in resources:
+        expected = selected[resource.identity][1]
+        if expected is not None and expected != resource.text:
+            raise ContractError(
+                f"external resource changed during planning: {resource.identity}"
+            )
+    return resources
+
+
+def _platform_resource_identities(platform: Any) -> Mapping[Path, str]:
+    selected: dict[Path, str] = {}
+    key = getattr(platform, "key", None)
+    if not isinstance(key, str) or not key:
+        return MappingProxyType(selected)
+    simulation = getattr(platform, "simulation", None)
+    model_sets = getattr(simulation, "model_sets", {})
+    if isinstance(model_sets, Mapping):
+        for name, model_set in sorted(model_sets.items()):
+            for index, path in enumerate(model_set.files):
+                selected[Path(path).absolute()] = (
+                    f"pdk:{key}:simulation/{name}/{index}-{Path(path).name}"
+                )
+    layout = getattr(platform, "layout", None)
+    if layout is not None:
+        for role in ("layermap", "drc_deck", "lvs_deck", "qrc_tech_file"):
+            path = getattr(layout, role, None)
+            if path is not None:
+                selected[Path(path).absolute()] = f"pdk:{key}:layout/{role}"
+    return MappingProxyType(selected)
+
+
+def _model_resource_identities(platform: Any, model_set: Any) -> Mapping[Path, str]:
+    selected = dict(_platform_resource_identities(platform))
+    key = getattr(platform, "key", None)
+    name = getattr(model_set, "name", None)
+    if not isinstance(key, str) or not key or not isinstance(name, str) or not name:
+        return MappingProxyType(selected)
+    for index, path in enumerate(model_set.files):
+        selected[Path(path).absolute()] = (
+            f"pdk:{key}:simulation/{name}/{index}-{Path(path).name}"
         )
     return MappingProxyType(selected)
 
 
-def _require_external_files(sources: Mapping[Path, tuple[str, str]]) -> None:
-    for path, (digest, _snapshot) in sources.items():
-        try:
-            current = hashlib.sha256(
-                read_nofollow_text(path).encode("utf-8")
-            ).hexdigest()
-        except OSError as exc:
-            raise ExecutionError(f"bound external resource is unavailable: {path}") from exc
-        if current != digest:
-            raise ExecutionError(f"bound external resource identity drift: {path}")
+def _ams_resource_identities(planning: Any) -> Mapping[Path, str]:
+    selected = dict(
+        _model_resource_identities(planning.platform, planning.model_set)
+    )
+    releases = planning.integration_check.get("dependency_releases")
+    if not isinstance(releases, list) or len(releases) != 1:
+        raise ContractError("Xcelium AMS release identity is unavailable")
+    release = releases[0]
+    if not isinstance(release, Mapping):
+        raise ContractError("Xcelium AMS release identity is invalid")
+    dependency = release.get("name")
+    release_id = release.get("release_id")
+    if not isinstance(dependency, str) or not isinstance(release_id, str):
+        raise ContractError("Xcelium AMS release identity is incomplete")
+    role = planning.spec.ams.circuit_role
+    prefix = f"release:{dependency}:{release_id}"
+    selected[planning.circuit_netlist.absolute()] = f"{prefix}/role/{role}"
+    for source in planning.source_records:
+        path = Path(source).absolute()
+        if path.name == "manifest.json" and path.parent.parent.name == "objects":
+            selected[path] = f"{prefix}/manifest"
+    return MappingProxyType(selected)
+
+
+def _oa_resource_identities(
+    project: Any,
+    planning: Any,
+    paths: Mapping[Path, str],
+) -> Mapping[Path, str]:
+    root = project.project_root.resolve()
+    if not any(not Path(path).absolute().is_relative_to(root) for path in paths):
+        return MappingProxyType({})
+    from sigilicon.domain.platform import load_platform
+
+    pdk = getattr(getattr(planning, "source", None), "pdk", None)
+    if not isinstance(pdk, str) or not pdk:
+        raise ContractError("OA plan external resources have no platform identity")
+    platform = load_platform(project, pdk)
+    selected = dict(_platform_resource_identities(platform))
+    asset_root = platform.asset_root
+    if asset_root is not None:
+        for source in paths:
+            path = Path(source).absolute()
+            if path in selected or not path.is_relative_to(asset_root):
+                continue
+            relative = path.relative_to(asset_root).as_posix()
+            basename = re.sub(r"[^A-Za-z0-9._-]", "-", path.name)
+            identity_hash = hashlib.sha256(relative.encode("utf-8")).hexdigest()
+            selected[path] = (
+                f"pdk:{platform.key}:asset/{identity_hash[:20]}-{basename}"
+            )
+    for source in paths:
+        path = Path(source).absolute()
+        if path in selected or not path.is_relative_to(_PACKAGE_ROOT):
+            continue
+        selected[path] = (
+            "package:sigilicon/" + path.relative_to(_PACKAGE_ROOT).as_posix()
+        )
+    return MappingProxyType(selected)
 
 
 def _captured_project_sources(
@@ -291,39 +415,25 @@ def _captured_project_sources(
 def _portable_request(
     config: Mapping[str, Any],
     prepared: Mapping[str, Any],
-    external: Mapping[Path, tuple[str, str]],
 ) -> Mapping[str, Any]:
     return {
         "config": dict(config),
         "prepared": dict(prepared),
-        "external": [
-            {"path": str(path), "sha256": digest, "text": snapshot}
-            for path, (digest, snapshot) in sorted(
-                external.items(), key=lambda item: str(item[0])
-            )
-        ],
     }
 
 
-def _portable_external(step: PreparedStep) -> Mapping[Path, tuple[str, str]]:
-    raw = step.request.get("external")
-    if not isinstance(raw, tuple):
-        raise ExecutionError("Cadence request has no prepared external source set")
-    selected: dict[Path, tuple[str, str]] = {}
-    for entry in raw:
-        if not isinstance(entry, Mapping) or set(entry) != {"path", "sha256", "text"}:
-            raise ExecutionError("Cadence request contains an invalid external source")
-        path_value = entry["path"]
-        digest = entry["sha256"]
-        snapshot = entry["text"]
-        if not all(isinstance(value, str) for value in (path_value, digest, snapshot)):
-            raise ExecutionError("Cadence external source fields must be text")
-        path = Path(path_value).absolute()
-        if path != path.resolve() or path in selected:
-            raise ExecutionError("Cadence external source path is unsafe or duplicated")
-        if hashlib.sha256(snapshot.encode("utf-8")).hexdigest() != digest:
-            raise ExecutionError("Cadence external source digest disagrees with its snapshot")
-        selected[path] = (digest, snapshot)
+def _portable_external(
+    context: StepContext,
+    resources: tuple[ExternalResource, ...],
+) -> Mapping[Path, str]:
+    if tuple(resource.identity for resource in resources) != context.step.resources:
+        raise ExecutionError("Cadence external resource identity drift")
+    selected: dict[Path, str] = {}
+    for resource in resources:
+        snapshot = context.resource_text(resource.identity)
+        if hashlib.sha256(snapshot.encode("utf-8")).hexdigest() != resource.sha256:
+            raise ExecutionError("sealed Cadence external resource identity drift")
+        selected[resource.location] = snapshot
     return MappingProxyType(selected)
 
 
@@ -509,15 +619,23 @@ class XceliumAmsBackend:
             step,
             planning.source_records,
         )
-        external = _external_file_records(project, planning.source_records)
+        external = _external_file_records(
+            project,
+            planning.source_records,
+            identities=_ams_resource_identities(planning),
+        )
         captured = _captured_project_sources(project, owner, bindings)
         prepared = PreparedStep.from_operation(
             step,
-            request=_portable_request(config, planning.as_dict(), external),
+            request=_portable_request(
+                config,
+                {"identity": canonical_digest(planning.as_dict())},
+            ),
             sources=tuple(dict.fromkeys((*step.sources, *(s.path for s in captured)))),
+            resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured)
+        return _Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
@@ -537,14 +655,20 @@ class XceliumAmsBackend:
             project=project,
         )
         expected = step.request.get("prepared")
-        if not isinstance(expected, Mapping) or canonical_digest(
-            planning.as_dict()
-        ) != canonical_digest(json_value(expected)):
+        if not isinstance(expected, Mapping) or expected != {
+            "identity": canonical_digest(planning.as_dict())
+        }:
             raise ExecutionError("Xcelium AMS preparation identity drift")
         sources = _bind_source_paths(project, owner, step, planning.source_records)
-        external = _portable_external(step)
+        external = _portable_external(
+            context,
+            _external_file_records(
+                project,
+                planning.source_records,
+                identities=_ams_resource_identities(planning),
+            ),
+        )
         _require_bound_sources(context, sources)
-        _require_external_files(external)
         root_environment = planning.platform.installation_root_environment
         if root_environment is not None and context.resources.environment.get(
             root_environment
@@ -579,7 +703,7 @@ class XceliumAmsBackend:
                         ("external", f"{index:03d}-{path.name}"),
                         snapshot,
                     )
-                    for index, (path, (_digest, snapshot)) in enumerate(
+                    for index, (path, snapshot) in enumerate(
                         sorted(external.items(), key=lambda item: str(item[0]))
                     )
                 }
@@ -685,6 +809,7 @@ class NativeOaBackend:
         external = _external_file_records(
             project,
             required,
+            identities=_oa_resource_identities(project, planning, required),
         )
         captured = _captured_project_sources(project, owner, sources)
         prepared = PreparedStep.from_operation(
@@ -696,12 +821,12 @@ class NativeOaBackend:
                     "library": planning.library,
                     "testbench": matches[0].cell,
                 },
-                external,
             ),
             sources=tuple(dict.fromkeys((*step.sources, *(s.path for s in captured)))),
+            resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured)
+        return _Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
@@ -739,9 +864,15 @@ class NativeOaBackend:
             project, owner, plan, oa_plan_source_paths(plan)
         )
         sources = _bind_source_paths(project, owner, step, required)
-        external = _portable_external(step)
+        external = _portable_external(
+            context,
+            _external_file_records(
+                project,
+                required,
+                identities=_oa_resource_identities(project, plan, required),
+            ),
+        )
         _require_bound_sources(context, sources)
-        _require_external_files(external)
         uncertainty: list[str] = []
         try:
             with owned_scratch_directory(
@@ -856,6 +987,7 @@ class _OaBackend:
         external = _external_file_records(
             project,
             required,
+            identities=_oa_resource_identities(project, planning, required),
         )
         captured = _captured_project_sources(project, owner, sources)
         prepared = PreparedStep.from_operation(
@@ -868,12 +1000,12 @@ class _OaBackend:
                     "operation": self.operation,
                     "testbench": None if selected is None else selected.cell,
                 },
-                external,
             ),
             sources=tuple(dict.fromkeys((*step.sources, *(s.path for s in captured)))),
+            resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured)
+        return _Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
@@ -916,9 +1048,15 @@ class _OaBackend:
             project, owner, planning, oa_plan_source_paths(planning)
         )
         sources = _bind_source_paths(project, owner, step, required)
-        external = _portable_external(step)
+        _portable_external(
+            context,
+            _external_file_records(
+                project,
+                required,
+                identities=_oa_resource_identities(project, planning, required),
+            ),
+        )
         _require_bound_sources(context, sources)
-        _require_external_files(external)
         timeout = _positive_integer(config, "timeout_seconds")
         client = get_client()
         if self.operation == "check":
@@ -1017,19 +1155,25 @@ class LayoutBackend:
             step,
             planning.source_records,
         )
-        external = _external_file_records(project, planning.source_records)
+        external = _external_file_records(
+            project,
+            planning.source_records,
+            identities=_platform_resource_identities(planning.spec.pdk),
+        )
         captured = _captured_project_sources(project, owner, sources)
         prepared = PreparedStep.from_operation(
             step,
             request=_portable_request(
                 config,
-                json.loads(planning.plan.canonical_json()),
-                external,
+                {"identity": canonical_digest(
+                    json.loads(planning.plan.canonical_json())
+                )},
             ),
             sources=tuple(dict.fromkeys((*step.sources, *(s.path for s in captured)))),
+            resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured)
+        return _Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
@@ -1047,12 +1191,20 @@ class LayoutBackend:
         )
         expected = step.request.get("prepared")
         actual = json.loads(planning.plan.canonical_json())
-        if not isinstance(expected, Mapping) or canonical_digest(json_value(expected)) != canonical_digest(actual):
+        if not isinstance(expected, Mapping) or expected != {
+            "identity": canonical_digest(actual)
+        }:
             raise ExecutionError("layout preparation identity drift")
         sources = _bind_source_paths(project, owner, step, planning.source_records)
-        external = _portable_external(step)
+        _portable_external(
+            context,
+            _external_file_records(
+                project,
+                planning.source_records,
+                identities=_platform_resource_identities(planning.spec.pdk),
+            ),
+        )
         _require_bound_sources(context, sources)
-        _require_external_files(external)
         return self._execute(context, planning)
 
     def _execute(self, context: StepContext, planning: Any) -> StepResult:
@@ -1167,6 +1319,7 @@ class LayoutVerificationBackend:
             project,
             planning.source_records,
             (planning.spec.layout_pdk.layermap, deck),
+            identities=_platform_resource_identities(planning.spec.pdk),
         )
         check = _text(config, "check")
         captured = _captured_project_sources(project, owner, sources)
@@ -1175,15 +1328,17 @@ class LayoutVerificationBackend:
             request=_portable_request(
                 config,
                 {
-                    "layout": json.loads(planning.plan.canonical_json()),
+                    "layout_identity": canonical_digest(
+                        json.loads(planning.plan.canonical_json())
+                    ),
                     "check": check,
                 },
-                external,
             ),
             sources=tuple(dict.fromkeys((*step.sources, *(s.path for s in captured)))),
+            resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured)
+        return _Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
@@ -1202,19 +1357,35 @@ class LayoutVerificationBackend:
         )
         expected = step.request.get("prepared")
         actual = {
-            "layout": json.loads(planning.plan.canonical_json()),
+            "layout_identity": canonical_digest(
+                json.loads(planning.plan.canonical_json())
+            ),
             "check": check,
         }
-        if not isinstance(expected, Mapping) or canonical_digest(json_value(expected)) != canonical_digest(actual):
+        if not isinstance(expected, Mapping) or expected != actual:
             raise ExecutionError("layout verification preparation identity drift")
         sources = _bind_source_paths(project, owner, step, planning.source_records)
-        external = _portable_external(step)
+        if planning.spec.layout_pdk is None:
+            raise ExecutionError("layout verification lost its layout PDK")
+        deck = (
+            planning.spec.layout_pdk.drc_deck
+            if check == "drc"
+            else planning.spec.layout_pdk.lvs_deck
+        )
+        external = _portable_external(
+            context,
+            _external_file_records(
+                project,
+                planning.source_records,
+                (planning.spec.layout_pdk.layermap, deck),
+                identities=_platform_resource_identities(planning.spec.pdk),
+            ),
+        )
         _require_bound_sources(context, sources)
-        _require_external_files(external)
         return self._execute(
             context,
             planning,
-            {path: snapshot for path, (_digest, snapshot) in external.items()},
+            external,
         )
 
     def _execute(

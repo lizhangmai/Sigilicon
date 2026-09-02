@@ -12,9 +12,11 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_text
+from sigilicon.artifacts import read_nofollow_text
+from sigilicon.domain.ip_integration import parse_locked_ip_release
 from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platform
 from sigilicon.project import Project
+from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
@@ -99,6 +101,16 @@ class XceliumAmsCellPlan(XceliumCellPlan):
         root = self.spec.project_root
         ams = self.spec.ams
         assert ams is not None
+        model_resources = [
+            {
+                "identity": (
+                    f"pdk:{self.platform.key}:simulation/"
+                    f"{self.model_set.name}/{index}-{path.name}"
+                ),
+                "sha256": self.model_sha256[path],
+            }
+            for index, path in enumerate(self.model_set.files)
+        ]
         return {
             **self.spec.as_dict(),
             "contract": self.contract.relative_to(root).as_posix(),
@@ -109,24 +121,14 @@ class XceliumAmsCellPlan(XceliumCellPlan):
                 "dependency": ams.dependency,
                 "role": ams.circuit_role,
                 "cell": self.native_cell,
-                "circuit_netlist": str(self.circuit_netlist.resolve()),
                 "circuit_sha256": self.circuit_sha256,
                 "integration_check": dict(self.integration_check),
             },
             "platform_model": {
                 "platform": self.platform.key,
                 "model_set": self.model_set.name,
-                "file": str(self.model_set.file.resolve()),
                 "section": self.model_set.single_section,
-                "support_files": [
-                    str(path.resolve()) for path in self.model_set.support_files
-                ],
-                "sha256": [
-                    {"path": str(path.resolve()), "digest": digest}
-                    for path, digest in sorted(
-                        self.model_sha256.items(), key=lambda item: str(item[0])
-                    )
-                ],
+                "resources": model_resources,
             },
             "command_template": list(self.command_template),
             "product_qualification_conclusion": False,
@@ -161,17 +163,6 @@ def _toml(path: Path, label: str) -> dict[str, Any]:
         return tomllib.loads(read_nofollow_text(path))
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"Xcelium AMS {label} is invalid TOML") from exc
-
-
-def _manifest(path: Path) -> tuple[dict[str, Any], str]:
-    try:
-        snapshot = read_nofollow_text(path)
-        value = audit_ip_release_manifest(path)
-        if json.loads(snapshot) != value:
-            raise RuntimeError("release manifest changed while auditing")
-    except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
-        raise ValueError("Xcelium AMS release manifest is invalid JSON") from exc
-    return value, hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
 
 def _locked_native_release(
@@ -248,21 +239,29 @@ def _locked_native_release(
     )
     if len(pinned) != 1:
         raise ValueError("Xcelium AMS dependency lock is ambiguous")
-    pin = pinned[0]
-    artifact_root = spec.project.artifact_root.resolve()
-    manifest_path = _project_source(
-        artifact_root,
-        pin.get("manifest"),
-        "release manifest",
-    )
-    manifest, manifest_digest = _manifest(manifest_path)
-    if manifest_digest != pin.get("manifest_sha256"):
-        raise ValueError("Xcelium AMS release manifest differs from its lock")
+    if (
+        lock.get("schema") != 2
+        or lock.get("contract_kind") != "ip-dependency-lock"
+        or lock.get("owner") != component.get("owner")
+    ):
+        raise ValueError("Xcelium AMS dependency lock identity is invalid")
+    pin = parse_locked_ip_release(pinned[0], "Xcelium AMS dependency lock entry")
+    ref = ReleaseRef(pin.store, pin.object, pin.manifest_sha256)
+    try:
+        audited = ReleaseStore.from_artifact_root(spec.project.artifact_root).open(
+            ref,
+            validate=audit_ip_release_manifest,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise ValueError("Xcelium AMS release manifest is invalid") from exc
+    manifest_path = audited.manifest_path
+    manifest = audited.manifest
+    manifest_digest = ref.manifest_sha256
     if (
         manifest.get("ip_name") != ams.dependency
         or manifest.get("owner") != ams.dependency
-        or manifest.get("release_id") != pin.get("release_id")
-        or manifest.get("source_commit") != pin.get("source_commit")
+        or manifest.get("release_id") != pin.release_id
+        or manifest.get("source_commit") != pin.source_commit
     ):
         raise ValueError("Xcelium AMS release identity differs from its lock")
     export = release.get("export")
@@ -301,7 +300,7 @@ def _locked_native_release(
     if (
         actual_maturity not in RELEASE_MATURITY_LEVELS
         or required_maturity not in RELEASE_MATURITY_LEVELS
-        or pin.get("maturity") != actual_maturity
+        or pin.maturity != actual_maturity
         or RELEASE_MATURITY_LEVELS.index(actual_maturity)
         < RELEASE_MATURITY_LEVELS.index(required_maturity)
     ):
@@ -350,24 +349,14 @@ def _locked_native_release(
     by_role = {item["role"]: item for item in selected_roles}
     if set(by_role) != set(required_roles) or len(selected_roles) != len(by_role):
         raise ValueError("Xcelium AMS package omits or duplicates a selected role")
-    selected = by_role[ams.circuit_role]
-    package_root = manifest_path.parent
-    circuit = _project_source(
-        package_root,
-        selected.get("path"),
-        "release circuit",
-    )
     try:
-        circuit_metadata, circuit_digest = _inspect_nofollow_file(circuit)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("Xcelium AMS release circuit is missing or unsafe") from exc
-    if (
-        selected.get("size") != circuit_metadata.st_size
-        or selected.get("sha256") != circuit_digest
-    ):
+        circuit_artifact = audited.role(export, ams.circuit_role)
+    except RuntimeError as exc:
         raise ValueError(
-            "Xcelium AMS release circuit content differs from its manifest"
-        )
+            "Xcelium AMS release circuit is missing or unsafe"
+        ) from exc
+    circuit = circuit_artifact.path
+    circuit_digest = circuit_artifact.sha256
     result = {
         "schema": 1,
         "contract_kind": "locked-release-selection",
@@ -376,10 +365,11 @@ def _locked_native_release(
             {
                 "name": ams.dependency,
                 "export": export,
-                "release_id": pin["release_id"],
-                "source_commit": pin["source_commit"],
-                "manifest": pin["manifest"],
-                "manifest_sha256": pin["manifest_sha256"],
+                "release_id": pin.release_id,
+                "source_commit": pin.source_commit,
+                "store": ref.store,
+                "object": ref.object,
+                "manifest_sha256": pin.manifest_sha256,
                 "roles": {role: by_role[role]["path"] for role in required_roles},
             }
         ],

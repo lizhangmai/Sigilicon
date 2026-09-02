@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 _BACKEND = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 _DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
+_RESOURCE = re.compile(r"[A-Za-z][A-Za-z0-9._:/-]{0,255}\Z")
 _ROLES = frozenset({"diagnostic", "regression", "qualification", "signoff"})
 _LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
 _STEP_STATUSES = frozenset(
@@ -55,6 +56,23 @@ def backend_identity(value: object) -> str:
     if not isinstance(value, str) or _BACKEND.fullmatch(value) is None:
         raise ContractError(f"invalid backend identity: {value!r}")
     return value
+
+
+def resource_identity(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or _RESOURCE.fullmatch(value) is None
+        or value.startswith("/")
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        raise ContractError(f"invalid external resource identity: {value!r}")
+    return value
+
+
+def resource_materialization_key(identity: str) -> str:
+    logical = resource_identity(identity)
+    return "resource-" + hashlib.sha256(logical.encode("utf-8")).hexdigest()
 
 
 def _source_name(value: object) -> str:
@@ -215,6 +233,78 @@ class Source:
 
 
 @dataclass(frozen=True)
+class ExternalResource:
+    """Exact host resource bound without exposing its path or content in records."""
+
+    identity: str
+    sha256: str
+    text: str = field(repr=False, compare=False)
+    location: Path = field(repr=False, compare=False)
+    device: int = field(default=-1, repr=False, compare=False)
+    inode: int = field(default=-1, repr=False, compare=False)
+    mtime_ns: int = field(default=-1, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        resource_identity(self.identity)
+        if not isinstance(self.sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", self.sha256
+        ) is None:
+            raise ContractError("external resource digest must be lowercase SHA-256")
+        if not isinstance(self.text, str):
+            raise ContractError("external resource snapshot must be text")
+        if hashlib.sha256(self.text.encode("utf-8")).hexdigest() != self.sha256:
+            raise ContractError("external resource digest disagrees with its snapshot")
+        location = Path(self.location).absolute()
+        if location != location.resolve():
+            raise ContractError("external resource must not traverse a symlink")
+        if any(type(value) is not int for value in (self.device, self.inode, self.mtime_ns)):
+            raise ContractError("external resource filesystem identity fields must be integers")
+        object.__setattr__(self, "location", location)
+
+    @classmethod
+    def capture(cls, path: Path, *, identity: str) -> "ExternalResource":
+        location = Path(path).absolute()
+        if location != location.resolve():
+            raise ContractError(f"external resource must not traverse a symlink: {path}")
+        metadata = location.stat(follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ContractError(f"external resource must be a regular file: {path}")
+        text = read_nofollow_text(location)
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return cls(
+            resource_identity(identity),
+            digest,
+            text,
+            location,
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mtime_ns,
+        )
+
+    @property
+    def record(self) -> dict[str, str]:
+        return {"identity": self.identity, "sha256": self.sha256}
+
+    @property
+    def materialization_key(self) -> str:
+        return resource_materialization_key(self.identity)
+
+    def current(self) -> bool:
+        try:
+            metadata = self.location.stat(follow_symlinks=False)
+            return (
+                self.location == self.location.resolve()
+                and stat.S_ISREG(metadata.st_mode)
+                and read_nofollow_text(self.location) == self.text
+                and metadata.st_dev == self.device
+                and metadata.st_ino == self.inode
+                and metadata.st_mtime_ns == self.mtime_ns
+            )
+        except (OSError, RuntimeError, UnicodeError):
+            return False
+
+
+@dataclass(frozen=True)
 class OperationStep:
     """Unprepared backend request compiled from an owner operation contract."""
 
@@ -268,6 +358,7 @@ class PreparedStep:
     needs: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     evidence: Evidence | None = None
+    resources: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _identifier(self.id, "step id"))
@@ -286,8 +377,17 @@ class PreparedStep:
             raise ContractError("prepared step sources contain duplicates")
         if self.evidence is not None and not isinstance(self.evidence, Evidence):
             raise ContractError("prepared step evidence must be an Evidence value")
+        if not isinstance(self.resources, tuple):
+            raise ContractError("prepared step resources must be a tuple")
+        resources = tuple(
+            resource_identity(value)
+            for value in self.resources
+        )
+        if len(resources) != len(set(resources)):
+            raise ContractError("prepared step resources contain duplicates")
         object.__setattr__(self, "needs", needs)
         object.__setattr__(self, "sources", sources)
+        object.__setattr__(self, "resources", resources)
         object.__setattr__(self, "request", _freeze(self.request, "prepared step request"))
 
     @classmethod
@@ -297,6 +397,7 @@ class PreparedStep:
         *,
         request: Mapping[str, Any] | None = None,
         sources: tuple[str, ...] | None = None,
+        resources: tuple[str, ...] = (),
     ) -> "PreparedStep":
         return cls(
             step.id,
@@ -305,6 +406,7 @@ class PreparedStep:
             step.needs,
             step.sources if sources is None else sources,
             step.evidence,
+            resources,
         )
 
     @property
@@ -315,6 +417,7 @@ class PreparedStep:
             "needs": list(self.needs),
             "request": json_value(self.request),
             "sources": list(self.sources),
+            "resources": list(self.resources),
             "evidence": None if self.evidence is None else self.evidence.record,
         }
 
@@ -383,6 +486,7 @@ class ExecutionPlan:
     variant: str | None
     steps: tuple[PreparedStep, ...]
     sources: tuple[Source, ...]
+    resources: tuple[ExternalResource, ...] = field(repr=False, compare=False)
     _authorization: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -402,6 +506,12 @@ class ExecutionPlan:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
             raise ContractError("execution plan sources must be Source values")
+        if not isinstance(self.resources, tuple) or any(
+            not isinstance(resource, ExternalResource) for resource in self.resources
+        ):
+            raise ContractError(
+                "execution plan resources must be ExternalResource values"
+            )
         if not isinstance(self._authorization, str):
             raise ContractError("execution plan authorization must be text")
         closure = {(source.root, source.path): source for source in self.sources}
@@ -415,18 +525,27 @@ class ExecutionPlan:
                     raise ContractError(
                         f"step {step.id!r} source is outside the plan source closure"
                     )
+        resources = {resource.identity: resource for resource in self.resources}
+        if len(resources) != len(self.resources):
+            raise ContractError("execution plan contains duplicate external resources")
+        referenced = {resource for step in self.steps for resource in step.resources}
+        if referenced != set(resources):
+            raise ContractError(
+                "execution plan external resource closure disagrees with its steps"
+            )
         object.__setattr__(self, "steps", _topology(self.steps))
 
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 3,
+            "schema": 4,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
             "operation": self.operation,
             "variant": self.variant,
             "sources": [source.record for source in self.sources],
+            "resources": [resource.record for resource in self.resources],
             "steps": [step.record for step in self.steps],
         }
 
@@ -603,6 +722,12 @@ class StepContext:
         repr=False,
         compare=False,
     )
+    resource_root: Path | None = field(default=None, repr=False, compare=False)
+    resource_digests: Mapping[str, str] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
     _register_operation: Callable[[Any], None] | None = field(
         default=None,
         repr=False,
@@ -618,6 +743,12 @@ class StepContext:
         object.__setattr__(self, "work_root", Path(self.work_root).absolute())
         object.__setattr__(self, "output_root", Path(self.output_root).absolute())
         object.__setattr__(self, "source_root", Path(self.source_root).absolute())
+        if self.resource_root is not None:
+            object.__setattr__(
+                self,
+                "resource_root",
+                Path(self.resource_root).absolute(),
+            )
         runtime_roots = (self.project_root, self.owner_root, self.workspace_root)
         if any(root is None for root in runtime_roots) and any(
             root is not None for root in runtime_roots
@@ -654,11 +785,33 @@ class StepContext:
             or self.source_root != run_root / "inputs" / "sources"
         ):
             raise ContractError("step context roots disagree with the managed run layout")
+        expected_resource_root = run_root / "inputs" / "resources"
+        if self.step.resources and self.resource_root != expected_resource_root:
+            raise ContractError(
+                "step context resource root disagrees with the managed run layout"
+            )
+        if (
+            not isinstance(self.resource_digests, Mapping)
+            or set(self.resource_digests) != set(self.step.resources)
+            or any(
+                not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                for digest in self.resource_digests.values()
+            )
+        ):
+            raise ContractError(
+                "step context resource digests disagree with its resource closure"
+            )
         object.__setattr__(self, "dependencies", MappingProxyType(dict(self.dependencies)))
         object.__setattr__(
             self,
             "source_scopes",
             MappingProxyType(dict(self.source_scopes)),
+        )
+        object.__setattr__(
+            self,
+            "resource_digests",
+            MappingProxyType(dict(self.resource_digests)),
         )
 
     def source_path(self, source: str) -> Path:
@@ -696,6 +849,31 @@ class StepContext:
         """Read a step source through the held-fd no-follow input primitive."""
 
         return read_nofollow_text(self.source_path(source))
+
+    def resource_path(self, resource: str) -> Path:
+        """Return one sealed external resource selected by this Step."""
+
+        name = resource_identity(resource)
+        if name not in self.step.resources or self.resource_root is None:
+            raise ExecutionError(f"external resource is outside this step: {name!r}")
+        result = self.resource_root / resource_materialization_key(name)
+        if (
+            result.absolute() != result
+            or result.resolve() != result
+            or not result.is_file()
+            or result.is_symlink()
+        ):
+            raise ExecutionError(f"sealed external resource is missing or unsafe: {name!r}")
+        if hashlib.sha256(read_nofollow_text(result).encode("utf-8")).hexdigest() != (
+            self.resource_digests[name]
+        ):
+            raise ExecutionError(
+                f"sealed external resource identity drift: {name!r}"
+            )
+        return result
+
+    def resource_text(self, resource: str) -> str:
+        return read_nofollow_text(self.resource_path(resource))
 
     def scoped_source_path(self, scope: str, source: str) -> Path:
         """Resolve one owner- or project-relative source from the sealed closure."""
@@ -942,6 +1120,7 @@ __all__ = [
     "Evidence",
     "ExecutionError",
     "ExecutionPlan",
+    "ExternalResource",
     "OperationPlan",
     "OperationStep",
     "PreparedStep",
@@ -956,4 +1135,6 @@ __all__ = [
     "StepResult",
     "json_value",
     "backend_identity",
+    "resource_identity",
+    "resource_materialization_key",
 ]

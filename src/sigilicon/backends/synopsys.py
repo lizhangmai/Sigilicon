@@ -28,6 +28,7 @@ from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
+    ExternalResource,
     OperationStep,
     PreflightCheck,
     Resources,
@@ -901,8 +902,6 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             "library_compiler_version",
             "release_export",
             "liberty_role",
-            "release_manifest",
-            "release_liberty",
             "timeout_seconds",
         }
     )
@@ -1029,12 +1028,6 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             _safe_relative(name, "structural-link RTL source")
             for name in self._rtl_sources(initial)
         )
-        manifest_name = _safe_relative(
-            _text(config, "release_manifest"), "release manifest"
-        )
-        liberty_name = _safe_relative(
-            _text(config, "release_liberty"), "release Liberty"
-        )
         owner_names = (
             lock_name,
             variant_name,
@@ -1046,13 +1039,6 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             ("owner", Source.capture(owner_root / name, root=owner_root, scope="owner"))
             for name in owner_names
         ]
-        captured_sources.extend(
-            (
-                "project",
-                Source.capture(project_root / name, root=project_root, scope="project"),
-            )
-            for name in (manifest_name, liberty_name)
-        )
         by_location = {source.location: source for _scope, source in captured_sources}
         planning = plan_structural_link(
             owner=owner,
@@ -1075,36 +1061,31 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             library_compiler_version=_text(config, "library_compiler_version"),
             release_export=_text(config, "release_export"),
             liberty_role=_text(config, "liberty_role"),
-            release_manifest=by_location[project_root / manifest_name].location,
-            release_liberty=by_location[project_root / liberty_name].location,
+            artifact_root=project.artifact_root,
         )
-        release_root = by_location[project_root / manifest_name].location.parent
-        captured_locations = {source.location for _scope, source in captured_sources}
-        captured_sources.extend(
-            (
-                "project",
-                Source.capture(path, root=project_root, scope="project"),
-            )
-            for path in sorted(release_root.rglob("*"))
-            if path.is_file() and path not in captured_locations
+        external = (
+            ExternalResource.capture(
+                planning.release_sources[0],
+                identity=(
+                    f"release:{_text(config, 'dependency')}:"
+                    f"{planning.release_id}/manifest"
+                ),
+            ),
+            ExternalResource.capture(
+                planning.release_sources[1],
+                identity=(
+                    f"release:{_text(config, 'dependency')}:"
+                    f"{planning.release_id}/role/{_text(config, 'liberty_role')}"
+                ),
+            ),
         )
         if any(not source.current() for _scope, source in captured_sources):
             raise ContractError(
                 "structural-link input changed while its Step was being prepared"
             )
-        planning_sources = {
-            source.location: (scope, source.path, source.sha256)
-            for scope, source in captured_sources
-        }
-        expected_release_digests = {
-            (project_root / manifest_name).resolve(): (
-                planning.release_manifest_sha256
-            ),
-            (project_root / liberty_name).resolve(): planning.release_liberty_sha256,
-        }
-        if any(
-            planning_sources[path][2] != digest
-            for path, digest in expected_release_digests.items()
+        if (
+            external[0].sha256 != planning.release_manifest_sha256
+            or external[1].sha256 != planning.release_liberty_sha256
         ):
             raise ContractError(
                 "structural-link release changed while its PreparedStep was being bound"
@@ -1114,7 +1095,8 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             rtl_sources=rtl_names,
             compile_script=compile_name,
             link_script=link_name,
-            release_liberty=liberty_name,
+            release_manifest_resource=external[0].identity,
+            release_liberty_resource=external[1].identity,
         )
         source_names = tuple(
             dict.fromkeys(
@@ -1125,9 +1107,14 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             step,
             request={"config": dict(config), "prepared": prepared_record},
             sources=source_names,
+            resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, tuple(source for _scope, source in captured_sources))
+        return _Preparation(
+            prepared,
+            tuple(source for _scope, source in captured_sources),
+            external,
+        )
 
     @staticmethod
     def _planning_record(
@@ -1136,7 +1123,8 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         rtl_sources: tuple[str, ...],
         compile_script: str,
         link_script: str,
-        release_liberty: str,
+        release_manifest_resource: str,
+        release_liberty_resource: str,
     ) -> Mapping[str, Any]:
         return {
             "owner": plan.owner,
@@ -1153,9 +1141,11 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             "library_compiler_version": plan.library_compiler_version,
             "release_id": plan.release_id,
             "release_source_commit": plan.release_source_commit,
-            "release_manifest": plan.release_manifest,
+            "release_store": plan.release_store,
+            "release_object": plan.release_object,
+            "release_manifest_resource": release_manifest_resource,
             "release_manifest_sha256": plan.release_manifest_sha256,
-            "release_liberty": release_liberty,
+            "release_liberty_resource": release_liberty_resource,
             "release_liberty_sha256": plan.release_liberty_sha256,
         }
 
@@ -1254,11 +1244,13 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         link_script = _safe_relative(
             _text(config, "link_script"), "structural link script"
         )
-        release_liberty = _safe_relative(
-            _text(config, "release_liberty"), "release Liberty"
+        release_resource = _text(
+            prepared,
+            "release_liberty_resource",
         )
-        manifest_name = _safe_relative(
-            _text(config, "release_manifest"), "release manifest"
+        manifest_resource = _text(
+            prepared,
+            "release_manifest_resource",
         )
         planning = StructuralLinkPlan(
             owner=_text(prepared, "owner"),
@@ -1279,10 +1271,11 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             library_compiler_version=_text(
                 prepared, "library_compiler_version"
             ),
-            release_liberty=context.project_source_path(release_liberty),
+            release_liberty=context.resource_path(release_resource),
             release_id=_text(prepared, "release_id"),
             release_source_commit=_text(prepared, "release_source_commit"),
-            release_manifest=_text(prepared, "release_manifest"),
+            release_store=_text(prepared, "release_store"),
+            release_object=_text(prepared, "release_object"),
             release_manifest_sha256=_text(
                 prepared, "release_manifest_sha256"
             ),
@@ -1290,8 +1283,8 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
                 prepared, "release_liberty_sha256"
             ),
             release_sources=(
-                context.project_source_path(manifest_name),
-                context.project_source_path(release_liberty),
+                context.resource_path(manifest_resource),
+                context.resource_path(release_resource),
             ),
         )
         return self._execute(context, planning)

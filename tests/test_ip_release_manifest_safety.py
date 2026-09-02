@@ -77,11 +77,11 @@ def test_release_build_rejects_symlinked_namespace_ancestor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = Project.open(write_project_context(tmp_path).parent)
-    exports = project.artifact_root / "exports"
-    exports.mkdir(parents=True)
+    store_root = project.artifact_root / "release-store"
+    store_root.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (exports / "fixture").symlink_to(outside, target_is_directory=True)
+    (store_root / "fixture").symlink_to(outside, target_is_directory=True)
     contract = SimpleNamespace(project=project, collateral=())
     monkeypatch.setattr(ip_packaging, "load_ip_contract", lambda *_args, **_kw: contract)
     monkeypatch.setattr(
@@ -90,7 +90,7 @@ def test_release_build_rejects_symlinked_namespace_ancestor(
         lambda *_args, **_kw: {
             "missing_items": [],
             "working_tree_dirty": False,
-            "release_root": "exports/fixture/package/development-fixture",
+            "release_store": "fixture",
         },
     )
 

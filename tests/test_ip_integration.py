@@ -30,7 +30,7 @@ from conftest import write_project_context
 
 def _write_release_fixture(artifact_root: Path) -> tuple[str, str]:
     release_id = "development-fixture"
-    relative_root = Path("exports/fixture-ip/package") / release_id
+    relative_root = Path("staging/fixture-ip") / release_id
     release_root = artifact_root / relative_root
     release_root.mkdir(parents=True)
     files = {
@@ -133,12 +133,17 @@ endmodule
     (release_root / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
+    digest = hashlib.sha256((release_root / "manifest.json").read_bytes()).hexdigest()
+    relative_root = Path("release-store/fixture/objects") / f"sha256-{digest}"
+    published = artifact_root / relative_root
+    published.parent.mkdir(parents=True)
+    release_root.rename(published)
     return release_id, (relative_root / "manifest.json").as_posix()
 
 
 def _write_rtl_release_fixture(artifact_root: Path) -> tuple[str, str]:
     release_id = "development-rtl-fixture"
-    relative_root = Path("exports/fixture-ip/package") / release_id
+    relative_root = Path("staging/fixture-ip") / release_id
     release_root = artifact_root / relative_root
     release_root.mkdir(parents=True)
     interface = release_root / "interfaces/interface.toml"
@@ -217,6 +222,11 @@ ports = [{ name = "clk", direction = "input", width = 1 }]
     (release_root / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
+    digest = hashlib.sha256((release_root / "manifest.json").read_bytes()).hexdigest()
+    relative_root = Path("release-store/fixture/objects") / f"sha256-{digest}"
+    published = artifact_root / relative_root
+    published.parent.mkdir(parents=True)
+    release_root.rename(published)
     return release_id, (relative_root / "manifest.json").as_posix()
 
 
@@ -226,20 +236,22 @@ def test_locked_release_rejects_a_symlinked_manifest_parent(tmp_path: Path) -> N
     manifest = real_artifacts / relative_manifest
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
-    (artifact_root / "exports").symlink_to(
-        real_artifacts / "exports",
+    (artifact_root / "release-store").symlink_to(
+        real_artifacts / "release-store",
         target_is_directory=True,
     )
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     pinned = LockedIpRelease(
         name="fixture-ip",
         release_id=release_id,
-        manifest=Path(relative_manifest),
+        store="fixture",
+        object=f"sha256-{digest}",
         maturity="development",
         source_commit="a" * 40,
-        manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        manifest_sha256=digest,
     )
 
-    with pytest.raises(FileNotFoundError, match="unavailable"):
+    with pytest.raises((FileNotFoundError, RuntimeError), match="symlink"):
         resolve_locked_ip_release(artifact_root=artifact_root, pinned=pinned)
 
 
@@ -393,11 +405,17 @@ domains = []
 
 def _refresh_lock_manifest_digest(contract: Path, manifest_path: Path) -> None:
     lock_path = contract.parent / "dependency.lock.toml"
+    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    object_id = f"sha256-{digest}"
+    target = manifest_path.parent.parent / object_id
+    if target != manifest_path.parent:
+        manifest_path.parent.rename(target)
     _replace_lock_value(
         lock_path,
         "manifest_sha256",
-        hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        digest,
     )
+    _replace_lock_value(lock_path, "object", object_id)
 
 
 def _replace_lock_value(lock_path: Path, field: str, value: str) -> None:
@@ -470,7 +488,7 @@ blockers = ["implementation_release_missing"]
         else "b" * 64
     )
     (owner_root / "configs/dependency.lock.toml").write_text(
-        f"""schema = 1
+        f"""schema = 2
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "demo"
@@ -480,7 +498,8 @@ ip = "demo"
 [[dependency]]
 name = "fixture-ip"
 release_id = "{release_id}"
-manifest = "{manifest}"
+store = "fixture"
+object = "{Path(manifest).parent.name}"
 maturity = "development"
 source_commit = "{'a' * 40}"
 manifest_sha256 = "{manifest_sha256}"
@@ -725,9 +744,11 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert "sources" not in result
     assert result["source_files"] == ["ip/demo/rtl/top.sv"]
     assert result["release_sources"] == [
-        f"exports/fixture-ip/package/{release_id}/rtl/fixture_model.sv"
+        f"{Path(manifest).parent.as_posix()}/rtl/fixture_model.sv"
     ]
-    assert result["dependency_releases"][0]["manifest"] == manifest
+    selected = result["dependency_releases"][0]
+    assert selected["store"] == "fixture"
+    assert selected["object"] == Path(manifest).parts[3]
 
     resolved = resolve_ip_integration_fileset(
         contract,
@@ -871,13 +892,10 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
 
     assert result["passed"] is True
     assert result["dependency_releases"][0]["roles"] == {
-        "rtl_source": (
-            "exports/fixture-ip/package/development-rtl-fixture/"
-            "rtl/fixture_rtl.sv"
-        )
+        "rtl_source": f"{Path(manifest).parent.as_posix()}/rtl/fixture_rtl.sv"
     }
     assert result["release_sources"] == [
-        "exports/fixture-ip/package/development-rtl-fixture/rtl/fixture_rtl.sv"
+        f"{Path(manifest).parent.as_posix()}/rtl/fixture_rtl.sv"
     ]
 
 def test_native_oa_release_dependency_is_typed_planned_and_consumed(
@@ -970,12 +988,9 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
         variant_name="default",
     )
     assert result["passed"] is True
-    assert result["dependency_releases"][0]["roles"] == {
-        "circuit_netlist": (
-            "exports/fixture-ip/package/development-fixture/"
-            "circuit/fixture_macro.scs"
-        )
-    }
+    circuit = result["dependency_releases"][0]["roles"]["circuit_netlist"]
+    assert circuit.startswith("release-store/fixture/objects/sha256-")
+    assert circuit.endswith("/circuit/fixture_macro.scs")
 
 
 def test_native_oa_planner_takes_interface_identity_from_provider_export(
@@ -1214,7 +1229,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
         ("lock-identity", "lock identity"),
         ("interface-drift", "interface identities disagree"),
         ("module-drift", "module disagrees"),
-        ("missing-manifest", "manifest"),
+        ("missing-manifest", "release store"),
         ("stale-role", "content drifted"),
     ),
 )
