@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,15 @@ from sigilicon.backends.cadence import (
     XceliumBackend,
     XceliumAmsBackend,
 )
-from sigilicon.execution import ContractError, Evidence, Resources, Step, StepContext
+from sigilicon.execution import (
+    ContractError,
+    Evidence,
+    ExecutionError,
+    OperationStep,
+    PreparedStep,
+    Resources,
+    StepContext,
+)
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -27,7 +36,7 @@ def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> P
 
 def _context(
     tmp_path: Path,
-    step: Step,
+    step: OperationStep | PreparedStep,
     resources: Resources,
     *,
     project_root: Path | None = None,
@@ -36,15 +45,18 @@ def _context(
     scopes: dict[str, str] | None = None,
     register_operation=None,
 ) -> StepContext:
+    runtime_step = (
+        step if isinstance(step, PreparedStep) else PreparedStep.from_operation(step)
+    )
     run_root = tmp_path / "run"
-    work = run_root / "work" / step.id
-    output = run_root / "outputs" / step.id
+    work = run_root / "work" / runtime_step.id
+    output = run_root / "outputs" / runtime_step.id
     sources = run_root / "inputs/sources"
     for root in (work, output, sources):
         root.mkdir(parents=True, exist_ok=True)
     return StepContext(
         "1" * 64,
-        step,
+        runtime_step,
         "2" * 32,
         "3" * 64,
         work,
@@ -85,7 +97,7 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
 ) -> None:
     marker = "RTL_SUMMARY failures=0"
     executable = _fake_xrun(tmp_path, marker)
-    step = Step(
+    step = PreparedStep(
         "rtl",
         "cadence.xcelium",
         {
@@ -117,12 +129,14 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     backend = XceliumBackend()
 
     assert all(check.status == "ready" for check in backend.preflight(step, resources))
-    result = backend.run(context)
+    result = backend.run(context, step)
 
     assert result.status == "succeeded"
     assert len(result.artifacts) == 4
     assert result.facts == {"passed": True}
     assert not (context.work_root / "xcelium.d").exists()
+    with pytest.raises(ExecutionError, match="disagrees"):
+        backend.run(replace(context, step=step), replace(step, request={}),)
 
 
 def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
@@ -130,7 +144,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     tmp_path: Path,
 ) -> None:
     executable = _file(tmp_path / "bin/xrun", executable=True)
-    step = Step(
+    step = OperationStep(
         "ams",
         "cadence.xcelium-ams",
         {
@@ -177,6 +191,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         sources=(contract,),
         circuit_netlist=contract,
         model_set=SimpleNamespace(files=(model,)),
+        as_dict=lambda: {"cell": "tb_ams", "model": str(model)},
     )
     monkeypatch.setattr(
         "sigilicon.workflows.xcelium_ams.plan_xcelium_ams_cell",
@@ -202,9 +217,18 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         execute,
     )
     backend = XceliumAmsBackend()
+    prepared = backend.prepare(selected_project, step).step
+    context = replace(
+        context,
+        step=prepared,
+        source_scopes={source: "owner" for source in prepared.sources},
+    )
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: selected_project)
 
-    assert all(check.status == "ready" for check in backend.preflight(step, resources))
-    result = backend.bind(selected_project, step).run(context)
+    assert all(
+        check.status == "ready" for check in backend.preflight(prepared, resources)
+    )
+    result = backend.run(context, prepared)
 
     assert result.status == "succeeded"
     assert result.facts == {
@@ -218,7 +242,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
 
 def _oa_context(
     tmp_path: Path,
-    step: Step,
+    step: OperationStep | PreparedStep,
     *,
     registered: list[object],
 ) -> StepContext:
@@ -227,17 +251,20 @@ def _oa_context(
     workspace = tmp_path / "oa-workspace"
     owner.mkdir(parents=True)
     workspace.mkdir()
+    runtime_step = (
+        step if isinstance(step, PreparedStep) else PreparedStep.from_operation(step)
+    )
     context = _context(
         tmp_path,
-        step,
+        runtime_step,
         Resources(frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})),
         project_root=project,
         owner_root=owner,
         workspace_root=workspace,
-        scopes={source: "owner" for source in step.sources},
+        scopes={source: "owner" for source in runtime_step.sources},
         register_operation=registered.append,
     )
-    for source in step.sources:
+    for source in runtime_step.sources:
         _file(context.source_root / source)
         _file(owner / source)
     return context
@@ -247,7 +274,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Step(
+    step = OperationStep(
         "native",
         "cadence.native-oa",
         {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
@@ -260,7 +287,11 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     owner_root = context.owner_root
     assert owner_root is not None
     selected = SimpleNamespace(cell="tb_EXAMPLE")
-    plan = SimpleNamespace(testbenches=(selected,))
+    plan = SimpleNamespace(
+        library="example",
+        testbenches=(selected,),
+        as_dict=lambda: {"library": "example", "testbench": "tb_EXAMPLE"},
+    )
     project = SimpleNamespace(
         project_root=source_project,
         owner=lambda name: SimpleNamespace(root=owner_root)
@@ -295,8 +326,16 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         "sigilicon.workflows.oa_simulation.execute_oa_maestro_testbench",
         execute,
     )
+    backend = NativeOaBackend()
+    prepared = backend.prepare(project, step).step
+    context = replace(
+        context,
+        step=prepared,
+        source_scopes={source: "owner" for source in prepared.sources},
+    )
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
 
-    result = NativeOaBackend().bind(project, step).run(context)
+    result = backend.run(context, prepared)
 
     assert result.status == "succeeded"
     assert result.facts == {"passed": True, "evidence_status": "passed"}
@@ -308,7 +347,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Step(
+    step = OperationStep(
         "oa",
         "cadence.oa",
         {"owner": "example", "action": "rebuild", "timeout_seconds": 10},
@@ -354,8 +393,16 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         "sigilicon.workflows.oa_library.rebuild_oa_library",
         rebuild,
     )
+    backend = OaBackend()
+    prepared = backend.prepare(project, step).step
+    context = replace(
+        context,
+        step=prepared,
+        source_scopes={source: "owner" for source in prepared.sources},
+    )
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
 
-    result = OaBackend().bind(project, step).run(context)
+    result = backend.run(context, prepared)
 
     assert result.status == "succeeded"
     assert registered[0].operation_id == context.operation_id
@@ -365,7 +412,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Step(
+    step = OperationStep(
         "layout",
         "cadence.layout",
         {
@@ -404,8 +451,15 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         generate,
     )
 
-    backend = LayoutBackend().bind(project, step)
-    result = backend.run(context)
+    backend = LayoutBackend()
+    prepared = backend.prepare(project, step).step
+    context = replace(
+        context,
+        step=prepared,
+        source_scopes={source: "owner" for source in prepared.sources},
+    )
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
+    result = backend.run(context, prepared)
 
     assert result.status == "succeeded"
     assert result.facts == {"instance_count": 3}
@@ -420,8 +474,8 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         "sigilicon.workflows.layout_generation.generate_layout",
         uncertain,
     )
-    second = _oa_context(tmp_path / "uncertain", step, registered=[])
-    result = backend.run(second)
+    second = _oa_context(tmp_path / "uncertain", prepared, registered=[])
+    result = backend.run(second, prepared)
     assert result.status == "uncertain"
     assert result.facts["workspace_uncertainty"] == (
         "workspace cleanup could not be proven",
@@ -432,7 +486,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Step(
+    step = OperationStep(
         "layout",
         "cadence.layout",
         {
@@ -458,7 +512,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     )
 
     with pytest.raises(ContractError, match="typed backend source snapshot drift"):
-        LayoutBackend().bind(project, step)
+        LayoutBackend().prepare(project, step)
 
 
 def test_layout_verification_backend_publishes_classified_evidence(
@@ -467,7 +521,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
 ) -> None:
     xstream = _file(tmp_path / "bin/strmout", executable=True)
     calibre = _file(tmp_path / "bin/calibre", executable=True)
-    step = Step(
+    step = OperationStep(
         "verify",
         "cadence.layout-verify",
         {
@@ -563,10 +617,19 @@ def test_layout_verification_backend_publishes_classified_evidence(
         "sigilicon.workflows.layout_verification.run_layout_verification",
         verify,
     )
-    backend = LayoutVerificationBackend().bind(project, step)
+    backend = LayoutVerificationBackend()
+    prepared = backend.prepare(project, step).step
+    context = replace(
+        context,
+        step=prepared,
+        source_scopes={source: "owner" for source in prepared.sources},
+    )
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
 
-    assert all(check.status == "ready" for check in backend.preflight(step, resources))
-    result = backend.run(context)
+    assert all(
+        check.status == "ready" for check in backend.preflight(prepared, resources)
+    )
+    result = backend.run(context, prepared)
 
     assert result.status == "succeeded"
     assert result.facts == {

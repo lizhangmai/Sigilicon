@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -12,18 +11,20 @@ import pytest
 
 from sigilicon.execution import (
     Artifact,
-    Backends,
     ContractError,
     ExecutionError,
+    OperationStep,
+    PreparedStep,
     PreflightCheck,
     Resources,
     RunResult,
     RunStoreError,
-    Step,
+    Source,
     StepContext,
     StepOutcome,
     StepResult,
 )
+from sigilicon.execution.backend import _Preparation
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
 
@@ -142,6 +143,9 @@ needs = ["source"]
 class CopyBackend:
     name = "fake.copy"
 
+    def prepare(self, _project, step):
+        return _Preparation(PreparedStep.from_operation(step))
+
     def preflight(self, step, resources):
         return (
             PreflightCheck(
@@ -151,21 +155,24 @@ class CopyBackend:
             ),
         )
 
-    def run(self, context: StepContext) -> StepResult:
-        output = context.write_text("source", "value.txt", str(context.step.config["text"]))
+    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        output = context.write_text("source", "value.txt", str(step.request["text"]))
         return StepResult.succeeded(
             artifacts=(Artifact("source", "text.plain", output),),
-            facts={"length": len(str(context.step.config["text"]))},
+            facts={"length": len(str(step.request["text"]))},
         )
 
 
 class UpperBackend:
     name = "fake.upper"
 
+    def prepare(self, _project, step):
+        return _Preparation(PreparedStep.from_operation(step))
+
     def preflight(self, step, resources):
         return ()
 
-    def run(self, context: StepContext) -> StepResult:
+    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         source = context.artifacts("source", "source")[0]
         output = context.write_text(
             "result",
@@ -197,12 +204,15 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert plan.target == "smoke"
     assert plan.operation == "check"
     assert [step.uses for step in plan.steps] == ["fake.copy"]
-    assert plan.steps[0].config == {"prefix": "value", "text": "hello"}
+    assert plan.steps[0].request == {"prefix": "value", "text": "hello"}
     assert plan.steps[0].evidence.record == {
         "role": "regression",
         "level": "l0",
         "scope": "source",
     }
+    assert json.loads(json.dumps(plan.record))["schema"] == 2
+    assert "backend_bindings" not in plan.record
+    assert not hasattr(plan, "_backends")
     assert not project.artifact_root.exists()
     assert project.preflight(plan).status == "blocked"
     checked = project.preflight(plan, Resources(frozenset({"offline"})))
@@ -223,13 +233,21 @@ def test_backend_discovered_sources_have_canonical_plan_order(tmp_path: Path) ->
 
     class DiscoveringBackend(CopyBackend):
         def __init__(self, paths: tuple[Path, ...]) -> None:
-            self.binding_sources = {
-                path: hashlib.sha256(path.read_bytes()).hexdigest()
-                for path in paths
-            }
+            self.paths = paths
 
-        def bind(self, project, step):
-            return self
+        def prepare(self, project, step):
+            owner_root = project.owner("example").root
+            sources = tuple(
+                Source.capture(path, root=owner_root, scope="owner")
+                for path in self.paths
+            )
+            names = tuple(sorted(source.path for source in sources))
+            return _Preparation(
+                PreparedStep.from_operation(
+                    step, sources=tuple(dict.fromkeys((*step.sources, *names)))
+                ),
+                sources,
+            )
 
     forward = _project(
         tmp_path,
@@ -247,18 +265,18 @@ def test_backend_discovered_sources_have_canonical_plan_order(tmp_path: Path) ->
     )
 
 
-def test_backend_binding_rejects_a_compiled_source_change(tmp_path: Path) -> None:
+def test_backend_preparation_rejects_a_compiled_source_change(tmp_path: Path) -> None:
     _write_project(tmp_path)
     source = tmp_path / "ip/example/configs/value.txt"
 
     class ChangingBackend(CopyBackend):
-        def bind(self, project, step):
-            source.write_text("changed during bind\n", encoding="utf-8")
-            return self
+        def prepare(self, project, step):
+            source.write_text("changed during prepare\n", encoding="utf-8")
+            return super().prepare(project, step)
 
     project = _project(tmp_path, ChangingBackend())
 
-    with pytest.raises(ContractError, match="changed during backend binding"):
+    with pytest.raises(ContractError, match="changed during backend preparation"):
         project.plan("example/smoke:check")
 
 
@@ -293,12 +311,12 @@ source = ["ip/foreign/value.txt"]
     value.write_text("foreign\n", encoding="utf-8")
 
     class ForeignSourceBackend(CopyBackend):
-        binding_sources = {
-            value: hashlib.sha256(value.read_bytes()).hexdigest(),
-        }
-
-        def bind(self, project, step):
-            return self
+        def prepare(self, project, step):
+            source = Source.capture(value, root=foreign, scope="owner")
+            return _Preparation(
+                PreparedStep.from_operation(step, sources=(*step.sources, source.path)),
+                (source,),
+            )
 
     project = _project(tmp_path, ForeignSourceBackend())
     with pytest.raises(ContractError, match="source owned by 'foreign'"):
@@ -314,15 +332,15 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
     link.symlink_to(target.name)
 
     class SymlinkSourceBackend(CopyBackend):
-        binding_sources = {
-            link: hashlib.sha256(target.read_bytes()).hexdigest(),
-        }
-
-        def bind(self, project, step):
-            return self
+        def prepare(self, project, step):
+            source = Source.capture(link, root=owner.parent, scope="owner")
+            return _Preparation(
+                PreparedStep.from_operation(step, sources=(*step.sources, source.path)),
+                (source,),
+            )
 
     project = _project(tmp_path, SymlinkSourceBackend())
-    with pytest.raises(ContractError, match="symlinked source"):
+    with pytest.raises(ContractError, match="non-symlink"):
         project.plan("example/smoke:check")
 
 
@@ -486,7 +504,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     live = tmp_path / "ip/example/configs/value.txt"
 
     class SealedSourceBackend(CopyBackend):
-        def run(self, context: StepContext) -> StepResult:
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
             live.write_text("later\n", encoding="utf-8")
             output = context.write_text(
                 "source",
@@ -528,18 +546,8 @@ def test_project_rejects_an_authorized_plan_modified_by_the_caller(
     _write_project(tmp_path)
     project = _project(tmp_path, CopyBackend())
     plan = project.plan("example/smoke:check")
-    forged_step = replace(plan.steps[0], config={"text": "forged"})
+    forged_step = replace(plan.steps[0], request={"text": "forged"})
     forged = replace(plan, steps=(forged_step,))
-
-    with pytest.raises(ValueError, match="not authorized by this Project"):
-        project.preflight(forged, Resources(frozenset({"offline"})))
-
-
-def test_project_rejects_a_replaced_backend_binding(tmp_path: Path) -> None:
-    _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
-    plan = project.plan("example/smoke:check")
-    forged = replace(plan, _backends={plan.steps[0].id: UpperBackend()})
 
     with pytest.raises(ValueError, match="not authorized by this Project"):
         project.preflight(forged, Resources(frozenset({"offline"})))
@@ -585,13 +593,8 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 
 
 def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
-    class InvalidBackend(CopyBackend):
-        name = "Invalid/Backend"
-
-    with pytest.raises(ContractError, match="canonical identity"):
-        Backends((InvalidBackend(),))
     with pytest.raises(ContractError, match="mapping"):
-        Step("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
+        OperationStep("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
     outcome = StepOutcome("run", "fake.copy", StepResult.succeeded())
     with pytest.raises(ContractError, match="disagrees"):
         RunResult(
@@ -614,7 +617,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
         def preflight(self, step, resources):
             return ()
 
-        def run(self, context: StepContext) -> StepResult:
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
             published = context.write_text("source", "published.txt", "published")
             context.write_text("source", "extra.txt", "extra")
             return StepResult.succeeded(
@@ -632,7 +635,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     _write_project(tmp_path)
 
     class UncertainBackend(CopyBackend):
-        def run(self, context: StepContext) -> StepResult:
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
             return StepResult.uncertain("descendant cleanup could not be proven")
 
     project = _project(tmp_path, UncertainBackend(),)
@@ -662,7 +665,7 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
     _write_project(tmp_path)
 
     class CleanupUnknownBackend(CopyBackend):
-        def run(self, context: StepContext) -> StepResult:
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
             raise ProcessGroupCleanupUncertainError(
                 "descendant cleanup could not be proven"
             )
@@ -685,7 +688,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
     class CancelledBackend(CopyBackend):
-        def run(self, context: StepContext) -> StepResult:
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
             return StepResult.cancelled("operator cancelled the tool")
 
     project = _project(tmp_path, CancelledBackend(),)
@@ -712,7 +715,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
     class RejectingBackend(CopyBackend):
-        def run(self, context: StepContext) -> StepResult:
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
             evidence = context.write_text("evidence", "failure.json", "{}\n")
             return StepResult(
                 "failed",
@@ -749,8 +752,8 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
     live = tmp_path / "ip/example/configs/value.txt"
 
     class DriftingCopyBackend(CopyBackend):
-        def run(self, context: StepContext) -> StepResult:
-            result = super().run(context)
+        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+            result = super().run(context, step)
             live.write_text("changed\n", encoding="utf-8")
             return result
 

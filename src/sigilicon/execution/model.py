@@ -212,8 +212,8 @@ class Source:
 
 
 @dataclass(frozen=True)
-class Step:
-    """One typed backend invocation in an operation plan."""
+class OperationStep:
+    """Unprepared backend request compiled from an owner operation contract."""
 
     id: str
     uses: str
@@ -255,7 +255,68 @@ class Step:
         }
 
 
-def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
+@dataclass(frozen=True)
+class PreparedStep:
+    """Portable backend request authorized for preflight and execution."""
+
+    id: str
+    uses: str
+    request: Mapping[str, Any] = field(default_factory=dict)
+    needs: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
+    evidence: Evidence | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _identifier(self.id, "step id"))
+        object.__setattr__(self, "uses", backend_identity(self.uses))
+        if not isinstance(self.request, Mapping):
+            raise ContractError("prepared step request must be a mapping")
+        if not isinstance(self.needs, tuple):
+            raise ContractError("prepared step needs must be a tuple")
+        needs = tuple(_identifier(value, "step dependency") for value in self.needs)
+        if self.id in needs or len(needs) != len(set(needs)):
+            raise ContractError(f"step {self.id!r} has invalid dependencies")
+        if not isinstance(self.sources, tuple):
+            raise ContractError("prepared step sources must be a tuple")
+        sources = tuple(_source_name(source) for source in self.sources)
+        if len(sources) != len(set(sources)):
+            raise ContractError("prepared step sources contain duplicates")
+        if self.evidence is not None and not isinstance(self.evidence, Evidence):
+            raise ContractError("prepared step evidence must be an Evidence value")
+        object.__setattr__(self, "needs", needs)
+        object.__setattr__(self, "sources", sources)
+        object.__setattr__(self, "request", _freeze(self.request, "prepared step request"))
+
+    @classmethod
+    def from_operation(
+        cls,
+        step: OperationStep,
+        *,
+        request: Mapping[str, Any] | None = None,
+        sources: tuple[str, ...] | None = None,
+    ) -> "PreparedStep":
+        return cls(
+            step.id,
+            step.uses,
+            step.config if request is None else request,
+            step.needs,
+            step.sources if sources is None else sources,
+            step.evidence,
+        )
+
+    @property
+    def record(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "uses": self.uses,
+            "needs": list(self.needs),
+            "request": json_value(self.request),
+            "sources": list(self.sources),
+            "evidence": None if self.evidence is None else self.evidence.record,
+        }
+
+
+def _topology(steps: tuple[PreparedStep, ...]) -> tuple[PreparedStep, ...]:
     by_id = {step.id: step for step in steps}
     if len(by_id) != len(steps):
         raise ContractError("operation contains duplicate step ids")
@@ -267,7 +328,7 @@ def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     }
     if unknown:
         raise ContractError(f"operation references unknown step dependencies: {sorted(unknown)}")
-    ordered: list[Step] = []
+    ordered: list[PreparedStep] = []
     waiting = list(steps)
     while waiting:
         ready = [step for step in waiting if all(item in {done.id for done in ordered} for item in step.needs)]
@@ -280,6 +341,35 @@ def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
 
 
 @dataclass(frozen=True)
+class OperationPlan:
+    """Internal source snapshot awaiting package-owned Backend preparation."""
+
+    project_identity: str
+    owner: str
+    target: str
+    operation: str
+    steps: tuple[OperationStep, ...]
+    sources: tuple[Source, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.project_identity, str) or _DIGEST.fullmatch(
+            self.project_identity
+        ) is None:
+            raise ContractError("operation plan project identity must be a SHA-256 digest")
+        object.__setattr__(self, "owner", _identifier(self.owner, "owner"))
+        object.__setattr__(self, "target", _identifier(self.target, "target"))
+        object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
+        if not isinstance(self.steps, tuple) or not self.steps:
+            raise ContractError("operation plan must contain at least one step")
+        if any(not isinstance(step, OperationStep) for step in self.steps):
+            raise ContractError("operation plan steps must be OperationStep values")
+        if not isinstance(self.sources, tuple) or not self.sources:
+            raise ContractError("operation plan must retain its operation source")
+        if any(not isinstance(source, Source) for source in self.sources):
+            raise ContractError("operation plan sources must be Source values")
+
+
+@dataclass(frozen=True)
 class ExecutionPlan:
     """Source-bound deterministic plan for exactly one owner operation."""
 
@@ -287,13 +377,8 @@ class ExecutionPlan:
     owner: str
     target: str
     operation: str
-    steps: tuple[Step, ...]
+    steps: tuple[PreparedStep, ...]
     sources: tuple[Source, ...]
-    _backends: Mapping[str, Any] = field(
-        default_factory=lambda: MappingProxyType({}),
-        repr=False,
-        compare=False,
-    )
     _authorization: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -306,23 +391,14 @@ class ExecutionPlan:
         object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
         if not isinstance(self.steps, tuple) or not self.steps:
             raise ContractError("execution plan must contain at least one step")
-        if any(not isinstance(step, Step) for step in self.steps):
-            raise ContractError("execution plan steps must be Step values")
+        if any(not isinstance(step, PreparedStep) for step in self.steps):
+            raise ContractError("execution plan steps must be PreparedStep values")
         if not isinstance(self.sources, tuple) or not self.sources:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
             raise ContractError("execution plan sources must be Source values")
         if not isinstance(self._authorization, str):
             raise ContractError("execution plan authorization must be text")
-        if not isinstance(self._backends, Mapping) or any(
-            not isinstance(name, str) for name in self._backends
-        ):
-            raise ContractError("execution plan backend bindings must be a mapping")
-        object.__setattr__(
-            self,
-            "_backends",
-            MappingProxyType(dict(self._backends)),
-        )
         closure = {(source.root, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
@@ -336,36 +412,10 @@ class ExecutionPlan:
                     )
         object.__setattr__(self, "steps", _topology(self.steps))
 
-    def _backend_for(self, step: Step) -> Any:
-        try:
-            return self._backends[step.id]
-        except KeyError as exc:
-            raise ContractError(
-                f"execution plan step {step.id!r} has no trusted backend binding"
-            ) from exc
-
-    def _backend_record(self, step: Step) -> dict[str, Any]:
-        backend = self._backend_for(step)
-        prepared = getattr(backend, "binding_record", None)
-        record = (
-            {
-                "schema": 1,
-                "backend": step.uses,
-                "implementation": (
-                    f"{type(backend).__module__}.{type(backend).__qualname__}"
-                ),
-            }
-            if prepared is None
-            else prepared
-        )
-        if not isinstance(record, Mapping):
-            raise ContractError("backend binding record must be a mapping")
-        return json_value(record)
-
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
@@ -373,11 +423,6 @@ class ExecutionPlan:
             "operation": self.operation,
             "sources": [source.record for source in self.sources],
             "steps": [step.record for step in self.steps],
-            "backend_bindings": [
-                {"step": step.id, **self._backend_record(step)}
-                for step in self.steps
-                if step.id in self._backends
-            ],
         }
 
     @property
@@ -537,7 +582,7 @@ class StepContext:
     """Managed filesystem and dependency view supplied to one Backend."""
 
     plan_identity: str
-    step: Step
+    step: PreparedStep
     run_id: str
     operation_id: str
     work_root: Path
@@ -560,6 +605,8 @@ class StepContext:
     )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.step, PreparedStep):
+            raise ContractError("step context requires a PreparedStep")
         validate_artifact_id(self.run_id, "run id")
         validate_artifact_id(self.operation_id, "operation id")
         validate_artifact_id(self.plan_identity, "plan identity")
@@ -633,6 +680,12 @@ class StepContext:
         ):
             raise ExecutionError(f"sealed source is missing or unsafe: {name!r}")
         return result
+
+    def require_step(self, step: PreparedStep) -> None:
+        """Reject a Backend call whose explicit request disagrees with this context."""
+
+        if not isinstance(step, PreparedStep) or step != self.step:
+            raise ExecutionError("backend PreparedStep disagrees with its StepContext")
 
     def source_text(self, source: str) -> str:
         """Read a step source through the held-fd no-follow input primitive."""
@@ -864,13 +917,15 @@ __all__ = [
     "Evidence",
     "ExecutionError",
     "ExecutionPlan",
+    "OperationPlan",
+    "OperationStep",
+    "PreparedStep",
     "PreflightCheck",
     "PreflightResult",
     "Resources",
     "RunResult",
     "RunFailure",
     "Source",
-    "Step",
     "StepContext",
     "StepOutcome",
     "StepResult",

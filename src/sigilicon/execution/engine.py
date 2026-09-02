@@ -24,6 +24,7 @@ from sigilicon.execution.model import (
     StepResult,
     json_value,
 )
+from sigilicon.execution.backend import _BackendRegistry
 from sigilicon.external_tools import process_group_cleanup_uncertainty
 from sigilicon.paths import ArtifactLayout
 
@@ -31,9 +32,10 @@ from sigilicon.paths import ArtifactLayout
 Progress = Callable[[str, str], None]
 
 
-def preflight(
+def _preflight(
     plan: ExecutionPlan,
     resources: Resources,
+    backends: _BackendRegistry,
 ) -> PreflightResult:
     """Check exact sources and only the backends selected by this plan."""
 
@@ -57,8 +59,8 @@ def preflight(
         )
     for step in plan.steps:
         try:
-            backend = plan._backend_for(step)
-        except ContractError:
+            backend = backends[step.uses]
+        except KeyError:
             checks.append(
                 PreflightCheck(
                     "backend",
@@ -150,9 +152,10 @@ def _register_tree(record: ArtifactRecord, role: str, root: Path) -> None:
         record.add_file(role, path)
 
 
-def run(
+def _run(
     plan: ExecutionPlan,
     resources: Resources,
+    backends: _BackendRegistry,
     *,
     artifact_root: Path,
     project_root: Path,
@@ -163,7 +166,7 @@ def run(
 ) -> RunResult:
     """Run a preflighted plan once and persist a closed immutable result."""
 
-    checked = preflight(plan, resources)
+    checked = _preflight(plan, resources, backends)
     if not checked.ready:
         blocked = "; ".join(
             f"{check.kind}:{check.subject}: {check.detail}"
@@ -272,9 +275,14 @@ def run(
                         lambda operation: operation.register_artifact(record)
                     ),
                 )
-                backend = plan._backend_for(step)
                 try:
-                    result = backend.run(context)
+                    backend = backends[step.uses]
+                except KeyError as exc:
+                    raise ExecutionError(
+                        f"trusted backend is unavailable: {step.uses!r}"
+                    ) from exc
+                try:
+                    result = backend.run(context, step)
                     if not isinstance(result, StepResult):
                         raise TypeError("backend run must return StepResult")
                     for artifact in result.artifacts:
@@ -392,4 +400,4 @@ def run(
         return result
 
 
-__all__ = ["Progress", "preflight", "run"]
+__all__: list[str] = []

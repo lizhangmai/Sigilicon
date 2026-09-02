@@ -119,7 +119,7 @@ class Project:
         """Compile one canonical ``owner/target:operation`` selector."""
 
         from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import Backends, bind_plan
+        from sigilicon.execution.backend import _BackendRegistry, _prepare_plan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
         owner_name, target, operation = parse_selector(selector)
@@ -137,10 +137,10 @@ class Project:
             operation=operation,
             project_identity=self.identity,
         )
-        plan = bind_plan(
+        plan = _prepare_plan(
             plan,
             project=self,
-            backends=Backends(trusted_backends()),
+            backends=_BackendRegistry(trusted_backends()),
         )
         return replace(plan, _authorization=self._authorize_plan(plan))
 
@@ -154,7 +154,9 @@ class Project:
     def preflight(self, plan, resources=None):
         """Check a plan without creating a run or starting a backend."""
 
-        from sigilicon.execution.engine import preflight
+        from sigilicon.execution.engine import _preflight
+        from sigilicon.backends import trusted_backends
+        from sigilicon.execution.backend import _BackendRegistry
         from sigilicon.execution.model import (
             ExecutionPlan,
             PreflightCheck,
@@ -168,9 +170,10 @@ class Project:
         selected = Resources() if resources is None else resources
         if not isinstance(selected, Resources):
             raise TypeError("Project.preflight resources must be Resources")
-        checked = preflight(
+        checked = _preflight(
             plan,
             selected,
+            _BackendRegistry(trusted_backends()),
         )
         if plan.project_identity == self.identity:
             return checked
@@ -197,7 +200,9 @@ class Project:
     ):
         """Execute one source-current plan through its selected backends."""
 
-        from sigilicon.execution.engine import run
+        from sigilicon.execution.engine import _run
+        from sigilicon.backends import trusted_backends
+        from sigilicon.execution.backend import _BackendRegistry
         from sigilicon.execution.model import ExecutionPlan, Resources
 
         if not isinstance(plan, ExecutionPlan):
@@ -206,9 +211,10 @@ class Project:
         selected = Resources() if resources is None else resources
         if not isinstance(selected, Resources):
             raise TypeError("Project.run resources must be Resources")
-        return run(
+        return _run(
             plan,
             selected,
+            _BackendRegistry(trusted_backends()),
             artifact_root=self.artifact_root,
             project_root=self.project_root,
             owner_root=self.owner(plan.owner).root,

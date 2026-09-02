@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
-from pathlib import Path
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from sigilicon.execution.model import (
     ContractError,
     PreflightCheck,
+    OperationPlan,
+    OperationStep,
+    PreparedStep,
     Resources,
-    Step,
     StepContext,
     StepResult,
     ExecutionPlan,
@@ -22,7 +23,7 @@ from sigilicon.execution.model import (
 
 
 @runtime_checkable
-class Backend(Protocol):
+class _Backend(Protocol):
     """Trusted package code selected by a Step's ``uses`` identity.
 
     A Backend is not a sandboxed owner plugin.  Implementations that launch an
@@ -31,34 +32,52 @@ class Backend(Protocol):
 
     name: str
 
+    def prepare(self, project: Any, step: OperationStep) -> "_Preparation": ...
+
     def preflight(
         self,
-        step: Step,
+        step: PreparedStep,
         resources: Resources,
     ) -> tuple[PreflightCheck, ...]: ...
 
-    def run(self, context: StepContext) -> StepResult: ...
+    def run(self, context: StepContext, step: PreparedStep) -> StepResult: ...
 
 
-class Backends(Mapping[str, Backend]):
+@dataclass(frozen=True)
+class _Preparation:
+    """Portable Step plus exact Project sources discovered by one Backend."""
+
+    step: PreparedStep
+    sources: tuple[Source, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.step, PreparedStep):
+            raise ContractError("backend preparation must contain a PreparedStep")
+        if not isinstance(self.sources, tuple) or any(
+            not isinstance(source, Source) for source in self.sources
+        ):
+            raise ContractError("backend preparation sources must be Source values")
+
+
+class _BackendRegistry(Mapping[str, _Backend]):
     """Immutable explicit backend set; it performs no global registration."""
 
-    def __init__(self, values: Iterable[Backend] = ()) -> None:
-        selected: dict[str, Backend] = {}
+    def __init__(self, values: Iterable[_Backend] = ()) -> None:
+        selected: dict[str, _Backend] = {}
         for backend in values:
             name = getattr(backend, "name", None)
             try:
                 name = backend_identity(name)
             except ContractError as exc:
                 raise ContractError("backend must expose a canonical identity") from exc
-            if not isinstance(backend, Backend):
+            if not isinstance(backend, _Backend):
                 raise ContractError(f"backend {name!r} does not satisfy the Backend interface")
             if name in selected:
                 raise ContractError(f"duplicate backend identity: {name!r}")
             selected[name] = backend
         self._values = MappingProxyType(selected)
 
-    def __getitem__(self, name: str) -> Backend:
+    def __getitem__(self, name: str) -> _Backend:
         return self._values[name]
 
     def __iter__(self):
@@ -68,15 +87,14 @@ class Backends(Mapping[str, Backend]):
         return len(self._values)
 
 
-def bind_plan(
-    plan: ExecutionPlan,
+def _prepare_plan(
+    plan: OperationPlan,
     *,
     project: Any,
-    backends: Backends,
+    backends: _BackendRegistry,
 ) -> ExecutionPlan:
-    """Bind every Step once to package-owned implementation and domain data."""
+    """Prepare every operation Step into an authorized portable request."""
 
-    selected: dict[str, Backend] = {}
     captured = {(source.root, source.path): source for source in plan.sources}
     captured_names = {source.path: source.root for source in plan.sources}
     steps = []
@@ -87,61 +105,61 @@ def bind_plan(
             backend = backends[step.uses]
         except KeyError as exc:
             raise ContractError(f"unknown trusted backend: {step.uses!r}") from exc
-        binder = getattr(backend, "bind", None)
-        bound = backend if binder is None else binder(project, step)
-        if not isinstance(bound, Backend) or bound.name != step.uses:
+        preparation = backend.prepare(project, step)
+        if not isinstance(preparation, _Preparation):
             raise ContractError(
-                f"backend {step.uses!r} produced an invalid Step binding"
+                f"backend {step.uses!r} produced an invalid preparation"
             )
-        changed_during_binding = tuple(
+        prepared = preparation.step
+        if (
+            prepared.id,
+            prepared.uses,
+            prepared.needs,
+            prepared.evidence,
+        ) != (step.id, step.uses, step.needs, step.evidence):
+            raise ContractError(f"backend {step.uses!r} rewrote operation structure")
+        if prepared.sources[: len(step.sources)] != step.sources:
+            raise ContractError(
+                f"backend {step.uses!r} removed or reordered operation sources"
+            )
+        changed_during_preparation = tuple(
             source.path for source in captured.values() if not source.current()
         )
-        if changed_during_binding:
+        if changed_during_preparation:
             raise ContractError(
-                "operation source changed during backend binding: "
-                + ", ".join(sorted(set(changed_during_binding)))
+                "operation source changed during backend preparation: "
+                + ", ".join(sorted(set(changed_during_preparation)))
             )
-        selected[step.id] = bound
         source_names = list(step.sources)
-        bindings = getattr(bound, "binding_sources", {})
-        if not isinstance(bindings, Mapping) or any(
-            not isinstance(path, Path) or not isinstance(digest, str)
-            for path, digest in bindings.items()
+        for source in sorted(
+            preparation.sources, key=lambda item: (str(item.root), item.path)
         ):
-            raise ContractError(
-                f"backend {step.uses!r} produced invalid source bindings"
-            )
-        for raw_path, digest in sorted(
-            bindings.items(), key=lambda item: str(item[0])
-        ):
-            path = raw_path.absolute()
-            if path != path.resolve():
-                raise ContractError(
-                    f"backend {step.uses!r} bound a symlinked source: {path}"
-                )
-            source_owner = project.owner_for(path)
+            path = source.location
+            source_owner = project.owner_for(source.location)
             if source_owner is not None and source_owner.name != plan.owner:
                 raise ContractError(
-                    f"backend {step.uses!r} bound source owned by "
+                    f"backend {step.uses!r} prepared source owned by "
                     f"{source_owner.name!r}: {path}"
                 )
             if source_owner is not None:
-                root, scope = owner_root, "owner"
+                expected_root, expected_scope = owner_root, "owner"
             elif path.is_relative_to(project_root):
-                root, scope = project_root, "project"
+                expected_root, expected_scope = project_root, "project"
             else:
                 raise ContractError(
-                    f"backend {step.uses!r} bound a source outside the Project: {path}"
+                    f"backend {step.uses!r} prepared a source outside the Project: {path}"
                 )
-            source = Source.capture(path, root=root, scope=scope)
-            if source.sha256 != digest:
+            if source.root != expected_root or source.scope != expected_scope:
                 raise ContractError(
-                    f"backend {step.uses!r} source changed during binding: {source.path}"
+                    f"backend {step.uses!r} prepared a source with the wrong scope: {path}"
                 )
+            current = Source.capture(path, root=expected_root, scope=expected_scope)
+            if current.sha256 != source.sha256 or not source.current():
+                raise ContractError(f"backend source changed during preparation: {source.path}")
             previous = captured.get((source.root, source.path))
             if previous is not None and not previous.current():
                 raise ContractError(
-                    f"source changed between operation compilation and backend binding: "
+                    f"source changed between operation compilation and backend preparation: "
                     f"{source.path}"
                 )
             previous_root = captured_names.get(source.path)
@@ -152,13 +170,28 @@ def bind_plan(
             captured_names[source.path] = source.root
             if source.path not in source_names:
                 source_names.append(source.path)
-        steps.append(replace(step, sources=tuple(source_names)))
-    return replace(
-        plan,
-        steps=tuple(steps),
-        sources=tuple(captured.values()),
-        _backends=selected,
+        discovered = {source.path for source in preparation.sources}
+        unexplained = set(prepared.sources) - set(step.sources) - discovered
+        omitted = discovered - set(prepared.sources)
+        if unexplained:
+            raise ContractError(
+                f"backend {step.uses!r} prepared unexplained sources: "
+                + ", ".join(sorted(unexplained))
+            )
+        if omitted:
+            raise ContractError(
+                f"backend {step.uses!r} omitted prepared sources: "
+                + ", ".join(sorted(omitted))
+            )
+        steps.append(replace(prepared, sources=tuple(source_names)))
+    return ExecutionPlan(
+        plan.project_identity,
+        plan.owner,
+        plan.target,
+        plan.operation,
+        tuple(steps),
+        tuple(captured.values()),
     )
 
 
-__all__ = ["Backend", "Backends", "bind_plan"]
+__all__: list[str] = []

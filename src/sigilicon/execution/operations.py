@@ -8,7 +8,13 @@ import tomllib
 from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.execution.model import ContractError, Evidence, ExecutionPlan, Source, Step
+from sigilicon.execution.model import (
+    ContractError,
+    Evidence,
+    OperationPlan,
+    OperationStep,
+    Source,
+)
 from sigilicon.paths import validate_artifact_component
 
 
@@ -219,7 +225,7 @@ def _step(
     inherited_sources: tuple[Source, ...],
     source_groups: Mapping[str, Mapping[str, Any]],
     default_id: str | None = None,
-) -> Step:
+) -> OperationStep:
     unknown = set(raw) - _STEP_FIELDS
     if unknown:
         raise ContractError(f"{field} contains unknown fields: {sorted(unknown)}")
@@ -234,7 +240,7 @@ def _step(
         field=field,
         source_groups=source_groups,
     )
-    return Step(
+    return OperationStep(
         step_id,
         uses,
         _merge(inherited_config, _config(raw.get("with"), f"{field}.with")),
@@ -474,7 +480,7 @@ def compile_operation(
                     f"step {step.id!r} source is absent from the compiled closure: "
                     f"{source_name}"
                 )
-    return ExecutionPlan(
+    return OperationPlan(
         project_identity,
         owner,
         target_name,

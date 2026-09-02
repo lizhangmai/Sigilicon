@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from sigilicon.backends.synopsys import DcBackend, FcBackend, HspiceBackend, VcsBackend
-from sigilicon.execution import Resources, Step, StepContext
+from sigilicon.execution import PreparedStep, Resources, StepContext
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -19,7 +19,7 @@ def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> P
 
 def _context(
     tmp_path: Path,
-    step: Step,
+    step: PreparedStep,
     environment: dict[str, str],
 ) -> StepContext:
     run_root = tmp_path / "run"
@@ -63,7 +63,7 @@ printf 'managed vcs\n'
     _file(sources / "rtl/design.sv")
     _file(sources / "dv/testbench.sv")
     executable = _file(tmp_path / "site/vcs", "#!/bin/sh\nexit 0\n", executable=True)
-    step = Step(
+    step = PreparedStep(
         "rtl",
         "synopsys.vcs",
         {
@@ -85,7 +85,7 @@ printf 'managed vcs\n'
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context)
+    result = backend.run(context, step)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {"log"}
@@ -107,7 +107,7 @@ printf 'tampered\n' >>"$source_file"
     rtl = _file(sources / "rtl/design.sv")
     _file(sources / "dv/testbench.sv")
     executable = _file(tmp_path / "site/vcs", "#!/bin/sh\nexit 0\n", executable=True)
-    step = Step(
+    step = PreparedStep(
         "rtl",
         "synopsys.vcs",
         {
@@ -124,7 +124,7 @@ printf 'tampered\n' >>"$source_file"
     environment["SIGILICON_SYNOPSYS_VCS"] = str(executable)
 
     with pytest.raises(RuntimeError, match="changed during invocation"):
-        VcsBackend().run(_context(tmp_path, step, environment))
+        VcsBackend().run(_context(tmp_path, step, environment), step)
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
@@ -169,7 +169,7 @@ test "$0" = "{executable}"
         environment[f"SIGILICON_STDCELL_{flavor}_DB"] = str(
             _file(site / f"{flavor.lower()}.db")
         )
-    step = Step(
+    step = PreparedStep(
         "synthesis",
         "synopsys.dc",
         {
@@ -193,7 +193,7 @@ test "$0" = "{executable}"
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context)
+    result = backend.run(context, step)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {
@@ -246,7 +246,7 @@ raise SystemExit(1)
         "SIGILICON_STDCELL_LVT_SPICE",
     ):
         environment[name] = str(_file(site / f"{name.lower()}.sp"))
-    step = Step(
+    step = PreparedStep(
         "qualification",
         "synopsys.hspice",
         {
@@ -285,7 +285,7 @@ raise SystemExit(1)
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context)
+    result = backend.run(context, step)
 
     assert result.status == "failed"
     assert {artifact.role for artifact in result.artifacts} == {
@@ -333,7 +333,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
                 executable=name.endswith("LM_SHELL"),
             )
         )
-    step = Step(
+    step = PreparedStep(
         "reference-library",
         "synopsys.fc",
         {
@@ -354,7 +354,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context)
+    result = backend.run(context, step)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {
