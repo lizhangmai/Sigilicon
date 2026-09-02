@@ -543,6 +543,73 @@ def test_release_rejects_removed_owner_and_source_fields(tmp_path: Path) -> None
         load_ip_contract(contract_path, project=Project.open(tmp_path))
 
 
+@pytest.mark.parametrize(
+    ("fixture", "needle", "replacement", "label"),
+    [
+        (
+            "rtl",
+            'name = "rtl-top"\n',
+            'name = "rtl-top"\nunexpected = "value"\n',
+            r"exports\[0\]",
+        ),
+        (
+            "rtl",
+            'kind = "rtl"\n',
+            'kind = "rtl"\nunexpected = "value"\n',
+            r"exports\[0\]\.interface",
+        ),
+        (
+            "oa",
+            'library = "fixture-lib"\n',
+            'library = "fixture-lib"\nunexpected = "value"\n',
+            r"exports\[0\]\.oa",
+        ),
+        (
+            "rtl",
+            "[exports.maturity.development]\n",
+            '[exports.maturity]\nunexpected = "value"\n'
+            "[exports.maturity.development]\n",
+            r"exports\[0\]\.maturity",
+        ),
+        (
+            "rtl",
+            "[exports.maturity.development]\n",
+            '[exports.maturity.development]\nunexpected = "value"\n',
+            r"exports\[0\]\.maturity\.development",
+        ),
+        (
+            "rtl",
+            "[[collateral]]\n",
+            '[[collateral]]\nunexpected = "value"\n',
+            r"collateral\[0\]",
+        ),
+    ],
+)
+def test_release_rejects_unknown_nested_fields(
+    tmp_path: Path,
+    fixture: str,
+    needle: str,
+    replacement: str,
+    label: str,
+) -> None:
+    contract_path = (
+        _contract_fixture(tmp_path)
+        if fixture == "oa"
+        else _rtl_contract_fixture(tmp_path)
+    )
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            needle,
+            replacement,
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=label + ".*unknown fields"):
+        load_ip_contract(contract_path, project=Project.open(tmp_path))
+
+
 def test_release_must_be_declared_by_its_owner_component(tmp_path: Path) -> None:
     contract_path = _rtl_contract_fixture(tmp_path)
     component = tmp_path / "ip/rtl_fixture/configs/ip.toml"

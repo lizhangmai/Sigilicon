@@ -36,6 +36,16 @@ def _string(value: object, label: str) -> str:
     return value
 
 
+def _reject_unknown(
+    value: Mapping[str, Any],
+    allowed: set[str],
+    label: str,
+) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(f"{label} contains unknown fields: {sorted(unknown)}")
+
+
 def safe_relative(value: object, label: str) -> PurePosixPath:
     text = _string(value, label)
     path = PurePosixPath(text)
@@ -223,6 +233,11 @@ def _parse_ip_contract(
     export_specs: dict[str, dict[str, object]] = {}
     for index, value in enumerate(exports_raw):
         entry = _table(value, f"exports[{index}]")
+        _reject_unknown(
+            entry,
+            {"name", "interface", "oa", "maturity"},
+            f"exports[{index}]",
+        )
         name = _string(entry.get("name"), f"exports[{index}].name")
         if name in export_specs:
             raise ValueError(f"duplicate IP export: {name}")
@@ -232,12 +247,27 @@ def _parse_ip_contract(
         interface_kind = _string(
             interface.get("kind"), f"exports[{index}].interface.kind"
         )
+        interface_fields = {"kind", "contract"}
+        if interface_kind == "oa-mixed-signal":
+            interface_fields.update({"physical", "logical"})
+        elif interface_kind == "rtl":
+            interface_fields.update({"module", "source_role", "variant"})
+        _reject_unknown(
+            interface,
+            interface_fields,
+            f"exports[{index}].interface",
+        )
         interface_contract = safe_relative(
             interface.get("contract"),
             f"exports[{index}].interface.contract",
         )
         if interface_kind in {"oa-mixed-signal", "oa-native"}:
             oa = _table(entry.get("oa"), f"exports[{index}].oa")
+            _reject_unknown(
+                oa,
+                {"library", "cell", "schematic_view", "layout_view"},
+                f"exports[{index}].oa",
+            )
             oa_identity = {
                 "contract": interface_contract,
                 "library": _string(
@@ -309,11 +339,21 @@ def _parse_ip_contract(
         maturity = _table(
             entry.get("maturity"), f"exports[{index}].maturity"
         )
+        _reject_unknown(
+            maturity,
+            set(RELEASE_MATURITY_LEVELS),
+            f"exports[{index}].maturity",
+        )
         required_roles: dict[str, tuple[str, ...]] = {}
         previous: set[str] = set()
         for level in RELEASE_MATURITY_LEVELS:
             level_table = _table(
                 maturity.get(level),
+                f"exports[{index}].maturity.{level}",
+            )
+            _reject_unknown(
+                level_table,
+                {"required_roles"},
                 f"exports[{index}].maturity.{level}",
             )
             values = level_table.get("required_roles")
@@ -352,6 +392,24 @@ def _parse_ip_contract(
     }
     for index, item in enumerate(collateral_raw):
         entry = _table(item, f"collateral[{index}]")
+        _reject_unknown(
+            entry,
+            {
+                "export",
+                "role",
+                "component",
+                "source",
+                "package_path",
+                "format",
+                "module",
+                "library",
+                "cell",
+                "view",
+                "corner",
+                "capabilities",
+            },
+            f"collateral[{index}]",
+        )
         export = _string(entry.get("export"), f"collateral[{index}].export")
         if export not in export_specs:
             raise ValueError(
