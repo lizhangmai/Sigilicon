@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import math
+import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
@@ -12,11 +13,13 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from sigilicon.artifacts import (
+    _open_nofollow_directory,
     ensure_nofollow_directory,
+    read_nofollow_bytes,
     read_nofollow_text,
     write_immutable_text,
 )
-from sigilicon.canonical import canonical_digest
+from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 if TYPE_CHECKING:
@@ -324,74 +327,368 @@ class SourceRef:
 
 
 @dataclass(frozen=True)
-class ExternalResource:
-    """Exact host resource bound without exposing its path or content in records."""
+class ResourceFile:
+    """One binary-safe file inside a captured runtime resource."""
+
+    path: str
+    sha256: str
+    data: bytes = field(repr=False, compare=False)
+    executable: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str):
+            raise ContractError("resource file path must be text")
+        if self.path:
+            relative = PurePosixPath(self.path)
+            if (
+                relative.is_absolute()
+                or "\\" in self.path
+                or relative.as_posix() != self.path
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise ContractError("resource file path must be canonical and relative")
+        if not isinstance(self.data, bytes):
+            raise ContractError("resource file payload must be bytes")
+        if hashlib.sha256(self.data).hexdigest() != self.sha256:
+            raise ContractError("resource file digest disagrees with its payload")
+        if not isinstance(self.executable, bool):
+            raise ContractError("resource file executable flag must be boolean")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "size": len(self.data),
+            "sha256": self.sha256,
+            "executable": self.executable,
+        }
+
+
+@dataclass(frozen=True)
+class ResourceBinding:
+    """Exact file or sealed directory bound to one logical runtime identity."""
 
     identity: str
+    kind: str
     sha256: str
-    text: str = field(repr=False, compare=False)
     location: Path = field(repr=False, compare=False)
-    device: int = field(default=-1, repr=False, compare=False)
-    inode: int = field(default=-1, repr=False, compare=False)
-    mtime_ns: int = field(default=-1, repr=False, compare=False)
+    files: tuple[ResourceFile, ...] = field(repr=False, compare=False)
+    directories: tuple[str, ...] = ()
+    _fingerprint: tuple[tuple[object, ...], ...] = field(
+        default=(), repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         resource_identity(self.identity)
-        if not isinstance(self.sha256, str) or re.fullmatch(
-            r"[0-9a-f]{64}", self.sha256
-        ) is None:
-            raise ContractError("external resource digest must be lowercase SHA-256")
-        if not isinstance(self.text, str):
-            raise ContractError("external resource snapshot must be text")
-        if hashlib.sha256(self.text.encode("utf-8")).hexdigest() != self.sha256:
-            raise ContractError("external resource digest disagrees with its snapshot")
+        if self.kind not in {"file", "directory"}:
+            raise ContractError("resource binding kind must be file or directory")
         location = Path(self.location).absolute()
         if location != location.resolve():
-            raise ContractError("external resource must not traverse a symlink")
-        if any(type(value) is not int for value in (self.device, self.inode, self.mtime_ns)):
-            raise ContractError("external resource filesystem identity fields must be integers")
+            raise ContractError("resource binding must not traverse a symlink")
+        if not isinstance(self.files, tuple) or any(
+            not isinstance(item, ResourceFile) for item in self.files
+        ):
+            raise ContractError("resource binding files must be ResourceFile values")
+        if not isinstance(self.directories, tuple) or any(
+            not isinstance(item, str) or not item for item in self.directories
+        ):
+            raise ContractError("resource binding directories must be relative paths")
+        for directory in self.directories:
+            relative = PurePosixPath(directory)
+            if (
+                relative.is_absolute()
+                or "\\" in directory
+                or relative.as_posix() != directory
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise ContractError(
+                    "resource binding directories must be canonical and relative"
+                )
+        if self.kind == "file":
+            if len(self.files) != 1 or self.files[0].path or self.directories:
+                raise ContractError("file resource binding must contain one root payload")
+            expected = self.files[0].sha256
+        else:
+            file_paths = tuple(item.path for item in self.files)
+            if any(not path for path in file_paths):
+                raise ContractError("directory resource files must be relative")
+            if len(set(file_paths)) != len(file_paths):
+                raise ContractError("directory resource contains duplicate files")
+            if len(set(self.directories)) != len(self.directories):
+                raise ContractError("directory resource contains duplicate directories")
+            if file_paths != tuple(sorted(file_paths)) or self.directories != tuple(
+                sorted(self.directories)
+            ):
+                raise ContractError("directory resource manifest must be sorted")
+            if set(file_paths) & set(self.directories):
+                raise ContractError(
+                    "directory resource file and directory paths collide"
+                )
+            expected = hashlib.sha256(
+                canonical_json(
+                    {
+                        "directories": list(self.directories),
+                        "files": [item.record for item in self.files],
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+        if expected != self.sha256:
+            raise ContractError("resource binding digest disagrees with its manifest")
+        if not isinstance(self._fingerprint, tuple) or any(
+            not isinstance(item, tuple) for item in self._fingerprint
+        ):
+            raise ContractError("resource binding fingerprint is invalid")
         object.__setattr__(self, "location", location)
 
     @classmethod
-    def capture(cls, path: Path, *, identity: str) -> "ExternalResource":
+    def capture(cls, path: Path, *, identity: str) -> "ResourceBinding":
         location = Path(path).absolute()
         if location != location.resolve():
-            raise ContractError(f"external resource must not traverse a symlink: {path}")
+            raise ContractError(f"resource binding must not traverse a symlink: {path}")
         metadata = location.stat(follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ContractError(f"external resource must be a regular file: {path}")
-        text = read_nofollow_text(location)
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if stat.S_ISREG(metadata.st_mode):
+            data = read_nofollow_bytes(location)
+            current = location.stat(follow_symlinks=False)
+            fingerprint = (
+                (
+                    "",
+                    current.st_dev,
+                    current.st_ino,
+                    current.st_size,
+                    current.st_mtime_ns,
+                    current.st_mode,
+                ),
+            )
+            entry = ResourceFile(
+                "",
+                hashlib.sha256(data).hexdigest(),
+                data,
+                bool(current.st_mode & 0o111),
+            )
+            return cls(
+                resource_identity(identity),
+                "file",
+                entry.sha256,
+                location,
+                (entry,),
+                _fingerprint=fingerprint,
+            )
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ContractError(f"resource binding must be a file or directory: {path}")
+
+        directories: list[str] = []
+        files: list[ResourceFile] = []
+        fingerprint: list[tuple[object, ...]] = []
+
+        def stable_file(descriptor: int, before: os.stat_result) -> bytes:
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                raise ContractError("resource file changed while being captured")
+            return b"".join(chunks)
+
+        def capture_directory(descriptor: int, prefix: PurePosixPath) -> None:
+            for name in sorted(os.listdir(descriptor)):
+                visible = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                relative = (prefix / name).as_posix()
+                if stat.S_ISLNK(visible.st_mode):
+                    raise ContractError(
+                        f"resource directory must not contain symlinks: {relative}"
+                    )
+                if stat.S_ISDIR(visible.st_mode):
+                    child = os.open(
+                        name,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_CLOEXEC
+                        | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                elif stat.S_ISREG(visible.st_mode):
+                    child = os.open(
+                        name,
+                        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                else:
+                    raise ContractError(
+                        "resource directory contains an unsupported entry: "
+                        f"{relative}"
+                    )
+                try:
+                    held = os.fstat(child)
+                    if (held.st_dev, held.st_ino) != (visible.st_dev, visible.st_ino):
+                        raise ContractError(
+                            f"resource directory entry changed: {relative}"
+                        )
+                    fingerprint.append(
+                        (
+                            relative,
+                            held.st_dev,
+                            held.st_ino,
+                            held.st_size,
+                            held.st_mtime_ns,
+                            held.st_mode,
+                        )
+                    )
+                    if stat.S_ISDIR(held.st_mode):
+                        directories.append(relative)
+                        capture_directory(child, prefix / name)
+                    else:
+                        data = stable_file(child, held)
+                        files.append(
+                            ResourceFile(
+                                relative,
+                                hashlib.sha256(data).hexdigest(),
+                                data,
+                                bool(held.st_mode & 0o111),
+                            )
+                        )
+                    after = os.fstat(child)
+                    visible_after = os.stat(
+                        name,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        held.st_dev,
+                        held.st_ino,
+                        held.st_size,
+                        held.st_mtime_ns,
+                        held.st_mode,
+                    ) != (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_size,
+                        after.st_mtime_ns,
+                        after.st_mode,
+                    ) or (after.st_dev, after.st_ino) != (
+                        visible_after.st_dev,
+                        visible_after.st_ino,
+                    ):
+                        raise ContractError(
+                            f"resource directory entry changed: {relative}"
+                        )
+                finally:
+                    os.close(child)
+
+        root_descriptor = _open_nofollow_directory(
+            location,
+            create_missing=False,
+        )
+        try:
+            held_root = os.fstat(root_descriptor)
+            visible_root = location.stat(follow_symlinks=False)
+            if (held_root.st_dev, held_root.st_ino) != (
+                visible_root.st_dev,
+                visible_root.st_ino,
+            ):
+                raise ContractError("resource directory root changed while opening")
+            fingerprint.append(
+                (
+                    "",
+                    held_root.st_dev,
+                    held_root.st_ino,
+                    held_root.st_size,
+                    held_root.st_mtime_ns,
+                    held_root.st_mode,
+                )
+            )
+            capture_directory(root_descriptor, PurePosixPath())
+            current_root = os.fstat(root_descriptor)
+            visible_root = location.stat(follow_symlinks=False)
+            if (
+                held_root.st_dev,
+                held_root.st_ino,
+                held_root.st_size,
+                held_root.st_mtime_ns,
+                held_root.st_mode,
+            ) != (
+                current_root.st_dev,
+                current_root.st_ino,
+                current_root.st_size,
+                current_root.st_mtime_ns,
+                current_root.st_mode,
+            ) or (current_root.st_dev, current_root.st_ino) != (
+                visible_root.st_dev,
+                visible_root.st_ino,
+            ):
+                raise ContractError("resource directory root changed while capturing")
+        finally:
+            os.close(root_descriptor)
+        directory_tuple = tuple(sorted(directories))
+        file_tuple = tuple(sorted(files, key=lambda item: item.path))
+        digest = hashlib.sha256(
+            canonical_json(
+                {
+                    "directories": list(directory_tuple),
+                    "files": [item.record for item in file_tuple],
+                }
+            ).encode("utf-8")
+        ).hexdigest()
         return cls(
             resource_identity(identity),
+            "directory",
             digest,
-            text,
             location,
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mtime_ns,
+            file_tuple,
+            directory_tuple,
+            tuple(fingerprint),
         )
 
     @property
-    def record(self) -> dict[str, str]:
-        return {"identity": self.identity, "sha256": self.sha256}
+    def record(self) -> dict[str, object]:
+        common: dict[str, object] = {
+            "identity": self.identity,
+            "kind": self.kind,
+            "sha256": self.sha256,
+            "size": sum(len(item.data) for item in self.files),
+        }
+        if self.kind == "file":
+            common["executable"] = self.files[0].executable
+        else:
+            common["directories"] = list(self.directories)
+            common["files"] = [item.record for item in self.files]
+        return common
 
     @property
     def materialization_key(self) -> str:
         return resource_materialization_key(self.identity)
 
+    @property
+    def data(self) -> bytes:
+        if self.kind != "file":
+            raise ContractError("directory resource has no single payload")
+        return self.files[0].data
+
+    def read_text(self) -> str:
+        try:
+            return self.data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ContractError(
+                f"resource binding is not UTF-8 text: {self.identity}"
+            ) from exc
+
     def current(self) -> bool:
         try:
-            metadata = self.location.stat(follow_symlinks=False)
+            current = type(self).capture(self.location, identity=self.identity)
             return (
-                self.location == self.location.resolve()
-                and stat.S_ISREG(metadata.st_mode)
-                and read_nofollow_text(self.location) == self.text
-                and metadata.st_dev == self.device
-                and metadata.st_ino == self.inode
-                and metadata.st_mtime_ns == self.mtime_ns
+                current.record == self.record
+                and current._fingerprint == self._fingerprint
             )
-        except (OSError, RuntimeError, UnicodeError):
+        except (OSError, RuntimeError, ContractError):
             return False
 
 
@@ -670,8 +967,7 @@ class BoundExecution:
     plan: ExecutionPlan
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
-    resources_identity: str
-    resources: tuple[ExternalResource, ...] = field(repr=False, compare=False)
+    resources: tuple[ResourceBinding, ...] = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, ExecutionPlan):
@@ -684,15 +980,11 @@ class BoundExecution:
             not isinstance(source, Source) for source in self.sources
         ):
             raise ContractError("bound execution sources must be Source values")
-        if not isinstance(self.resources_identity, str) or _DIGEST.fullmatch(
-            self.resources_identity
-        ) is None:
-            raise ContractError("bound resources identity must be a SHA-256 digest")
         if not isinstance(self.resources, tuple) or any(
-            not isinstance(resource, ExternalResource) for resource in self.resources
+            not isinstance(resource, ResourceBinding) for resource in self.resources
         ):
             raise ContractError(
-                "bound execution resources must be ExternalResource values"
+                "bound execution resources must be ResourceBinding values"
             )
         source_closure = {(source.root, source.path): source for source in self.sources}
         if len(source_closure) != len(self.sources):
@@ -740,37 +1032,19 @@ class Resources:
 
     capabilities: frozenset[str] = frozenset()
     environment: Mapping[str, str] = field(default_factory=dict)
-    _identity: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.capabilities, frozenset) or any(
-            not isinstance(item, str) or not item for item in self.capabilities
+            not isinstance(item, str) or _BACKEND.fullmatch(item) is None
+            for item in self.capabilities
         ):
-            raise ContractError("resource capabilities must be non-empty strings")
+            raise ContractError("resource capabilities must be semantic identities")
         if not isinstance(self.environment, Mapping) or any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in self.environment.items()
         ):
             raise ContractError("resource environment must map strings to strings")
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
-        object.__setattr__(
-            self,
-            "_identity",
-            canonical_digest(
-                {
-                    "schema": 1,
-                    "contract_kind": "execution-resources",
-                    "capabilities": tuple(sorted(self.capabilities)),
-                    "environment": dict(sorted(self.environment.items())),
-                }
-            ),
-        )
-
-    @property
-    def identity(self) -> str:
-        """Return the immutable identity of this runtime resource snapshot."""
-
-        return self._identity
 
     def require_environment(self, name: str) -> str:
         """Return one required environment binding from this runtime snapshot."""
@@ -958,6 +1232,11 @@ class StepContext:
         repr=False,
         compare=False,
     )
+    resource_kinds: Mapping[str, str] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
     _register_operation: Callable[[Any], None] | None = field(
         default=None,
         repr=False,
@@ -1032,6 +1311,17 @@ class StepContext:
             raise ContractError(
                 "step context resource digests disagree with its resource closure"
             )
+        if (
+            not isinstance(self.resource_kinds, Mapping)
+            or set(self.resource_kinds) != set(self.step.resources)
+            or any(
+                kind not in {"file", "directory"}
+                for kind in self.resource_kinds.values()
+            )
+        ):
+            raise ContractError(
+                "step context resource kinds disagree with its resource closure"
+            )
         object.__setattr__(self, "dependencies", MappingProxyType(dict(self.dependencies)))
         object.__setattr__(
             self,
@@ -1042,6 +1332,11 @@ class StepContext:
             self,
             "resource_digests",
             MappingProxyType(dict(self.resource_digests)),
+        )
+        object.__setattr__(
+            self,
+            "resource_kinds",
+            MappingProxyType(dict(self.resource_kinds)),
         )
 
     def source_path(self, source: str) -> Path:
@@ -1090,12 +1385,20 @@ class StepContext:
         if (
             result.absolute() != result
             or result.resolve() != result
-            or not result.is_file()
             or result.is_symlink()
         ):
-            raise ExecutionError(f"sealed external resource is missing or unsafe: {name!r}")
-        if hashlib.sha256(read_nofollow_text(result).encode("utf-8")).hexdigest() != (
-            self.resource_digests[name]
+            raise ExecutionError(
+                f"sealed external resource is missing or unsafe: {name!r}"
+            )
+        try:
+            sealed = ResourceBinding.capture(result, identity=name)
+        except (OSError, RuntimeError, ContractError) as exc:
+            raise ExecutionError(
+                f"sealed external resource is missing or unsafe: {name!r}"
+            ) from exc
+        if (
+            sealed.kind != self.resource_kinds[name]
+            or sealed.sha256 != self.resource_digests[name]
         ):
             raise ExecutionError(
                 f"sealed external resource identity drift: {name!r}"
@@ -1103,7 +1406,23 @@ class StepContext:
         return result
 
     def resource_text(self, resource: str) -> str:
-        return read_nofollow_text(self.resource_path(resource))
+        try:
+            return self.resource_bytes(resource).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ExecutionError(
+                f"sealed external resource is not UTF-8: {resource!r}"
+            ) from exc
+
+    def resource_bytes(self, resource: str) -> bytes:
+        name = resource_identity(resource)
+        if self.resource_kinds.get(name) != "file":
+            raise ExecutionError(f"sealed external resource is not a file: {name!r}")
+        data = read_nofollow_bytes(self.resource_path(name))
+        if hashlib.sha256(data).hexdigest() != self.resource_digests[name]:
+            raise ExecutionError(
+                f"sealed external resource identity drift: {name!r}"
+            )
+        return data
 
     def scoped_source_path(self, scope: str, source: str) -> Path:
         """Resolve one owner- or project-relative source from the sealed closure."""
@@ -1350,7 +1669,8 @@ __all__ = [
     "Evidence",
     "ExecutionError",
     "ExecutionPlan",
-    "ExternalResource",
+    "ResourceBinding",
+    "ResourceFile",
     "Operation",
     "Step",
     "PreflightCheck",

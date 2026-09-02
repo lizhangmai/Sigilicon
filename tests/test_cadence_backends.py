@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import os
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -55,6 +55,7 @@ def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
     model_set = SimpleNamespace(files=(model, support))
     pdk = SimpleNamespace(
         source_paths=(),
+        runtime_bound=True,
         simulation=SimpleNamespace(model_sets={"default": model_set}),
     )
     native_setup = SimpleNamespace(
@@ -83,6 +84,20 @@ def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
     closure = oa_plan_source_paths(plan)
 
     assert {model.resolve(), support.resolve()}.issubset(closure)
+
+    native_setup.pdk = SimpleNamespace(
+        source_paths=(),
+        runtime_bound=False,
+        simulation=SimpleNamespace(
+            model_sets={
+                "default": SimpleNamespace(
+                    files=(PurePosixPath("model.scs"),)
+                )
+            }
+        ),
+    )
+    source_closure = oa_plan_source_paths(plan)
+    assert (Path.cwd() / "model.scs").resolve() not in source_closure
 
 
 def test_cadence_run_methods_only_consume_prepared_domain_plans() -> None:
@@ -144,10 +159,8 @@ def _bind_preparation(context: StepContext, preparation) -> StepContext:
     root = context.source_root.parent / "resources"
     root.mkdir(exist_ok=True)
     for resource in preparation.resources:
-        (root / resource.materialization_key).write_text(
-            resource.text,
-            encoding="utf-8",
-        )
+        assert resource.kind == "file"
+        (root / resource.materialization_key).write_bytes(resource.data)
     return replace(
         context,
         step=preparation.step,
@@ -155,6 +168,10 @@ def _bind_preparation(context: StepContext, preparation) -> StepContext:
         resource_root=root if preparation.resources else None,
         resource_digests={
             resource.identity: resource.sha256
+            for resource in preparation.resources
+        },
+        resource_kinds={
+            resource.identity: resource.kind
             for resource in preparation.resources
         },
     )

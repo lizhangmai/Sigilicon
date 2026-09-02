@@ -28,7 +28,7 @@ from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
-    ExternalResource,
+    ResourceBinding,
     Operation,
     PreflightCheck,
     Resources,
@@ -1074,14 +1074,14 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             artifact_root=project.artifact_root,
         )
         external = (
-            ExternalResource.capture(
+            ResourceBinding.capture(
                 planning.release_sources[0],
                 identity=(
                     f"release:{_text(config, 'dependency')}:"
                     f"{planning.release_id}/manifest"
                 ),
             ),
-            ExternalResource.capture(
+            ResourceBinding.capture(
                 planning.release_sources[1],
                 identity=(
                     f"release:{_text(config, 'dependency')}:"

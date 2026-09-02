@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 from typing import Any
 
@@ -160,17 +160,31 @@ def _seal_resources(record: RunRecord, plan: BoundExecution) -> Path | None:
         return None
     root = record.directory("inputs", "resources")
     for resource in plan.resources:
-        path = record.write_text(
-            "inputs",
-            ("resources", resource.materialization_key),
-            resource.text,
-        )
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try:
-            os.fchmod(descriptor, 0o444)
-        finally:
-            os.close(descriptor)
-        record.add_file("inputs", path)
+        components = ("resources", resource.materialization_key)
+        if resource.kind == "file":
+            item = resource.files[0]
+            path = record.write_bytes("inputs", components, item.data)
+            path.chmod(0o555 if item.executable else 0o444)
+            record.add_file("inputs", path)
+            continue
+        resource_root = record.directory("inputs", *components)
+        for relative in resource.directories:
+            record.directory("inputs", *components, *PurePosixPath(relative).parts)
+        for item in resource.files:
+            path = record.write_bytes(
+                "inputs",
+                (*components, *PurePosixPath(item.path).parts),
+                item.data,
+            )
+            path.chmod(0o555 if item.executable else 0o444)
+            record.add_file("inputs", path)
+        for directory in sorted(
+            (path for path in resource_root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            directory.chmod(0o555)
+        resource_root.chmod(0o555)
     root.chmod(0o555)
     return root
 
@@ -235,6 +249,22 @@ def _run(
     ):
         record.bind_operation(operation_id)
         record.write_json("inputs", ("execution-plan.json",), plan.plan.record)
+        record.write_json(
+            "inputs",
+            ("runtime-bindings.json",),
+            {
+                "schema": 1,
+                "contract_kind": "runtime-bindings",
+                "capabilities": sorted(resources.capabilities),
+                "resources": [
+                    resource.record
+                    for resource in sorted(
+                        plan.resources,
+                        key=lambda selected: selected.identity,
+                    )
+                ],
+            },
+        )
         record.write_json("inputs", ("preflight.json",), checked.record)
         changed_at_seal = tuple(
             source.path for source in plan.sources if not source.current()
@@ -314,6 +344,11 @@ def _run(
                     resource_root=resource_root,
                     resource_digests={
                         resource.identity: resource.sha256
+                        for resource in plan.resources
+                        if resource.identity in step.resources
+                    },
+                    resource_kinds={
+                        resource.identity: resource.kind
                         for resource in plan.resources
                         if resource.identity in step.resources
                     },

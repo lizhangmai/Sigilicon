@@ -19,10 +19,13 @@ from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionPlan,
+    ResourceBinding,
     RunFailure,
     RunResult,
     StepOutcome,
     StepResult,
+    backend_identity,
+    resource_materialization_key,
 )
 from sigilicon.paths import ArtifactLayout, RunPaths
 
@@ -227,8 +230,13 @@ class RunStore:
                 selected.paths.role("outputs") / "run-result.json",
                 "Run Result",
             )
+            runtime_bindings = read_json_object(
+                selected.paths.role("inputs") / "runtime-bindings.json",
+                "Runtime Bindings",
+            )
         except (OSError, RuntimeError) as exc:
             raise RunStoreError(str(exc)) from exc
+        self._validate_runtime_bindings(selected.paths, runtime_bindings)
         try:
             decoded_plan = ExecutionPlan.from_record(plan)
         except ContractError as exc:
@@ -318,6 +326,76 @@ class RunStore:
                 ):
                     raise RunStoreError("persisted run artifact is unsafe or unregistered")
         return manifest, plan, result
+
+    @staticmethod
+    def _validate_runtime_bindings(
+        paths: RunPaths,
+        value: Mapping[str, Any],
+    ) -> None:
+        if set(value) != {
+            "schema",
+            "contract_kind",
+            "capabilities",
+            "resources",
+        } or value.get("schema") != 1 or value.get("contract_kind") != (
+            "runtime-bindings"
+        ):
+            raise RunStoreError("persisted runtime bindings have an invalid shape")
+        capabilities = value.get("capabilities")
+        resources = value.get("resources")
+        if not isinstance(capabilities, list) or any(
+            not isinstance(capability, str) for capability in capabilities
+        ):
+            raise RunStoreError("persisted runtime bindings are not canonical")
+        if (
+            capabilities != sorted(set(capabilities))
+            or not isinstance(resources, list)
+            or any(not isinstance(resource, Mapping) for resource in resources)
+        ):
+            raise RunStoreError("persisted runtime bindings are not canonical")
+        try:
+            for capability in capabilities:
+                backend_identity(capability)
+        except ContractError as exc:
+            raise RunStoreError("persisted runtime capability is invalid") from exc
+
+        resource_root = paths.role("inputs") / "resources"
+        identities: set[str] = set()
+        ordered_identities: list[str] = []
+        expected_members: set[str] = set()
+        for record in resources:
+            assert isinstance(record, Mapping)
+            identity = record.get("identity")
+            if not isinstance(identity, str) or identity in identities:
+                raise RunStoreError("persisted runtime resource identity is invalid")
+            identities.add(identity)
+            ordered_identities.append(identity)
+            try:
+                materialization_key = resource_materialization_key(identity)
+                binding = ResourceBinding.capture(
+                    resource_root / materialization_key,
+                    identity=identity,
+                )
+            except (OSError, RuntimeError, ContractError) as exc:
+                raise RunStoreError(
+                    "persisted runtime resource is missing or unsafe"
+                ) from exc
+            if binding.record != dict(record):
+                raise RunStoreError("persisted runtime resource identity drift")
+            expected_members.add(materialization_key)
+        if ordered_identities != sorted(ordered_identities):
+            raise RunStoreError("persisted runtime resources are not canonical")
+        if expected_members:
+            try:
+                actual_members = set(os.listdir(resource_root))
+            except OSError as exc:
+                raise RunStoreError(
+                    "persisted runtime resource closure is missing"
+                ) from exc
+            if actual_members != expected_members:
+                raise RunStoreError("persisted runtime resource closure drift")
+        elif resource_root.exists():
+            raise RunStoreError("persisted runtime resource closure is unexpected")
 
     def read(
         self,

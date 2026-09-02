@@ -230,6 +230,10 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
             manifest_resource: manifest_digest,
             liberty_resource: liberty_digest,
         },
+        resource_kinds={
+            manifest_resource: "file",
+            liberty_resource: "file",
+        },
     )
     backend = StructuralLinkBackend()
     observed = []

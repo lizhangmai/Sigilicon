@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import InitVar, dataclass, field
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
@@ -29,14 +29,6 @@ class PlatformResources(Protocol):
     """Minimal runtime-resource capability required by platform loading."""
 
     def require_directory(self, name: str) -> Path: ...
-
-
-class _NoPlatformResources:
-    def require_directory(self, name: str) -> Path:
-        raise ValueError(f"platform runtime resource is missing: {name}")
-
-
-_NO_PLATFORM_RESOURCES = _NoPlatformResources()
 
 
 @dataclass(frozen=True)
@@ -126,6 +118,65 @@ class LayoutPdkConfig:
     oa_materialization: OaMaterializationMapping | None = None
 
 
+@dataclass(frozen=True)
+class SimulationModelContract:
+    """One model set whose assets remain logical references."""
+
+    name: str
+    file: PurePosixPath
+    sections: tuple[str, ...]
+    support_files: tuple[PurePosixPath, ...] = ()
+
+    @property
+    def files(self) -> tuple[PurePosixPath, ...]:
+        return (self.file, *self.support_files)
+
+    @property
+    def single_section(self) -> str:
+        if len(self.sections) != 1:
+            raise ValueError(
+                f"platform model set {self.name!r} does not have one default section"
+            )
+        return self.sections[0]
+
+
+@dataclass(frozen=True)
+class SimulationPlatformContract:
+    """Source-owned simulation contract without host paths."""
+
+    path: Path
+    default_model_set: str
+    model_sets: Mapping[str, SimulationModelContract]
+
+    @property
+    def default(self) -> SimulationModelContract:
+        return self.model_set(self.default_model_set)
+
+    def model_set(self, name: str) -> SimulationModelContract:
+        try:
+            return self.model_sets[name]
+        except KeyError as exc:
+            raise ValueError(f"platform has no simulation model set {name!r}") from exc
+
+
+@dataclass(frozen=True)
+class LayoutPlatformContract:
+    """Source-owned layout contract with logical verification assets."""
+
+    layout_path: Path
+    verification_path: Path
+    dbu_per_micron: int
+    layermap: PurePosixPath
+    drc_deck: PurePosixPath
+    lvs_deck: PurePosixPath
+    qrc_tech_file: PurePosixPath | None
+    xstream_flatten_pcells: bool = True
+    xstream_suppressed_warnings: tuple[str, ...] = ()
+    xstream_bin: PurePosixPath | None = None
+    calibre_bin: PurePosixPath | None = None
+    oa_materialization: OaMaterializationMapping | None = None
+
+
 _PDK_CONFIG_AUTHORITY = object()
 
 
@@ -154,6 +205,70 @@ class PdkConfig:
     def __post_init__(self, _authority: object) -> None:
         if _authority is not _PDK_CONFIG_AUTHORITY:
             raise ValueError("platform snapshots must be built by the platform loader")
+
+    @property
+    def runtime_bound(self) -> bool:
+        """Whether external asset paths were resolved for this invocation."""
+
+        return self.asset_root is not None
+
+
+_PLATFORM_CONTRACT_AUTHORITY = object()
+
+
+@dataclass(frozen=True)
+class PlatformContract:
+    """Project-owned platform contract with logical, unresolved asset references."""
+
+    _authority: InitVar[object]
+    key: str
+    path: Path
+    owner: str
+    name: str
+    simulation: SimulationPlatformContract
+    oa: OaPlatformConfig
+    layout: LayoutPlatformContract | None
+    asset_root_environment: str | None
+    source_paths: tuple[Path, ...]
+    catalog_document: Mapping[str, Any]
+    source_documents: Mapping[Path, Mapping[str, Any]]
+
+    def __post_init__(self, _authority: object) -> None:
+        if _authority is not _PLATFORM_CONTRACT_AUTHORITY:
+            raise ValueError("platform contracts must be built by the platform loader")
+        if any(
+            not isinstance(path, PurePosixPath)
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            for path in self.asset_paths
+        ):
+            raise ValueError("platform contract asset paths must be logical and relative")
+
+    @property
+    def asset_paths(self) -> tuple[PurePosixPath, ...]:
+        assets = [
+            path
+            for model_set in self.simulation.model_sets.values()
+            for path in model_set.files
+        ]
+        if self.layout is not None:
+            assets.extend(
+                path
+                for path in (
+                    self.layout.layermap,
+                    self.layout.drc_deck,
+                    self.layout.lvs_deck,
+                    self.layout.qrc_tech_file,
+                    self.layout.xstream_bin,
+                    self.layout.calibre_bin,
+                )
+                if path is not None
+            )
+        return tuple(sorted(set(assets)))
+
+    @property
+    def runtime_bound(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)
@@ -209,7 +324,8 @@ class PlatformInventory(Mapping[str, PdkConfig]):
         for key, platform in selected.items():
             _validate_immutable_platform_snapshot(platform)
             if (
-                platform.key != key
+                not platform.runtime_bound
+                or platform.key != key
                 or platform.path != catalog.manifest(key)
                 or platform.catalog_document != catalog.document
                 or not platform.source_paths
@@ -274,7 +390,83 @@ class PlatformInventory(Mapping[str, PdkConfig]):
         return platform
 
 
-PlatformSnapshot = PdkConfig | PlatformInventory
+class PlatformContractInventory(Mapping[str, PlatformContract]):
+    """Complete source-only platform catalog for repository planning."""
+
+    __slots__ = ("_catalog", "_platforms", "_project")
+
+    def __init__(
+        self,
+        *,
+        _authority: object,
+        project: Project,
+        catalog: PlatformCatalogSnapshot,
+        platforms: Mapping[str, PlatformContract],
+    ) -> None:
+        if _authority is not _PLATFORM_INVENTORY_AUTHORITY:
+            raise ValueError("platform contract inventory must be built by its loader")
+        if (
+            catalog.project_root != project.project_root
+            or catalog.path != project.catalog("platform")
+        ):
+            raise ValueError("platform contract inventory catalog identity drift")
+        _validate_immutable_platform_catalog(catalog)
+        selected = dict(platforms)
+        if set(selected) != set(catalog.manifests):
+            raise ValueError("platform contract inventory is incomplete")
+        for key, contract in selected.items():
+            if (
+                not isinstance(contract, PlatformContract)
+                or contract.key != key
+                or contract.path != catalog.manifest(key)
+                or contract.catalog_document != catalog.document
+            ):
+                raise ValueError("platform contract inventory identity drift")
+        object.__setattr__(self, "_project", project)
+        object.__setattr__(self, "_catalog", catalog)
+        object.__setattr__(self, "_platforms", MappingProxyType(selected))
+
+    @property
+    def project(self) -> Project:
+        return self._project
+
+    @property
+    def catalog(self) -> PlatformCatalogSnapshot:
+        return self._catalog
+
+    @property
+    def platforms(self) -> Mapping[str, PlatformContract]:
+        return self._platforms
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("platform contract inventory is immutable")
+
+    def __getitem__(self, key: str) -> PlatformContract:
+        return self.platforms[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.platforms)
+
+    def __len__(self) -> int:
+        return len(self.platforms)
+
+    def resolve(self, context: Project, key: str) -> PlatformContract:
+        if context is not self.project:
+            raise ValueError("platform contract inventory belongs to another operation")
+        try:
+            return self.platforms[key]
+        except KeyError as exc:
+            raise ValueError(f"platform contract inventory has no {key!r} entry") from exc
+
+
+PlatformSnapshot = (
+    PdkConfig
+    | PlatformInventory
+    | PlatformContract
+    | PlatformContractInventory
+)
+ResolvedPlatform = PdkConfig | PlatformContract
+ResolvedLayoutPlatform = LayoutPdkConfig | LayoutPlatformContract
 
 
 def _validate_immutable_platform_catalog(
@@ -440,8 +632,7 @@ def _validate_platform_snapshot(
             or snapshot.asset_root_environment != root_environment
         ):
             raise ValueError("platform identity drift")
-        if asset_root is None:
-            raise ValueError("platform snapshot omits its external asset root")
+        contract_asset_root = asset_root or snapshot.path.parent
         contracts = manifest_document.get("contracts")
         if not isinstance(contracts, Mapping):
             raise ValueError("platform snapshot source document drift")
@@ -489,7 +680,7 @@ def _validate_platform_snapshot(
         parsed_simulation = _load_simulation(
             simulation_path,
             simulation_document,
-            asset_root=asset_root,
+            asset_root=contract_asset_root,
         )
         parsed_oa = _load_oa(oa_path, oa_document)
         if parsed_simulation != snapshot.simulation or parsed_oa != snapshot.oa:
@@ -539,7 +730,8 @@ def _validate_platform_snapshot(
                 layout_document,
                 verification_path,
                 verification_document,
-                asset_root=asset_root,
+                asset_root=contract_asset_root,
+                require_assets=asset_root is not None,
             )
             if parsed_layout != snapshot.layout:
                 raise ValueError("platform identity drift")
@@ -558,20 +750,22 @@ def resolve_platform_snapshot(
     key: str,
     *,
     snapshot: PlatformSnapshot | None = None,
-) -> PdkConfig:
+) -> ResolvedPlatform:
     """Resolve a public snapshot or select an operation-trusted inventory."""
 
     if isinstance(snapshot, PlatformInventory):
         return snapshot.resolve(context, key)
+    if isinstance(snapshot, PlatformContractInventory):
+        return snapshot.resolve(context, key)
+    if isinstance(snapshot, PlatformContract):
+        if snapshot.key != key:
+            raise ValueError("platform contract disagrees with requested key")
+        current = load_platform_contract(context, key)
+        if current != snapshot:
+            raise ValueError("platform contract source identity drift")
+        return snapshot
     if snapshot is None:
-        # This deliberately supplies no host facts.  External platforms must
-        # be loaded through ``load_platform``/``resolve_platform`` with an
-        # explicit Resources value before they can enter an operation.
-        return resolve_platform(
-            context,
-            key,
-            resources=_NO_PLATFORM_RESOURCES,
-        )
+        return load_platform_contract(context, key)
     return _validate_platform_snapshot(context, key, snapshot, resources=None)
 
 
@@ -724,18 +918,30 @@ def _platform_asset_root(
     return asset_root.expanduser().absolute(), root_environment
 
 
-def _required_file(base: Path, value: object, field: str) -> Path:
+def _required_file(
+    base: Path,
+    value: object,
+    field: str,
+    *,
+    require_asset: bool = True,
+) -> Path:
     result = _asset_source_path(base, value, field)
-    if not result.is_file():
+    if require_asset and not result.is_file():
         raise ValueError(f"{field} does not exist: {result}")
     return result
 
 
-def _optional_executable(base: Path, value: object, field: str) -> Path | None:
+def _optional_executable(
+    base: Path,
+    value: object,
+    field: str,
+    *,
+    require_asset: bool = True,
+) -> Path | None:
     if value is None:
         return None
     result = _asset_path(base, value, field)
-    if not result.is_file() or not os.access(result, os.X_OK):
+    if require_asset and (not result.is_file() or not os.access(result, os.X_OK)):
         raise ValueError(f"{field} must be executable: {result}")
     return result
 
@@ -938,6 +1144,7 @@ def _load_layout(
     verification_raw: Mapping[str, Any],
     *,
     asset_root: Path,
+    require_assets: bool = True,
 ) -> LayoutPdkConfig:
     _reject_unknown(
         layout_raw,
@@ -982,14 +1189,30 @@ def _load_layout(
         layout_path=layout_path,
         verification_path=verification_path,
         dbu_per_micron=dbu,
-        layermap=_required_file(asset_root, verification_raw.get("layermap"), "layermap"),
-        drc_deck=_required_file(asset_root, verification_raw.get("drc_deck"), "drc_deck"),
-        lvs_deck=_required_file(asset_root, verification_raw.get("lvs_deck"), "lvs_deck"),
+        layermap=_required_file(
+            asset_root,
+            verification_raw.get("layermap"),
+            "layermap",
+            require_asset=require_assets,
+        ),
+        drc_deck=_required_file(
+            asset_root,
+            verification_raw.get("drc_deck"),
+            "drc_deck",
+            require_asset=require_assets,
+        ),
+        lvs_deck=_required_file(
+            asset_root,
+            verification_raw.get("lvs_deck"),
+            "lvs_deck",
+            require_asset=require_assets,
+        ),
         qrc_tech_file=(
             _required_file(
                 asset_root,
                 verification_raw["qrc_tech_file"],
                 "qrc_tech_file",
+                require_asset=require_assets,
             )
             if "qrc_tech_file" in verification_raw
             else None
@@ -997,10 +1220,16 @@ def _load_layout(
         xstream_flatten_pcells=xstream_flatten,
         xstream_suppressed_warnings=warnings,
         xstream_bin=_optional_executable(
-            asset_root, verification_raw.get("xstream_bin"), "xstream_bin"
+            asset_root,
+            verification_raw.get("xstream_bin"),
+            "xstream_bin",
+            require_asset=require_assets,
         ),
         calibre_bin=_optional_executable(
-            asset_root, verification_raw.get("calibre_bin"), "calibre_bin"
+            asset_root,
+            verification_raw.get("calibre_bin"),
+            "calibre_bin",
+            require_asset=require_assets,
         ),
         oa_materialization=oa_materialization,
     )
@@ -1066,18 +1295,18 @@ def load_platform_catalog(context: Project) -> PlatformCatalogSnapshot:
     return parse_platform_catalog(context, read_toml(catalog_path))
 
 
-def load_platform(
+def _load_platform(
     context: Project,
     key: str,
     *,
-    resources: PlatformResources,
+    resources: PlatformResources | None,
     catalog: PlatformCatalogSnapshot | None = None,
 ) -> PdkConfig:
-    """Resolve and validate one platform without leaking repository layout."""
+    """Parse one platform, optionally resolving its external asset root."""
 
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
         raise ValueError("platform key contains unsupported characters")
-    if not isinstance(resources, PlatformResources):
+    if resources is not None and not isinstance(resources, PlatformResources):
         raise TypeError("platform resources must provide require_directory")
     if catalog is None:
         catalog_document = read_toml(context.catalog("platform"))
@@ -1122,7 +1351,7 @@ def load_platform(
         raw,
         resources=resources,
     )
-    assert asset_root is not None
+    contract_asset_root = asset_root or manifest.parent
     contracts = _table(raw.get("contracts"), "platform.contracts")
     allowed = {"simulation", "oa", "layout", "verification"}
     if set(contracts) - allowed or not {"simulation", "oa"}.issubset(contracts):
@@ -1140,7 +1369,7 @@ def load_platform(
     simulation_path, simulation_raw = simulation_contract
     oa_path, oa_raw = oa_contract
     simulation = _load_simulation(
-        simulation_path, simulation_raw, asset_root=asset_root
+        simulation_path, simulation_raw, asset_root=contract_asset_root
     )
     oa = _load_oa(oa_path, oa_raw)
     source_paths: list[Path] = [
@@ -1165,7 +1394,8 @@ def load_platform(
             layout_raw,
             verification_path,
             verification_raw,
-            asset_root=asset_root,
+            asset_root=contract_asset_root,
+            require_assets=asset_root is not None,
         )
         source_paths.extend((layout_path, verification_path))
     sources = tuple(source_paths)
@@ -1199,6 +1429,109 @@ def load_platform(
     )
 
 
+def load_platform(
+    context: Project,
+    key: str,
+    *,
+    resources: PlatformResources,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PdkConfig:
+    """Resolve one platform against explicit runtime assets."""
+
+    if not isinstance(resources, PlatformResources):
+        raise TypeError("platform resources must provide require_directory")
+    platform = _load_platform(
+        context,
+        key,
+        resources=resources,
+        catalog=catalog,
+    )
+    if platform.asset_root is None:
+        raise ValueError("platform runtime asset root was not resolved")
+    return platform
+
+
+def load_platform_contract(
+    context: Project,
+    key: str,
+    *,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PlatformContract:
+    """Validate one platform's project-owned source without host bindings."""
+
+    platform = _load_platform(context, key, resources=None, catalog=catalog)
+    asset_base = platform.asset_root or platform.path.parent
+
+    def logical(path: Path) -> PurePosixPath:
+        try:
+            relative = path.relative_to(asset_base)
+        except ValueError as exc:
+            raise ValueError("platform asset escaped its logical root") from exc
+        return PurePosixPath(relative.as_posix())
+
+    model_sets = {
+        name: SimulationModelContract(
+            name=model_set.name,
+            file=logical(model_set.file),
+            sections=model_set.sections,
+            support_files=tuple(logical(path) for path in model_set.support_files),
+        )
+        for name, model_set in platform.simulation.model_sets.items()
+    }
+    simulation = SimulationPlatformContract(
+        path=platform.simulation.path,
+        default_model_set=platform.simulation.default_model_set,
+        model_sets=MappingProxyType(model_sets),
+    )
+    runtime_layout = platform.layout
+    layout = (
+        None
+        if runtime_layout is None
+        else LayoutPlatformContract(
+            layout_path=runtime_layout.layout_path,
+            verification_path=runtime_layout.verification_path,
+            dbu_per_micron=runtime_layout.dbu_per_micron,
+            layermap=logical(runtime_layout.layermap),
+            drc_deck=logical(runtime_layout.drc_deck),
+            lvs_deck=logical(runtime_layout.lvs_deck),
+            qrc_tech_file=(
+                None
+                if runtime_layout.qrc_tech_file is None
+                else logical(runtime_layout.qrc_tech_file)
+            ),
+            xstream_flatten_pcells=runtime_layout.xstream_flatten_pcells,
+            xstream_suppressed_warnings=(
+                runtime_layout.xstream_suppressed_warnings
+            ),
+            xstream_bin=(
+                None
+                if runtime_layout.xstream_bin is None
+                else logical(runtime_layout.xstream_bin)
+            ),
+            calibre_bin=(
+                None
+                if runtime_layout.calibre_bin is None
+                else logical(runtime_layout.calibre_bin)
+            ),
+            oa_materialization=runtime_layout.oa_materialization,
+        )
+    )
+    return PlatformContract(
+        _authority=_PLATFORM_CONTRACT_AUTHORITY,
+        key=platform.key,
+        path=platform.path,
+        owner=platform.owner,
+        name=platform.name,
+        simulation=simulation,
+        oa=platform.oa,
+        layout=layout,
+        asset_root_environment=platform.asset_root_environment,
+        source_paths=platform.source_paths,
+        catalog_document=platform.catalog_document,
+        source_documents=platform.source_documents,
+    )
+
+
 def load_platform_inventory(
     context: Project,
     *,
@@ -1219,6 +1552,30 @@ def load_platform_inventory(
         for key in selected_catalog.manifests
     }
     return PlatformInventory(
+        _authority=_PLATFORM_INVENTORY_AUTHORITY,
+        project=context,
+        catalog=selected_catalog,
+        platforms=MappingProxyType(platforms),
+    )
+
+
+def load_platform_contract_inventory(
+    context: Project,
+    *,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PlatformContractInventory:
+    """Validate every project-owned platform contract without host assets."""
+
+    selected_catalog = (
+        load_platform_catalog(context)
+        if catalog is None
+        else resolve_platform_catalog(context, snapshot=catalog)
+    )
+    platforms = {
+        key: load_platform_contract(context, key, catalog=selected_catalog)
+        for key in selected_catalog.manifests
+    }
+    return PlatformContractInventory(
         _authority=_PLATFORM_INVENTORY_AUTHORITY,
         project=context,
         catalog=selected_catalog,

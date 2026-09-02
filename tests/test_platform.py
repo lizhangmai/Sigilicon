@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -11,8 +11,11 @@ from conftest import (
     write_test_platform,
 )
 from sigilicon.domain.platform import (
+    PdkConfig,
+    PlatformContract,
     load_platform,
     load_platform_catalog,
+    load_platform_contract_inventory,
     load_platform_inventory,
     resolve_platform,
     resolve_platform_snapshot,
@@ -220,6 +223,39 @@ asset_scope = "external"
 
     assert platform.simulation.default.file == model
     assert all(path.is_relative_to(tmp_path) for path in platform.source_documents)
+
+
+def test_external_platform_contract_inventory_needs_no_runtime_root(
+    tmp_path: Path,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '\nasset_scope = "external"\n\n[contracts]\n',
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = load_platform_contract_inventory(Project.open(tmp_path))
+    platform = inventory["testpdk"]
+
+    assert isinstance(platform, PlatformContract)
+    assert not isinstance(platform, PdkConfig)
+    assert not hasattr(platform, "_planning")
+    assert (
+        resolve_platform_snapshot(
+            inventory.project,
+            "testpdk",
+            snapshot=inventory,
+        )
+        is platform
+    )
+    assert platform.asset_root_environment == "SIGILICON_PLATFORM_TESTPDK_ROOT"
+    assert tuple(path.as_posix() for path in platform.asset_paths) == ("model.scs",)
+    assert isinstance(platform.simulation.default.file, PurePosixPath)
 
 
 def test_external_platform_model_cannot_traverse_a_symlink(

@@ -21,9 +21,9 @@ from sigilicon.domain.netlist import (
 from sigilicon.domain.oa_library import OALibrarySource, load_oa_library_source
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import (
-    LayoutPdkConfig,
-    PdkConfig,
     PlatformSnapshot,
+    ResolvedLayoutPlatform,
+    ResolvedPlatform,
     resolve_platform_snapshot,
 )
 from sigilicon.project import Project
@@ -57,8 +57,8 @@ class LayoutSpec:
     oa_assembly_manifest: Path | None
     primitive_masters: tuple[str, ...]
     physical_verification: PhysicalVerificationPolicy | None
-    pdk: PdkConfig
-    layout_pdk: LayoutPdkConfig
+    pdk: ResolvedPlatform
+    layout_pdk: ResolvedLayoutPlatform
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )

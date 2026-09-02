@@ -25,7 +25,7 @@ from sigilicon.execution import (
     StepResult,
 )
 from sigilicon.execution.backend import Preparation
-from sigilicon.execution.model import ExternalResource
+from sigilicon.execution.model import ResourceBinding
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
@@ -814,7 +814,7 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
 
     class ResourceBackend(CopyBackend):
         def prepare(self, _project, step, resources):
-            resource = ExternalResource.capture(
+            resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
@@ -857,6 +857,103 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
     assert "proprietary model" not in persisted
 
 
+def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "site/pdk/table.bin"
+    live.parent.mkdir(parents=True)
+    payload = b"\x00\xff\x10binary\x00"
+    live.write_bytes(payload)
+
+    class BinaryBackend(CopyBackend):
+        def prepare(self, _project, step, resources):
+            resource = ResourceBinding.capture(live, identity="pdk:fixture/table")
+            return Preparation(
+                Step.from_operation(step, resources=(resource.identity,)),
+                resources=(resource,),
+            )
+
+        def run(self, context: StepContext, step: Step) -> StepResult:
+            assert context.resource_bytes(step.resources[0]) == payload
+            with pytest.raises(ExecutionError, match="not UTF-8"):
+                context.resource_text(step.resources[0])
+            return StepResult.succeeded(facts={"size": len(payload)})
+
+    project = _project(tmp_path, BinaryBackend())
+    result = project.run(
+        _plan(project, "example:check"),
+        _resources(),
+        run_id="b" * 32,
+    )
+
+    assert result.outcomes[0].result.facts == {"size": len(payload)}
+    bindings = json.loads(
+        (result.run_root / "inputs/runtime-bindings.json").read_text()
+    )
+    assert bindings["resources"][0]["kind"] == "file"
+    assert str(live) not in str(bindings)
+    store, owner, operation, variant = _run_store_call(project, "example:check")
+    selected = store._select(
+        owner=owner,
+        operation=operation,
+        variant=variant,
+        run_id=result.run_id,
+    )
+    store._validate_runtime_bindings(selected.paths, bindings)
+    bindings["resources"][0]["size"] += 1
+    with pytest.raises(RunStoreError, match="resource identity drift"):
+        store._validate_runtime_bindings(selected.paths, bindings)
+
+
+def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "site/pdk/library"
+    (live / "nested/empty").mkdir(parents=True)
+    (live / "model.bin").write_bytes(b"\x00model")
+    executable = live / "nested/tool"
+    executable.write_bytes(b"#!/bin/sh\n")
+    executable.chmod(0o755)
+
+    class DirectoryBackend(CopyBackend):
+        def prepare(self, _project, step, resources):
+            resource = ResourceBinding.capture(live, identity="pdk:fixture/library")
+            return Preparation(
+                Step.from_operation(step, resources=(resource.identity,)),
+                resources=(resource,),
+            )
+
+        def run(self, context: StepContext, step: Step) -> StepResult:
+            sealed = context.resource_path(step.resources[0])
+            assert (sealed / "model.bin").read_bytes() == b"\x00model"
+            assert (sealed / "nested/empty").is_dir()
+            assert os.access(sealed / "nested/tool", os.X_OK)
+            return StepResult.succeeded(facts={"tree": True})
+
+    project = _project(tmp_path, DirectoryBackend())
+    result = project.run(
+        _plan(project, "example:check"),
+        _resources(),
+        run_id="d" * 32,
+    )
+
+    assert result.outcomes[0].result.facts == {"tree": True}
+    bindings = json.loads(
+        (result.run_root / "inputs/runtime-bindings.json").read_text()
+    )
+    assert bindings["resources"][0]["kind"] == "directory"
+    assert bindings["resources"][0]["directories"] == ["nested", "nested/empty"]
+
+
+def test_directory_resource_rejects_symlink_members(tmp_path: Path) -> None:
+    live = tmp_path / "library"
+    live.mkdir()
+    target = tmp_path / "target"
+    target.write_bytes(b"target")
+    (live / "link").symlink_to(target)
+
+    with pytest.raises(ContractError, match="must not contain symlinks"):
+        ResourceBinding.capture(live, identity="pdk:fixture/library")
+
+
 def test_external_resource_reader_rejects_sealed_content_tampering(
     tmp_path: Path,
 ) -> None:
@@ -867,7 +964,7 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
 
     class TamperingBackend(CopyBackend):
         def prepare(self, _project, step, resources):
-            resource = ExternalResource.capture(
+            resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )

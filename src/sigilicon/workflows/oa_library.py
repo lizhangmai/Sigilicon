@@ -27,9 +27,9 @@ from sigilicon.domain.oa_library import (
     resolve_oa_library_source,
 )
 from sigilicon.domain.platform import (
-    PdkConfig,
     PlatformInventory,
     PlatformSnapshot,
+    ResolvedPlatform,
     load_platform,
     resolve_platform_snapshot,
 )
@@ -281,8 +281,9 @@ def oa_plan_source_paths(plan: OALibraryRebuildPlan) -> frozenset[Path]:
         native_setup = step.simulation.native_setup
         if native_setup is not None:
             paths.update(native_setup.pdk.source_paths)
-            for model_set in native_setup.pdk.simulation.model_sets.values():
-                paths.update(model_set.files)
+            if native_setup.pdk.runtime_bound:
+                for model_set in native_setup.pdk.simulation.model_sets.values():
+                    paths.update(model_set.files)
             paths.add(native_setup.source_snapshot.source_path)
             rdb_contract = native_setup.rdb_contract
             if rdb_contract is not None:
@@ -832,7 +833,7 @@ def plan_oa_library_rebuild(
     *,
     project: Project,
     library: str | None = None,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: Mapping[str, ResolvedPlatform] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OALibraryRebuildPlan:

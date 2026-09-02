@@ -270,6 +270,12 @@ def read_nofollow_text(path: Path, *, errors: str = "strict") -> str:
     return _read_nofollow_bytes(path).decode("utf-8", errors=errors)
 
 
+def read_nofollow_bytes(path: Path) -> bytes:
+    """Read one stable regular file without following any path symlink."""
+
+    return _read_nofollow_bytes(path)
+
+
 def ensure_nofollow_directory(path: Path) -> Path:
     """Create/open one directory chain while rejecting symlink components."""
 
@@ -738,6 +744,23 @@ class RunRecord:
             self._require_running("write a text file")
             path = self.path(role, *components)
             _write_exclusive_bytes(path, value.encode("utf-8"))
+            self.add_file(role, path, label=label)
+            return path
+
+    def write_bytes(
+        self,
+        role: str,
+        components: Sequence[str],
+        value: bytes,
+        *,
+        label: str | None = None,
+    ) -> Path:
+        with self._lock:
+            self._require_running("write a binary file")
+            if not isinstance(value, bytes):
+                raise TypeError("binary artifact value must be bytes")
+            path = self.path(role, *components)
+            _write_exclusive_bytes(path, value)
             self.add_file(role, path, label=label)
             return path
 

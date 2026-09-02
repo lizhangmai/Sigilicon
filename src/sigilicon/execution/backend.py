@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 from sigilicon.execution.model import (
     BoundExecution,
     ContractError,
-    ExternalResource,
+    ResourceBinding,
     PreflightCheck,
     Operation,
     Step,
@@ -55,7 +55,7 @@ class Preparation:
 
     step: Step
     sources: tuple[Source, ...] = ()
-    resources: tuple[ExternalResource, ...] = ()
+    resources: tuple[ResourceBinding, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.step, Step):
@@ -65,10 +65,10 @@ class Preparation:
         ):
             raise ContractError("backend preparation sources must be Source values")
         if not isinstance(self.resources, tuple) or any(
-            not isinstance(resource, ExternalResource) for resource in self.resources
+            not isinstance(resource, ResourceBinding) for resource in self.resources
         ):
             raise ContractError(
-                "backend preparation resources must be ExternalResource values"
+                "backend preparation resources must be ResourceBinding values"
             )
 
 
@@ -120,7 +120,7 @@ def bind_execution(
     )
     captured = {(source.root, source.path): source for source in bound_sources}
     captured_names = {source.path: source.root for source in bound_sources}
-    captured_resources: dict[str, ExternalResource] = {}
+    captured_resources: dict[str, ResourceBinding] = {}
     steps = []
     for portable_step in plan.steps:
         step = Operation(
@@ -239,7 +239,6 @@ def bind_execution(
         plan=plan,
         steps=tuple(steps),
         sources=tuple(captured.values()),
-        resources_identity=resources.identity,
         resources=tuple(
             captured_resources[identity] for identity in sorted(captured_resources)
         ),

@@ -18,7 +18,7 @@ from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
-    ExternalResource,
+    ResourceBinding,
     Operation,
     PreflightCheck,
     Resources,
@@ -280,7 +280,7 @@ def _external_file_records(
     source_records: Mapping[Path, str],
     extra_paths: tuple[Path, ...] = (),
     identities: Mapping[Path, str] = MappingProxyType({}),
-) -> tuple[ExternalResource, ...]:
+) -> tuple[ResourceBinding, ...]:
     project_root = project.project_root.resolve()
     artifact_root = getattr(project, "artifact_root", None)
     artifact_root = (
@@ -324,12 +324,12 @@ def _external_file_records(
         seen.add(path)
         selected[identity] = (path, expected)
     resources = tuple(
-        ExternalResource.capture(path, identity=identity)
+        ResourceBinding.capture(path, identity=identity)
         for identity, (path, _expected) in sorted(selected.items())
     )
     for resource in resources:
         expected = selected[resource.identity][1]
-        if expected is not None and expected != resource.text:
+        if expected is not None and expected.encode("utf-8") != resource.data:
             raise ContractError(
                 f"external resource changed during planning: {resource.identity}"
             )
@@ -489,7 +489,7 @@ class _PreparedCadencePlan:
         plan: object,
         prepared: Mapping[str, Any],
         sources: Mapping[Path, tuple[str, str]],
-        resources: tuple[ExternalResource, ...],
+        resources: tuple[ResourceBinding, ...],
     ) -> "_PreparedCadencePlan":
         return cls(
             plan,
@@ -581,7 +581,7 @@ class _CadenceDomainBackend:
         prepared: Mapping[str, Any],
         sources: Mapping[Path, tuple[str, str]],
         captured: tuple[Source, ...],
-        resources: tuple[ExternalResource, ...],
+        resources: tuple[ResourceBinding, ...],
     ) -> Step:
         domain_plan = _PreparedCadencePlan.create(
             plan,
