@@ -5,8 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.backends.synopsys import DcBackend, FcBackend, HspiceBackend, VcsBackend
-from sigilicon.execution import PreparedStep, Resources, StepContext
+from sigilicon.backends.synopsys import (
+    DcBackend,
+    FcBackend,
+    HspiceBackend,
+    StructuralLinkBackend,
+    VcsBackend,
+)
+from sigilicon.execution import PreparedStep, Resources, StepContext, StepResult
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -126,6 +132,115 @@ printf 'tampered\n' >>"$source_file"
     with pytest.raises(RuntimeError, match="changed during invocation"):
         VcsBackend().run(_context(tmp_path, step, environment), step)
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
+
+
+def test_structural_link_run_consumes_the_prepared_record_without_replanning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = (
+        "artifacts/exports/provider/package/development-"
+        + "a" * 40
+    )
+    manifest = f"{release}/manifest.json"
+    liberty = f"{release}/macro.lib"
+    owner_sources = (
+        "configs/dependency.lock.toml",
+        "configs/variant.toml",
+        "compile.tcl",
+        "link.tcl",
+        "rtl/top.sv",
+    )
+    project_sources = (manifest, liberty)
+    source_root = tmp_path / "run/inputs/sources"
+    for name in (*owner_sources, *project_sources):
+        _file(source_root / name)
+    config = {
+        "owner": "example",
+        "dependency": "provider",
+        "dependency_lock": owner_sources[0],
+        "variant": "default",
+        "variant_contract": owner_sources[1],
+        "compile_script": owner_sources[2],
+        "link_script": owner_sources[3],
+        "library_name": "fixture",
+        "macro_cell": "MACRO",
+        "parameter_overrides": {"ROWS": 1},
+        "expected_macro_instances": 1,
+        "expected_unresolved_references": 0,
+        "release_export": "macro",
+        "liberty_role": "raw_macro_liberty_or_db",
+        "release_manifest": manifest,
+        "release_liberty": liberty,
+        "timeout_seconds": 10,
+    }
+    prepared = {
+        "owner": "example",
+        "variant": "default",
+        "top": "top",
+        "rtl_sources": [owner_sources[4]],
+        "compile_script": owner_sources[2],
+        "link_script": owner_sources[3],
+        "library_name": "fixture",
+        "macro_cell": "MACRO",
+        "parameter_overrides": {"ROWS": 1},
+        "expected_macro_instances": 1,
+        "expected_unresolved_references": 0,
+        "release_id": "development-" + "a" * 40,
+        "release_source_commit": "a" * 40,
+        "release_manifest": (
+            "exports/provider/package/development-" + "a" * 40 + "/manifest.json"
+        ),
+        "release_manifest_sha256": "b" * 64,
+        "release_liberty": liberty,
+        "release_liberty_sha256": "c" * 64,
+    }
+    step = PreparedStep(
+        "link",
+        "synopsys.structural-link",
+        {"config": config, "prepared": prepared},
+        sources=(*owner_sources, *project_sources),
+    )
+    project_root = tmp_path / "project"
+    owner_root = project_root / "ip/example"
+    workspace_root = tmp_path / "workspace"
+    owner_root.mkdir(parents=True)
+    workspace_root.mkdir()
+    context = StepContext(
+        "1" * 64,
+        step,
+        "2" * 32,
+        "3" * 64,
+        tmp_path / "run/work/link",
+        tmp_path / "run/outputs/link",
+        source_root,
+        Resources(),
+        {},
+        project_root=project_root,
+        owner_root=owner_root,
+        workspace_root=workspace_root,
+        source_scopes={
+            **{name: "owner" for name in owner_sources},
+            **{name: "project" for name in project_sources},
+        },
+    )
+    backend = StructuralLinkBackend()
+    observed = []
+    monkeypatch.setattr(
+        "sigilicon.workflows.structural_link.plan_structural_link",
+        lambda **_kwargs: pytest.fail("run replanned a prepared structural step"),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_execute",
+        lambda _context, plan: observed.append(plan) or StepResult.succeeded(),
+    )
+
+    result = backend.run(context, step)
+
+    assert result.status == "succeeded"
+    assert observed[0].top == "top"
+    assert observed[0].release_liberty == source_root / liberty
 
 
 def test_dc_backend_collects_only_declared_delivery_files(tmp_path: Path) -> None:

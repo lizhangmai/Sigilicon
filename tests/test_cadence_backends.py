@@ -11,9 +11,9 @@ from sigilicon.backends.cadence import (
     LayoutBackend,
     LayoutVerificationBackend,
     NativeOaBackend,
-    OaBackend,
     XceliumBackend,
     XceliumAmsBackend,
+    cadence_backends,
 )
 from sigilicon.execution import (
     ContractError,
@@ -32,6 +32,17 @@ def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> P
     if executable:
         path.chmod(0o755)
     return path
+
+
+def test_oa_operations_have_fixed_backend_identities() -> None:
+    names = {backend.name for backend in cadence_backends()}
+
+    assert "cadence.oa" not in names
+    assert {
+        "cadence.oa-check",
+        "cadence.oa-rebuild",
+        "cadence.oa-attest",
+    }.issubset(names)
 
 
 def _context(
@@ -348,8 +359,8 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
 ) -> None:
     step = OperationStep(
         "oa",
-        "cadence.oa",
-        {"owner": "example", "action": "rebuild", "timeout_seconds": 10},
+        "cadence.oa-rebuild",
+        {"owner": "example", "timeout_seconds": 10},
         sources=("configs/oa.toml",),
     )
     registered: list[object] = []
@@ -392,7 +403,10 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         "sigilicon.workflows.oa_library.rebuild_oa_library",
         rebuild,
     )
-    backend = OaBackend()
+    backend = next(
+        backend for backend in cadence_backends()
+        if backend.name == "cadence.oa-rebuild"
+    )
     prepared = backend.prepare(project, step).step
     context = replace(
         context,

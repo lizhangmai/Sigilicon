@@ -792,24 +792,28 @@ class NativeOaBackend:
         )
 
 
-class OaBackend:
-    """Check, rebuild, or attest one plan-bound native OA assembly."""
+class _OaBackend:
+    """Execute one fixed native-OA operation against a plan-bound assembly."""
 
-    name = "cadence.oa"
-    _base_fields = frozenset({"owner", "action", "timeout_seconds"})
+    _base_fields = frozenset({"owner", "timeout_seconds"})
+
+    def __init__(self, operation: str) -> None:
+        if operation not in {"check", "rebuild", "attest"}:
+            raise ValueError(f"unsupported OA operation: {operation}")
+        self.operation = operation
+        self.name = f"cadence.oa-{operation}"
 
     def _config(self, step: PreparedStep) -> Mapping[str, Any]:
         request = step.request.get("config", step.request)
         if not isinstance(request, Mapping):
             raise ContractError("prepared OA config must be a mapping")
-        action = _text(request, "action")
-        fields = self._base_fields | ({"testbench"} if action == "attest" else set())
+        fields = self._base_fields | (
+            {"testbench"} if self.operation == "attest" else set()
+        )
         config = _strict_config(step, frozenset(fields))
-        if action not in {"check", "rebuild", "attest"}:
-            raise ContractError("OA action must be check, rebuild, or attest")
         _text(config, "owner")
         _positive_integer(config, "timeout_seconds")
-        if action == "attest":
+        if self.operation == "attest":
             _text(config, "testbench")
         if "configs/oa.toml" not in step.sources:
             raise ContractError("OA management step must close over configs/oa.toml")
@@ -834,7 +838,7 @@ class OaBackend:
             raise ContractError(f"owner {owner!r} has no OA assembly")
         planning = plan_oa_library_rebuild(manifest, project=project)
         selected = None
-        if _text(config, "action") == "attest":
+        if self.operation == "attest":
             testbench = _text(config, "testbench")
             matches = tuple(
                 item for item in planning.testbenches if item.cell == testbench
@@ -853,7 +857,6 @@ class OaBackend:
             project,
             required,
         )
-        action = _text(config, "action")
         captured = _captured_project_sources(project, owner, sources)
         prepared = PreparedStep.from_operation(
             step,
@@ -862,7 +865,7 @@ class OaBackend:
                 {
                     "assembly_identity": canonical_digest(planning.as_dict()),
                     "library": planning.library,
-                    "action": action,
+                    "operation": self.operation,
                     "testbench": None if selected is None else selected.cell,
                 },
                 external,
@@ -886,7 +889,6 @@ class OaBackend:
 
         config = self._config(step)
         owner = _text(config, "owner")
-        action = _text(config, "action")
         if context.project_root is None or context.owner_root is None or context.workspace_root is None:
             raise ExecutionError("OA management requires Project runtime roots")
         project = Project.open(context.project_root)
@@ -895,7 +897,7 @@ class OaBackend:
             raise ExecutionError(f"owner {owner!r} has no OA assembly")
         planning = plan_oa_library_rebuild(manifest, project=project)
         selected = None
-        if action == "attest":
+        if self.operation == "attest":
             testbench = _text(config, "testbench")
             matches = tuple(item for item in planning.testbenches if item.cell == testbench)
             if len(matches) != 1:
@@ -905,7 +907,7 @@ class OaBackend:
         actual = {
             "assembly_identity": canonical_digest(planning.as_dict()),
             "library": planning.library,
-            "action": action,
+            "operation": self.operation,
             "testbench": None if selected is None else selected.cell,
         }
         if not isinstance(expected, Mapping) or canonical_digest(json_value(expected)) != canonical_digest(actual):
@@ -919,7 +921,7 @@ class OaBackend:
         _require_external_files(external)
         timeout = _positive_integer(config, "timeout_seconds")
         client = get_client()
-        if action == "check":
+        if self.operation == "check":
             from sigilicon.virtuoso.workspace import (
                 OperationPolicy,
                 workspace_operation,
@@ -944,7 +946,7 @@ class OaBackend:
                     plan=planning,
                     operation=operation,
                 )
-        elif action == "rebuild":
+        elif self.operation == "rebuild":
             payload = rebuild_oa_library(
                 planning,
                 client,
@@ -965,12 +967,12 @@ class OaBackend:
             )
         output = context.write_text(
             "oa",
-            f"{action}.json",
+            f"{self.operation}.json",
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         )
         passed = bool(payload.get("passed"))
         artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
-        facts = {"passed": passed, "action": action}
+        facts = {"passed": passed, "operation": self.operation}
         return (
             StepResult.succeeded(artifacts=artifacts, facts=facts)
             if passed
@@ -978,7 +980,7 @@ class OaBackend:
                 "failed",
                 artifacts,
                 facts,
-                f"OA {action} did not pass",
+                f"OA {self.operation} did not pass",
             )
         )
 
@@ -1335,7 +1337,9 @@ def cadence_backends() -> tuple[
     XceliumBackend,
     XceliumAmsBackend,
     NativeOaBackend,
-    OaBackend,
+    _OaBackend,
+    _OaBackend,
+    _OaBackend,
     LayoutBackend,
     LayoutVerificationBackend,
 ]:
@@ -1343,7 +1347,9 @@ def cadence_backends() -> tuple[
         XceliumBackend(),
         XceliumAmsBackend(),
         NativeOaBackend(),
-        OaBackend(),
+        _OaBackend("check"),
+        _OaBackend("rebuild"),
+        _OaBackend("attest"),
         LayoutBackend(),
         LayoutVerificationBackend(),
     )
@@ -1353,7 +1359,6 @@ __all__ = [
     "LayoutBackend",
     "LayoutVerificationBackend",
     "NativeOaBackend",
-    "OaBackend",
     "XceliumBackend",
     "XceliumAmsBackend",
     "cadence_backends",

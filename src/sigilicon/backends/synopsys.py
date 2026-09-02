@@ -1075,6 +1075,16 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             release_manifest=by_location[project_root / manifest_name].location,
             release_liberty=by_location[project_root / liberty_name].location,
         )
+        release_root = by_location[project_root / manifest_name].location.parent
+        captured_locations = {source.location for _scope, source in captured_sources}
+        captured_sources.extend(
+            (
+                "project",
+                Source.capture(path, root=project_root, scope="project"),
+            )
+            for path in sorted(release_root.rglob("*"))
+            if path.is_file() and path not in captured_locations
+        )
         if any(not source.current() for _scope, source in captured_sources):
             raise ContractError(
                 "structural-link input changed while its Step was being prepared"
@@ -1224,13 +1234,13 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
 
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
-        from sigilicon.workflows.structural_link import plan_structural_link
+        from sigilicon.workflows.structural_link import StructuralLinkPlan
 
         config = self._config(step)
         prepared = step.request.get("prepared")
         if not isinstance(prepared, Mapping):
             raise ExecutionError("structural-link request was not prepared")
-        rtl_sources = tuple(
+        rtl_names = tuple(
             _safe_relative(name, "structural-link RTL source")
             for name in self._rtl_sources(context.step)
         )
@@ -1243,46 +1253,40 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         release_liberty = _safe_relative(
             _text(config, "release_liberty"), "release Liberty"
         )
-        planning = plan_structural_link(
-            owner=_text(config, "owner"),
-            dependency=_text(config, "dependency"),
-            dependency_lock_path=context.owner_source_path(
-                _safe_relative(_text(config, "dependency_lock"), "dependency lock")
-            ),
-            variant_path=context.owner_source_path(
-                _safe_relative(
-                    _text(config, "variant_contract"), "structural-link variant contract"
-                )
-            ),
-            variant=_text(config, "variant"),
-            rtl_sources=tuple(context.owner_source_path(name) for name in rtl_sources),
+        manifest_name = _safe_relative(
+            _text(config, "release_manifest"), "release manifest"
+        )
+        planning = StructuralLinkPlan(
+            owner=_text(prepared, "owner"),
+            variant=_text(prepared, "variant"),
+            top=_text(prepared, "top"),
+            rtl_sources=tuple(context.owner_source_path(name) for name in rtl_names),
             compile_script=context.owner_source_path(compile_script),
             link_script=context.owner_source_path(link_script),
-            library_name=_text(config, "library_name"),
-            macro_cell=_text(config, "macro_cell"),
-            parameter_overrides=_mapping(config, "parameter_overrides"),
+            library_name=_text(prepared, "library_name"),
+            macro_cell=_text(prepared, "macro_cell"),
+            parameter_overrides=_mapping(prepared, "parameter_overrides"),
             expected_macro_instances=_positive_integer(
-                config, "expected_macro_instances"
+                prepared, "expected_macro_instances"
             ),
             expected_unresolved_references=int(
-                config["expected_unresolved_references"]
-            ),
-            release_export=_text(config, "release_export"),
-            liberty_role=_text(config, "liberty_role"),
-            release_manifest=context.project_source_path(
-                _safe_relative(_text(config, "release_manifest"), "release manifest")
+                prepared["expected_unresolved_references"]
             ),
             release_liberty=context.project_source_path(release_liberty),
+            release_id=_text(prepared, "release_id"),
+            release_source_commit=_text(prepared, "release_source_commit"),
+            release_manifest=_text(prepared, "release_manifest"),
+            release_manifest_sha256=_text(
+                prepared, "release_manifest_sha256"
+            ),
+            release_liberty_sha256=_text(
+                prepared, "release_liberty_sha256"
+            ),
+            release_sources=(
+                context.project_source_path(manifest_name),
+                context.project_source_path(release_liberty),
+            ),
         )
-        actual = self._planning_record(
-            planning,
-            rtl_sources=rtl_sources,
-            compile_script=compile_script,
-            link_script=link_script,
-            release_liberty=release_liberty,
-        )
-        if canonical_digest(json_value(prepared)) != canonical_digest(actual):
-            raise ExecutionError("structural-link preparation identity drift")
         return self._execute(context, planning)
 
 
