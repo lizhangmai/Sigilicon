@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import struct
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 
+from sigilicon.external_tools import ProcessResult
 from sigilicon.virtuoso.xstream import (
     XStreamExportError,
     XStreamExportRequest,
@@ -122,19 +123,25 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
     request = _request(tmp_path)
     observed: dict[str, object] = {}
 
-    def runner(command, **kwargs):
-        kwargs["before_spawn"]()
-        observed.update(command=command, **kwargs)
-        _write_success(kwargs["cwd"])
-        return subprocess.CompletedProcess(command, 0, "translator stdout")
-
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.xstream.run_process_group", runner
-    )
+    def runner(process_request):
+        process_request.before_spawn()
+        observed.update(
+            command=process_request.argv,
+            cwd=process_request.cwd,
+            env=process_request.environment,
+            pass_fds=process_request.pass_fds,
+        )
+        _write_success(process_request.cwd)
+        return ProcessResult(
+            returncode=0,
+            stdout="translator stdout",
+            stderr="",
+        )
 
     result = run_xstream_export(
         request,
         environment={"PATH": "/snapshot/bin", "CDS_LIC_FILE": "snapshot"},
+        process=SimpleNamespace(run=runner),
     )
 
     assert result.exit_code == 0
@@ -177,17 +184,17 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
     )
     observed: dict[str, object] = {}
 
-    def runner(command, **kwargs):
-        kwargs["before_spawn"]()
-        observed["command"] = command
-        _write_success(kwargs["cwd"])
-        return subprocess.CompletedProcess(command, 0, "translator stdout")
+    def runner(process_request):
+        process_request.before_spawn()
+        observed["command"] = process_request.argv
+        _write_success(process_request.cwd)
+        return ProcessResult(
+            returncode=0,
+            stdout="translator stdout",
+            stderr="",
+        )
 
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.xstream.run_process_group", runner
-    )
-
-    run_xstream_export(request)
+    run_xstream_export(request, process=SimpleNamespace(run=runner))
 
     assert request.executable.is_symlink()
     assert str(request.executable) in tuple(observed["command"])
@@ -211,9 +218,9 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
 ) -> None:
     request = _request(tmp_path)
 
-    def runner(command, **kwargs):
-        kwargs["before_spawn"]()
-        cwd = kwargs["cwd"]
+    def runner(process_request):
+        process_request.before_spawn()
+        cwd = process_request.cwd
         if failure == "symlink-gds":
             target = tmp_path / "outside.gds"
             target.write_bytes(b"outside")
@@ -231,18 +238,16 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
             (cwd / "strmout.log").write_text("no completion proof\n", encoding="utf-8")
         elif failure == "malformed-gds":
             (cwd / "layout.gds").write_bytes(b"not-gds")
-        return subprocess.CompletedProcess(
-            command,
-            9 if failure == "nonzero" else 0,
-            "translator rejected one option\n" if failure == "nonzero" else "",
+        return ProcessResult(
+            returncode=9 if failure == "nonzero" else 0,
+            stdout=(
+                "translator rejected one option\n" if failure == "nonzero" else ""
+            ),
+            stderr="",
         )
 
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.xstream.run_process_group", runner
-    )
-
     with pytest.raises(XStreamExportError, match=expected) as error:
-        run_xstream_export(request)
+        run_xstream_export(request, process=SimpleNamespace(run=runner))
 
     assert error.value.executed
     assert error.value.exit_code == (9 if failure == "nonzero" else 0)

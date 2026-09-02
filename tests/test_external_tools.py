@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,11 +17,15 @@ from sigilicon.external_tools import (
     owned_output_file,
     owned_scratch_directory,
     owned_sealed_input,
+    ProcessRequest,
+    ProcessResult,
     ProcessGroupCleanupUncertainError,
-    run_process_group,
+    managed_process,
     run_process_group_until_confirmed,
     xrun_env,
 )
+from sigilicon.execution.step_files import StepFiles
+from sigilicon.workflows.spectre import find_spectre, run_spectre_deck
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
@@ -49,8 +55,16 @@ def test_xrun_resolution_and_environment_use_one_installation(
     monkeypatch.delenv("IUS_HOME", raising=False)
     monkeypatch.setenv("PATH", "")
 
-    resolved = find_xrun()
-    environment = xrun_env(resolved)
+    resolved = find_xrun(
+        environment={
+            "XCELIUM_HOME": str(installation),
+            "PATH": "",
+        }
+    )
+    environment = xrun_env(
+        resolved,
+        {"XCELIUM_HOME": str(installation)},
+    )
 
     assert resolved == launcher.resolve()
     assert environment["XCELIUM_HOME"] == str(installation)
@@ -60,6 +74,38 @@ def test_xrun_resolution_and_environment_use_one_installation(
         str(installation / "tools/bin"),
         str(installation / "bin"),
     ]
+    assert not environment["PATH"].endswith(os.pathsep)
+    assert not environment["LD_LIBRARY_PATH"].endswith(os.pathsep)
+
+
+def test_xrun_resolution_ignores_ambient_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    installation = tmp_path / "ambient-xcelium"
+    launcher = installation / "tools/bin/xrun"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("launcher\n", encoding="utf-8")
+    monkeypatch.setenv("XCELIUM_HOME", str(installation))
+
+    with pytest.raises(FileNotFoundError):
+        find_xrun()
+
+
+def test_spectre_resolution_uses_only_explicit_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "spectre"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("VB_SPECTRE_BIN", str(launcher))
+
+    with pytest.raises(FileNotFoundError):
+        find_spectre()
+    assert find_spectre(
+        environment={"VB_SPECTRE_BIN": str(launcher)}
+    ) == launcher.absolute()
 
 
 def test_xrun_environment_uses_the_supplied_resource_snapshot(
@@ -133,15 +179,103 @@ def test_sealed_child_input_is_immutable_and_exact() -> None:
 def test_nonzero_external_exit_is_reported_without_leaving_a_live_process(
     tmp_path: Path,
 ) -> None:
-    completed = run_process_group(
-        ["/bin/sh", "-c", "printf failed-output; exit 7"],
+    completed = managed_process.run(ProcessRequest(
+        argv=("/bin/sh", "-c", "printf failed-output; exit 7"),
         cwd=tmp_path,
-        env={},
-        timeout=5,
-    )
+        environment={},
+        timeout_seconds=5,
+    ))
 
     assert completed.returncode == 7
     assert completed.stdout == "failed-output"
+    assert completed.stderr == ""
+
+
+def test_managed_process_keeps_output_streams_and_environment_separate(
+    tmp_path: Path,
+) -> None:
+    environment = {"SELECTED_VALUE": "explicit"}
+    request = ProcessRequest(
+        argv=(
+            "/bin/sh",
+            "-c",
+            "printf %s \"$SELECTED_VALUE\"; printf diagnostic >&2",
+        ),
+        cwd=tmp_path,
+        environment=environment,
+        timeout_seconds=5,
+    )
+    environment["SELECTED_VALUE"] = "changed-after-request"
+
+    completed = managed_process.run(request)
+
+    assert completed.returncode == 0
+    assert completed.stdout == "explicit"
+    assert completed.stderr == "diagnostic"
+    assert request.environment == {"SELECTED_VALUE": "explicit"}
+
+
+@pytest.mark.parametrize("timeout", (math.nan, math.inf, -math.inf))
+def test_process_boundaries_reject_nonfinite_timeouts(timeout: float) -> None:
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        ProcessRequest(
+            argv=("/bin/true",),
+            cwd=Path("/"),
+            environment={},
+            timeout_seconds=timeout,
+        )
+
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        run_process_group_until_confirmed(
+            ["/bin/true"],
+            cwd=Path("/"),
+            env={},
+            timeout=timeout,
+            stdout_fd=1,
+            confirmation_probe=lambda: False,
+        )
+
+
+def test_spectre_completion_preserves_all_three_log_sources(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    record = StepFiles(
+        run_id="spectre-proof",
+        root=run,
+        input_root=run / "inputs",
+        work_root=run / "work",
+        output_root=run / "outputs",
+        log_root=run / "logs",
+        source={},
+    )
+    model = record.write_text("inputs", ("model.scs",), "// model\n")
+
+    def execute(request: ProcessRequest) -> ProcessResult:
+        assert request.before_spawn is not None
+        request.before_spawn()
+        (request.cwd / "spectre.out").write_text(
+            "native log without completion marker\n",
+            encoding="utf-8",
+        )
+        (request.cwd / "result.prn").write_text("time value\n0 1\n", encoding="utf-8")
+        return ProcessResult(
+            returncode=0,
+            stdout="",
+            stderr="spectre completes with 0 errors\n",
+        )
+
+    result = run_spectre_deck(
+        record,
+        render_deck=lambda paths: f'include "{paths["model"]}"\n',
+        inputs={"model": model},
+        output_names=("result.prn",),
+        timeout=5,
+        spectre=Path("/bin/true"),
+        environment={},
+        process=SimpleNamespace(run=execute),
+    )
+
+    assert result.stderr_log.read_text(encoding="utf-8").endswith("0 errors\n")
+    assert result.native_log is not None
 
 
 def test_confirmed_process_group_can_clean_its_own_lingering_worker(
@@ -245,12 +379,12 @@ def test_timeout_escalates_from_term_to_kill_when_group_does_not_exit(
     monkeypatch.setattr("sigilicon.external_tools.PROCESS_KILL_GRACE_SECONDS", 1)
 
     with pytest.raises(RuntimeError, match="timed out"):
-        run_process_group(
-            ["/bin/sh", "-c", "trap '' TERM; while :; do :; done"],
+        managed_process.run(ProcessRequest(
+            argv=("/bin/sh", "-c", "trap '' TERM; while :; do :; done"),
             cwd=tmp_path,
-            env={},
-            timeout=0.05,
-        )
+            environment={},
+            timeout_seconds=0.05,
+        ))
 
 
 def test_owned_input_detects_a_path_swap_even_when_original_is_restored(
@@ -313,16 +447,16 @@ def test_normal_leader_exit_succeeds_only_after_residual_descendants_are_cleaned
     tmp_path: Path,
 ) -> None:
     child_pid_file = tmp_path / "residual.pid"
-    completed = run_process_group(
-        [
+    completed = managed_process.run(ProcessRequest(
+        argv=(
             "/bin/sh",
             "-c",
             f"sleep 30 & printf %s $! > {child_pid_file}",
-        ],
+        ),
         cwd=tmp_path,
-        env={},
-        timeout=5,
-    )
+        environment={},
+        timeout_seconds=5,
+    ))
 
     child_pid = int(child_pid_file.read_text(encoding="utf-8"))
     assert completed.returncode == 0

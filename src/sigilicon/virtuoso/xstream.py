@@ -11,11 +11,13 @@ import re
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.external_tools import (
+    ProcessPort,
+    ProcessRequest,
     cadence_subprocess_env,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_input_file,
-    run_process_group,
 )
 
 
@@ -281,6 +283,7 @@ class XStreamExportResult:
     command: tuple[str, ...]
     exit_code: int
     stdout: str
+    stderr: str
     gds_path: Path
     native_log_path: Path
     summary_path: Path
@@ -297,7 +300,7 @@ def xstream_environment(
 ) -> dict[str, str]:
     """Construct Cadence's subprocess environment from one explicit launcher."""
 
-    environment = cadence_subprocess_env(base)
+    environment = cadence_subprocess_env({} if base is None else base)
     cds_home = Path(environment.get("CDSHOME", executable.parents[3]))
     environment.setdefault("CDSHOME", str(cds_home))
     environment.setdefault("CDSROOT", str(cds_home))
@@ -335,6 +338,7 @@ def run_xstream_export(
     request: XStreamExportRequest,
     *,
     environment: Mapping[str, str] | None = None,
+    process: ProcessPort = managed_process,
 ) -> XStreamExportResult:
     """Export one exact OA cellview and require authoritative XStream completion."""
 
@@ -416,11 +420,11 @@ def run_xstream_export(
             owned_cds.require_visible()
 
         try:
-            completed = run_process_group(
-                command,
+            completed = process.run(ProcessRequest(
+                argv=tuple(command),
                 cwd=work,
-                env=xstream_environment(executable, environment),
-                timeout=request.timeout_seconds,
+                environment=xstream_environment(executable, environment),
+                timeout_seconds=request.timeout_seconds,
                 before_spawn=validate_spawn,
                 pass_fds=(
                     owned_work.fd,
@@ -429,7 +433,7 @@ def run_xstream_export(
                     owned_cds.fd,
                     owned_cds.directory_fd,
                 ),
-            )
+            ))
         except FileNotFoundError as exc:
             raise XStreamExportError(
                 f"XStream backend unavailable: {exc}",
@@ -450,7 +454,7 @@ def run_xstream_export(
         diagnostic = _write_failure_diagnostic(
             work,
             exit_code=completed.returncode,
-            stdout=completed.stdout,
+            stdout=completed.stdout + completed.stderr,
         )
         raise XStreamExportError(
             f"XStream exited {completed.returncode}; see managed xstream-failure.log",
@@ -474,6 +478,7 @@ def run_xstream_export(
             read_nofollow_text(native_log, errors="replace"),
             read_nofollow_text(summary, errors="replace"),
             completed.stdout,
+            completed.stderr,
         )
     )
     if _XSTREAM_COMPLETE.search(proof) is None:
@@ -495,6 +500,7 @@ def run_xstream_export(
         command=command,
         exit_code=completed.returncode,
         stdout=completed.stdout,
+        stderr=completed.stderr,
         gds_path=gds,
         native_log_path=native_log,
         summary_path=summary,

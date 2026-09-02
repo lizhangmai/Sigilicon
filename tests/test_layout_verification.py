@@ -68,6 +68,69 @@ def test_calibre_environment_uses_the_resource_snapshot(tmp_path: Path) -> None:
     assert environment["CALIBRE_HOME"] == str(executable.parent.parent)
 
 
+def test_xstream_artifacts_preserve_separate_output_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    artifacts = StepFiles(
+        run_id="xstream-streams",
+        root=root,
+        input_root=root / "inputs",
+        work_root=root / "work",
+        output_root=root / "outputs",
+        log_root=root / "logs",
+        source={},
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "cds.lib").write_text("DEFINE example ./example\n", encoding="utf-8")
+    native_log = tmp_path / "strmout.log"
+    summary = tmp_path / "strmout.sum"
+    gds = tmp_path / "layout.gds"
+    native_log.write_text("native\n", encoding="utf-8")
+    summary.write_text("summary\n", encoding="utf-8")
+    gds.write_bytes(b"gds")
+    monkeypatch.setattr(
+        layout_verification,
+        "run_xstream_export",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout="translator output\n",
+            stderr="translator diagnostic\n",
+            native_log_path=native_log,
+            summary_path=summary,
+            gds_path=gds,
+        ),
+    )
+    spec = SimpleNamespace(
+        project=SimpleNamespace(workspace_root=workspace),
+        library="example",
+        cell="TOP",
+        view="layout",
+        pdk=SimpleNamespace(oa=SimpleNamespace(technology_library="technology")),
+        layout_pdk=SimpleNamespace(
+            xstream_flatten_pcells=True,
+            xstream_suppressed_warnings=(),
+        ),
+    )
+
+    layout_verification._run_xstream(
+        artifacts,
+        spec,
+        layermap_source="M1 drawing 1 0\n",
+        executable=tmp_path / "strmout",
+        environment={},
+        timeout=5,
+    )
+
+    assert (artifacts.output_root / "xstream-stdout.log").read_text() == (
+        "translator output\n"
+    )
+    assert (artifacts.output_root / "xstream-stderr.log").read_text() == (
+        "translator diagnostic\n"
+    )
+
+
 def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

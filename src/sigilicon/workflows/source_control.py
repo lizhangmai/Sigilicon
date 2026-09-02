@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sigilicon.external_tools import run_process_group
+from sigilicon.external_tools import ProcessRequest, managed_process
 
 
 @dataclass(frozen=True)
@@ -44,36 +44,41 @@ def inspect_source_state(root: Path) -> SourceState:
     """
 
     environment = os.environ.copy()
-    revision = run_process_group(
-        ["git", "rev-parse", "HEAD"],
+    revision = managed_process.run(ProcessRequest(
+        argv=("git", "rev-parse", "HEAD"),
         cwd=root,
-        env=environment,
-        timeout=30,
-    )
+        environment=environment,
+        timeout_seconds=30,
+    ))
     if revision.returncode != 0 or not revision.stdout.strip():
-        status = run_process_group(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        status = managed_process.run(ProcessRequest(
+            argv=("git", "status", "--porcelain=v1", "--untracked-files=all"),
             cwd=root,
-            env=environment,
-            timeout=30,
-        )
+            environment=environment,
+            timeout_seconds=30,
+        ))
         status_text = status.stdout
         return SourceState(
             repository_available=False,
             commit=None,
             working_tree_dirty=None,
             changes=tuple(status_text.splitlines()),
-            error=(revision.stdout.strip() or "cannot resolve Git HEAD")[-4000:],
+            error=(
+                f"{revision.stdout}\n{revision.stderr}".strip()
+                or "cannot resolve Git HEAD"
+            )[-4000:],
         )
 
-    status = run_process_group(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+    status = managed_process.run(ProcessRequest(
+        argv=("git", "status", "--porcelain=v1", "--untracked-files=all"),
         cwd=root,
-        env=environment,
-        timeout=30,
-    )
+        environment=environment,
+        timeout_seconds=30,
+    ))
     if status.returncode != 0:
-        raise RuntimeError(f"cannot inspect source checkout:\n{status.stdout}")
+        raise RuntimeError(
+            f"cannot inspect source checkout:\n{status.stdout}{status.stderr}"
+        )
     status_text = status.stdout
     return SourceState(
         repository_available=True,

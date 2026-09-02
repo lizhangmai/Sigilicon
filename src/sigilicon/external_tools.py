@@ -7,6 +7,7 @@ import select
 import ctypes
 import fcntl
 import json
+import math
 import shutil
 import signal
 import stat
@@ -20,7 +21,8 @@ from dataclasses import dataclass, field
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from types import MappingProxyType
+from typing import Any, Callable, Iterator, Protocol
 
 
 SYNOPSYS_LICENSE_ENV = "LM_LICENSE_FILE"
@@ -66,25 +68,70 @@ _INPUT_WATCH_MASK = (
     | _IN_UNMOUNT
 )
 _INOTIFY_EVENT = struct.Struct("iIII")
+_EMPTY_ENVIRONMENT: Mapping[str, str] = MappingProxyType({})
 
 
-def run_readonly_capture(
-    command: Sequence[str],
-    *,
-    cwd: Path,
-    timeout_seconds: int = 30,
-) -> bytes:
-    """Run one bounded read-only helper and return its stdout bytes."""
+@dataclass(frozen=True, slots=True)
+class ProcessRequest:
+    """Complete, explicit input to the package-owned process boundary."""
 
-    completed = subprocess.run(
-        tuple(command),
-        cwd=Path(cwd),
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout_seconds,
+    argv: tuple[str, ...]
+    cwd: Path
+    environment: Mapping[str, str]
+    timeout_seconds: float
+    pass_fds: tuple[int, ...] = ()
+    before_spawn: Callable[[], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
     )
-    return completed.stdout
+
+    def __post_init__(self) -> None:
+        argv = tuple(self.argv)
+        if not argv or any(not isinstance(value, str) or not value for value in argv):
+            raise ValueError("process argv must contain non-empty strings")
+        if not isinstance(self.cwd, Path) or not self.cwd.is_absolute():
+            raise ValueError("process cwd must be an absolute path")
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError("process timeout must be positive")
+        environment = dict(self.environment)
+        if any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
+            for key, value in environment.items()
+        ):
+            raise ValueError("process environment must map non-empty strings to strings")
+        pass_fds = tuple(self.pass_fds)
+        if any(type(descriptor) is not int or descriptor < 0 for descriptor in pass_fds):
+            raise ValueError("process descriptors must be non-negative integers")
+        if len(set(pass_fds)) != len(pass_fds):
+            raise ValueError("process descriptors must be unique")
+        if self.before_spawn is not None and not callable(self.before_spawn):
+            raise ValueError("process before_spawn hook must be callable")
+        object.__setattr__(self, "argv", argv)
+        object.__setattr__(self, "environment", MappingProxyType(environment))
+        object.__setattr__(self, "pass_fds", pass_fds)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    """Captured result of one fully cleaned process-tree execution."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+class ProcessPort(Protocol):
+    """Replaceable execution seam for package workflows and tests."""
+
+    def run(self, request: ProcessRequest) -> ProcessResult: ...
 
 
 def owned_process_fd_path(descriptor: int) -> str:
@@ -894,11 +941,11 @@ def owned_atomic_output_file(
 
 
 def cadence_subprocess_env(
-    base: Mapping[str, str] | None = None,
+    base: Mapping[str, str],
 ) -> dict[str, str]:
     """Return a Cadence child environment without conflicting license state."""
 
-    env = dict(os.environ if base is None else base)
+    env = dict(base)
     env.pop(SYNOPSYS_LICENSE_ENV, None)
     return env
 
@@ -923,18 +970,22 @@ def configured_executable(
     return path if path.is_file() and os.access(path, os.X_OK) else None
 
 
-def find_xrun(explicit: Path | None = None) -> Path:
-    """Resolve the Xcelium launcher from an explicit path or installation root."""
+def find_xrun(
+    explicit: Path | None = None,
+    *,
+    environment: Mapping[str, str] = _EMPTY_ENVIRONMENT,
+) -> Path:
+    """Resolve Xcelium only from an explicit runtime snapshot."""
 
     if explicit is not None:
         if explicit.is_file():
             return Path(os.path.abspath(explicit))
         raise FileNotFoundError(f"xrun does not exist: {explicit}")
-    discovered = shutil.which("xrun")
+    discovered = shutil.which("xrun", path=environment.get("PATH", ""))
     if discovered:
         return Path(os.path.abspath(discovered))
     for variable in ("XCELIUM_HOME", "IUS_HOME"):
-        value = os.environ.get(variable)
+        value = environment.get(variable)
         if not value:
             continue
         installation = Path(value)
@@ -951,11 +1002,10 @@ def find_xrun(explicit: Path | None = None) -> Path:
 
 def _xcelium_home(
     xrun: Path,
-    environment: Mapping[str, str] | None = None,
+    environment: Mapping[str, str],
 ) -> Path:
     resolved = xrun.resolve()
-    source = os.environ if environment is None else environment
-    configured = source.get("XCELIUM_HOME") or source.get("IUS_HOME")
+    configured = environment.get("XCELIUM_HOME") or environment.get("IUS_HOME")
     candidates = ([Path(configured)] if configured else []) + list(resolved.parents)
     for installation in candidates:
         for launcher in (
@@ -969,7 +1019,7 @@ def _xcelium_home(
 
 def xrun_env(
     xrun: Path,
-    base: Mapping[str, str] | None = None,
+    base: Mapping[str, str] = _EMPTY_ENVIRONMENT,
 ) -> dict[str, str]:
     """Build the bounded child environment for one resolved Xcelium install."""
 
@@ -984,15 +1034,16 @@ def xrun_env(
         installation / "tools" / "lib",
         installation / "lib",
     )
-    env["PATH"] = (
-        os.pathsep.join(map(str, path_entries))
-        + os.pathsep
-        + env.get("PATH", "")
+    existing_path = env.get("PATH")
+    env["PATH"] = os.pathsep.join(
+        (*map(str, path_entries), *((existing_path,) if existing_path else ()))
     )
-    env["LD_LIBRARY_PATH"] = (
-        os.pathsep.join(map(str, lib_entries))
-        + os.pathsep
-        + env.get("LD_LIBRARY_PATH", "")
+    existing_library_path = env.get("LD_LIBRARY_PATH")
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(
+        (
+            *map(str, lib_entries),
+            *((existing_library_path,) if existing_library_path else ()),
+        )
     )
     env.setdefault("XCELIUM_HOME", str(installation))
     env.setdefault("IUS_HOME", str(installation))
@@ -1044,12 +1095,11 @@ def _spawn_process_supervisor(
             process = subprocess.Popen(
                 (
                     sys.executable,
-                    "-m",
-                    "sigilicon.process_supervisor",
+                    str(Path(__file__).with_name("process_supervisor.py")),
                     str(owned_control.fd),
                 ),
                 cwd=cwd,
-                env=dict(os.environ),
+                env={"PYTHONNOUSERSITE": "1"},
                 text=True,
                 encoding="utf-8",
                 errors="backslashreplace",
@@ -1141,25 +1191,16 @@ def _finish_process_drains(
         raise errors[0]
 
 
-def _run_process_group_owned(
-    command: Sequence[str],
-    *,
-    cwd: Path,
-    env: Mapping[str, str],
-    timeout: int,
-    combine_output: bool,
-    before_spawn: Callable[[], None] | None = None,
-    pass_fds: Sequence[int] = (),
-) -> subprocess.CompletedProcess[str]:
-    if before_spawn is not None:
-        before_spawn()
+def _run_process_group_owned(request: ProcessRequest) -> ProcessResult:
+    if request.before_spawn is not None:
+        request.before_spawn()
     supervisor = _spawn_process_supervisor(
-        command,
-        cwd=cwd,
-        env=dict(env),
+        request.argv,
+        cwd=request.cwd,
+        env=dict(request.environment),
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT if combine_output else subprocess.PIPE,
-        pass_fds=pass_fds,
+        stderr=subprocess.PIPE,
+        pass_fds=request.pass_fds,
     )
     process = supervisor.process
     stdout_chunks: list[str] = []
@@ -1181,7 +1222,7 @@ def _run_process_group_owned(
             )
             thread.start()
             drain_threads.append(thread)
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + request.timeout_seconds
         while not _leader_exited_unreaped(process):
             now = time.monotonic()
             if drain_errors:
@@ -1190,7 +1231,8 @@ def _run_process_group_owned(
                 supervisor.terminate()
                 _finish_process_drains(drain_threads, drain_errors)
                 raise RuntimeError(
-                    f"process group timed out after {timeout}s: {command[0]}"
+                    f"process group timed out after {request.timeout_seconds}s: "
+                    f"{request.argv[0]}"
                 )
             time.sleep(0.05)
         status = supervisor.finish()
@@ -1202,60 +1244,26 @@ def _run_process_group_owned(
             except BaseException as cleanup_exc:
                 raise ProcessGroupCleanupUncertainError(
                     f"external process failed and cleanup could not be proven: "
-                    f"{command[0]}: {cleanup_exc}"
+                    f"{request.argv[0]}: {cleanup_exc}"
                 ) from exc
         _finish_process_drains(drain_threads, ())
         raise
     assert status is not None
-    return subprocess.CompletedProcess(
-        command,
-        status.actual_returncode,
-        "".join(stdout_chunks),
-        None if combine_output else "".join(stderr_chunks),
+    return ProcessResult(
+        returncode=status.actual_returncode,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
     )
 
 
-def _run_process_group(
-    command: Sequence[str],
-    *,
-    cwd: Path,
-    env: Mapping[str, str],
-    timeout: int,
-    combine_output: bool,
-    before_spawn: Callable[[], None] | None = None,
-    pass_fds: Sequence[int] = (),
-) -> subprocess.CompletedProcess[str]:
-    return _run_process_group_owned(
-        command,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        combine_output=combine_output,
-        before_spawn=before_spawn,
-        pass_fds=pass_fds,
-    )
+class ManagedProcessPort:
+    """Linux process-tree implementation used by trusted package code."""
+
+    def run(self, request: ProcessRequest) -> ProcessResult:
+        return _run_process_group_owned(request)
 
 
-def run_process_group(
-    command: Sequence[str],
-    *,
-    cwd: Path,
-    env: Mapping[str, str],
-    timeout: int,
-    before_spawn: Callable[[], None] | None = None,
-    pass_fds: Sequence[int] = (),
-) -> subprocess.CompletedProcess[str]:
-    """Run a command and terminate its complete process group on timeout."""
-
-    return _run_process_group(
-        command,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        combine_output=True,
-        before_spawn=before_spawn,
-        pass_fds=pass_fds,
-    )
+managed_process = ManagedProcessPort()
 
 
 def _run_process_group_until_confirmed_owned(
@@ -1280,9 +1288,19 @@ def _run_process_group_until_confirmed_owned(
     an error.
     """
 
-    if timeout <= 0:
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
         raise ValueError("process group timeout must be positive")
-    if confirmation_grace_seconds < 0:
+    if (
+        isinstance(confirmation_grace_seconds, bool)
+        or not isinstance(confirmation_grace_seconds, (int, float))
+        or not math.isfinite(confirmation_grace_seconds)
+        or confirmation_grace_seconds < 0
+    ):
         raise ValueError("confirmation grace must not be negative")
     if stdout_fd < 0:
         raise ValueError("process group stdout descriptor must be valid")
@@ -1382,28 +1400,6 @@ def run_process_group_until_confirmed(
         stdout_fd=stdout_fd,
         confirmation_probe=confirmation_probe,
         confirmation_grace_seconds=confirmation_grace_seconds,
-        before_spawn=before_spawn,
-        pass_fds=pass_fds,
-    )
-
-
-def run_process_group_capture(
-    command: Sequence[str],
-    *,
-    cwd: Path,
-    env: Mapping[str, str],
-    timeout: int,
-    before_spawn: Callable[[], None] | None = None,
-    pass_fds: Sequence[int] = (),
-) -> subprocess.CompletedProcess[str]:
-    """Run a child group while preserving separate stdout/stderr streams."""
-
-    return _run_process_group(
-        command,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        combine_output=False,
         before_spawn=before_spawn,
         pass_fds=pass_fds,
     )

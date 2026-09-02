@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from sigilicon.project import Project
 from sigilicon.execution.model import Resources
+from sigilicon.external_tools import ProcessResult
 from sigilicon.workflows import xcelium_ams
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.xcelium_ams import (
@@ -420,25 +421,25 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
     contract, circuit = _ams_project(tmp_path)
     _patch_native_resolution(monkeypatch, root=tmp_path, circuit=circuit)
     project = Project.open(tmp_path)
-    xrun = _write(tmp_path / "tools/xrun", "#!/bin/sh\nexit 99\n")
+    xrun = _write(
+        tmp_path / "tools/xcelium/tools/bin/xrun",
+        "#!/bin/sh\nexit 99\n",
+    )
     xrun.chmod(0o755)
 
-    def capture(command, *, cwd, before_spawn, **kwargs):
-        assert str(cwd).startswith("/proc/") and "/fd/" in str(cwd)
-        assert len(kwargs["pass_fds"]) == 2
-        before_spawn()
-        control = Path(command[-1]).read_text(encoding="utf-8")
+    def capture(request):
+        assert str(request.cwd).startswith("/proc/") and "/fd/" in str(request.cwd)
+        assert len(request.pass_fds) == 2
+        request.before_spawn()
+        control = Path(request.argv[-1]).read_text(encoding="utf-8")
         assert "/inputs/release/circuit.scs" in control
         assert "/inputs/pdk/model.scs" in control
         assert str(circuit) not in control
-        (cwd / "xrun.log").write_text(
+        (request.cwd / "xrun.log").write_text(
             "TB_DEMO_AMS_SUMMARY failures=0\n",
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(xcelium_ams, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium_ams, "xrun_env", lambda _xrun: {})
+        return ProcessResult(returncode=0, stdout="", stderr="")
 
     result = execute_xcelium_ams_cell(
         plan_xcelium_ams_cell(
@@ -448,6 +449,7 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
         ),
         artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
+        process=SimpleNamespace(run=capture),
     )
 
     assert result.passed
@@ -462,15 +464,19 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
 ) -> None:
     contract, circuit = _ams_project(tmp_path)
     _patch_native_resolution(monkeypatch, root=tmp_path, circuit=circuit)
-    xrun = _write(tmp_path / "tools/xrun", "#!/bin/sh\nexit 99\n")
+    xrun = _write(
+        tmp_path / "tools/xcelium/tools/bin/xrun",
+        "#!/bin/sh\nexit 99\n",
+    )
     xrun.chmod(0o755)
 
-    def capture(command, *, before_spawn, **_kwargs):
-        before_spawn()
-        return subprocess.CompletedProcess(command, 0, "FAIL transaction\n", "")
-
-    monkeypatch.setattr(xcelium_ams, "run_process_group_capture", capture)
-    monkeypatch.setattr(xcelium_ams, "xrun_env", lambda _xrun: {})
+    def capture(request):
+        request.before_spawn()
+        return ProcessResult(
+            returncode=0,
+            stdout="FAIL transaction\n",
+            stderr="",
+        )
 
     project = Project.open(tmp_path)
     result = execute_xcelium_ams_cell(
@@ -481,6 +487,7 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
         ),
         artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
+        process=SimpleNamespace(run=capture),
     )
 
     assert not result.passed

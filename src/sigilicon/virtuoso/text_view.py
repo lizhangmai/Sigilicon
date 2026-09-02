@@ -12,13 +12,15 @@ from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.external_tools import (
     CADENCE_TEXT_IMPORT_ENV,
+    ProcessPort,
+    ProcessRequest,
     cadence_subprocess_env,
     configured_executable,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_output_file,
     owned_sealed_input,
-    run_process_group,
 )
 from sigilicon.virtuoso.capability import (
     dispatch_oa_mutation,
@@ -140,6 +142,7 @@ def import_oa_text_view(
     operation: Any,
     resources: Any,
     timeout: int = 300,
+    process: ProcessPort = managed_process,
 ) -> None:
     """Import one canonical model source without replacing an existing view."""
 
@@ -236,11 +239,11 @@ def import_oa_text_view(
                 phase="cdsTextTo5x process spawn",
             )
 
-        completed = run_process_group(
-            command,
+        completed = process.run(ProcessRequest(
+            argv=tuple(command),
             cwd=Path(owned_workdir.child_path),
-            env=cadence_subprocess_env(resources.environment),
-            timeout=timeout,
+            environment=cadence_subprocess_env(resources.environment),
+            timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=(
                 owned_source.fd,
@@ -251,7 +254,7 @@ def import_oa_text_view(
                 owned_logs.fd,
                 owned_tool_log.fd,
             ),
-        )
+        ))
         with owned_output_file(owned_logs, "cdsTextTo5x.stdout.log") as owned_stdout:
             owned_stdout.write_bytes(
                 ((completed.stdout or "") + (completed.stderr or "")).encode(

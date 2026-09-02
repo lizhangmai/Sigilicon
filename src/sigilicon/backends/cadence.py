@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.backend import Preparation
+from sigilicon.execution.backend import Preparation, _DirectBackend
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
@@ -32,12 +32,13 @@ from sigilicon.external_tools import (
     CADENCE_SPICEIN_ENV,
     CADENCE_TEXT_IMPORT_ENV,
     CADENCE_VIRTUOSO_ENV,
+    ProcessRequest,
     configured_executable,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
-    run_process_group_capture,
     xrun_env,
 )
 
@@ -70,16 +71,6 @@ def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
             f"missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
     return config
-
-
-def _direct_preparation(
-    backend: Any,
-    step: Operation,
-    resources: Resources,
-) -> Preparation:
-    prepared = Step.from_operation(step)
-    backend.preflight(prepared, resources)
-    return Preparation(prepared)
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:
@@ -616,7 +607,7 @@ class _CadenceDomainBackend:
         return domain_plan
 
 
-class XceliumBackend:
+class XceliumBackend(_DirectBackend):
     """Execute one explicit, source-closed Verilog/SystemVerilog testbench."""
 
     name = "cadence.xcelium"
@@ -632,14 +623,6 @@ class XceliumBackend:
         if not sources:
             raise ContractError("Xcelium filesets select no Verilog sources")
         return sources
-
-    def prepare(
-        self,
-        _project: Any,
-        step: Operation,
-        resources: Resources,
-    ) -> Preparation:
-        return _direct_preparation(self, step, resources)
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
@@ -684,11 +667,11 @@ class XceliumBackend:
                 f"{work.child_path}/xrun.log",
                 *(str(source) for source in sources),
             )
-            completed = run_process_group_capture(
-                command,
+            completed = managed_process.run(ProcessRequest(
+                argv=tuple(command),
                 cwd=Path(work.child_path),
-                env=xrun_env(executable, context.resources.environment),
-                timeout=timeout,
+                environment=xrun_env(executable, context.resources.environment),
+                timeout_seconds=timeout,
                 before_spawn=(
                     lambda: (
                         owned_launcher.require_visible(),
@@ -697,7 +680,7 @@ class XceliumBackend:
                     )
                 ),
                 pass_fds=(work.fd, library.fd),
-            )
+            ))
         native = context.work_root / "xrun.log"
         native_text = (
             native.read_text(encoding="utf-8", errors="replace")

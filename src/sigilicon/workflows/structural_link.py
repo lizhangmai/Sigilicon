@@ -15,10 +15,11 @@ from typing import Any, Mapping
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.ip_integration import parse_locked_ip_release
 from sigilicon.external_tools import (
+    ProcessRequest,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_input_file,
-    run_process_group_capture,
 )
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.release_store import ReleaseRef, ReleaseStore
@@ -351,14 +352,14 @@ def execute_structural_link(
             ):
                 item.require_visible()
 
-        lc = run_process_group_capture(
-            [*held_lc.command, "-f", held_compile.child_named_path],
+        lc = managed_process.run(ProcessRequest(
+            argv=(*held_lc.command, "-f", held_compile.child_named_path),
             cwd=Path(held_work.child_path),
-            env=child_environment,
-            timeout=timeout,
+            environment=child_environment,
+            timeout_seconds=timeout,
             before_spawn=visible,
             pass_fds=(held_work.fd,),
-        )
+        ))
         artifacts.write_text("outputs", ("library-compiler.stdout.log",), lc.stdout)
         artifacts.write_text("outputs", ("library-compiler.stderr.log",), lc.stderr or "")
         lc_marker = f"SIGILICON_STRUCTURAL_DB_PASS library={plan.library_name}"
@@ -377,14 +378,14 @@ def execute_structural_link(
         )
         dc = None
         if lc_clean:
-            dc = run_process_group_capture(
-                [*held_dc.command, "-f", held_link.child_named_path],
+            dc = managed_process.run(ProcessRequest(
+                argv=(*held_dc.command, "-f", held_link.child_named_path),
                 cwd=Path(held_work.child_path),
-                env=child_environment,
-                timeout=timeout,
+                environment=child_environment,
+                timeout_seconds=timeout,
                 before_spawn=visible,
                 pass_fds=(held_work.fd,),
-            )
+            ))
             artifacts.write_text("outputs", ("design-compiler.stdout.log",), dc.stdout)
             artifacts.write_text("outputs", ("design-compiler.stderr.log",), dc.stderr or "")
 

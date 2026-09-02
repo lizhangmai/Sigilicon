@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from sigilicon.execution.model import Resources
+from sigilicon.external_tools import ProcessResult
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.domain.systemverilog import module_port_signatures
 
@@ -69,12 +70,10 @@ def test_source_owned_views_use_native_identity(
         lambda _client: operation.root,
     )
 
-    def run(command, **kwargs):
-        commands.append(command)
-        kwargs["before_spawn"]()
-        return subprocess.CompletedProcess(command, 0, "ok", None)
-
-    monkeypatch.setattr("sigilicon.virtuoso.text_view.run_process_group", run)
+    def run(request):
+        commands.append(request.argv)
+        request.before_spawn()
+        return ProcessResult(returncode=0, stdout="ok", stderr="")
 
     with workspace_factory(client, library="lib") as operation:
         (operation.root / "cds.lib").write_text("# test\n", encoding="utf-8")
@@ -93,6 +92,7 @@ def test_source_owned_views_use_native_identity(
                 log_dir=log_dir,
                 work_dir=work_dir,
                 operation=operation,
+                process=SimpleNamespace(run=run),
             )
 
     command = commands[0]

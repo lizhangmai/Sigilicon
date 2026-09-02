@@ -23,7 +23,7 @@ from sigilicon.artifacts import (
     ensure_nofollow_directory,
 )
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.backend import Preparation
+from sigilicon.execution.backend import Preparation, _DirectBackend
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
@@ -39,13 +39,15 @@ from sigilicon.execution.model import (
     json_value,
 )
 from sigilicon.external_tools import (
+    ProcessRequest,
+    ProcessResult,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_input_file,
     owned_output_file,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
-    run_process_group_capture,
 )
 
 
@@ -229,7 +231,7 @@ def _run_script(
     held_executables: tuple[str, ...],
     held_files: tuple[str, ...],
     held_directories: tuple[str, ...] = (),
-):
+) -> ProcessResult:
     """Run one source-pinned script while holding every external input path."""
 
     runner = _runner(context.step)
@@ -331,30 +333,18 @@ def _run_script(
                 executable.require_visible()
             for launcher in launchers:
                 launcher.require_visible()
-        return run_process_group_capture(
-            command,
+        return managed_process.run(ProcessRequest(
+            argv=tuple(command),
             cwd=context.work_root,
-            env=environment,
-            timeout=_positive_integer(context.step.request, "timeout_seconds"),
+            environment=environment,
+            timeout_seconds=_positive_integer(
+                context.step.request, "timeout_seconds"
+            ),
             before_spawn=visible,
-        )
+        ))
 
 
-class _PreparedSynopsysBackend:
-    """Validate each package-owned Synopsys request during Project.plan."""
-
-    def prepare(
-        self,
-        _project: Any,
-        step: Operation,
-        resources: Resources,
-    ) -> Preparation:
-        prepared = Step.from_operation(step)
-        self.preflight(prepared, resources)
-        return Preparation(prepared)
-
-
-class VcsBackend(_PreparedSynopsysBackend):
+class VcsBackend(_DirectBackend):
     name = "synopsys.vcs"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -428,7 +418,7 @@ class VcsBackend(_PreparedSynopsysBackend):
         return StepResult.succeeded(artifacts=logs)
 
 
-class DcBackend(_PreparedSynopsysBackend):
+class DcBackend(_DirectBackend):
     name = "synopsys.dc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -526,7 +516,7 @@ class DcBackend(_PreparedSynopsysBackend):
             return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
 
 
-class FcBackend(_PreparedSynopsysBackend):
+class FcBackend(_DirectBackend):
     name = "synopsys.fc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -732,7 +722,7 @@ class FcBackend(_PreparedSynopsysBackend):
             return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 
-class HspiceBackend(_PreparedSynopsysBackend):
+class HspiceBackend(_DirectBackend):
     name = "synopsys.hspice"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -886,7 +876,7 @@ class HspiceBackend(_PreparedSynopsysBackend):
             return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
-class StructuralLinkBackend(_PreparedSynopsysBackend):
+class StructuralLinkBackend(_DirectBackend):
     """Link owner RTL against one locked, uncharacterized macro release."""
 
     name = "synopsys.structural-link"

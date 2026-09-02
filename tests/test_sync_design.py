@@ -386,8 +386,8 @@ def test_spicein_preflight_failure_prevents_process_launch(
     launches: list[object] = []
     monkeypatch.setattr(
         importer,
-        "run_process_group_capture",
-        lambda *args, **kwargs: launches.append((args, kwargs)),
+        "managed_process",
+        SimpleNamespace(run=lambda request: launches.append(request)),
     )
     client = SimpleNamespace(
         ssh_runner=None,

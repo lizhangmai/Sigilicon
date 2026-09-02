@@ -41,7 +41,7 @@ from sigilicon.domain.systemverilog import (
     module_port_signatures,
     named_port_connections,
 )
-from sigilicon.external_tools import owned_directory, run_process_group
+from sigilicon.external_tools import ProcessRequest, managed_process, owned_directory
 from sigilicon.release_store import AuditedRelease, ReleaseRef, ReleaseStore
 
 if TYPE_CHECKING:
@@ -925,19 +925,27 @@ def _source_inputs(
 
 
 def _source_control(root: Path) -> tuple[str, bool]:
-    revision = run_process_group(
-        ["git", "rev-parse", "HEAD"], cwd=root, env=os.environ.copy(), timeout=30
-    )
-    if revision.returncode != 0 or not revision.stdout.strip():
-        raise RuntimeError(f"cannot resolve source commit:\n{revision.stdout}")
-    status_result = run_process_group(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
+    revision = managed_process.run(ProcessRequest(
+        argv=("git", "rev-parse", "HEAD"),
         cwd=root,
-        env=os.environ.copy(),
-        timeout=30,
-    )
+        environment=os.environ.copy(),
+        timeout_seconds=30,
+    ))
+    if revision.returncode != 0 or not revision.stdout.strip():
+        raise RuntimeError(
+            f"cannot resolve source commit:\n{revision.stdout}{revision.stderr}"
+        )
+    status_result = managed_process.run(ProcessRequest(
+        argv=("git", "status", "--porcelain", "--untracked-files=all"),
+        cwd=root,
+        environment=os.environ.copy(),
+        timeout_seconds=30,
+    ))
     if status_result.returncode != 0:
-        raise RuntimeError(f"cannot inspect source checkout:\n{status_result.stdout}")
+        raise RuntimeError(
+            "cannot inspect source checkout:\n"
+            f"{status_result.stdout}{status_result.stderr}"
+        )
     return revision.stdout.strip(), bool(status_result.stdout.strip())
 
 

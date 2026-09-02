@@ -12,7 +12,7 @@ from sigilicon.workflows.structural_link import (
     execute_structural_link,
     plan_structural_link,
 )
-from sigilicon.external_tools import owned_executable, run_process_group_capture
+from sigilicon.external_tools import ProcessRequest, managed_process, owned_executable
 
 
 _COMPAT_LC_VERSION = "U-2022.12-SP6-T-20250827"
@@ -431,13 +431,13 @@ def test_structural_link_can_hold_a_binary_tool_mode_symlink(tmp_path: Path) -> 
     launcher.symlink_to(dispatcher.name)
 
     with owned_executable(launcher) as held:
-        completed = run_process_group_capture(
-            held.command,
+        completed = managed_process.run(ProcessRequest(
+            argv=held.command,
             cwd=tmp_path,
-            env={"PATH": "/bin"},
-            timeout=10,
+            environment={"PATH": "/bin"},
+            timeout_seconds=10,
             before_spawn=held.require_visible,
-        )
+        ))
 
     assert completed.returncode == 0
 

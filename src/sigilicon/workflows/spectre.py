@@ -14,19 +14,23 @@ import os
 from pathlib import Path
 import re
 import shutil
+from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.external_tools import (
+    ProcessPort,
+    ProcessRequest,
     cadence_subprocess_env,
+    managed_process,
     owned_directory,
     owned_input_file,
-    run_process_group,
 )
 
 
 _SPECTRE_ZERO_ERRORS = re.compile(r"spectre completes with\s+0 errors", re.IGNORECASE)
+_EMPTY_ENVIRONMENT: Mapping[str, str] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,7 @@ class SpectreExecution:
     canonical_deck: Path
     invocation_deck: Path
     stdout_log: Path
+    stderr_log: Path
     native_log: Path | None
     raw_outputs: Mapping[str, Path]
 
@@ -66,7 +71,11 @@ class MeasurementContractFailure(RuntimeError):
         self.result = result
 
 
-def find_spectre(explicit: Path | None = None) -> Path:
+def find_spectre(
+    explicit: Path | None = None,
+    *,
+    environment: Mapping[str, str] = _EMPTY_ENVIRONMENT,
+) -> Path:
     """Find the Cadence launcher without resolving its wrapper symlink.
 
     Cadence's public ``spectre`` launcher may be a symlink whose resolved
@@ -77,13 +86,16 @@ def find_spectre(explicit: Path | None = None) -> Path:
     candidates: list[Path] = []
     if explicit is not None:
         candidates.append(explicit)
-    configured = os.environ.get("VB_SPECTRE_BIN")
+    configured = environment.get("VB_SPECTRE_BIN")
     if configured:
         candidates.append(Path(configured))
-    discovered = shutil.which("spectre")
+    discovered = shutil.which(
+        "spectre",
+        path=environment.get("PATH", ""),
+    )
     if discovered:
         candidates.append(Path(discovered))
-    mmsim = os.environ.get("MMSIM")
+    mmsim = environment.get("MMSIM")
     if mmsim:
         candidates.append(Path(mmsim) / "bin" / "spectre")
     for candidate in candidates:
@@ -103,6 +115,8 @@ def run_spectre_deck(
     output_names: Sequence[str],
     timeout: int,
     spectre: Path | None = None,
+    environment: Mapping[str, str],
+    process: ProcessPort = managed_process,
 ) -> SpectreExecution:
     """Render, execute, and prove one direct Spectre deck.
 
@@ -147,7 +161,7 @@ def run_spectre_deck(
         render_deck(canonical_paths),
     )
     canonical_deck.chmod(0o444)
-    executable = find_spectre(spectre)
+    executable = find_spectre(spectre, environment=environment)
     work_dir = record.directory("work")
     completed = None
     invocation_deck: Path | None = None
@@ -205,14 +219,14 @@ def run_spectre_deck(
                 )
             )
         )
-        completed = run_process_group(
-            command,
+        completed = process.run(ProcessRequest(
+            argv=tuple(command),
             cwd=Path(owned_work.child_path),
-            env=cadence_subprocess_env(),
-            timeout=timeout,
+            environment=cadence_subprocess_env(environment),
+            timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=pass_fds,
-        )
+        ))
 
     assert completed is not None
     stdout_log = record.write_text(
@@ -220,20 +234,27 @@ def run_spectre_deck(
         ("spectre.stdout.log",),
         completed.stdout,
     )
+    stderr_log = record.write_text(
+        "logs",
+        ("spectre.stderr.log",),
+        completed.stderr,
+    )
     native_log_candidate = record.path("work", "spectre.out")
     native_log: Path | None = None
-    log_text = completed.stdout
+    proof_sources = [completed.stdout, completed.stderr]
     if native_log_candidate.is_file():
         native_log = record.copy_file(
             "logs",
             ("spectre.out",),
             native_log_candidate,
         )
-        log_text = read_nofollow_text(native_log, errors="replace")
+        proof_sources.append(read_nofollow_text(native_log, errors="replace"))
     if completed.returncode != 0:
-        tail = "\n".join(completed.stdout.splitlines()[-80:])
+        tail = "\n".join(
+            f"{completed.stdout}\n{completed.stderr}".splitlines()[-80:]
+        )
         raise RuntimeError(f"Spectre exited {completed.returncode}\n{tail}")
-    if not _SPECTRE_ZERO_ERRORS.search(log_text + "\n" + completed.stdout):
+    if not _SPECTRE_ZERO_ERRORS.search("\n".join(proof_sources)):
         raise RuntimeError("could not prove a Spectre completion with zero errors")
     raw_outputs: dict[str, Path] = {}
     for name in output_names:
@@ -246,6 +267,7 @@ def run_spectre_deck(
         canonical_deck=canonical_deck,
         invocation_deck=invocation_deck,
         stdout_log=stdout_log,
+        stderr_log=stderr_log,
         native_log=native_log,
         raw_outputs=raw_outputs,
     )
@@ -280,6 +302,8 @@ def run_spectre_measurement(
     timeout: int,
     artifacts: StepFiles,
     spectre: Path | None = None,
+    environment: Mapping[str, str],
+    process: ProcessPort = managed_process,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
 
@@ -301,6 +325,8 @@ def run_spectre_measurement(
         output_names=(output_name,),
         timeout=timeout,
         spectre=spectre,
+        environment=environment,
+        process=process,
     )
     raw = artifacts.copy_file(
         "outputs",

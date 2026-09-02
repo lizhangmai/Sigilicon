@@ -13,14 +13,15 @@ from sigilicon.virtuoso.bridge import escape_skill_string
 
 from sigilicon.external_tools import (
     CADENCE_SPICEIN_ENV,
+    ProcessRequest,
     cadence_subprocess_env,
     configured_executable,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_input_file,
     owned_output_file,
     owned_process_fd_path,
-    run_process_group_capture,
 )
 from sigilicon.paths import validate_artifact_component
 from sigilicon.virtuoso.capability import dispatch_oa_mutation, require_oa_target_capability
@@ -594,14 +595,14 @@ def _import_netlist(
                 phase="spiceIn process launch",
             )
 
-        completed = run_process_group_capture(
-            command,
+        completed = managed_process.run(ProcessRequest(
+            argv=tuple(command),
             cwd=Path(owned_run_dir.child_path),
-            env=cadence_subprocess_env(resources.environment),
-            timeout=timeout,
+            environment=cadence_subprocess_env(resources.environment),
+            timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=tuple(pass_fds),
-        )
+        ))
         owned_stdout.write_bytes(
             ((completed.stdout or "") + (completed.stderr or "")).encode(
                 "utf-8", errors="replace"

@@ -19,10 +19,7 @@ from sigilicon.project import Project
 from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
-from sigilicon.external_tools import (
-    run_process_group_capture,
-    xrun_env,
-)
+from sigilicon.external_tools import ProcessPort, managed_process
 from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
@@ -491,6 +488,7 @@ def execute_xcelium_ams_cell(
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
+    process: ProcessPort = managed_process,
 ) -> XceliumExecution:
     """Execute a resolved AMS cell without creating or completing a run record."""
 
@@ -554,8 +552,7 @@ def execute_xcelium_ams_cell(
         environment_values=environment_values,
         xrun=xrun,
         timeout=timeout,
-        run_process=run_process_group_capture,
-        environment=xrun_env,
+        process=process,
     )
 
 

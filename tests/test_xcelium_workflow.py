@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from sigilicon.project import Project
 import sigilicon.project._project as repository_module
-from sigilicon.workflows import xcelium
+from sigilicon.external_tools import ProcessResult
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.xcelium import (
     execute_xcelium_cell,
@@ -157,17 +157,20 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
-    def capture(command, *, cwd, before_spawn, **kwargs):
-        assert str(xrun) in command
-        assert str(cwd).startswith("/proc/") and "/fd/" in str(cwd)
-        assert len(kwargs["pass_fds"]) == 2
-        before_spawn()
-        (cwd / "xrun.log").write_text("fixture Xcelium log\n", encoding="utf-8")
-        return subprocess.CompletedProcess(
-            command, 0, "TB_DEMO_SUMMARY failures=0\n", ""
+    def capture(request):
+        assert str(xrun) in request.argv
+        assert str(request.cwd).startswith("/proc/") and "/fd/" in str(request.cwd)
+        assert len(request.pass_fds) == 2
+        request.before_spawn()
+        (request.cwd / "xrun.log").write_text(
+            "fixture Xcelium log\n", encoding="utf-8"
+        )
+        return ProcessResult(
+            returncode=0,
+            stdout="TB_DEMO_SUMMARY failures=0\n",
+            stderr="",
         )
 
-    monkeypatch.setattr(xcelium, "run_process_group_capture", capture)
     plan = plan_xcelium_cell(contract, project=project)
     artifacts = _run_artifacts(tmp_path)
     result = execute_xcelium_cell(
@@ -175,6 +178,7 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
         artifacts=artifacts,
         xrun=xrun,
         timeout=17,
+        process=SimpleNamespace(run=capture),
     )
 
     assert result.returncode == 0
@@ -194,15 +198,19 @@ def test_xcelium_execution_reports_absent_success_marker(
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
-    def capture(command, *, cwd, before_spawn, **_kwargs):
-        before_spawn()
-        return subprocess.CompletedProcess(command, 0, "FAIL fixture assertion\n", "")
+    def capture(request):
+        request.before_spawn()
+        return ProcessResult(
+            returncode=0,
+            stdout="FAIL fixture assertion\n",
+            stderr="",
+        )
 
-    monkeypatch.setattr(xcelium, "run_process_group_capture", capture)
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
         artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
+        process=SimpleNamespace(run=capture),
     )
 
     assert result.returncode == 0
@@ -220,19 +228,19 @@ def test_xcelium_execution_accepts_success_marker_from_native_log(
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
 
-    def capture(command, *, cwd, before_spawn, **_kwargs):
-        before_spawn()
-        (cwd / "xrun.log").write_text(
+    def capture(request):
+        request.before_spawn()
+        (request.cwd / "xrun.log").write_text(
             "TB_DEMO_SUMMARY failures=0\n",
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return ProcessResult(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(xcelium, "run_process_group_capture", capture)
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
         artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
+        process=SimpleNamespace(run=capture),
     )
 
     assert result.passed

@@ -13,10 +13,12 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.project import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
+    ProcessPort,
+    ProcessRequest,
     find_xrun,
+    managed_process,
     owned_directory,
     owned_executable,
-    run_process_group_capture,
     xrun_env,
 )
 from sigilicon.execution.step_files import StepFiles
@@ -197,6 +199,7 @@ def execute_xcelium_cell(
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
+    process: ProcessPort = managed_process,
 ) -> XceliumExecution:
     """Execute a resolved cell without creating or completing a run record."""
 
@@ -220,8 +223,7 @@ def execute_xcelium_cell(
         environment_values=environment_values,
         xrun=xrun,
         timeout=timeout,
-        run_process=run_process_group_capture,
-        environment=xrun_env,
+        process=process,
     )
 
 
@@ -245,12 +247,14 @@ def _execute_xcelium(
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
-    run_process: Callable[..., Any] = run_process_group_capture,
-    environment: Callable[[Path], Mapping[str, str]] = xrun_env,
+    process: ProcessPort = managed_process,
 ) -> XceliumExecution:
     """Run one typed Xcelium plan after its caller-specific inputs are prepared."""
 
-    xrun_bin = find_xrun(xrun)
+    selected_environment = (
+        {} if environment_values is None else dict(environment_values)
+    )
+    xrun_bin = find_xrun(xrun, environment=selected_environment)
     if prepare_inputs is not None:
         prepare_inputs()
     artifacts.write_json(
@@ -281,18 +285,14 @@ def _execute_xcelium(
             if validate_inputs is not None:
                 validate_inputs()
 
-        completed = run_process(
-            command,
+        completed = process.run(ProcessRequest(
+            argv=tuple(command),
             cwd=Path(owned_work.child_path),
-            env=(
-                environment(xrun_bin)
-                if environment_values is None
-                else environment(xrun_bin, environment_values)
-            ),
-            timeout=timeout,
+            environment=xrun_env(xrun_bin, selected_environment),
+            timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=(owned_work.fd, owned_xcelium.fd),
-        )
+        ))
     stdout_path = artifacts.write_text(
         "logs", ("xrun.stdout.log",), completed.stdout
     )

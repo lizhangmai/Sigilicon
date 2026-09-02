@@ -24,11 +24,12 @@ from sigilicon.domain.physical_verification import (
     VerificationCompletion,
 )
 from sigilicon.external_tools import (
+    ProcessRequest,
     cadence_subprocess_env,
+    managed_process,
     owned_directory,
     owned_executable,
     owned_input_file,
-    run_process_group,
 )
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
@@ -457,6 +458,7 @@ def _run_xstream(
             )
         raise
     record.write_text("outputs", ("xstream-stdout.log",), exported.stdout)
+    record.write_text("outputs", ("xstream-stderr.log",), exported.stderr)
     record.copy_file("outputs", ("strmout.log",), exported.native_log_path)
     record.copy_file("outputs", ("strmout.sum",), exported.summary_path)
     return record.copy_file("inputs", ("layout.gds",), exported.gds_path)
@@ -573,16 +575,18 @@ def _run_calibre(
         ]
         if owned_source is not None:
             descriptors.extend((owned_source.fd, owned_source.directory_fd))
-        completed = run_process_group(
-            command,
+        completed = managed_process.run(ProcessRequest(
+            argv=tuple(command),
             cwd=work,
-            env=calibre_environment(executable, environment),
-            timeout=timeout,
+            environment=calibre_environment(executable, environment),
+            timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=tuple(dict.fromkeys(descriptors)),
-        )
+        ))
     record.write_text(
-        "outputs", (f"calibre-{check}.log",), completed.stdout
+        "outputs",
+        (f"calibre-{check}.log",),
+        completed.stdout + completed.stderr,
     )
     if completed.returncode != 0:
         return _failed_evidence(
@@ -622,7 +626,8 @@ def _run_calibre(
             report = read_nofollow_text(copied["lvs.rep"])
             if (
                 parse_lvs_report(report, primary=spec.cell)["passed"]
-                and "LVS completed. CORRECT." not in completed.stdout
+                and "LVS completed. CORRECT."
+                not in f"{completed.stdout}\n{completed.stderr}"
             ):
                 raise RuntimeError(
                     "Calibre log does not independently confirm correct LVS completion"

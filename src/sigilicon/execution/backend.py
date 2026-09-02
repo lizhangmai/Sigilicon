@@ -72,6 +72,20 @@ class Preparation:
             )
 
 
+class _DirectBackend:
+    """Backend whose portable Step needs no domain-specific runtime binding."""
+
+    def prepare(
+        self,
+        _project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
+        prepared = Step.from_operation(step)
+        self.preflight(prepared, resources)
+        return Preparation(prepared)
+
+
 class BackendRegistry(Mapping[str, Backend]):
     """Immutable explicit backend set; it performs no global registration."""
 
