@@ -898,6 +898,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             "parameter_overrides",
             "expected_macro_instances",
             "expected_unresolved_references",
+            "library_compiler_version",
             "release_export",
             "liberty_role",
             "release_manifest",
@@ -969,6 +970,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             _text(config, name)
         _mapping(config, "parameter_overrides")
         _positive_integer(config, "expected_macro_instances")
+        _text(config, "library_compiler_version")
         unresolved = config.get("expected_unresolved_references")
         if type(unresolved) is not int or unresolved < 0:
             raise ContractError(
@@ -1070,6 +1072,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             expected_unresolved_references=int(
                 config["expected_unresolved_references"]
             ),
+            library_compiler_version=_text(config, "library_compiler_version"),
             release_export=_text(config, "release_export"),
             liberty_role=_text(config, "liberty_role"),
             release_manifest=by_location[project_root / manifest_name].location,
@@ -1147,6 +1150,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             "parameter_overrides": dict(plan.parameter_overrides),
             "expected_macro_instances": plan.expected_macro_instances,
             "expected_unresolved_references": plan.expected_unresolved_references,
+            "library_compiler_version": plan.library_compiler_version,
             "release_id": plan.release_id,
             "release_source_commit": plan.release_source_commit,
             "release_manifest": plan.release_manifest,
@@ -1271,6 +1275,9 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             ),
             expected_unresolved_references=int(
                 prepared["expected_unresolved_references"]
+            ),
+            library_compiler_version=_text(
+                prepared, "library_compiler_version"
             ),
             release_liberty=context.project_source_path(release_liberty),
             release_id=_text(prepared, "release_id"),

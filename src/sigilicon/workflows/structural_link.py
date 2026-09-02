@@ -24,6 +24,8 @@ from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
+_TOOL_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
+_VERSION_BANNER = re.compile(r"\bVersion\s+([A-Za-z0-9][A-Za-z0-9._+-]*)\b")
 
 
 def _sha256_fd(descriptor: int) -> str:
@@ -93,6 +95,15 @@ def _text(document: Mapping[str, Any], name: str, label: str) -> str:
     return value
 
 
+def _observed_library_compiler_version(output: str) -> str | None:
+    versions = {
+        match.group(1)
+        for line in output.splitlines()
+        if (match := _VERSION_BANNER.search(line)) is not None
+    }
+    return next(iter(versions)) if len(versions) == 1 else None
+
+
 @dataclass(frozen=True)
 class StructuralLinkPlan:
     owner: str
@@ -106,6 +117,7 @@ class StructuralLinkPlan:
     parameter_overrides: Mapping[str, int]
     expected_macro_instances: int
     expected_unresolved_references: int
+    library_compiler_version: str
     release_liberty: Path
     release_id: str
     release_source_commit: str
@@ -137,6 +149,7 @@ def plan_structural_link(
     parameter_overrides: Mapping[str, int],
     expected_macro_instances: int,
     expected_unresolved_references: int,
+    library_compiler_version: str,
     release_export: str,
     liberty_role: str,
     release_manifest: Path,
@@ -163,6 +176,8 @@ def plan_structural_link(
         raise ValueError("structural-link expected results are invalid")
     if not dependency or not release_export or not liberty_role:
         raise ValueError("structural-link release selection is incomplete")
+    if _TOOL_VERSION.fullmatch(library_compiler_version) is None:
+        raise ValueError("structural-link Library Compiler version is invalid")
 
     variant_document = _toml(variant_path, "variant")
     if (
@@ -278,6 +293,7 @@ def plan_structural_link(
         parameter_overrides=dict(parameter_overrides),
         expected_macro_instances=expected_macro_instances,
         expected_unresolved_references=expected_unresolved_references,
+        library_compiler_version=library_compiler_version,
         release_liberty=release_liberty,
         release_id=pinned["release_id"],
         release_source_commit=pinned["source_commit"],
@@ -377,8 +393,10 @@ def execute_structural_link(
         artifacts.write_text("outputs", ("library-compiler.stdout.log",), lc.stdout)
         artifacts.write_text("outputs", ("library-compiler.stderr.log",), lc.stderr or "")
         lc_marker = f"SIGILICON_STRUCTURAL_DB_PASS library={plan.library_name}"
+        observed_lc_version = _observed_library_compiler_version(lc.stdout)
         lc_clean = (
             lc.returncode == 0
+            and observed_lc_version == plan.library_compiler_version
             and lc_marker in lc.stdout
             and macro_db.is_file()
             and not macro_db.is_symlink()
@@ -431,6 +449,8 @@ def execute_structural_link(
         artifacts.copy_file("outputs", (f"{plan.top}.ddc",), checkpoint)
     facts: dict[str, object] = {
         "passed": passed,
+        "library_compiler_version": observed_lc_version,
+        "required_library_compiler_version": plan.library_compiler_version,
         "macro_instance_count": observed[0] if passed and observed is not None else None,
         "unresolved_reference_count": (
             observed[1] if passed and observed is not None else None

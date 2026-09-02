@@ -168,6 +168,7 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "parameter_overrides": {"ROWS": 1},
         "expected_macro_instances": 1,
         "expected_unresolved_references": 0,
+        "library_compiler_version": "U-2022.12-SP6-T-20250827",
         "release_export": "macro",
         "liberty_role": "raw_macro_liberty_or_db",
         "release_manifest": manifest,
@@ -186,6 +187,7 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "parameter_overrides": {"ROWS": 1},
         "expected_macro_instances": 1,
         "expected_unresolved_references": 0,
+        "library_compiler_version": "U-2022.12-SP6-T-20250827",
         "release_id": "development-" + "a" * 40,
         "release_source_commit": "a" * 40,
         "release_manifest": (

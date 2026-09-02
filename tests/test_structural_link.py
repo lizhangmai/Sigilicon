@@ -15,6 +15,9 @@ from sigilicon.workflows.structural_link import (
 from sigilicon.external_tools import owned_executable, run_process_group_capture
 
 
+_COMPAT_LC_VERSION = "U-2022.12-SP6-T-20250827"
+
+
 def _write(path: Path, text: str, *, executable: bool = False) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -202,6 +205,7 @@ maturity = "development"
         parameter_overrides={"ROWS": 32},
         expected_macro_instances=1,
         expected_unresolved_references=0,
+        library_compiler_version=_COMPAT_LC_VERSION,
         release_export="mx-block-v2",
         liberty_role="raw_macro_liberty_or_db",
         release_manifest=manifest,
@@ -237,6 +241,7 @@ def test_structural_link_executes_both_tools_and_publishes_typed_evidence(
         tmp_path / "tools/lc_shell",
         '''#!/bin/sh
 set -eu
+printf 'Version U-2022.12-SP6-T-20250827 for linux64\n'
 printf 'compiled-db\n' > "$SIGILICON_STRUCTURAL_DB"
 printf 'SIGILICON_STRUCTURAL_DB_PASS library=%s\n' "$SIGILICON_STRUCTURAL_LIBRARY"
 ''',
@@ -278,6 +283,7 @@ printf 'SIGILICON_STRUCTURAL_LINK_PASS top=%s macro_instances=1 unresolved=0\n' 
         (artifacts.output_root / "structural-link-evidence.json").read_text()
     )
     assert evidence["release_id"] == "development-0123456789ab"
+    assert evidence["library_compiler_version"] == _COMPAT_LC_VERSION
     assert evidence["macro_instance_count"] == 1
     assert evidence["product_qualification_conclusion"] is False
     assert (artifacts.output_root / "consumer_top.ddc").is_file()
@@ -323,6 +329,7 @@ def test_structural_link_preserves_tool_mode_symlink_names(
 set -eu
 case "${0##*/}" in
   lc_shell)
+    printf 'Version U-2022.12-SP6-T-20250827 for linux64\n'
     printf 'compiled-db\n' > "$SIGILICON_STRUCTURAL_DB"
     printf 'SIGILICON_STRUCTURAL_DB_PASS library=%s\n' "$SIGILICON_STRUCTURAL_LIBRARY"
     ;;
@@ -361,6 +368,41 @@ esac
     )
 
     assert result.passed
+
+
+def test_structural_link_rejects_a_different_library_compiler_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plan, artifacts = _fixture(tmp_path, monkeypatch)
+    dc_invoked = tmp_path / "dc-invoked"
+    library_compiler = _write(
+        tmp_path / "tools/lc_shell",
+        '''#!/bin/sh
+printf 'Version X-2025.06 for linux64\n'
+printf 'compiled-db\n' > "$SIGILICON_STRUCTURAL_DB"
+printf 'SIGILICON_STRUCTURAL_DB_PASS library=%s\n' "$SIGILICON_STRUCTURAL_LIBRARY"
+''',
+        executable=True,
+    )
+    design_compiler = _write(
+        tmp_path / "tools/dc_shell",
+        f"#!/bin/sh\nprintf invoked > {dc_invoked}\n",
+        executable=True,
+    )
+
+    result = execute_structural_link(
+        plan,
+        artifacts=artifacts,
+        library_compiler=library_compiler,
+        design_compiler=design_compiler,
+        environment={"PATH": "/bin"},
+        timeout=10,
+    )
+
+    assert not result.passed
+    assert result.facts["library_compiler_version"] == "X-2025.06"
+    assert not dc_invoked.exists()
 
 
 def test_structural_link_can_hold_a_binary_tool_mode_symlink(tmp_path: Path) -> None:
@@ -410,6 +452,7 @@ def test_structural_link_rejects_marker_without_report_facts(
     library_compiler = _write(
         tmp_path / "tools/lc_shell",
         '''#!/bin/sh
+printf 'Version U-2022.12-SP6-T-20250827 for linux64\n'
 printf 'compiled-db\n' > "$SIGILICON_STRUCTURAL_DB"
 printf 'SIGILICON_STRUCTURAL_DB_PASS library=%s\n' "$SIGILICON_STRUCTURAL_LIBRARY"
 ''',
