@@ -196,7 +196,12 @@ def test_target_only_sync_reuses_bridge_import_without_touching_cds_lib(
     _patch_fake_import(monkeypatch)
     before_cds_lib = (root / "virtuoso" / "cds.lib").read_text(encoding="utf-8")
 
-    result = sync_existing_design_target_only(spec.design, client, overwrite=True)
+    result = sync_existing_design_target_only(
+        spec.design,
+        client,
+        design_source=spec.design.path,
+        overwrite=True,
+    )
 
     assert client.library.create_call is None
     assert result.imported_cells == ("inv",)
@@ -231,7 +236,11 @@ ends inv
     client = FakeClient(root / "virtuoso")
 
     with pytest.raises(ValueError, match="exactly one canonical subckt"):
-        sync_existing_design_target_only(multi, client)
+        sync_existing_design_target_only(
+            multi,
+            client,
+            design_source=multi.path,
+        )
     assert client.library.create_call is None
 
 

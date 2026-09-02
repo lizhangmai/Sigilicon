@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,7 @@ from sigilicon.execution import (
     Resources,
     StepContext,
 )
+from sigilicon.workflows.oa_library import oa_plan_source_paths
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -43,6 +45,61 @@ def test_oa_operations_have_fixed_backend_identities() -> None:
         "cadence.oa-rebuild",
         "cadence.oa-attest",
     }.issubset(names)
+
+
+def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
+    model = _file(tmp_path / "model.scs")
+    support = _file(tmp_path / "support.scs")
+    setup = _file(tmp_path / "setup.il")
+    testbench = _file(tmp_path / "testbench.scs")
+    model_set = SimpleNamespace(files=(model, support))
+    pdk = SimpleNamespace(
+        source_paths=(),
+        simulation=SimpleNamespace(model_sets={"default": model_set}),
+    )
+    native_setup = SimpleNamespace(
+        pdk=pdk,
+        source_snapshot=SimpleNamespace(source_path=setup),
+        rdb_contract=None,
+    )
+    simulation = SimpleNamespace(
+        source_documents={},
+        native_setup=native_setup,
+    )
+    plan = SimpleNamespace(
+        source=SimpleNamespace(source_documents={}, cells=()),
+        netlist_snapshots={},
+        designs=(),
+        layouts=(),
+        testbenches=(
+            SimpleNamespace(
+                source_snapshot=SimpleNamespace(source_path=testbench),
+                simulation=simulation,
+            ),
+        ),
+        views=(),
+    )
+
+    closure = oa_plan_source_paths(plan)
+
+    assert {model.resolve(), support.resolve()}.issubset(closure)
+
+
+def test_cadence_run_methods_only_consume_prepared_domain_plans() -> None:
+    backends = (
+        XceliumAmsBackend(),
+        NativeOaBackend(),
+        LayoutBackend(),
+        LayoutVerificationBackend(),
+        *(backend for backend in cadence_backends() if backend.name.startswith("cadence.oa-")),
+    )
+
+    for backend in backends:
+        source = inspect.getsource(backend.run)
+        assert "Project.open" not in source
+        assert "plan_xcelium" not in source
+        assert "plan_oa" not in source
+        assert "plan_layout" not in source
 
 
 def _context(
@@ -264,7 +321,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     preparation = backend.prepare(selected_project, step)
     prepared = preparation.step
     context = _bind_preparation(context, preparation)
-    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: selected_project)
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     record = prepared.record
     assert str(model) not in str(record)
@@ -378,7 +435,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         step=prepared,
         source_scopes={source: "owner" for source in prepared.sources},
     )
-    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     result = backend.run(context, prepared)
 
@@ -401,6 +458,8 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     registered: list[object] = []
     context = _oa_context(tmp_path, step, registered=registered)
     assert context.project_root is not None and context.owner_root is not None
+    model = _file(tmp_path / "site/pdk/model.scs", "sealed model\n")
+    manifest = context.owner_root / "configs/oa.toml"
     planning = SimpleNamespace(
         library="example",
         testbenches=(),
@@ -421,15 +480,34 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.oa_plan_source_paths",
-        lambda _plan: frozenset(),
+        lambda _plan: frozenset({manifest, model}),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.validate_oa_plan_source_members",
         lambda _plan, _members: None,
     )
+    monkeypatch.setattr(
+        "sigilicon.backends.cadence._oa_resource_identities",
+        lambda _project, _plan, _required: {
+            model: "pdk:fixture:simulation/nominal/model.scs"
+        },
+    )
     monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
 
-    def rebuild(_plan, _client, *, operation_id, bind_operation, **_kwargs):
+    def rebuild(
+        _plan,
+        _client,
+        *,
+        source_paths,
+        resource_paths,
+        operation_id,
+        bind_operation,
+        **_kwargs,
+    ):
+        assert source_paths[manifest] == context.source_root / "configs/oa.toml"
+        assert source_paths[manifest] != manifest
+        assert resource_paths[model].read_text(encoding="utf-8") == "sealed model\n"
+        assert resource_paths[model] != model
         operation = SimpleNamespace(operation_id=operation_id)
         bind_operation(operation)
         return {"passed": True}
@@ -442,13 +520,10 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         backend for backend in cadence_backends()
         if backend.name == "cadence.oa-rebuild"
     )
-    prepared = backend.prepare(project, step).step
-    context = replace(
-        context,
-        step=prepared,
-        source_scopes={source: "owner" for source in prepared.sources},
-    )
-    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
+    preparation = backend.prepare(project, step)
+    prepared = preparation.step
+    context = _bind_preparation(context, preparation)
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     result = backend.run(context, prepared)
 
@@ -507,7 +582,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         step=prepared,
         source_scopes={source: "owner" for source in prepared.sources},
     )
-    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
     result = backend.run(context, prepared)
 
     assert result.status == "succeeded"
@@ -670,7 +745,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
     preparation = backend.prepare(project, step)
     prepared = preparation.step
     context = _bind_preparation(context, preparation)
-    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: project)
+    monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     assert all(
         check.status == "ready" for check in backend.preflight(prepared, resources)

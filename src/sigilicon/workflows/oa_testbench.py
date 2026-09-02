@@ -71,6 +71,7 @@ def sync_oa_testbench(
     canonical_source: Path | NetlistSnapshot,
     client: Any,
     *,
+    model_file: Path,
     overwrite: bool = False,
     timeout: int = 300,
     operation_id: str | None = None,
@@ -89,6 +90,7 @@ def sync_oa_testbench(
             spec,
             canonical_source,
             client,
+            model_file=model_file,
             overwrite=overwrite,
             timeout=timeout,
             _work=work,
@@ -102,6 +104,7 @@ def _sync_oa_testbench_impl(
     canonical_source: Path | NetlistSnapshot,
     client: Any,
     *,
+    model_file: Path,
     overwrite: bool = False,
     timeout: int = 300,
     _work: DisposableWork | None = None,
@@ -255,6 +258,7 @@ def _sync_oa_testbench_impl(
             create_oa_native_maestro_view(
                 client,
                 spec,
+                model_file=model_file,
                 operation=operation,
                 timeout=timeout,
             )

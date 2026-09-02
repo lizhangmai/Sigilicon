@@ -737,6 +737,50 @@ def test_project_rejects_an_authorized_plan_modified_by_the_caller(
         project.preflight(forged, Resources(frozenset({"offline"})))
 
 
+def test_project_backend_registry_cannot_be_injected_through_replace(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyBackend())
+
+    with pytest.raises(ValueError, match="init=False"):
+        replace(project, _backend_registry=object())
+
+
+def test_project_authorization_binds_the_external_resource_digest(
+    tmp_path: Path,
+) -> None:
+    live = tmp_path / "site/pdk/model.scs"
+    forged_live = tmp_path / "site/pdk/forged.scs"
+    live.parent.mkdir(parents=True)
+    live.write_text("trusted\n", encoding="utf-8")
+    forged_live.write_text("forged\n", encoding="utf-8")
+
+    class ResourceBackend(CopyBackend):
+        def prepare(self, _project, step):
+            resource = ExternalResource.capture(
+                live,
+                identity="pdk:fixture:simulation/nominal/model.scs",
+            )
+            return Preparation(
+                Step.from_operation(step, resources=(resource.identity,)),
+                resources=(resource,),
+            )
+
+    _write_project(tmp_path)
+    project = _project(tmp_path, ResourceBackend())
+    plan = project.plan("example:check")
+    forged_resource = ExternalResource.capture(
+        forged_live,
+        identity=plan.resources[0].identity,
+    )
+    forged = replace(plan, resources=(forged_resource,))
+
+    assert forged.record != plan.record
+    with pytest.raises(ValueError, match="not authorized by this Project"):
+        project.preflight(forged, Resources(frozenset({"offline"})))
+
+
 def test_project_rejects_composition_source_drift(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = _project(tmp_path, CopyBackend())

@@ -46,7 +46,7 @@ class Backend(Protocol):
 
 @dataclass(frozen=True)
 class Preparation:
-    """Portable Step plus exact Project sources discovered by one Backend."""
+    """Step plus exact Project inputs discovered by one Backend."""
 
     step: Step
     sources: tuple[Source, ...] = ()

@@ -133,6 +133,7 @@ def create_oa_native_maestro_view(
     client: Any,
     spec: Any,
     *,
+    model_file: Path,
     operation: Any,
     timeout: int = 300,
 ) -> None:
@@ -156,7 +157,7 @@ def create_oa_native_maestro_view(
     platform_model = native_setup.pdk.simulation.default
     invocation = (
         f"{entry_point}(session {skill_quote(spec.library)} "
-        f"{skill_quote(spec.cell)} {skill_quote(str(platform_model.file))} "
+        f"{skill_quote(spec.cell)} {skill_quote(str(model_file))} "
         f"{skill_quote(platform_model.single_section)})"
     )
     with _staged_native_setup_source(native_setup) as setup_source:

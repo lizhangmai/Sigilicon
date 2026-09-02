@@ -188,6 +188,7 @@ def sync_existing_design_target_only(
     spec: DesignSpec,
     client: Any,
     *,
+    design_source: Path,
     overwrite: bool = False,
     timeout: int = 300,
     quarantine_stale_locks: bool = False,
@@ -207,6 +208,7 @@ def sync_existing_design_target_only(
         return _sync_existing_design_target_only_impl(
             spec,
             client,
+            design_source=design_source,
             overwrite=overwrite,
             timeout=timeout,
             quarantine_stale_locks=quarantine_stale_locks,
@@ -220,6 +222,7 @@ def _sync_existing_design_target_only_impl(
     spec: DesignSpec,
     client: Any,
     *,
+    design_source: Path,
     overwrite: bool = False,
     timeout: int = 300,
     quarantine_stale_locks: bool = False,
@@ -284,7 +287,7 @@ def _sync_existing_design_target_only_impl(
         attempt.copy_file(
             "inputs",
             ("design.toml",),
-            spec.path,
+            design_source,
         )
         materialize_netlist_snapshot(
             spec.netlist_snapshot,

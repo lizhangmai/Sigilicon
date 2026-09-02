@@ -34,7 +34,6 @@ _STEP_STATUSES = frozenset(
 _RUN_STATUSES = frozenset({"succeeded", "failed", "partial", "uncertain", "cancelled"})
 _RUN_FAILURE_STATUSES = frozenset({"failed", "partial", "uncertain", "cancelled"})
 
-
 class ContractError(ValueError):
     """An operation, plan, or backend value violates the execution contract."""
 
@@ -350,7 +349,7 @@ class Operation:
 
 @dataclass(frozen=True)
 class Step:
-    """Portable backend request authorized for preflight and execution."""
+    """Portable, deterministic Backend request recorded in an ExecutionPlan."""
 
     id: str
     uses: str

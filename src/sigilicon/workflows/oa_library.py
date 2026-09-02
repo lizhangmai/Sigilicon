@@ -267,6 +267,8 @@ def oa_plan_source_paths(plan: OALibraryRebuildPlan) -> frozenset[Path]:
         native_setup = step.simulation.native_setup
         if native_setup is not None:
             paths.update(native_setup.pdk.source_paths)
+            for model_set in native_setup.pdk.simulation.model_sets.values():
+                paths.update(model_set.files)
             paths.add(native_setup.source_snapshot.source_path)
             rdb_contract = native_setup.rdb_contract
             if rdb_contract is not None:
@@ -1308,6 +1310,8 @@ def rebuild_oa_library(
     plan: OALibraryRebuildPlan,
     client: Any,
     *,
+    source_paths: Mapping[Path, Path],
+    resource_paths: Mapping[Path, Path],
     cell: str | None = None,
     testbench: str | None = None,
     timeout: int = 300,
@@ -1390,6 +1394,7 @@ def rebuild_oa_library(
             synchronize_design(
                 step.inspection,
                 client,
+                source_paths=source_paths,
                 overwrite=True,
                 timeout=timeout,
                 operation_id=operation_id,
@@ -1451,10 +1456,17 @@ def rebuild_oa_library(
             f"testbench {index}/{len(selected_testbenches)}: rebuild "
             f"{plan.library}/{step.cell}"
         )
+        model_path = step.simulation.native_setup.pdk.simulation.default.file.resolve()
+        model_file = resource_paths.get(model_path, source_paths.get(model_path))
+        if model_file is None:
+            raise ValueError(
+                "OA testbench PDK model is outside the sealed input closure"
+            )
         sync_oa_testbench(
             step.simulation,
             step.source_snapshot,
             client,
+            model_file=model_file,
             overwrite=True,
             timeout=timeout,
             operation_id=operation_id,

@@ -29,6 +29,7 @@ from sigilicon.paths import (
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 
 if TYPE_CHECKING:
+    from sigilicon.execution.backend import BackendRegistry
     from sigilicon.execution import (
         ExecutionPlan,
         PreflightResult,
@@ -103,6 +104,24 @@ class Project:
         repr=False,
         compare=False,
     )
+    _backend_registry: BackendRegistry | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def _backends(self) -> BackendRegistry:
+        """Return this open Project's process-local trusted Backend instances."""
+
+        from sigilicon.backends import trusted_backends
+        from sigilicon.execution.backend import BackendRegistry
+
+        registry = self._backend_registry
+        if registry is None:
+            registry = BackendRegistry(trusted_backends())
+            object.__setattr__(self, "_backend_registry", registry)
+        return registry
 
     @classmethod
     def open(
@@ -122,8 +141,7 @@ class Project:
     def plan(self, selector: str) -> ExecutionPlan:
         """Compile one canonical ``owner:operation[@variant]`` selector."""
 
-        from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import BackendRegistry, prepare_plan
+        from sigilicon.execution.backend import prepare_plan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
         owner_name, operation, variant = parse_selector(selector)
@@ -145,7 +163,7 @@ class Project:
         plan = prepare_plan(
             plan,
             project=self,
-            backends=BackendRegistry(trusted_backends()),
+            backends=self._backends(),
         )
         return replace(plan, _authorization=self._authorize_plan(plan))
 
@@ -164,8 +182,6 @@ class Project:
         """Check a plan without creating a run or starting a backend."""
 
         from sigilicon.execution.engine import _preflight
-        from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import BackendRegistry
         from sigilicon.execution.model import (
             ExecutionPlan,
             PreflightCheck,
@@ -182,7 +198,7 @@ class Project:
         checked = _preflight(
             plan,
             selected,
-            BackendRegistry(trusted_backends()),
+            self._backends(),
         )
         if plan.project_identity == self.identity:
             return checked
@@ -210,8 +226,6 @@ class Project:
         """Execute one source-current plan through its selected backends."""
 
         from sigilicon.execution.engine import _run
-        from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import BackendRegistry
         from sigilicon.execution.model import ExecutionPlan, Resources
 
         if not isinstance(plan, ExecutionPlan):
@@ -223,7 +237,7 @@ class Project:
         return _run(
             plan,
             selected,
-            BackendRegistry(trusted_backends()),
+            self._backends(),
             artifact_root=self.artifact_root,
             project_root=self.project_root,
             owner_root=self.owner(plan.owner).root,

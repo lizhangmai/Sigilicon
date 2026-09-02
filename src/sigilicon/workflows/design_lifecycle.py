@@ -89,6 +89,7 @@ def synchronize_design(
     inspection: DesignInspection,
     client: Any,
     *,
+    source_paths: Mapping[Path, Path],
     overwrite: bool = False,
     timeout: int = 300,
     quarantine_stale_locks: bool = False,
@@ -97,12 +98,22 @@ def synchronize_design(
 ) -> DesignSyncResult | TargetOnlyDesignSyncResult:
     """Synchronize the exact inspected hierarchy through the shared OA sigilicon."""
 
-    synchronizer = (
-        sync_existing_design_target_only
-        if inspection.spec.sync_mode == "target-only"
-        else sync_design
-    )
-    return synchronizer(
+    if inspection.spec.sync_mode == "target-only":
+        try:
+            design_source = source_paths[inspection.spec.path.resolve()]
+        except KeyError as exc:
+            raise ValueError("target-only design source is outside the sealed closure") from exc
+        return sync_existing_design_target_only(
+            inspection.spec,
+            client,
+            design_source=design_source,
+            overwrite=overwrite,
+            timeout=timeout,
+            quarantine_stale_locks=quarantine_stale_locks,
+            operation_id=operation_id,
+            bind_operation=bind_operation,
+        )
+    return sync_design(
         inspection.spec,
         client,
         overwrite=overwrite,
