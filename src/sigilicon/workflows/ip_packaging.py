@@ -13,7 +13,12 @@ import tomllib
 import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.artifacts import _inspect_nofollow_file, atomic_write_json, read_json_object
+from sigilicon.artifacts import (
+    SafeTree,
+    _inspect_nofollow_file,
+    atomic_write_json,
+    read_json_object,
+)
 from sigilicon.contracts import require_config_header
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
@@ -42,7 +47,12 @@ from sigilicon.domain.systemverilog import (
     named_port_connections,
 )
 from sigilicon.external_tools import ProcessRequest, managed_process, owned_directory
-from sigilicon.release_store import AuditedRelease, ReleaseRef, ReleaseStore
+from sigilicon.release_store import (
+    AuditedRelease,
+    ReleaseRef,
+    ReleaseStore,
+    audit_release_package,
+)
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
@@ -2288,73 +2298,13 @@ def _packaged_maturity_check(
 def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Audit an exact immutable package without consulting producer source."""
 
-    release_root = manifest_path.parent
-    if manifest_path.is_symlink() or release_root.is_symlink():
-        raise RuntimeError("IP release root and manifest cannot be symlinks")
-    with owned_directory(release_root, create_missing=False):
-        return _audit_ip_release_manifest(manifest_path)
-
-
-def _audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
-    release_root = manifest_path.parent
-    for path in release_root.rglob("*"):
-        if path.is_symlink():
-            raise RuntimeError(f"IP release cannot contain symlinks: {path}")
-    manifest = read_json_object(manifest_path, "IP release manifest")
-    if (
-        manifest.get("schema") != 2
-        or manifest.get("contract_kind") != "ip-release-manifest"
-    ):
-        raise RuntimeError("unsupported IP release manifest schema")
-    if manifest.get("release_kind") != "source-package":
-        raise RuntimeError("unsupported IP release kind")
-    release_root = release_root.resolve()
-    views = manifest.get("views")
-    if not isinstance(views, list) or not views:
-        raise RuntimeError("IP release views must be a non-empty list")
-    exports = _manifest_exports(manifest)
-    roles: set[tuple[str, str]] = set()
-    expected_files = {Path("manifest.json")}
-    for view in views:
-        if not isinstance(view, Mapping) or not isinstance(view.get("role"), str):
-            raise RuntimeError("IP release view entry is invalid")
-        role = str(view["role"])
-        export = view.get("export")
-        if not isinstance(export, str) or export not in exports:
-            raise RuntimeError(f"IP release view names an unknown export: {export}")
-        role_key = (export, role)
-        if role_key in roles:
-            raise RuntimeError(
-                f"IP release contains duplicate role: {export}/{role}"
-            )
-        roles.add(role_key)
-        relative = Path(str(view.get("path", "")))
-        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-            raise RuntimeError("IP release view path is unsafe")
-        path = (release_root / relative).resolve()
-        if not path.is_relative_to(release_root) or not path.is_file():
-            raise RuntimeError(f"IP release view is missing: {relative}")
-        digest = view.get("sha256")
-        metadata, actual_digest = _inspect_nofollow_file(path)
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-            or metadata.st_size != view.get("size")
-            or actual_digest != digest
-        ):
-            raise RuntimeError(f"IP release view content drifted: {relative}")
-        expected_files.add(relative)
-    actual_files = {
-        path.relative_to(release_root)
-        for path in release_root.rglob("*")
-        if path.is_file()
-    }
-    if actual_files != expected_files:
-        raise RuntimeError("IP release file inventory does not match its manifest")
-    _packaged_interface_check(manifest, manifest_path)
-    _packaged_maturity_check(manifest, manifest_path)
-    return manifest
+    first = audit_release_package(manifest_path)
+    _packaged_interface_check(first.manifest, first.manifest_path)
+    _packaged_maturity_check(first.manifest, first.manifest_path)
+    second = audit_release_package(manifest_path)
+    if dict(first.manifest) != dict(second.manifest):
+        raise RuntimeError("IP release changed during semantic audit")
+    return dict(second.manifest)
 
 
 def _audit_loaded_ip_release(
@@ -2408,21 +2358,22 @@ def _audit_loaded_ip_release(
     expected_views = {
         (item["export"], item["role"]): item for item in plan["collateral"]
     }
+    audited_views = {
+        (artifact.export, artifact.role): artifact
+        for artifact in audited.artifacts
+    }
     for view in views:
         if not isinstance(view, Mapping):
             raise RuntimeError("IP release view entry is invalid")
-        relative = Path(str(view.get("path", "")))
-        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-            raise RuntimeError("IP release view path is unsafe")
-        path = (release_root / relative).resolve()
-        if not path.is_relative_to(release_root.resolve()) or not path.is_file():
-            raise RuntimeError(f"IP release view is missing: {relative}")
         role = str(view.get("role"))
         export = str(view.get("export"))
         role_key = (export, role)
         expected_view = expected_views.get(role_key)
+        audited_view = audited_views.get(role_key)
         if (
             expected_view is None
+            or audited_view is None
+            or view.get("path") != audited_view.relative_path
             or view.get("path") != expected_view["package_path"]
             or any(
                 view.get(field) != expected_view.get(field)
@@ -2448,22 +2399,17 @@ def _audit_loaded_ip_release(
         Path("manifest.json"),
         *(Path(str(view["path"])) for view in views),
     }
-    actual_files: set[Path] = set()
-    for path in release_root.rglob("*"):
-        if path.is_symlink():
-            raise RuntimeError(f"IP release cannot contain symlinks: {path}")
-        if path.is_file():
-            relative = path.relative_to(release_root)
-            actual_files.add(relative)
-            if path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH):
-                raise RuntimeError(f"IP release file is writable: {relative}")
-        elif path.is_dir() and path.stat().st_mode & (
-            stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
-        ):
+    inventory = SafeTree(release_root).inventory()
+    writable = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    for relative, file in inventory.files.items():
+        if file.mode & writable:
+            raise RuntimeError(f"IP release file is writable: {relative}")
+    for relative, mode in inventory.directories.items():
+        if mode & writable:
             raise RuntimeError(
-                f"IP release directory is writable: {path.relative_to(release_root)}"
+                f"IP release directory is writable: {relative}"
             )
-    if actual_files != expected_files:
+    if set(inventory.files) != expected_files:
         raise RuntimeError("IP release file inventory does not match its manifest")
     return {
         **manifest,
@@ -2482,7 +2428,12 @@ def resolve_release_role(
     export: str,
 ) -> Path:
     view = release_role_view(manifest, role, export=export)
-    path = (manifest_path.parent / str(view.get("path"))).resolve()
-    if not path.is_relative_to(manifest_path.parent.resolve()) or not path.is_file():
-        raise RuntimeError(f"IP release role {export}/{role} is missing")
-    return path
+    try:
+        file = SafeTree(manifest_path.parent).file(
+            view.get("path"), f"IP release role {export}/{role}"
+        )
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"IP release role {export}/{role} is missing") from exc
+    if file.size != view.get("size") or file.sha256 != view.get("sha256"):
+        raise RuntimeError(f"IP release role {export}/{role} content drifted")
+    return file.path

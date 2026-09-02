@@ -73,6 +73,30 @@ def test_exact_release_audit_hashes_same_size_payload_tampering(
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
+def test_exact_release_audit_rejects_unknown_view_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_release(tmp_path / "release")
+    _skip_semantic_checks(monkeypatch)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["views"][0]["export"] = "undeclared"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="view metadata"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
+def test_exact_release_audit_rejects_unmanifested_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_release(tmp_path / "release")
+    _skip_semantic_checks(monkeypatch)
+    (manifest_path.parent / "extra.txt").write_text("extra\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="inventory"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
 def test_release_build_rejects_symlinked_namespace_ancestor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

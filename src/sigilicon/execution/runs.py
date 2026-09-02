@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import os
 from pathlib import Path
-import stat
 from typing import Any, Mapping
 
 from sigilicon.artifacts import (
-    _open_nofollow_directory,
+    SafeTree,
     load_manifest,
     read_json_object,
     read_nofollow_text,
@@ -33,66 +31,6 @@ from sigilicon.paths import ArtifactLayout, RunPaths
 
 class RunStoreError(ValueError):
     """A requested run is missing, unsafe, or internally inconsistent."""
-
-
-def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
-    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
-
-
-def _clear_directory(descriptor: int) -> None:
-    """Remove a held directory tree without resolving any pathname."""
-
-    os.fchmod(descriptor, 0o700)
-    for name in os.listdir(descriptor):
-        visible = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-        if stat.S_ISDIR(visible.st_mode):
-            child = os.open(
-                name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                dir_fd=descriptor,
-            )
-            try:
-                held = os.fstat(child)
-                if not _same_inode(visible, held):
-                    raise RunStoreError("run directory changed while cleaning")
-                _clear_directory(child)
-                current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                if not _same_inode(held, current):
-                    raise RunStoreError("run directory changed while cleaning")
-                os.rmdir(name, dir_fd=descriptor)
-            finally:
-                os.close(child)
-        else:
-            os.unlink(name, dir_fd=descriptor)
-
-
-def _remove_nofollow_tree(root: Path, expected: os.stat_result) -> None:
-    """Remove exactly *expected* below held no-follow parent and root fds."""
-
-    parent = _open_nofollow_directory(root.parent, create_missing=False)
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            root.name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-            dir_fd=parent,
-        )
-        held = os.fstat(descriptor)
-        visible = os.stat(root.name, dir_fd=parent, follow_symlinks=False)
-        if not _same_inode(expected, held) or not _same_inode(held, visible):
-            raise RunStoreError("run root changed while cleaning")
-        _clear_directory(descriptor)
-        visible = os.stat(root.name, dir_fd=parent, follow_symlinks=False)
-        if not _same_inode(held, visible):
-            raise RunStoreError("run root changed while cleaning")
-        os.rmdir(root.name, dir_fd=parent)
-        os.fsync(parent)
-    except OSError as exc:
-        raise RunStoreError(f"could not safely clean execution run: {exc}") from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        os.close(parent)
 
 
 @dataclass(frozen=True)
@@ -164,28 +102,26 @@ class RunStore:
             relative = Path(value)
             allowed.add(relative)
             allowed.update(parent for parent in relative.parents if parent != Path("."))
-        actual = {path.relative_to(root) for path in root.rglob("*")}
+        try:
+            inventory = SafeTree(root).inventory()
+        except (OSError, RuntimeError) as exc:
+            raise RunStoreError(
+                f"run filesystem inventory is unsafe: {exc}"
+            ) from exc
+        actual = set(inventory.files) | set(inventory.directories)
         if actual != allowed:
             raise RunStoreError("run filesystem inventory disagrees with its manifest")
         for value, reference in references.items():
-            path = root / value
-            if path.resolve() != path.absolute() or path.is_symlink():
-                raise RunStoreError("run manifest references an unsafe filesystem member")
+            relative = Path(value)
             if reference["kind"] == "file":
-                metadata = path.stat(follow_symlinks=False)
-                digest = hashlib.sha256(
-                    read_nofollow_text(path, errors="surrogateescape").encode(
-                        "utf-8", errors="surrogateescape"
-                    )
-                ).hexdigest()
+                file = inventory.files.get(relative)
                 if (
-                    not path.is_file()
-                    or metadata.st_nlink != 1
-                    or metadata.st_size != reference["size"]
-                    or digest != reference.get("sha256")
+                    file is None
+                    or file.size != reference["size"]
+                    or file.sha256 != reference.get("sha256")
                 ):
                     raise RunStoreError("run file metadata disagrees with its manifest")
-            elif not path.is_dir():
+            elif relative not in inventory.directories:
                 raise RunStoreError("run directory metadata disagrees with its manifest")
 
     def _manifest(
@@ -421,8 +357,12 @@ class RunStore:
             raise RunStoreError("persisted runtime resources are not canonical")
         if expected_members:
             try:
-                actual_members = set(os.listdir(resource_root))
-            except OSError as exc:
+                inventory = SafeTree(resource_root).inventory()
+                actual_members = {
+                    path.parts[0]
+                    for path in (*inventory.files, *inventory.directories)
+                }
+            except (OSError, RuntimeError) as exc:
                 raise RunStoreError(
                     "persisted runtime resource closure is missing"
                 ) from exc
@@ -543,15 +483,17 @@ class RunStore:
         root = selected.paths.root
         try:
             expected = root.stat(follow_symlinks=False)
-        except OSError as exc:
+            tree = SafeTree(root)
+        except (OSError, RuntimeError) as exc:
             raise RunStoreError(f"missing execution run: {run_id}") from exc
-        if not stat.S_ISDIR(expected.st_mode):
-            raise RunStoreError(f"missing or unsafe execution run: {run_id}")
         manifest = self._manifest(selected)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
             self._records(selected)
         self._validate_inventory(selected.paths, manifest)
-        _remove_nofollow_tree(root, expected)
+        try:
+            tree.remove(expected)
+        except (OSError, RuntimeError) as exc:
+            raise RunStoreError(f"could not safely clean execution run: {exc}") from exc
 
 
 __all__ = ["RunStore", "RunStoreError"]

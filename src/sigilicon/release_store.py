@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-import hashlib
-import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
-import stat
 from types import MappingProxyType
 from typing import Any
 
-from sigilicon.artifacts import _inspect_nofollow_file, _read_nofollow_bytes
+from sigilicon.artifacts import (
+    SafeTree,
+    _inspect_nofollow_file,
+    read_json_object,
+)
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 
@@ -78,6 +79,109 @@ class AuditedRelease:
         return artifact
 
 
+@dataclass(frozen=True)
+class ReleasePackage:
+    """One structurally audited release manifest and its exact file closure."""
+
+    manifest_path: Path
+    manifest: Mapping[str, Any]
+    artifacts: tuple[ReleaseArtifact, ...]
+
+
+def audit_release_package(
+    manifest_path: Path,
+    *,
+    manifest_sha256: str | None = None,
+) -> ReleasePackage:
+    """Audit the common release schema, paths, digests, and exact inventory."""
+
+    path = Path(manifest_path).absolute()
+    if path.name != "manifest.json":
+        raise RuntimeError("release package manifest must be named manifest.json")
+    tree = SafeTree(path.parent)
+    try:
+        tree.file("manifest.json", "release package manifest")
+    except (OSError, RuntimeError) as exc:
+        raise FileNotFoundError(f"release package manifest is missing: {path}") from exc
+    manifest = read_json_object(
+        path,
+        "release package manifest",
+        sha256=manifest_sha256,
+    )
+    if (
+        manifest.get("schema") != 2
+        or manifest.get("contract_kind") != "ip-release-manifest"
+        or manifest.get("release_kind") != "source-package"
+    ):
+        raise RuntimeError("release package manifest identity is invalid")
+    raw_exports = manifest.get("exports")
+    if not isinstance(raw_exports, list) or not raw_exports:
+        raise RuntimeError("release package manifest has no exports")
+    exports: set[str] = set()
+    for row in raw_exports:
+        name = row.get("name") if isinstance(row, Mapping) else None
+        if not isinstance(name, str) or not name or name in exports:
+            raise RuntimeError("release package export identities are invalid")
+        exports.add(name)
+    views = manifest.get("views")
+    if not isinstance(views, list) or not views:
+        raise RuntimeError("release package manifest has no views")
+    artifacts: list[ReleaseArtifact] = []
+    identities: set[tuple[str, str]] = set()
+    expected_files = {Path("manifest.json")}
+    for row in views:
+        if not isinstance(row, Mapping):
+            raise RuntimeError("release package view entry is invalid")
+        export = row.get("export")
+        role = row.get("role")
+        relative_text = row.get("path")
+        digest = row.get("sha256")
+        size = row.get("size")
+        if (
+            not isinstance(export, str)
+            or export not in exports
+            or not isinstance(role, str)
+            or not role
+            or not isinstance(relative_text, str)
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or type(size) is not int
+            or size < 0
+        ):
+            raise RuntimeError("release package view metadata is invalid")
+        identity = (export, role)
+        if identity in identities:
+            raise RuntimeError(
+                f"release package contains duplicate role: {export}/{role}"
+            )
+        identities.add(identity)
+        try:
+            file = tree.file(relative_text, "release package view path")
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"release package view is missing, symlinked, or unsafe: {relative_text}"
+            ) from exc
+        if file.size != size or file.sha256 != digest:
+            raise RuntimeError(
+                f"release package view content drifted: {relative_text}"
+            )
+        artifacts.append(
+            ReleaseArtifact(export, role, file.path, relative_text, digest, size)
+        )
+        expected_files.add(file.relative)
+    try:
+        actual_files = set(tree.inventory().files)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"release package is unsafe: {exc}") from exc
+    if actual_files != expected_files:
+        raise RuntimeError("release package inventory disagrees with its manifest")
+    return ReleasePackage(
+        path,
+        MappingProxyType(manifest),
+        tuple(artifacts),
+    )
+
+
 class ReleaseStore:
     """Open exact immutable packages without exposing storage layout to consumers."""
 
@@ -112,100 +216,34 @@ class ReleaseStore:
 
     def _audit(self, ref: ReleaseRef) -> AuditedRelease:
         root = self.object_root(ref)
-        manifest_path = root / "manifest.json"
         try:
-            manifest_bytes = _read_nofollow_bytes(manifest_path)
-        except (OSError, RuntimeError) as exc:
+            package = audit_release_package(
+                root / "manifest.json",
+                manifest_sha256=ref.manifest_sha256,
+            )
+        except FileNotFoundError as exc:
             raise FileNotFoundError(
                 f"release store {ref.store!r} has no object {ref.object!r}"
             ) from exc
-        if hashlib.sha256(manifest_bytes).hexdigest() != ref.manifest_sha256:
-            raise RuntimeError("release store object digest disagrees with its lock")
-        try:
-            manifest = json.loads(manifest_bytes)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("release store manifest is invalid JSON") from exc
-        if not isinstance(manifest, dict):
-            raise RuntimeError("release store manifest must be a JSON object")
-        if (
-            manifest.get("schema") != 2
-            or manifest.get("contract_kind") != "ip-release-manifest"
-            or manifest.get("release_kind") != "source-package"
-        ):
-            raise RuntimeError("release store manifest identity is invalid")
-        views = manifest.get("views")
-        if not isinstance(views, list) or not views:
-            raise RuntimeError("release store manifest has no views")
-        artifacts: list[ReleaseArtifact] = []
-        identities: set[tuple[str, str]] = set()
-        expected_files = {PurePosixPath("manifest.json")}
-        for row in views:
-            if not isinstance(row, Mapping):
-                raise RuntimeError("release store view entry is invalid")
-            export = row.get("export")
-            role = row.get("role")
-            relative_text = row.get("path")
-            digest = row.get("sha256")
-            size = row.get("size")
-            if (
-                not isinstance(export, str)
-                or not export
-                or not isinstance(role, str)
-                or not role
-                or not isinstance(relative_text, str)
-                or not isinstance(digest, str)
-                or _SHA256.fullmatch(digest) is None
-                or type(size) is not int
-                or size < 0
-            ):
-                raise RuntimeError("release store view metadata is invalid")
-            identity = (export, role)
-            if identity in identities:
-                raise RuntimeError(
-                    f"release store contains duplicate role: {export}/{role}"
-                )
-            identities.add(identity)
-            relative = PurePosixPath(relative_text)
-            if (
-                relative.is_absolute()
-                or relative.as_posix() != relative_text
-                or any(part in {"", ".", ".."} for part in relative.parts)
-            ):
-                raise RuntimeError("release store view path is unsafe")
-            path = root.joinpath(*relative.parts)
-            if path.absolute() != path or path.resolve() != path:
-                raise RuntimeError("release store view traverses a symlink")
-            try:
-                metadata, actual_digest = _inspect_nofollow_file(path)
-            except (OSError, RuntimeError) as exc:
-                raise RuntimeError(
-                    f"release store view is missing or unsafe: {relative_text}"
+        except (OSError, RuntimeError) as exc:
+            if not root.is_dir():
+                raise FileNotFoundError(
+                    f"release store {ref.store!r} has no object {ref.object!r}"
                 ) from exc
-            if metadata.st_size != size or actual_digest != digest:
-                raise RuntimeError(
-                    f"release store view content drifted: {relative_text}"
-                )
-            artifacts.append(
-                ReleaseArtifact(export, role, path, relative_text, digest, size)
-            )
-            expected_files.add(relative)
-        actual_files: set[PurePosixPath] = set()
-        for path in root.rglob("*"):
-            metadata = path.stat(follow_symlinks=False)
-            if stat.S_ISLNK(metadata.st_mode):
-                raise RuntimeError("release store object cannot contain symlinks")
-            if stat.S_ISREG(metadata.st_mode):
-                actual_files.add(PurePosixPath(path.relative_to(root).as_posix()))
-            elif not stat.S_ISDIR(metadata.st_mode):
-                raise RuntimeError("release store object contains an unsupported entry")
-        if actual_files != expected_files:
-            raise RuntimeError("release store inventory disagrees with its manifest")
+            raise
         return AuditedRelease(
             ref,
-            manifest_path,
-            MappingProxyType(manifest),
-            tuple(artifacts),
+            package.manifest_path,
+            package.manifest,
+            package.artifacts,
         )
 
 
-__all__ = ["AuditedRelease", "ReleaseArtifact", "ReleaseRef", "ReleaseStore"]
+__all__ = [
+    "AuditedRelease",
+    "ReleaseArtifact",
+    "ReleasePackage",
+    "ReleaseRef",
+    "ReleaseStore",
+    "audit_release_package",
+]

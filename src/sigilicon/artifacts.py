@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from sigilicon.paths import (
@@ -256,9 +257,19 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
         os.close(parent_fd)
 
 
-def read_json_object(path: Path, label: str) -> dict[str, Any]:
+def read_json_object(
+    path: Path,
+    label: str,
+    *,
+    sha256: str | None = None,
+) -> dict[str, Any]:
+    """Decode one stable JSON object, optionally requiring its byte digest."""
+
     try:
-        value = json.loads(_read_nofollow_bytes(path).decode("utf-8"))
+        payload = _read_nofollow_bytes(path)
+        if sha256 is not None and hashlib.sha256(payload).hexdigest() != sha256:
+            raise ArtifactManifestError(f"{label} digest disagrees with its locator")
+        value = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError) as exc:
         raise ArtifactManifestError(f"cannot read {label} {path}: {exc}") from exc
     if not isinstance(value, dict):
@@ -283,6 +294,140 @@ def ensure_nofollow_directory(path: Path) -> Path:
     descriptor = _open_nofollow_directory(absolute, create_missing=True)
     os.close(descriptor)
     return absolute
+
+
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _clear_held_directory(descriptor: int) -> None:
+    os.fchmod(descriptor, 0o700)
+    for name in os.listdir(descriptor):
+        visible = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(visible.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            try:
+                held = os.fstat(child)
+                if not _same_inode(visible, held):
+                    raise RuntimeError("directory changed while removing safe tree")
+                _clear_held_directory(child)
+                current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not _same_inode(held, current):
+                    raise RuntimeError("directory changed while removing safe tree")
+                os.rmdir(name, dir_fd=descriptor)
+            finally:
+                os.close(child)
+        else:
+            os.unlink(name, dir_fd=descriptor)
+
+
+@dataclass(frozen=True)
+class SafeFile:
+    """One stable, single-link regular file inside a no-follow tree."""
+
+    relative: Path
+    path: Path
+    mode: int
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class SafeTreeInventory:
+    files: Mapping[Path, SafeFile]
+    directories: Mapping[Path, int]
+
+
+@dataclass(frozen=True)
+class SafeTree:
+    """Inspect or remove one exact tree without accepting path indirection."""
+
+    root: Path
+
+    def __post_init__(self) -> None:
+        root = Path(os.path.abspath(self.root))
+        descriptor = _open_nofollow_directory(root, create_missing=False)
+        os.close(descriptor)
+        object.__setattr__(self, "root", root)
+
+    def path(self, value: object, label: str = "tree member") -> Path:
+        relative = _safe_manifest_relative(value, label)
+        return _resolved_artifact_member(self.root, self.root / relative, label)
+
+    def file(self, value: object, label: str = "tree file") -> SafeFile:
+        path = self.path(value, label)
+        metadata, digest = _inspect_nofollow_file(path)
+        return SafeFile(
+            path.relative_to(self.root),
+            path,
+            metadata.st_mode,
+            metadata.st_size,
+            digest,
+        )
+
+    def inventory(self) -> SafeTreeInventory:
+        files: dict[Path, SafeFile] = {}
+        directories: dict[Path, int] = {}
+        for path in self.root.rglob("*"):
+            relative = path.relative_to(self.root)
+            metadata = path.stat(follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise RuntimeError(f"safe tree cannot contain symlinks: {relative}")
+            if stat.S_ISREG(metadata.st_mode):
+                inspected, digest = _inspect_nofollow_file(path)
+                files[relative] = SafeFile(
+                    relative,
+                    path,
+                    inspected.st_mode,
+                    inspected.st_size,
+                    digest,
+                )
+            elif stat.S_ISDIR(metadata.st_mode):
+                descriptor = _open_nofollow_directory(path, create_missing=False)
+                os.close(descriptor)
+                directories[relative] = metadata.st_mode
+            else:
+                raise RuntimeError(
+                    f"safe tree contains an unsupported entry: {relative}"
+                )
+        return SafeTreeInventory(
+            MappingProxyType(files),
+            MappingProxyType(directories),
+        )
+
+    def remove(self, expected: os.stat_result) -> None:
+        """Remove the expected root through held parent/root descriptors."""
+
+        parent = _open_nofollow_directory(self.root.parent, create_missing=False)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                self.root.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+            held = os.fstat(descriptor)
+            visible = os.stat(
+                self.root.name, dir_fd=parent, follow_symlinks=False
+            )
+            if not _same_inode(expected, held) or not _same_inode(held, visible):
+                raise RuntimeError("safe tree root changed while removing")
+            _clear_held_directory(descriptor)
+            visible = os.stat(
+                self.root.name, dir_fd=parent, follow_symlinks=False
+            )
+            if not _same_inode(held, visible):
+                raise RuntimeError("safe tree root changed while removing")
+            os.rmdir(self.root.name, dir_fd=parent)
+            os.fsync(parent)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(parent)
 
 
 def copy_immutable_file(source: Path, destination: Path) -> Path:
