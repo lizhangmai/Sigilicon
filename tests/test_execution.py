@@ -320,7 +320,8 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert not project.artifact_root.exists()
 
     operations.write_text(operations.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    assert project.preflight(plan).status == "blocked"
+    with pytest.raises(ContractError, match="another project composition"):
+        project.preflight(plan)
 
 
 def test_project_plan_is_independent_of_runtime_resources(
@@ -768,6 +769,37 @@ def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
         project.run(plan, run_id="2" * 32)
 
 
+def test_adapter_defects_propagate_from_preflight(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class BrokenAdapter(CopyAdapter):
+        def preflight(self, step, resources):
+            raise TypeError("broken preflight implementation")
+
+    project = _project(tmp_path, BrokenAdapter())
+
+    with pytest.raises(TypeError, match="broken preflight implementation"):
+        project.preflight(_plan(project, "example:check"))
+
+
+def test_adapter_defects_propagate_after_terminalizing_the_run(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class BrokenAdapter(CopyAdapter):
+        def run(self, context: StepContext, step: Step) -> StepResult:
+            raise RuntimeError("broken run implementation")
+
+    project = _project(tmp_path, BrokenAdapter())
+    run_id = "0" * 32
+
+    with pytest.raises(RuntimeError, match="broken run implementation"):
+        project.run(_plan(project, "example:check"), run_id=run_id)
+
+    failure = _read_run(project, "example:check", run_id)
+    assert failure.record["contract_kind"] == "run-failure"
+    assert failure.error_type == "RuntimeError"
+
+
 def test_adapter_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
     _write_project(tmp_path)
     source = tmp_path / "ip/example/configs/value.txt"
@@ -1024,7 +1056,8 @@ def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:
     plan = _plan(project, "example:check")
     forged = replace(plan, project_identity="sha256-" + "0" * 64)
 
-    assert project.preflight(forged).status == "blocked"
+    with pytest.raises(ContractError, match="another project composition"):
+        project.preflight(forged)
 
 
 def test_project_adapter_registry_cannot_be_injected_through_replace(
@@ -1047,11 +1080,8 @@ def test_project_rejects_composition_source_drift(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    checked = project.preflight(plan)
-    assert checked.status == "blocked"
-    assert checked.checks[0].kind == "plan"
-    assert checked.checks[0].subject == "example"
-    assert "project manifest snapshot source document drift" in checked.checks[0].detail
+    with pytest.raises(ValueError, match="project manifest snapshot source document drift"):
+        project.preflight(plan)
 
 
 def test_project_rejects_owner_python_registration_fields_without_importing(

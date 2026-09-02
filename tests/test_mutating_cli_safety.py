@@ -184,14 +184,25 @@ def test_public_mutating_clis_delegate_to_application_workflows(
         "sigilicon.cli.close_cell.close_cell",
         record("close-cell", WindowCloseResult(0, 0)),
     )
-    assert open_cell_main(["design", "top", "symbol"], client_factory=object) == 0
-    assert close_cell_main(["design", "top", "symbol"], client_factory=object) == 0
+    clients: list[object] = []
+
+    def client_factory(resources):
+        clients.append(resources)
+        return object()
+
+    assert open_cell_main(
+        ["design", "top", "symbol"], client_factory=client_factory
+    ) == 0
+    assert close_cell_main(
+        ["design", "top", "symbol"], client_factory=client_factory
+    ) == 0
     assert [name for name, _args, _kwargs in events] == [
         "open-cell",
         "close-cell",
     ]
     assert events[0][1][2:] == ("design", "top", "symbol")
     assert events[1][1][2:] == ("design", "top", "symbol")
+    assert len(clients) == 2
 
 
 def test_close_cell_skill_uses_exact_cellview_identity_and_escaping(

@@ -14,7 +14,9 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from sigilicon.cli.common import die
-from sigilicon.paths import ProjectContext, discover_project_context
+from sigilicon.execution.model import Resources
+from sigilicon.paths import discover_project_context
+from sigilicon.project import Project
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.virtuoso_operations import open_project_cell
 
@@ -22,7 +24,7 @@ from sigilicon.workflows.virtuoso_operations import open_project_cell
 def main(
     argv: Sequence[str] | None = None,
     *,
-    client_factory: Callable[[], Any] = get_client,
+    client_factory: Callable[[Resources], Any] = get_client,
 ) -> int:
     p = argparse.ArgumentParser(description="打开 cell 窗口")
     p.add_argument("lib")
@@ -37,8 +39,9 @@ def main(
 
     try:
         paths = discover_project_context(__file__)
+        resources = Project.open(paths.project_root)._execution_resources()
         open_project_cell(
-            client_factory(),
+            client_factory(resources),
             paths,
             args.lib,
             args.cell,

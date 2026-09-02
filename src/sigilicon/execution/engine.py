@@ -83,24 +83,12 @@ def _preflight(
             )
             continue
         checks.append(PreflightCheck("adapter", step.uses, "ready", step.id))
-        try:
-            adapter_checks = adapter.preflight(step, resources)
-            if not isinstance(adapter_checks, tuple) or any(
-                not isinstance(check, PreflightCheck) for check in adapter_checks
-            ):
-                raise TypeError("adapter preflight must return PreflightCheck values")
-            checks.extend(adapter_checks)
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as exc:
-            checks.append(
-                PreflightCheck(
-                    "adapter-preflight",
-                    step.uses,
-                    "blocked",
-                    f"{type(exc).__name__}: {exc}",
-                )
-            )
+        adapter_checks = adapter.preflight(step, resources)
+        if not isinstance(adapter_checks, tuple) or any(
+            not isinstance(check, PreflightCheck) for check in adapter_checks
+        ):
+            raise TypeError("adapter preflight must return PreflightCheck values")
+        checks.extend(adapter_checks)
     return PreflightResult(plan.identity, tuple(checks))
 
 
@@ -383,11 +371,9 @@ def _run(
                     raise
                 except Exception as exc:
                     uncertainty = process_group_cleanup_uncertainty(exc)
-                    result = (
-                        StepResult.uncertain(uncertainty)
-                        if uncertainty is not None
-                        else StepResult.failed(f"{type(exc).__name__}: {exc}")
-                    )
+                    if uncertainty is None:
+                        raise
+                    result = StepResult.uncertain(uncertainty)
                 published = {artifact.path for artifact in result.artifacts}
                 actual_outputs = {
                     path.absolute()

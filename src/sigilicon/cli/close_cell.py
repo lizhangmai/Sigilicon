@@ -16,7 +16,9 @@ import argparse
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from sigilicon.paths import ProjectContext, discover_project_context
+from sigilicon.execution.model import Resources
+from sigilicon.paths import discover_project_context
+from sigilicon.project import Project
 from sigilicon.cli.common import add_json_arg, die, emit_json
 from sigilicon.virtuoso.client import get_client
 from sigilicon.workflows.virtuoso_operations import close_cell
@@ -25,7 +27,7 @@ from sigilicon.workflows.virtuoso_operations import close_cell
 def main(
     argv: Sequence[str] | None = None,
     *,
-    client_factory: Callable[[], Any] = get_client,
+    client_factory: Callable[[Resources], Any] = get_client,
 ) -> int:
     p = argparse.ArgumentParser(description="关闭 cell 窗口（先存盘再关）")
     p.add_argument("lib")
@@ -36,7 +38,8 @@ def main(
 
     try:
         paths = discover_project_context(__file__)
-        client = client_factory()
+        resources = Project.open(paths.project_root)._execution_resources()
+        client = client_factory(resources)
         result = close_cell(client, paths, args.lib, args.cell, args.view)
     except Exception as exc:  # noqa: BLE001
         die(f"关窗口失败：{exc}")

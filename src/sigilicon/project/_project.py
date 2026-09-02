@@ -263,35 +263,13 @@ class Project:
         """Check a plan without creating a run or starting a backend."""
 
         from sigilicon.execution.engine import _preflight
-        from sigilicon.execution.model import (
-            ExecutionPlan,
-            PreflightCheck,
-            PreflightResult,
-        )
+        from sigilicon.execution.model import ExecutionPlan
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
         resources = self._execution_resources()
-        phase = "plan"
-        try:
-            self._require_project_plan(plan)
-            phase = "preflight"
-            checked = _preflight(plan, resources, self._adapters())
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as exc:
-            checked = PreflightResult(
-                plan.identity,
-                (
-                    PreflightCheck(
-                        phase,
-                        plan.owner,
-                        "blocked",
-                        f"{type(exc).__name__}: {exc}",
-                    ),
-                ),
-            )
-        return checked
+        self._require_project_plan(plan)
+        return _preflight(plan, resources, self._adapters())
 
     def run(
         self,
