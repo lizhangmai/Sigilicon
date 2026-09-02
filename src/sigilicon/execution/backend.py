@@ -8,10 +8,10 @@ from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from sigilicon.execution.model import (
+    BoundExecution,
     ContractError,
     ExternalResource,
     PreflightCheck,
-    OperationPlan,
     Operation,
     Step,
     Resources,
@@ -100,25 +100,37 @@ class BackendRegistry(Mapping[str, Backend]):
         return len(self._values)
 
 
-def prepare_plan(
-    plan: OperationPlan,
+def bind_execution(
+    plan: ExecutionPlan,
     *,
     project: Any,
     backends: BackendRegistry,
     resources: Resources,
-) -> ExecutionPlan:
-    """Prepare every operation Step into an authorized portable request."""
+) -> BoundExecution:
+    """Bind a portable plan to exact runtime resources for one invocation."""
 
     if not isinstance(resources, Resources):
-        raise TypeError("prepare_plan resources must be Resources")
+        raise TypeError("bind_execution resources must be Resources")
 
-    captured = {(source.root, source.path): source for source in plan.sources}
-    captured_names = {source.path: source.root for source in plan.sources}
-    captured_resources: dict[str, ExternalResource] = {}
-    steps = []
     owner_root = project.owner(plan.owner).root.resolve()
     project_root = project.project_root.resolve()
-    for step in plan.operations:
+    bound_sources = tuple(
+        reference.bind({"owner": owner_root, "project": project_root})
+        for reference in plan.sources
+    )
+    captured = {(source.root, source.path): source for source in bound_sources}
+    captured_names = {source.path: source.root for source in bound_sources}
+    captured_resources: dict[str, ExternalResource] = {}
+    steps = []
+    for portable_step in plan.steps:
+        step = Operation(
+            portable_step.id,
+            portable_step.uses,
+            portable_step.request,
+            portable_step.needs,
+            portable_step.sources,
+            portable_step.evidence,
+        )
         try:
             backend = backends[step.uses]
         except KeyError as exc:
@@ -223,11 +235,8 @@ def prepare_plan(
                 )
             captured_resources[resource.identity] = resource
         steps.append(replace(prepared, sources=tuple(source_names)))
-    return ExecutionPlan(
-        project_identity=plan.project_identity,
-        owner=plan.owner,
-        operation=plan.operation,
-        variant=plan.variant,
+    return BoundExecution(
+        plan=plan,
         steps=tuple(steps),
         sources=tuple(captured.values()),
         resources_identity=resources.identity,
@@ -237,4 +246,4 @@ def prepare_plan(
     )
 
 
-__all__ = ["Backend", "BackendRegistry", "Preparation", "prepare_plan"]
+__all__ = ["Backend", "BackendRegistry", "Preparation", "bind_execution"]

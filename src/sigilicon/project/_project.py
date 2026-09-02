@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-import hmac
 import hashlib
 from pathlib import Path, PurePosixPath
-import secrets
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.canonical import canonical_digest, canonical_json
+from sigilicon.canonical import canonical_digest
 from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
@@ -108,11 +106,6 @@ class Project:
         repr=False,
         compare=False,
     )
-    _plan_key: bytes = field(
-        default_factory=lambda: secrets.token_bytes(32),
-        repr=False,
-        compare=False,
-    )
     _backend_registry: BackendRegistry | None = field(
         default=None,
         init=False,
@@ -147,22 +140,27 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
-    def plan(self, selector: str, resources: Resources) -> ExecutionPlan:
-        """Compile one canonical ``owner:operation[@variant]`` selector."""
+    def plan(self, selector: str | Mapping[str, Any]) -> ExecutionPlan:
+        """Compile a selector or restore its canonical portable plan record."""
 
-        from sigilicon.execution.backend import prepare_plan
-        from sigilicon.execution.model import Resources
+        from sigilicon.execution.model import ExecutionPlan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
-        if not isinstance(resources, Resources):
-            raise TypeError("Project.plan resources must be Resources")
+        if isinstance(selector, Mapping):
+            owner_name = selector.get("owner")
+            if not isinstance(owner_name, str):
+                raise ValueError("execution plan record must identify its owner")
+            self.owner(owner_name)
+            return ExecutionPlan.from_record(selector)
+        if not isinstance(selector, str):
+            raise TypeError("Project.plan requires a selector or execution plan record")
         owner_name, operation, variant = parse_selector(selector)
         owner = self.owner(owner_name)
         relative = owner.component.operation_catalog
         if relative is None:
             raise ValueError(f"owner {owner.name!r} has no operation catalog")
         catalog = self.project_root.joinpath(*relative.parts).absolute()
-        plan = compile_operation(
+        return compile_operation(
             catalog,
             owner=owner.name,
             owner_root=owner.root,
@@ -172,20 +170,6 @@ class Project:
             variant=variant,
             project_identity=self.identity,
         )
-        plan = prepare_plan(
-            plan,
-            project=self,
-            backends=self._backends(),
-            resources=resources,
-        )
-        return replace(plan, _authorization=self._authorize_plan(plan))
-
-    def _authorize_plan(self, plan: ExecutionPlan) -> str:
-        return hmac.new(
-            self._plan_key,
-            canonical_json(plan.record).encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
 
     def preflight(
         self,
@@ -194,6 +178,7 @@ class Project:
     ) -> PreflightResult:
         """Check a plan without creating a run or starting a backend."""
 
+        from sigilicon.execution.backend import bind_execution
         from sigilicon.execution.engine import _preflight
         from sigilicon.execution.model import (
             ExecutionPlan,
@@ -206,27 +191,32 @@ class Project:
             raise TypeError("Project.preflight requires an ExecutionPlan")
         if not isinstance(resources, Resources):
             raise TypeError("Project.preflight resources must be Resources")
-        self._require_canonical_plan(plan, require_current=False)
-        self._require_plan_resources(plan, resources)
-        checked = _preflight(
-            plan,
-            resources,
-            self._backends(),
-        )
-        if plan.project_identity == self.identity:
-            return checked
-        return PreflightResult(
-            checked.plan_identity,
-            (
-                PreflightCheck(
-                    "project",
-                    plan.owner,
-                    "blocked",
-                    "project composition changed after planning",
+        phase = "plan"
+        try:
+            self._require_canonical_plan(plan)
+            phase = "runtime-binding"
+            bound = bind_execution(
+                plan,
+                project=self,
+                backends=self._backends(),
+                resources=resources,
+            )
+            checked = _preflight(bound, resources, self._backends())
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            checked = PreflightResult(
+                plan.identity,
+                (
+                    PreflightCheck(
+                        phase,
+                        plan.owner,
+                        "blocked",
+                        f"{type(exc).__name__}: {exc}",
+                    ),
                 ),
-                *checked.checks,
-            ),
-        )
+            )
+        return checked
 
     def run(
         self,
@@ -238,6 +228,7 @@ class Project:
     ) -> RunResult:
         """Execute one source-current plan through its selected backends."""
 
+        from sigilicon.execution.backend import bind_execution
         from sigilicon.execution.engine import _run
         from sigilicon.execution.model import ExecutionPlan, Resources
 
@@ -246,9 +237,14 @@ class Project:
         if not isinstance(resources, Resources):
             raise TypeError("Project.run resources must be Resources")
         self._require_canonical_plan(plan)
-        self._require_plan_resources(plan, resources)
-        return _run(
+        bound = bind_execution(
             plan,
+            project=self,
+            backends=self._backends(),
+            resources=resources,
+        )
+        return _run(
+            bound,
             resources,
             self._backends(),
             artifact_root=self.artifact_root,
@@ -259,41 +255,20 @@ class Project:
             progress=progress,
         )
 
-    @staticmethod
-    def _require_plan_resources(plan: ExecutionPlan, resources: Resources) -> None:
-        if resources.identity != plan.resources_identity:
-            raise ValueError(
-                "execution plan was prepared for different runtime resources"
-            )
-
     def _require_canonical_plan(
         self,
         plan: ExecutionPlan,
-        *,
-        require_current: bool = True,
     ) -> None:
         """Reject plans not compiled from this Project's current owner contract."""
 
-        expected = self._authorize_plan(replace(plan, _authorization=""))
-        if not hmac.compare_digest(plan._authorization, expected):
-            raise ValueError("execution plan was not authorized by this Project")
-        owner = self.owner(plan.owner)
-        for source in plan.sources:
-            if source.scope == "owner":
-                valid = source.root == owner.root
-            elif source.scope == "project":
-                valid = source.root == self.project_root and not any(
-                    source.location.is_relative_to(candidate.root)
-                    for candidate in self.owners
-                )
-            else:
-                valid = False
-            if not valid:
-                raise ValueError(
-                    "execution plan contains a source outside its owner/shared roots"
-                )
-        if require_current and plan.project_identity != self.identity:
-            raise ValueError("execution plan belongs to a different Project composition")
+        selector = f"{plan.owner}:{plan.operation}" + (
+            "" if plan.variant is None else f"@{plan.variant}"
+        )
+        current = self.plan(selector)
+        if plan.record != current.record:
+            raise ValueError(
+                "execution plan does not match the current owner operation contract"
+            )
 
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:

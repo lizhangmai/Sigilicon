@@ -11,9 +11,11 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.execution.model import (
     ContractError,
     Evidence,
-    OperationPlan,
+    ExecutionPlan,
     Operation,
     Source,
+    SourceRef,
+    Step,
 )
 from sigilicon.paths import validate_artifact_component
 
@@ -170,7 +172,7 @@ def compile_operation(
     component_filesets: Mapping[str, tuple[PurePosixPath, ...]],
     operation: str,
     variant: str | None = None,
-) -> OperationPlan:
+) -> ExecutionPlan:
     """Compile ``owner:operation[@variant]`` from one owner catalog."""
 
     path = Path(catalog_path).absolute()
@@ -280,13 +282,17 @@ def compile_operation(
     for _step_value, sources in compiled:
         for source in sources:
             unique_sources.setdefault(source.path, source)
-    return OperationPlan(
-        project_identity,
-        owner,
-        operation_name,
-        variant_name,
-        tuple(step for step, _sources in compiled),
-        tuple(unique_sources.values()),
+    return ExecutionPlan(
+        project_identity=project_identity,
+        owner=owner,
+        operation=operation_name,
+        variant=variant_name,
+        steps=tuple(
+            Step.from_operation(step) for step, _sources in compiled
+        ),
+        sources=tuple(
+            SourceRef.from_source(source) for source in unique_sources.values()
+        ),
     )
 
 

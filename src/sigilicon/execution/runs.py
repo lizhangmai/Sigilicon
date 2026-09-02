@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
-import re
 import stat
 from typing import Any, Mapping
 
@@ -16,10 +15,10 @@ from sigilicon.artifacts import (
     read_json_object,
     read_nofollow_text,
 )
-from sigilicon.canonical import canonical_digest
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
+    ExecutionPlan,
     RunFailure,
     RunResult,
     StepOutcome,
@@ -30,17 +29,6 @@ from sigilicon.paths import ArtifactLayout, RunPaths
 
 class RunStoreError(ValueError):
     """A requested run is missing, unsafe, or internally inconsistent."""
-
-
-_SHA256_IDENTITY = re.compile(r"sha256-[0-9a-f]{64}\Z")
-
-
-def _valid_resources_identity(plan: Mapping[str, Any]) -> bool:
-    identity = plan.get("resources_identity")
-    return (
-        isinstance(identity, str)
-        and _SHA256_IDENTITY.fullmatch(identity) is not None
-    )
 
 
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
@@ -241,7 +229,11 @@ class RunStore:
             )
         except (OSError, RuntimeError) as exc:
             raise RunStoreError(str(exc)) from exc
-        identity = canonical_digest(plan)
+        try:
+            decoded_plan = ExecutionPlan.from_record(plan)
+        except ContractError as exc:
+            raise RunStoreError("persisted execution plan is invalid") from exc
+        identity = decoded_plan.identity
         expected = {
             "owner": selected.owner,
             "operation": selected.operation,
@@ -260,12 +252,11 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 5
+            plan.get("schema") != 6
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
             or plan.get("variant") != selected.variant
-            or not _valid_resources_identity(plan)
         ):
             raise RunStoreError("persisted execution plan identity drift")
         if (

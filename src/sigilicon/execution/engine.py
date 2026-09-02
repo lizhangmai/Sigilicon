@@ -12,9 +12,9 @@ from typing import Any
 from sigilicon.artifacts import RunRecord, new_identity, read_nofollow_text
 from sigilicon.execution.model import (
     Artifact,
+    BoundExecution,
     ContractError,
     ExecutionError,
-    ExecutionPlan,
     PreflightCheck,
     PreflightResult,
     Resources,
@@ -33,7 +33,7 @@ Progress = Callable[[str, str], None]
 
 
 def _preflight(
-    plan: ExecutionPlan,
+    plan: BoundExecution,
     resources: Resources,
     backends: BackendRegistry,
 ) -> PreflightResult:
@@ -130,7 +130,7 @@ def _validate_artifact(
         )
 
 
-def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
+def _seal_sources(record: RunRecord, plan: BoundExecution) -> Path:
     """Materialize the plan closure once; backends consume only these copies."""
 
     root = record.directory("inputs", "sources")
@@ -153,7 +153,7 @@ def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
     return root
 
 
-def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
+def _seal_resources(record: RunRecord, plan: BoundExecution) -> Path | None:
     """Materialize host resources without persisting their original locations."""
 
     if not plan.resources:
@@ -187,7 +187,7 @@ def _register_tree(record: RunRecord, role: str, root: Path) -> None:
 
 
 def _run(
-    plan: ExecutionPlan,
+    plan: BoundExecution,
     resources: Resources,
     backends: BackendRegistry,
     *,
@@ -234,7 +234,7 @@ def _run(
         )
     ):
         record.bind_operation(operation_id)
-        record.write_json("inputs", ("execution-plan.json",), plan.record)
+        record.write_json("inputs", ("execution-plan.json",), plan.plan.record)
         record.write_json("inputs", ("preflight.json",), checked.record)
         changed_at_seal = tuple(
             source.path for source in plan.sources if not source.current()

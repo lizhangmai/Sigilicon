@@ -124,6 +124,10 @@ class Evidence:
     scope: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.role, str):
+            raise ContractError("evidence role must be text")
+        if not isinstance(self.level, str):
+            raise ContractError("evidence level must be text")
         if self.role not in _ROLES:
             raise ContractError(f"unsupported evidence role: {self.role!r}")
         if self.level not in _LEVELS:
@@ -134,6 +138,12 @@ class Evidence:
     @property
     def record(self) -> dict[str, str]:
         return {"role": self.role, "level": self.level, "scope": self.scope}
+
+    @classmethod
+    def from_record(cls, value: object) -> "Evidence":
+        if not isinstance(value, Mapping) or set(value) != {"role", "level", "scope"}:
+            raise ContractError("evidence record must contain role, level, and scope")
+        return cls(value["role"], value["level"], value["scope"])
 
 
 @dataclass(frozen=True)
@@ -229,6 +239,88 @@ class Source:
             )
         except (OSError, RuntimeError, UnicodeError):
             return False
+
+@dataclass(frozen=True)
+class SourceRef:
+    """Portable identity of one source captured while compiling a plan."""
+
+    scope: str
+    path: str
+    sha256: str
+    executable: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, str):
+            raise ContractError("source reference scope must be text")
+        if not isinstance(self.path, str):
+            raise ContractError("source reference path must be text")
+        relative = PurePosixPath(self.path)
+        if self.scope not in {"owner", "project"}:
+            raise ContractError("source reference scope must be owner or project")
+        if (
+            not self.path
+            or relative.is_absolute()
+            or "\\" in self.path
+            or relative.as_posix() != self.path
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ContractError(
+                f"source reference path must be canonical and relative: {self.path!r}"
+            )
+        if not isinstance(self.sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", self.sha256
+        ) is None:
+            raise ContractError("source reference digest must be a SHA-256 digest")
+        if not isinstance(self.executable, bool):
+            raise ContractError("source reference executable flag must be boolean")
+
+    @classmethod
+    def from_source(cls, source: Source) -> "SourceRef":
+        if not isinstance(source, Source):
+            raise ContractError("source reference requires a Source snapshot")
+        return cls(source.scope, source.path, source.sha256, source.executable)
+
+    @classmethod
+    def from_record(cls, value: object) -> "SourceRef":
+        if not isinstance(value, Mapping) or set(value) != {
+            "scope",
+            "path",
+            "sha256",
+            "executable",
+        }:
+            raise ContractError("source reference record has an invalid shape")
+        reference = cls(
+            value["scope"], value["path"], value["sha256"], value["executable"]
+        )
+        if reference.record != dict(value):
+            raise ContractError("source reference record is not canonical")
+        return reference
+
+    def bind(self, roots: Mapping[str, Path]) -> Source:
+        """Capture and verify this reference against explicit runtime roots."""
+
+        root = roots.get(self.scope)
+        if root is None:
+            raise ContractError(f"source reference has no runtime root: {self.scope}")
+        source = Source.capture(
+            Path(root).joinpath(*PurePosixPath(self.path).parts),
+            root=Path(root),
+            scope=self.scope,
+        )
+        if source.record != self.record:
+            raise ContractError(
+                f"source reference is not current: {self.scope}:{self.path}"
+            )
+        return source
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {
+            "scope": self.scope,
+            "path": self.path,
+            "sha256": self.sha256,
+            "executable": self.executable,
+        }
 
 
 @dataclass(frozen=True)
@@ -420,6 +512,34 @@ class Step:
             "evidence": None if self.evidence is None else self.evidence.record,
         }
 
+    @classmethod
+    def from_record(cls, value: object) -> "Step":
+        if not isinstance(value, Mapping) or set(value) != {
+            "id",
+            "uses",
+            "needs",
+            "request",
+            "sources",
+            "resources",
+            "evidence",
+        }:
+            raise ContractError("step record has an invalid shape")
+        needs = value["needs"]
+        sources = value["sources"]
+        resources = value["resources"]
+        if not all(isinstance(item, list) for item in (needs, sources, resources)):
+            raise ContractError("step record arrays must be JSON arrays")
+        evidence = value["evidence"]
+        return cls(
+            value["id"],
+            value["uses"],
+            value["request"],
+            tuple(needs),
+            tuple(sources),
+            None if evidence is None else Evidence.from_record(evidence),
+            tuple(resources),
+        )
+
 
 def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     by_id = {step.id: step for step in steps}
@@ -446,48 +566,15 @@ def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
 
 
 @dataclass(frozen=True)
-class OperationPlan:
-    """Internal source snapshot awaiting package-owned Backend preparation."""
-
-    project_identity: str
-    owner: str
-    operation: str
-    variant: str | None
-    operations: tuple[Operation, ...]
-    sources: tuple[Source, ...]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.project_identity, str) or _DIGEST.fullmatch(
-            self.project_identity
-        ) is None:
-            raise ContractError("operation plan project identity must be a SHA-256 digest")
-        object.__setattr__(self, "owner", _identifier(self.owner, "owner"))
-        object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
-        if self.variant is not None:
-            object.__setattr__(self, "variant", _identifier(self.variant, "variant"))
-        if not isinstance(self.operations, tuple) or not self.operations:
-            raise ContractError("operation plan must contain at least one step")
-        if any(not isinstance(operation, Operation) for operation in self.operations):
-            raise ContractError("operation plan must contain Operation values")
-        if not isinstance(self.sources, tuple) or not self.sources:
-            raise ContractError("operation plan must retain its operation source")
-        if any(not isinstance(source, Source) for source in self.sources):
-            raise ContractError("operation plan sources must be Source values")
-
-
-@dataclass(frozen=True)
 class ExecutionPlan:
-    """Source-bound deterministic plan for exactly one owner operation."""
+    """Portable source-only plan for exactly one owner operation."""
 
     project_identity: str
     owner: str
     operation: str
     variant: str | None
     steps: tuple[Step, ...]
-    sources: tuple[Source, ...]
-    resources_identity: str
-    resources: tuple[ExternalResource, ...] = field(repr=False, compare=False)
-    _authorization: str = field(default="", repr=False, compare=False)
+    sources: tuple[SourceRef, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_identity, str) or _DIGEST.fullmatch(
@@ -504,23 +591,9 @@ class ExecutionPlan:
             raise ContractError("execution plan steps must be Step values")
         if not isinstance(self.sources, tuple) or not self.sources:
             raise ContractError("execution plan must retain its operation source")
-        if any(not isinstance(source, Source) for source in self.sources):
-            raise ContractError("execution plan sources must be Source values")
-        if not isinstance(self.resources_identity, str) or _DIGEST.fullmatch(
-            self.resources_identity
-        ) is None:
-            raise ContractError(
-                "execution plan resources identity must be a SHA-256 digest"
-            )
-        if not isinstance(self.resources, tuple) or any(
-            not isinstance(resource, ExternalResource) for resource in self.resources
-        ):
-            raise ContractError(
-                "execution plan resources must be ExternalResource values"
-            )
-        if not isinstance(self._authorization, str):
-            raise ContractError("execution plan authorization must be text")
-        closure = {(source.root, source.path): source for source in self.sources}
+        if any(not isinstance(source, SourceRef) for source in self.sources):
+            raise ContractError("execution plan sources must be SourceRef values")
+        closure = {(source.scope, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
         if len({source.path for source in self.sources}) != len(self.sources):
@@ -531,34 +604,134 @@ class ExecutionPlan:
                     raise ContractError(
                         f"step {step.id!r} source is outside the plan source closure"
                     )
-        resources = {resource.identity: resource for resource in self.resources}
-        if len(resources) != len(self.resources):
-            raise ContractError("execution plan contains duplicate external resources")
-        referenced = {resource for step in self.steps for resource in step.resources}
-        if referenced != set(resources):
+        if any(step.resources for step in self.steps):
             raise ContractError(
-                "execution plan external resource closure disagrees with its steps"
+                "portable execution steps cannot contain bound external resources"
             )
         object.__setattr__(self, "steps", _topology(self.steps))
 
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 5,
+            "schema": 6,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
             "operation": self.operation,
             "variant": self.variant,
-            "resources_identity": self.resources_identity,
             "sources": [source.record for source in self.sources],
-            "resources": [resource.record for resource in self.resources],
             "steps": [step.record for step in self.steps],
         }
 
     @property
     def identity(self) -> str:
         return canonical_digest(self.record)
+
+    @classmethod
+    def from_record(
+        cls,
+        value: object,
+    ) -> "ExecutionPlan":
+        fields = {
+            "schema",
+            "contract_kind",
+            "project_identity",
+            "owner",
+            "operation",
+            "variant",
+            "sources",
+            "steps",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise ContractError("execution plan record has an invalid shape")
+        if value["schema"] != 6 or value["contract_kind"] != "execution-plan":
+            raise ContractError("execution plan record has an unsupported schema")
+        sources = value["sources"]
+        steps = value["steps"]
+        if not isinstance(sources, list) or not isinstance(steps, list):
+            raise ContractError("execution plan sources and steps must be JSON arrays")
+        plan = cls(
+            project_identity=value["project_identity"],
+            owner=value["owner"],
+            operation=value["operation"],
+            variant=value["variant"],
+            steps=tuple(Step.from_record(step) for step in steps),
+            sources=tuple(SourceRef.from_record(source) for source in sources),
+        )
+        if plan.record != dict(value):
+            raise ContractError("execution plan record is not canonical")
+        return plan
+
+
+@dataclass(frozen=True)
+class BoundExecution:
+    """Private runtime closure produced immediately before preflight or run."""
+
+    plan: ExecutionPlan
+    steps: tuple[Step, ...]
+    sources: tuple[Source, ...]
+    resources_identity: str
+    resources: tuple[ExternalResource, ...] = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, ExecutionPlan):
+            raise ContractError("bound execution must retain its portable plan")
+        if not isinstance(self.steps, tuple) or not self.steps:
+            raise ContractError("bound execution must contain at least one step")
+        if any(not isinstance(step, Step) for step in self.steps):
+            raise ContractError("bound execution steps must be Step values")
+        if not isinstance(self.sources, tuple) or any(
+            not isinstance(source, Source) for source in self.sources
+        ):
+            raise ContractError("bound execution sources must be Source values")
+        if not isinstance(self.resources_identity, str) or _DIGEST.fullmatch(
+            self.resources_identity
+        ) is None:
+            raise ContractError("bound resources identity must be a SHA-256 digest")
+        if not isinstance(self.resources, tuple) or any(
+            not isinstance(resource, ExternalResource) for resource in self.resources
+        ):
+            raise ContractError(
+                "bound execution resources must be ExternalResource values"
+            )
+        source_closure = {(source.root, source.path): source for source in self.sources}
+        if len(source_closure) != len(self.sources):
+            raise ContractError("bound execution contains duplicate source identities")
+        if len({source.path for source in self.sources}) != len(self.sources):
+            raise ContractError("bound execution source paths collide across scopes")
+        available_sources = {source.path for source in self.sources}
+        for step in self.steps:
+            if any(source not in available_sources for source in step.sources):
+                raise ContractError(
+                    f"step {step.id!r} source is outside the bound source closure"
+                )
+        resources = {resource.identity: resource for resource in self.resources}
+        if len(resources) != len(self.resources):
+            raise ContractError("bound execution contains duplicate external resources")
+        referenced = {resource for step in self.steps for resource in step.resources}
+        if referenced != set(resources):
+            raise ContractError(
+                "bound external resource closure disagrees with its steps"
+            )
+        object.__setattr__(self, "steps", _topology(self.steps))
+
+    @property
+    def identity(self) -> str:
+        """The durable identity remains the portable source plan identity."""
+
+        return self.plan.identity
+
+    @property
+    def owner(self) -> str:
+        return self.plan.owner
+
+    @property
+    def operation(self) -> str:
+        return self.plan.operation
+
+    @property
+    def variant(self) -> str | None:
+        return self.plan.variant
 
 
 @dataclass(frozen=True)
@@ -1178,7 +1351,6 @@ __all__ = [
     "ExecutionError",
     "ExecutionPlan",
     "ExternalResource",
-    "OperationPlan",
     "Operation",
     "Step",
     "PreflightCheck",
@@ -1187,6 +1359,7 @@ __all__ = [
     "RunResult",
     "RunFailure",
     "Source",
+    "SourceRef",
     "StepContext",
     "StepOutcome",
     "StepResult",
