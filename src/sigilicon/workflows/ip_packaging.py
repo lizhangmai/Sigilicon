@@ -601,7 +601,7 @@ def _resolve_release_oa_source(
     """Resolve one operation-owned OA assembly snapshot for release work."""
 
     if contract.oa_assembly is None:
-        raise ValueError("OA release exports require source.oa_assembly")
+        raise ValueError("OA release owner has no OA assembly")
     oa_manifest = _project_path(
         contract.project_root,
         Path(contract.oa_assembly),
@@ -646,7 +646,7 @@ def _source_inputs(
 ) -> tuple[str, ...]:
     root = contract.project_root
     graph = contract.component_graph
-    paths: set[Path] = {contract.path}
+    paths: set[Path] = {contract.path, *contract.interface_documents}
 
     def add_source(source: Path) -> None:
         resolved = source.resolve()
@@ -670,12 +670,6 @@ def _source_inputs(
                 add_source(
                     _project_path(root, Path(relative), "component fileset input"),
                 )
-    for relative in contract.source_files:
-        path = _project_path(root, Path(relative), "source file")
-        if not path.is_file():
-            raise FileNotFoundError(f"IP source file is missing: {relative}")
-        add_source(path)
-
     oa_exports = [
         exported
         for exported in contract.exports
@@ -694,6 +688,24 @@ def _source_inputs(
         oa_source_inventory=oa_source_inventory,
         resolved_oa_source=resolved_oa_source,
     )
+    paths.update(library.source_documents)
+    from sigilicon.domain.platform import load_platform, resolve_platform
+
+    if platform_inventory is None:
+        release_platform = load_platform(library.project, library.pdk)
+    else:
+        try:
+            platform_snapshot = platform_inventory[library.pdk]
+        except KeyError as exc:
+            raise ValueError(
+                f"platform inventory has no {library.pdk!r} entry"
+            ) from exc
+        release_platform = resolve_platform(
+            library.project,
+            library.pdk,
+            snapshot=platform_snapshot,
+        )
+    paths.update(release_platform.source_paths)
     oa_plan = None
     if oa_plan_inventory is not None:
         try:
@@ -754,7 +766,6 @@ def _source_inputs(
         )
     }
     selected_cells = reachable | validation_cells
-    release_platform = None
     paths.add(library.manifest_path)
     for cell in library.cells:
         if cell.cell not in selected_cells:
@@ -782,23 +793,6 @@ def _source_inputs(
                 )
             if oa_plan is None:
                 from sigilicon.domain.oa_simulation import load_oa_simulation_spec
-                from sigilicon.domain.platform import load_platform, resolve_platform
-
-                if release_platform is None:
-                    if platform_inventory is None:
-                        release_platform = load_platform(library.project, library.pdk)
-                    else:
-                        try:
-                            platform_snapshot = platform_inventory[library.pdk]
-                        except KeyError as exc:
-                            raise ValueError(
-                                f"platform inventory has no {library.pdk!r} entry"
-                            ) from exc
-                        release_platform = resolve_platform(
-                            library.project,
-                            library.pdk,
-                            snapshot=platform_snapshot,
-                        )
                 simulation = load_oa_simulation_spec(
                     next(iter(setup_sources)),
                     project=library.project,
@@ -818,6 +812,8 @@ def _source_inputs(
                     or simulation.project is not library.project
                     or simulation.library != library.name
                     or simulation.cell != cell.cell
+                    or simulation.native_setup.pdk.source_paths
+                    != release_platform.source_paths
                 ):
                     raise ValueError("OA rebuild testbench plan identity drift")
             rdb_contract = simulation.native_setup.rdb_contract

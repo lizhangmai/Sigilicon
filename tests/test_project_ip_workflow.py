@@ -29,17 +29,6 @@ owner = "fixture"
     return Project.open(project_contract.parent), component
 
 
-def test_project_ip_catalog_reuses_bound_project(tmp_path: Path) -> None:
-    project, component = _project(tmp_path)
-    assert not hasattr(Project, "from_project_root")
-
-    assert ip_integration.ip_catalog_contract_path(
-        project,
-        "fixture",
-        section="components",
-    ) == component
-
-
 def test_integration_plan_passes_same_project_to_domain_loader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

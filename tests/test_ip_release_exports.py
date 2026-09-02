@@ -19,7 +19,7 @@ from sigilicon.domain.ip_release import (
 from sigilicon.project import Project
 from sigilicon.workflows.ip_packaging import release_role_view
 
-from conftest import write_project_context
+from conftest import write_project_context, write_test_layout_platform
 
 
 def _built_manifest(project: Project, built: dict[str, object]) -> Path:
@@ -40,7 +40,14 @@ def _contract_fixture(root: Path) -> Path:
     sources = owner / "sources"
     configs.mkdir(parents=True)
     sources.mkdir()
-    (configs / "oa.toml").write_text("name = 'fixture-lib'\n", encoding="utf-8")
+    (configs / "oa.toml").write_text(
+        "schema = 1\n"
+        'contract_kind = "oa-assembly"\n'
+        'path_scope = "owner"\n'
+        'owner = "fixture"\n'
+        'name = "fixture-lib"\n',
+        encoding="utf-8",
+    )
     for name in ("left", "right"):
         (configs / f"{name}_interface.toml").write_text(
             f"name = '{name}'\n", encoding="utf-8"
@@ -56,8 +63,10 @@ owner = "fixture"
 
 name = "fixture-ip"
 kind = "composite-ip"
+release_contract = "ip/fixture/configs/release.toml"
 
 [filesets]
+oa_source = ["ip/fixture/configs/oa.toml"]
 left = ["ip/fixture/sources/left.toml"]
 right = ["ip/fixture/sources/right.toml"]
 """,
@@ -71,8 +80,6 @@ path_scope = "owner"
 owner = "fixture"
 
 name = "fixture-ip"
-producer = "ip/fixture"
-component = "configs/ip.toml"
 default_maturity = "development"
 
 [[exports]]
@@ -129,9 +136,6 @@ fileset = "right"
 package_path = "exports/right/interface.toml"
 format = "toml"
 
-[source]
-oa_assembly = "ip/fixture/configs/oa.toml"
-files = []
 """,
         encoding="utf-8",
     )
@@ -142,9 +146,6 @@ files = []
 [components.fixture-ip]
 contract = "ip/fixture/configs/ip.toml"
 root = "ip/fixture"
-
-[targets.fixture-ip]
-contract = "ip/fixture/configs/release.toml"
 ''',
         encoding="utf-8",
     )
@@ -190,6 +191,7 @@ owner = "rtl-fixture"
 name = "rtl-fixture"
 kind = "rtl-ip"
 public_interface = "ip/rtl_fixture/configs/interface.toml"
+release_contract = "ip/rtl_fixture/configs/release.toml"
 
 [filesets]
 interface = ["ip/rtl_fixture/configs/interface.toml"]
@@ -205,8 +207,6 @@ path_scope = "owner"
 owner = "rtl-fixture"
 
 name = "rtl-fixture"
-producer = "ip/rtl_fixture"
-component = "configs/ip.toml"
 default_maturity = "development"
 
 [[exports]]
@@ -246,8 +246,6 @@ format = "systemverilog"
 module = "rtl_top"
 capabilities = ["simulation", "synthesis", "physical_implementation"]
 
-[source]
-files = []
 ''',
         encoding="utf-8",
     )
@@ -258,12 +256,66 @@ files = []
 [components.rtl-fixture]
 contract = "ip/rtl_fixture/configs/ip.toml"
 root = "ip/rtl_fixture"
-
-[targets.rtl-fixture]
-contract = "ip/rtl_fixture/configs/release.toml"
 ''',
         encoding="utf-8",
     )
+    return contract
+
+
+def _oa_source_closure_fixture(root: Path) -> Path:
+    contract = _contract_fixture(root)
+    owner = root / "ip/fixture"
+    configs = owner / "configs"
+    sources = owner / "sources"
+    (root / "virtuoso").mkdir()
+    write_test_layout_platform(root)
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'library = "fixture-lib"', 'library = "fixture_lib"'
+        ),
+        encoding="utf-8",
+    )
+    (configs / "oa.toml").write_text(
+        '''schema = 1
+contract_kind = "oa-assembly"
+path_scope = "owner"
+owner = "fixture"
+
+name = "fixture_lib"
+pdk = "testpdk"
+primitive_masters = []
+cell_roots = ["sources"]
+''',
+        encoding="utf-8",
+    )
+    for cell in ("LEFT", "RIGHT"):
+        cell_root = sources / cell
+        cell_root.mkdir()
+        (cell_root / "circuit.scs").write_text(
+            f"subckt {cell} IN OUT\nends {cell}\n",
+            encoding="utf-8",
+        )
+        (cell_root / "design.toml").write_text(
+            f"name = '{cell}'\n",
+            encoding="utf-8",
+        )
+        (cell_root / "cell.toml").write_text(
+            f'''schema = 1
+contract_kind = "oa-cell"
+path_scope = "cell"
+owner = "fixture"
+
+cell = "{cell}"
+role = "design"
+canonical_source = "circuit.scs"
+views = [
+  {{ name = "netlist", kind = "spectre_netlist", source = "circuit.scs", dependencies = [] }},
+  {{ name = "schematic", kind = "schematic", source = "design.toml", dependencies = ["{cell}/netlist"] }},
+  {{ name = "symbol", kind = "symbol", source = "design.toml", dependencies = ["{cell}/schematic"] }},
+]
+''',
+            encoding="utf-8",
+        )
     return contract
 
 
@@ -274,7 +326,14 @@ def _native_oa_contract_fixture(root: Path) -> Path:
     sources = owner / "sources"
     configs.mkdir(parents=True)
     sources.mkdir()
-    (configs / "oa.toml").write_text("name = 'native-lib'\n", encoding="utf-8")
+    (configs / "oa.toml").write_text(
+        "schema = 1\n"
+        'contract_kind = "oa-assembly"\n'
+        'path_scope = "owner"\n'
+        'owner = "native-fixture"\n'
+        'name = "native-lib"\n',
+        encoding="utf-8",
+    )
     (configs / "interface.toml").write_text(
         '''schema = 1
 contract_kind = "ip-interface"
@@ -325,8 +384,10 @@ owner = "native-fixture"
 
 name = "native-fixture"
 kind = "hard-macro"
+release_contract = "ip/native_fixture/configs/release.toml"
 
 [filesets]
+oa_source = ["ip/native_fixture/configs/oa.toml"]
 interface = ["ip/native_fixture/configs/interface.toml"]
 ports = ["ip/native_fixture/sources/design.toml"]
 circuit = ["ip/native_fixture/sources/circuit.scs"]
@@ -342,8 +403,6 @@ path_scope = "owner"
 owner = "native-fixture"
 
 name = "native-fixture"
-producer = "ip/native_fixture"
-component = "configs/ip.toml"
 default_maturity = "development"
 
 [[exports]]
@@ -388,9 +447,6 @@ package_path = "exports/native-top/circuit.scs"
 format = "spectre-source"
 capabilities = ["circuit_simulation"]
 
-[source]
-oa_assembly = "ip/native_fixture/configs/oa.toml"
-files = []
 ''',
         encoding="utf-8",
     )
@@ -401,9 +457,6 @@ files = []
 [components.native-fixture]
 contract = "ip/native_fixture/configs/ip.toml"
 root = "ip/native_fixture"
-
-[targets.native-fixture]
-contract = "ip/native_fixture/configs/release.toml"
 ''',
         encoding="utf-8",
     )
@@ -441,6 +494,62 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
         "interface_contract",
         "interface_contract",
     ]
+
+
+def test_oa_release_derives_complete_platform_source_closure(tmp_path: Path) -> None:
+    contract = load_ip_contract(
+        _oa_source_closure_fixture(tmp_path),
+        project=Project.open(tmp_path),
+    )
+
+    sources = set(ip_packaging._source_inputs(contract))
+
+    assert {
+        "configs/platform/catalog.toml",
+        "configs/platform/testpdk/platform.toml",
+        "configs/platform/testpdk/simulation.toml",
+        "configs/platform/testpdk/oa.toml",
+        "configs/platform/testpdk/layout.toml",
+        "configs/platform/testpdk/verification.toml",
+    }.issubset(sources)
+    assert {
+        "ip/fixture/configs/left_interface.toml",
+        "ip/fixture/configs/right_interface.toml",
+        "ip/fixture/configs/oa.toml",
+        "ip/fixture/sources/LEFT/cell.toml",
+        "ip/fixture/sources/RIGHT/cell.toml",
+    }.issubset(sources)
+
+
+def test_release_rejects_removed_owner_and_source_fields(tmp_path: Path) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            'name = "rtl-fixture"\n',
+            'name = "rtl-fixture"\nproducer = "ip/rtl_fixture"\n',
+            1,
+        )
+        + "\n[source]\nfiles = []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown fields.*producer.*source"):
+        load_ip_contract(contract_path, project=Project.open(tmp_path))
+
+
+def test_release_must_be_declared_by_its_owner_component(tmp_path: Path) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    component = tmp_path / "ip/rtl_fixture/configs/ip.toml"
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            'release_contract = "ip/rtl_fixture/configs/release.toml"\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not declared by its owner"):
+        load_ip_contract(contract_path, project=Project.open(tmp_path))
 
 
 def test_native_oa_release_keeps_its_domain_interface_and_audits(

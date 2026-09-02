@@ -19,7 +19,6 @@ from sigilicon.domain.ip_integration import (
 from sigilicon.project import Project
 from sigilicon.workflows.ip_integration import (
     check_ip_integration,
-    ip_catalog_contract_path,
     plan_ip_integration,
     resolve_locked_ip_release,
     resolve_ip_integration_fileset,
@@ -440,9 +439,18 @@ owner = "fixture"
 
 name = "fixture-ip"
 kind = "rtl-ip"
+release_contract = "ip/fixture/configs/release.toml"
 
 [filesets]
 source = ["ip/fixture/configs/ip.toml"]
+''',
+        encoding="utf-8",
+    )
+    (dependency_root / "configs/release.toml").write_text(
+        '''schema = 1
+contract_kind = "ip-release"
+path_scope = "owner"
+owner = "fixture"
 ''',
         encoding="utf-8",
     )
@@ -554,8 +562,6 @@ owner = "repository"
 contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "repository"
-
-[targets]
 
 [components.demo]
 contract = "ip/demo/configs/ip.toml"
@@ -691,8 +697,6 @@ contract = "ip/leaf/configs/ip.toml"
 contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "test"
-
-[targets]
 
 [components.leaf]
 contract = "ip/leaf/configs/ip.toml"
@@ -853,11 +857,6 @@ def test_rtl_release_dependency_is_consumed_without_physical_identity(
     )
     monkeypatch.setattr(
         ip_integration,
-        "ip_catalog_contract_path",
-        lambda *_args, **_kwargs: producer_path,
-    )
-    monkeypatch.setattr(
-        ip_integration,
         "plan_ip_release_contract",
         lambda *_args, **_kwargs: {
             "contract": "ip/fixture/configs/release.toml",
@@ -928,11 +927,6 @@ def test_native_oa_release_dependency_is_typed_planned_and_consumed(
         name="fixture-ip",
         path=producer_path,
         project=project,
-    )
-    monkeypatch.setattr(
-        ip_integration,
-        "ip_catalog_contract_path",
-        lambda *_args, **_kwargs: producer_path,
     )
     monkeypatch.setattr(
         ip_integration,
@@ -1015,11 +1009,6 @@ def test_native_oa_planner_takes_interface_identity_from_provider_export(
         path=producer_path,
         project=project,
     )
-    monkeypatch.setattr(
-        ip_integration,
-        "ip_catalog_contract_path",
-        lambda *_args, **_kwargs: producer_path,
-    )
     oa = {
         "library": "fixture",
         "cell": "fixture_macro",
@@ -1063,7 +1052,7 @@ def test_native_oa_planner_takes_interface_identity_from_provider_export(
     assert "interface" not in plan["dependencies"][0]["release"]
 
 
-def test_ip_catalog_never_selects_an_uncataloged_project_file(
+def test_ip_catalog_rejects_release_registries(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "project"
@@ -1073,19 +1062,13 @@ def test_ip_catalog_never_selects_an_uncataloged_project_file(
     rogue.write_text("schema = 1\n", encoding="utf-8")
     catalog = project_root / "catalogs/ip.toml"
     catalog.write_text(
-        catalog.read_text(encoding="utf-8").replace(
-            "[targets]\n",
-            '[targets.rogue]\ncontract = "misc/release.toml"\n',
-        ),
+        catalog.read_text(encoding="utf-8")
+        + '\n[targets.rogue]\ncontract = "misc/release.toml"\n',
         encoding="utf-8",
     )
-    project = Project.open(project_root)
 
-    with pytest.raises(ValueError, match="no cataloged owner"):
-        ip_catalog_contract_path(
-            project,
-            "rogue",
-        )
+    with pytest.raises(ValueError, match="unknown fields.*targets"):
+        Project.open(project_root)
 
 
 def test_declaring_release_capability_does_not_implicitly_consume_it(

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+_HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
 
 
 def _table(value: object, label: str) -> Mapping[str, Any]:
@@ -119,7 +120,6 @@ class IpContract:
     component_contract: PurePosixPath
     default_maturity: str
     exports: tuple[IpExport, ...]
-    source_files: tuple[PurePosixPath, ...]
     oa_assembly: PurePosixPath | None
     component_graph: Mapping[str, ComponentContract]
     document: Mapping[str, Any] = field(
@@ -161,7 +161,6 @@ def _parse_ip_contract(
     source_interface_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> IpContract:
     root = repository.project_root
-    producer = safe_relative(raw.get("producer"), "producer")
     cataloged_owner = repository.require_owner(contract_path)
     header = require_config_header(
         raw,
@@ -170,20 +169,22 @@ def _parse_ip_contract(
         path_scope="owner",
         owner=cataloged_owner.name,
     )
-    source = _table(raw.get("source"), "source")
-
-    component_contract = safe_relative(raw.get("component"), "component")
-    producer_path = (root / producer).resolve()
-    if (
-        not producer_path.is_dir()
-        or not producer_path.is_relative_to(root)
-        or not contract_path.is_relative_to(producer_path)
-        or producer_path != cataloged_owner.root
-    ):
-        raise ValueError("IP release contract must stay inside its declared producer")
-    component_path = (producer_path / component_contract).resolve()
-    if not component_path.is_file() or not component_path.is_relative_to(producer_path):
-        raise FileNotFoundError("IP component contract is missing or outside its owner")
+    unknown = set(raw) - _HEADER_FIELDS - {
+        "name",
+        "default_maturity",
+        "exports",
+        "collateral",
+    }
+    if unknown:
+        raise ValueError(f"IP release contains unknown fields: {sorted(unknown)}")
+    if cataloged_owner.release_contract != contract_path:
+        raise ValueError("IP release is not declared by its owner component")
+    producer_path = cataloged_owner.root
+    producer = PurePosixPath(producer_path.relative_to(root).as_posix())
+    component_path = cataloged_owner.component.path
+    component_contract = PurePosixPath(
+        component_path.relative_to(producer_path).as_posix()
+    )
     from sigilicon.project._component import (
         load_component_graph,
         resolve_component_fileset,
@@ -464,9 +465,6 @@ def _parse_ip_contract(
     if set(interface_documents) != expected_interface_paths:
         raise ValueError("IP release snapshot interface document identity drift")
 
-    source_files = source.get("files", [])
-    if not isinstance(source_files, (list, tuple)):
-        raise ValueError("source.files must be an array")
     oa_exports = [
         exported
         for exported in exports
@@ -474,20 +472,14 @@ def _parse_ip_contract(
             exported.interface, (OaMixedSignalIpInterface, OaNativeIpInterface)
         )
     ]
-    oa_assembly_value = source.get("oa_assembly")
     if oa_exports:
-        oa_assembly = safe_relative(oa_assembly_value, "source.oa_assembly")
-        oa_assembly_path = (root / oa_assembly).resolve()
-        if (
-            not oa_assembly_path.is_file()
-            or not oa_assembly_path.is_relative_to(producer_path)
-        ):
-            raise FileNotFoundError(
-                "source.oa_assembly must name a manifest inside the producer root"
-            )
+        oa_assembly_path = repository.oa_assembly_for(contract_path)
+        if oa_assembly_path is None:
+            raise ValueError("OA release owner must declare one OA assembly")
+        oa_assembly = PurePosixPath(
+            oa_assembly_path.relative_to(root).as_posix()
+        )
     else:
-        if oa_assembly_value is not None:
-            raise ValueError("RTL-only IP releases cannot declare source.oa_assembly")
         oa_assembly = None
 
     default = _string(raw.get("default_maturity"), "default_maturity")
@@ -502,9 +494,6 @@ def _parse_ip_contract(
         component_contract=component_contract,
         default_maturity=default,
         exports=tuple(exports),
-        source_files=tuple(
-            safe_relative(value, "source.files entry") for value in source_files
-        ),
         oa_assembly=oa_assembly,
         component_graph=MappingProxyType(dict(component_graph)),
         document=freeze_toml_document(raw),

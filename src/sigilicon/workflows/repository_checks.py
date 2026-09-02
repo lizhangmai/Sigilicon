@@ -162,13 +162,9 @@ def inspect_repository_designs(
     )
     ip_catalog = context.ip_catalog_snapshot()
     ip_catalog_path = ip_catalog.path
-    release_rows = ip_catalog.document.get("targets", {})
     component_rows = ip_catalog.document.get("components", {})
-    if not isinstance(release_rows, Mapping):
-        raise ValueError("ip catalog targets must be a table")
     if not isinstance(component_rows, Mapping):
         raise ValueError("ip catalog components must be a table")
-    release_paths = _contract_entries(context, "ip.targets", release_rows)
     component_paths = _contract_entries(
         context,
         "ip.components",
@@ -183,10 +179,14 @@ def inspect_repository_designs(
     architecture_source_documents = _architecture_source_documents(context)
 
     release_inventory = {}
-    for name, path in release_paths.items():
+    for owner in context.owners:
+        path = owner.release_contract
+        if path is None:
+            continue
+        name = owner.component.name
         contract = load_ip_contract(path, project=context)
-        if contract.name != name:
-            raise ValueError(f"IP release catalog identity mismatch: {name}")
+        if contract.name != name or contract.owner != owner.name:
+            raise ValueError(f"IP release owner identity mismatch: {name}")
         release_inventory[name] = contract
 
     oa_source_inventory = {}

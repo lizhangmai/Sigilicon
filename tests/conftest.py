@@ -41,7 +41,6 @@ contract_kind = "ip-catalog"
 path_scope = "repository"
 owner = "test"
 
-[targets]
 [components]
 ''',
         encoding="utf-8",

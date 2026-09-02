@@ -64,6 +64,15 @@ class RepositoryOwner:
             for path in self.component.filesets.get(fileset, ())
         )
 
+    @property
+    def release_contract(self) -> Path | None:
+        relative = self.component.release_contract
+        return (
+            None
+            if relative is None
+            else (self.component.project_root / Path(relative)).resolve()
+        )
+
 @dataclass(frozen=True)
 class RepositoryCatalogSnapshot:
     """One validated repository-level catalog source snapshot."""
@@ -325,7 +334,7 @@ class Project:
             contract_kind="ip-catalog",
             path_scope="repository",
         )
-        unknown = set(ip_raw) - _HEADER_FIELDS - {"targets", "components"}
+        unknown = set(ip_raw) - _HEADER_FIELDS - {"components"}
         if unknown:
             raise ValueError(
                 f"{ip_catalog}: IP catalog contains unknown fields: {sorted(unknown)}"
@@ -393,6 +402,24 @@ class Project:
                     raise FileNotFoundError(
                         f"{component.path}: operation_catalog is missing: "
                         f"{component.operation_catalog}"
+                    )
+            if component.release_contract is not None:
+                configured_release = project.project_root.joinpath(
+                    *component.release_contract.parts
+                )
+                release_contract = configured_release.resolve()
+                if (
+                    configured_release != release_contract
+                    or release_contract.suffix != ".toml"
+                ):
+                    raise ValueError(
+                        f"{component.path}: release_contract must name a direct "
+                        "TOML source"
+                    )
+                if not release_contract.is_relative_to(owner_root):
+                    raise ValueError(
+                        f"{component.path}: release_contract must stay inside its "
+                        f"owner root: {component.release_contract}"
                     )
             owned_sources = [
                 path
@@ -574,10 +601,7 @@ class Project:
             or snapshot.owner != header.owner
         ):
             raise ValueError("IP catalog snapshot belongs to a different Project")
-        unknown = set(snapshot.document) - _HEADER_FIELDS - {
-            "targets",
-            "components",
-        }
+        unknown = set(snapshot.document) - _HEADER_FIELDS - {"components"}
         if unknown:
             raise ValueError(
                 f"{snapshot.path}: IP catalog contains unknown fields: "

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from sigilicon.contracts import require_config_header
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
     IpIntegrationDependency,
@@ -36,58 +35,25 @@ if TYPE_CHECKING:
     from sigilicon.workflows.oa_library import OALibraryRebuildPlan
 
 
-def _ip_catalog(project: Project) -> tuple[Path, Mapping[str, Any]]:
-    snapshot = project.ip_catalog_snapshot()
-    require_config_header(
-        snapshot.document,
-        snapshot.path,
-        contract_kind="ip-catalog",
-        path_scope="repository",
-        owner=project.manifest_owner,
-    )
-    return snapshot.path, snapshot.document
-
-
-def ip_catalog_contract_path(
-    project: Project,
-    target: str,
-    *,
-    section: str = "targets",
-) -> Path:
-    """Resolve one release or component contract through the canonical IP catalog."""
-
-    if section not in {"targets", "components"}:
-        raise ValueError(f"unsupported IP catalog section: {section}")
-    repository = project
-    _, raw = _ip_catalog(repository)
-    entries = raw.get(section)
-    if not isinstance(entries, Mapping):
-        raise ValueError(f"IP catalog {section} must be a table")
-    entry = entries.get(target)
-    if not isinstance(entry, Mapping) or not isinstance(entry.get("contract"), str):
-        raise KeyError(f"unknown IP {section[:-1]}: {target}")
-    relative = safe_relative(entry["contract"], f"IP catalog {section}.{target}")
-    candidate = repository.project_root.joinpath(*relative.parts).resolve()
-    owner = repository.require_owner(candidate)
-    path, _ = repository.resolve_owner_file(
-        owner,
-        relative.as_posix(),
-        f"IP catalog {section}.{target}",
-    )
-    return path
-
-
 def _producer_contract(
     contract: IpIntegrationContract,
     dependency_name: str,
     *,
     release_inventory: Mapping[str, IpContract] | None = None,
 ) -> IpContract:
-    path = ip_catalog_contract_path(
-        contract.project,
-        dependency_name,
-        section="targets",
-    )
+    try:
+        component = contract.component_graph[dependency_name]
+    except KeyError as exc:
+        raise ValueError(f"unknown IP dependency: {dependency_name}") from exc
+    owner = contract.project.require_owner(component.path)
+    if (
+        owner.component.path != component.path
+        or owner.component.name != dependency_name
+    ):
+        raise ValueError(f"IP component identity mismatch: {dependency_name}")
+    path = owner.release_contract
+    if path is None:
+        raise ValueError(f"IP dependency has no release contract: {dependency_name}")
     if release_inventory is None:
         producer = load_ip_contract(path, project=contract.project)
     else:

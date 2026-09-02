@@ -30,8 +30,6 @@ owner = "test"
         "catalogs/ip.toml",
         header.format(kind="ip-catalog")
         + '''
-[targets]
-
 [components.alpha]
 contract = "ip/alpha/component.toml"
 root = "ip/alpha"

@@ -64,6 +64,7 @@ class ComponentContract:
     components: tuple[ComponentDependency, ...]
     document: Mapping[str, Any] = field(repr=False, compare=False)
     operation_catalog: PurePosixPath | None = None
+    release_contract: PurePosixPath | None = None
 
 
 def parse_component_contract(
@@ -140,6 +141,12 @@ def parse_component_contract(
         if operation_catalog_value is None
         else _safe_relative(operation_catalog_value, "operation_catalog")
     )
+    release_value = document.get("release_contract")
+    release_contract = (
+        None
+        if release_value is None
+        else _safe_relative(release_value, "release_contract")
+    )
 
     result = ComponentContract(
         path=contract_path,
@@ -152,11 +159,14 @@ def parse_component_contract(
         filesets=MappingProxyType(filesets),
         components=tuple(dependencies),
         operation_catalog=operation_catalog,
+        release_contract=release_contract,
         document=freeze_toml_document(document),
     )
     referenced = [path for values in result.filesets.values() for path in values]
     if result.public_interface is not None:
         referenced.append(result.public_interface)
+    if result.release_contract is not None:
+        referenced.append(result.release_contract)
     referenced.extend(item.contract for item in result.components)
     for relative in referenced:
         resolved = (root / Path(relative)).resolve()
