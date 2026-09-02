@@ -674,17 +674,17 @@ def test_operation_rejects_legacy_target_selector(tmp_path: Path) -> None:
         _plan(Project.open(tmp_path), "example/smoke:check")
 
 
-def test_component_rejects_legacy_target_catalog_field(tmp_path: Path) -> None:
+def test_component_rejects_unknown_field(tmp_path: Path) -> None:
     _write_project(tmp_path)
     component = tmp_path / "ip/example/component.toml"
     component.write_text(
         component.read_text(encoding="utf-8").replace(
-            "operation_catalog =", "target_catalog ="
+            'kind = "rtl-ip"', 'kind = "rtl-ip"\nunexpected = true'
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="target_catalog was removed"):
+    with pytest.raises(ValueError, match="unknown fields.*unexpected"):
         Project.open(tmp_path)
 
 

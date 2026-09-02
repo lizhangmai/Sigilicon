@@ -24,6 +24,25 @@ COMPONENT_KINDS = {
     "source-library",
 }
 COMPONENT_LIFECYCLES = {"active", "legacy"}
+_COMPONENT_FIELDS = {
+    "schema",
+    "contract_kind",
+    "path_scope",
+    "owner",
+    "name",
+    "kind",
+    "lifecycle",
+    "public_interface",
+    "operation_catalog",
+    "release_contract",
+    "dependency_lock",
+    "sources",
+    "filesets",
+    "variants",
+    "implementation",
+    "component",
+}
+_DEPENDENCY_FIELDS = {"name", "contract", "release"}
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
@@ -88,6 +107,9 @@ def parse_component_contract(
         path_scope="owner",
         schema=contract_schema("ip-component"),
     )
+    unknown = set(document) - _COMPONENT_FIELDS
+    if unknown:
+        raise ValueError(f"component contains unknown fields: {sorted(unknown)}")
     kind = _string(document.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:
         raise ValueError(f"unsupported component kind: {kind}")
@@ -146,6 +168,11 @@ def parse_component_contract(
     for index, value in enumerate(dependencies_raw):
         if not isinstance(value, Mapping):
             raise ValueError(f"component[{index}] must be a TOML table")
+        unknown = set(value) - _DEPENDENCY_FIELDS
+        if unknown:
+            raise ValueError(
+                f"component[{index}] contains unknown fields: {sorted(unknown)}"
+            )
         name = _string(value.get("name"), f"component[{index}].name")
         if name in names:
             raise ValueError(f"duplicate component dependency: {name}")
@@ -159,8 +186,6 @@ def parse_component_contract(
             )
         )
 
-    if "target_catalog" in document:
-        raise ValueError("target_catalog was removed; declare operation_catalog")
     operation_catalog_value = document.get("operation_catalog")
     operation_catalog = (
         None

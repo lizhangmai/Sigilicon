@@ -427,12 +427,6 @@ def _operating_variant(
     if default_fileset not in filesets:
         raise ValueError(f"variant {name} default_fileset is undeclared")
 
-    if "architecture_validation" in raw:
-        raise ValueError(
-            f"variant {name}.architecture_validation was removed; "
-            "owner architecture checks belong in owner tests"
-        )
-
     physical_binding: PhysicalBinding | None = None
     if raw.get("physical_binding") is not None:
         binding = _table(raw["physical_binding"], f"variant {name}.physical_binding")
