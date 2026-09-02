@@ -2393,6 +2393,12 @@ def _audit_loaded_ip_release(
         Path("manifest.json"),
         *(Path(str(view["path"])) for view in views),
     }
+    expected_directories = {
+        parent
+        for file in expected_files
+        for parent in file.parents
+        if parent != Path(".")
+    }
     inventory = SafeTree(release_root).inventory()
     writable = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
     for relative, file in inventory.files.items():
@@ -2403,8 +2409,11 @@ def _audit_loaded_ip_release(
             raise RuntimeError(
                 f"IP release directory is writable: {relative}"
             )
-    if set(inventory.files) != expected_files:
-        raise RuntimeError("IP release file inventory does not match its manifest")
+    if (
+        set(inventory.files) != expected_files
+        or set(inventory.directories) != expected_directories
+    ):
+        raise RuntimeError("IP release inventory does not match its manifest")
     return {
         **manifest,
         "store": audited.ref.store,

@@ -11,6 +11,7 @@ from sigilicon.artifacts import (
     SafeTree,
     load_manifest,
     read_json_object,
+    read_nofollow_bytes,
     read_nofollow_text,
 )
 from sigilicon.canonical import canonical_digest
@@ -26,6 +27,7 @@ from sigilicon.execution.model import (
     resource_identity,
     resource_materialization_key,
 )
+from sigilicon.external_tools import retain_sealed_input
 from sigilicon.paths import ArtifactLayout, RunPaths
 
 
@@ -77,13 +79,18 @@ class RunStore:
         files = manifest.get("files")
         if not isinstance(files, Mapping):
             raise RunStoreError("run manifest has no file inventory")
-        return {
-            entry["path"]
-            for entries in files.values()
-            if isinstance(entries, list)
-            for entry in entries
-            if isinstance(entry, Mapping) and isinstance(entry.get("path"), str)
-        }
+        registered: set[str] = set()
+        for entries in files.values():
+            if not isinstance(entries, list):
+                raise RunStoreError("run manifest file inventory is malformed")
+            for entry in entries:
+                path = entry.get("path") if isinstance(entry, Mapping) else None
+                if not isinstance(path, str) or path in registered:
+                    raise RunStoreError(
+                        "run manifest file inventory contains an invalid path"
+                    )
+                registered.add(path)
+        return registered
 
     @classmethod
     def _validate_inventory(
@@ -93,11 +100,13 @@ class RunStore:
     ) -> None:
         root = paths.root
         allowed = {Path("manifest.json"), *(Path(role) for role in paths.roles)}
-        references = {
-            entry["path"]: entry
-            for entries in manifest["files"].values()
-            for entry in entries
-        }
+        references: dict[str, Mapping[str, Any]] = {}
+        for entries in manifest["files"].values():
+            for entry in entries:
+                value = entry["path"]
+                if value in references:
+                    raise RunStoreError("run manifest file inventory is duplicated")
+                references[value] = entry
         for value in references:
             relative = Path(value)
             allowed.add(relative)
@@ -417,22 +426,50 @@ class RunStore:
         return self._read_selected(selected)
 
     @staticmethod
-    def _typed_result(result: Mapping[str, Any], root: Path) -> RunResult:
+    def _typed_result(
+        result: Mapping[str, Any],
+        root: Path,
+        manifest: Mapping[str, Any],
+    ) -> RunResult:
         try:
+            registered = {
+                entry["path"]: entry
+                for entries in manifest["files"].values()
+                for entry in entries
+            }
             outcomes: list[StepOutcome] = []
             for raw_step in result["steps"]:
-                artifacts = tuple(
-                    Artifact(
-                        raw["role"],
-                        raw["kind"],
-                        root.joinpath(*Path(raw["path"]).parts),
-                        raw["qualifiers"],
+                artifacts: list[Artifact] = []
+                for raw in raw_step["artifacts"]:
+                    record = registered[raw["path"]]
+                    original = root.joinpath(*Path(raw["path"]).parts)
+                    data = read_nofollow_bytes(original)
+                    if (
+                        record.get("kind") != "file"
+                        or len(data) != record.get("size")
+                        or hashlib.sha256(data).hexdigest()
+                        != record.get("sha256")
+                    ):
+                        raise RunStoreError(
+                            "persisted artifact changed while retaining its payload"
+                        )
+                    payload = retain_sealed_input(
+                        data,
+                        name=original.name,
                     )
-                    for raw in raw_step["artifacts"]
-                )
+                    artifacts.append(
+                        Artifact(
+                            raw["role"],
+                            raw["kind"],
+                            Path(payload.child_path),
+                            raw["qualifiers"],
+                            _record_path=original,
+                            _payload_owner=payload,
+                        )
+                    )
                 step_result = StepResult(
                     raw_step["status"],
-                    artifacts,
+                    tuple(artifacts),
                     raw_step["facts"],
                     raw_step["message"],
                 )
@@ -456,8 +493,8 @@ class RunStore:
     def _read_selected(self, selected: _SelectedRun) -> RunResult | RunFailure:
         manifest = self._manifest(selected)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
-            _manifest, _plan, result = self._records(selected)
-            return self._typed_result(result, selected.paths.root)
+            manifest, _plan, result = self._records(selected)
+            return self._typed_result(result, selected.paths.root, manifest)
         details = manifest.get("details")
         error_type = details.get("error_type") if isinstance(details, Mapping) else None
         message = details.get("error") if isinstance(details, Mapping) else None

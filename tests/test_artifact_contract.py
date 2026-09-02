@@ -145,6 +145,17 @@ def test_manifest_binds_run_identity_and_status_provenance(
     with pytest.raises(ArtifactManifestError, match="terminal provenance"):
         validate_manifest(forged_running)
 
+    duplicated = copy.deepcopy(record.manifest)
+    reference = {
+        "path": "outputs/repeated.txt",
+        "kind": "file",
+        "size": 0,
+        "sha256": "0" * 64,
+    }
+    duplicated["files"]["outputs"] = [reference, dict(reference)]
+    with pytest.raises(ArtifactManifestError, match="duplicated"):
+        validate_manifest(duplicated)
+
 
 def test_artifact_files_reject_symlinks_even_when_target_stays_inside_role(
     tmp_path: Path,

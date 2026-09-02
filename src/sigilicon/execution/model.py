@@ -1154,6 +1154,8 @@ class Artifact:
     kind: str
     path: Path
     qualifiers: Mapping[str, Any] = field(default_factory=dict)
+    _record_path: Path | None = field(default=None, repr=False, compare=False)
+    _payload_owner: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", _identifier(self.role, "artifact role"))
@@ -1161,7 +1163,19 @@ class Artifact:
         if not isinstance(self.qualifiers, Mapping):
             raise ContractError("artifact qualifiers must be a mapping")
         object.__setattr__(self, "path", Path(self.path).absolute())
+        if self._record_path is not None:
+            object.__setattr__(
+                self,
+                "_record_path",
+                Path(self._record_path).absolute(),
+            )
         object.__setattr__(self, "qualifiers", _freeze(self.qualifiers, "artifact qualifiers"))
+
+    @property
+    def record_path(self) -> Path:
+        """Return the managed locator recorded in execution provenance."""
+
+        return self.path if self._record_path is None else self._record_path
 
 
 @dataclass(frozen=True)
@@ -1588,7 +1602,10 @@ class RunResult:
             raise ContractError("run root cannot be a filesystem root")
         for outcome in self.outcomes:
             expected = root / "outputs" / outcome.step
-            if any(not artifact.path.is_relative_to(expected) for artifact in outcome.result.artifacts):
+            if any(
+                not artifact.record_path.is_relative_to(expected)
+                for artifact in outcome.result.artifacts
+            ):
                 raise ContractError(
                     f"step {outcome.step!r} published outside its managed output root"
                 )
@@ -1617,7 +1634,9 @@ class RunResult:
                         {
                             "role": artifact.role,
                             "kind": artifact.kind,
-                            "path": artifact.path.relative_to(self.run_root).as_posix(),
+                            "path": artifact.record_path.relative_to(
+                                self.run_root
+                            ).as_posix(),
                             "qualifiers": json_value(artifact.qualifiers),
                         }
                         for artifact in outcome.result.artifacts

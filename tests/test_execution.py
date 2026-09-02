@@ -883,6 +883,31 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     assert sealed.parent.stat().st_mode & 0o777 == 0o555
 
 
+def test_sealed_input_mutation_is_uncertain_and_remains_readable(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+
+    class MutatingAdapter(CopyAdapter):
+        def run(self, context: StepContext, step: Step) -> StepResult:
+            sealed = context.source_path("configs/value.txt")
+            sealed.chmod(0o644)
+            sealed.write_text("changed during execution\n", encoding="utf-8")
+            raise RuntimeError("adapter failed after changing its input")
+
+    project = _project(tmp_path, MutatingAdapter())
+    run_id = "9" * 32
+
+    with pytest.raises(ExecutionError, match="sealed adapter input changed"):
+        project.run(_plan(project, "example:check"), run_id=run_id)
+
+    failure = _read_run(project, "example:check", run_id)
+    assert failure.status == "uncertain"
+    assert failure.error_type == "InputIntegrityError"
+    assert "sealed adapter input changed" in failure.message
+    _clean_run(project, "example:check", run_id)
+
+
 def test_external_resource_is_sealed_without_persisting_location_or_text(
     tmp_path: Path,
 ) -> None:
@@ -1074,11 +1099,13 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
     project = _project(tmp_path, TamperingAdapter())
     plan = _plan(project, "example:check")
 
-    result = project.run(
-        plan,
-        run_id="7" * 32,
-    )
-    assert result.outcomes[0].result.facts == {"tamper_rejected": True}
+    run_id = "7" * 32
+    with pytest.raises(ExecutionError, match="sealed adapter input changed"):
+        project.run(plan, run_id=run_id)
+
+    failure = _read_run(project, "example:check", run_id)
+    assert failure.status == "uncertain"
+    assert failure.error_type == "InputIntegrityError"
 
 
 def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:
@@ -1270,7 +1297,17 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "{}\n"
     restored = _read_run(project, "example:check", result.run_id)
     assert restored.outcomes[0].result.facts == {"passed": False}
-    assert restored.outcomes[0].result.artifacts[0].role == "evidence"
+    artifact = restored.outcomes[0].result.artifacts[0]
+    assert artifact.role == "evidence"
+    assert artifact.path.read_text() == "{}\n"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    artifact.record_path.unlink()
+    artifact.record_path.symlink_to(outside)
+    assert artifact.path.read_text() == "{}\n"
+    assert restored.record["steps"][0]["artifacts"][0]["path"] == (
+        "outputs/run/evidence/failure.json"
+    )
 
 
 def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Path) -> None:

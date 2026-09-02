@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import ExitStack, contextmanager
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import stat
-from typing import Any
+from typing import Any, Iterator
 
 from sigilicon.artifacts import RunRecord, new_identity, read_nofollow_text
 from sigilicon.execution.model import (
@@ -19,17 +20,80 @@ from sigilicon.execution.model import (
     PreflightResult,
     Resources,
     RunResult,
+    Step,
     StepContext,
     StepOutcome,
     StepResult,
     json_value,
 )
 from sigilicon.execution.adapter import AdapterRegistry
-from sigilicon.external_tools import process_group_cleanup_uncertainty
-from sigilicon.paths import ArtifactLayout
+from sigilicon.external_tools import (
+    owned_input_file,
+    process_group_cleanup_uncertainty,
+)
+from sigilicon.paths import ArtifactLayout, RunPaths
 
 
 Progress = Callable[[str, str], None]
+
+
+class InputIntegrityError(ExecutionError):
+    """A sealed execution input changed while an adapter could consume it."""
+
+
+@contextmanager
+def _held_step_inputs(
+    plan: ExecutionPlan,
+    step: Step,
+    source_root: Path,
+    resource_root: Path | None,
+) -> Iterator[None]:
+    """Hold and monitor every file input visible to one adapter invocation."""
+
+    paths = [source_root / source for source in step.sources]
+    bindings = {binding.identity: binding for binding in plan.resources}
+    if resource_root is not None:
+        for identity in step.resources:
+            binding = bindings[identity]
+            if binding.kind == "file":
+                paths.append(resource_root / binding.materialization_key)
+            elif binding.kind == "directory":
+                base = resource_root / binding.materialization_key
+                paths.extend(base / item.path for item in binding.files)
+
+    stack = ExitStack()
+    try:
+        for path in paths:
+            stack.enter_context(owned_input_file(path))
+    except (OSError, RuntimeError) as exc:
+        stack.close()
+        raise InputIntegrityError(
+            "could not bind the sealed adapter input closure"
+        ) from exc
+    try:
+        yield
+    except BaseException as execution_error:
+        try:
+            stack.close()
+        except (OSError, RuntimeError):
+            raise InputIntegrityError(
+                "sealed adapter input changed during execution"
+            ) from execution_error
+        raise
+    else:
+        try:
+            stack.close()
+        except (OSError, RuntimeError) as exc:
+            raise InputIntegrityError(
+                "sealed adapter input changed during execution"
+            ) from exc
+
+
+def _refresh_failure_inventory(record: RunRecord, paths: RunPaths) -> None:
+    """Make a failed run's safe on-disk state readable by RunStore."""
+
+    for role in paths.roles:
+        _register_tree(record, role, paths.role(role))
 
 
 def _preflight(
@@ -228,7 +292,9 @@ def _run(
     )
     outcomes: list[StepOutcome] = []
     by_id: dict[str, StepResult] = {}
+    integrity_failure: list[str] = []
     with record.failure_boundary(
+        uncertainty=lambda: integrity_failure[0] if integrity_failure else None,
         partial_failure=lambda: (
             {
                 "completed_steps": [outcome.step for outcome in outcomes],
@@ -236,7 +302,8 @@ def _run(
             }
             if outcomes
             else None
-        )
+        ),
+        prepare_failure=lambda: _refresh_failure_inventory(record, paths),
     ):
         record.bind_operation(operation_id)
         record.write_json("inputs", ("execution-plan.json",), plan.record)
@@ -365,23 +432,33 @@ def _run(
                         f"trusted adapter is unavailable: {step.uses!r}"
                     ) from exc
                 try:
-                    result = adapter.run(context, step)
-                    if not isinstance(result, StepResult):
-                        raise TypeError("adapter run must return StepResult")
-                    for artifact in result.artifacts:
-                        _validate_artifact(
-                            artifact,
-                            output_root=output_root,
-                            run_root=paths.root,
-                        )
-                        record.add_file("outputs", artifact.path)
-                except (KeyboardInterrupt, SystemExit):
+                    with _held_step_inputs(
+                        plan,
+                        step,
+                        source_root,
+                        resource_root,
+                    ):
+                        try:
+                            result = adapter.run(context, step)
+                            if not isinstance(result, StepResult):
+                                raise TypeError("adapter run must return StepResult")
+                            for artifact in result.artifacts:
+                                _validate_artifact(
+                                    artifact,
+                                    output_root=output_root,
+                                    run_root=paths.root,
+                                )
+                                record.add_file("outputs", artifact.path)
+                        except (KeyboardInterrupt, SystemExit):
+                            raise
+                        except Exception as exc:
+                            uncertainty = process_group_cleanup_uncertainty(exc)
+                            if uncertainty is None:
+                                raise
+                            result = StepResult.uncertain(uncertainty)
+                except InputIntegrityError as exc:
+                    integrity_failure.append(str(exc))
                     raise
-                except Exception as exc:
-                    uncertainty = process_group_cleanup_uncertainty(exc)
-                    if uncertainty is None:
-                        raise
-                    result = StepResult.uncertain(uncertainty)
                 published = {artifact.path for artifact in result.artifacts}
                 actual_outputs = {
                     path.absolute()

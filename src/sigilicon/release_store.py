@@ -169,11 +169,22 @@ def audit_release_package(
             ReleaseArtifact(export, role, file.path, relative_text, digest, size)
         )
         expected_files.add(file.relative)
+    expected_directories = {
+        parent
+        for file in expected_files
+        for parent in file.parents
+        if parent != Path(".")
+    }
     try:
-        actual_files = set(tree.inventory().files)
+        inventory = tree.inventory()
+        actual_files = set(inventory.files)
+        actual_directories = set(inventory.directories)
     except (OSError, RuntimeError) as exc:
         raise RuntimeError(f"release package is unsafe: {exc}") from exc
-    if actual_files != expected_files:
+    if (
+        actual_files != expected_files
+        or actual_directories != expected_directories
+    ):
         raise RuntimeError("release package inventory disagrees with its manifest")
     return ReleasePackage(
         path,

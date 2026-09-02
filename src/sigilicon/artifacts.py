@@ -597,6 +597,10 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise ArtifactManifestError(
                     "manifest directory reference cannot have file metadata"
                 )
+            if relative in registered_paths:
+                raise ArtifactManifestError(
+                    f"manifest file reference is duplicated: {relative}"
+                )
             registered_paths.add(relative)
     completion_evidence = value.get("completion_evidence")
     if not isinstance(completion_evidence, list) or not all(
@@ -1130,6 +1134,7 @@ class RunRecord:
         uncertainty: Callable[[], str | None] = lambda: None,
         partial_failure: Callable[[], Mapping[str, Any] | None] = lambda: None,
         details: Callable[[], Mapping[str, Any] | None] = lambda: None,
+        prepare_failure: Callable[[], None] = lambda: None,
     ) -> Iterator[None]:
         """Terminalize failures that happen before a workspace can register callbacks."""
 
@@ -1137,6 +1142,12 @@ class RunRecord:
             yield
         except BaseException as error:
             if self.status == "running":
+                try:
+                    prepare_failure()
+                except Exception as inventory_error:
+                    error.add_note(
+                        f"could not close artifact failure inventory: {inventory_error}"
+                    )
                 try:
                     self.fail(
                         error,

@@ -98,6 +98,17 @@ def test_exact_release_audit_rejects_unmanifested_files(
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
+def test_exact_release_audit_rejects_unmanifested_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_release(tmp_path / "release")
+    _skip_semantic_checks(monkeypatch)
+    (manifest_path.parent / "empty-extra").mkdir()
+
+    with pytest.raises(RuntimeError, match="inventory"):
+        ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
 def test_release_audit_is_reachable_only_through_the_public_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

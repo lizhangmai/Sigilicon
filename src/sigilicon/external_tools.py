@@ -358,20 +358,35 @@ class OwnedFileDescriptor:
                     )
 
 
-@dataclass(frozen=True)
+@dataclass
 class OwnedSealedInputDescriptor:
-    """Immutable anonymous input inherited by an exact child process."""
+    """Immutable anonymous input with an explicit or object lifetime."""
 
-    fd: int
+    fd: int | None
 
     @property
     def child_path(self) -> str:
+        if self.fd is None:
+            raise RuntimeError("sealed child input is closed")
         return owned_process_fd_path(self.fd)
 
     def require_sealed(self) -> None:
+        if self.fd is None:
+            raise RuntimeError("sealed child input is closed")
         if fcntl.fcntl(self.fd, _F_GET_SEALS) != _REQUIRED_MEMFD_SEALS:
             raise RuntimeError("sealed child input lost its immutable seals")
         os.lseek(self.fd, 0, os.SEEK_SET)
+
+    def close(self) -> None:
+        descriptor, self.fd = self.fd, None
+        if descriptor is not None:
+            os.close(descriptor)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except OSError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -687,13 +702,12 @@ def owned_input_file(
         os.close(parent_fd)
 
 
-@contextmanager
-def owned_sealed_input(
+def retain_sealed_input(
     payload: bytes,
     *,
     name: str,
-) -> Iterator[OwnedSealedInputDescriptor]:
-    """Create a sealed memfd whose bytes cannot change during child execution."""
+) -> OwnedSealedInputDescriptor:
+    """Create an immutable memfd retained until its owner closes or releases it."""
 
     if not name or Path(name).name != name:
         raise ValueError(f"sealed input name must be one filename: {name!r}")
@@ -721,12 +735,28 @@ def owned_sealed_input(
         fcntl.fcntl(descriptor, _F_ADD_SEALS, _REQUIRED_MEMFD_SEALS)
         owned = OwnedSealedInputDescriptor(descriptor)
         owned.require_sealed()
-        try:
-            yield owned
-        finally:
-            owned.require_sealed()
-    finally:
+        return owned
+    except BaseException:
         os.close(descriptor)
+        raise
+
+
+@contextmanager
+def owned_sealed_input(
+    payload: bytes,
+    *,
+    name: str,
+) -> Iterator[OwnedSealedInputDescriptor]:
+    """Hold a sealed memfd across one exact child invocation."""
+
+    owned = retain_sealed_input(payload, name=name)
+    try:
+        yield owned
+    finally:
+        try:
+            owned.require_sealed()
+        finally:
+            owned.close()
 
 
 @contextmanager
