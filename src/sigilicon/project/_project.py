@@ -34,7 +34,7 @@ _RUNTIME_FIELDS = frozenset(
 )
 
 if TYPE_CHECKING:
-    from sigilicon.execution.backend import BackendRegistry
+    from sigilicon.execution.adapter import AdapterRegistry
     from sigilicon.execution import (
         ExecutionPlan,
         PreflightResult,
@@ -169,23 +169,23 @@ class Project:
         repr=False,
         compare=False,
     )
-    _backend_registry: BackendRegistry | None = field(
+    _adapter_registry: AdapterRegistry | None = field(
         default=None,
         init=False,
         repr=False,
         compare=False,
     )
 
-    def _backends(self) -> BackendRegistry:
-        """Return this open Project's process-local trusted Backend instances."""
+    def _adapters(self) -> AdapterRegistry:
+        """Return this Project's package-owned tool adapters."""
 
-        from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import BackendRegistry
+        from sigilicon.backends import trusted_adapters
+        from sigilicon.execution.adapter import AdapterRegistry
 
-        registry = self._backend_registry
+        registry = self._adapter_registry
         if registry is None:
-            registry = BackendRegistry(trusted_backends())
-            object.__setattr__(self, "_backend_registry", registry)
+            registry = AdapterRegistry(trusted_adapters())
+            object.__setattr__(self, "_adapter_registry", registry)
         return registry
 
     @classmethod
@@ -204,17 +204,33 @@ class Project:
         return project
 
     def plan(self, selector: str | Mapping[str, Any]) -> ExecutionPlan:
-        """Compile a selector or restore its canonical portable plan record."""
+        """Compile a selector to its complete source and runtime closure."""
 
+        from sigilicon.execution.adapter import plan_execution
         from sigilicon.execution.model import ExecutionPlan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
         if isinstance(selector, Mapping):
             owner_name = selector.get("owner")
-            if not isinstance(owner_name, str):
-                raise ValueError("execution plan record must identify its owner")
-            self.owner(owner_name)
-            return ExecutionPlan.from_record(selector)
+            operation_name = selector.get("operation")
+            variant = selector.get("variant")
+            if (
+                not isinstance(owner_name, str)
+                or not isinstance(operation_name, str)
+                or (variant is not None and not isinstance(variant, str))
+            ):
+                raise ValueError(
+                    "execution plan record must identify owner, operation, and variant"
+                )
+            identity = f"{owner_name}:{operation_name}" + (
+                "" if variant is None else f"@{variant}"
+            )
+            current = self.plan(identity)
+            if current.record != dict(selector):
+                raise ValueError(
+                    "execution plan record does not match the current project closure"
+                )
+            return current
         if not isinstance(selector, str):
             raise TypeError("Project.plan requires a selector or execution plan record")
         owner_name, operation, variant = parse_selector(selector)
@@ -223,7 +239,7 @@ class Project:
         if relative is None:
             raise ValueError(f"owner {owner.name!r} has no operation catalog")
         catalog = self.project_root.joinpath(*relative.parts).absolute()
-        return compile_operation(
+        draft = compile_operation(
             catalog,
             owner=owner.name,
             owner_root=owner.root,
@@ -233,6 +249,12 @@ class Project:
             variant=variant,
             project_identity=self.identity,
         )
+        return plan_execution(
+            draft,
+            project=self,
+            adapters=self._adapters(),
+            resources=self._execution_resources(),
+        )
 
     def preflight(
         self,
@@ -240,7 +262,6 @@ class Project:
     ) -> PreflightResult:
         """Check a plan without creating a run or starting a backend."""
 
-        from sigilicon.execution.backend import bind_execution
         from sigilicon.execution.engine import _preflight
         from sigilicon.execution.model import (
             ExecutionPlan,
@@ -253,15 +274,9 @@ class Project:
         resources = self._execution_resources()
         phase = "plan"
         try:
-            self._require_canonical_plan(plan)
-            phase = "runtime-binding"
-            bound = bind_execution(
-                plan,
-                project=self,
-                backends=self._backends(),
-                resources=resources,
-            )
-            checked = _preflight(bound, resources, self._backends())
+            self._require_project_plan(plan)
+            phase = "preflight"
+            checked = _preflight(plan, resources, self._adapters())
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
@@ -287,24 +302,17 @@ class Project:
     ) -> RunResult:
         """Execute one source-current plan through its selected backends."""
 
-        from sigilicon.execution.backend import bind_execution
         from sigilicon.execution.engine import _run
         from sigilicon.execution.model import ExecutionPlan
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")
         resources = self._execution_resources()
-        self._require_canonical_plan(plan)
-        bound = bind_execution(
-            plan,
-            project=self,
-            backends=self._backends(),
-            resources=resources,
-        )
+        self._require_project_plan(plan)
         return _run(
-            bound,
+            plan,
             resources,
-            self._backends(),
+            self._adapters(),
             artifact_root=self.artifact_root,
             project_root=self.project_root,
             owner_root=self.owner(plan.owner).root,
@@ -312,6 +320,13 @@ class Project:
             run_id=run_id,
             progress=progress,
         )
+
+    def _require_project_plan(self, plan: ExecutionPlan) -> None:
+        """Require a plan produced from this exact project composition."""
+
+        if plan.project_identity != self.identity:
+            raise ContractError("execution plan belongs to another project composition")
+        self.owner(plan.owner)
 
     def _execution_resources(self) -> Resources:
         """Bind project runtime configuration to a sanitized host snapshot."""
@@ -322,21 +337,6 @@ class Project:
             if not key.startswith("SIGILICON_")
         }
         return replace(self._runtime, environment=environment)
-
-    def _require_canonical_plan(
-        self,
-        plan: ExecutionPlan,
-    ) -> None:
-        """Reject plans not compiled from this Project's current owner contract."""
-
-        selector = f"{plan.owner}:{plan.operation}" + (
-            "" if plan.variant is None else f"@{plan.variant}"
-        )
-        current = self.plan(selector)
-        if plan.record != current.record:
-            raise ValueError(
-                "execution plan does not match the current owner operation contract"
-            )
 
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:

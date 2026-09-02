@@ -20,7 +20,6 @@ from sigilicon.execution import (
     ContractError,
     Evidence,
     ExecutionError,
-    Operation,
     Step,
     StepContext,
 )
@@ -119,7 +118,7 @@ def test_cadence_run_methods_only_consume_prepared_domain_plans() -> None:
 
 def _context(
     tmp_path: Path,
-    step: Operation | Step,
+    step: Step,
     resources: Resources,
     *,
     project_root: Path | None = None,
@@ -128,9 +127,7 @@ def _context(
     scopes: dict[str, str] | None = None,
     register_operation=None,
 ) -> StepContext:
-    runtime_step = (
-        step if isinstance(step, Step) else Step.from_operation(step)
-    )
+    runtime_step = step
     run_root = tmp_path / "run"
     work = run_root / "work" / runtime_step.id
     output = run_root / "outputs" / runtime_step.id
@@ -155,24 +152,24 @@ def _context(
     )
 
 
-def _bind_preparation(context: StepContext, preparation) -> StepContext:
+def _bind_plan(context: StepContext, step: Step) -> StepContext:
     root = context.source_root.parent / "resources"
     root.mkdir(exist_ok=True)
-    for resource in preparation.resources:
+    for resource in step._resource_bindings:
         assert resource.kind == "file"
         (root / resource.materialization_key).write_bytes(resource.data)
     return replace(
         context,
-        step=preparation.step,
-        source_scopes={source: "owner" for source in preparation.step.sources},
-        resource_root=root if preparation.resources else None,
+        step=step,
+        source_scopes={source: "owner" for source in step.sources},
+        resource_root=root if step._resource_bindings else None,
         resource_digests={
             resource.identity: resource.sha256
-            for resource in preparation.resources
+            for resource in step._resource_bindings
         },
         resource_kinds={
             resource.identity: resource.kind
-            for resource in preparation.resources
+            for resource in step._resource_bindings
         },
     )
 
@@ -273,7 +270,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     tmp_path: Path,
 ) -> None:
     executable = _file(tmp_path / "bin/xrun", executable=True)
-    step = Operation(
+    step = Step(
         "ams",
         "cadence.xcelium-ams",
         {
@@ -358,9 +355,8 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         execute,
     )
     backend = XceliumAmsBackend()
-    preparation = backend.prepare(selected_project, step, resources)
-    prepared = preparation.step
-    context = _bind_preparation(context, preparation)
+    prepared = backend.plan(selected_project, step, resources)
+    context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     record = prepared.record
@@ -384,7 +380,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
 
 def _oa_context(
     tmp_path: Path,
-    step: Operation | Step,
+    step: Step,
     *,
     registered: list[object],
 ) -> StepContext:
@@ -393,9 +389,7 @@ def _oa_context(
     workspace = tmp_path / "oa-workspace"
     owner.mkdir(parents=True)
     workspace.mkdir()
-    runtime_step = (
-        step if isinstance(step, Step) else Step.from_operation(step)
-    )
+    runtime_step = step
     context = _context(
         tmp_path,
         runtime_step,
@@ -507,7 +501,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Operation(
+    step = Step(
         "native",
         "cadence.native-oa",
         {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
@@ -572,7 +566,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         execute,
     )
     backend = NativeOaBackend()
-    prepared = backend.prepare(project, step, context.resources).step
+    prepared = backend.plan(project, step, context.resources)
     context = replace(
         context,
         step=prepared,
@@ -592,7 +586,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Operation(
+    step = Step(
         "oa",
         "cadence.oa-rebuild",
         {"owner": "example", "timeout_seconds": 10},
@@ -675,9 +669,8 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         backend for backend in cadence_backends()
         if backend.name == "cadence.oa-rebuild"
     )
-    preparation = backend.prepare(project, step, context.resources)
-    prepared = preparation.step
-    context = _bind_preparation(context, preparation)
+    prepared = backend.plan(project, step, context.resources)
+    context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     result = backend.run(context, prepared)
@@ -690,7 +683,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Operation(
+    step = Step(
         "layout",
         "cadence.layout",
         {
@@ -753,7 +746,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     )
 
     backend = LayoutBackend()
-    prepared = backend.prepare(project, step, context.resources).step
+    prepared = backend.plan(project, step, context.resources)
     context = replace(
         context,
         step=prepared,
@@ -787,7 +780,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = Operation(
+    step = Step(
         "layout",
         "cadence.layout",
         {
@@ -817,7 +810,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     )
 
     with pytest.raises(ContractError, match="typed backend source snapshot drift"):
-        LayoutBackend().prepare(project, step, context.resources)
+        LayoutBackend().plan(project, step, context.resources)
 
 
 def test_layout_verification_backend_publishes_classified_evidence(
@@ -826,7 +819,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
 ) -> None:
     xstream = _file(tmp_path / "bin/strmout", executable=True)
     calibre = _file(tmp_path / "bin/calibre", executable=True)
-    step = Operation(
+    step = Step(
         "verify",
         "cadence.layout-verify",
         {
@@ -945,9 +938,8 @@ def test_layout_verification_backend_publishes_classified_evidence(
         verify,
     )
     backend = LayoutVerificationBackend()
-    preparation = backend.prepare(project, step, resources)
-    prepared = preparation.step
-    context = _bind_preparation(context, preparation)
+    prepared = backend.plan(project, step, resources)
+    context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     assert all(

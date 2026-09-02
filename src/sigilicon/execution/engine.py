@@ -12,8 +12,8 @@ from typing import Any
 from sigilicon.artifacts import RunRecord, new_identity, read_nofollow_text
 from sigilicon.execution.model import (
     Artifact,
-    BoundExecution,
     ContractError,
+    ExecutionPlan,
     ExecutionError,
     PreflightCheck,
     PreflightResult,
@@ -24,7 +24,7 @@ from sigilicon.execution.model import (
     StepResult,
     json_value,
 )
-from sigilicon.execution.backend import BackendRegistry
+from sigilicon.execution.adapter import AdapterRegistry
 from sigilicon.external_tools import process_group_cleanup_uncertainty
 from sigilicon.paths import ArtifactLayout
 
@@ -33,11 +33,11 @@ Progress = Callable[[str, str], None]
 
 
 def _preflight(
-    plan: BoundExecution,
+    plan: ExecutionPlan,
     resources: Resources,
-    backends: BackendRegistry,
+    adapters: AdapterRegistry,
 ) -> PreflightResult:
-    """Check exact sources and only the backends selected by this plan."""
+    """Check exact sources and only the adapters selected by this plan."""
 
     checks: list[PreflightCheck] = []
     seen_sources: set[tuple[Path, str]] = set()
@@ -71,31 +71,31 @@ def _preflight(
         )
     for step in plan.steps:
         try:
-            backend = backends[step.uses]
+            adapter = adapters[step.uses]
         except KeyError:
             checks.append(
                 PreflightCheck(
-                    "backend",
+                    "adapter",
                     step.uses,
                     "blocked",
                     f"selected by step {step.id!r} but not provided",
                 )
             )
             continue
-        checks.append(PreflightCheck("backend", step.uses, "ready", step.id))
+        checks.append(PreflightCheck("adapter", step.uses, "ready", step.id))
         try:
-            backend_checks = backend.preflight(step, resources)
-            if not isinstance(backend_checks, tuple) or any(
-                not isinstance(check, PreflightCheck) for check in backend_checks
+            adapter_checks = adapter.preflight(step, resources)
+            if not isinstance(adapter_checks, tuple) or any(
+                not isinstance(check, PreflightCheck) for check in adapter_checks
             ):
-                raise TypeError("backend preflight must return PreflightCheck values")
-            checks.extend(backend_checks)
+                raise TypeError("adapter preflight must return PreflightCheck values")
+            checks.extend(adapter_checks)
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
             checks.append(
                 PreflightCheck(
-                    "backend-preflight",
+                    "adapter-preflight",
                     step.uses,
                     "blocked",
                     f"{type(exc).__name__}: {exc}",
@@ -115,7 +115,7 @@ def _validate_artifact(
         metadata = path.stat(follow_symlinks=False)
     except OSError as exc:
         raise ExecutionError(
-            f"backend published an unsafe or missing artifact: {artifact.path}"
+            f"adapter published an unsafe or missing artifact: {artifact.path}"
         ) from exc
     if (
         path.resolve() != path
@@ -126,12 +126,12 @@ def _validate_artifact(
         or not path.is_relative_to(run_root)
     ):
         raise ExecutionError(
-            f"backend published an unsafe or missing artifact: {artifact.path}"
+            f"adapter published an unsafe or missing artifact: {artifact.path}"
         )
 
 
-def _seal_sources(record: RunRecord, plan: BoundExecution) -> Path:
-    """Materialize the plan closure once; backends consume only these copies."""
+def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
+    """Materialize the plan closure once; adapters consume only these copies."""
 
     root = record.directory("inputs", "sources")
     for source in plan.sources:
@@ -153,7 +153,7 @@ def _seal_sources(record: RunRecord, plan: BoundExecution) -> Path:
     return root
 
 
-def _seal_resources(record: RunRecord, plan: BoundExecution) -> Path | None:
+def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
     """Materialize host resources without persisting their original locations."""
 
     if not plan.resources:
@@ -193,17 +193,17 @@ def _register_tree(record: RunRecord, role: str, root: Path) -> None:
     """Close the owned inventory without accepting symlinks or path replacement."""
 
     if root.resolve() != root.absolute() or not root.is_dir() or root.is_symlink():
-        raise ExecutionError(f"managed {role} root was replaced during backend execution")
+        raise ExecutionError(f"managed {role} root was replaced during adapter execution")
     for path in sorted(root.rglob("*"), key=lambda item: (len(item.parts), str(item))):
         if path.is_symlink() or path.resolve() != path.absolute():
-            raise ExecutionError(f"backend created an unsafe managed path: {path}")
+            raise ExecutionError(f"adapter created an unsafe managed path: {path}")
         record.add_file(role, path)
 
 
 def _run(
-    plan: BoundExecution,
+    plan: ExecutionPlan,
     resources: Resources,
-    backends: BackendRegistry,
+    adapters: AdapterRegistry,
     *,
     artifact_root: Path,
     project_root: Path,
@@ -214,7 +214,7 @@ def _run(
 ) -> RunResult:
     """Run a preflighted plan once and persist a closed immutable result."""
 
-    checked = _preflight(plan, resources, backends)
+    checked = _preflight(plan, resources, adapters)
     if not checked.ready:
         blocked = "; ".join(
             f"{check.kind}:{check.subject}: {check.detail}"
@@ -248,7 +248,7 @@ def _run(
         )
     ):
         record.bind_operation(operation_id)
-        record.write_json("inputs", ("execution-plan.json",), plan.plan.record)
+        record.write_json("inputs", ("execution-plan.json",), plan.record)
         record.write_json(
             "inputs",
             ("runtime-bindings.json",),
@@ -277,7 +277,7 @@ def _run(
         )
         if changed_at_seal:
             raise ExecutionError(
-                "operation source changed immediately before backend input sealing: "
+                "operation source changed immediately before adapter input sealing: "
                 + ", ".join(sorted(set(changed_at_seal)))
             )
         changed_resources = tuple(
@@ -312,7 +312,7 @@ def _run(
                 )
                 if changed:
                     raise ExecutionError(
-                        "operation source changed immediately before backend start: "
+                        "operation source changed immediately before adapter start: "
                         + ", ".join(sorted(set(changed)))
                     )
                 work_root = record.directory("work", step.id)
@@ -363,15 +363,15 @@ def _run(
                     ),
                 )
                 try:
-                    backend = backends[step.uses]
+                    adapter = adapters[step.uses]
                 except KeyError as exc:
                     raise ExecutionError(
-                        f"trusted backend is unavailable: {step.uses!r}"
+                        f"trusted adapter is unavailable: {step.uses!r}"
                     ) from exc
                 try:
-                    result = backend.run(context, step)
+                    result = adapter.run(context, step)
                     if not isinstance(result, StepResult):
-                        raise TypeError("backend run must return StepResult")
+                        raise TypeError("adapter run must return StepResult")
                     for artifact in result.artifacts:
                         _validate_artifact(
                             artifact,
@@ -396,7 +396,7 @@ def _run(
                 }
                 if result.status == "succeeded" and actual_outputs != published:
                     raise ExecutionError(
-                        f"backend {step.uses!r} output inventory does not match "
+                        f"adapter {step.uses!r} output inventory does not match "
                         "its published artifacts"
                     )
                 _register_tree(record, "work", work_root)

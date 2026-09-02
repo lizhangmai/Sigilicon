@@ -15,10 +15,10 @@ from sigilicon.artifacts import (
     read_json_object,
     read_nofollow_text,
 )
+from sigilicon.canonical import canonical_digest
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
-    ExecutionPlan,
     ResourceBinding,
     RunFailure,
     RunResult,
@@ -238,11 +238,7 @@ class RunStore:
         except (OSError, RuntimeError) as exc:
             raise RunStoreError(str(exc)) from exc
         self._validate_runtime_bindings(selected.paths, runtime_bindings)
-        try:
-            decoded_plan = ExecutionPlan.from_record(plan)
-        except ContractError as exc:
-            raise RunStoreError("persisted execution plan is invalid") from exc
-        identity = decoded_plan.identity
+        identity = canonical_digest(plan)
         expected = {
             "owner": selected.owner,
             "operation": selected.operation,
@@ -261,11 +257,12 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 6
+            plan.get("schema") != 7
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
             or plan.get("variant") != selected.variant
+            or plan.get("resources") != runtime_bindings.get("resources")
         ):
             raise RunStoreError("persisted execution plan identity drift")
         if (

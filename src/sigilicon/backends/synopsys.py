@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
+from dataclasses import replace
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -23,13 +24,12 @@ from sigilicon.artifacts import (
     ensure_nofollow_directory,
 )
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.backend import Preparation, _DirectBackend
+from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
     ResourceBinding,
-    Operation,
     PreflightCheck,
     Resources,
     Source,
@@ -490,7 +490,7 @@ def _run_script(
         ))
 
 
-class VcsBackend(_DirectBackend):
+class VcsBackend(DirectAdapter):
     name = "synopsys.vcs"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -573,7 +573,7 @@ class VcsBackend(_DirectBackend):
         return StepResult.succeeded(artifacts=logs)
 
 
-class DcBackend(_DirectBackend):
+class DcBackend(DirectAdapter):
     name = "synopsys.dc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -686,7 +686,7 @@ class DcBackend(_DirectBackend):
             return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
 
 
-class FcBackend(_DirectBackend):
+class FcBackend(DirectAdapter):
     name = "synopsys.fc"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -918,7 +918,7 @@ class FcBackend(_DirectBackend):
             return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 
-class HspiceBackend(_DirectBackend):
+class HspiceBackend(DirectAdapter):
     name = "synopsys.hspice"
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
@@ -1083,7 +1083,7 @@ class HspiceBackend(_DirectBackend):
             return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
-class StructuralLinkBackend(_DirectBackend):
+class StructuralLinkBackend(DirectAdapter):
     """Link owner RTL against one locked, uncharacterized macro release."""
 
     name = "synopsys.structural-link"
@@ -1190,16 +1190,15 @@ class StructuralLinkBackend(_DirectBackend):
         ]
         return tuple(checks)
 
-    def prepare(
+    def plan(
         self,
-        project: Any,
-        step: Operation,
+        project: PlanningProject,
+        step: Step,
         resources: Resources,
-    ) -> Preparation:
+    ) -> Step:
         from sigilicon.workflows.structural_link import plan_structural_link
 
-        initial = Step.from_operation(step)
-        self.preflight(initial, resources)
+        initial = step
         config = self._config(initial)
         owner = _text(config, "owner")
         owner_root = project.owner(owner).root
@@ -1295,18 +1294,22 @@ class StructuralLinkBackend(_DirectBackend):
                 (*step.sources, *(source.path for _scope, source in captured_sources))
             )
         )
-        prepared = Step.from_operation(
+        prepared = replace(
             step,
             request={"config": dict(config), "prepared": prepared_record},
             sources=source_names,
             resources=tuple(resource.identity for resource in external),
+            _source_snapshots=tuple(
+                dict.fromkeys(
+                    (
+                        *step._source_snapshots,
+                        *(source for _scope, source in captured_sources),
+                    )
+                )
+            ),
+            _resource_bindings=external,
         )
-        self.preflight(prepared, resources)
-        return Preparation(
-            prepared,
-            tuple(source for _scope, source in captured_sources),
-            external,
-        )
+        return prepared
 
     @staticmethod
     def _planning_record(

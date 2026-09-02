@@ -12,9 +12,9 @@ import pytest
 
 from sigilicon.execution import (
     Artifact,
+    Adapter,
     ContractError,
     ExecutionError,
-    Operation,
     Step,
     PreflightCheck,
     RunResult,
@@ -23,7 +23,6 @@ from sigilicon.execution import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.backend import Preparation
 from sigilicon.execution.model import ResourceBinding, Resources
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
@@ -31,7 +30,7 @@ from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
 
 
-_TEST_BACKENDS: tuple[object, ...] = ()
+_TEST_ADAPTERS: tuple[object, ...] = ()
 
 
 def _plan(project: Project, selector: str):
@@ -70,9 +69,8 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
     import sigilicon.execution as execution
 
     for name in (
-        "Operation",
         "Step",
-        "Backend",
+        "Adapter",
         "ExecutionPlan",
         "RunResult",
         "RunStore",
@@ -81,9 +79,9 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
     for removed in (
         "OperationStep",
         "PreparedStep",
-        "_Backend",
-        "_BackendRegistry",
-        "_Preparation",
+        "Backend",
+        "Operation",
+        "Preparation",
         "_RunStore",
         "Resources",
     ):
@@ -128,11 +126,11 @@ def test_step_files_does_not_import_the_execution_model() -> None:
 
 @pytest.fixture(autouse=True)
 def _bind_test_backends(monkeypatch: pytest.MonkeyPatch) -> None:
-    global _TEST_BACKENDS
-    _TEST_BACKENDS = ()
+    global _TEST_ADAPTERS
+    _TEST_ADAPTERS = ()
     monkeypatch.setattr(
-        "sigilicon.backends.trusted_backends",
-        lambda: _TEST_BACKENDS,
+        "sigilicon.backends.trusted_adapters",
+        lambda: _TEST_ADAPTERS,
     )
 
 
@@ -243,11 +241,11 @@ filesets = ["value"]
     return operations
 
 
-class CopyBackend:
+class CopyAdapter:
     name = "fake.copy"
 
-    def prepare(self, _project, step, resources):
-        return Preparation(Step.from_operation(step))
+    def plan(self, _project, step, _resources):
+        return step
 
     def preflight(self, step, resources):
         return (
@@ -266,11 +264,11 @@ class CopyBackend:
         )
 
 
-class UpperBackend:
+class UpperAdapter:
     name = "fake.upper"
 
-    def prepare(self, _project, step, resources):
-        return Preparation(Step.from_operation(step))
+    def plan(self, _project, step, _resources):
+        return step
 
     def preflight(self, step, resources):
         return ()
@@ -287,11 +285,11 @@ class UpperBackend:
         )
 
 
-def _project(root: Path, *backends) -> Project:
+def _project(root: Path, *adapters) -> Project:
     """Select test-only implementations through pytest's private assembly."""
 
-    global _TEST_BACKENDS
-    _TEST_BACKENDS = backends
+    global _TEST_ADAPTERS
+    _TEST_ADAPTERS = adapters
     return Project.open(root)
 
 
@@ -299,7 +297,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     tmp_path: Path,
 ) -> None:
     operations = _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(), UpperBackend())
+    project = _project(tmp_path, CopyAdapter(), UpperAdapter())
     plan = project.plan("example:check")
 
     assert plan.owner == "example"
@@ -312,11 +310,10 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 6
+    assert json.loads(json.dumps(plan.record))["schema"] == 7
     assert "resources_identity" not in plan.record
-    assert "resources" not in plan.record
-    assert "backend_bindings" not in plan.record
-    assert not hasattr(plan, "_backends")
+    assert plan.record["resources"] == []
+    assert not hasattr(plan, "_adapters")
     assert not project.artifact_root.exists()
     checked = project.preflight(plan)
     assert checked.status == "ready"
@@ -330,7 +327,7 @@ def test_project_plan_is_independent_of_runtime_resources(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     plan = project.plan("example:check")
 
     assert project.preflight(plan).status == "ready"
@@ -341,7 +338,7 @@ def test_project_plan_is_independent_of_runtime_resources(
         ),
         encoding="utf-8",
     )
-    without_runtime = _project(tmp_path, CopyBackend())
+    without_runtime = _project(tmp_path, CopyAdapter())
     assert without_runtime.plan("example:check").record == plan.record
     assert without_runtime.preflight(plan).status == "blocked"
 
@@ -388,29 +385,27 @@ def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> No
     assert json.loads(completed.stdout) == local.record
 
 
-def test_execution_plan_record_restoration_does_not_read_current_sources(
+def test_execution_plan_record_restoration_requires_current_sources(
     tmp_path: Path,
 ) -> None:
     operations = _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     record = project.plan("example:check").record
     operations.write_text("invalid = true\n", encoding="utf-8")
 
-    restored = project.plan(json.loads(json.dumps(record)))
-
-    assert restored.record == record
-    assert project.preflight(restored).status == "blocked"
+    with pytest.raises((ContractError, ValueError)):
+        project.plan(json.loads(json.dumps(record)))
 
 
-def test_execution_plan_decoder_normalizes_invalid_evidence_types(
+def test_execution_plan_record_rejects_modified_evidence(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     record = project.plan("example:check").record
     record["steps"][0]["evidence"]["role"] = []
 
-    with pytest.raises(ContractError, match="evidence role must be text"):
+    with pytest.raises(ValueError, match="current project closure"):
         project.plan(record)
 
 
@@ -421,7 +416,7 @@ def test_cli_preflight_consumes_a_portable_plan_record(
     from sigilicon.cli.flow_core import main as flow_main
 
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(project.plan("example:check").record))
 
@@ -444,7 +439,7 @@ def test_cli_run_consumes_a_portable_plan_record(
     from sigilicon.cli.flow_core import main as flow_main
 
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(project.plan("example:check").record))
 
@@ -469,7 +464,7 @@ def test_cli_rejects_a_symlinked_plan_file(
     from sigilicon.cli.flow_core import main as flow_main
 
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     target = tmp_path / "target-plan.json"
     target.write_text(json.dumps(project.plan("example:check").record))
     plan_path = tmp_path / "plan.json"
@@ -487,7 +482,9 @@ def test_cli_rejects_a_symlinked_plan_file(
     assert "cannot read execution plan" in capsys.readouterr().err
 
 
-def test_backend_discovery_does_not_change_the_portable_plan(tmp_path: Path) -> None:
+def test_adapter_planning_closes_over_discovered_sources_deterministically(
+    tmp_path: Path,
+) -> None:
     _write_project(tmp_path)
     owner = tmp_path / "ip/example"
     first = owner / "configs/discovered-a.txt"
@@ -495,56 +492,62 @@ def test_backend_discovery_does_not_change_the_portable_plan(tmp_path: Path) -> 
     first.write_text("a\n", encoding="utf-8")
     second.write_text("b\n", encoding="utf-8")
 
-    class DiscoveringBackend(CopyBackend):
+    class DiscoveringAdapter(CopyAdapter):
         def __init__(self, paths: tuple[Path, ...]) -> None:
             self.paths = paths
 
-        def prepare(self, project, step, resources):
+        def plan(self, project, step, resources):
             owner_root = project.owner("example").root
             sources = tuple(
                 Source.capture(path, root=owner_root, scope="owner")
                 for path in self.paths
             )
             names = tuple(sorted(source.path for source in sources))
-            return Preparation(
-                Step.from_operation(
-                    step, sources=tuple(dict.fromkeys((*step.sources, *names)))
+            return replace(
+                step,
+                sources=tuple(dict.fromkeys((*step.sources, *names))),
+                _source_snapshots=tuple(
+                    sorted(
+                        (*step._source_snapshots, *sources),
+                        key=lambda source: source.path,
+                    )
                 ),
-                sources,
             )
 
     forward = _project(
         tmp_path,
-        DiscoveringBackend((first, second)),
+        DiscoveringAdapter((first, second)),
     ).plan("example:check")
     reverse = _project(
         tmp_path,
-        DiscoveringBackend((second, first)),
+        DiscoveringAdapter((second, first)),
     ).plan("example:check")
 
     assert forward.identity == reverse.identity
-    assert forward.steps[0].sources == ("configs/value.txt",)
+    assert forward.steps[0].sources == (
+        "configs/value.txt",
+        "configs/discovered-a.txt",
+        "configs/discovered-b.txt",
+    )
     assert _project(
         tmp_path,
-        DiscoveringBackend((first, second)),
+        DiscoveringAdapter((first, second)),
     ).preflight(forward).ready
 
 
-def test_runtime_binding_rejects_a_compiled_source_change(tmp_path: Path) -> None:
+def test_planning_rejects_a_compiled_source_change(tmp_path: Path) -> None:
     _write_project(tmp_path)
     source = tmp_path / "ip/example/configs/value.txt"
 
-    class ChangingBackend(CopyBackend):
-        def prepare(self, project, step, resources):
-            source.write_text("changed during prepare\n", encoding="utf-8")
-            return super().prepare(project, step, resources)
+    class ChangingAdapter(CopyAdapter):
+        def plan(self, project, step, resources):
+            source.write_text("changed during planning\n", encoding="utf-8")
+            return super().plan(project, step, resources)
 
-    project = _project(tmp_path, ChangingBackend())
+    project = _project(tmp_path, ChangingAdapter())
 
-    plan = _plan(project, "example:check")
-    checked = project.preflight(plan)
-    assert checked.status == "blocked"
-    assert "changed during backend preparation" in checked.checks[0].detail
+    with pytest.raises(ContractError, match="source changed during planning"):
+        _plan(project, "example:check")
 
 
 def test_backend_cannot_discover_another_owners_source(tmp_path: Path) -> None:
@@ -577,19 +580,18 @@ source = ["ip/foreign/value.txt"]
     value = foreign / "value.txt"
     value.write_text("foreign\n", encoding="utf-8")
 
-    class ForeignSourceBackend(CopyBackend):
-        def prepare(self, project, step, resources):
+    class ForeignSourceAdapter(CopyAdapter):
+        def plan(self, project, step, resources):
             source = Source.capture(value, root=foreign, scope="owner")
-            return Preparation(
-                Step.from_operation(step, sources=(*step.sources, source.path)),
-                (source,),
+            return replace(
+                step,
+                sources=(*step.sources, source.path),
+                _source_snapshots=(*step._source_snapshots, source),
             )
 
-    project = _project(tmp_path, ForeignSourceBackend())
-    plan = _plan(project, "example:check")
-    checked = project.preflight(plan)
-    assert checked.status == "blocked"
-    assert "source owned by 'foreign'" in checked.checks[0].detail
+    project = _project(tmp_path, ForeignSourceAdapter())
+    with pytest.raises(ContractError, match="owned outside 'example'"):
+        _plan(project, "example:check")
 
 
 def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
@@ -600,19 +602,18 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
     link = owner / "linked.txt"
     link.symlink_to(target.name)
 
-    class SymlinkSourceBackend(CopyBackend):
-        def prepare(self, project, step, resources):
+    class SymlinkSourceAdapter(CopyAdapter):
+        def plan(self, project, step, resources):
             source = Source.capture(link, root=owner.parent, scope="owner")
-            return Preparation(
-                Step.from_operation(step, sources=(*step.sources, source.path)),
-                (source,),
+            return replace(
+                step,
+                sources=(*step.sources, source.path),
+                _source_snapshots=(*step._source_snapshots, source),
             )
 
-    project = _project(tmp_path, SymlinkSourceBackend())
-    plan = _plan(project, "example:check")
-    checked = project.preflight(plan)
-    assert checked.status == "blocked"
-    assert "non-symlink" in checked.checks[0].detail
+    project = _project(tmp_path, SymlinkSourceAdapter())
+    with pytest.raises(ContractError, match="non-symlink"):
+        _plan(project, "example:check")
 
 
 def test_operation_catalog_rejects_source_groups(tmp_path: Path) -> None:
@@ -640,7 +641,7 @@ def test_operation_rejects_source_globs(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ContractError, match="unknown fields.*source_globs"):
-        _plan(_project(tmp_path, CopyBackend()), "example:check")
+        _plan(_project(tmp_path, CopyAdapter()), "example:check")
 
 
 def test_operation_rejects_legacy_target_selector(tmp_path: Path) -> None:
@@ -665,7 +666,7 @@ def test_component_rejects_legacy_target_catalog_field(tmp_path: Path) -> None:
 
 def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(), UpperBackend())
+    project = _project(tmp_path, CopyAdapter(), UpperAdapter())
     plan = _plan(project, "example:all")
     progress: list[tuple[str, str]] = []
 
@@ -699,7 +700,7 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(),)
+    project = _project(tmp_path, CopyAdapter(),)
     result = project.run(
         _plan(project, "example:check"),
         run_id="7" * 32,
@@ -738,7 +739,7 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
 
 def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     plan = _plan(project, "example:check@fast")
     result = project.run(
         plan,
@@ -761,16 +762,17 @@ def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
     plan = _plan(project, "example:check")
     checked = project.preflight(plan)
     assert checked.status == "blocked"
-    assert "unknown trusted backend" in checked.checks[0].detail
-    with pytest.raises(ContractError, match="unknown trusted backend"):
+    missing = next(check for check in checked.checks if check.subject == "fake.copy")
+    assert missing.status == "blocked"
+    with pytest.raises(ExecutionError, match="preflight is blocked"):
         project.run(plan, run_id="2" * 32)
 
 
-def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
+def test_adapter_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
     _write_project(tmp_path)
     source = tmp_path / "ip/example/configs/value.txt"
 
-    class MutatingBackend(CopyBackend):
+    class MutatingBackend(CopyAdapter):
         def preflight(self, step, resources):
             source.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
             return ()
@@ -778,7 +780,7 @@ def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
     project = _project(tmp_path, MutatingBackend(),)
     plan = _plan(project, "example:check")
 
-    with pytest.raises(ExecutionError, match="changed immediately before backend"):
+    with pytest.raises(ExecutionError, match="changed immediately before adapter"):
         project.run(plan, run_id="b" * 32)
     failed = _read_run(project, "example:check", "b" * 32)
     assert failed.record["contract_kind"] == "run-failure"
@@ -792,7 +794,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     _write_project(tmp_path)
     live = tmp_path / "ip/example/configs/value.txt"
 
-    class SealedSourceBackend(CopyBackend):
+    class SealedSourceBackend(CopyAdapter):
         def run(self, context: StepContext, step: Step) -> StepResult:
             live.write_text("later\n", encoding="utf-8")
             output = context.write_text(
@@ -826,17 +828,17 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
     live.parent.mkdir(parents=True)
     live.write_text("proprietary model\n", encoding="utf-8")
 
-    class ResourceBackend(CopyBackend):
-        def prepare(self, _project, step, resources):
+    class ResourceAdapter(CopyAdapter):
+        def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            prepared = Step.from_operation(
+            return replace(
                 step,
                 resources=(resource.identity,),
+                _resource_bindings=(resource,),
             )
-            return Preparation(prepared, resources=(resource,))
 
         def run(self, context: StepContext, step: Step) -> StepResult:
             live.write_text("changed after sealing\n", encoding="utf-8")
@@ -849,12 +851,12 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
                 artifacts=(Artifact("source", "text.model", output),)
             )
 
-    project = _project(tmp_path, ResourceBackend())
+    project = _project(tmp_path, ResourceAdapter())
     plan = _plan(project, "example:check")
 
     assert str(live) not in str(plan.record)
     assert "proprietary model" not in str(plan.record)
-    assert "resources" not in plan.record
+    assert plan.record["resources"][0]["sha256"] == plan.resources[0].sha256
 
     result = project.run(
         plan,
@@ -877,12 +879,13 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     payload = b"\x00\xff\x10binary\x00"
     live.write_bytes(payload)
 
-    class BinaryBackend(CopyBackend):
-        def prepare(self, _project, step, resources):
+    class BinaryAdapter(CopyAdapter):
+        def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/table")
-            return Preparation(
-                Step.from_operation(step, resources=(resource.identity,)),
-                resources=(resource,),
+            return replace(
+                step,
+                resources=(resource.identity,),
+                _resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext, step: Step) -> StepResult:
@@ -891,7 +894,7 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
                 context.resource_text(step.resources[0])
             return StepResult.succeeded(facts={"size": len(payload)})
 
-    project = _project(tmp_path, BinaryBackend())
+    project = _project(tmp_path, BinaryAdapter())
     result = project.run(
         _plan(project, "example:check"),
         run_id="b" * 32,
@@ -929,12 +932,13 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
     executable.write_bytes(b"#!/bin/sh\n")
     executable.chmod(0o755)
 
-    class DirectoryBackend(CopyBackend):
-        def prepare(self, _project, step, resources):
+    class DirectoryAdapter(CopyAdapter):
+        def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/library")
-            return Preparation(
-                Step.from_operation(step, resources=(resource.identity,)),
-                resources=(resource,),
+            return replace(
+                step,
+                resources=(resource.identity,),
+                _resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext, step: Step) -> StepResult:
@@ -944,7 +948,7 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
             assert os.access(sealed / "nested/tool", os.X_OK)
             return StepResult.succeeded(facts={"tree": True})
 
-    project = _project(tmp_path, DirectoryBackend())
+    project = _project(tmp_path, DirectoryAdapter())
     result = project.run(
         _plan(project, "example:check"),
         run_id="d" * 32,
@@ -977,18 +981,16 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
     live.parent.mkdir(parents=True)
     live.write_text("trusted model\n", encoding="utf-8")
 
-    class TamperingBackend(CopyBackend):
-        def prepare(self, _project, step, resources):
+    class TamperingAdapter(CopyAdapter):
+        def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return Preparation(
-                Step.from_operation(
-                    step,
-                    resources=(resource.identity,),
-                ),
-                resources=(resource,),
+            return replace(
+                step,
+                resources=(resource.identity,),
+                _resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext, step: Step) -> StepResult:
@@ -1006,7 +1008,7 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
             sealed.chmod(0o444)
             return StepResult.succeeded(facts={"tamper_rejected": True})
 
-    project = _project(tmp_path, TamperingBackend())
+    project = _project(tmp_path, TamperingAdapter())
     plan = _plan(project, "example:check")
 
     result = project.run(
@@ -1018,42 +1020,26 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
 
 def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(),)
+    project = _project(tmp_path, CopyAdapter(),)
     plan = _plan(project, "example:check")
     forged = replace(plan, project_identity="sha256-" + "0" * 64)
 
     assert project.preflight(forged).status == "blocked"
 
 
-def test_project_rejects_a_plan_modified_by_the_caller(
+def test_project_adapter_registry_cannot_be_injected_through_replace(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
-    plan = _plan(project, "example:check")
-    forged_step = replace(plan.steps[0], request={"text": "forged"})
-    forged = replace(plan, steps=(forged_step,))
-
-    checked = project.preflight(forged)
-
-    assert checked.status == "blocked"
-    assert checked.checks[0].kind == "plan"
-    assert "current owner operation contract" in checked.checks[0].detail
-
-
-def test_project_backend_registry_cannot_be_injected_through_replace(
-    tmp_path: Path,
-) -> None:
-    _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
 
     with pytest.raises(ValueError, match="init=False"):
-        replace(project, _backend_registry=object())
+        replace(project, _adapter_registry=object())
 
 
 def test_project_rejects_composition_source_drift(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend())
+    project = _project(tmp_path, CopyAdapter())
     plan = _plan(project, "example:check")
     manifest = tmp_path / "sigilicon.toml"
     manifest.write_text(
@@ -1092,7 +1078,7 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 
 def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
     with pytest.raises(ContractError, match="mapping"):
-        Operation("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
+        Step("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
     outcome = StepOutcome("run", "fake.copy", StepResult.succeeded())
     with pytest.raises(ContractError, match="disagrees"):
         RunResult(
@@ -1111,7 +1097,7 @@ def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> N
 def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class ExtraOutputBackend(CopyBackend):
+    class ExtraOutputBackend(CopyAdapter):
         def preflight(self, step, resources):
             return ()
 
@@ -1132,7 +1118,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
 def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class UncertainBackend(CopyBackend):
+    class UncertainBackend(CopyAdapter):
         def run(self, context: StepContext, step: Step) -> StepResult:
             return StepResult.uncertain("descendant cleanup could not be proven")
 
@@ -1156,7 +1142,7 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
 ) -> None:
     _write_project(tmp_path)
 
-    class CleanupUnknownBackend(CopyBackend):
+    class CleanupUnknownBackend(CopyAdapter):
         def run(self, context: StepContext, step: Step) -> StepResult:
             raise ProcessGroupCleanupUncertainError(
                 "descendant cleanup could not be proven"
@@ -1178,7 +1164,7 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
 def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class CancelledBackend(CopyBackend):
+    class CancelledBackend(CopyAdapter):
         def run(self, context: StepContext, step: Step) -> StepResult:
             return StepResult.cancelled("operator cancelled the tool")
 
@@ -1199,7 +1185,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
 def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class RejectingBackend(CopyBackend):
+    class RejectingBackend(CopyAdapter):
         def run(self, context: StepContext, step: Step) -> StepResult:
             evidence = context.write_text("evidence", "failure.json", "{}\n")
             return StepResult(
@@ -1230,16 +1216,16 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
     _write_project(tmp_path)
     live = tmp_path / "ip/example/configs/value.txt"
 
-    class DriftingCopyBackend(CopyBackend):
+    class DriftingCopyAdapter(CopyAdapter):
         def run(self, context: StepContext, step: Step) -> StepResult:
             result = super().run(context, step)
             live.write_text("changed\n", encoding="utf-8")
             return result
 
-    project = _project(tmp_path, DriftingCopyBackend(), UpperBackend())
+    project = _project(tmp_path, DriftingCopyAdapter(), UpperAdapter())
     plan = _plan(project, "example:all")
 
-    with pytest.raises(ExecutionError, match="changed immediately before backend"):
+    with pytest.raises(ExecutionError, match="changed immediately before adapter"):
         project.run(
             plan,
             run_id="5" * 32,
@@ -1253,7 +1239,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     tmp_path: Path,
 ) -> None:
     operations = _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(),)
+    project = _project(tmp_path, CopyAdapter(),)
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
@@ -1274,7 +1260,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
 
 def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(),)
+    project = _project(tmp_path, CopyAdapter(),)
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
@@ -1289,7 +1275,7 @@ def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
 
 def test_run_identity_is_exclusive(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(),)
+    project = _project(tmp_path, CopyAdapter(),)
     plan = _plan(project, "example:check")
     project.run(plan, run_id="e" * 32)
 
@@ -1300,7 +1286,7 @@ def test_run_identity_is_exclusive(tmp_path: Path) -> None:
 
 def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> None:
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyBackend(),)
+    project = _project(tmp_path, CopyAdapter(),)
     plan = _plan(project, "example:check")
     def invoke():
         try:

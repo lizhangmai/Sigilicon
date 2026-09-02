@@ -1,4 +1,4 @@
-"""Typed planning, backend execution, and durable run records."""
+"""Typed planning, adapter execution, and durable run records."""
 
 from sigilicon.execution.model import (
     Artifact,
@@ -6,7 +6,6 @@ from sigilicon.execution.model import (
     Evidence,
     ExecutionError,
     ExecutionPlan,
-    Operation,
     Step,
     PreflightCheck,
     PreflightResult,
@@ -17,23 +16,21 @@ from sigilicon.execution.model import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.backend import Backend, BackendRegistry, Preparation
+from sigilicon.execution.adapter import Adapter, AdapterRegistry
 from sigilicon.execution.runs import RunStore, RunStoreError
 
 
 __all__ = [
     "Artifact",
-    "Backend",
-    "BackendRegistry",
+    "Adapter",
+    "AdapterRegistry",
     "ContractError",
     "Evidence",
     "ExecutionError",
     "ExecutionPlan",
-    "Operation",
     "Step",
     "PreflightCheck",
     "PreflightResult",
-    "Preparation",
     "RunFailure",
     "RunResult",
     "RunStore",

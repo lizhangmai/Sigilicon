@@ -12,9 +12,7 @@ from sigilicon.execution.model import (
     ContractError,
     Evidence,
     ExecutionPlan,
-    Operation,
     Source,
-    SourceRef,
     Step,
 )
 from sigilicon.paths import validate_artifact_component
@@ -133,7 +131,7 @@ def _step(
     owner_root: Path,
     project_root: Path,
     default_id: str | None = None,
-) -> tuple[Operation, tuple[Source, ...]]:
+) -> tuple[Step, tuple[Source, ...]]:
     unknown = set(raw) - _STEP_FIELDS
     if unknown:
         raise ContractError(f"{field} contains unknown fields: {sorted(unknown)}")
@@ -150,13 +148,15 @@ def _step(
         field=f"{field}.filesets",
     )
     return (
-        Operation(
+        Step(
             step_id,
             uses,
             _config(raw.get("config"), f"{field}.config"),
             _strings(raw.get("needs"), f"{field}.needs"),
             tuple(source.path for source in sources),
             _evidence(raw.get("evidence"), f"{field}.evidence"),
+            (),
+            sources,
         ),
         sources,
     )
@@ -233,7 +233,7 @@ def compile_operation(
         raise ContractError(
             f"operation {identity!r} must declare exactly one of uses or steps"
         )
-    compiled: list[tuple[Operation, tuple[Source, ...]]] = []
+    compiled: list[tuple[Step, tuple[Source, ...]]] = []
     if uses is not None:
         unknown_direct = set(definition) - _DIRECT_FIELDS
         if unknown_direct:
@@ -287,12 +287,9 @@ def compile_operation(
         owner=owner,
         operation=operation_name,
         variant=variant_name,
-        steps=tuple(
-            Step.from_operation(step) for step, _sources in compiled
-        ),
-        sources=tuple(
-            SourceRef.from_source(source) for source in unique_sources.values()
-        ),
+        steps=tuple(step for step, _sources in compiled),
+        sources=tuple(unique_sources.values()),
+        resources=(),
     )
 
 

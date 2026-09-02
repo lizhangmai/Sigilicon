@@ -1,11 +1,11 @@
-"""Trusted Cadence backends for direct RTL, native OA, and layout execution."""
+"""Trusted Cadence adapters for direct RTL, native OA, and layout execution."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
@@ -13,13 +13,12 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.backend import Preparation, _DirectBackend
+from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
     ResourceBinding,
-    Operation,
     PreflightCheck,
     Resources,
     Source,
@@ -451,7 +450,7 @@ def _portable_request(
 
 @dataclass(frozen=True)
 class _PreparedCadencePlan:
-    """Backend-private Domain plan plus its sealed-path correspondence."""
+    """Adapter-private domain plan plus its sealed-path correspondence."""
 
     plan: object
     prepared: Mapping[str, Any]
@@ -489,8 +488,8 @@ class _PreparedCadencePlan:
         )
 
     @property
-    def cache_key(self) -> str:
-        """Return the deterministic handle recorded by the portable Step."""
+    def identity(self) -> str:
+        """Return the deterministic identity recorded by the Step."""
 
         return canonical_digest(
             {
@@ -510,9 +509,9 @@ class _PreparedCadencePlan:
         if not isinstance(expected, Mapping):
             raise ExecutionError("Cadence Domain plan identity drift")
         recorded = dict(expected)
-        handle = recorded.pop("domain_plan", None)
+        identity = recorded.pop("domain_plan_identity", None)
         if (
-            handle != self.cache_key
+            identity != self.identity
             or canonical_digest(json_value(recorded))
             != canonical_digest(json_value(self.prepared))
         ):
@@ -553,15 +552,12 @@ class _PreparedCadencePlan:
         )
 
 
-class _CadenceDomainBackend:
-    """Keep non-portable Domain objects inside one Project's Backend lifetime."""
-
-    def __init__(self) -> None:
-        self._domain_plans: dict[str, _PreparedCadencePlan] = {}
+class _CadenceDomainAdapter:
+    """Attach a non-portable domain value to its fully recorded Step."""
 
     def _bind_domain_plan(
         self,
-        operation: Operation,
+        operation: Step,
         *,
         config: Mapping[str, Any],
         plan: object,
@@ -576,34 +572,31 @@ class _CadenceDomainBackend:
             sources,
             resources,
         )
-        handle = domain_plan.cache_key
-        self._domain_plans[handle] = domain_plan
-        portable = {**prepared, "domain_plan": handle}
-        return Step.from_operation(
+        portable = {**prepared, "domain_plan_identity": domain_plan.identity}
+        source_snapshots = tuple(
+            dict.fromkeys((*operation._source_snapshots, *captured))
+        )
+        return replace(
             operation,
             request=_portable_request(config, portable),
             sources=tuple(
                 dict.fromkeys((*operation.sources, *(source.path for source in captured)))
             ),
             resources=tuple(resource.identity for resource in resources),
+            _source_snapshots=source_snapshots,
+            _resource_bindings=resources,
+            _payload=domain_plan,
         )
 
     def _prepared_domain_plan(self, context: StepContext) -> _PreparedCadencePlan:
-        prepared = context.step.request.get("prepared")
-        handle = prepared.get("domain_plan") if isinstance(prepared, Mapping) else None
-        if not isinstance(handle, str):
-            raise ExecutionError("Cadence Step has no prepared Domain plan handle")
-        try:
-            domain_plan = self._domain_plans[handle]
-        except KeyError as exc:
-            raise ExecutionError(
-                "Cadence Domain plan is outside this Project Backend lifetime"
-            ) from exc
+        domain_plan = context.step._payload
+        if not isinstance(domain_plan, _PreparedCadencePlan):
+            raise ExecutionError("Cadence Step has no planned Domain value")
         domain_plan.validate(context)
         return domain_plan
 
 
-class XceliumBackend(_DirectBackend):
+class XceliumBackend(DirectAdapter):
     """Execute one explicit, source-closed Verilog/SystemVerilog testbench."""
 
     name = "cadence.xcelium"
@@ -736,7 +729,7 @@ class XceliumBackend(_DirectBackend):
         )
 
 
-class XceliumAmsBackend(_CadenceDomainBackend):
+class XceliumAmsBackend(_CadenceDomainAdapter):
     """Execute one locked-release Verilog-AMS migration cell."""
 
     name = "cadence.xcelium-ams"
@@ -753,16 +746,15 @@ class XceliumAmsBackend(_CadenceDomainBackend):
             raise ContractError("Xcelium AMS execution requires an evidence envelope")
         return (_executable_check(resources, _XRUN),)
 
-    def prepare(
+    def plan(
         self,
-        project: Any,
-        step: Operation,
+        project: PlanningProject,
+        step: Step,
         resources: Resources,
-    ) -> Preparation:
+    ) -> Step:
         from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
 
-        initial = Step.from_operation(step)
-        self.preflight(initial, resources)
+        initial = step
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         selected_owner = project.owner(owner)
@@ -807,7 +799,7 @@ class XceliumAmsBackend(_CadenceDomainBackend):
             resources=external,
         )
         self.preflight(prepared, resources)
-        return Preparation(prepared, captured, external)
+        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -887,7 +879,7 @@ class XceliumAmsBackend(_CadenceDomainBackend):
         )
 
 
-class NativeOaBackend(_CadenceDomainBackend):
+class NativeOaBackend(_CadenceDomainAdapter):
     """Run one source-owned native Maestro testbench through a bound OA session."""
 
     name = "cadence.native-oa"
@@ -906,20 +898,19 @@ class NativeOaBackend(_CadenceDomainBackend):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def prepare(
+    def plan(
         self,
-        project: Any,
-        step: Operation,
+        project: PlanningProject,
+        step: Step,
         resources: Resources,
-    ) -> Preparation:
+    ) -> Step:
         from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
 
-        initial = Step.from_operation(step)
-        self.preflight(initial, resources)
+        initial = step
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         selected_owner = project.owner(owner)
@@ -974,7 +965,7 @@ class NativeOaBackend(_CadenceDomainBackend):
             resources=external,
         )
         self.preflight(prepared, resources)
-        return Preparation(prepared, captured, external)
+        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -1046,13 +1037,12 @@ class NativeOaBackend(_CadenceDomainBackend):
         )
 
 
-class _OaBackend(_CadenceDomainBackend):
+class _OaBackend(_CadenceDomainAdapter):
     """Execute one fixed native-OA operation against a plan-bound assembly."""
 
     _base_fields = frozenset({"owner", "timeout_seconds"})
 
     def __init__(self, operation: str) -> None:
-        super().__init__()
         if operation not in {"check", "rebuild", "attest"}:
             raise ValueError(f"unsupported OA operation: {operation}")
         self.operation = operation
@@ -1099,20 +1089,19 @@ class _OaBackend(_CadenceDomainBackend):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def prepare(
+    def plan(
         self,
-        project: Any,
-        step: Operation,
+        project: PlanningProject,
+        step: Step,
         resources: Resources,
-    ) -> Preparation:
+    ) -> Step:
         from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
 
-        initial = Step.from_operation(step)
-        self.preflight(initial, resources)
+        initial = step
         config = self._config(initial)
         owner = _text(config, "owner")
         manifest = project.oa_assembly_for(project.owner(owner).root)
@@ -1171,7 +1160,7 @@ class _OaBackend(_CadenceDomainBackend):
             resources=external,
         )
         self.preflight(prepared, resources)
-        return Preparation(prepared, captured, external)
+        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -1268,7 +1257,7 @@ class _OaBackend(_CadenceDomainBackend):
         )
 
 
-class LayoutBackend(_CadenceDomainBackend):
+class LayoutBackend(_CadenceDomainAdapter):
     """Generate one source-authored layout through a bound OA mutation lease."""
 
     name = "cadence.layout"
@@ -1286,17 +1275,16 @@ class LayoutBackend(_CadenceDomainBackend):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def prepare(
+    def plan(
         self,
-        project: Any,
-        step: Operation,
+        project: PlanningProject,
+        step: Step,
         resources: Resources,
-    ) -> Preparation:
+    ) -> Step:
         from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
-        initial = Step.from_operation(step)
-        self.preflight(initial, resources)
+        initial = step
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         spec = project.owner(owner).root / _relative(
@@ -1337,7 +1325,7 @@ class LayoutBackend(_CadenceDomainBackend):
             resources=external,
         )
         self.preflight(prepared, resources)
-        return Preparation(prepared, captured, external)
+        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -1397,7 +1385,7 @@ class LayoutBackend(_CadenceDomainBackend):
         )
 
 
-class LayoutVerificationBackend(_CadenceDomainBackend):
+class LayoutVerificationBackend(_CadenceDomainAdapter):
     """Verify one existing routed OA layout with XStream and Calibre."""
 
     name = "cadence.layout-verify"
@@ -1432,17 +1420,16 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def prepare(
+    def plan(
         self,
-        project: Any,
-        step: Operation,
+        project: PlanningProject,
+        step: Step,
         resources: Resources,
-    ) -> Preparation:
+    ) -> Step:
         from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
-        initial = Step.from_operation(step)
-        self.preflight(initial, resources)
+        initial = step
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         spec = project.owner(owner).root / _relative(
@@ -1493,7 +1480,7 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
             resources=external,
         )
         self.preflight(prepared, resources)
-        return Preparation(prepared, captured, external)
+        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
