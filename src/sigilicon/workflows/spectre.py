@@ -16,6 +16,7 @@ import re
 from typing import Any, Callable, Mapping, Sequence
 
 from sigilicon.artifacts import read_nofollow_text
+from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.external_tools import (
     ProcessPort,
@@ -285,8 +286,7 @@ def run_spectre_measurement(
     evaluate: Callable[[Any], Mapping[str, object]],
     timeout: int,
     artifacts: StepFiles,
-    spectre: Path,
-    environment: Mapping[str, str],
+    resources: Resources,
     process: ProcessPort = managed_process,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
@@ -308,8 +308,8 @@ def run_spectre_measurement(
         inputs=staged,
         output_names=(output_name,),
         timeout=timeout,
-        spectre=spectre,
-        environment=environment,
+        spectre=resources.require_tool("cadence.spectre"),
+        environment=resources.environment,
         process=process,
     )
     raw = artifacts.copy_file(
