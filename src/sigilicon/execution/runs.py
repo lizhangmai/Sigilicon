@@ -28,9 +28,16 @@ class RunStoreError(ValueError):
 class _SelectedRun:
     paths: ArtifactExecutionPaths
     owner: str
-    target: str
     operation: str
+    variant: str | None
     run_id: str
+
+    @property
+    def entities(self) -> dict[str, str]:
+        result = {"owner": self.owner}
+        if self.variant is not None:
+            result["variant"] = self.variant
+        return result
 
 
 @dataclass(frozen=True)
@@ -53,23 +60,20 @@ class RunStore:
         self,
         *,
         owner: str,
-        target: str,
         operation: str,
+        variant: str | None,
         run_id: str,
     ) -> _SelectedRun:
         try:
-            paths = ArtifactLayout(self.artifact_root).execution(
+            paths = ArtifactLayout(self.artifact_root).operation_run(
                 owner=owner,
-                target=target,
-                flow=operation,
-                variant="default",
-                identity=run_id,
-                artifact_kind="execution-run",
-                identity_kind="run_id",
+                operation=operation,
+                variant=variant,
+                run_id=run_id,
             )
         except (RuntimeError, ValueError) as exc:
             raise RunStoreError(str(exc)) from exc
-        return _SelectedRun(paths, owner, target, operation, run_id)
+        return _SelectedRun(paths, owner, operation, variant, run_id)
 
     @staticmethod
     def _registered_files(manifest: Mapping[str, Any]) -> set[str]:
@@ -140,7 +144,7 @@ class RunStore:
         if (
             manifest.get("artifact_kind") != "execution-run"
             or manifest.get("entities")
-            != {"owner": selected.owner, "target": selected.target}
+            != selected.entities
             or manifest.get("operation") != selected.operation
             or manifest.get("run_id") != selected.run_id
             or manifest.get("status")
@@ -172,30 +176,30 @@ class RunStore:
         identity = canonical_digest(plan)
         expected = {
             "owner": selected.owner,
-            "target": selected.target,
             "operation": selected.operation,
+            "variant": selected.variant,
             "run_id": selected.run_id,
             "plan_identity": identity,
         }
         if (
             manifest.get("artifact_kind") != "execution-run"
             or manifest.get("entities")
-            != {"owner": selected.owner, "target": selected.target}
+            != selected.entities
             or manifest.get("operation") != selected.operation
             or manifest.get("run_id") != selected.run_id
             or manifest.get("source") != {"plan_identity": identity}
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 2
+            plan.get("schema") != 3
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
-            or plan.get("target") != selected.target
             or plan.get("operation") != selected.operation
+            or plan.get("variant") != selected.variant
         ):
             raise RunStoreError("persisted execution plan identity drift")
         if (
-            result.get("schema") != 1
+            result.get("schema") != 2
             or result.get("contract_kind") != "run-result"
             or any(result.get(name) != value for name, value in expected.items())
             or result.get("status")
@@ -258,14 +262,14 @@ class RunStore:
         self,
         *,
         owner: str,
-        target: str,
         operation: str,
+        variant: str | None = None,
         run_id: str,
     ) -> RunResult | RunFailure:
         selected = self._select(
             owner=owner,
-            target=target,
             operation=operation,
+            variant=variant,
             run_id=run_id,
         )
         return self._read_selected(selected)
@@ -274,14 +278,14 @@ class RunStore:
         self,
         *,
         owner: str,
-        target: str,
         operation: str,
+        variant: str | None = None,
         run_id: str,
     ) -> RunResult | RunFailure | None:
         selected = self._select(
             owner=owner,
-            target=target,
             operation=operation,
+            variant=variant,
             run_id=run_id,
         )
         if not selected.paths.root.exists():
@@ -313,8 +317,8 @@ class RunStore:
                 )
             return RunResult(
                 result["owner"],
-                result["target"],
                 result["operation"],
+                result["variant"],
                 result["run_id"],
                 result["operation_id"],
                 result["plan_identity"],
@@ -336,8 +340,8 @@ class RunStore:
         try:
             return RunFailure(
                 selected.owner,
-                selected.target,
                 selected.operation,
+                selected.variant,
                 selected.run_id,
                 manifest.get("operation_id"),
                 manifest["source"]["plan_identity"],
@@ -353,14 +357,14 @@ class RunStore:
         self,
         *,
         owner: str,
-        target: str,
         operation: str,
+        variant: str | None = None,
         run_id: str,
     ) -> None:
         selected = self._select(
             owner=owner,
-            target=target,
             operation=operation,
+            variant=variant,
             run_id=run_id,
         )
         manifest = self._manifest(selected)

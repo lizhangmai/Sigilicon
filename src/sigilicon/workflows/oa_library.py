@@ -1392,7 +1392,6 @@ def rebuild_oa_library(
                 client,
                 overwrite=True,
                 timeout=timeout,
-                disposable=True,
                 operation_id=operation_id,
                 bind_operation=bind_operation,
             )
@@ -1444,7 +1443,6 @@ def rebuild_oa_library(
                 client,
                 overwrite=True,
                 timeout=timeout,
-                disposable=True,
                 operation_id=operation_id,
                 bind_operation=bind_operation,
             )

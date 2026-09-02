@@ -116,15 +116,15 @@ class Project:
         return project
 
     def plan(self, selector: str):
-        """Compile one canonical ``owner/target:operation`` selector."""
+        """Compile one canonical ``owner:operation[@variant]`` selector."""
 
         from sigilicon.backends import trusted_backends
         from sigilicon.execution.backend import _BackendRegistry, _prepare_plan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
-        owner_name, target, operation = parse_selector(selector)
+        owner_name, operation, variant = parse_selector(selector)
         owner = self.owner(owner_name)
-        relative = owner.component.target_catalog
+        relative = owner.component.operation_catalog
         if relative is None:
             raise ValueError(f"owner {owner.name!r} has no operation catalog")
         catalog = self.project_root.joinpath(*relative.parts).absolute()
@@ -133,8 +133,9 @@ class Project:
             owner=owner.name,
             owner_root=owner.root,
             project_root=self.project_root,
-            target=target,
+            component_filesets=owner.component.filesets,
             operation=operation,
+            variant=variant,
             project_identity=self.identity,
         )
         plan = _prepare_plan(
@@ -347,24 +348,24 @@ class Project:
                 raise ValueError(
                     f"{ip_catalog}: component {name!r} identity disagrees with its contract"
                 )
-            if component.target_catalog is not None:
-                target_catalog = project.project_root.joinpath(
-                    *component.target_catalog.parts
+            if component.operation_catalog is not None:
+                operation_catalog = project.project_root.joinpath(
+                    *component.operation_catalog.parts
                 )
-                resolved_target_catalog = target_catalog.resolve()
-                if target_catalog != resolved_target_catalog:
+                resolved_operation_catalog = operation_catalog.resolve()
+                if operation_catalog != resolved_operation_catalog:
                     raise ValueError(
-                        f"{component.path}: target_catalog must not be a symlink"
+                        f"{component.path}: operation_catalog must not be a symlink"
                     )
-                if not resolved_target_catalog.is_relative_to(owner_root):
+                if not resolved_operation_catalog.is_relative_to(owner_root):
                     raise ValueError(
-                        f"{component.path}: target_catalog must stay inside its "
-                        f"owner root: {component.target_catalog}"
+                        f"{component.path}: operation_catalog must stay inside its "
+                        f"owner root: {component.operation_catalog}"
                     )
-                if not resolved_target_catalog.is_file():
+                if not resolved_operation_catalog.is_file():
                     raise FileNotFoundError(
-                        f"{component.path}: target_catalog is missing: "
-                        f"{component.target_catalog}"
+                        f"{component.path}: operation_catalog is missing: "
+                        f"{component.operation_catalog}"
                     )
             owned_sources = [
                 path
@@ -464,9 +465,9 @@ class Project:
             *(path for _, path in self.catalog_paths),
             *(owner.component.path for owner in self.owners),
             *(
-                self.project_root.joinpath(*owner.component.target_catalog.parts)
+                self.project_root.joinpath(*owner.component.operation_catalog.parts)
                 for owner in self.owners
-                if owner.component.target_catalog is not None
+                if owner.component.operation_catalog is not None
             ),
         }
         return canonical_digest(

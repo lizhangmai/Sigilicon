@@ -176,18 +176,18 @@ def _run(
         raise ExecutionError(f"operation preflight is blocked: {blocked}")
     identity = new_identity() if run_id is None else run_id
     operation_id = new_identity()
-    paths = ArtifactLayout(Path(artifact_root).resolve()).execution(
+    paths = ArtifactLayout(Path(artifact_root).resolve()).operation_run(
         owner=plan.owner,
-        target=plan.target,
-        flow=plan.operation,
-        variant="default",
-        identity=identity,
-        artifact_kind="execution-run",
-        identity_kind="run_id",
+        operation=plan.operation,
+        variant=plan.variant,
+        run_id=identity,
     )
+    entities = {"owner": plan.owner}
+    if plan.variant is not None:
+        entities["variant"] = plan.variant
     record = ArtifactRecord.begin(
         paths,
-        entities={"owner": plan.owner, "target": plan.target},
+        entities=entities,
         operation=plan.operation,
         backend="sigilicon.execution",
         source={"plan_identity": plan.identity},
@@ -354,8 +354,8 @@ def _run(
             status = "failed"
         result = RunResult(
             plan.owner,
-            plan.target,
             plan.operation,
+            plan.variant,
             identity,
             operation_id,
             plan.identity,

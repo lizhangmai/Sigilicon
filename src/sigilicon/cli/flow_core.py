@@ -19,10 +19,10 @@ def _parser() -> argparse.ArgumentParser:
         prog="sigilicon flow",
         description="Plan, preflight, run, read, or clean one owner operation.",
     )
-    commands = parser.add_subparsers(dest="action", required=True)
+    commands = parser.add_subparsers(dest="command", required=True)
     for name in ("plan", "preflight", "run"):
         command = commands.add_parser(name)
-        command.add_argument("selector", help="owner/target:operation")
+        command.add_argument("selector", help="owner:operation[@variant]")
         command.add_argument("--project-root", type=Path)
         if name in {"preflight", "run"}:
             command.add_argument("--capability", action="append", default=[])
@@ -30,9 +30,7 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--run-id")
     for name in ("status", "clean"):
         command = commands.add_parser(name)
-        command.add_argument("owner")
-        command.add_argument("target")
-        command.add_argument("operation")
+        command.add_argument("selector", help="owner:operation[@variant]")
         command.add_argument("run_id")
         command.add_argument("--project-root", type=Path)
     return parser
@@ -56,20 +54,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(list(sys.argv[1:] if argv is None else argv))
     try:
         project = _project(args)
-        if args.action == "status":
+        if args.command == "status":
+            from sigilicon.execution.operations import parse_selector
+
+            owner, operation, variant = parse_selector(args.selector)
             stored = project.runs.read(
-                owner=args.owner,
-                target=args.target,
-                operation=args.operation,
+                owner=owner,
+                operation=operation,
+                variant=variant,
                 run_id=args.run_id,
             )
             emit_json(stored.record)
             return 0 if stored.status == "succeeded" else 1
-        if args.action == "clean":
+        if args.command == "clean":
+            from sigilicon.execution.operations import parse_selector
+
+            owner, operation, variant = parse_selector(args.selector)
             project.runs.clean(
-                owner=args.owner,
-                target=args.target,
-                operation=args.operation,
+                owner=owner,
+                operation=operation,
+                variant=variant,
                 run_id=args.run_id,
             )
             emit_json(
@@ -77,27 +81,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "schema": 1,
                     "contract_kind": "run-clean-result",
                     "status": "cleaned",
-                    "owner": args.owner,
-                    "target": args.target,
-                    "operation": args.operation,
+                    "owner": owner,
+                    "operation": operation,
+                    "variant": variant,
                     "run_id": args.run_id,
                 }
             )
             return 0
         plan = project.plan(args.selector)
-        if args.action == "plan":
+        if args.command == "plan":
             emit_json(plan.record)
             return 0
         resources = _resources(args)
-        if args.action == "preflight":
+        if args.command == "preflight":
             checked = project.preflight(plan, resources)
             emit_json(checked.record)
             return 0 if checked.ready else 2
         result = project.run(plan, resources, run_id=args.run_id)
         stored = project.runs.read(
             owner=result.owner,
-            target=result.target,
             operation=result.operation,
+            variant=result.variant,
             run_id=result.run_id,
         )
         emit_json(stored.record)

@@ -33,14 +33,11 @@ class Client:
 
 
 def _design_execution(project, identity):
-    return ProjectContext.from_project_root(project).artifacts.execution(
+    return ProjectContext.from_project_root(project).artifacts.operation_run(
         owner="lib",
-        target="cell",
-        flow="design-sync",
+        operation="design-sync",
         variant="recursive",
-        identity=identity,
-        artifact_kind="design_sync",
-        identity_kind="attempt_id",
+        run_id=identity,
     )
 
 
@@ -617,8 +614,8 @@ def test_final_audit_uncertainty_reaches_manifest_before_terminal_transition(
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
         _design_execution(project, "1" * 32),
-        entities={"library": "lib", "cell": "cell"},
-        operation="sync-design",
+        entities={"owner": "lib", "variant": "recursive"},
+        operation="design-sync",
         backend="virtuoso-oa",
     )
     calls = 0
@@ -667,8 +664,8 @@ def test_operation_incident_is_referenced_by_the_related_attempt_manifest(tmp_pa
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
         _design_execution(project, "1" * 32),
-        entities={"library": "lib", "cell": "cell"},
-        operation="sync-design",
+        entities={"owner": "lib", "variant": "recursive"},
+        operation="design-sync",
         backend="virtuoso-oa",
     )
 
@@ -699,8 +696,8 @@ def test_wrapped_process_cleanup_failure_marks_workspace_artifact_uncertain(
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
         _design_execution(project, "3" * 32),
-        entities={"library": "lib", "cell": "cell"},
-        operation="sync-design",
+        entities={"owner": "lib", "variant": "recursive"},
+        operation="design-sync",
         backend="virtuoso-oa",
     )
 
@@ -736,8 +733,8 @@ def test_incident_link_failure_rolls_back_unreferenced_journal(
     root.mkdir(parents=True)
     record = ArtifactRecord.begin(
         _design_execution(project, "2" * 32),
-        entities={"library": "lib", "cell": "cell"},
-        operation="sync-design",
+        entities={"owner": "lib", "variant": "recursive"},
+        operation="design-sync",
         backend="virtuoso-oa",
     )
     monkeypatch.setattr(

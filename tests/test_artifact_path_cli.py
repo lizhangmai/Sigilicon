@@ -5,46 +5,6 @@ from pathlib import Path
 from sigilicon.cli.artifact_path import main
 
 
-def test_cli_resolves_and_creates_runs_through_artifact_layout(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    identity = "1" * 32
-    assert main(
-        [
-            "run",
-            "owner",
-            "target",
-            "flow",
-            "variant",
-            "--project-root",
-            str(tmp_path),
-            "--identity",
-            identity,
-            "--create",
-            "--role",
-            "work",
-            "--role",
-            "logs",
-        ]
-    ) == 0
-
-    work_text, logs_text = capsys.readouterr().out.splitlines()
-    work = Path(work_text)
-    logs = Path(logs_text)
-    root = work.parent
-    assert work == (
-        tmp_path / "artifacts/runs/owner/target/flow/variant" / identity / "work"
-    )
-    assert {path.name for path in root.iterdir()} == {
-        "inputs",
-        "work",
-        "outputs",
-        "logs",
-    }
-    assert logs == root / "logs"
-
-
 def test_cli_resolves_named_exports_without_creating_them(
     tmp_path: Path,
     capsys,

@@ -331,20 +331,26 @@ class XceliumBackend:
     """Execute one explicit, source-closed Verilog/SystemVerilog testbench."""
 
     name = "cadence.xcelium"
-    _fields = frozenset(
-        {"hdl_sources", "success_marker", "timeout_seconds"}
-    )
+    _fields = frozenset({"success_marker", "timeout_seconds"})
+
+    @staticmethod
+    def _hdl_sources(step: PreparedStep) -> tuple[str, ...]:
+        sources = tuple(
+            source
+            for source in step.sources
+            if Path(source).suffix.lower() in {".sv", ".svh", ".v", ".vh"}
+        )
+        if not sources:
+            raise ContractError("Xcelium filesets select no Verilog sources")
+        return sources
 
     def prepare(self, _project: Any, step: OperationStep) -> _Preparation:
         return _direct_preparation(self, step)
 
     def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
-        sources = _strings(config, "hdl_sources")
-        for source in sources:
-            _relative(source, "hdl source")
-            if Path(source).suffix.lower() not in {".sv", ".svh", ".v", ".vh"}:
-                raise ContractError(f"unsupported Xcelium HDL source: {source}")
+        for source in self._hdl_sources(step):
+            _relative(source, "HDL fileset source")
         _text(config, "success_marker")
         _positive_integer(config, "timeout_seconds")
         return (
@@ -355,7 +361,7 @@ class XceliumBackend:
     def run(self, context: StepContext, step: PreparedStep) -> StepResult:
         context.require_step(step)
         config = _strict_config(context.step, self._fields)
-        source_names = _strings(config, "hdl_sources")
+        source_names = self._hdl_sources(context.step)
         sources = tuple(
             context.owner_source_path(_relative(source, "hdl source"))
             for source in source_names

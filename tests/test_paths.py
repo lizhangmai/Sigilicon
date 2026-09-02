@@ -45,24 +45,18 @@ def test_artifact_components_reject_escape_and_separators(unsafe: str) -> None:
 
 def test_ids_and_role_components_are_validated(tmp_path: Path) -> None:
     paths = ProjectContext.from_project_root(tmp_path).artifacts
-    with pytest.raises(ValueError, match="attempt id"):
-        paths.execution(
+    with pytest.raises(ValueError, match="run id"):
+        paths.operation_run(
             owner="lib",
-            target="inv",
-            flow="design-sync",
+            operation="design-sync",
             variant="recursive",
-            identity="../unsafe",
-            artifact_kind="design_sync",
-            identity_kind="attempt_id",
+            run_id="../unsafe",
         )
-    execution = paths.execution(
+    execution = paths.operation_run(
         owner="lib",
-        target="tb",
-        flow="spectre",
+        operation="spectre",
         variant="nominal",
-        identity=RUN,
-        artifact_kind="standalone_simulation",
-        identity_kind="run_id",
+        run_id=RUN,
     )
     with pytest.raises(ValueError, match="path component"):
         execution.path("inputs", "../escape")
@@ -137,14 +131,11 @@ def test_execution_creation_rejects_symlinked_structural_components(
         outside,
         target_is_directory=True,
     )
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
         owner="lib",
-        target="tb",
-        flow="spectre",
+        operation="spectre",
         variant="nominal",
-        identity=RUN,
-        artifact_kind="standalone_simulation",
-        identity_kind="run_id",
+        run_id=RUN,
     )
 
     with pytest.raises(RuntimeError, match="unsafe filesystem component"):

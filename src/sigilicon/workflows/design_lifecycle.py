@@ -92,8 +92,6 @@ def synchronize_design(
     overwrite: bool = False,
     timeout: int = 300,
     quarantine_stale_locks: bool = False,
-    artifact_root: Path | None = None,
-    disposable: bool = False,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
 ) -> DesignSyncResult | TargetOnlyDesignSyncResult:
@@ -107,11 +105,9 @@ def synchronize_design(
     return synchronizer(
         inspection.spec,
         client,
-        artifact_root=artifact_root,
         overwrite=overwrite,
         timeout=timeout,
         quarantine_stale_locks=quarantine_stale_locks,
-        disposable=disposable,
         operation_id=operation_id,
         bind_operation=bind_operation,
     )

@@ -13,7 +13,7 @@ from sigilicon.domain.config_contracts import (
     inspect_project_configuration_sources,
 )
 from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
-from sigilicon.execution.operations import compile_operation
+from sigilicon.execution.operations import compile_operation, parse_selector
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
@@ -142,10 +142,10 @@ def inspect_repository_designs(
     source_inventory = RepositorySourceInventory.for_project(context)
     operation_catalog_inventory = {
         owner.name: context.project_root.joinpath(
-            *owner.component.target_catalog.parts
+            *owner.component.operation_catalog.parts
         ).resolve()
         for owner in context.owners
-        if owner.component.target_catalog is not None
+        if owner.component.operation_catalog is not None
     }
     source_inventory.verify(
         "owner operation catalog snapshot",
@@ -378,60 +378,44 @@ def inspect_repository_designs(
         sources=source_inventory,
     )
 
-    targets: dict[str, Any] = {}
+    operations: dict[str, Any] = {}
     for owner in context.owners:
-        if owner.component.target_catalog is None:
+        if owner.component.operation_catalog is None:
             continue
         catalog_path = operation_catalog_inventory[owner.name]
         document = source_inventory.resolve(catalog_path)
-        target_rows = document.get("targets")
-        if not isinstance(target_rows, Mapping):
-            raise ValueError(f"{catalog_path}: targets must be a table")
-        owner_targets: dict[str, Any] = {}
-        for target_name, target_row in target_rows.items():
-            if not isinstance(target_name, str) or not isinstance(target_row, Mapping):
-                raise ValueError(f"{catalog_path}: target declarations are invalid")
-            operations = target_row.get("operations")
-            if (
-                not isinstance(operations, (list, tuple))
-                or not operations
-                or any(not isinstance(name, str) or not name for name in operations)
-                or len(operations) != len(set(operations))
-            ):
-                raise ValueError(
-                    f"{catalog_path}: target {target_name!r} operations must be "
-                    "a non-empty unique text array"
-                )
-            compiled = {
-                operation_name: compile_operation(
-                    catalog_path,
-                    project_identity=context.identity,
-                    owner=owner.name,
-                    owner_root=owner.root,
-                    project_root=context.project_root,
-                    target=target_name,
-                    operation=operation_name,
-                )
-                for operation_name in operations
+        rows = document.get("operations")
+        if not isinstance(rows, Mapping) or not rows:
+            raise ValueError(f"{catalog_path}: operations must be a non-empty table")
+        owner_operations: dict[str, Any] = {}
+        for identity in rows:
+            if not isinstance(identity, str):
+                raise ValueError(f"{catalog_path}: operation identities must be text")
+            _selected_owner, operation, variant = parse_selector(
+                f"{owner.name}:{identity}"
+            )
+            plan = compile_operation(
+                catalog_path,
+                project_identity=context.identity,
+                owner=owner.name,
+                owner_root=owner.root,
+                project_root=context.project_root,
+                component_filesets=owner.component.filesets,
+                operation=operation,
+                variant=variant,
+            )
+            owner_operations[identity] = {
+                "steps": [
+                    {"id": step.id, "uses": step.uses}
+                    for step in plan.steps
+                ]
             }
-            owner_targets[target_name] = {
-                "description": target_row.get("description"),
-                "operations": {
-                    operation_name: {
-                        "steps": [
-                            {"id": step.id, "uses": step.uses}
-                            for step in plan.steps
-                        ]
-                    }
-                    for operation_name, plan in compiled.items()
-                },
-            }
-        targets[owner.name] = owner_targets
+        operations[owner.name] = owner_operations
 
     catalogs = {
         "ip": ip_catalog_path.relative_to(root).as_posix(),
         "platform": platform_catalog_path.relative_to(root).as_posix(),
-        "target_catalogs": {
+        "operation_catalogs": {
             owner: path.relative_to(root).as_posix()
             for owner, path in sorted(operation_catalog_inventory.items())
         },
@@ -443,7 +427,7 @@ def inspect_repository_designs(
         "catalogs": catalogs,
         "components": components,
         "ip_releases": ip_releases,
-        "targets": targets,
+        "operations": operations,
         "oa_assemblies": oa_assemblies,
         "platforms": platforms,
     }

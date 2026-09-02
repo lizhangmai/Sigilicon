@@ -86,7 +86,7 @@ ARTIFACT_ENTITY_FIELDS = {
         {"library", "cell", "analysis", "model"},
         {"library", "cell", "analysis", "model"},
     ),
-    "execution-run": ({"owner", "target"}, {"owner", "target"}),
+    "execution-run": ({"owner"}, {"owner", "variant"}),
 }
 
 

@@ -223,39 +223,32 @@ class ArtifactLayout:
 
     root: Path
 
-    def execution(
+    def operation_run(
         self,
         *,
         owner: str,
-        target: str,
-        flow: str,
-        variant: str,
-        identity: str,
-        artifact_kind: str,
-        identity_kind: str,
+        operation: str,
+        variant: str | None,
+        run_id: str,
     ) -> ArtifactExecutionPaths:
-        """Resolve one run without exposing directory policy to its caller."""
+        """Resolve one owner operation run from its complete public identity."""
 
         owner_name = validate_artifact_component(owner, "owner")
-        target_name = validate_artifact_component(target, "target")
-        flow_name = validate_artifact_component(flow, "flow")
-        variant_name = validate_artifact_component(variant, "variant")
-        artifact_identity = validate_artifact_id(identity, identity_kind.replace("_", " "))
-        namespace = (
-            self.root
-            / "runs"
-            / owner_name
-            / target_name
-            / flow_name
-            / variant_name
-        )
+        operation_name = validate_artifact_component(operation, "operation")
+        identity = validate_artifact_id(run_id, "run id")
+        namespace = self.root / "runs" / owner_name / operation_name
+        if variant is None:
+            namespace /= "base"
+        else:
+            namespace /= "variants"
+            namespace /= validate_artifact_component(variant, "variant")
         return ArtifactExecutionPaths.build(
             artifact_root=self.root,
             namespace_root=namespace,
-            root=namespace / artifact_identity,
-            artifact_kind=artifact_kind,
-            identity_kind=identity_kind,
-            identity=artifact_identity,
+            root=namespace / identity,
+            artifact_kind="execution-run",
+            identity_kind="run_id",
+            identity=identity,
             roles=("inputs", "work", "outputs", "logs"),
         )
 

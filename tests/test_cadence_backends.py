@@ -101,8 +101,7 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
         "rtl",
         "cadence.xcelium",
         {
-            "hdl_sources": ("rtl/design.sv", "dv/testbench.sv"),
-            "success_marker": marker,
+                "success_marker": marker,
             "timeout_seconds": 10,
         },
         sources=("rtl/design.sv", "dv/testbench.sv"),

@@ -16,19 +16,16 @@ from sigilicon.paths import ProjectContext
 
 
 def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
         owner="lib",
-        target="tb",
-        flow="spectre",
+        operation="spectre",
         variant="nominal",
-        identity=identity,
-        artifact_kind="standalone_simulation",
-        identity_kind="run_id",
+        run_id=identity,
     )
     return ArtifactRecord.begin(
         execution,
-        entities={"library": "lib", "cell": "dut", "testbench": "tb"},
-        operation="simulate",
+        entities={"owner": "lib", "variant": "nominal"},
+        operation="spectre",
         backend="standalone",
     )
 
@@ -36,19 +33,16 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
 def test_artifact_manifest_records_git_source(
     tmp_path: Path,
 ) -> None:
-    execution = ProjectContext.from_project_root(tmp_path).artifacts.execution(
+    execution = ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
         owner="lib",
-        target="tb",
-        flow="spectre",
+        operation="spectre",
         variant="nominal",
-        identity="4" * 32,
-        artifact_kind="standalone_simulation",
-        identity_kind="run_id",
+        run_id="4" * 32,
     )
     record = ArtifactRecord.begin(
         execution,
-        entities={"library": "lib", "cell": "dut", "testbench": "tb"},
-        operation="simulate",
+        entities={"owner": "lib", "variant": "nominal"},
+        operation="spectre",
         backend="virtuoso-oa",
         source={
             "project": {
@@ -142,7 +136,7 @@ def test_manifest_binds_kind_to_identity_entities_and_status_provenance(
         validate_manifest(wrong_identity)
 
     missing_entity = copy.deepcopy(record.manifest)
-    del missing_entity["entities"]["testbench"]
+    del missing_entity["entities"]["owner"]
     with pytest.raises(ArtifactManifestError, match="entities do not match"):
         validate_manifest(missing_entity)
 

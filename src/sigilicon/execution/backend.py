@@ -187,8 +187,8 @@ def _prepare_plan(
     return ExecutionPlan(
         plan.project_identity,
         plan.owner,
-        plan.target,
         plan.operation,
+        plan.variant,
         tuple(steps),
         tuple(captured.values()),
     )

@@ -13,17 +13,14 @@ from sigilicon.virtuoso.workspace import OperationPolicy
 
 def _artifact(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
     return ArtifactRecord.begin(
-        ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
             owner="lib",
-            target="source",
-            flow="netlist-import",
+            operation="netlist-import",
             variant="hierarchy",
-            identity=identity,
-            artifact_kind="netlist_import",
-            identity_kind="attempt_id",
+            run_id=identity,
         ),
-        entities={"library": "lib", "source": "source"},
-        operation="test-import",
+        entities={"owner": "lib", "variant": "hierarchy"},
+        operation="netlist-import",
         backend="offline",
     )
 

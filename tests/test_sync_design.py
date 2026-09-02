@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from virtuoso_bridge import ExecutionStatus, VirtuosoResult
 
-from sigilicon.artifacts import ArtifactRecord, load_manifest
+from sigilicon.artifacts import ArtifactRecord
 from sigilicon.domain.design import load_design_spec
 from sigilicon.project import Project
 from sigilicon.paths import ProjectContext
@@ -46,9 +46,15 @@ class FakeLibrary:
 class FakeSchematic:
     def __init__(self) -> None:
         self.calls = []
+        self.netlist_texts: list[str] = []
+        self.device_map_texts: list[str] = []
 
     def import_netlist(self, *args, **kwargs):
         self.calls.append((args, kwargs))
+        self.netlist_texts.append(args[2].read_text(encoding="utf-8"))
+        device_map = kwargs.get("dev_map_file")
+        if device_map is not None:
+            self.device_map_texts.append(device_map.read_text(encoding="utf-8"))
 
 
 class FakeSymbol:
@@ -126,17 +132,14 @@ def _patch_fake_import(monkeypatch) -> None:
 
 def _import_artifact(tmp_path: Path, identity: str = "1" * 32) -> ArtifactRecord:
     return ArtifactRecord.begin(
-        ProjectContext.from_project_root(tmp_path).artifacts.execution(
+        ProjectContext.from_project_root(tmp_path).artifacts.operation_run(
             owner="designLib",
-            target="source",
-            flow="netlist-import",
+            operation="netlist-import",
             variant="hierarchy",
-            identity=identity,
-            artifact_kind="netlist_import",
-            identity_kind="attempt_id",
+            run_id=identity,
         ),
-        entities={"library": "designLib", "source": "source"},
-        operation="test-import",
+        entities={"owner": "designLib", "variant": "hierarchy"},
+        operation="netlist-import",
         backend="offline",
     )
 
@@ -159,21 +162,18 @@ def test_sync_design_consumes_source_and_pdk_config(
     assert library_path == str(root / "virtuoso" / "designLib")
     assert create_kwargs["technology_library"] == "techLib"
     import_args, import_kwargs = client.schematic.calls[0]
-    assert import_args[2].read_text(encoding="utf-8") == spec.design.netlist_snapshot.text
+    assert client.schematic.netlist_texts == [spec.design.netlist_snapshot.text]
     assert import_kwargs["ref_libs"] == (
         "designLib",
         "deviceLib",
         "analogLib",
         "basic",
     )
-    assert import_kwargs["dev_map_file"].read_text(encoding="utf-8") == (
+    assert client.schematic.device_map_texts == [
         "devselect := resistor res\n"
         "devselect := capacitor cap\n"
-    )
+    ]
     assert result.imported_cells == ("inv",)
-    assert result.attempt_dir.parent.name == "recursive"
-    assert result.attempt_dir.parent.parent.name == "design-sync"
-    assert load_manifest(result.manifest_path)["status"] == "succeeded"
     assert "DEFINE designLib ./designLib" in (
         root / "virtuoso" / "cds.lib"
     ).read_text()
@@ -204,7 +204,6 @@ def test_target_only_sync_reuses_bridge_import_without_touching_cds_lib(
     assert result.imported_cells == ("inv",)
     assert result.library_path == library_path
     assert result.technology_library == "techLib"
-    assert load_manifest(result.manifest_path)["status"] == "succeeded"
     assert (root / "virtuoso" / "cds.lib").read_text(encoding="utf-8") == before_cds_lib
     import_args, _import_kwargs = client.schematic.calls[0]
     assert import_args[:2] == ("designLib", "inv")

@@ -902,7 +902,6 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             "liberty_role",
             "release_manifest",
             "release_liberty",
-            "rtl_sources",
             "timeout_seconds",
         }
     )
@@ -928,6 +927,17 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             )
         return config
 
+    @staticmethod
+    def _rtl_sources(step: PreparedStep) -> tuple[str, ...]:
+        sources = tuple(
+            source
+            for source in step.sources
+            if Path(source).suffix.lower() in {".sv", ".v"}
+        )
+        if not sources:
+            raise ContractError("structural-link filesets select no RTL sources")
+        return sources
+
     def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = self._config(step)
         _text(config, "owner")
@@ -942,7 +952,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
                 raise ContractError(
                     f"structural-link {name} must be inside the source closure"
                 )
-        for source in _strings(config, "rtl_sources"):
+        for source in self._rtl_sources(step):
             _safe_relative(source, "structural-link RTL source")
             if source not in step.sources:
                 raise ContractError(
@@ -1015,7 +1025,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         )
         rtl_names = tuple(
             _safe_relative(name, "structural-link RTL source")
-            for name in _strings(config, "rtl_sources")
+            for name in self._rtl_sources(initial)
         )
         manifest_name = _safe_relative(
             _text(config, "release_manifest"), "release manifest"
@@ -1224,7 +1234,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             raise ExecutionError("structural-link request was not prepared")
         rtl_sources = tuple(
             _safe_relative(name, "structural-link RTL source")
-            for name in _strings(config, "rtl_sources")
+            for name in self._rtl_sources(context.step)
         )
         compile_script = _safe_relative(
             _text(config, "compile_script"), "Liberty compile script"

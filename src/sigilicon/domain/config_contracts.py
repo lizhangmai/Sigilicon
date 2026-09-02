@@ -255,7 +255,7 @@ def inspect_project_configuration_sources(
     expected_owner_names = {
         owner.name
         for owner in context.owners
-        if owner.component.target_catalog is not None
+        if owner.component.operation_catalog is not None
     }
     selected_catalogs = dict(operation_catalog_inventory)
     if set(selected_catalogs) != expected_owner_names:
@@ -267,10 +267,10 @@ def inspect_project_configuration_sources(
         )
     for owner_name, path in selected_catalogs.items():
         owner = context.owner(owner_name)
-        configured = owner.component.target_catalog
+        configured = owner.component.operation_catalog
         if configured is None:
             raise ValueError(
-                f"owner {owner.name!r} has no component target_catalog selection"
+                f"owner {owner.name!r} has no component operation_catalog selection"
             )
         configured_path = context.project_root.joinpath(*configured.parts)
         resolved = configured_path.resolve()
@@ -291,6 +291,7 @@ def inspect_project_configuration_sources(
             contract_kind="owner-operations",
             path_scope="owner",
             owner=owner.name,
+            schema=2,
         )
     sources.verify(
         "owner operation catalog snapshot",
@@ -378,7 +379,7 @@ def inspect_project_configuration_sources(
         if kind == "owner-operations" and resolved not in operation_catalog_paths:
             raise ValueError(
                 f"{resolved}: owner-operations must be selected by a component "
-                "target_catalog"
+                "operation_catalog"
             )
         if resolved in repository_sources:
             allowed_scopes: str | tuple[str, ...] = "repository"
@@ -409,6 +410,7 @@ def inspect_project_configuration_sources(
             contract_kind=kind,
             path_scope=allowed_scopes,
             owner=expected_owner,
+            schema=2 if kind == "owner-operations" else 1,
         )
         if header.contract_kind == "verification-cell":
             from sigilicon.domain.verification_cell import parse_verification_cell

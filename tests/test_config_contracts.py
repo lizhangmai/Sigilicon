@@ -57,17 +57,14 @@ root = "ip/example"
     _write(
         root,
         "ip/example/configs/operations.toml",
-        '''schema = 1
+        '''schema = 2
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
 
-[targets.example]
-description = "Example target"
-operations = ["check"]
-
 [operations.check]
 uses = "fake.check"
+filesets = ["flow"]
 ''',
     )
     for owner in ("alpha", "beta", "compute"):
@@ -95,7 +92,7 @@ owner = "example"
 name = "example"
 kind = "rtl-ip"
 
-target_catalog = "ip/example/configs/operations.toml"
+operation_catalog = "ip/example/configs/operations.toml"
 
 [filesets]
 flow = [
@@ -113,10 +110,10 @@ def _inspect(
     sources = RepositorySourceInventory.for_project(project)
     catalogs = {
         owner.name: project.project_root.joinpath(
-            *owner.component.target_catalog.parts
+            *owner.component.operation_catalog.parts
         ).resolve()
         for owner in project.owners
-        if owner.component.target_catalog is not None
+        if owner.component.operation_catalog is not None
     }
     if documents:
         sources.verify("test source snapshot", documents)

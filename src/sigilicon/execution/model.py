@@ -346,8 +346,8 @@ class OperationPlan:
 
     project_identity: str
     owner: str
-    target: str
     operation: str
+    variant: str | None
     steps: tuple[OperationStep, ...]
     sources: tuple[Source, ...]
 
@@ -357,8 +357,9 @@ class OperationPlan:
         ) is None:
             raise ContractError("operation plan project identity must be a SHA-256 digest")
         object.__setattr__(self, "owner", _identifier(self.owner, "owner"))
-        object.__setattr__(self, "target", _identifier(self.target, "target"))
         object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
+        if self.variant is not None:
+            object.__setattr__(self, "variant", _identifier(self.variant, "variant"))
         if not isinstance(self.steps, tuple) or not self.steps:
             raise ContractError("operation plan must contain at least one step")
         if any(not isinstance(step, OperationStep) for step in self.steps):
@@ -375,8 +376,8 @@ class ExecutionPlan:
 
     project_identity: str
     owner: str
-    target: str
     operation: str
+    variant: str | None
     steps: tuple[PreparedStep, ...]
     sources: tuple[Source, ...]
     _authorization: str = field(default="", repr=False, compare=False)
@@ -387,8 +388,9 @@ class ExecutionPlan:
         ) is None:
             raise ContractError("execution plan project identity must be a SHA-256 digest")
         object.__setattr__(self, "owner", _identifier(self.owner, "owner"))
-        object.__setattr__(self, "target", _identifier(self.target, "target"))
         object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
+        if self.variant is not None:
+            object.__setattr__(self, "variant", _identifier(self.variant, "variant"))
         if not isinstance(self.steps, tuple) or not self.steps:
             raise ContractError("execution plan must contain at least one step")
         if any(not isinstance(step, PreparedStep) for step in self.steps):
@@ -415,12 +417,12 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
-            "target": self.target,
             "operation": self.operation,
+            "variant": self.variant,
             "sources": [source.record for source in self.sources],
             "steps": [step.record for step in self.steps],
         }
@@ -775,8 +777,8 @@ class StepOutcome:
 @dataclass(frozen=True)
 class RunResult:
     owner: str
-    target: str
     operation: str
+    variant: str | None
     run_id: str
     operation_id: str
     plan_identity: str
@@ -786,8 +788,9 @@ class RunResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner", _identifier(self.owner, "run owner"))
-        object.__setattr__(self, "target", _identifier(self.target, "run target"))
         object.__setattr__(self, "operation", _identifier(self.operation, "run operation"))
+        if self.variant is not None:
+            object.__setattr__(self, "variant", _identifier(self.variant, "run variant"))
         if self.status not in _RUN_STATUSES:
             raise ContractError(f"invalid run status: {self.status!r}")
         validate_artifact_id(self.run_id, "run id")
@@ -826,11 +829,11 @@ class RunResult:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "contract_kind": "run-result",
             "owner": self.owner,
-            "target": self.target,
             "operation": self.operation,
+            "variant": self.variant,
             "run_id": self.run_id,
             "operation_id": self.operation_id,
             "plan_identity": self.plan_identity,
@@ -862,8 +865,8 @@ class RunFailure:
     """Typed terminal record for a run that failed before producing RunResult."""
 
     owner: str
-    target: str
     operation: str
+    variant: str | None
     run_id: str
     operation_id: str | None
     plan_identity: str
@@ -874,8 +877,9 @@ class RunFailure:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner", _identifier(self.owner, "run owner"))
-        object.__setattr__(self, "target", _identifier(self.target, "run target"))
         object.__setattr__(self, "operation", _identifier(self.operation, "run operation"))
+        if self.variant is not None:
+            object.__setattr__(self, "variant", _identifier(self.variant, "run variant"))
         validate_artifact_id(self.run_id, "run id")
         validate_artifact_id(self.plan_identity, "plan identity")
         if self.operation_id is not None:
@@ -897,11 +901,11 @@ class RunFailure:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 1,
+            "schema": 2,
             "contract_kind": "run-failure",
             "owner": self.owner,
-            "target": self.target,
             "operation": self.operation,
+            "variant": self.variant,
             "run_id": self.run_id,
             "operation_id": self.operation_id,
             "plan_identity": self.plan_identity,
