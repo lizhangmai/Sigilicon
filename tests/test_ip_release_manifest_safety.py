@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.project import Project
 from sigilicon.workflows import ip_packaging
 
@@ -95,6 +96,18 @@ def test_exact_release_audit_rejects_unmanifested_files(
 
     with pytest.raises(RuntimeError, match="inventory"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
+def test_release_audit_is_reachable_only_through_the_public_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = _write_release(tmp_path / "release")
+    _skip_semantic_checks(monkeypatch)
+
+    assert sigilicon_main(["release", "audit", str(manifest_path)]) == 0
+    assert '"ip_name": "fixture"' in capsys.readouterr().out
 
 
 def test_release_build_rejects_symlinked_namespace_ancestor(

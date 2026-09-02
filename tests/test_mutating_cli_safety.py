@@ -5,8 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tomllib
 
-from sigilicon.cli.open_cell import main as open_cell_main
-from sigilicon.cli.close_cell import main as close_cell_main
+from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.virtuoso.oa import close_visible_cell_windows
 from sigilicon.virtuoso.oa import WindowCloseResult
 from sigilicon.virtuoso.schematic import set_instance_parameters
@@ -50,6 +49,10 @@ def test_noncanonical_engineering_cli_modules_are_removed() -> None:
         "set_params.py",
         "verify_layout.py",
         "xcelium.py",
+        "check_designs.py",
+        "close_cell.py",
+        "flow_core.py",
+        "open_cell.py",
     ):
         assert not (root / module).exists()
 
@@ -177,11 +180,11 @@ def test_public_mutating_clis_delegate_to_application_workflows(
         return workflow
 
     monkeypatch.setattr(
-        "sigilicon.cli.open_cell.open_project_cell",
+        "sigilicon.cli._oa.open_project_cell",
         record("open-cell", None),
     )
     monkeypatch.setattr(
-        "sigilicon.cli.close_cell.close_cell",
+        "sigilicon.cli._oa.close_cell",
         record("close-cell", WindowCloseResult(0, 0)),
     )
     clients: list[object] = []
@@ -190,11 +193,13 @@ def test_public_mutating_clis_delegate_to_application_workflows(
         clients.append(resources)
         return object()
 
-    assert open_cell_main(
-        ["design", "top", "symbol"], client_factory=client_factory
+    assert sigilicon_main(
+        ["oa", "open", "design", "top", "symbol"],
+        oa_client_factory=client_factory,
     ) == 0
-    assert close_cell_main(
-        ["design", "top", "symbol"], client_factory=client_factory
+    assert sigilicon_main(
+        ["oa", "close", "design", "top", "symbol"],
+        oa_client_factory=client_factory,
     ) == 0
     assert [name for name, _args, _kwargs in events] == [
         "open-cell",

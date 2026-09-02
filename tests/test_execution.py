@@ -431,15 +431,16 @@ def test_cli_preflight_consumes_a_portable_plan_record(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from sigilicon.cli.flow_core import main as flow_main
+    from sigilicon.cli.main import main as sigilicon_main
 
     _write_project(tmp_path)
     project = _project(tmp_path, CopyAdapter())
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(project.plan("example:check").record))
 
-    assert flow_main(
+    assert sigilicon_main(
         (
+            "flow",
             "preflight",
             "--plan-file",
             str(plan_path),
@@ -454,15 +455,16 @@ def test_cli_run_consumes_a_portable_plan_record(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from sigilicon.cli.flow_core import main as flow_main
+    from sigilicon.cli.main import main as sigilicon_main
 
     _write_project(tmp_path)
     project = _project(tmp_path, CopyAdapter())
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(project.plan("example:check").record))
 
-    assert flow_main(
+    assert sigilicon_main(
         (
+            "flow",
             "run",
             "--plan-file",
             str(plan_path),
@@ -479,7 +481,7 @@ def test_cli_rejects_a_symlinked_plan_file(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from sigilicon.cli.flow_core import main as flow_main
+    from sigilicon.cli.main import main as sigilicon_main
 
     _write_project(tmp_path)
     project = _project(tmp_path, CopyAdapter())
@@ -488,8 +490,9 @@ def test_cli_rejects_a_symlinked_plan_file(
     plan_path = tmp_path / "plan.json"
     plan_path.symlink_to(target)
 
-    assert flow_main(
+    assert sigilicon_main(
         (
+            "flow",
             "preflight",
             "--plan-file",
             str(plan_path),

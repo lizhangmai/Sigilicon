@@ -8,7 +8,7 @@ import pytest
 
 from conftest import write_component_owner
 import sigilicon.project._project as repository_module
-from sigilicon.cli.check_designs import main as check_designs_main
+from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.contracts import freeze_toml_document
 from sigilicon.project import Project
 import sigilicon.workflows.repository_checks as repository_checks
@@ -41,7 +41,7 @@ def test_check_designs_parses_the_project_manifest_once(
     monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.chdir(tmp_path)
 
-    assert check_designs_main([]) == 0
+    assert sigilicon_main(["check"]) == 0
     assert manifest_reads == 1
     assert toml_reads == 1
     assert '"passed": true' in capsys.readouterr().out

@@ -30,6 +30,9 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   一个 capability，具体 workflow 在自己的 seam 要求所消费的 capability，不得让纯数字
   platform 为满足模拟默认值而声明虚假 contract。
 - 公共 import namespace 是 `sigilicon`，实现采用 `src/sigilicon` layout。
+- 公共命令只有 `sigilicon {check,flow,oa,release}` 这一棵命令树；子命令实现是不可独立
+  执行的内部模块。不得新增并行 console script、`python -m sigilicon.cli.<subcommand>`
+  入口或只转发参数的 CLI wrapper。
 - 需要 owner、catalog 或 artifact inventory 的 domain loader 与 workflow 接收同一个显式
   `Project`；只需路径和直接工具操作的窄接口接收显式 `ProjectContext`。最外层 composition
   入口把显式 project root 解析成 `Project`，内部接口不接受 project root 代替 `Project`；

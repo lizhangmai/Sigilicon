@@ -127,7 +127,3 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(f"Sigilicon defect: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 3
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
