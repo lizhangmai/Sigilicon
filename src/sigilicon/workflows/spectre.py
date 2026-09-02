@@ -13,26 +13,21 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
-from types import MappingProxyType
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.external_tools import (
     ProcessPort,
     ProcessRequest,
-    cadence_subprocess_env,
     managed_process,
     owned_directory,
     owned_input_file,
+    spectre_env,
 )
 
 
 _SPECTRE_ZERO_ERRORS = re.compile(r"spectre completes with\s+0 errors", re.IGNORECASE)
-_EMPTY_ENVIRONMENT: Mapping[str, str] = MappingProxyType({})
-
-
 @dataclass(frozen=True)
 class SpectreExecution:
     """Evidence from one direct Spectre process-group invocation."""
@@ -72,39 +67,19 @@ class MeasurementContractFailure(RuntimeError):
 
 
 def find_spectre(
-    explicit: Path | None = None,
-    *,
-    environment: Mapping[str, str] = _EMPTY_ENVIRONMENT,
+    explicit: Path,
 ) -> Path:
-    """Find the Cadence launcher without resolving its wrapper symlink.
+    """Validate a configured Cadence launcher without resolving its symlink.
 
     Cadence's public ``spectre`` launcher may be a symlink whose resolved
     target expects its original bin-directory layout.  Returning the absolute
     launcher path rather than ``Path.resolve()`` preserves that contract.
     """
 
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(explicit)
-    configured = environment.get("VB_SPECTRE_BIN")
-    if configured:
-        candidates.append(Path(configured))
-    discovered = shutil.which(
-        "spectre",
-        path=environment.get("PATH", ""),
-    )
-    if discovered:
-        candidates.append(Path(discovered))
-    mmsim = environment.get("MMSIM")
-    if mmsim:
-        candidates.append(Path(mmsim) / "bin" / "spectre")
-    for candidate in candidates:
-        absolute = Path(os.path.abspath(candidate))
-        if absolute.is_file() and os.access(absolute, os.X_OK):
-            return absolute
-    if explicit is not None:
-        raise FileNotFoundError(f"spectre does not exist or is not executable: {explicit}")
-    raise FileNotFoundError("spectre was not found; configure VB_SPECTRE_BIN or MMSIM")
+    absolute = Path(os.path.abspath(explicit))
+    if absolute.is_file() and os.access(absolute, os.X_OK):
+        return absolute
+    raise FileNotFoundError(f"spectre does not exist or is not executable: {explicit}")
 
 
 def run_spectre_deck(
@@ -114,7 +89,7 @@ def run_spectre_deck(
     inputs: Mapping[str, Path],
     output_names: Sequence[str],
     timeout: int,
-    spectre: Path | None = None,
+    spectre: Path,
     environment: Mapping[str, str],
     process: ProcessPort = managed_process,
 ) -> SpectreExecution:
@@ -161,7 +136,7 @@ def run_spectre_deck(
         render_deck(canonical_paths),
     )
     canonical_deck.chmod(0o444)
-    executable = find_spectre(spectre, environment=environment)
+    executable = find_spectre(spectre)
     work_dir = record.directory("work")
     completed = None
     invocation_deck: Path | None = None
@@ -222,7 +197,7 @@ def run_spectre_deck(
         completed = process.run(ProcessRequest(
             argv=tuple(command),
             cwd=Path(owned_work.child_path),
-            environment=cadence_subprocess_env(environment),
+            environment=spectre_env(executable, environment),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=pass_fds,
@@ -301,8 +276,7 @@ def run_spectre_measurement(
     evaluate: Callable[[Any], Mapping[str, object]],
     timeout: int,
     artifacts: StepFiles,
-    spectre: Path | None = None,
-    environment: Mapping[str, str],
+    project_root: Path,
     process: ProcessPort = managed_process,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
@@ -318,14 +292,17 @@ def run_spectre_measurement(
         ("external-input-references.json",),
         dict(external_input_references),
     )
+    from sigilicon.project import Project
+
+    runtime = Project.open(project_root)._execution_resources()
     execution = run_spectre_deck(
         artifacts,
         render_deck=render,
         inputs=staged,
         output_names=(output_name,),
         timeout=timeout,
-        spectre=spectre,
-        environment=environment,
+        spectre=runtime.require_tool("cadence.spectre"),
+        environment=runtime.environment,
         process=process,
     )
     raw = artifacts.copy_file(

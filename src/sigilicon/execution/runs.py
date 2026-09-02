@@ -25,6 +25,7 @@ from sigilicon.execution.model import (
     StepOutcome,
     StepResult,
     backend_identity,
+    resource_identity,
     resource_materialization_key,
 )
 from sigilicon.paths import ArtifactLayout, RunPaths
@@ -336,12 +337,14 @@ class RunStore:
             "schema",
             "contract_kind",
             "capabilities",
+            "configuration",
             "resources",
-        } or value.get("schema") != 1 or value.get("contract_kind") != (
+        } or value.get("schema") != 2 or value.get("contract_kind") != (
             "runtime-bindings"
         ):
             raise RunStoreError("persisted runtime bindings have an invalid shape")
         capabilities = value.get("capabilities")
+        configuration = value.get("configuration")
         resources = value.get("resources")
         if not isinstance(capabilities, list) or any(
             not isinstance(capability, str) for capability in capabilities
@@ -353,6 +356,35 @@ class RunStore:
             or any(not isinstance(resource, Mapping) for resource in resources)
         ):
             raise RunStoreError("persisted runtime bindings are not canonical")
+        if not isinstance(configuration, Mapping) or set(configuration) != {
+            "tools",
+            "files",
+            "directories",
+            "values",
+        }:
+            raise RunStoreError("persisted runtime configuration is malformed")
+        configured_identities: set[str] = set()
+        for label in ("tools", "files", "directories", "values"):
+            table = configuration[label]
+            if not isinstance(table, Mapping) or list(table) != sorted(table):
+                raise RunStoreError("persisted runtime configuration is not canonical")
+            for name, configured in table.items():
+                try:
+                    identity = resource_identity(name)
+                except ContractError as exc:
+                    raise RunStoreError(
+                        "persisted runtime configuration identity is invalid"
+                    ) from exc
+                if (
+                    identity in configured_identities
+                    or not isinstance(configured, str)
+                    or not configured
+                    or (label != "values" and not Path(configured).is_absolute())
+                ):
+                    raise RunStoreError(
+                        "persisted runtime configuration value is invalid"
+                    )
+                configured_identities.add(identity)
         try:
             for capability in capabilities:
                 backend_identity(capability)

@@ -54,6 +54,47 @@ from sigilicon.external_tools import (
 _ENVIRONMENT = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 _ENVIRONMENT_PREFIX = re.compile(r"[A-Z][A-Z0-9_]*_\Z")
 _TARGET = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_RUNTIME_TOOLS = {
+    "SIGILICON_SYNOPSYS_VCS": "synopsys.vcs",
+    "SIGILICON_SYNOPSYS_DC_SHELL": "synopsys.dc-shell",
+    "SIGILICON_SYNOPSYS_LM_SHELL": "synopsys.lm-shell",
+    "SIGILICON_SYNOPSYS_FC_SHELL": "synopsys.fc-shell",
+    "SIGILICON_SYNOPSYS_HSPICE": "synopsys.hspice",
+    "SIGILICON_SYNOPSYS_LIBRARY_COMPILER": "synopsys.library-compiler",
+}
+_RUNTIME_FILES = {
+    "SIGILICON_STDCELL_RVT_VERILOG": "stdcell.rvt.verilog",
+    "SIGILICON_STDCELL_HVT_VERILOG": "stdcell.hvt.verilog",
+    "SIGILICON_STDCELL_LVT_VERILOG": "stdcell.lvt.verilog",
+    "SIGILICON_STDCELL_RVT_DB": "stdcell.rvt.db",
+    "SIGILICON_STDCELL_HVT_DB": "stdcell.hvt.db",
+    "SIGILICON_STDCELL_LVT_DB": "stdcell.lvt.db",
+    "SIGILICON_STDCELL_RVT_LEF": "stdcell.rvt.lef",
+    "SIGILICON_STDCELL_HVT_LEF": "stdcell.hvt.lef",
+    "SIGILICON_STDCELL_LVT_LEF": "stdcell.lvt.lef",
+    "SIGILICON_STDCELL_RVT_SPICE": "stdcell.rvt.spice",
+    "SIGILICON_STDCELL_HVT_SPICE": "stdcell.hvt.spice",
+    "SIGILICON_STDCELL_LVT_SPICE": "stdcell.lvt.spice",
+    "SIGILICON_STDCELL_12T_RVT_SPICE": "stdcell.rvt-12t.spice",
+    "SIGILICON_FC_TECH_FILE": "synopsys.fc.tech-file",
+    "SIGILICON_FC_TECH_LEF": "synopsys.fc.tech-lef",
+    "SIGILICON_FC_GDS_MAP": "synopsys.fc.gds-map",
+    "SIGILICON_FC_TLUPLUS": "synopsys.fc.tluplus",
+    "SIGILICON_FC_ANTENNA_RULES": "synopsys.fc.antenna-rules",
+    "SIGILICON_HSPICE_NOMINAL_MODEL": "hspice.model.nominal",
+    "SIGILICON_HSPICE_MISMATCH_MODEL": "hspice.model.mismatch",
+}
+_TOOL_LOCATION_ENVIRONMENT = frozenset(
+    {
+        "VCS_HOME",
+        "VCS_ARCH_OVERRIDE",
+        "SYN_HOME",
+        "FUSIONCOMPILER_HOME",
+        "HSPICE_HOME",
+        "LC_HOME",
+        "SYNOPSYS_LC_ROOT",
+    }
+)
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:
@@ -144,21 +185,126 @@ def _environment_path_check(
     *,
     directory: bool = False,
     executable: bool = False,
+    corner: str | None = None,
 ) -> PreflightCheck:
-    value = resources.environment.get(name)
-    path = None if not value else Path(value)
-    ready = bool(
-        path is not None
-        and ((path.is_dir() if directory else path.is_file()))
-        and (not executable or os.access(path, os.X_OK))
-    )
+    if directory:
+        resource = name
+        value = resources.directories.get(resource)
+        path = None if value is None else Path(value)
+        ready = bool(path is not None and path.is_dir())
+    elif executable:
+        resource = _RUNTIME_TOOLS[name]
+        path = resources.configured_tool(resource)
+        ready = path is not None
+    else:
+        resource = _runtime_file_resource(name, corner=corner)
+        value = resources.files.get(resource)
+        path = None if value is None else Path(value)
+        ready = bool(path is not None and path.is_file())
     kind = "directory" if directory else "executable" if executable else "file"
     return PreflightCheck(
         "runtime-resource",
-        name,
+        resource,
         "ready" if ready else "blocked",
-        f"{kind} supplied by the invoking environment" if ready else f"missing {kind}",
+        f"configured {kind}" if ready else f"missing configured {kind}",
     )
+
+
+def _configured_runtime_paths(
+    resources: Resources,
+    names: tuple[str, ...] | list[str],
+    *,
+    corner: str | None = None,
+) -> dict[str, str]:
+    """Translate project resource identities into the private runner protocol."""
+
+    result: dict[str, str] = {}
+    for name in names:
+        if name in _RUNTIME_TOOLS:
+            path = resources.require_tool(_RUNTIME_TOOLS[name])
+        else:
+            path = resources.require_file(_runtime_file_resource(name, corner=corner))
+        result[name] = str(path)
+    return result
+
+
+def _prepend_path(environment: dict[str, str], directory: Path) -> None:
+    existing = environment.get("PATH")
+    environment["PATH"] = str(directory) + (
+        os.pathsep + existing if existing else ""
+    )
+
+
+def _runtime_environment(
+    resources: Resources,
+    names: tuple[str, ...] | list[str],
+    *,
+    corner: str | None = None,
+) -> dict[str, str]:
+    """Build a child environment from configured resources, never host homes."""
+
+    environment = {
+        name: value
+        for name, value in resources.environment.items()
+        if name not in _TOOL_LOCATION_ENVIRONMENT
+    }
+    bindings = _configured_runtime_paths(resources, names, corner=corner)
+    environment.update(bindings)
+    for name in names:
+        if name not in _RUNTIME_TOOLS:
+            continue
+        executable = Path(bindings[name])
+        if (
+            name == "SIGILICON_SYNOPSYS_VCS"
+            and executable.name == "vcs"
+            and executable.parent.name == "bin"
+        ):
+            environment["VCS_HOME"] = str(executable.parents[1])
+            environment["VCS_ARCH_OVERRIDE"] = "linux"
+        elif (
+            name == "SIGILICON_SYNOPSYS_DC_SHELL"
+            and executable.name == "dc_shell"
+            and executable.parent.name == "bin"
+        ):
+            environment["SYN_HOME"] = str(executable.parents[1])
+        elif (
+            name
+            in {
+                "SIGILICON_SYNOPSYS_LM_SHELL",
+                "SIGILICON_SYNOPSYS_FC_SHELL",
+            }
+            and executable.name in {"lm_shell", "fc_shell"}
+            and executable.parent.name == "bin"
+            and executable.parent.parent.name == "fusioncompiler"
+        ):
+            environment["FUSIONCOMPILER_HOME"] = str(executable.parents[1])
+            environment["SYN_HOME"] = str(executable.parents[2])
+        elif (
+            name == "SIGILICON_SYNOPSYS_HSPICE"
+            and executable.name == "hspice"
+            and executable.parent.name == "bin"
+            and executable.parent.parent.name == "hspice"
+        ):
+            environment["HSPICE_HOME"] = str(executable.parents[2])
+        elif (
+            name == "SIGILICON_SYNOPSYS_LIBRARY_COMPILER"
+            and executable.name == "lc_shell"
+            and executable.parent.name == "bin"
+        ):
+            home = executable.parents[1]
+            environment["LC_HOME"] = str(home)
+            environment["SYNOPSYS_LC_ROOT"] = str(home)
+        _prepend_path(environment, executable.parent)
+    return environment
+
+
+def _runtime_file_resource(name: str, *, corner: str | None) -> str:
+    resource = _RUNTIME_FILES[name]
+    if name.endswith(("RVT_DB", "HVT_DB", "LVT_DB")):
+        if corner is None:
+            raise ContractError("standard-cell timing DB requires an explicit corner")
+        resource = f"{resource}.{corner}"
+    return resource
 
 
 def _base_checks(step: Step) -> list[PreflightCheck]:
@@ -372,7 +518,16 @@ class VcsBackend(_DirectBackend):
         context.require_step(step)
         config = context.step.request
         target = _target(config)
-        environment = dict(context.resources.environment)
+        runtime_names = ["SIGILICON_SYNOPSYS_VCS"]
+        if target in {"structural", "gate"}:
+            runtime_names.extend(
+                (
+                    "SIGILICON_STDCELL_RVT_VERILOG",
+                    "SIGILICON_STDCELL_HVT_VERILOG",
+                    "SIGILICON_STDCELL_LVT_VERILOG",
+                )
+            )
+        environment = _runtime_environment(context.resources, runtime_names)
         environment["SIGILICON_DESIGN_VARIANT"] = _text(config, "variant")
         rtl = _source_members(context.step, "rtl_root", suffix=".sv")
         testbench = _source_members(context.step, "testbench_root", suffix=".sv")
@@ -424,11 +579,17 @@ class DcBackend(_DirectBackend):
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
         constraints = _safe_relative(_text(step.request, "constraints"), "constraints")
+        corner = _text(step.request, "corner")
         if constraints not in step.sources:
             raise ContractError("DC constraints must be inside the step source closure")
         _source_members(step, "rtl_root", suffix=".sv")
         checks.extend(
-            _environment_path_check(resources, name, executable=name.endswith("DC_SHELL"))
+            _environment_path_check(
+                resources,
+                name,
+                executable=name.endswith("DC_SHELL"),
+                corner=corner,
+            )
             for name in (
                 "SIGILICON_SYNOPSYS_DC_SHELL",
                 "SIGILICON_STDCELL_RVT_DB",
@@ -441,7 +602,16 @@ class DcBackend(_DirectBackend):
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         config = context.step.request
-        environment = dict(context.resources.environment)
+        environment = _runtime_environment(
+            context.resources,
+            [
+                "SIGILICON_SYNOPSYS_DC_SHELL",
+                "SIGILICON_STDCELL_RVT_DB",
+                "SIGILICON_STDCELL_HVT_DB",
+                "SIGILICON_STDCELL_LVT_DB",
+            ],
+            corner=_text(config, "corner"),
+        )
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
@@ -522,6 +692,7 @@ class FcBackend(_DirectBackend):
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
         target = _target(step.request)
+        corner = _text(step.request, "corner")
         if target not in {"library", "pnr"}:
             raise ContractError(f"unsupported FC target {target!r}")
         names = (
@@ -549,6 +720,7 @@ class FcBackend(_DirectBackend):
                 resources,
                 name,
                 executable=name.endswith(("LM_SHELL", "FC_SHELL")),
+                corner=corner,
             )
             for name in names
         )
@@ -558,7 +730,31 @@ class FcBackend(_DirectBackend):
         context.require_step(step)
         config = context.step.request
         target = _target(config)
-        environment = dict(context.resources.environment)
+        runtime_names = (
+            (
+                "SIGILICON_SYNOPSYS_LM_SHELL",
+                "SIGILICON_FC_TECH_FILE",
+                "SIGILICON_FC_TECH_LEF",
+                "SIGILICON_STDCELL_RVT_LEF",
+                "SIGILICON_STDCELL_HVT_LEF",
+                "SIGILICON_STDCELL_LVT_LEF",
+                "SIGILICON_STDCELL_RVT_DB",
+                "SIGILICON_STDCELL_HVT_DB",
+                "SIGILICON_STDCELL_LVT_DB",
+            )
+            if target == "library"
+            else (
+                "SIGILICON_SYNOPSYS_FC_SHELL",
+                "SIGILICON_FC_GDS_MAP",
+                "SIGILICON_FC_TLUPLUS",
+                "SIGILICON_FC_ANTENNA_RULES",
+            )
+        )
+        environment = _runtime_environment(
+            context.resources,
+            runtime_names,
+            corner=_text(config, "corner"),
+        )
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
@@ -791,7 +987,18 @@ class HspiceBackend(_DirectBackend):
         context.require_step(step)
         config = context.step.request
         target = _target(config)
-        environment = dict(context.resources.environment)
+        runtime_names = [
+            "SIGILICON_SYNOPSYS_HSPICE",
+            "SIGILICON_HSPICE_NOMINAL_MODEL",
+            "SIGILICON_STDCELL_RVT_SPICE",
+            "SIGILICON_STDCELL_HVT_SPICE",
+            "SIGILICON_STDCELL_LVT_SPICE",
+        ]
+        if _boolean(config, "requires_mismatch"):
+            runtime_names.append("SIGILICON_HSPICE_MISMATCH_MODEL")
+        if _boolean(config, "requires_12t"):
+            runtime_names.append("SIGILICON_STDCELL_12T_RVT_SPICE")
+        environment = _runtime_environment(context.resources, runtime_names)
         environment.update(
             {
                 "SIGILICON_DESIGN_VARIANT": _text(config, "variant"),
@@ -900,10 +1107,6 @@ class StructuralLinkBackend(_DirectBackend):
             "timeout_seconds",
         }
     )
-    _capabilities = frozenset(
-        {"tool.synopsys-library-compiler", "tool.synopsys-dc"}
-    )
-
     def _config(self, step: Step) -> Mapping[str, Any]:
         request = step.request
         if set(request) == {"config", "prepared"}:
@@ -985,17 +1188,6 @@ class StructuralLinkBackend(_DirectBackend):
                 executable=True,
             ),
         ]
-        checks.extend(
-            PreflightCheck(
-                "runtime-capability",
-                capability,
-                "ready" if capability in resources.capabilities else "blocked",
-                "supplied by the invoking runtime"
-                if capability in resources.capabilities
-                else "missing capability",
-            )
-            for capability in sorted(self._capabilities)
-        )
         return tuple(checks)
 
     def prepare(
@@ -1153,15 +1345,10 @@ class StructuralLinkBackend(_DirectBackend):
         from sigilicon.workflows.structural_link import execute_structural_link
 
         config = self._config(context.step)
-        library_compiler = Path(
-            _text(
-                context.resources.environment,
-                "SIGILICON_SYNOPSYS_LIBRARY_COMPILER",
-            )
+        library_compiler = context.resources.require_tool(
+            "synopsys.library-compiler"
         )
-        design_compiler = Path(
-            _text(context.resources.environment, "SIGILICON_SYNOPSYS_DC_SHELL")
-        )
+        design_compiler = context.resources.require_tool("synopsys.dc-shell")
         with owned_scratch_directory(
             prefix=f"sigilicon-structural-link-{context.run_id}-",
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
@@ -1177,7 +1364,13 @@ class StructuralLinkBackend(_DirectBackend):
                 artifacts=artifacts,
                 library_compiler=library_compiler,
                 design_compiler=design_compiler,
-                environment=context.resources.environment,
+                environment=_runtime_environment(
+                    context.resources,
+                    [
+                        "SIGILICON_SYNOPSYS_LIBRARY_COMPILER",
+                        "SIGILICON_SYNOPSYS_DC_SHELL",
+                    ],
+                ),
                 timeout=_positive_integer(config, "timeout_seconds"),
             )
         envelope = context.step.evidence

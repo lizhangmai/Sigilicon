@@ -195,7 +195,7 @@ def execute_xcelium_cell(
     plan: XceliumCellPlan,
     *,
     artifacts: StepFiles,
-    xrun: Path | None = None,
+    xrun: Path,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
@@ -243,7 +243,7 @@ def _execute_xcelium(
     prepare_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
     summary_fields: Mapping[str, object] | None = None,
-    xrun: Path | None = None,
+    xrun: Path,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
@@ -254,7 +254,7 @@ def _execute_xcelium(
     selected_environment = (
         {} if environment_values is None else dict(environment_values)
     )
-    xrun_bin = find_xrun(xrun, environment=selected_environment)
+    xrun_bin = find_xrun(xrun)
     if prepare_inputs is not None:
         prepare_inputs()
     artifacts.write_json(

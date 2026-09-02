@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.external_tools import (
+    cadence_ic_env,
     cadence_subprocess_env,
     find_xrun,
     owned_atomic_output_file,
@@ -22,6 +23,7 @@ from sigilicon.external_tools import (
     ProcessGroupCleanupUncertainError,
     managed_process,
     run_process_group_until_confirmed,
+    spectre_env,
     xrun_env,
 )
 from sigilicon.execution.step_files import StepFiles
@@ -33,6 +35,16 @@ def test_cadence_child_environment_removes_conflicting_license_variable() -> Non
         "LM_LICENSE_FILE": "mentor-or-synopsys-license",
         "CDS_LIC_FILE": "cadence-license",
         "PATH": "/tools/bin",
+        "VB_SPECTRE_BIN": "/ambient/spectre",
+        "MMSIM": "/ambient/mmsim",
+        "SPECTRE_HOME": "/ambient/spectre-home",
+        "XCELIUM_HOME": "/ambient/xcelium",
+        "IUS_HOME": "/ambient/ius",
+        "GCC_HOME": "/ambient/gcc",
+        "CDSHOME": "/ambient/cdshome",
+        "CDSROOT": "/ambient/cdsroot",
+        "CDS_INST_DIR": "/ambient/cadence",
+        "OA_HOME": "/ambient/oa",
     }
 
     result = cadence_subprocess_env(source)
@@ -40,6 +52,18 @@ def test_cadence_child_environment_removes_conflicting_license_variable() -> Non
     assert "LM_LICENSE_FILE" not in result
     assert result["CDS_LIC_FILE"] == "cadence-license"
     assert result["PATH"] == "/tools/bin"
+    assert not {
+        "VB_SPECTRE_BIN",
+        "MMSIM",
+        "SPECTRE_HOME",
+        "XCELIUM_HOME",
+        "IUS_HOME",
+        "GCC_HOME",
+        "CDSHOME",
+        "CDSROOT",
+        "CDS_INST_DIR",
+        "OA_HOME",
+    } & result.keys()
     assert source["LM_LICENSE_FILE"] == "mentor-or-synopsys-license"
 
 
@@ -51,16 +75,12 @@ def test_xrun_resolution_and_environment_use_one_installation(
     launcher = installation / "tools/bin/xrun"
     launcher.parent.mkdir(parents=True)
     launcher.write_text("launcher\n", encoding="utf-8")
+    launcher.chmod(0o755)
     monkeypatch.setenv("XCELIUM_HOME", str(installation))
     monkeypatch.delenv("IUS_HOME", raising=False)
     monkeypatch.setenv("PATH", "")
 
-    resolved = find_xrun(
-        environment={
-            "XCELIUM_HOME": str(installation),
-            "PATH": "",
-        }
-    )
+    resolved = find_xrun(launcher)
     environment = xrun_env(
         resolved,
         {"XCELIUM_HOME": str(installation)},
@@ -70,6 +90,9 @@ def test_xrun_resolution_and_environment_use_one_installation(
     assert environment["XCELIUM_HOME"] == str(installation)
     assert environment["IUS_HOME"] == str(installation)
     assert environment["CDS_INST_DIR"] == str(installation)
+    assert environment["GCC_HOME"] == str(
+        installation / "tools/systemc/gcc/install"
+    )
     assert environment["PATH"].split(os.pathsep)[:2] == [
         str(installation / "tools/bin"),
         str(installation / "bin"),
@@ -89,10 +112,10 @@ def test_xrun_resolution_ignores_ambient_environment(
     monkeypatch.setenv("XCELIUM_HOME", str(installation))
 
     with pytest.raises(FileNotFoundError):
-        find_xrun()
+        find_xrun(tmp_path / "not-configured/xrun")
 
 
-def test_spectre_resolution_uses_only_explicit_environment(
+def test_spectre_resolution_uses_only_explicit_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -102,10 +125,35 @@ def test_spectre_resolution_uses_only_explicit_environment(
     monkeypatch.setenv("VB_SPECTRE_BIN", str(launcher))
 
     with pytest.raises(FileNotFoundError):
-        find_spectre()
-    assert find_spectre(
-        environment={"VB_SPECTRE_BIN": str(launcher)}
-    ) == launcher.absolute()
+        find_spectre(tmp_path / "not-configured/spectre")
+    assert find_spectre(launcher) == launcher.absolute()
+
+
+def test_spectre_environment_is_derived_from_configured_launcher(
+    tmp_path: Path,
+) -> None:
+    installation = tmp_path / "spectre-installation"
+    launcher = installation / "tools/bin/spectre"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    environment = spectre_env(
+        launcher,
+        {
+            "PATH": "/snapshot/bin",
+            "MMSIM": "/ambient/mmsim",
+            "SPECTRE_HOME": "/ambient/spectre",
+        },
+    )
+
+    assert environment["SPECTRE_HOME"] == str(installation)
+    assert environment["MMSIM"] == str(installation)
+    assert environment["PATH"].split(os.pathsep) == [
+        str(installation / "tools/bin"),
+        str(installation / "tools.lnx86/bin"),
+        str(installation / "bin"),
+        "/snapshot/bin",
+    ]
 
 
 def test_xrun_environment_uses_the_supplied_resource_snapshot(
@@ -129,6 +177,34 @@ def test_xrun_environment_uses_the_supplied_resource_snapshot(
 
     assert environment["CDS_LIC_FILE"] == "snapshot-license"
     assert environment["PATH"].endswith(":/snapshot/bin")
+
+
+def test_cadence_ic_environment_is_derived_from_configured_launcher(
+    tmp_path: Path,
+) -> None:
+    installation = tmp_path / "ic"
+    launcher = installation / "tools/dfII/bin/virtuoso"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("launcher\n", encoding="utf-8")
+    oa_home = installation / "oa_v1"
+    oa_home.mkdir()
+
+    environment = cadence_ic_env(
+        launcher,
+        {
+            "CDSHOME": "/ambient/ic",
+            "OA_HOME": "/ambient/oa",
+            "LD_LIBRARY_PATH": "/snapshot/lib",
+        },
+    )
+
+    assert environment["CDSHOME"] == str(installation)
+    assert environment["CDSROOT"] == str(installation)
+    assert environment["CDS_INST_DIR"] == str(installation)
+    assert environment["OA_HOME"] == str(oa_home)
+    assert environment["LD_LIBRARY_PATH"] == os.pathsep.join(
+        (str(installation / "tools.lnx86/lib"), "/snapshot/lib")
+    )
 
 
 def test_owned_scratch_removes_links_without_following_them(tmp_path: Path) -> None:

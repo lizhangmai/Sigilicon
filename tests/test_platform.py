@@ -37,7 +37,7 @@ def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> 
     assert platform.oa.technology_library == "techLib"
     assert platform.oa.reference_libraries == ("deviceLib",)
     assert platform.asset_root == tmp_path / "configs/platform/testpdk"
-    assert platform.asset_root_environment is None
+    assert platform.asset_root_resource is None
     assert platform.source_paths == (
         tmp_path / "configs/platform/catalog.toml",
         tmp_path / "configs/platform/testpdk/platform.toml",
@@ -216,7 +216,7 @@ asset_scope = "external"
         "SIGILICON_PLATFORM_TESTPDK_ROOT", str(tmp_path / "wrong")
     )
     resources = Resources(
-        environment={"SIGILICON_PLATFORM_TESTPDK_ROOT": str(package)}
+        directories={"platform.testpdk": str(package)}
     )
 
     platform = load_platform(Project.open(tmp_path), "testpdk", resources=resources)
@@ -253,7 +253,7 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
         )
         is platform
     )
-    assert platform.asset_root_environment == "SIGILICON_PLATFORM_TESTPDK_ROOT"
+    assert platform.asset_root_resource == "platform.testpdk"
     assert tuple(path.as_posix() for path in platform.asset_paths) == ("model.scs",)
     assert isinstance(platform.simulation.default.file, PurePosixPath)
 
@@ -281,7 +281,7 @@ asset_scope = "external"
         encoding="utf-8",
     )
     resources = Resources(
-        environment={"SIGILICON_PLATFORM_TESTPDK_ROOT": str(package)}
+        directories={"platform.testpdk": str(package)}
     )
 
     with pytest.raises(ValueError, match="must not traverse a symlink"):
@@ -306,7 +306,7 @@ def test_external_platform_requires_explicit_resource_root(
         "SIGILICON_PLATFORM_TESTPDK_ROOT", str(tmp_path / "ambient")
     )
 
-    with pytest.raises(ValueError, match="SIGILICON_PLATFORM_TESTPDK_ROOT"):
+    with pytest.raises(ValueError, match="platform.testpdk"):
         load_platform(
             Project.open(tmp_path), "testpdk", resources=Resources()
         )
@@ -329,12 +329,12 @@ def test_external_platform_snapshot_ignores_ambient_and_detects_explicit_drift(
         ),
         encoding="utf-8",
     )
-    environment = "SIGILICON_PLATFORM_TESTPDK_ROOT"
-    resources = Resources(environment={environment: str(package)})
+    resource = "platform.testpdk"
+    resources = Resources(directories={resource: str(package)})
     project = Project.open(tmp_path)
     snapshot = load_platform(project, "testpdk", resources=resources)
 
-    monkeypatch.setenv(environment, str(tmp_path / "ambient"))
+    monkeypatch.setenv("SIGILICON_PLATFORM_TESTPDK_ROOT", str(tmp_path / "ambient"))
     assert resolve_platform_snapshot(project, "testpdk", snapshot=snapshot) is snapshot
 
     other = tmp_path / "installed/other"
@@ -344,12 +344,12 @@ def test_external_platform_snapshot_ignores_ambient_and_detects_explicit_drift(
         resolve_platform(
             project,
             "testpdk",
-            resources=Resources(environment={environment: str(other)}),
+            resources=Resources(directories={resource: str(other)}),
             snapshot=snapshot,
         )
 
 
-def test_platform_asset_environment_names_cannot_collide(tmp_path: Path) -> None:
+def test_platform_asset_resources_preserve_distinct_catalog_keys(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path, key="a-b")
     write_test_platform(tmp_path, key="a_b")
@@ -362,8 +362,7 @@ def test_platform_asset_environment_names_cannot_collide(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="collide in asset environment"):
-        load_platform_catalog(Project.open(tmp_path))
+    assert set(load_platform_catalog(Project.open(tmp_path)).manifests) == {"a-b", "a_b"}
 
 
 def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:

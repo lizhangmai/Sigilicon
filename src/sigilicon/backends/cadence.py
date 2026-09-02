@@ -29,11 +29,10 @@ from sigilicon.execution.model import (
     json_value,
 )
 from sigilicon.external_tools import (
-    CADENCE_SPICEIN_ENV,
-    CADENCE_TEXT_IMPORT_ENV,
-    CADENCE_VIRTUOSO_ENV,
+    CADENCE_SPICEIN_TOOL,
+    CADENCE_TEXT_IMPORT_TOOL,
+    CADENCE_VIRTUOSO_TOOL,
     ProcessRequest,
-    configured_executable,
     managed_process,
     owned_directory,
     owned_executable,
@@ -43,13 +42,10 @@ from sigilicon.external_tools import (
 )
 
 
-_XRUN = "SIGILICON_CADENCE_XRUN"
-_XSTREAM = "SIGILICON_CADENCE_XSTREAM"
-_CALIBRE = "SIGILICON_CALIBRE"
+_XRUN = "cadence.xrun"
+_XSTREAM = "cadence.xstream"
+_CALIBRE = "mentor.calibre"
 _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
-_LAYOUT_VERIFICATION_CAPABILITIES = _OA_CAPABILITIES | frozenset(
-    {"tool.cadence-xstream", "tool.calibre"}
-)
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,7 +115,7 @@ def _capability_checks(
             "runtime-capability",
             capability,
             "ready" if capability in resources.capabilities else "blocked",
-            "supplied by the invoking runtime"
+            "declared by the project runtime"
             if capability in resources.capabilities
             else "missing capability",
         )
@@ -128,7 +124,7 @@ def _capability_checks(
 
 
 def _configured_executable(resources: Resources, name: str) -> Path | None:
-    return configured_executable(resources.environment, name)
+    return resources.configured_tool(name)
 
 
 def _executable_check(resources: Resources, name: str) -> PreflightCheck:
@@ -138,7 +134,7 @@ def _executable_check(resources: Resources, name: str) -> PreflightCheck:
         "runtime-resource",
         name,
         "ready" if ready else "blocked",
-        "executable supplied by the invoking runtime" if ready else "missing executable",
+        "executable declared by the project runtime" if ready else "missing executable",
     )
 
 
@@ -167,12 +163,12 @@ def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
         return ()
     required: list[str] = []
     if getattr(planning, "designs", ()) or getattr(planning, "testbenches", ()):
-        required.append(CADENCE_SPICEIN_ENV)
+        required.append(CADENCE_SPICEIN_TOOL)
     if any(
         item.view.kind in _OA_TEXT_VIEW_KINDS
         for item in getattr(planning, "views", ())
     ):
-        required.append(CADENCE_TEXT_IMPORT_ENV)
+        required.append(CADENCE_TEXT_IMPORT_TOOL)
     return tuple(required)
 
 
@@ -630,10 +626,7 @@ class XceliumBackend(_DirectBackend):
             _relative(source, "HDL fileset source")
         _text(config, "success_marker")
         _positive_integer(config, "timeout_seconds")
-        return (
-            _executable_check(resources, _XRUN),
-            *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
-        )
+        return (_executable_check(resources, _XRUN),)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -758,10 +751,7 @@ class XceliumAmsBackend(_CadenceDomainBackend):
         _positive_integer(config, "timeout_seconds")
         if step.evidence is None:
             raise ContractError("Xcelium AMS execution requires an evidence envelope")
-        return (
-            _executable_check(resources, _XRUN),
-            *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
-        )
+        return (_executable_check(resources, _XRUN),)
 
     def prepare(
         self,
@@ -912,7 +902,7 @@ class NativeOaBackend(_CadenceDomainBackend):
             raise ContractError("native OA step must close over configs/oa.toml")
         return (
             _bridge_check(resources),
-            _executable_check(resources, CADENCE_VIRTUOSO_ENV),
+            _executable_check(resources, CADENCE_VIRTUOSO_TOOL),
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
@@ -1093,7 +1083,7 @@ class _OaBackend(_CadenceDomainBackend):
                 raise ContractError("prepared OA identity must be a mapping")
             selected = prepared.get("runtime_executables")
             if not isinstance(selected, tuple) or any(
-                item not in {CADENCE_SPICEIN_ENV, CADENCE_TEXT_IMPORT_ENV}
+                item not in {CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL}
                 for item in selected
             ):
                 raise ContractError(
@@ -1439,7 +1429,7 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
             _bridge_check(resources),
             _executable_check(resources, _XSTREAM),
             _executable_check(resources, _CALIBRE),
-            *_capability_checks(resources, _LAYOUT_VERIFICATION_CAPABILITIES),
+            *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
     def prepare(

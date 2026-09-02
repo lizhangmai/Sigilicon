@@ -86,10 +86,18 @@ def _run_with_fake_process(
     executable = tmp_path / "virtuoso"
     executable.write_text("tool\n", encoding="utf-8")
     executable.chmod(0o755)
+    xcelium = tmp_path / "xcelium"
+    xrun = xcelium / "tools/bin/xrun"
+    xrun.parent.mkdir(parents=True)
+    xrun.write_text("tool\n", encoding="utf-8")
+    xrun.chmod(0o755)
     runtime = Resources(
+        tools={
+            "cadence.virtuoso": str(executable),
+            "cadence.xrun": str(xrun),
+        },
         environment={
-            "SIGILICON_CADENCE_VIRTUOSO": str(executable),
-            "XCELIUM_HOME": "/mock/xcelium",
+            "XCELIUM_HOME": "/ambient/xcelium",
         }
     )
     captured: dict[str, object] = {}
@@ -126,10 +134,6 @@ def _run_with_fake_process(
             residual_group_cleaned_after_exit=residual_group_cleaned_after_exit,
         )
 
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.maestro_batch.cadence_subprocess_env",
-        lambda base: dict(base),
-    )
     monkeypatch.setattr(
         "sigilicon.virtuoso.maestro_batch.run_process_group_until_confirmed",
         fake_process,
@@ -178,7 +182,8 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
     assert command[command.index("-log") + 1].startswith(PROC_FD_PREFIX)
     assert command[command.index("-restore") + 1].startswith(PROC_FD_PREFIX)
     assert str(captured["cwd"]).startswith(PROC_FD_PREFIX)
-    assert captured["env"]["IUS_HOME"] == "/mock/xcelium"
+    assert captured["env"]["XCELIUM_HOME"] == str(tmp_path / "xcelium")
+    assert captured["env"]["IUS_HOME"] == str(tmp_path / "xcelium")
     assert len(captured["pass_fds"]) == 9
     assert result.history == "ExplorerRORun.0.RO"
     assert result.rdb_export == rdb_path
@@ -292,7 +297,7 @@ def test_isolated_runner_rejects_log_outside_direct_work(
     executable.write_text("tool\n", encoding="utf-8")
     executable.chmod(0o755)
     runtime = Resources(
-        environment={"SIGILICON_CADENCE_VIRTUOSO": str(executable)}
+        tools={"cadence.virtuoso": str(executable)}
     )
     with workspace_factory(
         client,

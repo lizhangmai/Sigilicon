@@ -13,7 +13,8 @@ from sigilicon.backends.synopsys import (
     StructuralLinkBackend,
     VcsBackend,
 )
-from sigilicon.execution import Step, Resources, StepContext, StepResult
+from sigilicon.execution import Step, StepContext, StepResult
+from sigilicon.execution.model import Resources
 from sigilicon.execution.model import resource_materialization_key
 
 
@@ -28,7 +29,7 @@ def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> P
 def _context(
     tmp_path: Path,
     step: Step,
-    environment: dict[str, str],
+    resources: Resources,
 ) -> StepContext:
     run_root = tmp_path / "run"
     roots = (
@@ -46,7 +47,7 @@ def _context(
         roots[0],
         roots[1],
         roots[2],
-        Resources(environment=environment),
+        resources,
         {},
     )
 
@@ -59,6 +60,8 @@ def test_vcs_backend_runs_one_sealed_owner_script(tmp_path: Path) -> None:
 set -euo pipefail
 test "$1" = rtl
 test -x "$SIGILICON_SYNOPSYS_VCS"
+test "$VCS_HOME" != /ambient/vcs
+test "$VCS_ARCH_OVERRIDE" = linux
 test -s "$SIGILICON_VCS_RTL_FILELIST"
 test -s "$SIGILICON_VCS_TESTBENCH_FILELIST"
 mkdir -p "$SIGILICON_VCS_OUTPUT_ROOT/csrc" "$SIGILICON_VCS_OUTPUT_ROOT/simv.daidir"
@@ -70,7 +73,11 @@ printf 'managed vcs\n'
     )
     _file(sources / "rtl/design.sv")
     _file(sources / "dv/testbench.sv")
-    executable = _file(tmp_path / "site/vcs", "#!/bin/sh\nexit 0\n", executable=True)
+    executable = _file(
+        tmp_path / "site/vcs-home/bin/vcs",
+        "#!/bin/sh\nexit 0\n",
+        executable=True,
+    )
     step = Step(
         "rtl",
         "synopsys.vcs",
@@ -84,9 +91,15 @@ printf 'managed vcs\n'
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
     )
-    environment = dict(os.environ)
-    environment["SIGILICON_SYNOPSYS_VCS"] = str(executable)
-    context = _context(tmp_path, step, environment)
+    resources = Resources(
+        tools={"synopsys.vcs": str(executable)},
+        environment={
+            **os.environ,
+            "VCS_HOME": "/ambient/vcs",
+            "VCS_ARCH_OVERRIDE": "ambient",
+        },
+    )
+    context = _context(tmp_path, step, resources)
     backend = VcsBackend()
 
     assert all(
@@ -128,11 +141,13 @@ printf 'tampered\n' >>"$source_file"
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
     )
-    environment = dict(os.environ)
-    environment["SIGILICON_SYNOPSYS_VCS"] = str(executable)
+    resources = Resources(
+        tools={"synopsys.vcs": str(executable)},
+        environment=dict(os.environ),
+    )
 
     with pytest.raises(RuntimeError, match="changed during invocation"):
-        VcsBackend().run(_context(tmp_path, step, environment), step)
+        VcsBackend().run(_context(tmp_path, step, resources), step)
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
@@ -291,10 +306,9 @@ test "$0" = "{executable}"
         ),
         encoding="utf-8",
     )
-    environment = dict(os.environ)
-    environment["SIGILICON_SYNOPSYS_DC_SHELL"] = str(executable)
+    files: dict[str, str] = {}
     for flavor in ("RVT", "HVT", "LVT"):
-        environment[f"SIGILICON_STDCELL_{flavor}_DB"] = str(
+        files[f"stdcell.{flavor.lower()}.db.tt"] = str(
             _file(site / f"{flavor.lower()}.db")
         )
     step = Step(
@@ -304,6 +318,7 @@ test "$0" = "{executable}"
             "runner": runner.relative_to(sources).as_posix(),
             "constraints": "impl/syn/constraints.sdc",
             "variant": "test",
+            "corner": "tt",
             "rtl_root": "rtl",
             "timeout_seconds": 10,
             "reports": ("check_design.rpt", "area.rpt"),
@@ -314,7 +329,15 @@ test "$0" = "{executable}"
             "rtl/design.sv",
         ),
     )
-    context = _context(tmp_path, step, environment)
+    context = _context(
+        tmp_path,
+        step,
+        Resources(
+            tools={"synopsys.dc-shell": str(executable)},
+            files=files,
+            environment=dict(os.environ),
+        ),
+    )
     backend = DcBackend()
 
     assert all(
@@ -362,18 +385,17 @@ raise SystemExit(1)
     )
     _file(sources / "configs/qualification.toml")
     site = tmp_path / "site"
-    environment = dict(os.environ)
-    environment["SIGILICON_SYNOPSYS_HSPICE"] = str(
-        _file(site / "hspice", "#!/bin/sh\nexit 0\n", executable=True)
-    )
-    for name in (
-        "SIGILICON_HSPICE_NOMINAL_MODEL",
-        "SIGILICON_HSPICE_MISMATCH_MODEL",
-        "SIGILICON_STDCELL_RVT_SPICE",
-        "SIGILICON_STDCELL_HVT_SPICE",
-        "SIGILICON_STDCELL_LVT_SPICE",
-    ):
-        environment[name] = str(_file(site / f"{name.lower()}.sp"))
+    executable = _file(site / "hspice", "#!/bin/sh\nexit 0\n", executable=True)
+    files = {
+        name: str(_file(site / f"{name}.sp"))
+        for name in (
+            "hspice.model.nominal",
+            "hspice.model.mismatch",
+            "stdcell.rvt.spice",
+            "stdcell.hvt.spice",
+            "stdcell.lvt.spice",
+        )
+    }
     step = Step(
         "qualification",
         "synopsys.hspice",
@@ -406,7 +428,15 @@ raise SystemExit(1)
             "configs/qualification.toml",
         ),
     )
-    context = _context(tmp_path, step, environment)
+    context = _context(
+        tmp_path,
+        step,
+        Resources(
+            tools={"synopsys.hspice": str(executable)},
+            files=files,
+            environment=dict(os.environ),
+        ),
+    )
     backend = HspiceBackend()
 
     assert all(
@@ -442,25 +472,20 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         executable=True,
     )
     site = tmp_path / "site"
-    environment = dict(os.environ)
-    for name in (
-        "SIGILICON_SYNOPSYS_LM_SHELL",
-        "SIGILICON_FC_TECH_FILE",
-        "SIGILICON_FC_TECH_LEF",
-        "SIGILICON_STDCELL_RVT_LEF",
-        "SIGILICON_STDCELL_HVT_LEF",
-        "SIGILICON_STDCELL_LVT_LEF",
-        "SIGILICON_STDCELL_RVT_DB",
-        "SIGILICON_STDCELL_HVT_DB",
-        "SIGILICON_STDCELL_LVT_DB",
-    ):
-        environment[name] = str(
-            _file(
-                site / name.lower(),
-                "#!/bin/sh\nexit 0\n" if name.endswith("LM_SHELL") else "fixture\n",
-                executable=name.endswith("LM_SHELL"),
-            )
+    lm_shell = _file(site / "lm_shell", "#!/bin/sh\nexit 0\n", executable=True)
+    files = {
+        name: str(_file(site / name, "fixture\n"))
+        for name in (
+            "synopsys.fc.tech-file",
+            "synopsys.fc.tech-lef",
+            "stdcell.rvt.lef",
+            "stdcell.hvt.lef",
+            "stdcell.lvt.lef",
+            "stdcell.rvt.db.tt",
+            "stdcell.hvt.db.tt",
+            "stdcell.lvt.db.tt",
         )
+    }
     step = Step(
         "reference-library",
         "synopsys.fc",
@@ -475,7 +500,15 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         },
         sources=("impl/pnr/run_fc.sh",),
     )
-    context = _context(tmp_path, step, environment)
+    context = _context(
+        tmp_path,
+        step,
+        Resources(
+            tools={"synopsys.lm-shell": str(lm_shell)},
+            files=files,
+            environment=dict(os.environ),
+        ),
+    )
     backend = FcBackend()
 
     assert all(

@@ -8,7 +8,6 @@ import ctypes
 import fcntl
 import json
 import math
-import shutil
 import signal
 import stat
 import struct
@@ -26,9 +25,9 @@ from typing import Any, Callable, Iterator, Protocol
 
 
 SYNOPSYS_LICENSE_ENV = "LM_LICENSE_FILE"
-CADENCE_VIRTUOSO_ENV = "SIGILICON_CADENCE_VIRTUOSO"
-CADENCE_SPICEIN_ENV = "SIGILICON_CADENCE_SPICEIN"
-CADENCE_TEXT_IMPORT_ENV = "SIGILICON_CADENCE_CDSTEXTTO5X"
+CADENCE_VIRTUOSO_TOOL = "cadence.virtuoso"
+CADENCE_SPICEIN_TOOL = "cadence.spice-in"
+CADENCE_TEXT_IMPORT_TOOL = "cadence.cds-text-to-5x"
 PROCESS_TERM_GRACE_SECONDS = 10
 PROCESS_KILL_GRACE_SECONDS = 5
 # Some Python builds omit these Linux memfd constants even though libc and the
@@ -69,6 +68,20 @@ _INPUT_WATCH_MASK = (
 )
 _INOTIFY_EVENT = struct.Struct("iIII")
 _EMPTY_ENVIRONMENT: Mapping[str, str] = MappingProxyType({})
+_CADENCE_LOCATION_ENVIRONMENT = frozenset(
+    {
+        "VB_SPECTRE_BIN",
+        "MMSIM",
+        "SPECTRE_HOME",
+        "XCELIUM_HOME",
+        "IUS_HOME",
+        "GCC_HOME",
+        "CDSHOME",
+        "CDSROOT",
+        "CDS_INST_DIR",
+        "OA_HOME",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -943,78 +956,50 @@ def owned_atomic_output_file(
 def cadence_subprocess_env(
     base: Mapping[str, str],
 ) -> dict[str, str]:
-    """Return a Cadence child environment without conflicting license state."""
+    """Return a Cadence child environment without external tool selection."""
 
     env = dict(base)
     env.pop(SYNOPSYS_LICENSE_ENV, None)
+    for name in _CADENCE_LOCATION_ENVIRONMENT:
+        env.pop(name, None)
     return env
 
 
-def configured_executable(
-    environment: Mapping[str, str],
-    name: str,
-) -> Path | None:
-    """Resolve one executable only from its explicit runtime binding.
-
-    Managed execution must not search the ambient ``PATH`` or infer an
-    installation from ``CDSHOME``.  The caller supplies the immutable runtime
-    environment snapshot and names an absolute launcher path in it.
-    """
-
-    value = environment.get(name)
-    if not value:
-        return None
-    path = Path(value)
-    if not path.is_absolute():
-        return None
-    return path if path.is_file() and os.access(path, os.X_OK) else None
-
-
 def find_xrun(
-    explicit: Path | None = None,
-    *,
-    environment: Mapping[str, str] = _EMPTY_ENVIRONMENT,
+    explicit: Path,
 ) -> Path:
-    """Resolve Xcelium only from an explicit runtime snapshot."""
+    """Validate one explicitly configured Xcelium launcher."""
 
-    if explicit is not None:
-        if explicit.is_file():
-            return Path(os.path.abspath(explicit))
-        raise FileNotFoundError(f"xrun does not exist: {explicit}")
-    discovered = shutil.which("xrun", path=environment.get("PATH", ""))
-    if discovered:
-        return Path(os.path.abspath(discovered))
-    for variable in ("XCELIUM_HOME", "IUS_HOME"):
-        value = environment.get(variable)
-        if not value:
-            continue
-        installation = Path(value)
-        for candidate in (
-            installation / "tools" / "bin" / "xrun",
-            installation / "bin" / "xrun",
-        ):
-            if candidate.is_file():
-                return Path(os.path.abspath(candidate))
-    raise FileNotFoundError(
-        "xrun was not found; load Xcelium, set XCELIUM_HOME, or pass --xrun"
-    )
+    if explicit.is_file() and os.access(explicit, os.X_OK):
+        return Path(os.path.abspath(explicit))
+    raise FileNotFoundError(f"xrun does not exist or is not executable: {explicit}")
 
 
 def _xcelium_home(
     xrun: Path,
-    environment: Mapping[str, str],
 ) -> Path:
-    resolved = xrun.resolve()
-    configured = environment.get("XCELIUM_HOME") or environment.get("IUS_HOME")
-    candidates = ([Path(configured)] if configured else []) + list(resolved.parents)
-    for installation in candidates:
-        for launcher in (
-            installation / "tools" / "bin" / "xrun",
-            installation / "bin" / "xrun",
-        ):
-            if launcher.is_file() and launcher.resolve() == resolved:
-                return installation
-    raise RuntimeError(f"cannot determine Xcelium installation root from {xrun}")
+    absolute = Path(os.path.abspath(xrun))
+    if absolute.name != "xrun" or absolute.parent.name != "bin":
+        raise RuntimeError(f"cannot determine Xcelium installation root from {xrun}")
+    if absolute.parent.parent.name == "tools":
+        return absolute.parents[2]
+    if (
+        absolute.parent.parent.name == "inca"
+        and absolute.parent.parent.parent.name == "tools.lnx86"
+    ):
+        return absolute.parents[3]
+    return absolute.parents[1]
+
+
+def _prepend_environment_paths(
+    env: dict[str, str],
+    name: str,
+    entries: Sequence[Path],
+) -> None:
+    existing = env.get(name)
+    env[name] = os.pathsep.join(
+        (*map(str, entries), *((existing,) if existing else ()))
+    )
 
 
 def xrun_env(
@@ -1024,30 +1009,108 @@ def xrun_env(
     """Build the bounded child environment for one resolved Xcelium install."""
 
     env = cadence_subprocess_env(base)
-    installation = _xcelium_home(xrun, env)
+    _add_xrun_environment(env, xrun)
+    return env
+
+
+def _add_xrun_environment(env: dict[str, str], xrun: Path) -> None:
+    installation = _xcelium_home(xrun)
     path_entries = (installation / "tools" / "bin", installation / "bin")
     lib_entries = (
         installation / "tools" / "inca" / "lib",
         installation / "tools" / "tbsc" / "lib",
         installation / "tools" / "vic" / "lib" / "gnu",
         installation / "tools" / "systemc" / "lib",
+        installation / "tools" / "systemc" / "lib" / "gnu",
+        installation / "tools" / "systemc" / "gcc" / "install" / "lib64",
         installation / "tools" / "lib",
         installation / "lib",
     )
-    existing_path = env.get("PATH")
-    env["PATH"] = os.pathsep.join(
-        (*map(str, path_entries), *((existing_path,) if existing_path else ()))
-    )
-    existing_library_path = env.get("LD_LIBRARY_PATH")
-    env["LD_LIBRARY_PATH"] = os.pathsep.join(
-        (
-            *map(str, lib_entries),
-            *((existing_library_path,) if existing_library_path else ()),
+    _prepend_environment_paths(env, "PATH", path_entries)
+    _prepend_environment_paths(env, "LD_LIBRARY_PATH", lib_entries)
+    env["XCELIUM_HOME"] = str(installation)
+    env["IUS_HOME"] = str(installation)
+    env["CDS_INST_DIR"] = str(installation)
+    env["GCC_HOME"] = str(installation / "tools" / "systemc" / "gcc" / "install")
+
+
+def _cadence_ic_home(executable: Path) -> Path | None:
+    absolute = Path(os.path.abspath(executable))
+    if absolute.name not in {"virtuoso", "spiceIn", "cdsTextTo5x", "strmout"}:
+        return None
+    if absolute.parent.name != "bin":
+        return None
+    if (
+        absolute.parent.parent.name == "dfII"
+        and absolute.parent.parent.parent.name in {"tools", "tools.lnx86"}
+    ):
+        return absolute.parents[3]
+    if absolute.parent.parent.name in {"tools", "tools.lnx86"}:
+        return absolute.parents[2]
+    return absolute.parents[1]
+
+
+def cadence_ic_env(
+    executable: Path,
+    base: Mapping[str, str] = _EMPTY_ENVIRONMENT,
+    *,
+    xrun: Path | None = None,
+) -> dict[str, str]:
+    """Derive Cadence IC and optional Xcelium homes from configured tools."""
+
+    env = cadence_subprocess_env(base)
+    installation = _cadence_ic_home(executable)
+    if installation is not None:
+        env["CDSHOME"] = str(installation)
+        env["CDSROOT"] = str(installation)
+        env["CDS_INST_DIR"] = str(installation)
+        oa_installations = tuple(
+            path for path in sorted(installation.glob("oa_*")) if path.is_dir()
         )
+        if len(oa_installations) == 1:
+            env["OA_HOME"] = str(oa_installations[0])
+        _prepend_environment_paths(
+            env,
+            "LD_LIBRARY_PATH",
+            (installation / "tools.lnx86" / "lib",),
+        )
+    if xrun is not None:
+        _add_xrun_environment(env, xrun)
+    return env
+
+
+def spectre_env(
+    spectre: Path,
+    base: Mapping[str, str] = _EMPTY_ENVIRONMENT,
+) -> dict[str, str]:
+    """Build a child environment from one configured Spectre launcher."""
+
+    absolute = Path(os.path.abspath(spectre))
+    env = cadence_subprocess_env(base)
+    if absolute.name != "spectre" or absolute.parent.name != "bin":
+        _prepend_environment_paths(env, "PATH", (absolute.parent,))
+        return env
+    installation = (
+        absolute.parents[2]
+        if absolute.parent.parent.name in {"tools", "tools.lnx86"}
+        else absolute.parents[1]
     )
-    env.setdefault("XCELIUM_HOME", str(installation))
-    env.setdefault("IUS_HOME", str(installation))
-    env.setdefault("CDS_INST_DIR", str(installation))
+    _prepend_environment_paths(
+        env,
+        "PATH",
+        (
+            installation / "tools" / "bin",
+            installation / "tools.lnx86" / "bin",
+            installation / "bin",
+        ),
+    )
+    _prepend_environment_paths(
+        env,
+        "LD_LIBRARY_PATH",
+        (installation / "tools.lnx86" / "lib",),
+    )
+    env["SPECTRE_HOME"] = str(installation)
+    env["MMSIM"] = str(installation)
     return env
 
 

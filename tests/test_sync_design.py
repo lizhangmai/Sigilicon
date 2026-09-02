@@ -19,7 +19,7 @@ from sigilicon.workflows.design_sync import (
 
 
 SPICEIN_RESOURCES = Resources(
-    environment={"SIGILICON_CADENCE_SPICEIN": "/bin/true"}
+    tools={"cadence.spice-in": "/bin/true"}
 )
 
 
@@ -381,7 +381,7 @@ def test_spicein_preflight_failure_prevents_process_launch(
     executable.write_text("offline test sentinel\n", encoding="utf-8")
     executable.chmod(0o755)
     resources = Resources(
-        environment={"SIGILICON_CADENCE_SPICEIN": str(executable)}
+        tools={"cadence.spice-in": str(executable)}
     )
     launches: list[object] = []
     monkeypatch.setattr(

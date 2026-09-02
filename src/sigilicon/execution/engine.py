@@ -253,9 +253,15 @@ def _run(
             "inputs",
             ("runtime-bindings.json",),
             {
-                "schema": 1,
+                "schema": 2,
                 "contract_kind": "runtime-bindings",
                 "capabilities": sorted(resources.capabilities),
+                "configuration": {
+                    "tools": dict(sorted(resources.tools.items())),
+                    "files": dict(sorted(resources.files.items())),
+                    "directories": dict(sorted(resources.directories.items())),
+                    "values": dict(sorted(resources.values.items())),
+                },
                 "resources": [
                     resource.record
                     for resource in sorted(

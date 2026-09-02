@@ -197,7 +197,7 @@ class PdkConfig:
         default_factory=lambda: MappingProxyType({})
     )
     asset_root: Path | None = None
-    asset_root_environment: str | None = None
+    asset_root_resource: str | None = None
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -228,7 +228,7 @@ class PlatformContract:
     simulation: SimulationPlatformContract
     oa: OaPlatformConfig
     layout: LayoutPlatformContract | None
-    asset_root_environment: str | None
+    asset_root_resource: str | None
     source_paths: tuple[Path, ...]
     catalog_document: Mapping[str, Any]
     source_documents: Mapping[Path, Mapping[str, Any]]
@@ -613,7 +613,7 @@ def _validate_platform_snapshot(
             _HEADER_FIELDS | {"key", "name", "asset_scope", "contracts"},
             "platform definition",
         )
-        resolved_asset_root, root_environment = _platform_asset_root(
+        resolved_asset_root, root_resource = _platform_asset_root(
             snapshot.path,
             key,
             manifest_document,
@@ -621,7 +621,7 @@ def _validate_platform_snapshot(
         )
         asset_root = (
             snapshot.asset_root
-            if resources is None and root_environment is not None
+            if resources is None and root_resource is not None
             else resolved_asset_root
         )
         if (
@@ -629,7 +629,7 @@ def _validate_platform_snapshot(
             or _text(manifest_document.get("name", key), "platform.name")
             != snapshot.name
             or snapshot.asset_root != asset_root
-            or snapshot.asset_root_environment != root_environment
+            or snapshot.asset_root_resource != root_resource
         ):
             raise ValueError("platform identity drift")
         contract_asset_root = asset_root or snapshot.path.parent
@@ -866,32 +866,21 @@ def _asset_source_path(base: Path, value: object, field: str) -> Path:
     return configured
 
 
-def _platform_asset_environment(key: str) -> str:
-    """Return the deterministic environment name for one platform key."""
+def _platform_asset_resource(key: str) -> str:
+    """Return the semantic external-directory resource for one platform key."""
 
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
         raise ValueError("platform key contains unsupported characters")
-    suffix = re.sub(r"[^A-Za-z0-9_]", "_", key).upper()
-    if re.fullmatch(r"[A-Z0-9_]+", suffix) is None:
-        raise ValueError("platform key cannot produce a safe asset environment")
-    return f"SIGILICON_PLATFORM_{suffix}_ROOT"
+    return f"platform.{key}"
 
 
-def _validate_platform_environment_names(platforms: Mapping[str, Any]) -> None:
-    """Reject catalog keys that would share one external asset variable."""
+def _validate_platform_resource_names(platforms: Mapping[str, Any]) -> None:
+    """Validate catalog keys used to derive external resource identities."""
 
-    environments: dict[str, str] = {}
     for key in platforms:
         if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
             raise ValueError("platform catalog keys contain unsupported characters")
-        environment = _platform_asset_environment(key)
-        previous = environments.get(environment)
-        if previous is not None and previous != key:
-            raise ValueError(
-                "platform catalog keys collide in asset environment: "
-                f"{previous!r} and {key!r} -> {environment}"
-            )
-        environments[environment] = key
+        _platform_asset_resource(key)
 
 
 def _platform_asset_root(
@@ -907,15 +896,15 @@ def _platform_asset_root(
     if scope == "project":
         return manifest.parent, None
 
-    root_environment = _platform_asset_environment(key)
+    root_resource = _platform_asset_resource(key)
     if resources is None:
         # Snapshot validation must remain independent of ambient environment.
         # The caller supplies the already sealed root through the snapshot.
-        return None, root_environment
-    asset_root = resources.require_directory(root_environment)
+        return None, root_resource
+    asset_root = resources.require_directory(root_resource)
     if not isinstance(asset_root, Path):
         raise TypeError("platform asset root must be a Path")
-    return asset_root.expanduser().absolute(), root_environment
+    return asset_root.expanduser().absolute(), root_resource
 
 
 def _required_file(
@@ -1269,7 +1258,7 @@ def parse_platform_catalog(
         document,
     )
     manifests: dict[str, Path] = {}
-    _validate_platform_environment_names(platforms)
+    _validate_platform_resource_names(platforms)
     for key, value in platforms.items():
         if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
             raise ValueError("platform catalog keys contain unsupported characters")
@@ -1314,7 +1303,7 @@ def _load_platform(
             context,
             catalog_document,
         )
-        _validate_platform_environment_names(platforms)
+        _validate_platform_resource_names(platforms)
         try:
             manifest_value = platforms[key]
         except KeyError as exc:
@@ -1345,7 +1334,7 @@ def _load_platform(
     )
     if raw.get("key") != key:
         raise ValueError(f"platform manifest key must be {key!r}")
-    asset_root, root_environment = _platform_asset_root(
+    asset_root, root_resource = _platform_asset_root(
         manifest,
         key,
         raw,
@@ -1425,7 +1414,7 @@ def _load_platform(
             }
         ),
         asset_root=asset_root,
-        asset_root_environment=root_environment,
+        asset_root_resource=root_resource,
     )
 
 
@@ -1525,7 +1514,7 @@ def load_platform_contract(
         simulation=simulation,
         oa=platform.oa,
         layout=layout,
-        asset_root_environment=platform.asset_root_environment,
+        asset_root_resource=platform.asset_root_resource,
         source_paths=platform.source_paths,
         catalog_document=platform.catalog_document,
         source_documents=platform.source_documents,

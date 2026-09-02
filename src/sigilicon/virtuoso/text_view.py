@@ -11,11 +11,10 @@ from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapsho
 from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.external_tools import (
-    CADENCE_TEXT_IMPORT_ENV,
+    CADENCE_TEXT_IMPORT_TOOL,
     ProcessPort,
     ProcessRequest,
-    cadence_subprocess_env,
-    configured_executable,
+    cadence_ic_env,
     managed_process,
     owned_directory,
     owned_executable,
@@ -186,14 +185,10 @@ def import_oa_text_view(
         phase=f"{kind} text-view adapter",
     )
     workdir = virtuoso_workdir(client)
-    executable = configured_executable(
-        resources.environment,
-        CADENCE_TEXT_IMPORT_ENV,
-    )
+    executable = resources.configured_tool(CADENCE_TEXT_IMPORT_TOOL)
     if executable is None:
         raise FileNotFoundError(
-            f"{CADENCE_TEXT_IMPORT_ENV} must name an absolute executable "
-            "supplied by the runtime"
+            f"runtime.tools.{CADENCE_TEXT_IMPORT_TOOL} must name an available executable"
         )
     library_path = operation.require_project_library_target(client, library)
     with (
@@ -242,7 +237,7 @@ def import_oa_text_view(
         completed = process.run(ProcessRequest(
             argv=tuple(command),
             cwd=Path(owned_workdir.child_path),
-            environment=cadence_subprocess_env(resources.environment),
+            environment=cadence_ic_env(executable, resources.environment),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=(

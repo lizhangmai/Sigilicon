@@ -17,7 +17,6 @@ from sigilicon.execution import (
     Operation,
     Step,
     PreflightCheck,
-    Resources,
     RunResult,
     Source,
     StepContext,
@@ -25,7 +24,7 @@ from sigilicon.execution import (
     StepResult,
 )
 from sigilicon.execution.backend import Preparation
-from sigilicon.execution.model import ResourceBinding
+from sigilicon.execution.model import ResourceBinding, Resources
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
@@ -33,10 +32,6 @@ from sigilicon.project import Project
 
 
 _TEST_BACKENDS: tuple[object, ...] = ()
-
-
-def _resources() -> Resources:
-    return Resources(frozenset({"offline"}))
 
 
 def _plan(project: Project, selector: str):
@@ -90,38 +85,35 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
         "_BackendRegistry",
         "_Preparation",
         "_RunStore",
+        "Resources",
     ):
         assert not hasattr(execution, removed)
     assert "_read_run" not in Project.__dict__
     assert "_clean_run" not in Project.__dict__
 
 
-def test_resources_require_explicit_environment_and_resolved_directory(
+def test_resources_require_typed_project_configuration(
     tmp_path: Path,
 ) -> None:
     directory = tmp_path / "runtime"
     directory.mkdir()
     resources = Resources(
-        environment={
-            "SIGILICON_TEST_VALUE": "bound",
-            "SIGILICON_TEST_ROOT": str(directory),
-        }
+        values={"test.value": "bound"},
+        directories={"test.root": str(directory)},
     )
 
-    assert resources.require_environment("SIGILICON_TEST_VALUE") == "bound"
-    assert resources.require_directory("SIGILICON_TEST_ROOT") == directory.resolve()
+    assert resources.require_value("test.value") == "bound"
+    assert resources.require_directory("test.root") == directory.resolve()
 
-    with pytest.raises(ContractError, match="environment binding is missing"):
-        resources.require_environment("SIGILICON_TEST_MISSING")
-    with pytest.raises(ContractError, match="absolute directory"):
-        Resources(environment={"SIGILICON_TEST_ROOT": "relative"}).require_directory(
-            "SIGILICON_TEST_ROOT"
-        )
+    with pytest.raises(ContractError, match="runtime value is missing"):
+        resources.require_value("test.missing")
+    with pytest.raises(ContractError, match="absolute path"):
+        Resources(directories={"test.root": "relative"})
     file_path = tmp_path / "runtime-file"
     file_path.write_text("file\n", encoding="utf-8")
-    with pytest.raises(ContractError, match="existing directory"):
-        Resources(environment={"SIGILICON_TEST_ROOT": str(file_path)}).require_directory(
-            "SIGILICON_TEST_ROOT"
+    with pytest.raises(ContractError, match="runtime directory is missing"):
+        Resources(directories={"test.root": str(file_path)}).require_directory(
+            "test.root"
         )
 
 
@@ -163,6 +155,15 @@ platform = "configs/platform/catalog.toml"
 project_root = "."
 workspace_root = "workspace"
 artifact_root = "artifacts"
+
+[runtime]
+capabilities = ["offline"]
+
+[runtime.tools]
+"test.tool" = "/bin/true"
+
+[runtime.values]
+"test.value" = "configured"
 """,
         encoding="utf-8",
     )
@@ -299,8 +300,6 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
 ) -> None:
     operations = _write_project(tmp_path)
     project = _project(tmp_path, CopyBackend(), UpperBackend())
-    resources = _resources()
-
     plan = project.plan("example:check")
 
     assert plan.owner == "example"
@@ -319,13 +318,12 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert "backend_bindings" not in plan.record
     assert not hasattr(plan, "_backends")
     assert not project.artifact_root.exists()
-    assert project.preflight(plan, Resources()).status == "blocked"
-    checked = project.preflight(plan, resources)
+    checked = project.preflight(plan)
     assert checked.status == "ready"
     assert not project.artifact_root.exists()
 
     operations.write_text(operations.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    assert project.preflight(plan, resources).status == "blocked"
+    assert project.preflight(plan).status == "blocked"
 
 
 def test_project_plan_is_independent_of_runtime_resources(
@@ -333,11 +331,37 @@ def test_project_plan_is_independent_of_runtime_resources(
 ) -> None:
     _write_project(tmp_path)
     project = _project(tmp_path, CopyBackend())
-    resources = _resources()
     plan = project.plan("example:check")
 
-    assert project.preflight(plan, Resources()).status == "blocked"
-    assert project.preflight(plan, resources).status == "ready"
+    assert project.preflight(plan).status == "ready"
+    manifest = tmp_path / "sigilicon.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'capabilities = ["offline"]', "capabilities = []"
+        ),
+        encoding="utf-8",
+    )
+    without_runtime = _project(tmp_path, CopyBackend())
+    assert without_runtime.plan("example:check").record == plan.record
+    assert without_runtime.preflight(plan).status == "blocked"
+
+
+def test_project_runtime_configuration_replaces_sigilicon_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    monkeypatch.setenv("SIGILICON_TEST_TOOL", "/ambient/tool")
+    monkeypatch.setenv("SIGILICON_TEST_VALUE", "ambient")
+    monkeypatch.setenv("LM_LICENSE_FILE", "host-license")
+
+    runtime = Project.open(tmp_path)._execution_resources()
+
+    assert runtime.require_tool("test.tool") == Path("/bin/true")
+    assert runtime.require_value("test.value") == "configured"
+    assert "SIGILICON_TEST_TOOL" not in runtime.environment
+    assert "SIGILICON_TEST_VALUE" not in runtime.environment
+    assert runtime.environment["LM_LICENSE_FILE"] == "host-license"
 
 
 def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> None:
@@ -375,7 +399,7 @@ def test_execution_plan_record_restoration_does_not_read_current_sources(
     restored = project.plan(json.loads(json.dumps(record)))
 
     assert restored.record == record
-    assert project.preflight(restored, _resources()).status == "blocked"
+    assert project.preflight(restored).status == "blocked"
 
 
 def test_execution_plan_decoder_normalizes_invalid_evidence_types(
@@ -408,8 +432,6 @@ def test_cli_preflight_consumes_a_portable_plan_record(
             str(plan_path),
             "--project-root",
             str(tmp_path),
-            "--capability",
-            "offline",
         )
     ) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ready"
@@ -433,8 +455,6 @@ def test_cli_run_consumes_a_portable_plan_record(
             str(plan_path),
             "--project-root",
             str(tmp_path),
-            "--capability",
-            "offline",
             "--run-id",
             "6" * 32,
         )
@@ -462,8 +482,6 @@ def test_cli_rejects_a_symlinked_plan_file(
             str(plan_path),
             "--project-root",
             str(tmp_path),
-            "--capability",
-            "offline",
         )
     ) == 2
     assert "cannot read execution plan" in capsys.readouterr().err
@@ -509,7 +527,7 @@ def test_backend_discovery_does_not_change_the_portable_plan(tmp_path: Path) -> 
     assert _project(
         tmp_path,
         DiscoveringBackend((first, second)),
-    ).preflight(forward, _resources()).ready
+    ).preflight(forward).ready
 
 
 def test_runtime_binding_rejects_a_compiled_source_change(tmp_path: Path) -> None:
@@ -524,7 +542,7 @@ def test_runtime_binding_rejects_a_compiled_source_change(tmp_path: Path) -> Non
     project = _project(tmp_path, ChangingBackend())
 
     plan = _plan(project, "example:check")
-    checked = project.preflight(plan, _resources())
+    checked = project.preflight(plan)
     assert checked.status == "blocked"
     assert "changed during backend preparation" in checked.checks[0].detail
 
@@ -569,7 +587,7 @@ source = ["ip/foreign/value.txt"]
 
     project = _project(tmp_path, ForeignSourceBackend())
     plan = _plan(project, "example:check")
-    checked = project.preflight(plan, _resources())
+    checked = project.preflight(plan)
     assert checked.status == "blocked"
     assert "source owned by 'foreign'" in checked.checks[0].detail
 
@@ -592,7 +610,7 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
 
     project = _project(tmp_path, SymlinkSourceBackend())
     plan = _plan(project, "example:check")
-    checked = project.preflight(plan, _resources())
+    checked = project.preflight(plan)
     assert checked.status == "blocked"
     assert "non-symlink" in checked.checks[0].detail
 
@@ -653,7 +671,6 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
 
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="a" * 32,
         progress=lambda step, status: progress.append((step, status)),
     )
@@ -685,7 +702,6 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
     project = _project(tmp_path, CopyBackend(),)
     result = project.run(
         _plan(project, "example:check"),
-        Resources(frozenset({"offline"})),
         run_id="7" * 32,
     )
     outside = tmp_path / "outside"
@@ -726,7 +742,6 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
     plan = _plan(project, "example:check@fast")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="1" * 32,
     )
 
@@ -744,11 +759,11 @@ def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = Project.open(tmp_path)
     plan = _plan(project, "example:check")
-    checked = project.preflight(plan, _resources())
+    checked = project.preflight(plan)
     assert checked.status == "blocked"
     assert "unknown trusted backend" in checked.checks[0].detail
     with pytest.raises(ContractError, match="unknown trusted backend"):
-        project.run(plan, _resources(), run_id="2" * 32)
+        project.run(plan, run_id="2" * 32)
 
 
 def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
@@ -764,7 +779,7 @@ def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
     plan = _plan(project, "example:check")
 
     with pytest.raises(ExecutionError, match="changed immediately before backend"):
-        project.run(plan, _resources(), run_id="b" * 32)
+        project.run(plan, run_id="b" * 32)
     failed = _read_run(project, "example:check", "b" * 32)
     assert failed.record["contract_kind"] == "run-failure"
     assert failed.status == "failed"
@@ -794,7 +809,6 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
 
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="f" * 32,
     )
 
@@ -844,7 +858,6 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
 
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="e" * 32,
     )
 
@@ -881,7 +894,6 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     project = _project(tmp_path, BinaryBackend())
     result = project.run(
         _plan(project, "example:check"),
-        _resources(),
         run_id="b" * 32,
     )
 
@@ -889,6 +901,10 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     bindings = json.loads(
         (result.run_root / "inputs/runtime-bindings.json").read_text()
     )
+    assert bindings["configuration"]["tools"] == {"test.tool": "/bin/true"}
+    assert bindings["configuration"]["values"] == {
+        "test.value": "configured"
+    }
     assert bindings["resources"][0]["kind"] == "file"
     assert str(live) not in str(bindings)
     store, owner, operation, variant = _run_store_call(project, "example:check")
@@ -931,7 +947,6 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
     project = _project(tmp_path, DirectoryBackend())
     result = project.run(
         _plan(project, "example:check"),
-        _resources(),
         run_id="d" * 32,
     )
 
@@ -996,7 +1011,6 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
 
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="7" * 32,
     )
     assert result.outcomes[0].result.facts == {"tamper_rejected": True}
@@ -1008,9 +1022,7 @@ def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:
     plan = _plan(project, "example:check")
     forged = replace(plan, project_identity="sha256-" + "0" * 64)
 
-    assert project.preflight(
-        forged, Resources(frozenset({"offline"}))
-    ).status == "blocked"
+    assert project.preflight(forged).status == "blocked"
 
 
 def test_project_rejects_a_plan_modified_by_the_caller(
@@ -1022,7 +1034,7 @@ def test_project_rejects_a_plan_modified_by_the_caller(
     forged_step = replace(plan.steps[0], request={"text": "forged"})
     forged = replace(plan, steps=(forged_step,))
 
-    checked = project.preflight(forged, Resources(frozenset({"offline"})))
+    checked = project.preflight(forged)
 
     assert checked.status == "blocked"
     assert checked.checks[0].kind == "plan"
@@ -1044,13 +1056,16 @@ def test_project_rejects_composition_source_drift(tmp_path: Path) -> None:
     project = _project(tmp_path, CopyBackend())
     plan = _plan(project, "example:check")
     manifest = tmp_path / "sigilicon.toml"
-    manifest.write_text(manifest.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('owner = "test"', 'owner = "other"', 1),
+        encoding="utf-8",
+    )
 
-    checked = project.preflight(plan, Resources(frozenset({"offline"})))
+    checked = project.preflight(plan)
     assert checked.status == "blocked"
     assert checked.checks[0].kind == "plan"
     assert checked.checks[0].subject == "example"
-    assert "current owner operation contract" in checked.checks[0].detail
+    assert "project manifest snapshot source document drift" in checked.checks[0].detail
 
 
 def test_project_rejects_owner_python_registration_fields_without_importing(
@@ -1111,7 +1126,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
     plan = _plan(project, "example:check")
 
     with pytest.raises(ExecutionError, match="output inventory"):
-        project.run(plan, _resources(), run_id="c" * 32)
+        project.run(plan, run_id="c" * 32)
 
 
 def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Path) -> None:
@@ -1125,7 +1140,6 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="6" * 32,
     )
 
@@ -1152,7 +1166,6 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="2" * 32,
     )
 
@@ -1173,7 +1186,6 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="3" * 32,
     )
 
@@ -1201,7 +1213,6 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="4" * 32,
     )
 
@@ -1231,7 +1242,6 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
     with pytest.raises(ExecutionError, match="changed immediately before backend"):
         project.run(
             plan,
-            Resources(frozenset({"offline"})),
             run_id="5" * 32,
         )
     stored = _read_run(project, "example:all", "5" * 32)
@@ -1247,7 +1257,6 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="d" * 32,
     )
     operations.unlink()
@@ -1269,7 +1278,6 @@ def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
-        Resources(frozenset({"offline"})),
         run_id="9" * 32,
     )
     output = result.outcomes[0].result.artifacts[0].path
@@ -1283,11 +1291,10 @@ def test_run_identity_is_exclusive(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = _project(tmp_path, CopyBackend(),)
     plan = _plan(project, "example:check")
-    resources = Resources(frozenset({"offline"}))
-    project.run(plan, resources, run_id="e" * 32)
+    project.run(plan, run_id="e" * 32)
 
     with pytest.raises(FileExistsError):
-        project.run(plan, resources, run_id="e" * 32)
+        project.run(plan, run_id="e" * 32)
     assert _read_run(project, "example:check", "e" * 32).status == "succeeded"
 
 
@@ -1295,11 +1302,9 @@ def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> 
     _write_project(tmp_path)
     project = _project(tmp_path, CopyBackend(),)
     plan = _plan(project, "example:check")
-    resources = Resources(frozenset({"offline"}))
-
     def invoke():
         try:
-            return project.run(plan, resources, run_id="4" * 32)
+            return project.run(plan, run_id="4" * 32)
         except BaseException as exc:
             return exc
 

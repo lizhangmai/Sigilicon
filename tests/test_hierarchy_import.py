@@ -13,7 +13,7 @@ from sigilicon.virtuoso.workspace import OperationPolicy
 
 
 SPICEIN_RESOURCES = Resources(
-    environment={"SIGILICON_CADENCE_SPICEIN": "/bin/true"}
+    tools={"cadence.spice-in": "/bin/true"}
 )
 
 

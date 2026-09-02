@@ -22,9 +22,9 @@ from sigilicon.execution import (
     ExecutionError,
     Operation,
     Step,
-    Resources,
     StepContext,
 )
+from sigilicon.execution.model import Resources
 from sigilicon.workflows.oa_library import oa_plan_source_paths
 
 
@@ -204,8 +204,7 @@ def test_cadence_executable_does_not_fall_back_to_ambient_path(
     executable = _file(tmp_path / "ambient/xrun", executable=True)
     monkeypatch.setenv("PATH", str(executable.parent))
     resources = Resources(
-        frozenset({"tool.cadence-xcelium"}),
-        {"SIGILICON_CADENCE_XRUN": executable.name},
+        environment={"PATH": str(executable.parent)},
     )
     step = Step(
         "rtl",
@@ -217,7 +216,7 @@ def test_cadence_executable_does_not_fall_back_to_ambient_path(
     checks = XceliumBackend().preflight(step, resources)
 
     assert any(
-        check.subject == "SIGILICON_CADENCE_XRUN" and check.status == "blocked"
+        check.subject == "cadence.xrun" and check.status == "blocked"
         for check in checks
     )
 
@@ -236,9 +235,10 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
         },
         sources=("rtl/design.sv", "dv/testbench.sv"),
     )
-    environment = dict(os.environ)
-    environment["SIGILICON_CADENCE_XRUN"] = str(executable)
-    resources = Resources(frozenset({"tool.cadence-xcelium"}), environment)
+    resources = Resources(
+        tools={"cadence.xrun": str(executable)},
+        environment=dict(os.environ),
+    )
     project = tmp_path / "project"
     owner = project / "ip/example"
     workspace = project / "workspace"
@@ -284,11 +284,10 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         sources=("dv/tb_ams/cell.toml",),
         evidence=Evidence("diagnostic", "l2", "native-adapter-wiring"),
     )
-    environment = {
-        "SIGILICON_CADENCE_XRUN": str(executable),
-        "PATH": "/snapshot/bin",
-    }
-    resources = Resources(frozenset({"tool.cadence-xcelium"}), environment)
+    resources = Resources(
+        tools={"cadence.xrun": str(executable)},
+        environment={"PATH": "/snapshot/bin"},
+    )
     project = tmp_path / "source-project"
     owner = project / "ip/example"
     workspace = tmp_path / "workspace"
@@ -422,19 +421,19 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
         {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
         sources=("configs/oa.toml",),
     )
-    environment = {
-        "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-        "SIGILICON_VIRTUOSO_PORT": "65432",
+    values = {
+        "virtuoso-bridge.host": "127.0.0.1",
+        "virtuoso-bridge.port": "65432",
     }
     capabilities = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 
     blocked = NativeOaBackend().preflight(
         step,
-        Resources(capabilities, environment),
+        Resources(capabilities=capabilities, values=values),
     )
 
     assert any(
-        check.subject == "SIGILICON_CADENCE_VIRTUOSO"
+        check.subject == "cadence.virtuoso"
         and check.status == "blocked"
         for check in blocked
     )
@@ -443,8 +442,9 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
     ready = NativeOaBackend().preflight(
         step,
         Resources(
-            capabilities,
-            {**environment, "SIGILICON_CADENCE_VIRTUOSO": str(executable)},
+            capabilities=capabilities,
+            tools={"cadence.virtuoso": str(executable)},
+            values=values,
         ),
     )
 
@@ -459,41 +459,44 @@ def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> No
             "config": {"owner": "example", "timeout_seconds": 10},
             "prepared": {
                 "runtime_executables": (
-                    "SIGILICON_CADENCE_SPICEIN",
-                    "SIGILICON_CADENCE_CDSTEXTTO5X",
+                    "cadence.spice-in",
+                    "cadence.cds-text-to-5x",
                 )
             },
         },
         sources=("configs/oa.toml",),
     )
-    environment = {
-        "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-        "SIGILICON_VIRTUOSO_PORT": "65432",
+    values = {
+        "virtuoso-bridge.host": "127.0.0.1",
+        "virtuoso-bridge.port": "65432",
     }
     capabilities = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
     backend = next(
         item for item in cadence_backends() if item.name == "cadence.oa-rebuild"
     )
 
-    blocked = backend.preflight(step, Resources(capabilities, environment))
+    blocked = backend.preflight(
+        step,
+        Resources(capabilities=capabilities, values=values),
+    )
 
     assert {
         check.subject
         for check in blocked
         if check.status == "blocked"
-    } == {"SIGILICON_CADENCE_SPICEIN", "SIGILICON_CADENCE_CDSTEXTTO5X"}
+    } == {"cadence.spice-in", "cadence.cds-text-to-5x"}
 
     spicein = _file(tmp_path / "tools/spiceIn", executable=True)
     text_import = _file(tmp_path / "tools/cdsTextTo5x", executable=True)
     ready = backend.preflight(
         step,
         Resources(
-            capabilities,
-            {
-                **environment,
-                "SIGILICON_CADENCE_SPICEIN": str(spicein),
-                "SIGILICON_CADENCE_CDSTEXTTO5X": str(text_import),
+            capabilities=capabilities,
+            tools={
+                "cadence.spice-in": str(spicein),
+                "cadence.cds-text-to-5x": str(text_import),
             },
+            values=values,
         ),
     )
 
@@ -837,20 +840,20 @@ def test_layout_verification_backend_publishes_classified_evidence(
         evidence=Evidence("regression", "l1", "physical-layout"),
     )
     resources = Resources(
-        frozenset(
+        capabilities=frozenset(
             {
                 "tool.virtuoso-bridge",
                 "license.cadence-oa",
-                "tool.cadence-xstream",
-                "tool.calibre",
             }
         ),
-            {
-                "SIGILICON_CADENCE_XSTREAM": str(xstream),
-                "SIGILICON_CALIBRE": str(calibre),
-                "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-                "SIGILICON_VIRTUOSO_PORT": "65432",
-            },
+        tools={
+            "cadence.xstream": str(xstream),
+            "mentor.calibre": str(calibre),
+        },
+        values={
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "65432",
+        },
     )
     project_root = tmp_path / "source-project"
     owner_root = project_root / "ip/example"

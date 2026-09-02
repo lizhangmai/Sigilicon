@@ -13,7 +13,7 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.external_tools import (
     ProcessPort,
     ProcessRequest,
-    cadence_subprocess_env,
+    cadence_ic_env,
     managed_process,
     owned_directory,
     owned_executable,
@@ -289,25 +289,13 @@ class XStreamExportResult:
     summary_path: Path
 
 
-def _prepend(environment: dict[str, str], name: str, value: Path) -> None:
-    existing = environment.get(name, "")
-    environment[name] = str(value) + (os.pathsep + existing if existing else "")
-
-
 def xstream_environment(
     executable: Path,
     base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Construct Cadence's subprocess environment from one explicit launcher."""
 
-    environment = cadence_subprocess_env({} if base is None else base)
-    cds_home = Path(environment.get("CDSHOME", executable.parents[3]))
-    environment.setdefault("CDSHOME", str(cds_home))
-    environment.setdefault("CDSROOT", str(cds_home))
-    environment.setdefault("CDS_INST_DIR", str(cds_home))
-    environment.setdefault("OA_HOME", str(cds_home / "oa_v22.62.021"))
-    _prepend(environment, "LD_LIBRARY_PATH", cds_home / "tools.lnx86" / "lib")
-    return environment
+    return cadence_ic_env(executable, {} if base is None else base)
 
 
 def _write_failure_diagnostic(

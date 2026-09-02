@@ -50,7 +50,7 @@ def test_source_owned_views_use_native_identity(
     executable.write_text("tool\n", encoding="utf-8")
     executable.chmod(0o755)
     resources = Resources(
-        environment={"SIGILICON_CADENCE_CDSTEXTTO5X": str(executable)}
+        tools={"cadence.cds-text-to-5x": str(executable)}
     )
     source = tmp_path / f"model.{suffix}"
     source.write_text("module model; endmodule\n", encoding="utf-8")

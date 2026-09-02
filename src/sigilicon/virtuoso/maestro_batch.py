@@ -11,10 +11,9 @@ import stat
 from typing import Any, Callable, Mapping
 
 from sigilicon.external_tools import (
-    CADENCE_VIRTUOSO_ENV,
+    CADENCE_VIRTUOSO_TOOL,
     ProcessGroupCleanupUncertainError,
-    cadence_subprocess_env,
-    configured_executable,
+    cadence_ic_env,
     owned_atomic_output_file,
     owned_directory,
     owned_executable,
@@ -204,11 +203,10 @@ def render_isolated_maestro_run_skill(
 
 
 def _virtuoso_executable(resources: Any) -> Path:
-    executable = configured_executable(resources.environment, CADENCE_VIRTUOSO_ENV)
+    executable = resources.configured_tool(CADENCE_VIRTUOSO_TOOL)
     if executable is None:
         raise FileNotFoundError(
-            f"{CADENCE_VIRTUOSO_ENV} must name an absolute executable "
-            "supplied by the runtime"
+            f"runtime.tools.{CADENCE_VIRTUOSO_TOOL} must name an available executable"
         )
     return executable
 
@@ -323,10 +321,12 @@ def run_isolated_maestro(
                     name="maestro-worker.il",
                 ) as owned_script,
             ):
-                environment = cadence_subprocess_env(resources.environment)
-                xcelium_home = environment.get("XCELIUM_HOME")
-                if xcelium_home:
-                    environment.setdefault("IUS_HOME", xcelium_home)
+                xrun = resources.configured_tool("cadence.xrun")
+                environment = cadence_ic_env(
+                    executable,
+                    resources.environment,
+                    xrun=xrun,
+                )
                 command = (
                     *owned_launcher.command,
                     "-nograph",

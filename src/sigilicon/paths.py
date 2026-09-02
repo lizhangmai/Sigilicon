@@ -325,7 +325,8 @@ class ProjectContext:
                 raw = tomllib.load(stream)
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"cannot read Sigilicon project context {contract}: {exc}") from exc
-        return cls.from_contract(contract, raw)
+        source_raw = {key: value for key, value in raw.items() if key != "runtime"}
+        return cls.from_contract(contract, source_raw)
 
     @classmethod
     def from_contract(

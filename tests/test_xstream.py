@@ -12,6 +12,7 @@ from sigilicon.virtuoso.xstream import (
     XStreamExportRequest,
     canonicalize_xstream_gdsii,
     run_xstream_export,
+    xstream_environment,
 )
 
 
@@ -45,6 +46,31 @@ def _write_success(cwd: Path) -> None:
     )
     (cwd / "strmout.sum").write_text("complete\n", encoding="utf-8")
     (cwd / "layout.gds").write_bytes(_xstream_pcell_gds("787838128820"))
+
+
+def test_xstream_environment_derives_installation_from_configured_tool(
+    tmp_path: Path,
+) -> None:
+    installation = tmp_path / "cadence"
+    executable = installation / "tools/dfII/bin/strmout"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("tool\n", encoding="utf-8")
+    (installation / "oa_v1").mkdir()
+
+    environment = xstream_environment(
+        executable,
+        {
+            "CDSHOME": "/ambient/cdshome",
+            "CDSROOT": "/ambient/cdsroot",
+            "CDS_INST_DIR": "/ambient/cadence",
+            "OA_HOME": "/ambient/oa",
+        },
+    )
+
+    assert environment["CDSHOME"] == str(installation)
+    assert environment["CDSROOT"] == str(installation)
+    assert environment["CDS_INST_DIR"] == str(installation)
+    assert environment["OA_HOME"] == str(installation / "oa_v1")
 
 
 def _record(record_type: int, data_type: int = 0, data: bytes = b"") -> bytes:

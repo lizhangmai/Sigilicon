@@ -79,7 +79,7 @@ def test_project_manifest_source_document_is_frozen_and_resolved(
         **project.manifest_document["paths"],
         "artifact_root": "other-artifacts",
     }
-    with pytest.raises(ValueError, match="identity drift"):
+    with pytest.raises(ValueError, match="source document drift"):
         replace(
             project,
             manifest_document=freeze_toml_document(path_drift),

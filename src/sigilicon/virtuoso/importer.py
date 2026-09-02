@@ -12,10 +12,9 @@ from sigilicon.virtuoso.bridge import generate_symbol_from_schematic
 from sigilicon.virtuoso.bridge import escape_skill_string
 
 from sigilicon.external_tools import (
-    CADENCE_SPICEIN_ENV,
+    CADENCE_SPICEIN_TOOL,
     ProcessRequest,
-    cadence_subprocess_env,
-    configured_executable,
+    cadence_ic_env,
     managed_process,
     owned_directory,
     owned_executable,
@@ -465,11 +464,10 @@ def _import_netlist(
     overwrite = bool(kwargs.get("overwrite", False))
     timeout = int(kwargs.get("timeout", 300))
 
-    executable = configured_executable(resources.environment, CADENCE_SPICEIN_ENV)
+    executable = resources.configured_tool(CADENCE_SPICEIN_TOOL)
     if executable is None:
         raise FileNotFoundError(
-            f"{CADENCE_SPICEIN_ENV} must name an absolute executable "
-            "supplied by the runtime"
+            f"runtime.tools.{CADENCE_SPICEIN_TOOL} must name an available executable"
         )
 
     operation.require_active_mutation(
@@ -598,7 +596,7 @@ def _import_netlist(
         completed = managed_process.run(ProcessRequest(
             argv=tuple(command),
             cwd=Path(owned_run_dir.child_path),
-            environment=cadence_subprocess_env(resources.environment),
+            environment=cadence_ic_env(executable, resources.environment),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=tuple(pass_fds),

@@ -1028,9 +1028,13 @@ class BoundExecution:
 
 @dataclass(frozen=True)
 class Resources:
-    """Explicit host facts supplied to backend preflight and execution."""
+    """Project-configured resources plus one filtered host environment."""
 
     capabilities: frozenset[str] = frozenset()
+    tools: Mapping[str, str] = field(default_factory=dict)
+    files: Mapping[str, str] = field(default_factory=dict)
+    directories: Mapping[str, str] = field(default_factory=dict)
+    values: Mapping[str, str] = field(default_factory=dict)
     environment: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -1039,43 +1043,102 @@ class Resources:
             for item in self.capabilities
         ):
             raise ContractError("resource capabilities must be semantic identities")
+        tables = {
+            "tools": self.tools,
+            "files": self.files,
+            "directories": self.directories,
+            "values": self.values,
+        }
+        identities: set[str] = set()
+        for label, table in tables.items():
+            if not isinstance(table, Mapping):
+                raise ContractError(f"resource {label} must be a mapping")
+            checked: dict[str, str] = {}
+            for name, value in table.items():
+                identity = resource_identity(name)
+                if identity in identities:
+                    raise ContractError(
+                        f"resource identity is configured more than once: {identity}"
+                    )
+                if not isinstance(value, str) or not value:
+                    raise ContractError(
+                        f"resource {label}.{identity} must be non-empty text"
+                    )
+                if label != "values" and not Path(value).is_absolute():
+                    raise ContractError(
+                        f"resource {label}.{identity} must be an absolute path"
+                    )
+                identities.add(identity)
+                checked[identity] = value
+            object.__setattr__(self, label, MappingProxyType(checked))
         if not isinstance(self.environment, Mapping) or any(
-            not isinstance(key, str) or not isinstance(value, str)
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
             for key, value in self.environment.items()
         ):
-            raise ContractError("resource environment must map strings to strings")
+            raise ContractError("host environment must map non-empty strings to strings")
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
 
-    def require_environment(self, name: str) -> str:
-        """Return one required environment binding from this runtime snapshot."""
+    def configured_tool(self, name: str) -> Path | None:
+        """Return a configured executable when it currently exists."""
 
-        if not isinstance(name, str) or not name:
-            raise ContractError("resource environment name must be non-empty text")
-        value = self.environment.get(name)
-        if value is None or not value:
-            raise ContractError(f"required environment binding is missing: {name}")
-        return value
+        identity = resource_identity(name)
+        value = self.tools.get(identity)
+        if value is None:
+            return None
+        path = Path(value)
+        return path if path.is_file() and os.access(path, os.X_OK) else None
+
+    def require_tool(self, name: str) -> Path:
+        """Return one required project-configured executable."""
+
+        identity = resource_identity(name)
+        path = self.configured_tool(identity)
+        if path is None:
+            raise ContractError(
+                f"required runtime tool is missing or not executable: {identity}"
+            )
+        return path
+
+    def require_file(self, name: str) -> Path:
+        """Return one required project-configured regular file."""
+
+        identity = resource_identity(name)
+        value = self.files.get(identity)
+        path = None if value is None else Path(value)
+        if path is None or not path.is_file():
+            raise ContractError(f"required runtime file is missing: {identity}")
+        return path
 
     def require_directory(self, name: str) -> Path:
-        """Return one required absolute directory after resolving its path."""
+        """Return one required project-configured directory."""
 
-        value = self.require_environment(name)
-        path = Path(value)
-        if not path.is_absolute():
-            raise ContractError(
-                f"required environment binding is not an absolute directory: {name}"
-            )
+        identity = resource_identity(name)
+        value = self.directories.get(identity)
+        path = None if value is None else Path(value)
+        if path is None:
+            raise ContractError(f"required runtime directory is missing: {identity}")
         try:
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError) as exc:
             raise ContractError(
-                f"required environment binding is not an existing directory: {name}"
+                f"required runtime directory is missing: {identity}"
             ) from exc
         if not resolved.is_dir():
             raise ContractError(
-                f"required environment binding is not an existing directory: {name}"
+                f"required runtime directory is missing: {identity}"
             )
         return resolved
+
+    def require_value(self, name: str) -> str:
+        """Return one required non-path runtime value."""
+
+        identity = resource_identity(name)
+        value = self.values.get(identity)
+        if value is None:
+            raise ContractError(f"required runtime value is missing: {identity}")
+        return value
 
 
 @dataclass(frozen=True)

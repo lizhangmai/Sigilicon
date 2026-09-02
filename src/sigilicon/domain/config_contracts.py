@@ -176,7 +176,12 @@ class RepositorySourceInventory:
             resolved = path.resolve()
             if path != resolved or not resolved.is_relative_to(project.project_root):
                 raise ValueError(f"configuration source is unsafe: {path}")
-            documents[resolved] = _read_frozen_toml(resolved)
+            document = _read_frozen_toml(resolved)
+            if resolved == project.manifest_path:
+                document = _freeze_toml_document(
+                    {key: value for key, value in document.items() if key != "runtime"}
+                )
+            documents[resolved] = document
         inventory = cls(
             _authority=_REPOSITORY_SOURCE_INVENTORY_AUTHORITY,
             project=project,

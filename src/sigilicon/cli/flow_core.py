@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -14,7 +13,6 @@ from sigilicon.cli.common import emit_json
 from sigilicon.execution import (
     ContractError,
     ExecutionError,
-    Resources,
     RunStore,
     RunStoreError,
 )
@@ -33,7 +31,6 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("selector", nargs="?", help="owner:operation[@variant]")
         command.add_argument("--project-root", type=Path)
-        command.add_argument("--capability", action="append", default=[])
         if name in {"preflight", "run"}:
             command.add_argument("--plan-file", type=Path)
         if name == "run":
@@ -51,13 +48,6 @@ def _project(args: argparse.Namespace) -> Project:
     if root is None:
         return Project.open(discover_project_contract().parent)
     return Project.open(root)
-
-
-def _resources(args: argparse.Namespace) -> Resources:
-    capabilities = frozenset(args.capability)
-    if len(capabilities) != len(args.capability) or any(not item for item in capabilities):
-        raise ContractError("--capability values must be unique and non-empty")
-    return Resources(capabilities, dict(os.environ))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -113,12 +103,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "plan":
             emit_json(plan.record)
             return 0
-        resources = _resources(args)
         if args.command == "preflight":
-            checked = project.preflight(plan, resources)
+            checked = project.preflight(plan)
             emit_json(checked.record)
             return 0 if checked.ready else 2
-        result = project.run(plan, resources, run_id=args.run_id)
+        result = project.run(plan, run_id=args.run_id)
         stored = runs.read(
             owner=plan.owner,
             operation=plan.operation,

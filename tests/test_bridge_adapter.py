@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from sigilicon.execution import ContractError, Resources
+from sigilicon.execution import ContractError
+from sigilicon.execution.model import Resources
 from sigilicon.virtuoso import bridge
 from sigilicon.virtuoso import client as client_adapter
 
@@ -21,9 +22,9 @@ def test_missing_bridge_dependency_has_an_actionable_error(
     with pytest.raises(bridge.BridgeDependencyUnavailable, match="'virtuoso' extra"):
         bridge.create_client(
             Resources(
-                environment={
-                    "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-                    "SIGILICON_VIRTUOSO_PORT": "65432",
+                values={
+                    "virtuoso-bridge.host": "127.0.0.1",
+                    "virtuoso-bridge.port": "65432",
                 }
             )
         )
@@ -50,9 +51,11 @@ def test_direct_client_uses_only_the_explicit_resources_endpoint(
         ),
     )
     resources = Resources(
+        values={
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "65432",
+        },
         environment={
-            "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-            "SIGILICON_VIRTUOSO_PORT": "65432",
             "VB_REMOTE_HOST": "must-not-be-read",
             "VB_REMOTE_PORT": "must-not-be-read",
         }
@@ -69,20 +72,20 @@ def test_direct_client_uses_only_the_explicit_resources_endpoint(
 @pytest.mark.parametrize(
     "environment",
     [
-        {"SIGILICON_VIRTUOSO_PORT": "65432"},
-        {"SIGILICON_VIRTUOSO_HOST": "127.0.0.1"},
+        {"virtuoso-bridge.port": "65432"},
+        {"virtuoso-bridge.host": "127.0.0.1"},
         {
-            "SIGILICON_VIRTUOSO_HOST": "   ",
-            "SIGILICON_VIRTUOSO_PORT": "65432",
+            "virtuoso-bridge.host": "   ",
+            "virtuoso-bridge.port": "65432",
         },
         {
-            "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-            "SIGILICON_VIRTUOSO_PORT": "not-a-port",
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "not-a-port",
         },
-        {"SIGILICON_VIRTUOSO_HOST": "127.0.0.1", "SIGILICON_VIRTUOSO_PORT": "0"},
+        {"virtuoso-bridge.host": "127.0.0.1", "virtuoso-bridge.port": "0"},
         {
-            "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-            "SIGILICON_VIRTUOSO_PORT": "65536",
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "65536",
         },
     ],
 )
@@ -99,16 +102,16 @@ def test_invalid_endpoint_fails_closed_before_loading_the_bridge(
     )
 
     with pytest.raises((ContractError, ValueError)):
-        bridge.create_client(Resources(environment=environment))
+        bridge.create_client(Resources(values=environment))
 
 
 def test_get_client_requires_resources_and_forwards_the_same_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resources = Resources(
-        environment={
-            "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
-            "SIGILICON_VIRTUOSO_PORT": "65432",
+        values={
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "65432",
         }
     )
     received: list[object] = []

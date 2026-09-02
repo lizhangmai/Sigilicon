@@ -5,17 +5,20 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
+import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.canonical import canonical_digest
+from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
     require_config_header,
+    thaw_toml_document,
 )
 from sigilicon.project._component import ComponentContract, load_component_contract
 from sigilicon.paths import (
@@ -23,17 +26,72 @@ from sigilicon.paths import (
     ProjectScope,
     validate_artifact_component,
 )
+from sigilicon.execution.model import ContractError, Resources, resource_identity
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
+_RUNTIME_FIELDS = frozenset(
+    {"capabilities", "tools", "files", "directories", "values"}
+)
 
 if TYPE_CHECKING:
     from sigilicon.execution.backend import BackendRegistry
     from sigilicon.execution import (
         ExecutionPlan,
         PreflightResult,
-        Resources,
         RunResult,
     )
+
+
+def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
+    runtime = raw.get("runtime", {})
+    if not isinstance(runtime, Mapping):
+        raise ValueError(f"{contract}: runtime must be a table")
+    unknown = set(runtime) - _RUNTIME_FIELDS
+    if unknown:
+        raise ValueError(f"{contract}: runtime contains unknown fields: {sorted(unknown)}")
+    capabilities = runtime.get("capabilities", [])
+    if not isinstance(capabilities, list) or any(
+        not isinstance(item, str) for item in capabilities
+    ):
+        raise ValueError(f"{contract}: runtime.capabilities must be a text array")
+    if len(capabilities) != len(set(capabilities)):
+        raise ValueError(f"{contract}: runtime.capabilities must be unique")
+
+    def table(name: str) -> dict[str, str]:
+        value = runtime.get(name, {})
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{contract}: runtime.{name} must be a table")
+        result: dict[str, str] = {}
+        for key, item in value.items():
+            try:
+                identity = resource_identity(key)
+            except ContractError as exc:
+                raise ValueError(
+                    f"{contract}: runtime.{name} has an invalid identity: {key!r}"
+                ) from exc
+            if not isinstance(item, str) or not item:
+                raise ValueError(
+                    f"{contract}: runtime.{name}.{identity} must be non-empty text"
+                )
+            result[identity] = item
+        return result
+
+    try:
+        return Resources(
+            capabilities=frozenset(capabilities),
+            tools=table("tools"),
+            files=table("files"),
+            directories=table("directories"),
+            values=table("values"),
+        )
+    except ContractError as exc:
+        raise ValueError(f"{contract}: invalid runtime configuration: {exc}") from exc
+
+
+def _source_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove host-specific runtime facts from the portable project contract."""
+
+    return {key: value for key, value in raw.items() if key != "runtime"}
 
 
 def _project_file(root: Path, value: object, field: str) -> Path:
@@ -106,6 +164,11 @@ class Project:
         repr=False,
         compare=False,
     )
+    _runtime: Resources = field(
+        default_factory=Resources,
+        repr=False,
+        compare=False,
+    )
     _backend_registry: BackendRegistry | None = field(
         default=None,
         init=False,
@@ -174,7 +237,6 @@ class Project:
     def preflight(
         self,
         plan: ExecutionPlan,
-        resources: Resources,
     ) -> PreflightResult:
         """Check a plan without creating a run or starting a backend."""
 
@@ -184,13 +246,11 @@ class Project:
             ExecutionPlan,
             PreflightCheck,
             PreflightResult,
-            Resources,
         )
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
-        if not isinstance(resources, Resources):
-            raise TypeError("Project.preflight resources must be Resources")
+        resources = self._execution_resources()
         phase = "plan"
         try:
             self._require_canonical_plan(plan)
@@ -221,7 +281,6 @@ class Project:
     def run(
         self,
         plan: ExecutionPlan,
-        resources: Resources,
         *,
         run_id: str | None = None,
         progress: Callable[[str, str], None] | None = None,
@@ -230,12 +289,11 @@ class Project:
 
         from sigilicon.execution.backend import bind_execution
         from sigilicon.execution.engine import _run
-        from sigilicon.execution.model import ExecutionPlan, Resources
+        from sigilicon.execution.model import ExecutionPlan
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")
-        if not isinstance(resources, Resources):
-            raise TypeError("Project.run resources must be Resources")
+        resources = self._execution_resources()
         self._require_canonical_plan(plan)
         bound = bind_execution(
             plan,
@@ -254,6 +312,16 @@ class Project:
             run_id=run_id,
             progress=progress,
         )
+
+    def _execution_resources(self) -> Resources:
+        """Bind project runtime configuration to a sanitized host snapshot."""
+
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("SIGILICON_")
+        }
+        return replace(self._runtime, environment=environment)
 
     def _require_canonical_plan(
         self,
@@ -282,9 +350,11 @@ class Project:
     def _from_file(cls, path: Path | str) -> "Project":
         contract = Path(path).resolve()
         raw = read_toml(contract)
-        project = ProjectContext.from_contract(contract, raw)
-        manifest_owner = cast(str, raw["owner"])
-        catalogs = raw.get("catalogs")
+        runtime = _runtime_resources(raw, contract)
+        source_raw = _source_manifest(raw)
+        project = ProjectContext.from_contract(contract, source_raw)
+        manifest_owner = cast(str, source_raw["owner"])
+        catalogs = source_raw.get("catalogs")
         if not isinstance(catalogs, Mapping):
             raise ValueError(f"{contract}: catalogs must be a table")
         catalog_names = set(catalogs)
@@ -434,7 +504,7 @@ class Project:
             manifest_owner=manifest_owner,
             catalog_paths=catalog_paths,
             owners=tuple(sorted(owners, key=lambda item: item.name)),
-            manifest_document=freeze_toml_document(raw),
+            manifest_document=freeze_toml_document(source_raw),
             _manifest_path=contract,
             _manifest_context=project,
             _ip_catalog=RepositoryCatalogSnapshot(
@@ -444,6 +514,7 @@ class Project:
                 owner=cast(str, ip_raw["owner"]),
                 document=freeze_toml_document(ip_raw),
             ),
+            _runtime=runtime,
         )
 
     def manifest_source_document(self) -> Mapping[str, Any]:
@@ -455,6 +526,14 @@ class Project:
         if not is_frozen_toml_document(raw):
             raise ValueError("project manifest snapshot source document drift")
         contract = self.manifest_path
+        try:
+            current = freeze_toml_document(
+                _source_manifest(tomllib.loads(read_nofollow_text(contract)))
+            )
+        except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError("project manifest snapshot source document drift") from exc
+        if current != raw:
+            raise ValueError("project manifest snapshot source document drift")
         source_paths = ProjectContext.from_contract(contract, raw)
         if (
             (
@@ -516,7 +595,15 @@ class Project:
                     {
                         "path": path.relative_to(self.project_root).as_posix(),
                         "sha256": hashlib.sha256(
-                            read_nofollow_text(path).encode("utf-8")
+                            (
+                                canonical_json(
+                                    thaw_toml_document(
+                                        self.manifest_source_document()
+                                    )
+                                )
+                                if path == self.manifest_path
+                                else read_nofollow_text(path)
+                            ).encode("utf-8")
                         ).hexdigest(),
                     }
                     for path in sorted(paths)
