@@ -6,8 +6,8 @@ from sigilicon.execution.model import (
     Evidence,
     ExecutionError,
     ExecutionPlan,
-    OperationStep,
-    PreparedStep,
+    Operation,
+    Step,
     PreflightCheck,
     PreflightResult,
     Resources,
@@ -18,21 +18,28 @@ from sigilicon.execution.model import (
     StepOutcome,
     StepResult,
 )
+from sigilicon.execution.backend import Backend, BackendRegistry, Preparation
+from sigilicon.execution.runs import RunStore, RunStoreError
 
 
 __all__ = [
     "Artifact",
+    "Backend",
+    "BackendRegistry",
     "ContractError",
     "Evidence",
     "ExecutionError",
     "ExecutionPlan",
-    "OperationStep",
-    "PreparedStep",
+    "Operation",
+    "Step",
     "PreflightCheck",
     "PreflightResult",
+    "Preparation",
     "Resources",
     "RunFailure",
     "RunResult",
+    "RunStore",
+    "RunStoreError",
     "Source",
     "StepContext",
     "StepOutcome",

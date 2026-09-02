@@ -413,7 +413,7 @@ def inspect_repository_designs(
             owner_operations[identity] = {
                 "steps": [
                     {"id": step.id, "uses": step.uses}
-                    for step in plan.steps
+                    for step in plan.operations
                 ]
             }
         operations[owner.name] = owner_operations

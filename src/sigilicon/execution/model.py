@@ -305,7 +305,7 @@ class ExternalResource:
 
 
 @dataclass(frozen=True)
-class OperationStep:
+class Operation:
     """Unprepared backend request compiled from an owner operation contract."""
 
     id: str
@@ -349,7 +349,7 @@ class OperationStep:
 
 
 @dataclass(frozen=True)
-class PreparedStep:
+class Step:
     """Portable backend request authorized for preflight and execution."""
 
     id: str
@@ -393,12 +393,12 @@ class PreparedStep:
     @classmethod
     def from_operation(
         cls,
-        step: OperationStep,
+        step: Operation,
         *,
         request: Mapping[str, Any] | None = None,
         sources: tuple[str, ...] | None = None,
         resources: tuple[str, ...] = (),
-    ) -> "PreparedStep":
+    ) -> "Step":
         return cls(
             step.id,
             step.uses,
@@ -422,7 +422,7 @@ class PreparedStep:
         }
 
 
-def _topology(steps: tuple[PreparedStep, ...]) -> tuple[PreparedStep, ...]:
+def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     by_id = {step.id: step for step in steps}
     if len(by_id) != len(steps):
         raise ContractError("operation contains duplicate step ids")
@@ -434,7 +434,7 @@ def _topology(steps: tuple[PreparedStep, ...]) -> tuple[PreparedStep, ...]:
     }
     if unknown:
         raise ContractError(f"operation references unknown step dependencies: {sorted(unknown)}")
-    ordered: list[PreparedStep] = []
+    ordered: list[Step] = []
     waiting = list(steps)
     while waiting:
         ready = [step for step in waiting if all(item in {done.id for done in ordered} for item in step.needs)]
@@ -454,7 +454,7 @@ class OperationPlan:
     owner: str
     operation: str
     variant: str | None
-    steps: tuple[OperationStep, ...]
+    operations: tuple[Operation, ...]
     sources: tuple[Source, ...]
 
     def __post_init__(self) -> None:
@@ -466,10 +466,10 @@ class OperationPlan:
         object.__setattr__(self, "operation", _identifier(self.operation, "operation"))
         if self.variant is not None:
             object.__setattr__(self, "variant", _identifier(self.variant, "variant"))
-        if not isinstance(self.steps, tuple) or not self.steps:
+        if not isinstance(self.operations, tuple) or not self.operations:
             raise ContractError("operation plan must contain at least one step")
-        if any(not isinstance(step, OperationStep) for step in self.steps):
-            raise ContractError("operation plan steps must be OperationStep values")
+        if any(not isinstance(operation, Operation) for operation in self.operations):
+            raise ContractError("operation plan must contain Operation values")
         if not isinstance(self.sources, tuple) or not self.sources:
             raise ContractError("operation plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
@@ -484,7 +484,7 @@ class ExecutionPlan:
     owner: str
     operation: str
     variant: str | None
-    steps: tuple[PreparedStep, ...]
+    steps: tuple[Step, ...]
     sources: tuple[Source, ...]
     resources: tuple[ExternalResource, ...] = field(repr=False, compare=False)
     _authorization: str = field(default="", repr=False, compare=False)
@@ -500,8 +500,8 @@ class ExecutionPlan:
             object.__setattr__(self, "variant", _identifier(self.variant, "variant"))
         if not isinstance(self.steps, tuple) or not self.steps:
             raise ContractError("execution plan must contain at least one step")
-        if any(not isinstance(step, PreparedStep) for step in self.steps):
-            raise ContractError("execution plan steps must be PreparedStep values")
+        if any(not isinstance(step, Step) for step in self.steps):
+            raise ContractError("execution plan steps must be Step values")
         if not isinstance(self.sources, tuple) or not self.sources:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
@@ -706,7 +706,7 @@ class StepContext:
     """Managed filesystem and dependency view supplied to one Backend."""
 
     plan_identity: str
-    step: PreparedStep
+    step: Step
     run_id: str
     operation_id: str
     work_root: Path
@@ -735,8 +735,8 @@ class StepContext:
     )
 
     def __post_init__(self) -> None:
-        if not isinstance(self.step, PreparedStep):
-            raise ContractError("step context requires a PreparedStep")
+        if not isinstance(self.step, Step):
+            raise ContractError("step context requires a Step")
         validate_artifact_id(self.run_id, "run id")
         validate_artifact_id(self.operation_id, "operation id")
         validate_artifact_id(self.plan_identity, "plan identity")
@@ -839,11 +839,11 @@ class StepContext:
             raise ExecutionError(f"sealed source is missing or unsafe: {name!r}")
         return result
 
-    def require_step(self, step: PreparedStep) -> None:
+    def require_step(self, step: Step) -> None:
         """Reject a Backend call whose explicit request disagrees with this context."""
 
-        if not isinstance(step, PreparedStep) or step != self.step:
-            raise ExecutionError("backend PreparedStep disagrees with its StepContext")
+        if not isinstance(step, Step) or step != self.step:
+            raise ExecutionError("backend Step disagrees with its StepContext")
 
     def source_text(self, source: str) -> str:
         """Read a step source through the held-fd no-follow input primitive."""
@@ -1122,8 +1122,8 @@ __all__ = [
     "ExecutionPlan",
     "ExternalResource",
     "OperationPlan",
-    "OperationStep",
-    "PreparedStep",
+    "Operation",
+    "Step",
     "PreflightCheck",
     "PreflightResult",
     "Resources",

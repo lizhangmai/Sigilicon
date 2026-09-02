@@ -12,8 +12,8 @@ from sigilicon.execution.model import (
     ExternalResource,
     PreflightCheck,
     OperationPlan,
-    OperationStep,
-    PreparedStep,
+    Operation,
+    Step,
     Resources,
     StepContext,
     StepResult,
@@ -24,7 +24,7 @@ from sigilicon.execution.model import (
 
 
 @runtime_checkable
-class _Backend(Protocol):
+class Backend(Protocol):
     """Trusted package code selected by a Step's ``uses`` identity.
 
     A Backend is not a sandboxed owner plugin.  Implementations that launch an
@@ -33,28 +33,28 @@ class _Backend(Protocol):
 
     name: str
 
-    def prepare(self, project: Any, step: OperationStep) -> "_Preparation": ...
+    def prepare(self, project: Any, step: Operation) -> "Preparation": ...
 
     def preflight(
         self,
-        step: PreparedStep,
+        step: Step,
         resources: Resources,
     ) -> tuple[PreflightCheck, ...]: ...
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult: ...
+    def run(self, context: StepContext, step: Step) -> StepResult: ...
 
 
 @dataclass(frozen=True)
-class _Preparation:
+class Preparation:
     """Portable Step plus exact Project sources discovered by one Backend."""
 
-    step: PreparedStep
+    step: Step
     sources: tuple[Source, ...] = ()
     resources: tuple[ExternalResource, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.step, PreparedStep):
-            raise ContractError("backend preparation must contain a PreparedStep")
+        if not isinstance(self.step, Step):
+            raise ContractError("backend preparation must contain a Step")
         if not isinstance(self.sources, tuple) or any(
             not isinstance(source, Source) for source in self.sources
         ):
@@ -67,25 +67,25 @@ class _Preparation:
             )
 
 
-class _BackendRegistry(Mapping[str, _Backend]):
+class BackendRegistry(Mapping[str, Backend]):
     """Immutable explicit backend set; it performs no global registration."""
 
-    def __init__(self, values: Iterable[_Backend] = ()) -> None:
-        selected: dict[str, _Backend] = {}
+    def __init__(self, values: Iterable[Backend] = ()) -> None:
+        selected: dict[str, Backend] = {}
         for backend in values:
             name = getattr(backend, "name", None)
             try:
                 name = backend_identity(name)
             except ContractError as exc:
                 raise ContractError("backend must expose a canonical identity") from exc
-            if not isinstance(backend, _Backend):
+            if not isinstance(backend, Backend):
                 raise ContractError(f"backend {name!r} does not satisfy the Backend interface")
             if name in selected:
                 raise ContractError(f"duplicate backend identity: {name!r}")
             selected[name] = backend
         self._values = MappingProxyType(selected)
 
-    def __getitem__(self, name: str) -> _Backend:
+    def __getitem__(self, name: str) -> Backend:
         return self._values[name]
 
     def __iter__(self):
@@ -95,11 +95,11 @@ class _BackendRegistry(Mapping[str, _Backend]):
         return len(self._values)
 
 
-def _prepare_plan(
+def prepare_plan(
     plan: OperationPlan,
     *,
     project: Any,
-    backends: _BackendRegistry,
+    backends: BackendRegistry,
 ) -> ExecutionPlan:
     """Prepare every operation Step into an authorized portable request."""
 
@@ -109,13 +109,13 @@ def _prepare_plan(
     steps = []
     owner_root = project.owner(plan.owner).root.resolve()
     project_root = project.project_root.resolve()
-    for step in plan.steps:
+    for step in plan.operations:
         try:
             backend = backends[step.uses]
         except KeyError as exc:
             raise ContractError(f"unknown trusted backend: {step.uses!r}") from exc
         preparation = backend.prepare(project, step)
-        if not isinstance(preparation, _Preparation):
+        if not isinstance(preparation, Preparation):
             raise ContractError(
                 f"backend {step.uses!r} produced an invalid preparation"
             )
@@ -225,4 +225,4 @@ def _prepare_plan(
     )
 
 
-__all__: list[str] = []
+__all__ = ["Backend", "BackendRegistry", "Preparation", "prepare_plan"]

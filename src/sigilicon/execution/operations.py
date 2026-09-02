@@ -12,7 +12,7 @@ from sigilicon.execution.model import (
     ContractError,
     Evidence,
     OperationPlan,
-    OperationStep,
+    Operation,
     Source,
 )
 from sigilicon.paths import validate_artifact_component
@@ -131,7 +131,7 @@ def _step(
     owner_root: Path,
     project_root: Path,
     default_id: str | None = None,
-) -> tuple[OperationStep, tuple[Source, ...]]:
+) -> tuple[Operation, tuple[Source, ...]]:
     unknown = set(raw) - _STEP_FIELDS
     if unknown:
         raise ContractError(f"{field} contains unknown fields: {sorted(unknown)}")
@@ -148,7 +148,7 @@ def _step(
         field=f"{field}.filesets",
     )
     return (
-        OperationStep(
+        Operation(
             step_id,
             uses,
             _config(raw.get("config"), f"{field}.config"),
@@ -231,7 +231,7 @@ def compile_operation(
         raise ContractError(
             f"operation {identity!r} must declare exactly one of uses or steps"
         )
-    compiled: list[tuple[OperationStep, tuple[Source, ...]]] = []
+    compiled: list[tuple[Operation, tuple[Source, ...]]] = []
     if uses is not None:
         unknown_direct = set(definition) - _DIRECT_FIELDS
         if unknown_direct:

@@ -13,17 +13,17 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.backend import _Preparation
+from sigilicon.execution.backend import Preparation
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
     ExternalResource,
-    OperationStep,
+    Operation,
     PreflightCheck,
     Resources,
     Source,
-    PreparedStep,
+    Step,
     StepContext,
     StepResult,
     json_value,
@@ -47,7 +47,7 @@ _LAYOUT_VERIFICATION_CAPABILITIES = _OA_CAPABILITIES | frozenset(
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _strict_config(step: PreparedStep, fields: frozenset[str]) -> Mapping[str, Any]:
+def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
     request = step.request
     if set(request) == {"config", "prepared"}:
         nested = request["config"]
@@ -66,10 +66,10 @@ def _strict_config(step: PreparedStep, fields: frozenset[str]) -> Mapping[str, A
     return config
 
 
-def _direct_preparation(backend: Any, step: OperationStep) -> _Preparation:
-    prepared = PreparedStep.from_operation(step)
+def _direct_preparation(backend: Any, step: Operation) -> Preparation:
+    prepared = Step.from_operation(step)
     backend.preflight(prepared, Resources())
-    return _Preparation(prepared)
+    return Preparation(prepared)
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:
@@ -160,7 +160,7 @@ def _publish_tree(context: StepContext, role: str, kind: str) -> tuple[Artifact,
 def _bind_source_paths(
     project: Any,
     owner_name: str,
-    step: PreparedStep,
+    step: Step,
     paths: Mapping[Path, str] | tuple[Path, ...] | frozenset[Path],
 ) -> Mapping[Path, tuple[str, str]]:
     """Bind Project-owned inputs; package code and PDK files stay runtime resources."""
@@ -444,7 +444,7 @@ class XceliumBackend:
     _fields = frozenset({"success_marker", "timeout_seconds"})
 
     @staticmethod
-    def _hdl_sources(step: PreparedStep) -> tuple[str, ...]:
+    def _hdl_sources(step: Step) -> tuple[str, ...]:
         sources = tuple(
             source
             for source in step.sources
@@ -454,10 +454,10 @@ class XceliumBackend:
             raise ContractError("Xcelium filesets select no Verilog sources")
         return sources
 
-    def prepare(self, _project: Any, step: OperationStep) -> _Preparation:
+    def prepare(self, _project: Any, step: Operation) -> Preparation:
         return _direct_preparation(self, step)
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
         for source in self._hdl_sources(step):
             _relative(source, "HDL fileset source")
@@ -468,7 +468,7 @@ class XceliumBackend:
             *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
         )
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         config = _strict_config(context.step, self._fields)
         source_names = self._hdl_sources(context.step)
@@ -577,7 +577,7 @@ class XceliumAmsBackend:
     name = "cadence.xcelium-ams"
     _fields = frozenset({"owner", "cell", "timeout_seconds"})
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
         _text(config, "owner")
         cell = _relative(_text(config, "cell"), "verification cell")
@@ -591,10 +591,10 @@ class XceliumAmsBackend:
             *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
         )
 
-    def prepare(self, project: Any, step: OperationStep) -> _Preparation:
+    def prepare(self, project: Any, step: Operation) -> Preparation:
         from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
 
-        initial = PreparedStep.from_operation(step)
+        initial = Step.from_operation(step)
         self.preflight(initial, Resources())
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
@@ -625,7 +625,7 @@ class XceliumAmsBackend:
             identities=_ams_resource_identities(planning),
         )
         captured = _captured_project_sources(project, owner, bindings)
-        prepared = PreparedStep.from_operation(
+        prepared = Step.from_operation(
             step,
             request=_portable_request(
                 config,
@@ -635,9 +635,9 @@ class XceliumAmsBackend:
             resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured, external)
+        return Preparation(prepared, captured, external)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.project import Project
         from sigilicon.workflows.xcelium_ams import (
@@ -766,7 +766,7 @@ class NativeOaBackend:
     name = "cadence.native-oa"
     _fields = frozenset({"owner", "testbench", "timeout_seconds"})
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
         _text(config, "owner")
         _text(config, "testbench")
@@ -775,13 +775,13 @@ class NativeOaBackend:
             raise ContractError("native OA step must close over configs/oa.toml")
         return _capability_checks(resources, _OA_CAPABILITIES)
 
-    def prepare(self, project: Any, step: OperationStep) -> _Preparation:
+    def prepare(self, project: Any, step: Operation) -> Preparation:
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
 
-        initial = PreparedStep.from_operation(step)
+        initial = Step.from_operation(step)
         self.preflight(initial, Resources())
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
@@ -812,7 +812,7 @@ class NativeOaBackend:
             identities=_oa_resource_identities(project, planning, required),
         )
         captured = _captured_project_sources(project, owner, sources)
-        prepared = PreparedStep.from_operation(
+        prepared = Step.from_operation(
             step,
             request=_portable_request(
                 config,
@@ -826,9 +826,9 @@ class NativeOaBackend:
             resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured, external)
+        return Preparation(prepared, captured, external)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.virtuoso.client import get_client
         from sigilicon.project import Project
@@ -934,7 +934,7 @@ class _OaBackend:
         self.operation = operation
         self.name = f"cadence.oa-{operation}"
 
-    def _config(self, step: PreparedStep) -> Mapping[str, Any]:
+    def _config(self, step: Step) -> Mapping[str, Any]:
         request = step.request.get("config", step.request)
         if not isinstance(request, Mapping):
             raise ContractError("prepared OA config must be a mapping")
@@ -950,17 +950,17 @@ class _OaBackend:
             raise ContractError("OA management step must close over configs/oa.toml")
         return config
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
         return _capability_checks(resources, _OA_CAPABILITIES)
 
-    def prepare(self, project: Any, step: OperationStep) -> _Preparation:
+    def prepare(self, project: Any, step: Operation) -> Preparation:
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
 
-        initial = PreparedStep.from_operation(step)
+        initial = Step.from_operation(step)
         self.preflight(initial, Resources())
         config = self._config(initial)
         owner = _text(config, "owner")
@@ -990,7 +990,7 @@ class _OaBackend:
             identities=_oa_resource_identities(project, planning, required),
         )
         captured = _captured_project_sources(project, owner, sources)
-        prepared = PreparedStep.from_operation(
+        prepared = Step.from_operation(
             step,
             request=_portable_request(
                 config,
@@ -1005,9 +1005,9 @@ class _OaBackend:
             resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured, external)
+        return Preparation(prepared, captured, external)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.virtuoso.client import get_client
         from sigilicon.project import Project
@@ -1129,7 +1129,7 @@ class LayoutBackend:
     name = "cadence.layout"
     _fields = frozenset({"owner", "spec", "timeout_seconds"})
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
         _text(config, "owner")
         spec = _relative(_text(config, "spec"), "layout spec")
@@ -1138,10 +1138,10 @@ class LayoutBackend:
         _positive_integer(config, "timeout_seconds")
         return _capability_checks(resources, _OA_CAPABILITIES)
 
-    def prepare(self, project: Any, step: OperationStep) -> _Preparation:
+    def prepare(self, project: Any, step: Operation) -> Preparation:
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
-        initial = PreparedStep.from_operation(step)
+        initial = Step.from_operation(step)
         self.preflight(initial, Resources())
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
@@ -1161,7 +1161,7 @@ class LayoutBackend:
             identities=_platform_resource_identities(planning.spec.pdk),
         )
         captured = _captured_project_sources(project, owner, sources)
-        prepared = PreparedStep.from_operation(
+        prepared = Step.from_operation(
             step,
             request=_portable_request(
                 config,
@@ -1173,9 +1173,9 @@ class LayoutBackend:
             resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured, external)
+        return Preparation(prepared, captured, external)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.project import Project
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1267,7 +1267,7 @@ class LayoutVerificationBackend:
         }
     )
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
         if step.evidence is None:
             raise ContractError("layout verification requires an evidence envelope")
@@ -1290,11 +1290,11 @@ class LayoutVerificationBackend:
     def prepare(
         self,
         project: Any,
-        step: OperationStep,
-    ) -> _Preparation:
+        step: Operation,
+    ) -> Preparation:
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
-        initial = PreparedStep.from_operation(step)
+        initial = Step.from_operation(step)
         self.preflight(initial, Resources())
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
@@ -1323,7 +1323,7 @@ class LayoutVerificationBackend:
         )
         check = _text(config, "check")
         captured = _captured_project_sources(project, owner, sources)
-        prepared = PreparedStep.from_operation(
+        prepared = Step.from_operation(
             step,
             request=_portable_request(
                 config,
@@ -1338,9 +1338,9 @@ class LayoutVerificationBackend:
             resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(prepared, captured, external)
+        return Preparation(prepared, captured, external)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.project import Project
         from sigilicon.workflows.layout_generation import plan_layout_spec

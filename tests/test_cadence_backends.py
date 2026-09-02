@@ -19,8 +19,8 @@ from sigilicon.execution import (
     ContractError,
     Evidence,
     ExecutionError,
-    OperationStep,
-    PreparedStep,
+    Operation,
+    Step,
     Resources,
     StepContext,
 )
@@ -47,7 +47,7 @@ def test_oa_operations_have_fixed_backend_identities() -> None:
 
 def _context(
     tmp_path: Path,
-    step: OperationStep | PreparedStep,
+    step: Operation | Step,
     resources: Resources,
     *,
     project_root: Path | None = None,
@@ -57,7 +57,7 @@ def _context(
     register_operation=None,
 ) -> StepContext:
     runtime_step = (
-        step if isinstance(step, PreparedStep) else PreparedStep.from_operation(step)
+        step if isinstance(step, Step) else Step.from_operation(step)
     )
     run_root = tmp_path / "run"
     work = run_root / "work" / runtime_step.id
@@ -128,7 +128,7 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
 ) -> None:
     marker = "RTL_SUMMARY failures=0"
     executable = _fake_xrun(tmp_path, marker)
-    step = PreparedStep(
+    step = Step(
         "rtl",
         "cadence.xcelium",
         {
@@ -174,7 +174,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     tmp_path: Path,
 ) -> None:
     executable = _file(tmp_path / "bin/xrun", executable=True)
-    step = OperationStep(
+    step = Operation(
         "ams",
         "cadence.xcelium-ams",
         {
@@ -287,7 +287,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
 
 def _oa_context(
     tmp_path: Path,
-    step: OperationStep | PreparedStep,
+    step: Operation | Step,
     *,
     registered: list[object],
 ) -> StepContext:
@@ -297,7 +297,7 @@ def _oa_context(
     owner.mkdir(parents=True)
     workspace.mkdir()
     runtime_step = (
-        step if isinstance(step, PreparedStep) else PreparedStep.from_operation(step)
+        step if isinstance(step, Step) else Step.from_operation(step)
     )
     context = _context(
         tmp_path,
@@ -319,7 +319,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = OperationStep(
+    step = Operation(
         "native",
         "cadence.native-oa",
         {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
@@ -392,7 +392,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = OperationStep(
+    step = Operation(
         "oa",
         "cadence.oa-rebuild",
         {"owner": "example", "timeout_seconds": 10},
@@ -460,7 +460,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = OperationStep(
+    step = Operation(
         "layout",
         "cadence.layout",
         {
@@ -535,7 +535,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    step = OperationStep(
+    step = Operation(
         "layout",
         "cadence.layout",
         {
@@ -570,7 +570,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
 ) -> None:
     xstream = _file(tmp_path / "bin/strmout", executable=True)
     calibre = _file(tmp_path / "bin/calibre", executable=True)
-    step = OperationStep(
+    step = Operation(
         "verify",
         "cadence.layout-verify",
         {

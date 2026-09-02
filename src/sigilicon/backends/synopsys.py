@@ -23,17 +23,17 @@ from sigilicon.artifacts import (
     ensure_nofollow_directory,
 )
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.backend import _Preparation
+from sigilicon.execution.backend import Preparation
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
     ExecutionError,
     ExternalResource,
-    OperationStep,
+    Operation,
     PreflightCheck,
     Resources,
     Source,
-    PreparedStep,
+    Step,
     StepContext,
     StepResult,
     json_value,
@@ -115,7 +115,7 @@ def _safe_relative(value: str, label: str) -> str:
 
 
 def _source_members(
-    step: PreparedStep,
+    step: Step,
     root_name: str,
     *,
     suffix: str,
@@ -129,7 +129,7 @@ def _source_members(
     )
 
 
-def _runner(step: PreparedStep) -> str:
+def _runner(step: Step) -> str:
     runner = _safe_relative(_text(step.request, "runner"), "runner")
     if runner not in step.sources:
         raise ContractError("Synopsys runner must be inside the step source closure")
@@ -159,7 +159,7 @@ def _environment_path_check(
     )
 
 
-def _base_checks(step: PreparedStep) -> list[PreflightCheck]:
+def _base_checks(step: Step) -> list[PreflightCheck]:
     runner = _runner(step)
     _positive_integer(step.request, "timeout_seconds")
     return [PreflightCheck("owner-runner", runner, "ready", "sealed plan source")]
@@ -343,16 +343,16 @@ def _run_script(
 class _PreparedSynopsysBackend:
     """Validate each package-owned Synopsys request during Project.plan."""
 
-    def prepare(self, _project: Any, step: OperationStep) -> _Preparation:
-        prepared = PreparedStep.from_operation(step)
+    def prepare(self, _project: Any, step: Operation) -> Preparation:
+        prepared = Step.from_operation(step)
         self.preflight(prepared, Resources())
-        return _Preparation(prepared)
+        return Preparation(prepared)
 
 
 class VcsBackend(_PreparedSynopsysBackend):
     name = "synopsys.vcs"
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
         target = _target(step.request)
         _source_members(step, "rtl_root", suffix=".sv")
@@ -373,7 +373,7 @@ class VcsBackend(_PreparedSynopsysBackend):
             )
         return tuple(checks)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         config = context.step.request
         target = _target(config)
@@ -426,7 +426,7 @@ class VcsBackend(_PreparedSynopsysBackend):
 class DcBackend(_PreparedSynopsysBackend):
     name = "synopsys.dc"
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
         constraints = _safe_relative(_text(step.request, "constraints"), "constraints")
         if constraints not in step.sources:
@@ -443,7 +443,7 @@ class DcBackend(_PreparedSynopsysBackend):
         )
         return tuple(checks)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         config = context.step.request
         environment = dict(context.resources.environment)
@@ -524,7 +524,7 @@ class DcBackend(_PreparedSynopsysBackend):
 class FcBackend(_PreparedSynopsysBackend):
     name = "synopsys.fc"
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
         target = _target(step.request)
         if target not in {"library", "pnr"}:
@@ -559,7 +559,7 @@ class FcBackend(_PreparedSynopsysBackend):
         )
         return tuple(checks)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         config = context.step.request
         target = _target(config)
@@ -730,7 +730,7 @@ class FcBackend(_PreparedSynopsysBackend):
 class HspiceBackend(_PreparedSynopsysBackend):
     name = "synopsys.hspice"
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
         target = _target(step.request)
         names = [
@@ -792,7 +792,7 @@ class HspiceBackend(_PreparedSynopsysBackend):
         _boolean(step.request, "requires_python")
         return tuple(checks)
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         config = context.step.request
         target = _target(config)
@@ -909,7 +909,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         {"tool.synopsys-library-compiler", "tool.synopsys-dc"}
     )
 
-    def _config(self, step: PreparedStep) -> Mapping[str, Any]:
+    def _config(self, step: Step) -> Mapping[str, Any]:
         request = step.request
         if set(request) == {"config", "prepared"}:
             nested = request["config"]
@@ -928,7 +928,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         return config
 
     @staticmethod
-    def _rtl_sources(step: PreparedStep) -> tuple[str, ...]:
+    def _rtl_sources(step: Step) -> tuple[str, ...]:
         sources = tuple(
             source
             for source in step.sources
@@ -938,7 +938,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             raise ContractError("structural-link filesets select no RTL sources")
         return sources
 
-    def preflight(self, step: PreparedStep, resources: Resources) -> tuple[PreflightCheck, ...]:
+    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = self._config(step)
         _text(config, "owner")
         for name in (
@@ -1003,10 +1003,10 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         )
         return tuple(checks)
 
-    def prepare(self, project: Any, step: OperationStep) -> _Preparation:
+    def prepare(self, project: Any, step: Operation) -> Preparation:
         from sigilicon.workflows.structural_link import plan_structural_link
 
-        initial = PreparedStep.from_operation(step)
+        initial = Step.from_operation(step)
         self.preflight(initial, Resources())
         config = self._config(initial)
         owner = _text(config, "owner")
@@ -1088,7 +1088,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             or external[1].sha256 != planning.release_liberty_sha256
         ):
             raise ContractError(
-                "structural-link release changed while its PreparedStep was being bound"
+                "structural-link release changed while its Step was being bound"
             )
         prepared_record = self._planning_record(
             planning,
@@ -1103,14 +1103,14 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
                 (*step.sources, *(source.path for _scope, source in captured_sources))
             )
         )
-        prepared = PreparedStep.from_operation(
+        prepared = Step.from_operation(
             step,
             request={"config": dict(config), "prepared": prepared_record},
             sources=source_names,
             resources=tuple(resource.identity for resource in external),
         )
         self.preflight(prepared, Resources())
-        return _Preparation(
+        return Preparation(
             prepared,
             tuple(source for _scope, source in captured_sources),
             external,
@@ -1226,7 +1226,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         )
 
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
         from sigilicon.workflows.structural_link import StructuralLinkPlan
 

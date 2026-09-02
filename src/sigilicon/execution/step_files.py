@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from sigilicon.artifacts import (
     copy_immutable_file,
@@ -15,8 +15,10 @@ from sigilicon.artifacts import (
 )
 from sigilicon.paths import validate_artifact_component
 
-if TYPE_CHECKING:
-    from sigilicon.execution.model import StepContext
+class _StepContext(Protocol):
+    run_id: str
+    work_root: Path
+    output_root: Path
 
 
 @dataclass(frozen=True)
@@ -34,16 +36,12 @@ class StepFiles:
     @classmethod
     def from_context(
         cls,
-        context: "StepContext",
+        context: _StepContext,
         output_role: str,
         source: Mapping[str, Any],
         *,
         tool_work_root: Path | None = None,
     ) -> "StepFiles":
-        from sigilicon.execution.model import StepContext
-
-        if not isinstance(context, StepContext):
-            raise TypeError("StepFiles requires a StepContext")
         role = validate_artifact_component(output_role, "output role")
         run_root = context.output_root.parents[1]
         return cls(

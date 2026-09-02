@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import hmac
 import hashlib
 from pathlib import Path, PurePosixPath
 import secrets
 from types import MappingProxyType
-from typing import Any, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest, canonical_json
@@ -26,6 +27,14 @@ from sigilicon.paths import (
 )
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
+
+if TYPE_CHECKING:
+    from sigilicon.execution import (
+        ExecutionPlan,
+        PreflightResult,
+        Resources,
+        RunResult,
+    )
 
 
 def _project_file(root: Path, value: object, field: str) -> Path:
@@ -110,11 +119,11 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
-    def plan(self, selector: str):
+    def plan(self, selector: str) -> ExecutionPlan:
         """Compile one canonical ``owner:operation[@variant]`` selector."""
 
         from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import _BackendRegistry, _prepare_plan
+        from sigilicon.execution.backend import BackendRegistry, prepare_plan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
         owner_name, operation, variant = parse_selector(selector)
@@ -133,26 +142,30 @@ class Project:
             variant=variant,
             project_identity=self.identity,
         )
-        plan = _prepare_plan(
+        plan = prepare_plan(
             plan,
             project=self,
-            backends=_BackendRegistry(trusted_backends()),
+            backends=BackendRegistry(trusted_backends()),
         )
         return replace(plan, _authorization=self._authorize_plan(plan))
 
-    def _authorize_plan(self, plan) -> str:
+    def _authorize_plan(self, plan: ExecutionPlan) -> str:
         return hmac.new(
             self._plan_key,
             canonical_json(plan.record).encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
 
-    def preflight(self, plan, resources=None):
+    def preflight(
+        self,
+        plan: ExecutionPlan,
+        resources: Resources | None = None,
+    ) -> PreflightResult:
         """Check a plan without creating a run or starting a backend."""
 
         from sigilicon.execution.engine import _preflight
         from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import _BackendRegistry
+        from sigilicon.execution.backend import BackendRegistry
         from sigilicon.execution.model import (
             ExecutionPlan,
             PreflightCheck,
@@ -169,7 +182,7 @@ class Project:
         checked = _preflight(
             plan,
             selected,
-            _BackendRegistry(trusted_backends()),
+            BackendRegistry(trusted_backends()),
         )
         if plan.project_identity == self.identity:
             return checked
@@ -188,17 +201,17 @@ class Project:
 
     def run(
         self,
-        plan,
-        resources=None,
+        plan: ExecutionPlan,
+        resources: Resources | None = None,
         *,
         run_id: str | None = None,
-        progress=None,
-    ):
+        progress: Callable[[str, str], None] | None = None,
+    ) -> RunResult:
         """Execute one source-current plan through its selected backends."""
 
         from sigilicon.execution.engine import _run
         from sigilicon.backends import trusted_backends
-        from sigilicon.execution.backend import _BackendRegistry
+        from sigilicon.execution.backend import BackendRegistry
         from sigilicon.execution.model import ExecutionPlan, Resources
 
         if not isinstance(plan, ExecutionPlan):
@@ -210,7 +223,7 @@ class Project:
         return _run(
             plan,
             selected,
-            _BackendRegistry(trusted_backends()),
+            BackendRegistry(trusted_backends()),
             artifact_root=self.artifact_root,
             project_root=self.project_root,
             owner_root=self.owner(plan.owner).root,
@@ -219,7 +232,12 @@ class Project:
             progress=progress,
         )
 
-    def _require_canonical_plan(self, plan, *, require_current: bool = True) -> None:
+    def _require_canonical_plan(
+        self,
+        plan: ExecutionPlan,
+        *,
+        require_current: bool = True,
+    ) -> None:
         """Reject plans not compiled from this Project's current owner contract."""
 
         expected = self._authorize_plan(replace(plan, _authorization=""))
@@ -490,30 +508,6 @@ class Project:
     @property
     def artifact_root(self) -> Path:
         return self._paths.artifact_root
-
-    def _read_run(self, selector: str, run_id: str):
-        from sigilicon.execution.operations import parse_selector
-        from sigilicon.execution.runs import _RunStore
-
-        owner, operation, variant = parse_selector(selector)
-        return _RunStore(self._paths.artifact_root).read(
-            owner=owner,
-            operation=operation,
-            variant=variant,
-            run_id=run_id,
-        )
-
-    def _clean_run(self, selector: str, run_id: str) -> None:
-        from sigilicon.execution.operations import parse_selector
-        from sigilicon.execution.runs import _RunStore
-
-        owner, operation, variant = parse_selector(selector)
-        _RunStore(self._paths.artifact_root).clean(
-            owner=owner,
-            operation=operation,
-            variant=variant,
-            run_id=run_id,
-        )
 
     def with_artifact_root(self, artifact_root: Path | str) -> "Project":
         """Return this exact project inventory with a run-scoped artifact root."""

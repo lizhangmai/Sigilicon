@@ -100,7 +100,7 @@ class _SelectedRun:
     run_id: str
 
 @dataclass(frozen=True)
-class _RunStore:
+class RunStore:
     """Read or clean one exact managed execution result."""
 
     artifact_root: Path
@@ -438,4 +438,4 @@ class _RunStore:
         _remove_nofollow_tree(root, expected)
 
 
-__all__ = ["RunStoreError"]
+__all__ = ["RunStore", "RunStoreError"]

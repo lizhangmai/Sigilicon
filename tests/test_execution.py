@@ -14,8 +14,8 @@ from sigilicon.execution import (
     Artifact,
     ContractError,
     ExecutionError,
-    OperationStep,
-    PreparedStep,
+    Operation,
+    Step,
     PreflightCheck,
     Resources,
     RunResult,
@@ -24,14 +24,77 @@ from sigilicon.execution import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.backend import _Preparation
+from sigilicon.execution.backend import Preparation
 from sigilicon.execution.model import ExternalResource
-from sigilicon.execution.runs import RunStoreError, _RunStore
+from sigilicon.execution.operations import parse_selector
+from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
 from sigilicon.project import Project
 
 
 _TEST_BACKENDS: tuple[object, ...] = ()
+
+
+def _run_store_call(
+    project: Project,
+    selector: str,
+) -> tuple[RunStore, str, str, str | None]:
+    owner, operation, variant = parse_selector(selector)
+    return RunStore(project.artifact_root), owner, operation, variant
+
+
+def _read_run(project: Project, selector: str, run_id: str):
+    store, owner, operation, variant = _run_store_call(project, selector)
+    return store.read(
+        owner=owner,
+        operation=operation,
+        variant=variant,
+        run_id=run_id,
+    )
+
+
+def _clean_run(project: Project, selector: str, run_id: str) -> None:
+    store, owner, operation, variant = _run_store_call(project, selector)
+    store.clean(
+        owner=owner,
+        operation=operation,
+        variant=variant,
+        run_id=run_id,
+    )
+
+
+def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
+    import sigilicon.execution as execution
+
+    for name in (
+        "Operation",
+        "Step",
+        "Backend",
+        "ExecutionPlan",
+        "RunResult",
+        "RunStore",
+    ):
+        assert getattr(execution, name).__name__ == name
+    for removed in (
+        "OperationStep",
+        "PreparedStep",
+        "_Backend",
+        "_BackendRegistry",
+        "_Preparation",
+        "_RunStore",
+    ):
+        assert not hasattr(execution, removed)
+    assert "_read_run" not in Project.__dict__
+    assert "_clean_run" not in Project.__dict__
+
+
+def test_step_files_does_not_import_the_execution_model() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src/sigilicon/execution/step_files.py"
+    ).read_text(encoding="utf-8")
+
+    assert "sigilicon.execution.model" not in source
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +210,7 @@ class CopyBackend:
     name = "fake.copy"
 
     def prepare(self, _project, step):
-        return _Preparation(PreparedStep.from_operation(step))
+        return Preparation(Step.from_operation(step))
 
     def preflight(self, step, resources):
         return (
@@ -158,7 +221,7 @@ class CopyBackend:
             ),
         )
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         output = context.write_text("source", "value.txt", str(step.request["text"]))
         return StepResult.succeeded(
             artifacts=(Artifact("source", "text.plain", output),),
@@ -170,12 +233,12 @@ class UpperBackend:
     name = "fake.upper"
 
     def prepare(self, _project, step):
-        return _Preparation(PreparedStep.from_operation(step))
+        return Preparation(Step.from_operation(step))
 
     def preflight(self, step, resources):
         return ()
 
-    def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+    def run(self, context: StepContext, step: Step) -> StepResult:
         source = context.artifacts("source", "source")[0]
         output = context.write_text(
             "result",
@@ -245,8 +308,8 @@ def test_backend_discovered_sources_have_canonical_plan_order(tmp_path: Path) ->
                 for path in self.paths
             )
             names = tuple(sorted(source.path for source in sources))
-            return _Preparation(
-                PreparedStep.from_operation(
+            return Preparation(
+                Step.from_operation(
                     step, sources=tuple(dict.fromkeys((*step.sources, *names)))
                 ),
                 sources,
@@ -316,8 +379,8 @@ source = ["ip/foreign/value.txt"]
     class ForeignSourceBackend(CopyBackend):
         def prepare(self, project, step):
             source = Source.capture(value, root=foreign, scope="owner")
-            return _Preparation(
-                PreparedStep.from_operation(step, sources=(*step.sources, source.path)),
+            return Preparation(
+                Step.from_operation(step, sources=(*step.sources, source.path)),
                 (source,),
             )
 
@@ -337,8 +400,8 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
     class SymlinkSourceBackend(CopyBackend):
         def prepare(self, project, step):
             source = Source.capture(link, root=owner.parent, scope="owner")
-            return _Preparation(
-                PreparedStep.from_operation(step, sources=(*step.sources, source.path)),
+            return Preparation(
+                Step.from_operation(step, sources=(*step.sources, source.path)),
                 (source,),
             )
 
@@ -417,14 +480,14 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
         ("transform", "running"),
         ("transform", "succeeded"),
     ]
-    stored = project._read_run("example:all", "a" * 32)
+    stored = _read_run(project, "example:all", "a" * 32)
     assert stored.status == "succeeded"
     assert stored.plan_identity == plan.identity
 
-    project._clean_run("example:all", "a" * 32)
+    _clean_run(project, "example:all", "a" * 32)
     assert not result.run_root.exists()
     with pytest.raises(RunStoreError):
-        project._read_run("example:all", "a" * 32)
+        _read_run(project, "example:all", "a" * 32)
 
 
 def test_run_clean_never_follows_a_role_replaced_after_validation(
@@ -442,7 +505,7 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
     outside.mkdir()
     sentinel = outside / "sentinel.txt"
     sentinel.write_text("keep", encoding="utf-8")
-    original = _RunStore._validate_inventory
+    original = RunStore._validate_inventory
     calls = 0
 
     def replace_after_validation(_cls, paths, manifest):
@@ -462,9 +525,9 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
             outputs.rmdir()
             outputs.symlink_to(outside, target_is_directory=True)
 
-    monkeypatch.setattr(_RunStore, "_validate_inventory", replace_after_validation)
+    monkeypatch.setattr(RunStore, "_validate_inventory", replace_after_validation)
 
-    project._clean_run("example:check", result.run_id)
+    _clean_run(project, "example:check", result.run_id)
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert not result.run_root.exists()
@@ -485,9 +548,9 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
     assert result.run_root == (
         tmp_path / "artifacts/runs/example/check/variants/fast" / ("1" * 32)
     )
-    assert project._read_run("example:check@fast", result.run_id).variant == "fast"
+    assert _read_run(project, "example:check@fast", result.run_id).variant == "fast"
     with pytest.raises(RunStoreError):
-        project._read_run("example:check", result.run_id)
+        _read_run(project, "example:check", result.run_id)
 
 
 def test_missing_backend_blocks_preflight_and_run(tmp_path: Path) -> None:
@@ -511,10 +574,10 @@ def test_backend_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
 
     with pytest.raises(ExecutionError, match="changed immediately before backend"):
         project.run(plan, run_id="b" * 32)
-    failed = project._read_run("example:check", "b" * 32)
+    failed = _read_run(project, "example:check", "b" * 32)
     assert failed.record["contract_kind"] == "run-failure"
     assert failed.status == "failed"
-    project._clean_run("example:check", "b" * 32)
+    _clean_run(project, "example:check", "b" * 32)
 
 
 def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
@@ -524,7 +587,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     live = tmp_path / "ip/example/configs/value.txt"
 
     class SealedSourceBackend(CopyBackend):
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             live.write_text("later\n", encoding="utf-8")
             output = context.write_text(
                 "source",
@@ -564,13 +627,13 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            prepared = PreparedStep.from_operation(
+            prepared = Step.from_operation(
                 step,
                 resources=(resource.identity,),
             )
-            return _Preparation(prepared, resources=(resource,))
+            return Preparation(prepared, resources=(resource,))
 
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             live.write_text("changed after sealing\n", encoding="utf-8")
             output = context.write_text(
                 "source",
@@ -617,15 +680,15 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return _Preparation(
-                PreparedStep.from_operation(
+            return Preparation(
+                Step.from_operation(
                     step,
                     resources=(resource.identity,),
                 ),
                 resources=(resource,),
             )
 
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             sealed = context.resource_path(step.resources[0])
             metadata = sealed.stat()
             sealed.chmod(0o600)
@@ -715,7 +778,7 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 
 def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
     with pytest.raises(ContractError, match="mapping"):
-        OperationStep("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
+        Operation("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
     outcome = StepOutcome("run", "fake.copy", StepResult.succeeded())
     with pytest.raises(ContractError, match="disagrees"):
         RunResult(
@@ -738,7 +801,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
         def preflight(self, step, resources):
             return ()
 
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             published = context.write_text("source", "published.txt", "published")
             context.write_text("source", "extra.txt", "extra")
             return StepResult.succeeded(
@@ -756,7 +819,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     _write_project(tmp_path)
 
     class UncertainBackend(CopyBackend):
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             return StepResult.uncertain("descendant cleanup could not be proven")
 
     project = _project(tmp_path, UncertainBackend(),)
@@ -771,7 +834,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
         "uncertain"
     )
-    restored = project._read_run("example:check", result.run_id)
+    restored = _read_run(project, "example:check", result.run_id)
     assert restored.status == "uncertain"
 
 
@@ -781,7 +844,7 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
     _write_project(tmp_path)
 
     class CleanupUnknownBackend(CopyBackend):
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             raise ProcessGroupCleanupUncertainError(
                 "descendant cleanup could not be proven"
             )
@@ -804,7 +867,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
     class CancelledBackend(CopyBackend):
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             return StepResult.cancelled("operator cancelled the tool")
 
     project = _project(tmp_path, CancelledBackend(),)
@@ -819,14 +882,14 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
         "cancelled"
     )
-    assert project._read_run("example:check", result.run_id).status == "cancelled"
+    assert _read_run(project, "example:check", result.run_id).status == "cancelled"
 
 
 def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
     class RejectingBackend(CopyBackend):
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             evidence = context.write_text("evidence", "failure.json", "{}\n")
             return StepResult(
                 "failed",
@@ -848,7 +911,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
         "failed"
     )
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "{}\n"
-    restored = project._read_run("example:check", result.run_id)
+    restored = _read_run(project, "example:check", result.run_id)
     assert restored.outcomes[0].result.facts == {"passed": False}
     assert restored.outcomes[0].result.artifacts[0].role == "evidence"
 
@@ -858,7 +921,7 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
     live = tmp_path / "ip/example/configs/value.txt"
 
     class DriftingCopyBackend(CopyBackend):
-        def run(self, context: StepContext, step: PreparedStep) -> StepResult:
+        def run(self, context: StepContext, step: Step) -> StepResult:
             result = super().run(context, step)
             live.write_text("changed\n", encoding="utf-8")
             return result
@@ -872,7 +935,7 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
             Resources(frozenset({"offline"})),
             run_id="5" * 32,
         )
-    stored = project._read_run("example:all", "5" * 32)
+    stored = _read_run(project, "example:all", "5" * 32)
     assert stored.status == "partial"
     assert stored.provenance["completed_steps"] == ("source",)
 
@@ -890,7 +953,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     )
     operations.unlink()
 
-    stored = project._read_run("example:check", result.run_id)
+    stored = _read_run(project, "example:check", result.run_id)
     assert stored.status == "succeeded"
 
     result_path = result.run_root / "outputs/run-result.json"
@@ -898,7 +961,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     payload["variant"] = "tampered"
     result_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RunStoreError, match="manifest|result"):
-        project._read_run("example:check", result.run_id)
+        _read_run(project, "example:check", result.run_id)
 
 
 def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
@@ -914,7 +977,7 @@ def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
     output.write_text("jello", encoding="utf-8")
 
     with pytest.raises(RunStoreError, match="metadata"):
-        project._read_run("example:check", result.run_id)
+        _read_run(project, "example:check", result.run_id)
 
 
 def test_run_identity_is_exclusive(tmp_path: Path) -> None:
@@ -926,7 +989,7 @@ def test_run_identity_is_exclusive(tmp_path: Path) -> None:
 
     with pytest.raises(FileExistsError):
         project.run(plan, resources, run_id="e" * 32)
-    assert project._read_run("example:check", "e" * 32).status == "succeeded"
+    assert _read_run(project, "example:check", "e" * 32).status == "succeeded"
 
 
 def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> None:
@@ -946,7 +1009,7 @@ def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> 
 
     assert sum(isinstance(value, RunResult) for value in values) == 1
     assert sum(isinstance(value, FileExistsError) for value in values) == 1
-    assert project._read_run("example:check", "4" * 32).status == "succeeded"
+    assert _read_run(project, "example:check", "4" * 32).status == "succeeded"
 
 
 def test_project_import_does_not_load_tool_capability_modules() -> None:

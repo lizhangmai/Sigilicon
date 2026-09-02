@@ -13,7 +13,7 @@ from sigilicon.backends.synopsys import (
     StructuralLinkBackend,
     VcsBackend,
 )
-from sigilicon.execution import PreparedStep, Resources, StepContext, StepResult
+from sigilicon.execution import Step, Resources, StepContext, StepResult
 from sigilicon.execution.model import resource_materialization_key
 
 
@@ -27,7 +27,7 @@ def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> P
 
 def _context(
     tmp_path: Path,
-    step: PreparedStep,
+    step: Step,
     environment: dict[str, str],
 ) -> StepContext:
     run_root = tmp_path / "run"
@@ -71,7 +71,7 @@ printf 'managed vcs\n'
     _file(sources / "rtl/design.sv")
     _file(sources / "dv/testbench.sv")
     executable = _file(tmp_path / "site/vcs", "#!/bin/sh\nexit 0\n", executable=True)
-    step = PreparedStep(
+    step = Step(
         "rtl",
         "synopsys.vcs",
         {
@@ -115,7 +115,7 @@ printf 'tampered\n' >>"$source_file"
     rtl = _file(sources / "rtl/design.sv")
     _file(sources / "dv/testbench.sv")
     executable = _file(tmp_path / "site/vcs", "#!/bin/sh\nexit 0\n", executable=True)
-    step = PreparedStep(
+    step = Step(
         "rtl",
         "synopsys.vcs",
         {
@@ -199,7 +199,7 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "release_liberty_resource": liberty_resource,
         "release_liberty_sha256": liberty_digest,
     }
-    step = PreparedStep(
+    step = Step(
         "link",
         "synopsys.structural-link",
         {"config": config, "prepared": prepared},
@@ -293,7 +293,7 @@ test "$0" = "{executable}"
         environment[f"SIGILICON_STDCELL_{flavor}_DB"] = str(
             _file(site / f"{flavor.lower()}.db")
         )
-    step = PreparedStep(
+    step = Step(
         "synthesis",
         "synopsys.dc",
         {
@@ -370,7 +370,7 @@ raise SystemExit(1)
         "SIGILICON_STDCELL_LVT_SPICE",
     ):
         environment[name] = str(_file(site / f"{name.lower()}.sp"))
-    step = PreparedStep(
+    step = Step(
         "qualification",
         "synopsys.hspice",
         {
@@ -457,7 +457,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
                 executable=name.endswith("LM_SHELL"),
             )
         )
-    step = PreparedStep(
+    step = Step(
         "reference-library",
         "synopsys.fc",
         {

@@ -24,7 +24,7 @@ from sigilicon.execution.model import (
     StepResult,
     json_value,
 )
-from sigilicon.execution.backend import _BackendRegistry
+from sigilicon.execution.backend import BackendRegistry
 from sigilicon.external_tools import process_group_cleanup_uncertainty
 from sigilicon.paths import ArtifactLayout
 
@@ -35,7 +35,7 @@ Progress = Callable[[str, str], None]
 def _preflight(
     plan: ExecutionPlan,
     resources: Resources,
-    backends: _BackendRegistry,
+    backends: BackendRegistry,
 ) -> PreflightResult:
     """Check exact sources and only the backends selected by this plan."""
 
@@ -189,7 +189,7 @@ def _register_tree(record: RunRecord, role: str, root: Path) -> None:
 def _run(
     plan: ExecutionPlan,
     resources: Resources,
-    backends: _BackendRegistry,
+    backends: BackendRegistry,
     *,
     artifact_root: Path,
     project_root: Path,
