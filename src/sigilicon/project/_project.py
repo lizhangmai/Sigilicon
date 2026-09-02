@@ -348,6 +348,11 @@ class Project:
         }
         return replace(self._runtime, environment=environment)
 
+    def resources(self) -> Resources:
+        """Snapshot the project-declared runtime deployment and allowed host state."""
+
+        return self._execution_resources()
+
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:
         """Return canonical owner component snapshots keyed by source path."""

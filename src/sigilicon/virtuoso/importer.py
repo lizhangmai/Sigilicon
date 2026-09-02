@@ -595,6 +595,7 @@ def _import_netlist(
 
         completed = managed_process.run(ProcessRequest(
             argv=tuple(command),
+            executable=owned_launcher.executable,
             cwd=Path(owned_run_dir.child_path),
             environment=cadence_ic_env(executable, resources.environment),
             timeout_seconds=timeout,

@@ -5,7 +5,7 @@ import pytest
 from sigilicon.execution import ContractError
 from sigilicon.execution.model import Resources
 from sigilicon.virtuoso import bridge
-from sigilicon.virtuoso import client as client_adapter
+from sigilicon.workflows import oa_client as client_adapter
 
 
 def test_missing_bridge_dependency_has_an_actionable_error(
@@ -126,7 +126,29 @@ def test_get_client_requires_resources_and_forwards_the_same_snapshot(
         lambda value: received.append(value) or ConnectedClient(),
     )
 
-    assert client_adapter.get_client(resources).__class__ is ConnectedClient
+    bound = client_adapter.get_client(resources)
+    assert isinstance(bound, client_adapter.OaClient)
+    assert bound.raw.__class__ is ConnectedClient
+    bound.require_resources(resources)
     assert received == [resources]
     with pytest.raises(TypeError):
         client_adapter.get_client()  # type: ignore[call-arg]
+
+
+def test_bound_client_rejects_a_different_runtime_endpoint() -> None:
+    first = Resources(
+        values={
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "65432",
+        }
+    )
+    second = Resources(
+        values={
+            "virtuoso-bridge.host": "127.0.0.1",
+            "virtuoso-bridge.port": "65433",
+        }
+    )
+    client = client_adapter.bind_client(object(), first)
+
+    with pytest.raises(RuntimeError, match="different runtime endpoint"):
+        client_adapter.bind_client(client, second)

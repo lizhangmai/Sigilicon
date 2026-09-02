@@ -16,7 +16,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
-import sys
 from typing import Any
 
 from sigilicon.artifacts import (
@@ -59,6 +58,8 @@ from sigilicon.external_tools import (
 _ENVIRONMENT = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 _ENVIRONMENT_PREFIX = re.compile(r"[A-Z][A-Z0-9_]*_\Z")
 _TARGET = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_RUNNER_SHELL = "SIGILICON_RUNNER_SHELL"
+_PYTHON = "SIGILICON_PYTHON"
 _TOOL_LOCATION_ENVIRONMENT = frozenset(
     {
         "VCS_HOME",
@@ -215,6 +216,10 @@ def _base_checks(step: Step) -> list[PreflightCheck]:
     _positive_integer(step.request, "timeout_seconds")
     if not step.runtime.tools:
         raise ContractError("Synopsys step requires a runtime profile with a tool")
+    if _RUNNER_SHELL not in step.runtime.tools:
+        raise ContractError(
+            f"Synopsys runtime profile must bind {_RUNNER_SHELL} as a tool"
+        )
     return [PreflightCheck("owner-runner", runner, "ready", "sealed plan source")]
 
 
@@ -305,6 +310,7 @@ def _run_script(
                     if relative == Path(".")
                     else f"{source_root.child_path}/{relative.as_posix()}"
                 )
+        executable_by_name = {}
         executables = []
         launchers = []
         for name in held_executables:
@@ -312,13 +318,20 @@ def _run_script(
             if not value:
                 raise ExecutionError(f"runtime environment omitted {name}")
             owned = stack.enter_context(owned_executable(Path(value)))
+            executable_by_name[name] = owned
+            executables.append(owned)
+        runner_shell = executable_by_name.get(_RUNNER_SHELL)
+        if runner_shell is None or len(runner_shell.command) != 1:
+            raise ExecutionError("runtime runner shell must be a native executable")
+        shell_path = runner_shell.target.child_named_path
+        for name, owned in executable_by_name.items():
             if len(owned.command) == 1:
                 environment[name] = owned.target.child_named_path
             else:
                 launcher_name = f".{name.lower()}.launcher"
                 launcher_path = context.work_root / launcher_name
                 payload = (
-                    "#!/bin/sh\nexec "
+                    f"#!{shell_path}\nexec "
                     + shlex.join(owned.command)
                     + ' "$@"\n'
                 ).encode("utf-8")
@@ -351,7 +364,6 @@ def _run_script(
                     raise ExecutionError("generated Synopsys launcher identity changed")
                 environment[name] = launcher.child_named_path
                 launchers.append(launcher)
-            executables.append(owned)
         for name in held_files:
             value = environment.get(name)
             if not value:
@@ -359,13 +371,6 @@ def _run_script(
             owned = stack.enter_context(
                 owned_input_file(Path(value), require_single_link=False)
             )
-            if name == "SIGILICON_PYTHON":
-                running = os.stat("/proc/self/exe")
-                held = os.fstat(owned.fd)
-                if (running.st_dev, running.st_ino) != (held.st_dev, held.st_ino):
-                    raise ExecutionError(
-                        "configured Python interpreter is not the running trusted runtime"
-                    )
             environment[name] = owned.child_named_path
         for name in held_directories:
             value = environment.get(name)
@@ -373,7 +378,7 @@ def _run_script(
                 raise ExecutionError(f"runtime environment omitted {name}")
             owned = stack.enter_context(owned_directory(Path(value)))
             environment[name] = owned.child_path
-        command = [f"{source_root.child_path}/{runner}"]
+        command = [shell_path, f"{source_root.child_path}/{runner}"]
         if argument:
             command.append(argument)
 
@@ -744,6 +749,12 @@ class HspiceBackend(DirectAdapter):
                 )
             _safe_relative(value, f"HSPICE output_environment {name}")
         _boolean(step.request, "requires_python")
+        if _boolean(step.request, "requires_python") and _PYTHON not in (
+            step.runtime.tools
+        ):
+            raise ContractError(
+                f"Python-backed HSPICE steps must bind {_PYTHON} as a tool"
+            )
         return tuple(checks)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
@@ -769,15 +780,8 @@ class HspiceBackend(DirectAdapter):
                 for name, value in _mapping(config, "source_environment").items()
             }
         )
-        if _boolean(config, "requires_python"):
-            environment["SIGILICON_PYTHON"] = str(
-                Path(sys.executable).resolve(strict=True)
-            )
         if "corner" in config:
             environment["SIGILICON_DESIGN_CORNER"] = _text(config, "corner")
-        held = list(runtime.files)
-        if _boolean(config, "requires_python"):
-            held.append("SIGILICON_PYTHON")
         with owned_scratch_directory(
             prefix=f"sigilicon-hspice-{context.run_id}-",
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
@@ -797,7 +801,7 @@ class HspiceBackend(DirectAdapter):
                 environment,
                 argument=target,
                 held_executables=runtime.tools,
-                held_files=tuple(held),
+                held_files=runtime.files,
                 held_directories=runtime.directories,
             )
             logs = _logs(context, completed.stdout, completed.stderr or "")

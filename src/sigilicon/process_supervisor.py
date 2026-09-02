@@ -41,12 +41,17 @@ def _read_control(descriptor: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError("supervisor control must be a JSON object")
     command = value.get("command")
+    executable = value.get("executable")
     environment = value.get("environment")
     pass_fds = value.get("pass_fds")
     if (
         not isinstance(command, list)
         or not command
         or not all(isinstance(item, str) and item for item in command)
+        or not (
+            executable is None
+            or isinstance(executable, str) and Path(executable).is_absolute()
+        )
         or not isinstance(value.get("cwd"), str)
         or not value["cwd"]
         or not isinstance(environment, dict)
@@ -281,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, request_cleanup)
         actual = subprocess.Popen(
             control["command"],
+            executable=control["executable"],
             cwd=control["cwd"],
             env=control["environment"],
             pass_fds=tuple(control["pass_fds"]),

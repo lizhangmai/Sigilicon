@@ -22,6 +22,7 @@ from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
     owned_directory,
+    owned_executable,
     owned_input_file,
     spectre_env,
 )
@@ -140,7 +141,11 @@ def run_spectre_deck(
     work_dir = record.directory("work")
     completed = None
     invocation_deck: Path | None = None
-    with owned_directory(work_dir) as owned_work, ExitStack() as resources:
+    with (
+        owned_executable(executable) as owned_spectre,
+        owned_directory(work_dir) as owned_work,
+        ExitStack() as resources,
+    ):
         owned_inputs = {
             key: resources.enter_context(owned_input_file(path))
             for key, path in inputs.items()
@@ -156,7 +161,7 @@ def run_spectre_deck(
         invocation_deck.chmod(0o444)
         owned_deck = resources.enter_context(owned_input_file(invocation_deck))
         command = (
-            str(executable),
+            *owned_spectre.command,
             "-64",
             "-format",
             "psfascii",
@@ -177,6 +182,7 @@ def run_spectre_deck(
         )
 
         def validate_spawn() -> None:
+            owned_spectre.require_visible()
             for owned in (*owned_inputs.values(), owned_deck):
                 owned.require_visible()
 
@@ -184,6 +190,8 @@ def run_spectre_deck(
             dict.fromkeys(
                 (
                     owned_work.fd,
+                    owned_spectre.target.fd,
+                    owned_spectre.target.directory_fd,
                     owned_deck.fd,
                     owned_deck.directory_fd,
                     *(
@@ -196,6 +204,7 @@ def run_spectre_deck(
         )
         completed = process.run(ProcessRequest(
             argv=tuple(command),
+            executable=owned_spectre.executable,
             cwd=Path(owned_work.child_path),
             environment=spectre_env(executable, environment),
             timeout_seconds=timeout,
@@ -276,7 +285,8 @@ def run_spectre_measurement(
     evaluate: Callable[[Any], Mapping[str, object]],
     timeout: int,
     artifacts: StepFiles,
-    project_root: Path,
+    spectre: Path,
+    environment: Mapping[str, str],
     process: ProcessPort = managed_process,
 ) -> SpectreRunResult:
     """Execute one design-defined contract using only shared flow mechanics.
@@ -292,17 +302,14 @@ def run_spectre_measurement(
         ("external-input-references.json",),
         dict(external_input_references),
     )
-    from sigilicon.project import Project
-
-    runtime = Project.open(project_root)._execution_resources()
     execution = run_spectre_deck(
         artifacts,
         render_deck=render,
         inputs=staged,
         output_names=(output_name,),
         timeout=timeout,
-        spectre=runtime.require_tool("cadence.spectre"),
-        environment=runtime.environment,
+        spectre=spectre,
+        environment=environment,
         process=process,
     )
     raw = artifacts.copy_file(

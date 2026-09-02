@@ -30,6 +30,10 @@ platform = "configs/platform/catalog.toml"
 project_root = "."
 workspace_root = "virtuoso"
 artifact_root = "artifacts"
+
+[runtime.values]
+"virtuoso-bridge.host" = "127.0.0.1"
+"virtuoso-bridge.port" = "50051"
 """,
         encoding="utf-8",
     )

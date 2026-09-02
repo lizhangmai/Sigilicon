@@ -568,7 +568,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         lambda _plan, _members: None,
     )
     monkeypatch.setattr(
-        "sigilicon.virtuoso.client.get_client",
+        "sigilicon.workflows.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
@@ -655,7 +655,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         },
     )
     monkeypatch.setattr(
-        "sigilicon.virtuoso.client.get_client",
+        "sigilicon.workflows.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
@@ -747,7 +747,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         lambda _spec, *, project, platform: planning,
     )
     monkeypatch.setattr(
-        "sigilicon.virtuoso.client.get_client",
+        "sigilicon.workflows.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
@@ -923,7 +923,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         lambda _spec, *, project, platform: planning,
     )
     monkeypatch.setattr(
-        "sigilicon.virtuoso.client.get_client",
+        "sigilicon.workflows.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(

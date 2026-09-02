@@ -691,6 +691,7 @@ class XceliumBackend(DirectAdapter):
             )
             completed = managed_process.run(ProcessRequest(
                 argv=tuple(command),
+                executable=owned_launcher.executable,
                 cwd=Path(work.child_path),
                 environment=xrun_env(executable, context.resources.environment),
                 timeout_seconds=timeout,
@@ -1011,7 +1012,7 @@ class NativeOaBackend(_CadenceDomainAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.oa_library import build_oa_layout_ir
         from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
 
@@ -1211,7 +1212,7 @@ class _OaBackend(_CadenceDomainAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.oa_check import check_oa_library
         from sigilicon.workflows.oa_library import (
             attest_oa_testbench,
@@ -1388,7 +1389,7 @@ class LayoutBackend(_CadenceDomainAdapter):
         return self._execute(context, planning)
 
     def _execute(self, context: StepContext, planning: Any) -> StepResult:
-        from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.layout_generation import generate_layout
 
         config = _strict_config(context.step, self._fields)
@@ -1560,7 +1561,7 @@ class LayoutVerificationBackend(_CadenceDomainAdapter):
         planning: Any,
         external_sources: Mapping[Path, str],
     ) -> StepResult:
-        from sigilicon.virtuoso.client import get_client
+        from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.layout_verification import run_layout_verification
 
         config = _strict_config(context.step, self._fields)

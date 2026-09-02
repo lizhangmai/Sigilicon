@@ -54,10 +54,13 @@ def main(
             workspace_root=project.workspace_root,
         )
         if client_factory is None:
-            from sigilicon.virtuoso.client import get_client
+            from sigilicon.workflows.oa_client import get_client
 
             client_factory = get_client
-        client = client_factory(project._execution_resources())
+        from sigilicon.workflows.oa_client import bind_client
+
+        resources = project.resources()
+        client = bind_client(client_factory(resources), resources)
         if args.command == "open":
             open_project_cell(client, paths, args.library, args.cell, args.view)
             print(f"opened {args.library}/{args.cell}/{args.view}")

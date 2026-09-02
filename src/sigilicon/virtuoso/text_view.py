@@ -236,6 +236,7 @@ def import_oa_text_view(
 
         completed = process.run(ProcessRequest(
             argv=tuple(command),
+            executable=owned_launcher.executable,
             cwd=Path(owned_workdir.child_path),
             environment=cadence_ic_env(executable, resources.environment),
             timeout_seconds=timeout,

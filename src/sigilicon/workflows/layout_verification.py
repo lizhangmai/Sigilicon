@@ -577,6 +577,7 @@ def _run_calibre(
             descriptors.extend((owned_source.fd, owned_source.directory_fd))
         completed = managed_process.run(ProcessRequest(
             argv=tuple(command),
+            executable=owned_launcher.executable,
             cwd=work,
             environment=calibre_environment(executable, environment),
             timeout_seconds=timeout,

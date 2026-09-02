@@ -394,6 +394,7 @@ def run_isolated_maestro(
                 try:
                     process_result = run_process_group_until_confirmed(
                         command,
+                        executable=owned_launcher.executable,
                         cwd=Path(owned_workspace.child_path),
                         env=environment,
                         timeout=timeout,

@@ -46,13 +46,14 @@ from sigilicon.domain.systemverilog import (
     module_port_signatures,
     named_port_connections,
 )
-from sigilicon.external_tools import ProcessRequest, managed_process, owned_directory
+from sigilicon.external_tools import owned_directory
 from sigilicon.release_store import (
     AuditedRelease,
     ReleaseRef,
     ReleaseStore,
     audit_release_package,
 )
+from sigilicon.workflows.source_control import inspect_checkout
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
@@ -928,31 +929,6 @@ def _source_inputs(
     )
 
 
-def _source_control(root: Path) -> tuple[str, bool]:
-    revision = managed_process.run(ProcessRequest(
-        argv=("git", "rev-parse", "HEAD"),
-        cwd=root,
-        environment=os.environ.copy(),
-        timeout_seconds=30,
-    ))
-    if revision.returncode != 0 or not revision.stdout.strip():
-        raise RuntimeError(
-            f"cannot resolve source commit:\n{revision.stdout}{revision.stderr}"
-        )
-    status_result = managed_process.run(ProcessRequest(
-        argv=("git", "status", "--porcelain", "--untracked-files=all"),
-        cwd=root,
-        environment=os.environ.copy(),
-        timeout_seconds=30,
-    ))
-    if status_result.returncode != 0:
-        raise RuntimeError(
-            "cannot inspect source checkout:\n"
-            f"{status_result.stdout}{status_result.stderr}"
-        )
-    return revision.stdout.strip(), bool(status_result.stdout.strip())
-
-
 def _missing_roles(contract: IpContract, level: str) -> list[str]:
     missing: list[str] = []
     for exported in contract.exports:
@@ -1367,7 +1343,12 @@ def _plan_loaded_ip_release(
         oa_plan_inventory=oa_plan_inventory,
         resolved_oa_source=oa_library,
     )
-    commit, dirty = _source_control(contract.project_root)
+    source_state = inspect_checkout(
+        contract.project_root,
+        contract.project.resources(),
+    )
+    commit = source_state.commit
+    dirty = source_state.working_tree_dirty
     release_id = f"{level}-{commit}"
     role_missing = _missing_roles(contract, level)
     component_path = _project_path(

@@ -354,6 +354,7 @@ def execute_structural_link(
 
         lc = managed_process.run(ProcessRequest(
             argv=(*held_lc.command, "-f", held_compile.child_named_path),
+            executable=held_lc.executable,
             cwd=Path(held_work.child_path),
             environment=child_environment,
             timeout_seconds=timeout,
@@ -380,6 +381,7 @@ def execute_structural_link(
         if lc_clean:
             dc = managed_process.run(ProcessRequest(
                 argv=(*held_dc.command, "-f", held_link.child_named_path),
+                executable=held_dc.executable,
                 cwd=Path(held_work.child_path),
                 environment=child_environment,
                 timeout_seconds=timeout,

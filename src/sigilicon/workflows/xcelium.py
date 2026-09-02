@@ -287,6 +287,7 @@ def _execute_xcelium(
 
         completed = process.run(ProcessRequest(
             argv=tuple(command),
+            executable=owned_xrun.executable,
             cwd=Path(owned_work.child_path),
             environment=xrun_env(xrun_bin, selected_environment),
             timeout_seconds=timeout,

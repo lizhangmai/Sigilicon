@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -91,11 +92,14 @@ printf 'managed vcs\n'
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
-            tools={"SIGILICON_SYNOPSYS_VCS": "synopsys.vcs"}
+            tools={
+                "SIGILICON_RUNNER_SHELL": "runtime.bash",
+                "SIGILICON_SYNOPSYS_VCS": "synopsys.vcs",
+            }
         ),
     )
     resources = Resources(
-        tools={"synopsys.vcs": str(executable)},
+        tools={"runtime.bash": "/bin/bash", "synopsys.vcs": str(executable)},
         environment={
             **os.environ,
             "VCS_HOME": "/ambient/vcs",
@@ -143,9 +147,15 @@ printf 'tampered\n' >>"$source_file"
             "timeout_seconds": 10,
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
+        runtime=RuntimeEnvironment(
+            tools={
+                "SIGILICON_RUNNER_SHELL": "runtime.bash",
+                "SIGILICON_SYNOPSYS_VCS": "synopsys.vcs",
+            },
+        ),
     )
     resources = Resources(
-        tools={"synopsys.vcs": str(executable)},
+        tools={"runtime.bash": "/bin/bash", "synopsys.vcs": str(executable)},
         environment=dict(os.environ),
     )
 
@@ -296,9 +306,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
     executable = site / "dc_shell"
     target = _file(
         site / "snps_shell",
-        f'''#!/bin/sh
-test "$0" = "{executable}"
-''',
+        "#!/bin/sh\nexit 0\n",
         executable=True,
     )
     executable.symlink_to(target.name)
@@ -332,7 +340,10 @@ test "$0" = "{executable}"
             "rtl/design.sv",
         ),
         runtime=RuntimeEnvironment(
-            tools={"SIGILICON_SYNOPSYS_DC_SHELL": "synopsys.dc-shell"},
+            tools={
+                "SIGILICON_RUNNER_SHELL": "runtime.bash",
+                "SIGILICON_SYNOPSYS_DC_SHELL": "synopsys.dc-shell",
+            },
             files={
                 f"SIGILICON_STDCELL_{flavor}_DB": f"stdcell.{flavor.lower()}.db.tt"
                 for flavor in ("RVT", "HVT", "LVT")
@@ -343,7 +354,10 @@ test "$0" = "{executable}"
         tmp_path,
         step,
         Resources(
-            tools={"synopsys.dc-shell": str(executable)},
+            tools={
+                "runtime.bash": "/bin/bash",
+                "synopsys.dc-shell": str(executable),
+            },
             files=files,
             environment=dict(os.environ),
         ),
@@ -438,7 +452,11 @@ raise SystemExit(1)
             "configs/qualification.toml",
         ),
         runtime=RuntimeEnvironment(
-            tools={"SIGILICON_SYNOPSYS_HSPICE": "synopsys.hspice"},
+            tools={
+                "SIGILICON_RUNNER_SHELL": "runtime.bash",
+                "SIGILICON_PYTHON": "runtime.python",
+                "SIGILICON_SYNOPSYS_HSPICE": "synopsys.hspice",
+            },
             files={
                 "SIGILICON_HSPICE_NOMINAL_MODEL": "hspice.model.nominal",
                 "SIGILICON_HSPICE_MISMATCH_MODEL": "hspice.model.mismatch",
@@ -452,7 +470,11 @@ raise SystemExit(1)
         tmp_path,
         step,
         Resources(
-            tools={"synopsys.hspice": str(executable)},
+            tools={
+                "runtime.bash": "/bin/bash",
+                "runtime.python": str(Path(sys.executable).resolve()),
+                "synopsys.hspice": str(executable),
+            },
             files=files,
             environment=dict(os.environ),
         ),
@@ -520,7 +542,10 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         },
         sources=("impl/pnr/run_fc.sh",),
         runtime=RuntimeEnvironment(
-            tools={"SIGILICON_SYNOPSYS_LM_SHELL": "synopsys.lm-shell"},
+            tools={
+                "SIGILICON_RUNNER_SHELL": "runtime.bash",
+                "SIGILICON_SYNOPSYS_LM_SHELL": "synopsys.lm-shell",
+            },
             files={
                 "SIGILICON_FC_TECH_FILE": "synopsys.fc.tech-file",
                 "SIGILICON_FC_TECH_LEF": "synopsys.fc.tech-lef",
@@ -537,7 +562,10 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         tmp_path,
         step,
         Resources(
-            tools={"synopsys.lm-shell": str(lm_shell)},
+            tools={
+                "runtime.bash": "/bin/bash",
+                "synopsys.lm-shell": str(lm_shell),
+            },
             files=files,
             environment=dict(os.environ),
         ),

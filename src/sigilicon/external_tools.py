@@ -93,6 +93,7 @@ class ProcessRequest:
     environment: Mapping[str, str]
     timeout_seconds: float
     pass_fds: tuple[int, ...] = ()
+    executable: str | None = None
     before_spawn: Callable[[], None] | None = field(
         default=None,
         repr=False,
@@ -125,6 +126,12 @@ class ProcessRequest:
             raise ValueError("process descriptors must be non-negative integers")
         if len(set(pass_fds)) != len(pass_fds):
             raise ValueError("process descriptors must be unique")
+        if self.executable is not None and (
+            not isinstance(self.executable, str)
+            or not self.executable
+            or not Path(self.executable).is_absolute()
+        ):
+            raise ValueError("process executable must be an absolute path")
         if self.before_spawn is not None and not callable(self.before_spawn):
             raise ValueError("process before_spawn hook must be callable")
         object.__setattr__(self, "argv", argv)
@@ -418,13 +425,17 @@ class OwnedDirectoryDescriptor:
 
 @dataclass(frozen=True)
 class OwnedExecutable:
-    """Held executable target launched with its configured path as argv[0]."""
+    """Held executable target and any exact shebang interpreter."""
 
     command: tuple[str, ...]
     target: OwnedFileDescriptor
+    interpreter: OwnedFileDescriptor | None = None
+    executable: str | None = None
 
     def require_visible(self) -> None:
         self.target.require_visible()
+        if self.interpreter is not None:
+            self.interpreter.require_visible()
 
 
 @dataclass(frozen=True)
@@ -804,7 +815,7 @@ def owned_directory(
 
 @contextmanager
 def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
-    """Resolve once, hold the exact target, and preserve the configured argv[0]."""
+    """Hold one exact executable while preserving a configured multicall name."""
 
     absolute = Path(os.path.abspath(path))
     resolved = absolute.resolve(strict=True)
@@ -813,38 +824,57 @@ def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
         if metadata.st_mode & 0o111 == 0:
             raise RuntimeError(f"external executable is not executable: {absolute}")
         header = os.pread(target.fd, 128, 0).splitlines()[0]
-        interpreter = header[2:].strip().split(maxsplit=1)[0] if header.startswith(b"#!") else b""
-        shell_script = Path(os.fsdecode(interpreter)).name in {
-            "ash",
-            "bash",
-            "dash",
-            "ksh",
-            "sh",
-            "zsh",
-        }
-        command = (
-            (
-                os.fsdecode(interpreter),
-                "-c",
-                'launcher=$1; shift; . "$launcher"',
-                str(absolute),
-                target.child_path,
+        if not header.startswith(b"#!"):
+            held = OwnedExecutable(
+                (str(absolute),),
+                target,
+                executable=target.child_path,
             )
-            if shell_script
-            else (
-                "/bin/bash",
-                "-c",
-                'launcher=$1; shift; exec -a "$0" "$launcher" "$@"',
-                str(absolute),
-                target.child_path,
-            )
-        )
-        held = OwnedExecutable(command, target)
-        held.require_visible()
-        try:
-            yield held
-        finally:
             held.require_visible()
+            try:
+                yield held
+            finally:
+                held.require_visible()
+            return
+        try:
+            shebang = header[2:].decode("utf-8").strip().split()
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("external executable has an invalid shebang") from exc
+        if not shebang or len(shebang) > 2 or not Path(shebang[0]).is_absolute():
+            raise RuntimeError("external executable requires one absolute interpreter")
+        if Path(shebang[0]).name == "env":
+            raise RuntimeError("external executable cannot select an ambient interpreter")
+        interpreter_path = Path(shebang[0]).resolve(strict=True)
+        with owned_input_file(
+            interpreter_path,
+            require_single_link=False,
+        ) as interpreter:
+            interpreter_name = interpreter_path.name
+            if interpreter_name in {"ash", "bash", "dash", "ksh", "sh", "zsh"}:
+                command = (
+                    interpreter.child_path,
+                    *shebang[1:],
+                    "-c",
+                    'launcher=$1; shift; . "$launcher"',
+                    str(absolute),
+                    target.child_named_path,
+                )
+            else:
+                command = (
+                    interpreter.child_path,
+                    *shebang[1:],
+                    target.child_named_path,
+                )
+            held = OwnedExecutable(
+                command,
+                target,
+                interpreter,
+            )
+            held.require_visible()
+            try:
+                yield held
+            finally:
+                held.require_visible()
 
 
 def _clear_directory_at(descriptor: int) -> None:
@@ -1147,6 +1177,7 @@ def spectre_env(
 def _spawn_process_supervisor(
     command: Sequence[str],
     *,
+    executable: str | None,
     cwd: Path,
     env: Mapping[str, str],
     stdout: Any,
@@ -1166,6 +1197,7 @@ def _spawn_process_supervisor(
         raise
     control = {
         "command": list(command),
+        "executable": executable,
         "cwd": os.fspath(cwd),
         "environment": dict(env),
         "pass_fds": list(pass_fds),
@@ -1289,6 +1321,7 @@ def _run_process_group_owned(request: ProcessRequest) -> ProcessResult:
         request.before_spawn()
     supervisor = _spawn_process_supervisor(
         request.argv,
+        executable=request.executable,
         cwd=request.cwd,
         env=dict(request.environment),
         stdout=subprocess.PIPE,
@@ -1362,6 +1395,7 @@ managed_process = ManagedProcessPort()
 def _run_process_group_until_confirmed_owned(
     command: Sequence[str],
     *,
+    executable: str | None = None,
     cwd: Path,
     env: Mapping[str, str],
     timeout: int,
@@ -1401,6 +1435,7 @@ def _run_process_group_until_confirmed_owned(
         before_spawn()
     supervisor = _spawn_process_supervisor(
         command,
+        executable=executable,
         cwd=cwd,
         env=dict(env),
         stdout=stdout_fd,

@@ -575,7 +575,11 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         ),
     )
     monkeypatch.setattr(
-        ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="d" * 40, working_tree_dirty=False
+        ),
     )
     monkeypatch.setattr(
         oa_library_domain,
@@ -719,7 +723,11 @@ capabilities = ["synthesis"]
         ),
     )
     monkeypatch.setattr(
-        ip_packaging, "_source_control", lambda _root: ("e" * 40, False)
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="e" * 40, working_tree_dirty=False
+        ),
     )
     monkeypatch.setattr(
         oa_library_domain,
@@ -782,7 +790,11 @@ def test_native_oa_package_rejects_digital_interface_sections(
         ),
     )
     monkeypatch.setattr(
-        ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="d" * 40, working_tree_dirty=False
+        ),
     )
     monkeypatch.setattr(
         oa_library_domain,
@@ -841,7 +853,11 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
         ),
     )
     monkeypatch.setattr(
-        ip_packaging, "_source_control", lambda _root: ("d" * 40, False)
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="d" * 40, working_tree_dirty=False
+        ),
     )
     monkeypatch.setattr(
         oa_library_domain,
@@ -901,7 +917,11 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         oa_library_domain, "resolve_oa_library_source", reject_oa_load
     )
     monkeypatch.setattr(
-        ip_packaging, "_source_control", lambda _root: ("a" * 40, False)
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="a" * 40, working_tree_dirty=False
+        ),
     )
 
     plan = ip_packaging.plan_ip_release_contract(contract)
@@ -1002,7 +1022,11 @@ source = "ip/rtl_fixture/rtl/top.sv"
     ).replace('module = "rtl_top"', 'module = "rtl_alternate"', 1)
     contract_path.write_text(source, encoding="utf-8")
     monkeypatch.setattr(
-        ip_packaging, "_source_control", lambda _root: ("b" * 40, False)
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="b" * 40, working_tree_dirty=False
+        ),
     )
 
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))

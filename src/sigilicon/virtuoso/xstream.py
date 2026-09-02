@@ -410,6 +410,7 @@ def run_xstream_export(
         try:
             completed = process.run(ProcessRequest(
                 argv=tuple(command),
+                executable=owned_launcher.executable,
                 cwd=work,
                 environment=xstream_environment(executable, environment),
                 timeout_seconds=request.timeout_seconds,
