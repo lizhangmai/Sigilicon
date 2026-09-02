@@ -319,7 +319,9 @@ class ResourceBinding:
             if self._fingerprint:
                 raise ContractError("value resource binding cannot have a fingerprint")
             return
-        if location is None or location != location.resolve():
+        if location is None:
+            raise ContractError("path resource binding requires a location")
+        if self.kind != "tool" and location != location.resolve():
             raise ContractError("resource binding must not traverse a symlink")
         if self.value is not None:
             raise ContractError("path resource binding cannot contain a value")
@@ -387,18 +389,31 @@ class ResourceBinding:
         kind: str | None = None,
     ) -> "ResourceBinding":
         location = Path(path).absolute()
-        if location != location.resolve():
+        resolved = location.resolve(strict=True)
+        if kind != "tool" and location != resolved:
             raise ContractError(f"resource binding must not traverse a symlink: {path}")
-        metadata = location.stat(follow_symlinks=False)
+        selected = resolved if kind == "tool" else location
+        metadata = selected.stat(follow_symlinks=False)
         if stat.S_ISREG(metadata.st_mode):
             selected_kind = "file" if kind is None else kind
             if selected_kind not in {"tool", "file"}:
                 raise ContractError("regular resource must be a tool or file")
-            data = read_nofollow_bytes(location)
-            current = location.stat(follow_symlinks=False)
+            data = read_nofollow_bytes(selected)
+            current = selected.stat(follow_symlinks=False)
+            launcher = location.stat(follow_symlinks=False)
+            if location.resolve(strict=True) != resolved:
+                raise ContractError("tool launcher changed while being captured")
             fingerprint = (
                 (
-                    "",
+                    "launcher",
+                    launcher.st_dev,
+                    launcher.st_ino,
+                    launcher.st_size,
+                    launcher.st_mtime_ns,
+                    launcher.st_mode,
+                ),
+                (
+                    "target",
                     current.st_dev,
                     current.st_ino,
                     current.st_size,
@@ -1050,7 +1065,11 @@ class Resources:
         if binding.identity not in configured:
             return binding.kind in {"file", "directory"} and binding.current()
         try:
-            return self.capture(binding.identity).record == binding.record
+            current = self.capture(binding.identity)
+            return (
+                current.record == binding.record
+                and current._fingerprint == binding._fingerprint
+            )
         except (OSError, RuntimeError, ContractError):
             return False
 

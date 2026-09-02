@@ -1061,6 +1061,30 @@ def test_directory_resource_rejects_symlink_members(tmp_path: Path) -> None:
         ResourceBinding.capture(live, identity="pdk:fixture/library")
 
 
+def test_tool_resource_binds_a_multicall_symlink_and_its_exact_target(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    first.write_bytes(b"first tool\n")
+    first.chmod(0o755)
+    second = tmp_path / "second"
+    second.write_bytes(b"second tool\n")
+    second.chmod(0o755)
+    launcher = tmp_path / "tool"
+    launcher.symlink_to(first.name)
+    resources = Resources(tools={"test.tool": str(launcher)})
+
+    binding = resources.capture("test.tool")
+
+    assert binding.location == launcher
+    assert binding.data == b"first tool\n"
+    assert resources.matches(binding)
+
+    launcher.unlink()
+    launcher.symlink_to(second.name)
+    assert not resources.matches(binding)
+
+
 def test_external_resource_reader_rejects_sealed_content_tampering(
     tmp_path: Path,
 ) -> None:
