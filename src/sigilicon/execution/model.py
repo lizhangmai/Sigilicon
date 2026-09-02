@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 _BACKEND = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
 _DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
 _RESOURCE = re.compile(r"[A-Za-z][A-Za-z0-9._:/-]{0,255}\Z")
+_ENVIRONMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ROLES = frozenset({"diagnostic", "regression", "qualification", "signoff"})
 _LEVELS = frozenset({"l0", "l1", "l2", "l3", "l4"})
 _STEP_STATUSES = frozenset(
@@ -610,6 +611,43 @@ class ResourceBinding:
 
 
 @dataclass(frozen=True)
+class RuntimeEnvironment:
+    """Owner-declared mapping from runner environment names to resource identities."""
+
+    tools: Mapping[str, str] = field(default_factory=dict)
+    files: Mapping[str, str] = field(default_factory=dict)
+    directories: Mapping[str, str] = field(default_factory=dict)
+    values: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        names: set[str] = set()
+        for label in ("tools", "files", "directories", "values"):
+            raw = getattr(self, label)
+            if not isinstance(raw, Mapping):
+                raise ContractError(f"runtime environment {label} must be a mapping")
+            checked: dict[str, str] = {}
+            for name, identity in raw.items():
+                if not isinstance(name, str) or _ENVIRONMENT.fullmatch(name) is None:
+                    raise ContractError(
+                        f"invalid runtime environment name in {label}: {name!r}"
+                    )
+                if name in names:
+                    raise ContractError(
+                        f"runtime environment name is bound more than once: {name}"
+                    )
+                names.add(name)
+                checked[name] = resource_identity(identity)
+            object.__setattr__(self, label, MappingProxyType(checked))
+
+    @property
+    def record(self) -> dict[str, dict[str, str]]:
+        return {
+            label: dict(sorted(getattr(self, label).items()))
+            for label in ("tools", "files", "directories", "values")
+        }
+
+
+@dataclass(frozen=True)
 class Step:
     """Fully planned adapter request and its exact input closure."""
 
@@ -620,6 +658,7 @@ class Step:
     sources: tuple[str, ...] = ()
     evidence: Evidence | None = None
     resources: tuple[str, ...] = ()
+    runtime: RuntimeEnvironment = field(default_factory=RuntimeEnvironment)
     _source_snapshots: tuple[Source, ...] = field(
         default=(), repr=False, compare=False
     )
@@ -653,6 +692,8 @@ class Step:
         )
         if len(resources) != len(set(resources)):
             raise ContractError("prepared step resources contain duplicates")
+        if not isinstance(self.runtime, RuntimeEnvironment):
+            raise ContractError("prepared step runtime must be a RuntimeEnvironment")
         if not isinstance(self._source_snapshots, tuple) or any(
             not isinstance(source, Source) for source in self._source_snapshots
         ):
@@ -688,6 +729,7 @@ class Step:
             "request": json_value(self.request),
             "sources": list(self.sources),
             "resources": list(self.resources),
+            "runtime": self.runtime.record,
             "evidence": None if self.evidence is None else self.evidence.record,
         }
 
@@ -774,7 +816,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 7,
+            "schema": 8,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
@@ -798,6 +840,7 @@ class Resources:
     files: Mapping[str, str] = field(default_factory=dict)
     directories: Mapping[str, str] = field(default_factory=dict)
     values: Mapping[str, str] = field(default_factory=dict)
+    inherit_environment: tuple[str, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -834,6 +877,17 @@ class Resources:
                 identities.add(identity)
                 checked[identity] = value
             object.__setattr__(self, label, MappingProxyType(checked))
+        if (
+            not isinstance(self.inherit_environment, tuple)
+            or any(
+                not isinstance(name, str) or _ENVIRONMENT.fullmatch(name) is None
+                for name in self.inherit_environment
+            )
+            or len(self.inherit_environment) != len(set(self.inherit_environment))
+        ):
+            raise ContractError(
+                "inherited environment must be a unique tuple of environment names"
+            )
         if not isinstance(self.environment, Mapping) or any(
             not isinstance(key, str)
             or not key

@@ -13,7 +13,7 @@ from sigilicon.backends.synopsys import (
     StructuralLinkBackend,
     VcsBackend,
 )
-from sigilicon.execution import Step, StepContext, StepResult
+from sigilicon.execution import RuntimeEnvironment, Step, StepContext, StepResult
 from sigilicon.execution.model import Resources
 from sigilicon.execution.model import resource_materialization_key
 
@@ -90,6 +90,9 @@ printf 'managed vcs\n'
             "timeout_seconds": 10,
         },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
+        runtime=RuntimeEnvironment(
+            tools={"SIGILICON_SYNOPSYS_VCS": "synopsys.vcs"}
+        ),
     )
     resources = Resources(
         tools={"synopsys.vcs": str(executable)},
@@ -328,6 +331,13 @@ test "$0" = "{executable}"
             "impl/syn/constraints.sdc",
             "rtl/design.sv",
         ),
+        runtime=RuntimeEnvironment(
+            tools={"SIGILICON_SYNOPSYS_DC_SHELL": "synopsys.dc-shell"},
+            files={
+                f"SIGILICON_STDCELL_{flavor}_DB": f"stdcell.{flavor.lower()}.db.tt"
+                for flavor in ("RVT", "HVT", "LVT")
+            },
+        ),
     )
     context = _context(
         tmp_path,
@@ -427,6 +437,16 @@ raise SystemExit(1)
             "tools/evaluate.py",
             "configs/qualification.toml",
         ),
+        runtime=RuntimeEnvironment(
+            tools={"SIGILICON_SYNOPSYS_HSPICE": "synopsys.hspice"},
+            files={
+                "SIGILICON_HSPICE_NOMINAL_MODEL": "hspice.model.nominal",
+                "SIGILICON_HSPICE_MISMATCH_MODEL": "hspice.model.mismatch",
+                "SIGILICON_STDCELL_RVT_SPICE": "stdcell.rvt.spice",
+                "SIGILICON_STDCELL_HVT_SPICE": "stdcell.hvt.spice",
+                "SIGILICON_STDCELL_LVT_SPICE": "stdcell.lvt.spice",
+            },
+        ),
     )
     context = _context(
         tmp_path,
@@ -499,6 +519,19 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
             "timeout_seconds": 10,
         },
         sources=("impl/pnr/run_fc.sh",),
+        runtime=RuntimeEnvironment(
+            tools={"SIGILICON_SYNOPSYS_LM_SHELL": "synopsys.lm-shell"},
+            files={
+                "SIGILICON_FC_TECH_FILE": "synopsys.fc.tech-file",
+                "SIGILICON_FC_TECH_LEF": "synopsys.fc.tech-lef",
+                "SIGILICON_STDCELL_RVT_LEF": "stdcell.rvt.lef",
+                "SIGILICON_STDCELL_HVT_LEF": "stdcell.hvt.lef",
+                "SIGILICON_STDCELL_LVT_LEF": "stdcell.lvt.lef",
+                "SIGILICON_STDCELL_RVT_DB": "stdcell.rvt.db.tt",
+                "SIGILICON_STDCELL_HVT_DB": "stdcell.hvt.db.tt",
+                "SIGILICON_STDCELL_LVT_DB": "stdcell.lvt.db.tt",
+            },
+        ),
     )
     context = _context(
         tmp_path,

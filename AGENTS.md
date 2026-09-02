@@ -20,7 +20,12 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   不提供 alias、兼容 schema、双写或弃用期。
 - `sigilicon.toml` 的 `[runtime]` 是调用项目拥有的 deployment contract。tool executable、
   PDK asset、bridge endpoint 和 capability 采用显式 binding，允许绝对路径；Sigilicon 不从
-  ambient `PATH` 或全局 site default 推断这些绑定。adapter 只继承自己声明需要的动态环境。
+  ambient `PATH` 或全局 site default 推断这些绑定。owner operation catalog 用 runtime
+  profile 把 runner 环境名映射到逻辑 resource identity；项目 `[runtime]` 只显式继承列出的
+  动态环境名，adapter 不得内置某个 IP 的 library flavor、corner、PDK 文件组织或环境前缀。
+- platform 的 simulation、OA、layout/verification capability 相互正交；loader 只要求至少
+  一个 capability，具体 workflow 在自己的 seam 要求所消费的 capability，不得让纯数字
+  platform 为满足模拟默认值而声明虚假 contract。
 - 公共 import namespace 是 `sigilicon`，实现采用 `src/sigilicon` layout。
 - 需要 owner、catalog 或 artifact inventory 的 domain loader 与 workflow 接收同一个显式
   `Project`；只需路径和直接工具操作的窄接口接收显式 `ProjectContext`。最外层 composition

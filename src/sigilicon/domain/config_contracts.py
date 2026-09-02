@@ -297,7 +297,7 @@ def inspect_project_configuration_sources(
             contract_kind="owner-operations",
             path_scope="owner",
             owner=owner.name,
-            schema=2,
+            schema=_contract_schema("owner-operations"),
         )
     sources.verify(
         "owner operation catalog snapshot",

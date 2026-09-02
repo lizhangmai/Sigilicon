@@ -12,16 +12,21 @@ from sigilicon.execution.model import (
     ContractError,
     Evidence,
     ExecutionPlan,
+    RuntimeEnvironment,
     Source,
     Step,
+    backend_identity,
 )
 from sigilicon.paths import validate_artifact_component
 
 
 _HEADER = frozenset({"schema", "contract_kind", "path_scope", "owner"})
-_DIRECT_FIELDS = frozenset({"uses", "filesets", "config", "evidence"})
+_DIRECT_FIELDS = frozenset({"uses", "filesets", "runtime", "config", "evidence"})
 _GRAPH_FIELDS = frozenset({"steps"})
-_STEP_FIELDS = frozenset({"id", "uses", "needs", "filesets", "config", "evidence"})
+_STEP_FIELDS = frozenset(
+    {"id", "uses", "needs", "filesets", "runtime", "config", "evidence"}
+)
+_RUNTIME_FIELDS = frozenset({"tools", "files", "directories", "values"})
 
 
 def _table(value: object, field: str) -> Mapping[str, Any]:
@@ -57,6 +62,46 @@ def _strings(value: object, field: str, *, required: bool = False) -> tuple[str,
 
 def _config(value: object, field: str) -> dict[str, Any]:
     return dict(_table({} if value is None else value, field))
+
+
+def _runtime_profiles(value: object) -> dict[str, RuntimeEnvironment]:
+    profiles = _table({} if value is None else value, "runtime")
+    result: dict[str, RuntimeEnvironment] = {}
+    for raw_name, raw_profile in profiles.items():
+        name = _name(raw_name, "runtime profile")
+        profile = _table(raw_profile, f"runtime.{name}")
+        unknown = set(profile) - _RUNTIME_FIELDS
+        if unknown:
+            raise ContractError(
+                f"runtime.{name} contains unknown fields: {sorted(unknown)}"
+            )
+        tables: dict[str, dict[str, str]] = {}
+        for kind in _RUNTIME_FIELDS:
+            raw_bindings = _table(profile.get(kind, {}), f"runtime.{name}.{kind}")
+            tables[kind] = dict(raw_bindings)
+        result[name] = RuntimeEnvironment(**tables)
+    return result
+
+
+def _runtime(
+    value: object,
+    *,
+    uses: str,
+    profiles: Mapping[str, RuntimeEnvironment],
+    defaults: Mapping[str, str],
+    field: str,
+) -> RuntimeEnvironment:
+    selected = defaults.get(uses) if value is None else value
+    if selected is None:
+        return RuntimeEnvironment()
+    name = _name(selected, field)
+    try:
+        return profiles[name]
+    except KeyError as exc:
+        raise ContractError(
+            f"{field} references unknown runtime profile {name!r}; "
+            f"available: {sorted(profiles)}"
+        ) from exc
 
 
 def _evidence(value: object, field: str) -> Evidence | None:
@@ -130,6 +175,8 @@ def _step(
     component_filesets: Mapping[str, tuple[PurePosixPath, ...]],
     owner_root: Path,
     project_root: Path,
+    runtime_profiles: Mapping[str, RuntimeEnvironment],
+    runtime_defaults: Mapping[str, str],
     default_id: str | None = None,
 ) -> tuple[Step, tuple[Source, ...]]:
     unknown = set(raw) - _STEP_FIELDS
@@ -149,14 +196,20 @@ def _step(
     )
     return (
         Step(
-            step_id,
-            uses,
-            _config(raw.get("config"), f"{field}.config"),
-            _strings(raw.get("needs"), f"{field}.needs"),
-            tuple(source.path for source in sources),
-            _evidence(raw.get("evidence"), f"{field}.evidence"),
-            (),
-            sources,
+            id=step_id,
+            uses=uses,
+            request=_config(raw.get("config"), f"{field}.config"),
+            needs=_strings(raw.get("needs"), f"{field}.needs"),
+            sources=tuple(source.path for source in sources),
+            evidence=_evidence(raw.get("evidence"), f"{field}.evidence"),
+            runtime=_runtime(
+                raw.get("runtime"),
+                uses=uses,
+                profiles=runtime_profiles,
+                defaults=runtime_defaults,
+                field=f"{field}.runtime",
+            ),
+            _source_snapshots=sources,
         ),
         sources,
     )
@@ -188,19 +241,35 @@ def compile_operation(
     except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ContractError(f"cannot read operation catalog {path}: {exc}") from exc
     expected_header = {
-        "schema": 2,
+        "schema": 3,
         "contract_kind": "owner-operations",
         "path_scope": "owner",
         "owner": owner,
     }
     if any(raw.get(name) != value for name, value in expected_header.items()):
         raise ContractError(
-            f"{path}: expected schema=2, contract_kind='owner-operations', "
+            f"{path}: expected schema=3, contract_kind='owner-operations', "
             f"path_scope='owner', owner={owner!r}"
         )
-    unknown = set(raw) - _HEADER - {"operations"}
+    unknown = set(raw) - _HEADER - {"runtime", "runtime_defaults", "operations"}
     if unknown:
         raise ContractError(f"{path}: unknown owner operation fields: {sorted(unknown)}")
+    runtime_profiles = _runtime_profiles(raw.get("runtime"))
+    runtime_defaults_raw = _table(
+        raw.get("runtime_defaults", {}), "runtime_defaults"
+    )
+    runtime_defaults: dict[str, str] = {}
+    for adapter, profile in runtime_defaults_raw.items():
+        identity = backend_identity(adapter)
+        profile_name = _name(
+            profile, f"runtime_defaults.{adapter}"
+        )
+        if profile_name not in runtime_profiles:
+            raise ContractError(
+                f"runtime_defaults.{identity} references unknown profile "
+                f"{profile_name!r}"
+            )
+        runtime_defaults[identity] = profile_name
     definitions = _table(raw.get("operations"), "operations")
     identities: dict[str, tuple[str, str | None, Mapping[str, Any]]] = {}
     for raw_identity, value in definitions.items():
@@ -245,6 +314,7 @@ def compile_operation(
                 {
                     "uses": uses,
                     "filesets": definition.get("filesets"),
+                    "runtime": definition.get("runtime"),
                     "config": definition.get("config"),
                     "evidence": definition.get("evidence"),
                 },
@@ -252,6 +322,8 @@ def compile_operation(
                 component_filesets=component_filesets,
                 owner_root=root,
                 project_root=repository_root,
+                runtime_profiles=runtime_profiles,
+                runtime_defaults=runtime_defaults,
                 default_id="run",
             )
         )
@@ -271,6 +343,8 @@ def compile_operation(
                 component_filesets=component_filesets,
                 owner_root=root,
                 project_root=repository_root,
+                runtime_profiles=runtime_profiles,
+                runtime_defaults=runtime_defaults,
             )
             for index, value in enumerate(steps_raw)
         )

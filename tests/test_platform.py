@@ -15,6 +15,7 @@ from sigilicon.domain.platform import (
     PlatformContract,
     load_platform,
     load_platform_catalog,
+    load_platform_contract,
     load_platform_contract_inventory,
     load_platform_inventory,
     resolve_platform,
@@ -48,6 +49,36 @@ def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> 
         platform.source_documents[platform.simulation.path][
             "default_model_set"
         ] = "other"
+
+
+@pytest.mark.parametrize(
+    ("omitted", "present"),
+    (("oa", "simulation"), ("simulation", "oa")),
+)
+def test_platform_capabilities_are_independently_optional(
+    tmp_path: Path,
+    omitted: str,
+    present: str,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            f'{omitted} = "{omitted}.toml"\n', ""
+        ),
+        encoding="utf-8",
+    )
+
+    platform = load_platform(
+        Project.open(tmp_path), "testpdk", resources=Resources()
+    )
+    contract = load_platform_contract(Project.open(tmp_path), "testpdk")
+
+    assert getattr(platform, omitted) is None
+    assert getattr(contract, omitted) is None
+    assert getattr(platform, present) is not None
+    assert getattr(contract, present) is not None
 
 
 def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None:

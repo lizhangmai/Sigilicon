@@ -30,7 +30,14 @@ from sigilicon.execution.model import ContractError, Resources, resource_identit
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _RUNTIME_FIELDS = frozenset(
-    {"capabilities", "tools", "files", "directories", "values"}
+    {
+        "capabilities",
+        "tools",
+        "files",
+        "directories",
+        "values",
+        "inherit_environment",
+    }
 )
 
 if TYPE_CHECKING:
@@ -56,6 +63,17 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
         raise ValueError(f"{contract}: runtime.capabilities must be a text array")
     if len(capabilities) != len(set(capabilities)):
         raise ValueError(f"{contract}: runtime.capabilities must be unique")
+    inherit_environment = runtime.get("inherit_environment", [])
+    if not isinstance(inherit_environment, list) or any(
+        not isinstance(item, str) for item in inherit_environment
+    ):
+        raise ValueError(
+            f"{contract}: runtime.inherit_environment must be a text array"
+        )
+    if len(inherit_environment) != len(set(inherit_environment)):
+        raise ValueError(
+            f"{contract}: runtime.inherit_environment must be unique"
+        )
 
     def table(name: str) -> dict[str, str]:
         value = runtime.get(name, {})
@@ -83,6 +101,7 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
             files=table("files"),
             directories=table("directories"),
             values=table("values"),
+            inherit_environment=tuple(inherit_environment),
         )
     except ContractError as exc:
         raise ValueError(f"{contract}: invalid runtime configuration: {exc}") from exc
@@ -310,9 +329,9 @@ class Project:
         """Bind project runtime configuration to a sanitized host snapshot."""
 
         environment = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("SIGILICON_")
+            key: os.environ[key]
+            for key in self._runtime.inherit_environment
+            if key in os.environ
         }
         return replace(self._runtime, environment=environment)
 

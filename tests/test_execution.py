@@ -156,6 +156,7 @@ artifact_root = "artifacts"
 
 [runtime]
 capabilities = ["offline"]
+inherit_environment = ["LM_LICENSE_FILE"]
 
 [runtime.tools]
 "test.tool" = "/bin/true"
@@ -205,10 +206,16 @@ value = ["ip/example/configs/value.txt"]
     (owner / "configs/value.txt").write_text("hello\n", encoding="utf-8")
     operations = owner / "configs/operations.toml"
     operations.write_text(
-        """schema = 2
+        """schema = 3
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
+
+[runtime_defaults]
+"fake.copy" = "copy"
+
+[runtime.copy]
+values = { SELECTED_VALUE = "test.value" }
 
 [operations.check]
 uses = "fake.copy"
@@ -310,7 +317,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 7
+    assert json.loads(json.dumps(plan.record))["schema"] == 8
     assert "resources_identity" not in plan.record
     assert plan.record["resources"] == []
     assert not hasattr(plan, "_adapters")
@@ -352,6 +359,7 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     monkeypatch.setenv("SIGILICON_TEST_TOOL", "/ambient/tool")
     monkeypatch.setenv("SIGILICON_TEST_VALUE", "ambient")
     monkeypatch.setenv("LM_LICENSE_FILE", "host-license")
+    monkeypatch.setenv("UNDECLARED_SITE_VALUE", "must-not-leak")
 
     runtime = Project.open(tmp_path)._execution_resources()
 
@@ -360,6 +368,11 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     assert "SIGILICON_TEST_TOOL" not in runtime.environment
     assert "SIGILICON_TEST_VALUE" not in runtime.environment
     assert runtime.environment["LM_LICENSE_FILE"] == "host-license"
+    assert "UNDECLARED_SITE_VALUE" not in runtime.environment
+    assert runtime.inherit_environment == ("LM_LICENSE_FILE",)
+
+    plan = Project.open(tmp_path).plan("example:check")
+    assert plan.steps[0].runtime.values == {"SELECTED_VALUE": "test.value"}
 
 
 def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> None:

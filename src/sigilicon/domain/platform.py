@@ -32,6 +32,17 @@ class PlatformResources(Protocol):
 
 
 @dataclass(frozen=True)
+class _SnapshotPlatformResources:
+    identity: str
+    path: Path
+
+    def require_directory(self, name: str) -> Path:
+        if name != self.identity:
+            raise ValueError(f"platform snapshot has no resource {name!r}")
+        return self.path
+
+
+@dataclass(frozen=True)
 class SimulationModelSet:
     """One caller-selectable simulator model include set."""
 
@@ -189,8 +200,8 @@ class PdkConfig:
     path: Path
     owner: str
     name: str
-    simulation: SimulationPlatformConfig
-    oa: OaPlatformConfig
+    simulation: SimulationPlatformConfig | None
+    oa: OaPlatformConfig | None
     layout: LayoutPdkConfig | None
     source_paths: tuple[Path, ...]
     catalog_document: Mapping[str, Any] = field(
@@ -225,8 +236,8 @@ class PlatformContract:
     path: Path
     owner: str
     name: str
-    simulation: SimulationPlatformContract
-    oa: OaPlatformConfig
+    simulation: SimulationPlatformContract | None
+    oa: OaPlatformConfig | None
     layout: LayoutPlatformContract | None
     asset_root_resource: str | None
     source_paths: tuple[Path, ...]
@@ -246,11 +257,13 @@ class PlatformContract:
 
     @property
     def asset_paths(self) -> tuple[PurePosixPath, ...]:
-        assets = [
-            path
-            for model_set in self.simulation.model_sets.values()
-            for path in model_set.files
-        ]
+        assets = []
+        if self.simulation is not None:
+            assets.extend(
+                path
+                for model_set in self.simulation.model_sets.values()
+                for path in model_set.files
+            )
         if self.layout is not None:
             assets.extend(
                 path
@@ -486,10 +499,11 @@ def _validate_immutable_platform_snapshot(snapshot: PdkConfig) -> None:
         for document in snapshot.source_documents.values()
     ):
         raise ValueError("platform snapshot source document identity drift")
-    typed_mappings: list[Mapping[str, object]] = [
-        snapshot.simulation.model_sets,
-        snapshot.oa.primitive_subcircuits,
-    ]
+    typed_mappings: list[Mapping[str, object]] = []
+    if snapshot.simulation is not None:
+        typed_mappings.append(snapshot.simulation.model_sets)
+    if snapshot.oa is not None:
+        typed_mappings.append(snapshot.oa.primitive_subcircuits)
     if (
         snapshot.layout is not None
         and snapshot.layout.oa_materialization is not None
@@ -549,201 +563,23 @@ def _validate_platform_snapshot(
             f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
         )
     _validate_immutable_platform_snapshot(snapshot)
-    root = context.project_root
-    catalog_path = context.catalog("platform")
+    selected_resources = resources
     if (
-        not isinstance(snapshot.catalog_document, Mapping)
-        or not snapshot.catalog_document
+        selected_resources is None
+        and snapshot.asset_root_resource is not None
+        and snapshot.asset_root is not None
     ):
-        raise ValueError("platform snapshot omits its platform catalog")
-    catalog_root, selected_catalog_path, _catalog_owner, platforms = (
-        _platform_catalog_document(
-            context,
-            snapshot.catalog_document,
+        selected_resources = _SnapshotPlatformResources(
+            snapshot.asset_root_resource,
+            snapshot.asset_root,
         )
-    )
     try:
-        manifest_value = platforms[key]
-    except KeyError as exc:
-        raise ValueError(f"platform catalog has no {key!r} entry") from exc
-    selected_manifest = _safe_relative(
-        selected_catalog_path.parent,
-        manifest_value,
-        f"platforms.{key}",
-        root=catalog_root,
-    )
-    if (
-        selected_catalog_path != catalog_path
-        or selected_manifest != snapshot.path
-        or not snapshot.source_paths
-        or snapshot.source_paths[0] != catalog_path
-    ):
-        raise ValueError("platform snapshot belongs to a different project catalog")
-    if snapshot.path not in snapshot.source_paths:
-        raise ValueError("platform snapshot manifest is absent from its source identity")
-    if any(
-        not isinstance(path, Path)
-        or path != path.resolve()
-        or not path.is_relative_to(root)
-        or not path.is_file()
-        for path in snapshot.source_paths
-    ):
-        raise ValueError("platform snapshot source identity drift")
-    document_paths = set(snapshot.source_documents)
-    if not document_paths:
-        raise ValueError("platform snapshot source document identity drift")
-    if document_paths:
-        if document_paths != set(snapshot.source_paths[1:]) or any(
-            path != path.resolve() or not path.is_relative_to(root)
-            for path in document_paths
-        ):
-            raise ValueError("platform snapshot source document identity drift")
-        manifest_document = snapshot.source_documents.get(snapshot.path)
-        if not isinstance(manifest_document, Mapping):
-            raise ValueError("platform snapshot source document drift")
-        require_config_header(
-            manifest_document,
-            snapshot.path,
-            contract_kind="platform-definition",
-            path_scope="platform",
-            owner=snapshot.owner,
-        )
-        _reject_unknown(
-            manifest_document,
-            _HEADER_FIELDS | {"key", "name", "asset_scope", "contracts"},
-            "platform definition",
-        )
-        resolved_asset_root, root_resource = _platform_asset_root(
-            snapshot.path,
-            key,
-            manifest_document,
-            resources=resources,
-        )
-        asset_root = (
-            snapshot.asset_root
-            if resources is None and root_resource is not None
-            else resolved_asset_root
-        )
-        if (
-            manifest_document.get("key") != key
-            or _text(manifest_document.get("name", key), "platform.name")
-            != snapshot.name
-            or snapshot.asset_root != asset_root
-            or snapshot.asset_root_resource != root_resource
-        ):
-            raise ValueError("platform identity drift")
-        contract_asset_root = asset_root or snapshot.path.parent
-        contracts = manifest_document.get("contracts")
-        if not isinstance(contracts, Mapping):
-            raise ValueError("platform snapshot source document drift")
-        allowed_contracts = {"simulation", "oa", "layout", "verification"}
-        if set(contracts) - allowed_contracts or not {
-            "simulation",
-            "oa",
-        }.issubset(contracts):
-            raise ValueError("platform snapshot source document drift")
-        if ("layout" in contracts) != ("verification" in contracts):
-            raise ValueError("platform snapshot source document drift")
-        simulation_path = _safe_relative(
-            snapshot.path.parent,
-            contracts.get("simulation"),
-            "platform.contracts.simulation",
-            root=root,
-        )
-        oa_path = _safe_relative(
-            snapshot.path.parent,
-            contracts.get("oa"),
-            "platform.contracts.oa",
-            root=root,
-        )
-        simulation_document = snapshot.source_documents.get(simulation_path)
-        oa_document = snapshot.source_documents.get(oa_path)
-        if not isinstance(simulation_document, Mapping) or not isinstance(
-            oa_document,
-            Mapping,
-        ):
-            raise ValueError("platform identity drift")
-        require_config_header(
-            simulation_document,
-            simulation_path,
-            contract_kind="platform-simulation",
-            path_scope="platform",
-            owner=snapshot.owner,
-        )
-        require_config_header(
-            oa_document,
-            oa_path,
-            contract_kind="platform-oa",
-            path_scope="platform",
-            owner=snapshot.owner,
-        )
-        parsed_simulation = _load_simulation(
-            simulation_path,
-            simulation_document,
-            asset_root=contract_asset_root,
-        )
-        parsed_oa = _load_oa(oa_path, oa_document)
-        if parsed_simulation != snapshot.simulation or parsed_oa != snapshot.oa:
-            raise ValueError("platform identity drift")
-        has_layout_contracts = "layout" in contracts
-        if (snapshot.layout is None) != (not has_layout_contracts):
-            raise ValueError("platform identity drift")
-        contract_paths = [simulation_path, oa_path]
-        if snapshot.layout is not None:
-            layout_path = _safe_relative(
-                snapshot.path.parent,
-                contracts.get("layout"),
-                "platform.contracts.layout",
-                root=root,
-            )
-            verification_path = _safe_relative(
-                snapshot.path.parent,
-                contracts.get("verification"),
-                "platform.contracts.verification",
-                root=root,
-            )
-            layout_document = snapshot.source_documents.get(layout_path)
-            verification_document = snapshot.source_documents.get(verification_path)
-            if (
-                snapshot.layout.layout_path != layout_path
-                or snapshot.layout.verification_path != verification_path
-                or not isinstance(layout_document, Mapping)
-                or not isinstance(verification_document, Mapping)
-            ):
-                raise ValueError("platform identity drift")
-            require_config_header(
-                layout_document,
-                layout_path,
-                contract_kind="platform-layout",
-                path_scope="platform",
-                owner=snapshot.owner,
-            )
-            require_config_header(
-                verification_document,
-                verification_path,
-                contract_kind="platform-verification",
-                path_scope="platform",
-                owner=snapshot.owner,
-            )
-            parsed_layout = _load_layout(
-                layout_path,
-                layout_document,
-                verification_path,
-                verification_document,
-                asset_root=contract_asset_root,
-                require_assets=asset_root is not None,
-            )
-            if parsed_layout != snapshot.layout:
-                raise ValueError("platform identity drift")
-            contract_paths.extend((layout_path, verification_path))
-        if snapshot.source_paths != (
-            catalog_path,
-            snapshot.path,
-            *contract_paths,
-        ):
-            raise ValueError("platform snapshot source identity drift")
+        current = _load_platform(context, key, resources=selected_resources)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("platform snapshot source identity drift") from exc
+    if current != snapshot:
+        raise ValueError("platform identity drift: source or runtime changed")
     return snapshot
-
 
 def resolve_platform_snapshot(
     context: Project,
@@ -1343,30 +1179,39 @@ def _load_platform(
     contract_asset_root = asset_root or manifest.parent
     contracts = _table(raw.get("contracts"), "platform.contracts")
     allowed = {"simulation", "oa", "layout", "verification"}
-    if set(contracts) - allowed or not {"simulation", "oa"}.issubset(contracts):
+    if set(contracts) - allowed or not contracts:
         raise ValueError(
-            "platform contracts must declare simulation and oa, with optional "
-            "layout and verification"
+            "platform contracts must declare at least one supported capability"
         )
     if ("layout" in contracts) != ("verification" in contracts):
         raise ValueError("platform layout and verification contracts must be paired")
     simulation_contract = _contract(
-        manifest, contracts, "simulation", root=root, owner=header.owner
-    )
-    oa_contract = _contract(manifest, contracts, "oa", root=root, owner=header.owner)
-    assert simulation_contract is not None and oa_contract is not None
-    simulation_path, simulation_raw = simulation_contract
-    oa_path, oa_raw = oa_contract
-    simulation = _load_simulation(
-        simulation_path, simulation_raw, asset_root=contract_asset_root
-    )
-    oa = _load_oa(oa_path, oa_raw)
-    source_paths: list[Path] = [
-        catalog_path,
         manifest,
-        simulation_path,
-        oa_path,
-    ]
+        contracts,
+        "simulation",
+        root=root,
+        owner=header.owner,
+        required=False,
+    )
+    oa_contract = _contract(
+        manifest, contracts, "oa", root=root, owner=header.owner, required=False
+    )
+    simulation = (
+        None
+        if simulation_contract is None
+        else _load_simulation(
+            simulation_contract[0],
+            simulation_contract[1],
+            asset_root=contract_asset_root,
+        )
+    )
+    oa = None if oa_contract is None else _load_oa(*oa_contract)
+    source_paths: list[Path] = [catalog_path, manifest]
+    source_documents = {manifest: raw}
+    for selected in (simulation_contract, oa_contract):
+        if selected is not None:
+            source_paths.append(selected[0])
+            source_documents[selected[0]] = selected[1]
     layout: LayoutPdkConfig | None = None
     if "layout" in contracts:
         layout_contract = _contract(
@@ -1388,11 +1233,6 @@ def _load_platform(
         )
         source_paths.extend((layout_path, verification_path))
     sources = tuple(source_paths)
-    source_documents = {
-        manifest: raw,
-        simulation_path: simulation_raw,
-        oa_path: oa_raw,
-    }
     if layout is not None:
         source_documents[layout.layout_path] = layout_raw
         source_documents[layout.verification_path] = verification_raw
@@ -1458,19 +1298,27 @@ def load_platform_contract(
             raise ValueError("platform asset escaped its logical root") from exc
         return PurePosixPath(relative.as_posix())
 
-    model_sets = {
-        name: SimulationModelContract(
-            name=model_set.name,
-            file=logical(model_set.file),
-            sections=model_set.sections,
-            support_files=tuple(logical(path) for path in model_set.support_files),
+    runtime_simulation = platform.simulation
+    simulation = (
+        None
+        if runtime_simulation is None
+        else SimulationPlatformContract(
+            path=runtime_simulation.path,
+            default_model_set=runtime_simulation.default_model_set,
+            model_sets=MappingProxyType(
+                {
+                    name: SimulationModelContract(
+                        name=model_set.name,
+                        file=logical(model_set.file),
+                        sections=model_set.sections,
+                        support_files=tuple(
+                            logical(path) for path in model_set.support_files
+                        ),
+                    )
+                    for name, model_set in runtime_simulation.model_sets.items()
+                }
+            ),
         )
-        for name, model_set in platform.simulation.model_sets.items()
-    }
-    simulation = SimulationPlatformContract(
-        path=platform.simulation.path,
-        default_model_set=platform.simulation.default_model_set,
-        model_sets=MappingProxyType(model_sets),
     )
     runtime_layout = platform.layout
     layout = (

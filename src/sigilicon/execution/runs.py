@@ -257,7 +257,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 7
+            plan.get("schema") != 8
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -334,13 +334,15 @@ class RunStore:
             "schema",
             "contract_kind",
             "capabilities",
+            "inherit_environment",
             "configuration",
             "resources",
-        } or value.get("schema") != 2 or value.get("contract_kind") != (
+        } or value.get("schema") != 3 or value.get("contract_kind") != (
             "runtime-bindings"
         ):
             raise RunStoreError("persisted runtime bindings have an invalid shape")
         capabilities = value.get("capabilities")
+        inherit_environment = value.get("inherit_environment")
         configuration = value.get("configuration")
         resources = value.get("resources")
         if not isinstance(capabilities, list) or any(
@@ -349,6 +351,9 @@ class RunStore:
             raise RunStoreError("persisted runtime bindings are not canonical")
         if (
             capabilities != sorted(set(capabilities))
+            or not isinstance(inherit_environment, list)
+            or any(not isinstance(name, str) for name in inherit_environment)
+            or inherit_environment != list(dict.fromkeys(inherit_environment))
             or not isinstance(resources, list)
             or any(not isinstance(resource, Mapping) for resource in resources)
         ):

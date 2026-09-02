@@ -55,7 +55,7 @@ root = "ip/example"
     _write(
         root,
         "ip/example/configs/operations.toml",
-        '''schema = 2
+        '''schema = 3
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
