@@ -7,15 +7,17 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import shutil
 import stat
 from typing import Any, Callable, Mapping
 
 from sigilicon.external_tools import (
+    CADENCE_VIRTUOSO_ENV,
     ProcessGroupCleanupUncertainError,
     cadence_subprocess_env,
+    configured_executable,
     owned_atomic_output_file,
     owned_directory,
+    owned_executable,
     owned_input_file,
     owned_output_file,
     owned_sealed_input,
@@ -200,22 +202,15 @@ def render_isolated_maestro_run_skill(
   exit())
 '''
 
-def _virtuoso_executable() -> Path:
-    candidates: list[Path] = []
-    discovered = shutil.which("virtuoso")
-    if discovered:
-        candidates.append(Path(discovered))
-    cds_home = os.environ.get("CDSHOME")
-    if cds_home:
-        candidates.append(Path(cds_home) / "bin" / "virtuoso")
-    for candidate in candidates:
-        try:
-            metadata = candidate.stat()
-        except OSError:
-            continue
-        if stat.S_ISREG(metadata.st_mode) and os.access(candidate, os.X_OK):
-            return candidate
-    raise FileNotFoundError("virtuoso was not found in PATH or CDSHOME/bin")
+
+def _virtuoso_executable(resources: Any) -> Path:
+    executable = configured_executable(resources.environment, CADENCE_VIRTUOSO_ENV)
+    if executable is None:
+        raise FileNotFoundError(
+            f"{CADENCE_VIRTUOSO_ENV} must name an absolute executable "
+            "supplied by the runtime"
+        )
+    return executable
 
 
 def _completion_state(log_text: str, nonce: str) -> tuple[list[str], int, bool]:
@@ -248,6 +243,7 @@ def run_isolated_maestro(
     nonce: str,
     timeout: int,
     operation: Any,
+    resources: Any,
     result_completion_probe: Callable[[str], bool],
     rdb_export: Path,
 ) -> IsolatedMaestroRunResult:
@@ -281,9 +277,10 @@ def run_isolated_maestro(
 
     operation.require_root_identity()
     cds_lib = operation.root / "cds.lib"
-    executable = _virtuoso_executable()
+    executable = _virtuoso_executable(resources)
     simulation_root = absolute_work / "simulation"
     with (
+        owned_executable(executable) as owned_launcher,
         owned_input_file(cds_lib) as owned_cds_lib,
         owned_directory(operation.root) as owned_workspace,
         owned_directory(absolute_work) as owned_work,
@@ -326,12 +323,12 @@ def run_isolated_maestro(
                     name="maestro-worker.il",
                 ) as owned_script,
             ):
-                environment = cadence_subprocess_env()
+                environment = cadence_subprocess_env(resources.environment)
                 xcelium_home = environment.get("XCELIUM_HOME")
                 if xcelium_home:
                     environment.setdefault("IUS_HOME", xcelium_home)
                 command = (
-                    str(executable),
+                    *owned_launcher.command,
                     "-nograph",
                     "-nocdsinit",
                     "-cdslib",
@@ -344,6 +341,7 @@ def run_isolated_maestro(
 
                 def validate_spawn() -> None:
                     operation.require_root_identity()
+                    owned_launcher.require_visible()
                     owned_cds_lib.require_visible()
                     owned_worker_cds.require_visible()
                     owned_script.require_sealed()

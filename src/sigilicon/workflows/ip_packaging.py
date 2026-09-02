@@ -689,10 +689,15 @@ def _source_inputs(
         resolved_oa_source=resolved_oa_source,
     )
     paths.update(library.source_documents)
-    from sigilicon.domain.platform import load_platform, resolve_platform
+    from sigilicon.domain.platform import load_platform, resolve_platform_snapshot
+    from sigilicon.execution.model import Resources
 
     if platform_inventory is None:
-        release_platform = load_platform(library.project, library.pdk)
+        release_platform = load_platform(
+            library.project,
+            library.pdk,
+            resources=Resources(),
+        )
     else:
         try:
             platform_snapshot = platform_inventory[library.pdk]
@@ -700,7 +705,7 @@ def _source_inputs(
             raise ValueError(
                 f"platform inventory has no {library.pdk!r} entry"
             ) from exc
-        release_platform = resolve_platform(
+        release_platform = resolve_platform_snapshot(
             library.project,
             library.pdk,
             snapshot=platform_snapshot,

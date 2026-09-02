@@ -158,7 +158,7 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
     xrun.chmod(0o755)
 
     def capture(command, *, cwd, before_spawn, **kwargs):
-        assert command[0] == str(xrun)
+        assert str(xrun) in command
         assert str(cwd).startswith("/proc/") and "/fd/" in str(cwd)
         assert len(kwargs["pass_fds"]) == 2
         before_spawn()

@@ -26,6 +26,7 @@ from sigilicon.domain.physical_verification import (
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
+    owned_executable,
     owned_input_file,
     run_process_group,
 )
@@ -506,7 +507,11 @@ def _run_calibre(
     )
     record.write_text("inputs", (f"run.{check}",), canonical_deck)
 
-    with owned_directory(work) as owned_work, ExitStack() as resources:
+    with (
+        owned_executable(executable) as owned_launcher,
+        owned_directory(work) as owned_work,
+        ExitStack() as resources,
+    ):
         owned_gds = resources.enter_context(owned_input_file(gds))
         owned_source = (
             resources.enter_context(owned_input_file(source_cdl))
@@ -536,7 +541,7 @@ def _run_calibre(
         )
         owned_deck = resources.enter_context(owned_input_file(invocation_path))
         command = (
-            str(executable),
+            *owned_launcher.command,
             f"-{check}",
             "-hier",
             owned_deck.child_named_path,
@@ -553,6 +558,7 @@ def _run_calibre(
         )
 
         def validate_spawn() -> None:
+            owned_launcher.require_visible()
             owned_gds.require_visible()
             owned_deck.require_visible()
             if owned_source is not None:

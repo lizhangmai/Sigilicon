@@ -7,8 +7,14 @@ import pytest
 
 import sigilicon.workflows.hierarchy_import as hierarchy
 from sigilicon.artifacts import RunRecord
+from sigilicon.execution.model import Resources
 from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
+
+
+SPICEIN_RESOURCES = Resources(
+    environment={"SIGILICON_CADENCE_SPICEIN": "/bin/true"}
+)
 
 
 def _artifact(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
@@ -94,6 +100,7 @@ ends leaf
             cell_evidence_role="outputs",
             timeout=30,
             operation=operation,
+            resources=SPICEIN_RESOURCES,
         )
 
     assert parse_calls == 1
@@ -174,6 +181,7 @@ def test_partial_failure_reports_exact_completed_cells_and_stage(
                 work_role="work",
                 timeout=30,
                 operation=operation,
+                resources=SPICEIN_RESOURCES,
             )
 
     error = raised.value
@@ -217,6 +225,7 @@ def test_hierarchy_write_adapters_reject_forged_workspace_operation(
             work_role="work",
             timeout=30,
             operation=SimpleNamespace(),
+            resources=SPICEIN_RESOURCES,
         )
 
     assert writes == []
@@ -277,6 +286,7 @@ def test_interrupt_is_rethrown_with_partial_provenance(
                 work_role="work",
                 timeout=30,
                 operation=operation,
+                resources=SPICEIN_RESOURCES,
             )
 
     assert any("completed cells: ()" in note for note in raised.value.__notes__)

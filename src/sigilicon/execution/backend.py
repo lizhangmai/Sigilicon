@@ -33,7 +33,12 @@ class Backend(Protocol):
 
     name: str
 
-    def prepare(self, project: Any, step: Operation) -> "Preparation": ...
+    def prepare(
+        self,
+        project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> "Preparation": ...
 
     def preflight(
         self,
@@ -100,12 +105,16 @@ def prepare_plan(
     *,
     project: Any,
     backends: BackendRegistry,
+    resources: Resources,
 ) -> ExecutionPlan:
     """Prepare every operation Step into an authorized portable request."""
 
+    if not isinstance(resources, Resources):
+        raise TypeError("prepare_plan resources must be Resources")
+
     captured = {(source.root, source.path): source for source in plan.sources}
     captured_names = {source.path: source.root for source in plan.sources}
-    resources: dict[str, ExternalResource] = {}
+    captured_resources: dict[str, ExternalResource] = {}
     steps = []
     owner_root = project.owner(plan.owner).root.resolve()
     project_root = project.project_root.resolve()
@@ -114,7 +123,7 @@ def prepare_plan(
             backend = backends[step.uses]
         except KeyError as exc:
             raise ContractError(f"unknown trusted backend: {step.uses!r}") from exc
-        preparation = backend.prepare(project, step)
+        preparation = backend.prepare(project, step, resources)
         if not isinstance(preparation, Preparation):
             raise ContractError(
                 f"backend {step.uses!r} produced an invalid preparation"
@@ -206,22 +215,25 @@ def prepare_plan(
                     "external resource changed during preparation: "
                     f"{resource.identity}"
                 )
-            previous = resources.get(resource.identity)
+            previous = captured_resources.get(resource.identity)
             if previous is not None and previous.sha256 != resource.sha256:
                 raise ContractError(
                     "external resource identity collision: "
                     f"{resource.identity}"
                 )
-            resources[resource.identity] = resource
+            captured_resources[resource.identity] = resource
         steps.append(replace(prepared, sources=tuple(source_names)))
     return ExecutionPlan(
-        plan.project_identity,
-        plan.owner,
-        plan.operation,
-        plan.variant,
-        tuple(steps),
-        tuple(captured.values()),
-        tuple(resources[identity] for identity in sorted(resources)),
+        project_identity=plan.project_identity,
+        owner=plan.owner,
+        operation=plan.operation,
+        variant=plan.variant,
+        steps=tuple(steps),
+        sources=tuple(captured.values()),
+        resources_identity=resources.identity,
+        resources=tuple(
+            captured_resources[identity] for identity in sorted(captured_resources)
+        ),
     )
 
 

@@ -72,6 +72,7 @@ def sync_oa_testbench(
     client: Any,
     *,
     model_file: Path,
+    resources: Any,
     overwrite: bool = False,
     timeout: int = 300,
     operation_id: str | None = None,
@@ -91,6 +92,7 @@ def sync_oa_testbench(
             canonical_source,
             client,
             model_file=model_file,
+            resources=resources,
             overwrite=overwrite,
             timeout=timeout,
             _work=work,
@@ -105,6 +107,7 @@ def _sync_oa_testbench_impl(
     client: Any,
     *,
     model_file: Path,
+    resources: Any,
     overwrite: bool = False,
     timeout: int = 300,
     _work: DisposableWork | None = None,
@@ -208,6 +211,7 @@ def _sync_oa_testbench_impl(
                 run_dir=work.directory("work", "spicein"),
                 timeout=timeout,
                 operation=operation,
+                resources=resources,
             )
             _materialize_inline_pwl_tables(
                 spec,
@@ -246,6 +250,7 @@ def _sync_oa_testbench_impl(
                 log_dir=work.directory("logs", "measurement"),
                 work_dir=work.directory("work", "measurement"),
                 operation=operation,
+                resources=resources,
                 timeout=timeout,
             )
         with operation.mutation_scope(

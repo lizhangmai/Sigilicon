@@ -15,6 +15,7 @@ from sigilicon.domain.verification_cell import VerificationCellSpec, load_verifi
 from sigilicon.external_tools import (
     find_xrun,
     owned_directory,
+    owned_executable,
     run_process_group_capture,
     xrun_env,
 )
@@ -259,16 +260,20 @@ def _execute_xcelium(
     )
     work_dir = artifacts.directory("work")
     xcelium_dir = artifacts.directory("work", "xcelium.d")
-    with owned_directory(work_dir) as owned_work, owned_directory(
-        xcelium_dir
-    ) as owned_xcelium:
-        command = command_factory(
+    with (
+        owned_executable(xrun_bin) as owned_xrun,
+        owned_directory(work_dir) as owned_work,
+        owned_directory(xcelium_dir) as owned_xcelium,
+    ):
+        requested_command = command_factory(
             xrun_bin,
             owned_work.child_path,
             owned_xcelium.child_path,
         )
+        command = [*owned_xrun.command, *requested_command[1:]]
 
         def validate_spawn() -> None:
+            owned_xrun.require_visible()
             owned_work.require_visible()
             owned_xcelium.require_visible()
             if before_spawn is not None:

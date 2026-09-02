@@ -31,8 +31,7 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("selector", help="owner:operation[@variant]")
         command.add_argument("--project-root", type=Path)
-        if name in {"preflight", "run"}:
-            command.add_argument("--capability", action="append", default=[])
+        command.add_argument("--capability", action="append", default=[])
         if name == "run":
             command.add_argument("--run-id")
     for name in ("status", "clean"):
@@ -91,11 +90,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
             return 0
-        plan = project.plan(args.selector)
+        resources = _resources(args)
+        plan = project.plan(args.selector, resources)
         if args.command == "plan":
             emit_json(plan.record)
             return 0
-        resources = _resources(args)
         if args.command == "preflight":
             checked = project.preflight(plan, resources)
             emit_json(checked.record)

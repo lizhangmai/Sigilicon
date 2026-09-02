@@ -22,6 +22,7 @@ def sync_oa_text_view(
     view: str,
     kind: str,
     source: Path | TextSourceSnapshot,
+    resources: Any,
     overwrite: bool = False,
     timeout: int = 300,
     operation_id: str | None = None,
@@ -47,6 +48,7 @@ def sync_oa_text_view(
             view=view,
             kind=kind,
             source=snapshot,
+            resources=resources,
             overwrite=overwrite,
             timeout=timeout,
             _work=work,
@@ -64,6 +66,7 @@ def _sync_oa_text_view_impl(
     view: str,
     kind: str,
     source: TextSourceSnapshot,
+    resources: Any,
     overwrite: bool = False,
     timeout: int = 300,
     _work: DisposableWork | None = None,
@@ -125,6 +128,7 @@ def _sync_oa_text_view_impl(
                 # The adapter receives the exact plan-owned bytes instead of
                 # reopening the canonical pathname during mutation.
                 source=source,
+                resources=resources,
                 log_dir=work.directory("logs", "text-view"),
                 work_dir=work.directory("work", "text-view"),
                 operation=operation,

@@ -190,7 +190,7 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
     run_xstream_export(request)
 
     assert request.executable.is_symlink()
-    assert tuple(observed["command"])[0] == str(request.executable)
+    assert str(request.executable) in tuple(observed["command"])
 
 
 @pytest.mark.parametrize(

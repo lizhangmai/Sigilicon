@@ -79,6 +79,7 @@ def sync_design(
     quarantine_stale_locks: bool = False,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    resources: Any,
 ) -> DesignSyncResult:
     """Make the OA library/schematic/symbol match the canonical design source."""
 
@@ -92,6 +93,7 @@ def sync_design(
             work=work,
             operation_id=operation_id,
             bind_operation=bind_operation,
+            resources=resources,
         )
 
 
@@ -105,6 +107,7 @@ def _sync_design_impl(
     work: DisposableWork,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    resources: Any,
 ) -> DesignSyncResult:
     """Run the shared design synchronizer under its caller-owned work scope."""
 
@@ -163,6 +166,7 @@ def _sync_design_impl(
                 work_role="work",
                 timeout=timeout,
                 operation=operation,
+                resources=resources,
             )
             with operation.mutation_scope(
                 spec.library,
@@ -194,6 +198,7 @@ def sync_existing_design_target_only(
     quarantine_stale_locks: bool = False,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    resources: Any,
 ) -> TargetOnlyDesignSyncResult:
     """Synchronize one canonical single-subckt design into an existing library.
 
@@ -215,6 +220,7 @@ def sync_existing_design_target_only(
             work=work,
             operation_id=operation_id,
             bind_operation=bind_operation,
+            resources=resources,
         )
 
 
@@ -229,6 +235,7 @@ def _sync_existing_design_target_only_impl(
     work: DisposableWork,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    resources: Any,
 ) -> TargetOnlyDesignSyncResult:
     """Run target-only synchronization under its caller-owned work scope."""
 
@@ -334,6 +341,7 @@ def _sync_existing_design_target_only_impl(
                 run_dir=work_dir,
                 timeout=timeout,
                 operation=operation,
+                resources=resources,
             )
         imported = (spec.cell,)
 

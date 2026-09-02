@@ -8,6 +8,7 @@ import pytest
 
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import load_text_source_snapshot
+from sigilicon.execution.model import Resources
 from sigilicon.workflows import oa_simulation
 
 
@@ -166,4 +167,5 @@ def test_oa_maestro_rejects_a_source_less_manual_contract() -> None:
             artifacts=object(),
             operation_id="a" * 32,
             bind_operation=lambda _operation: None,
+            resources=Resources(),
         )

@@ -232,6 +232,7 @@ def _run_native_oa_maestro_testbench_impl(
     artifacts: StepFiles,
     operation_id: str,
     bind_operation: Callable[[Any], None],
+    resources: Any,
     record_uncertainty: Callable[[str], None] | None = None,
 ) -> OAMaestroExecutionResult:
     """Run one source-owned setup and consume Cadence's read-only RDB API."""
@@ -313,6 +314,7 @@ def _run_native_oa_maestro_testbench_impl(
             nonce=nonce,
             timeout=timeout,
             operation=operation,
+            resources=resources,
             result_completion_probe=complete_results,
             rdb_export=rdb_export,
         )
@@ -514,6 +516,7 @@ def execute_oa_maestro_testbench(
     artifacts: StepFiles,
     operation_id: str,
     bind_operation: Callable[[Any], None],
+    resources: Any,
     record_uncertainty: Callable[[str], None] | None = None,
     before_backend: Callable[[], None] | None = None,
     timeout: int = 600,
@@ -537,5 +540,6 @@ def execute_oa_maestro_testbench(
         artifacts=artifacts,
         operation_id=operation_id,
         bind_operation=bind_operation,
+        resources=resources,
         record_uncertainty=record_uncertainty,
     )

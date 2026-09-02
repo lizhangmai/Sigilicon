@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 import os
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
 
 from sigilicon.contracts import (
     freeze_toml_document,
@@ -22,6 +22,21 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _PLATFORM_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _HEADER_FIELDS = {"schema", "contract_kind", "path_scope", "owner"}
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
+@runtime_checkable
+class PlatformResources(Protocol):
+    """Minimal runtime-resource capability required by platform loading."""
+
+    def require_directory(self, name: str) -> Path: ...
+
+
+class _NoPlatformResources:
+    def require_directory(self, name: str) -> Path:
+        raise ValueError(f"platform runtime resource is missing: {name}")
+
+
+_NO_PLATFORM_RESOURCES = _NoPlatformResources()
 
 
 @dataclass(frozen=True)
@@ -111,10 +126,14 @@ class LayoutPdkConfig:
     oa_materialization: OaMaterializationMapping | None = None
 
 
+_PDK_CONFIG_AUTHORITY = object()
+
+
 @dataclass(frozen=True)
 class PdkConfig:
-    """Fully resolved platform and its validated operation source snapshot."""
+    """Loader-sealed platform and its validated operation source snapshot."""
 
+    _authority: InitVar[object]
     key: str
     path: Path
     owner: str
@@ -127,10 +146,14 @@ class PdkConfig:
         default_factory=lambda: MappingProxyType({})
     )
     asset_root: Path | None = None
-    installation_root_environment: str | None = None
+    asset_root_environment: str | None = None
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+
+    def __post_init__(self, _authority: object) -> None:
+        if _authority is not _PDK_CONFIG_AUTHORITY:
+            raise ValueError("platform snapshots must be built by the platform loader")
 
 
 @dataclass(frozen=True)
@@ -156,9 +179,10 @@ _PLATFORM_INVENTORY_AUTHORITY = object()
 class PlatformInventory(Mapping[str, PdkConfig]):
     """Validated platform set trusted only within one repository operation.
 
-    Public and standalone APIs continue to accept a ``PdkConfig`` and validate
-    its complete source identity. Repository workflows use this immutable
-    capability after loading the catalog and every selected platform once.
+    Standalone APIs accept only loader-sealed ``PdkConfig`` snapshots and
+    validate their complete source identity. Repository workflows use this
+    immutable capability after loading the catalog and every selected platform
+    once.
     """
 
     __slots__ = ("_catalog", "_platforms", "_project")
@@ -295,12 +319,39 @@ def resolve_platform(
     context: Project,
     key: str,
     *,
+    resources: PlatformResources,
     snapshot: PdkConfig | None = None,
 ) -> PdkConfig:
-    """Load a platform or validate one caller-owned plan snapshot."""
+    """Load a platform or validate one loader-sealed plan snapshot.
+
+    ``resources`` is the only source of host-dependent platform facts.  A
+    supplied snapshot is still checked against the explicit resources so
+    that changing an external asset root cannot silently change an operation.
+    """
+
+    if not isinstance(resources, PlatformResources):
+        raise TypeError("platform resources must provide require_directory")
+    if snapshot is None:
+        return load_platform(context, key, resources=resources)
+    return _validate_platform_snapshot(
+        context,
+        key,
+        snapshot,
+        resources=resources,
+    )
+
+
+def _validate_platform_snapshot(
+    context: Project,
+    key: str,
+    snapshot: PdkConfig,
+    *,
+    resources: PlatformResources | None,
+) -> PdkConfig:
+    """Validate a platform snapshot without consulting ambient process state."""
 
     if snapshot is None:
-        return load_platform(context, key)
+        raise TypeError("platform snapshot must be PdkConfig")
     if snapshot.key != key:
         raise ValueError(
             f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
@@ -367,21 +418,30 @@ def resolve_platform(
         )
         _reject_unknown(
             manifest_document,
-            _HEADER_FIELDS | {"key", "name", "installation", "contracts"},
+            _HEADER_FIELDS | {"key", "name", "asset_scope", "contracts"},
             "platform definition",
         )
-        asset_root, root_environment = _platform_asset_root(
+        resolved_asset_root, root_environment = _platform_asset_root(
             snapshot.path,
+            key,
             manifest_document,
+            resources=resources,
+        )
+        asset_root = (
+            snapshot.asset_root
+            if resources is None and root_environment is not None
+            else resolved_asset_root
         )
         if (
             manifest_document.get("key") != key
             or _text(manifest_document.get("name", key), "platform.name")
             != snapshot.name
             or snapshot.asset_root != asset_root
-            or snapshot.installation_root_environment != root_environment
+            or snapshot.asset_root_environment != root_environment
         ):
             raise ValueError("platform identity drift")
+        if asset_root is None:
+            raise ValueError("platform snapshot omits its external asset root")
         contracts = manifest_document.get("contracts")
         if not isinstance(contracts, Mapping):
             raise ValueError("platform snapshot source document drift")
@@ -503,7 +563,16 @@ def resolve_platform_snapshot(
 
     if isinstance(snapshot, PlatformInventory):
         return snapshot.resolve(context, key)
-    return resolve_platform(context, key, snapshot=snapshot)
+    if snapshot is None:
+        # This deliberately supplies no host facts.  External platforms must
+        # be loaded through ``load_platform``/``resolve_platform`` with an
+        # explicit Resources value before they can enter an operation.
+        return resolve_platform(
+            context,
+            key,
+            resources=_NO_PLATFORM_RESOURCES,
+        )
+    return _validate_platform_snapshot(context, key, snapshot, resources=None)
 
 
 def resolve_platform_catalog(
@@ -603,37 +672,56 @@ def _asset_source_path(base: Path, value: object, field: str) -> Path:
     return configured
 
 
+def _platform_asset_environment(key: str) -> str:
+    """Return the deterministic environment name for one platform key."""
+
+    if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
+        raise ValueError("platform key contains unsupported characters")
+    suffix = re.sub(r"[^A-Za-z0-9_]", "_", key).upper()
+    if re.fullmatch(r"[A-Z0-9_]+", suffix) is None:
+        raise ValueError("platform key cannot produce a safe asset environment")
+    return f"SIGILICON_PLATFORM_{suffix}_ROOT"
+
+
+def _validate_platform_environment_names(platforms: Mapping[str, Any]) -> None:
+    """Reject catalog keys that would share one external asset variable."""
+
+    environments: dict[str, str] = {}
+    for key in platforms:
+        if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
+            raise ValueError("platform catalog keys contain unsupported characters")
+        environment = _platform_asset_environment(key)
+        previous = environments.get(environment)
+        if previous is not None and previous != key:
+            raise ValueError(
+                "platform catalog keys collide in asset environment: "
+                f"{previous!r} and {key!r} -> {environment}"
+            )
+        environments[environment] = key
+
+
 def _platform_asset_root(
     manifest: Path,
+    key: str,
     raw: Mapping[str, Any],
-) -> tuple[Path, str | None]:
-    installation = _table(raw.get("installation", {}), "platform.installation")
-    _reject_unknown(
-        installation,
-        {"root_environment", "package_root"},
-        "platform.installation",
-    )
-    root_environment = installation.get("root_environment")
-    package_root_value = installation.get("package_root")
-    if (root_environment is None) != (package_root_value is None):
-        raise ValueError(
-            "platform installation root_environment and package_root must be paired"
-        )
-    if root_environment is None:
+    *,
+    resources: PlatformResources | None,
+) -> tuple[Path | None, str | None]:
+    scope = raw.get("asset_scope", "project")
+    if not isinstance(scope, str) or scope not in {"project", "external"}:
+        raise ValueError("platform asset_scope must be 'project' or 'external'")
+    if scope == "project":
         return manifest.parent, None
-    if (
-        not isinstance(root_environment, str)
-        or re.fullmatch(r"[A-Z][A-Z0-9_]*", root_environment) is None
-    ):
-        raise ValueError("platform root_environment must be an environment name")
-    package_root = Path(_text(package_root_value, "platform package_root"))
-    if package_root.is_absolute() or ".." in package_root.parts:
-        raise ValueError("platform package_root must be a safe relative path")
-    installation_root = os.environ.get(root_environment)
-    if not installation_root:
-        raise ValueError(f"platform installation root is unset: {root_environment}")
-    asset_root = (Path(installation_root).expanduser() / package_root).resolve()
-    return asset_root, root_environment
+
+    root_environment = _platform_asset_environment(key)
+    if resources is None:
+        # Snapshot validation must remain independent of ambient environment.
+        # The caller supplies the already sealed root through the snapshot.
+        return None, root_environment
+    asset_root = resources.require_directory(root_environment)
+    if not isinstance(asset_root, Path):
+        raise TypeError("platform asset root must be a Path")
+    return asset_root.expanduser().absolute(), root_environment
 
 
 def _required_file(base: Path, value: object, field: str) -> Path:
@@ -952,6 +1040,7 @@ def parse_platform_catalog(
         document,
     )
     manifests: dict[str, Path] = {}
+    _validate_platform_environment_names(platforms)
     for key, value in platforms.items():
         if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
             raise ValueError("platform catalog keys contain unsupported characters")
@@ -981,18 +1070,22 @@ def load_platform(
     context: Project,
     key: str,
     *,
+    resources: PlatformResources,
     catalog: PlatformCatalogSnapshot | None = None,
 ) -> PdkConfig:
     """Resolve and validate one platform without leaking repository layout."""
 
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
         raise ValueError("platform key contains unsupported characters")
+    if not isinstance(resources, PlatformResources):
+        raise TypeError("platform resources must provide require_directory")
     if catalog is None:
         catalog_document = read_toml(context.catalog("platform"))
         root, catalog_path, _owner, platforms = _platform_catalog_document(
             context,
             catalog_document,
         )
+        _validate_platform_environment_names(platforms)
         try:
             manifest_value = platforms[key]
         except KeyError as exc:
@@ -1018,12 +1111,18 @@ def load_platform(
     )
     _reject_unknown(
         raw,
-        _HEADER_FIELDS | {"key", "name", "installation", "contracts"},
+        _HEADER_FIELDS | {"key", "name", "asset_scope", "contracts"},
         "platform definition",
     )
     if raw.get("key") != key:
         raise ValueError(f"platform manifest key must be {key!r}")
-    asset_root, root_environment = _platform_asset_root(manifest, raw)
+    asset_root, root_environment = _platform_asset_root(
+        manifest,
+        key,
+        raw,
+        resources=resources,
+    )
+    assert asset_root is not None
     contracts = _table(raw.get("contracts"), "platform.contracts")
     allowed = {"simulation", "oa", "layout", "verification"}
     if set(contracts) - allowed or not {"simulation", "oa"}.issubset(contracts):
@@ -1079,6 +1178,7 @@ def load_platform(
         source_documents[layout.layout_path] = layout_raw
         source_documents[layout.verification_path] = verification_raw
     return PdkConfig(
+        _authority=_PDK_CONFIG_AUTHORITY,
         key=key,
         path=manifest,
         owner=header.owner,
@@ -1095,13 +1195,14 @@ def load_platform(
             }
         ),
         asset_root=asset_root,
-        installation_root_environment=root_environment,
+        asset_root_environment=root_environment,
     )
 
 
 def load_platform_inventory(
     context: Project,
     *,
+    resources: PlatformResources,
     catalog: PlatformCatalogSnapshot | None = None,
 ) -> PlatformInventory:
     """Load the complete project platform set once for one operation."""
@@ -1111,8 +1212,10 @@ def load_platform_inventory(
         if catalog is None
         else resolve_platform_catalog(context, snapshot=catalog)
     )
+    if not isinstance(resources, PlatformResources):
+        raise TypeError("platform resources must provide require_directory")
     platforms = {
-        key: load_platform(context, key, catalog=selected_catalog)
+        key: load_platform(context, key, resources=resources, catalog=selected_catalog)
         for key in selected_catalog.manifests
     }
     return PlatformInventory(

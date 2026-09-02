@@ -259,7 +259,7 @@ def _run_script(
             if not value:
                 raise ExecutionError(f"runtime environment omitted {name}")
             owned = stack.enter_context(owned_executable(Path(value)))
-            if owned.directory is None:
+            if len(owned.command) == 1:
                 environment[name] = owned.target.child_named_path
             else:
                 launcher_name = f".{name.lower()}.launcher"
@@ -343,9 +343,14 @@ def _run_script(
 class _PreparedSynopsysBackend:
     """Validate each package-owned Synopsys request during Project.plan."""
 
-    def prepare(self, _project: Any, step: Operation) -> Preparation:
+    def prepare(
+        self,
+        _project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
         prepared = Step.from_operation(step)
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(prepared)
 
 
@@ -1003,11 +1008,16 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
         )
         return tuple(checks)
 
-    def prepare(self, project: Any, step: Operation) -> Preparation:
+    def prepare(
+        self,
+        project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
         from sigilicon.workflows.structural_link import plan_structural_link
 
         initial = Step.from_operation(step)
-        self.preflight(initial, Resources())
+        self.preflight(initial, resources)
         config = self._config(initial)
         owner = _text(config, "owner")
         owner_root = project.owner(owner).root
@@ -1109,7 +1119,7 @@ class StructuralLinkBackend(_PreparedSynopsysBackend):
             sources=source_names,
             resources=tuple(resource.identity for resource in external),
         )
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(
             prepared,
             tuple(source for _scope, source in captured_sources),

@@ -8,12 +8,18 @@ from virtuoso_bridge import ExecutionStatus, VirtuosoResult
 
 from sigilicon.artifacts import RunRecord
 from sigilicon.domain.design import load_design_spec
+from sigilicon.execution.model import Resources
 from sigilicon.project import Project
 from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
 from sigilicon.workflows.design_sync import (
     sync_design,
     sync_existing_design_target_only,
+)
+
+
+SPICEIN_RESOURCES = Resources(
+    environment={"SIGILICON_CADENCE_SPICEIN": "/bin/true"}
 )
 
 
@@ -153,7 +159,12 @@ def test_sync_design_consumes_source_and_pdk_config(
     client = FakeClient(root / "virtuoso")
     _patch_fake_import(monkeypatch)
 
-    result = sync_design(spec.design, client, overwrite=True)
+    result = sync_design(
+        spec.design,
+        client,
+        overwrite=True,
+        resources=SPICEIN_RESOURCES,
+    )
 
     name, library_path, create_kwargs = client.library.create_call
     assert name == "designLib"
@@ -201,6 +212,7 @@ def test_target_only_sync_reuses_bridge_import_without_touching_cds_lib(
         client,
         design_source=spec.design.path,
         overwrite=True,
+        resources=SPICEIN_RESOURCES,
     )
 
     assert client.library.create_call is None
@@ -240,6 +252,7 @@ ends inv
             multi,
             client,
             design_source=multi.path,
+            resources=SPICEIN_RESOURCES,
         )
     assert client.library.create_call is None
 
@@ -278,6 +291,7 @@ def test_import_hierarchy_passes_explicit_device_map(
             work_role="work",
             timeout=30,
             operation=operation,
+            resources=SPICEIN_RESOURCES,
         )
 
     assert client.schematic.calls[0][1]["dev_map_file"] == device_map
@@ -331,6 +345,7 @@ def test_import_hierarchy_preserves_unowned_leaked_handle(
                 work_role="work",
                 timeout=30,
                 operation=operation,
+                resources=SPICEIN_RESOURCES,
             )
 
     assert operation is not None
@@ -352,6 +367,7 @@ def test_import_adapter_rejects_unowned_remote_process_launch(tmp_path) -> None:
             own_netlist=lambda: None,
             run_dir=tmp_path / "run",
             timeout=12,
+            resources=SPICEIN_RESOURCES,
         )
 
 
@@ -363,8 +379,11 @@ def test_spicein_preflight_failure_prevents_process_launch(
 
     executable = tmp_path / "spiceIn"
     executable.write_text("offline test sentinel\n", encoding="utf-8")
+    executable.chmod(0o755)
+    resources = Resources(
+        environment={"SIGILICON_CADENCE_SPICEIN": str(executable)}
+    )
     launches: list[object] = []
-    monkeypatch.setattr(importer.shutil, "which", lambda _name: str(executable))
     monkeypatch.setattr(
         importer,
         "run_process_group_capture",
@@ -390,6 +409,7 @@ def test_spicein_preflight_failure_prevents_process_launch(
             own_netlist=lambda: None,
             run_dir=tmp_path / "run",
             timeout=12,
+            resources=resources,
         )
     assert launches == []
 
@@ -422,7 +442,12 @@ def test_sync_refuses_an_existing_library_with_wrong_technology(project_factory)
     )
 
     with pytest.raises(RuntimeError, match="wrongTech"):
-        sync_design(spec.design, client, overwrite=True)
+        sync_design(
+            spec.design,
+            client,
+            overwrite=True,
+            resources=SPICEIN_RESOURCES,
+        )
 
 
 def test_sync_refuses_to_overwrite_an_open_cell(project_factory) -> None:
@@ -434,7 +459,12 @@ def test_sync_refuses_to_overwrite_an_open_cell(project_factory) -> None:
     client.list_windows = lambda: [{"name": "Schematic Editing: designLib inv schematic"}]
 
     with pytest.raises(RuntimeError, match="open Virtuoso windows"):
-        sync_design(spec.design, client, overwrite=True)
+        sync_design(
+            spec.design,
+            client,
+            overwrite=True,
+            resources=SPICEIN_RESOURCES,
+        )
 
 
 def test_port_direction_write_rechecks_quiescence_after_hierarchy(
@@ -460,5 +490,10 @@ def test_port_direction_write_rechecks_quiescence_after_hierarchy(
     )
 
     with pytest.raises(RuntimeError, match="concurrent view before port update"):
-        sync_design(spec.design, client, overwrite=True)
+        sync_design(
+            spec.design,
+            client,
+            overwrite=True,
+            resources=SPICEIN_RESOURCES,
+        )
     assert direction_writes == []

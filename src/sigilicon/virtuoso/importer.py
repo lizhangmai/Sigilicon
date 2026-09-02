@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, ExitStack
 from pathlib import Path
 import os
-import shutil
 from typing import Any, Callable
 
 from sigilicon.virtuoso.bridge import schematic_import_netlist_skill
@@ -13,8 +12,11 @@ from sigilicon.virtuoso.bridge import generate_symbol_from_schematic
 from sigilicon.virtuoso.bridge import escape_skill_string
 
 from sigilicon.external_tools import (
+    CADENCE_SPICEIN_ENV,
     cadence_subprocess_env,
+    configured_executable,
     owned_directory,
+    owned_executable,
     owned_input_file,
     owned_output_file,
     owned_process_fd_path,
@@ -430,6 +432,7 @@ def _import_netlist(
     *,
     operation: WorkspaceOperation,
     own_netlist: Callable[[], AbstractContextManager[int]],
+    resources: Any,
     **kwargs: Any,
 ) -> Any:
     """Run one fully fd-owned local spiceIn import and conn2Sch conversion."""
@@ -461,18 +464,12 @@ def _import_netlist(
     overwrite = bool(kwargs.get("overwrite", False))
     timeout = int(kwargs.get("timeout", 300))
 
-    cds_home = os.environ.get("CDSHOME")
-    candidates = [Path(found) for found in [shutil.which("spiceIn")] if found]
-    if cds_home:
-        candidates.extend(
-            (
-                Path(cds_home) / "tools" / "dfII" / "bin" / "spiceIn",
-                Path(cds_home) / "bin" / "spiceIn",
-            )
-        )
-    executable = next((path for path in candidates if path.is_file()), None)
+    executable = configured_executable(resources.environment, CADENCE_SPICEIN_ENV)
     if executable is None:
-        raise FileNotFoundError("spiceIn was not found in PATH or CDSHOME")
+        raise FileNotFoundError(
+            f"{CADENCE_SPICEIN_ENV} must name an absolute executable "
+            "supplied by the runtime"
+        )
 
     operation.require_active_mutation(
         client,
@@ -521,6 +518,7 @@ def _import_netlist(
         return "\n".join(rows).encode("utf-8")
 
     with (
+        owned_executable(executable) as owned_launcher,
         owned_directory(run_dir, create_missing=True) as owned_run_dir,
         owned_output_file(owned_run_dir, "spiceIn.il") as owned_parameter,
         owned_output_file(owned_run_dir, "cds.lib") as owned_staged_cds,
@@ -582,21 +580,26 @@ def _import_netlist(
         if owned_dev_map is not None:
             pass_fds.append(owned_dev_map.fd)
         command = (
-            str(executable),
+            *owned_launcher.command,
             "-param",
             owned_parameter.child_path,
         )
-        completed = run_process_group_capture(
-            command,
-            cwd=Path(owned_run_dir.child_path),
-            env=cadence_subprocess_env(),
-            timeout=timeout,
-            before_spawn=lambda: operation.require_active_mutation(
+
+        def validate_spawn() -> None:
+            owned_launcher.require_visible()
+            operation.require_active_mutation(
                 client,
                 library,
                 cell,
                 phase="spiceIn process launch",
-            ),
+            )
+
+        completed = run_process_group_capture(
+            command,
+            cwd=Path(owned_run_dir.child_path),
+            env=cadence_subprocess_env(resources.environment),
+            timeout=timeout,
+            before_spawn=validate_spawn,
             pass_fds=tuple(pass_fds),
         )
         owned_stdout.write_bytes(
@@ -665,6 +668,7 @@ def import_schematic(
     run_dir: Path | None,
     timeout: int,
     operation: WorkspaceOperation,
+    resources: Any,
 ) -> Any:
     """Import exactly one named subcircuit as one OA schematic."""
 
@@ -695,6 +699,7 @@ def import_schematic(
             netlist,
             operation=operation,
             own_netlist=own_netlist,
+            resources=resources,
             **kwargs,
         ),
     )

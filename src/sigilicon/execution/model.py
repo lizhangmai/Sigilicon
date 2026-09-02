@@ -485,6 +485,7 @@ class ExecutionPlan:
     variant: str | None
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
+    resources_identity: str
     resources: tuple[ExternalResource, ...] = field(repr=False, compare=False)
     _authorization: str = field(default="", repr=False, compare=False)
 
@@ -505,6 +506,12 @@ class ExecutionPlan:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
             raise ContractError("execution plan sources must be Source values")
+        if not isinstance(self.resources_identity, str) or _DIGEST.fullmatch(
+            self.resources_identity
+        ) is None:
+            raise ContractError(
+                "execution plan resources identity must be a SHA-256 digest"
+            )
         if not isinstance(self.resources, tuple) or any(
             not isinstance(resource, ExternalResource) for resource in self.resources
         ):
@@ -537,12 +544,13 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 4,
+            "schema": 5,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
             "operation": self.operation,
             "variant": self.variant,
+            "resources_identity": self.resources_identity,
             "sources": [source.record for source in self.sources],
             "resources": [resource.record for resource in self.resources],
             "steps": [step.record for step in self.steps],
@@ -559,6 +567,7 @@ class Resources:
 
     capabilities: frozenset[str] = frozenset()
     environment: Mapping[str, str] = field(default_factory=dict)
+    _identity: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.capabilities, frozenset) or any(
@@ -571,6 +580,55 @@ class Resources:
         ):
             raise ContractError("resource environment must map strings to strings")
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
+        object.__setattr__(
+            self,
+            "_identity",
+            canonical_digest(
+                {
+                    "schema": 1,
+                    "contract_kind": "execution-resources",
+                    "capabilities": tuple(sorted(self.capabilities)),
+                    "environment": dict(sorted(self.environment.items())),
+                }
+            ),
+        )
+
+    @property
+    def identity(self) -> str:
+        """Return the immutable identity of this runtime resource snapshot."""
+
+        return self._identity
+
+    def require_environment(self, name: str) -> str:
+        """Return one required environment binding from this runtime snapshot."""
+
+        if not isinstance(name, str) or not name:
+            raise ContractError("resource environment name must be non-empty text")
+        value = self.environment.get(name)
+        if value is None or not value:
+            raise ContractError(f"required environment binding is missing: {name}")
+        return value
+
+    def require_directory(self, name: str) -> Path:
+        """Return one required absolute directory after resolving its path."""
+
+        value = self.require_environment(name)
+        path = Path(value)
+        if not path.is_absolute():
+            raise ContractError(
+                f"required environment binding is not an absolute directory: {name}"
+            )
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ContractError(
+                f"required environment binding is not an existing directory: {name}"
+            ) from exc
+        if not resolved.is_dir():
+            raise ContractError(
+                f"required environment binding is not an existing directory: {name}"
+            )
+        return resolved
 
 
 @dataclass(frozen=True)

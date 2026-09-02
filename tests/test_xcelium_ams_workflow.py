@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 from sigilicon.project import Project
+from sigilicon.execution.model import Resources
 from sigilicon.workflows import xcelium_ams
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.xcelium_ams import (
@@ -298,7 +299,11 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     contract, circuit = _ams_project(tmp_path)
     _patch_native_resolution(monkeypatch, root=tmp_path, circuit=circuit)
 
-    plan = plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
+    plan = plan_xcelium_ams_cell(
+        contract,
+        project=Project.open(tmp_path),
+        resources=Resources(),
+    )
 
     assert plan.native_cell == "NATIVE_TOP"
     assert plan.circuit_netlist == circuit
@@ -328,7 +333,11 @@ def test_xcelium_ams_rejects_unknown_dependency_lock_fields(
     )
 
     with pytest.raises(ValueError, match="fields must be exactly"):
-        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
+        plan_xcelium_ams_cell(
+            contract,
+            project=Project.open(tmp_path),
+            resources=Resources(),
+        )
 
 
 def test_xcelium_ams_rejects_same_size_release_tampering(
@@ -341,7 +350,11 @@ def test_xcelium_ams_rejects_same_size_release_tampering(
     circuit.write_bytes(payload)
 
     with pytest.raises(ValueError, match="release manifest"):
-        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
+        plan_xcelium_ams_cell(
+            contract,
+            project=Project.open(tmp_path),
+            resources=Resources(),
+        )
 
 
 def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
@@ -369,7 +382,11 @@ def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
     lock.write_text(source[:start] + digest + source[end:], encoding="utf-8")
 
     with pytest.raises(ValueError, match="release manifest"):
-        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
+        plan_xcelium_ams_cell(
+            contract,
+            project=Project.open(tmp_path),
+            resources=Resources(),
+        )
 
 
 def test_xcelium_ams_plan_rejects_spectre_compile_input(
@@ -389,7 +406,11 @@ def test_xcelium_ams_plan_rejects_spectre_compile_input(
     )
 
     with pytest.raises(ValueError, match="locked release role"):
-        plan_xcelium_ams_cell(contract, project=Project.open(tmp_path))
+        plan_xcelium_ams_cell(
+            contract,
+            project=Project.open(tmp_path),
+            resources=Resources(),
+        )
 
 
 def test_xcelium_ams_execution_stages_inputs_and_records_regression(
@@ -420,7 +441,11 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
     monkeypatch.setattr(xcelium_ams, "xrun_env", lambda _xrun: {})
 
     result = execute_xcelium_ams_cell(
-        plan_xcelium_ams_cell(contract, project=project),
+        plan_xcelium_ams_cell(
+            contract,
+            project=project,
+            resources=Resources(),
+        ),
         artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
     )
@@ -449,7 +474,11 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
 
     project = Project.open(tmp_path)
     result = execute_xcelium_ams_cell(
-        plan_xcelium_ams_cell(contract, project=project),
+        plan_xcelium_ams_cell(
+            contract,
+            project=project,
+            resources=Resources(),
+        ),
         artifacts=_run_artifacts(tmp_path),
         xrun=xrun,
     )

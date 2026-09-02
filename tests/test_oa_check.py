@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.project import Project
+from sigilicon.execution.model import Resources
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_check import (
     _library_ownership,
@@ -14,6 +15,9 @@ from sigilicon.workflows.oa_check import (
     check_oa_library,
 )
 from sigilicon.workflows.oa_library import OALibraryRebuildPlan, rebuild_oa_library
+
+
+OA_RESOURCES = Resources()
 
 
 def test_read_only_check_workspace_does_not_create_flow_lock(
@@ -72,7 +76,13 @@ def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access() -> None:
     )
 
     with pytest.raises(ValueError, match="OA rebuild requires managed LayoutIR"):
-        rebuild_oa_library(plan, client, source_paths={}, resource_paths={})
+        rebuild_oa_library(
+            plan,
+            client,
+            source_paths={},
+            resource_paths={},
+            resources=OA_RESOURCES,
+        )
 
 
 def test_current_clean_check_is_clean() -> None:

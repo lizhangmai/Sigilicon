@@ -8,7 +8,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -30,7 +29,12 @@ from sigilicon.execution.model import (
     json_value,
 )
 from sigilicon.external_tools import (
+    CADENCE_SPICEIN_ENV,
+    CADENCE_TEXT_IMPORT_ENV,
+    CADENCE_VIRTUOSO_ENV,
+    configured_executable,
     owned_directory,
+    owned_executable,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
     run_process_group_capture,
@@ -45,6 +49,7 @@ _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _LAYOUT_VERIFICATION_CAPABILITIES = _OA_CAPABILITIES | frozenset(
     {"tool.cadence-xstream", "tool.calibre"}
 )
+_OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -67,9 +72,13 @@ def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
     return config
 
 
-def _direct_preparation(backend: Any, step: Operation) -> Preparation:
+def _direct_preparation(
+    backend: Any,
+    step: Operation,
+    resources: Resources,
+) -> Preparation:
     prepared = Step.from_operation(step)
-    backend.preflight(prepared, Resources())
+    backend.preflight(prepared, resources)
     return Preparation(prepared)
 
 
@@ -128,12 +137,7 @@ def _capability_checks(
 
 
 def _configured_executable(resources: Resources, name: str) -> Path | None:
-    value = resources.environment.get(name)
-    if not value:
-        return None
-    discovered = shutil.which(value, path=resources.environment.get("PATH"))
-    path = Path(discovered if discovered is not None else os.path.abspath(value))
-    return path if path.is_file() and os.access(path, os.X_OK) else None
+    return configured_executable(resources.environment, name)
 
 
 def _executable_check(resources: Resources, name: str) -> PreflightCheck:
@@ -145,6 +149,40 @@ def _executable_check(resources: Resources, name: str) -> PreflightCheck:
         "ready" if ready else "blocked",
         "executable supplied by the invoking runtime" if ready else "missing executable",
     )
+
+
+def _bridge_check(resources: Resources) -> PreflightCheck:
+    from sigilicon.virtuoso.bridge import bridge_endpoint
+
+    try:
+        host, port = bridge_endpoint(resources)
+    except (TypeError, ValueError, ContractError) as exc:
+        return PreflightCheck(
+            "runtime-resource",
+            "virtuoso-bridge-endpoint",
+            "blocked",
+            str(exc),
+        )
+    return PreflightCheck(
+        "runtime-resource",
+        "virtuoso-bridge-endpoint",
+        "ready",
+        f"explicit endpoint {host}:{port}",
+    )
+
+
+def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
+    if operation != "rebuild":
+        return ()
+    required: list[str] = []
+    if getattr(planning, "designs", ()) or getattr(planning, "testbenches", ()):
+        required.append(CADENCE_SPICEIN_ENV)
+    if any(
+        item.view.kind in _OA_TEXT_VIEW_KINDS
+        for item in getattr(planning, "views", ())
+    ):
+        required.append(CADENCE_TEXT_IMPORT_ENV)
+    return tuple(required)
 
 
 def _publish_tree(context: StepContext, role: str, kind: str) -> tuple[Artifact, ...]:
@@ -361,6 +399,7 @@ def _oa_resource_identities(
     project: Any,
     planning: Any,
     paths: Mapping[Path, str],
+    resources: Resources,
 ) -> Mapping[Path, str]:
     root = project.project_root.resolve()
     if not any(not Path(path).absolute().is_relative_to(root) for path in paths):
@@ -370,7 +409,7 @@ def _oa_resource_identities(
     pdk = getattr(getattr(planning, "source", None), "pdk", None)
     if not isinstance(pdk, str) or not pdk:
         raise ContractError("OA plan external resources have no platform identity")
-    platform = load_platform(project, pdk)
+    platform = load_platform(project, pdk, resources=resources)
     selected = dict(_platform_resource_identities(platform))
     asset_root = platform.asset_root
     if asset_root is not None:
@@ -594,8 +633,13 @@ class XceliumBackend:
             raise ContractError("Xcelium filesets select no Verilog sources")
         return sources
 
-    def prepare(self, _project: Any, step: Operation) -> Preparation:
-        return _direct_preparation(self, step)
+    def prepare(
+        self,
+        _project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
+        return _direct_preparation(self, step, resources)
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         config = _strict_config(step, self._fields)
@@ -622,13 +666,14 @@ class XceliumBackend:
         timeout = _positive_integer(config, "timeout_seconds")
         marker = _text(config, "success_marker")
         with (
+            owned_executable(executable) as owned_launcher,
             owned_directory(context.work_root) as work,
             owned_scratch_directory(
                 prefix=f"sigilicon-xcelium-{context.run_id}-"
             ) as library,
         ):
             command = (
-                str(executable),
+                *owned_launcher.command,
                 "-64bit",
                 "-sv",
                 "-timescale",
@@ -645,7 +690,11 @@ class XceliumBackend:
                 env=xrun_env(executable, context.resources.environment),
                 timeout=timeout,
                 before_spawn=(
-                    lambda: (work.require_visible(), library.require_visible())
+                    lambda: (
+                        owned_launcher.require_visible(),
+                        work.require_visible(),
+                        library.require_visible(),
+                    )
                 ),
                 pass_fds=(work.fd, library.fd),
             )
@@ -731,18 +780,27 @@ class XceliumAmsBackend(_CadenceDomainBackend):
             *_capability_checks(resources, frozenset({"tool.cadence-xcelium"})),
         )
 
-    def prepare(self, project: Any, step: Operation) -> Preparation:
+    def prepare(
+        self,
+        project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
         from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
 
         initial = Step.from_operation(step)
-        self.preflight(initial, Resources())
+        self.preflight(initial, resources)
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         selected_owner = project.owner(owner)
         contract = selected_owner.root / _relative(
             _text(config, "cell"), "verification cell"
         )
-        planning = plan_xcelium_ams_cell(contract, project=project)
+        planning = plan_xcelium_ams_cell(
+            contract,
+            project=project,
+            resources=resources,
+        )
         required = frozenset(
             {
                 *planning.source_records,
@@ -775,7 +833,7 @@ class XceliumAmsBackend(_CadenceDomainBackend):
             captured=captured,
             resources=external,
         )
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
@@ -786,13 +844,6 @@ class XceliumAmsBackend(_CadenceDomainBackend):
         owner = _text(config, "owner")
         prepared = self._prepared_domain_plan(context)
         planning = prepared.plan
-        root_environment = planning.platform.installation_root_environment
-        if root_environment is not None and context.resources.environment.get(
-            root_environment
-        ) != os.environ.get(root_environment):
-            raise ExecutionError(
-                "Xcelium AMS platform root differs from the resource snapshot"
-            )
         xrun = _configured_executable(context.resources, _XRUN)
         if xrun is None:
             raise ExecutionError("configured Xcelium executable is unavailable")
@@ -876,23 +927,38 @@ class NativeOaBackend(_CadenceDomainBackend):
         _positive_integer(config, "timeout_seconds")
         if "configs/oa.toml" not in step.sources:
             raise ContractError("native OA step must close over configs/oa.toml")
-        return _capability_checks(resources, _OA_CAPABILITIES)
+        return (
+            _bridge_check(resources),
+            _executable_check(resources, CADENCE_VIRTUOSO_ENV),
+            *_capability_checks(resources, _OA_CAPABILITIES),
+        )
 
-    def prepare(self, project: Any, step: Operation) -> Preparation:
+    def prepare(
+        self,
+        project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
+        from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
 
         initial = Step.from_operation(step)
-        self.preflight(initial, Resources())
+        self.preflight(initial, resources)
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         selected_owner = project.owner(owner)
         manifest = project.oa_assembly_for(selected_owner.root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        planning = plan_oa_library_rebuild(manifest, project=project)
+        platforms = load_platform_inventory(project, resources=resources)
+        planning = plan_oa_library_rebuild(
+            manifest,
+            project=project,
+            platform_inventory=platforms,
+        )
         testbench = _text(config, "testbench")
         matches = tuple(item for item in planning.testbenches if item.cell == testbench)
         if len(matches) != 1:
@@ -912,7 +978,12 @@ class NativeOaBackend(_CadenceDomainBackend):
         external = _external_file_records(
             project,
             required,
-            identities=_oa_resource_identities(project, planning, required),
+            identities=_oa_resource_identities(
+                project,
+                planning,
+                required,
+                resources,
+            ),
         )
         captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
@@ -929,7 +1000,7 @@ class NativeOaBackend(_CadenceDomainBackend):
             captured=captured,
             resources=external,
         )
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
@@ -966,10 +1037,11 @@ class NativeOaBackend(_CadenceDomainBackend):
                 result = execute_oa_maestro_testbench(
                     plan,
                     selected,
-                    get_client(),
+                    get_client(context.resources),
                     artifacts=artifacts,
                     operation_id=context.operation_id,
                     bind_operation=context.bind_workspace_operation,
+                    resources=context.resources,
                     record_uncertainty=uncertainty.append,
                     timeout=_positive_integer(config, "timeout_seconds"),
                 )
@@ -1031,22 +1103,54 @@ class _OaBackend(_CadenceDomainBackend):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
-        return _capability_checks(resources, _OA_CAPABILITIES)
+        prepared = step.request.get("prepared")
+        runtime_executables: tuple[str, ...] = ()
+        if prepared is not None:
+            if not isinstance(prepared, Mapping):
+                raise ContractError("prepared OA identity must be a mapping")
+            selected = prepared.get("runtime_executables")
+            if not isinstance(selected, tuple) or any(
+                item not in {CADENCE_SPICEIN_ENV, CADENCE_TEXT_IMPORT_ENV}
+                for item in selected
+            ):
+                raise ContractError(
+                    "prepared OA runtime executables disagree with their contract"
+                )
+            runtime_executables = selected
+        return (
+            _bridge_check(resources),
+            *(
+                _executable_check(resources, name)
+                for name in runtime_executables
+            ),
+            *_capability_checks(resources, _OA_CAPABILITIES),
+        )
 
-    def prepare(self, project: Any, step: Operation) -> Preparation:
+    def prepare(
+        self,
+        project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
+        from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
 
         initial = Step.from_operation(step)
-        self.preflight(initial, Resources())
+        self.preflight(initial, resources)
         config = self._config(initial)
         owner = _text(config, "owner")
         manifest = project.oa_assembly_for(project.owner(owner).root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        planning = plan_oa_library_rebuild(manifest, project=project)
+        platforms = load_platform_inventory(project, resources=resources)
+        planning = plan_oa_library_rebuild(
+            manifest,
+            project=project,
+            platform_inventory=platforms,
+        )
         selected = None
         if self.operation == "attest":
             testbench = _text(config, "testbench")
@@ -1066,7 +1170,12 @@ class _OaBackend(_CadenceDomainBackend):
         external = _external_file_records(
             project,
             required,
-            identities=_oa_resource_identities(project, planning, required),
+            identities=_oa_resource_identities(
+                project,
+                planning,
+                required,
+                resources,
+            ),
         )
         captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
@@ -1074,6 +1183,10 @@ class _OaBackend(_CadenceDomainBackend):
             "library": planning.library,
             "operation": self.operation,
             "testbench": None if selected is None else selected.cell,
+            "runtime_executables": _oa_runtime_executables(
+                planning,
+                self.operation,
+            ),
         }
         prepared = self._bind_domain_plan(
             step,
@@ -1084,7 +1197,7 @@ class _OaBackend(_CadenceDomainBackend):
             captured=captured,
             resources=external,
         )
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
@@ -1117,7 +1230,7 @@ class _OaBackend(_CadenceDomainBackend):
                 raise ExecutionError(f"prepared OA testbench is invalid: {testbench}")
             selected = matches[0]
         timeout = _positive_integer(config, "timeout_seconds")
-        client = get_client()
+        client = get_client(context.resources)
         if self.operation == "check":
             from sigilicon.virtuoso.workspace import (
                 OperationPolicy,
@@ -1146,6 +1259,7 @@ class _OaBackend(_CadenceDomainBackend):
                 client,
                 source_paths=prepared.source_paths(context),
                 resource_paths=prepared.resource_paths(context),
+                resources=context.resources,
                 timeout=timeout,
                 operation_id=context.operation_id,
                 bind_operation=context.bind_workspace_operation,
@@ -1194,19 +1308,33 @@ class LayoutBackend(_CadenceDomainBackend):
         if spec not in step.sources:
             raise ContractError("layout spec must be inside the operation source closure")
         _positive_integer(config, "timeout_seconds")
-        return _capability_checks(resources, _OA_CAPABILITIES)
+        return (
+            _bridge_check(resources),
+            *_capability_checks(resources, _OA_CAPABILITIES),
+        )
 
-    def prepare(self, project: Any, step: Operation) -> Preparation:
+    def prepare(
+        self,
+        project: Any,
+        step: Operation,
+        resources: Resources,
+    ) -> Preparation:
+        from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
         initial = Step.from_operation(step)
-        self.preflight(initial, Resources())
+        self.preflight(initial, resources)
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        planning = plan_layout_spec(spec, project=project)
+        platforms = load_platform_inventory(project, resources=resources)
+        planning = plan_layout_spec(
+            spec,
+            project=project,
+            platform=platforms,
+        )
         sources = _bind_source_paths(
             project,
             owner,
@@ -1235,7 +1363,7 @@ class LayoutBackend(_CadenceDomainBackend):
             captured=captured,
             resources=external,
         )
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
@@ -1270,7 +1398,7 @@ class LayoutBackend(_CadenceDomainBackend):
                 )
                 result = generate_layout(
                     planning,
-                    get_client(),
+                    get_client(context.resources),
                     artifacts=artifacts,
                     operation_id=context.operation_id,
                     bind_operation=context.bind_workspace_operation,
@@ -1325,6 +1453,7 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
         _positive_integer(config, "xstream_timeout_seconds")
         _positive_integer(config, "calibre_timeout_seconds")
         return (
+            _bridge_check(resources),
             _executable_check(resources, _XSTREAM),
             _executable_check(resources, _CALIBRE),
             *_capability_checks(resources, _LAYOUT_VERIFICATION_CAPABILITIES),
@@ -1334,17 +1463,24 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
         self,
         project: Any,
         step: Operation,
+        resources: Resources,
     ) -> Preparation:
+        from sigilicon.domain.platform import load_platform_inventory
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
         initial = Step.from_operation(step)
-        self.preflight(initial, Resources())
+        self.preflight(initial, resources)
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        planning = plan_layout_spec(spec, project=project)
+        platforms = load_platform_inventory(project, resources=resources)
+        planning = plan_layout_spec(
+            spec,
+            project=project,
+            platform=platforms,
+        )
         if planning.spec.layout_pdk is None:
             raise ContractError("layout verification requires a layout PDK")
         deck = (
@@ -1383,7 +1519,7 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
             captured=captured,
             resources=external,
         )
-        self.preflight(prepared, Resources())
+        self.preflight(prepared, resources)
         return Preparation(prepared, captured, external)
 
     def run(self, context: StepContext, step: Step) -> StepResult:
@@ -1439,7 +1575,7 @@ class LayoutVerificationBackend(_CadenceDomainBackend):
                 )
                 result = run_layout_verification(
                     planning,
-                    get_client(),
+                    get_client(context.resources),
                     check=_text(config, "check"),
                     artifacts=artifacts,
                     xstream=xstream,

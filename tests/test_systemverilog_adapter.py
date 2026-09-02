@@ -5,6 +5,7 @@ import subprocess
 
 import pytest
 
+from sigilicon.execution.model import Resources
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.domain.systemverilog import module_port_signatures
 
@@ -46,6 +47,10 @@ def test_source_owned_views_use_native_identity(
 ) -> None:
     executable = tmp_path / "cdsTextTo5x"
     executable.write_text("tool\n", encoding="utf-8")
+    executable.chmod(0o755)
+    resources = Resources(
+        environment={"SIGILICON_CADENCE_CDSTEXTTO5X": str(executable)}
+    )
     source = tmp_path / f"model.{suffix}"
     source.write_text("module model; endmodule\n", encoding="utf-8")
     log_dir = tmp_path / "logs"
@@ -59,9 +64,6 @@ def test_source_owned_views_use_native_identity(
             return type("LibraryInfo", (), {"path": tmp_path / "virtuoso" / "lib"})()
 
     client = type("Client", (), {"library": Library()})()
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.text_view.shutil.which", lambda _name: str(executable)
-    )
     monkeypatch.setattr(
         "sigilicon.virtuoso.text_view.virtuoso_workdir",
         lambda _client: operation.root,
@@ -87,6 +89,7 @@ def test_source_owned_views_use_native_identity(
                 kind=kind,
                 view=view,
                 source=source,
+                resources=resources,
                 log_dir=log_dir,
                 work_dir=work_dir,
                 operation=operation,

@@ -19,6 +19,7 @@ from sigilicon.contracts import (
     require_config_header,
 )
 from sigilicon.execution.operations import compile_operation, parse_selector
+from sigilicon.execution.model import Resources
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
@@ -140,6 +141,7 @@ def _integration_variant_inventory(
 
 def inspect_repository_designs(
     project: Project,
+    resources: Resources,
 ) -> dict[str, Any]:
     """Validate every canonical source selected by one project context."""
 
@@ -172,7 +174,10 @@ def inspect_repository_designs(
         owner_roots=True,
     )
 
-    platform_inventory = load_platform_inventory(context)
+    platform_inventory = load_platform_inventory(
+        context,
+        resources=resources,
+    )
     platform_catalog = platform_inventory.catalog
     platform_catalog_path = platform_catalog.path
 

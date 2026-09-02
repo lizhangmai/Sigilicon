@@ -95,6 +95,7 @@ def synchronize_design(
     quarantine_stale_locks: bool = False,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
+    resources: Any,
 ) -> DesignSyncResult | TargetOnlyDesignSyncResult:
     """Synchronize the exact inspected hierarchy through the shared OA sigilicon."""
 
@@ -112,6 +113,7 @@ def synchronize_design(
             quarantine_stale_locks=quarantine_stale_locks,
             operation_id=operation_id,
             bind_operation=bind_operation,
+            resources=resources,
         )
     return sync_design(
         inspection.spec,
@@ -121,6 +123,7 @@ def synchronize_design(
         quarantine_stale_locks=quarantine_stale_locks,
         operation_id=operation_id,
         bind_operation=bind_operation,
+        resources=resources,
     )
 
 

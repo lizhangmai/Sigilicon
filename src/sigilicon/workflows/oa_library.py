@@ -865,9 +865,12 @@ def plan_oa_library_rebuild(
         )
     definitions, netlist_snapshots = _load_definitions(source)
     if platform_inventory is None:
+        from sigilicon.execution.model import Resources
+
         platform_snapshot: PlatformSnapshot = load_platform(
             source.project,
             source.pdk,
+            resources=Resources(),
         )
     else:
         if isinstance(platform_inventory, PlatformInventory):
@@ -1357,6 +1360,7 @@ def rebuild_oa_library(
     *,
     source_paths: Mapping[Path, Path],
     resource_paths: Mapping[Path, Path],
+    resources: Any,
     cell: str | None = None,
     testbench: str | None = None,
     timeout: int = 300,
@@ -1445,6 +1449,7 @@ def rebuild_oa_library(
                 timeout=timeout,
                 operation_id=operation_id,
                 bind_operation=bind_operation,
+                resources=resources,
             )
             actual[design_cell] = ("netlist", "schematic", "symbol")
         text_steps = tuple(
@@ -1469,6 +1474,7 @@ def rebuild_oa_library(
                 view=step.view.name,
                 kind=step.view.kind,
                 source=step.source_snapshot,
+                resources=resources,
                 overwrite=True,
                 timeout=timeout,
                 operation_id=operation_id,
@@ -1513,6 +1519,7 @@ def rebuild_oa_library(
             step.source_snapshot,
             client,
             model_file=model_file,
+            resources=resources,
             overwrite=True,
             timeout=timeout,
             operation_id=operation_id,

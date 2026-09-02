@@ -5,15 +5,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
-import shutil
 from typing import Any
 
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.external_tools import (
+    CADENCE_TEXT_IMPORT_ENV,
     cadence_subprocess_env,
+    configured_executable,
     owned_directory,
+    owned_executable,
     owned_output_file,
     owned_sealed_input,
     run_process_group,
@@ -136,6 +138,7 @@ def import_oa_text_view(
     log_dir: Path,
     work_dir: Path,
     operation: Any,
+    resources: Any,
     timeout: int = 300,
 ) -> None:
     """Import one canonical model source without replacing an existing view."""
@@ -180,15 +183,18 @@ def import_oa_text_view(
         phase=f"{kind} text-view adapter",
     )
     workdir = virtuoso_workdir(client)
-    cds_home = os.environ.get("CDSHOME")
-    candidates = [Path(found) for found in [shutil.which("cdsTextTo5x")] if found]
-    if cds_home:
-        candidates.append(Path(cds_home) / "tools" / "dfII" / "bin" / "cdsTextTo5x")
-    executable = next((path for path in candidates if path.is_file()), None)
+    executable = configured_executable(
+        resources.environment,
+        CADENCE_TEXT_IMPORT_ENV,
+    )
     if executable is None:
-        raise FileNotFoundError("cdsTextTo5x was not found in PATH or CDSHOME")
+        raise FileNotFoundError(
+            f"{CADENCE_TEXT_IMPORT_ENV} must name an absolute executable "
+            "supplied by the runtime"
+        )
     library_path = operation.require_project_library_target(client, library)
     with (
+        owned_executable(executable) as owned_launcher,
         owned_sealed_input(
             snapshot.text.encode("utf-8"),
             name=snapshot.source_path.name,
@@ -204,32 +210,38 @@ def import_oa_text_view(
             f"DEFINE {library} {owned_library.child_path}\n".encode("utf-8")
         )
         os.fchmod(owned_cds_lib.fd, 0o444)
-        completed = run_process_group(
-            [
-                str(executable),
-                "-CDSLIB",
-                owned_cds_lib.child_path,
-                "-LANG",
-                language,
-                "-LIB",
-                library,
-                "-CELL",
-                cell,
-                "-VIEW",
-                native_view,
-                "-LOG",
-                owned_tool_log.child_path,
-                owned_source.child_path,
-            ],
-            cwd=Path(owned_workdir.child_path),
-            env=cadence_subprocess_env(),
-            timeout=timeout,
-            before_spawn=lambda: operation.require_active_mutation(
+        command = (
+            *owned_launcher.command,
+            "-CDSLIB",
+            owned_cds_lib.child_path,
+            "-LANG",
+            language,
+            "-LIB",
+            library,
+            "-CELL",
+            cell,
+            "-VIEW",
+            native_view,
+            "-LOG",
+            owned_tool_log.child_path,
+            owned_source.child_path,
+        )
+
+        def validate_spawn() -> None:
+            owned_launcher.require_visible()
+            operation.require_active_mutation(
                 client,
                 library,
                 cell,
                 phase="cdsTextTo5x process spawn",
-            ),
+            )
+
+        completed = run_process_group(
+            command,
+            cwd=Path(owned_workdir.child_path),
+            env=cadence_subprocess_env(resources.environment),
+            timeout=timeout,
+            before_spawn=validate_spawn,
             pass_fds=(
                 owned_source.fd,
                 owned_cds_lib.fd,

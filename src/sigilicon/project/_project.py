@@ -147,12 +147,15 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
-    def plan(self, selector: str) -> ExecutionPlan:
+    def plan(self, selector: str, resources: Resources) -> ExecutionPlan:
         """Compile one canonical ``owner:operation[@variant]`` selector."""
 
         from sigilicon.execution.backend import prepare_plan
+        from sigilicon.execution.model import Resources
         from sigilicon.execution.operations import compile_operation, parse_selector
 
+        if not isinstance(resources, Resources):
+            raise TypeError("Project.plan resources must be Resources")
         owner_name, operation, variant = parse_selector(selector)
         owner = self.owner(owner_name)
         relative = owner.component.operation_catalog
@@ -173,6 +176,7 @@ class Project:
             plan,
             project=self,
             backends=self._backends(),
+            resources=resources,
         )
         return replace(plan, _authorization=self._authorize_plan(plan))
 
@@ -186,7 +190,7 @@ class Project:
     def preflight(
         self,
         plan: ExecutionPlan,
-        resources: Resources | None = None,
+        resources: Resources,
     ) -> PreflightResult:
         """Check a plan without creating a run or starting a backend."""
 
@@ -200,13 +204,13 @@ class Project:
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
-        self._require_canonical_plan(plan, require_current=False)
-        selected = Resources() if resources is None else resources
-        if not isinstance(selected, Resources):
+        if not isinstance(resources, Resources):
             raise TypeError("Project.preflight resources must be Resources")
+        self._require_canonical_plan(plan, require_current=False)
+        self._require_plan_resources(plan, resources)
         checked = _preflight(
             plan,
-            selected,
+            resources,
             self._backends(),
         )
         if plan.project_identity == self.identity:
@@ -227,7 +231,7 @@ class Project:
     def run(
         self,
         plan: ExecutionPlan,
-        resources: Resources | None = None,
+        resources: Resources,
         *,
         run_id: str | None = None,
         progress: Callable[[str, str], None] | None = None,
@@ -239,13 +243,13 @@ class Project:
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")
-        self._require_canonical_plan(plan)
-        selected = Resources() if resources is None else resources
-        if not isinstance(selected, Resources):
+        if not isinstance(resources, Resources):
             raise TypeError("Project.run resources must be Resources")
+        self._require_canonical_plan(plan)
+        self._require_plan_resources(plan, resources)
         return _run(
             plan,
-            selected,
+            resources,
             self._backends(),
             artifact_root=self.artifact_root,
             project_root=self.project_root,
@@ -254,6 +258,13 @@ class Project:
             run_id=run_id,
             progress=progress,
         )
+
+    @staticmethod
+    def _require_plan_resources(plan: ExecutionPlan, resources: Resources) -> None:
+        if resources.identity != plan.resources_identity:
+            raise ValueError(
+                "execution plan was prepared for different runtime resources"
+            )
 
     def _require_canonical_plan(
         self,

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+import os
 
 from sigilicon.cli.common import die, emit_json
 from sigilicon.paths import discover_project_contract
 from sigilicon.project import Project
+from sigilicon.execution.model import Resources
 from sigilicon.workflows.repository_checks import inspect_repository_designs
 
 
@@ -16,7 +18,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         report = inspect_repository_designs(
-            Project.open(discover_project_contract(__file__).parent)
+            Project.open(discover_project_contract(__file__).parent),
+            Resources(environment=dict(os.environ)),
         )
     except (OSError, RuntimeError, ValueError) as error:
         die(f"ERROR: {error}")

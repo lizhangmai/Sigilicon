@@ -13,6 +13,7 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_directory,
+    owned_executable,
     owned_input_file,
     run_process_group,
 )
@@ -356,13 +357,17 @@ def run_xstream_export(
             )
     work = request.work_root
     work.mkdir(parents=True, exist_ok=True)
-    with owned_directory(work) as owned_work, ExitStack() as resources:
+    with (
+        owned_executable(executable) as owned_launcher,
+        owned_directory(work) as owned_work,
+        ExitStack() as resources,
+    ):
         owned_map = resources.enter_context(owned_input_file(request.layer_map))
         owned_cds = resources.enter_context(
             owned_input_file(request.cds_lib, require_single_link=False)
         )
         command_parts = [
-            str(executable),
+            *owned_launcher.command,
             "-library",
             request.library,
             "-strmFile",
@@ -406,6 +411,7 @@ def run_xstream_export(
         command = tuple(command_parts)
 
         def validate_spawn() -> None:
+            owned_launcher.require_visible()
             owned_map.require_visible()
             owned_cds.require_visible()
 

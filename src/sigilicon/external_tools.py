@@ -24,6 +24,9 @@ from typing import Any, Callable, Iterator
 
 
 SYNOPSYS_LICENSE_ENV = "LM_LICENSE_FILE"
+CADENCE_VIRTUOSO_ENV = "SIGILICON_CADENCE_VIRTUOSO"
+CADENCE_SPICEIN_ENV = "SIGILICON_CADENCE_SPICEIN"
+CADENCE_TEXT_IMPORT_ENV = "SIGILICON_CADENCE_CDSTEXTTO5X"
 PROCESS_TERM_GRACE_SECONDS = 10
 PROCESS_KILL_GRACE_SECONDS = 5
 # Some Python builds omit these Linux memfd constants even though libc and the
@@ -340,40 +343,13 @@ class OwnedDirectoryDescriptor:
 
 @dataclass(frozen=True)
 class OwnedExecutable:
-    """Held regular executable or same-directory tool-mode symlink."""
+    """Held executable target launched with its configured path as argv[0]."""
 
     command: tuple[str, ...]
     target: OwnedFileDescriptor
-    directory: OwnedDirectoryDescriptor | None = None
-    symlink: Path | None = None
-    symlink_identity: tuple[int, int, int, int, int] | None = None
-    symlink_target: str | None = None
 
     def require_visible(self) -> None:
         self.target.require_visible()
-        if self.directory is None:
-            return
-        self.directory.require_visible()
-        if (
-            self.symlink is None
-            or self.symlink_identity is None
-            or self.symlink_target is None
-        ):
-            raise RuntimeError("held executable symlink lost its identity")
-        metadata = os.lstat(self.symlink)
-        identity = (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_size,
-            metadata.st_mtime_ns,
-        )
-        if (
-            identity != self.symlink_identity
-            or not stat.S_ISLNK(metadata.st_mode)
-            or os.readlink(self.symlink) != self.symlink_target
-        ):
-            raise RuntimeError(f"external executable symlink changed: {self.symlink}")
 
 
 @dataclass(frozen=True)
@@ -738,58 +714,42 @@ def owned_directory(
 
 @contextmanager
 def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
-    """Hold a regular launcher or a same-directory tool-mode symlink."""
+    """Resolve once, hold the exact target, and preserve the configured argv[0]."""
 
     absolute = Path(os.path.abspath(path))
-    if not absolute.is_symlink():
-        with owned_input_file(absolute, require_single_link=False) as target:
-            held = OwnedExecutable((target.child_named_path,), target)
-            held.require_visible()
-            yield held
-        return
-    link_target = os.readlink(absolute)
-    if Path(link_target).name != link_target:
-        raise RuntimeError(
-            f"external executable symlink must target its own directory: {absolute}"
-        )
-    metadata = os.lstat(absolute)
-    identity = (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-    )
-    with (
-        owned_directory(absolute.parent) as directory,
-        owned_input_file(
-            absolute.parent / link_target, require_single_link=False
-        ) as target,
-    ):
-        held = OwnedExecutable(
+    resolved = absolute.resolve(strict=True)
+    with owned_input_file(resolved, require_single_link=False) as target:
+        metadata = os.fstat(target.fd)
+        if metadata.st_mode & 0o111 == 0:
+            raise RuntimeError(f"external executable is not executable: {absolute}")
+        header = os.pread(target.fd, 128, 0).splitlines()[0]
+        interpreter = header[2:].strip().split(maxsplit=1)[0] if header.startswith(b"#!") else b""
+        shell_script = Path(os.fsdecode(interpreter)).name in {
+            "ash",
+            "bash",
+            "dash",
+            "ksh",
+            "sh",
+            "zsh",
+        }
+        command = (
             (
-                (
-                    "/bin/sh",
-                    "-c",
-                    'launcher=$1; shift; . "$launcher"',
-                    str(absolute),
-                    target.child_path,
-                )
-                if os.pread(target.fd, 2, 0) == b"#!"
-                else (
-                    "/bin/bash",
-                    "-c",
-                    'launcher=$1; shift; exec -a "$0" "$launcher" "$@"',
-                    str(absolute),
-                    target.child_path,
-                )
-            ),
-            target,
-            directory,
-            absolute,
-            identity,
-            link_target,
+                os.fsdecode(interpreter),
+                "-c",
+                'launcher=$1; shift; . "$launcher"',
+                str(absolute),
+                target.child_path,
+            )
+            if shell_script
+            else (
+                "/bin/bash",
+                "-c",
+                'launcher=$1; shift; exec -a "$0" "$launcher" "$@"',
+                str(absolute),
+                target.child_path,
+            )
         )
+        held = OwnedExecutable(command, target)
         held.require_visible()
         try:
             yield held
@@ -943,16 +903,36 @@ def cadence_subprocess_env(
     return env
 
 
+def configured_executable(
+    environment: Mapping[str, str],
+    name: str,
+) -> Path | None:
+    """Resolve one executable only from its explicit runtime binding.
+
+    Managed execution must not search the ambient ``PATH`` or infer an
+    installation from ``CDSHOME``.  The caller supplies the immutable runtime
+    environment snapshot and names an absolute launcher path in it.
+    """
+
+    value = environment.get(name)
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        return None
+    return path if path.is_file() and os.access(path, os.X_OK) else None
+
+
 def find_xrun(explicit: Path | None = None) -> Path:
     """Resolve the Xcelium launcher from an explicit path or installation root."""
 
     if explicit is not None:
         if explicit.is_file():
-            return explicit.resolve()
+            return Path(os.path.abspath(explicit))
         raise FileNotFoundError(f"xrun does not exist: {explicit}")
     discovered = shutil.which("xrun")
     if discovered:
-        return Path(discovered).resolve()
+        return Path(os.path.abspath(discovered))
     for variable in ("XCELIUM_HOME", "IUS_HOME"):
         value = os.environ.get(variable)
         if not value:
@@ -963,7 +943,7 @@ def find_xrun(explicit: Path | None = None) -> Path:
             installation / "bin" / "xrun",
         ):
             if candidate.is_file():
-                return candidate.resolve()
+                return Path(os.path.abspath(candidate))
     raise FileNotFoundError(
         "xrun was not found; load Xcelium, set XCELIUM_HOME, or pass --xrun"
     )

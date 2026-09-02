@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
+from sigilicon.domain.platform import PlatformSnapshot
 from sigilicon.project import Project
 from sigilicon.layout.generator import (
     LayoutGeneratorInput,
@@ -207,8 +208,9 @@ def plan_layout_spec(
     spec_path: Path,
     *,
     project: Project,
+    platform: PlatformSnapshot | None = None,
 ) -> LayoutPlanningResult:
-    spec = load_layout_spec(spec_path, project=project)
+    spec = load_layout_spec(spec_path, project=project, platform=platform)
     return plan_layout_snapshot(spec)
 
 

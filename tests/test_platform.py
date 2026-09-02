@@ -17,6 +17,7 @@ from sigilicon.domain.platform import (
     resolve_platform,
     resolve_platform_snapshot,
 )
+from sigilicon.execution.model import Resources
 from sigilicon.project import Project
 
 
@@ -24,12 +25,16 @@ def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> 
     write_project_context(tmp_path)
     model = write_test_platform(tmp_path)
 
-    platform = load_platform(Project.open(tmp_path), "testpdk")
+    platform = load_platform(
+        Project.open(tmp_path), "testpdk", resources=Resources()
+    )
 
     assert platform.simulation.default.file == model
     assert platform.simulation.default.single_section == "tt"
     assert platform.oa.technology_library == "techLib"
     assert platform.oa.reference_libraries == ("deviceLib",)
+    assert platform.asset_root == tmp_path / "configs/platform/testpdk"
+    assert platform.asset_root_environment is None
     assert platform.source_paths == (
         tmp_path / "configs/platform/catalog.toml",
         tmp_path / "configs/platform/testpdk/platform.toml",
@@ -46,7 +51,7 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     project = Project.open(tmp_path)
-    inventory = load_platform_inventory(project)
+    inventory = load_platform_inventory(project, resources=Resources())
 
     assert (
         resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
@@ -69,25 +74,23 @@ def test_resolve_platform_rejects_typed_and_source_drift(tmp_path: Path) -> None
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
     project = Project.open(tmp_path)
-    snapshot = load_platform(project, "testpdk")
+    snapshot = load_platform(project, "testpdk", resources=Resources())
     assert snapshot.layout is not None
 
-    with pytest.raises(ValueError, match="platform identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            snapshot=replace(
-                snapshot,
-                layout=replace(
-                    snapshot.layout,
-                    dbu_per_micron=snapshot.layout.dbu_per_micron + 1,
-                ),
+    with pytest.raises(ValueError, match="_authority.*specified"):
+        replace(
+            snapshot,
+            layout=replace(
+                snapshot.layout,
+                dbu_per_micron=snapshot.layout.dbu_per_micron + 1,
             ),
         )
 
     snapshot.layout.layout_path.unlink()
     with pytest.raises(ValueError, match="source identity drift"):
-        resolve_platform(project, "testpdk", snapshot=snapshot)
+        resolve_platform(
+            project, "testpdk", resources=Resources(), snapshot=snapshot
+        )
 
 
 def test_platform_contract_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -100,7 +103,25 @@ def test_platform_contract_rejects_unknown_fields(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported fields.*model_sects"):
-        load_platform(Project.open(tmp_path), "testpdk")
+        load_platform(
+            Project.open(tmp_path), "testpdk", resources=Resources()
+        )
+
+
+def test_platform_manifest_rejects_legacy_installation_schema(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + '\n[installation]\nroot_environment = "OLD_ROOT"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields.*installation"):
+        load_platform(
+            Project.open(tmp_path), "testpdk", resources=Resources()
+        )
 
 
 def test_layout_platform_resolves_optional_and_materialization_capabilities(
@@ -131,7 +152,9 @@ routing1_routing2 = "M2_M1c"
         encoding="utf-8",
     )
 
-    platform = load_platform(Project.open(tmp_path), "testpdk")
+    platform = load_platform(
+        Project.open(tmp_path), "testpdk", resources=Resources()
+    )
 
     assert platform.layout is not None
     assert platform.layout.qrc_tech_file is None
@@ -156,7 +179,10 @@ def test_platform_catalog_selects_explicit_manifest_only(tmp_path: Path) -> None
     manifest.rename(manifest.with_name("platform-contract.toml"))
     project = Project.open(tmp_path)
 
-    assert load_platform(project, "custom").path.name == "platform-contract.toml"
+    assert (
+        load_platform(project, "custom", resources=Resources()).path.name
+        == "platform-contract.toml"
+    )
     with pytest.raises(ValueError, match="safe relative path"):
         load_platform_catalog(project)
 
@@ -176,18 +202,21 @@ def test_external_platform_assets_are_not_source_documents(
         manifest.read_text(encoding="utf-8").replace(
             "\n[contracts]\n",
             '''
-[installation]
-root_environment = "TEST_PDK_ROOT"
-package_root = "testpdk"
+asset_scope = "external"
 
 [contracts]
 ''',
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("TEST_PDK_ROOT", str(tmp_path / "installed"))
+    monkeypatch.setenv(
+        "SIGILICON_PLATFORM_TESTPDK_ROOT", str(tmp_path / "wrong")
+    )
+    resources = Resources(
+        environment={"SIGILICON_PLATFORM_TESTPDK_ROOT": str(package)}
+    )
 
-    platform = load_platform(Project.open(tmp_path), "testpdk")
+    platform = load_platform(Project.open(tmp_path), "testpdk", resources=resources)
 
     assert platform.simulation.default.file == model
     assert all(path.is_relative_to(tmp_path) for path in platform.source_documents)
@@ -195,7 +224,6 @@ package_root = "testpdk"
 
 def test_external_platform_model_cannot_traverse_a_symlink(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
@@ -209,19 +237,97 @@ def test_external_platform_model_cannot_traverse_a_symlink(
         manifest.read_text(encoding="utf-8").replace(
             "\n[contracts]\n",
             '''
-[installation]
-root_environment = "TEST_PDK_ROOT"
-package_root = "testpdk"
+asset_scope = "external"
 
 [contracts]
 ''',
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("TEST_PDK_ROOT", str(tmp_path / "installed"))
+    resources = Resources(
+        environment={"SIGILICON_PLATFORM_TESTPDK_ROOT": str(package)}
+    )
 
     with pytest.raises(ValueError, match="must not traverse a symlink"):
-        load_platform(Project.open(tmp_path), "testpdk")
+        load_platform(Project.open(tmp_path), "testpdk", resources=resources)
+
+
+def test_external_platform_requires_explicit_resource_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '\nasset_scope = "external"\n\n[contracts]\n',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "SIGILICON_PLATFORM_TESTPDK_ROOT", str(tmp_path / "ambient")
+    )
+
+    with pytest.raises(ValueError, match="SIGILICON_PLATFORM_TESTPDK_ROOT"):
+        load_platform(
+            Project.open(tmp_path), "testpdk", resources=Resources()
+        )
+
+
+def test_external_platform_snapshot_ignores_ambient_and_detects_explicit_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    package = tmp_path / "installed/testpdk"
+    package.mkdir(parents=True)
+    (package / "model.scs").write_text("// installed model\n", encoding="utf-8")
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '\nasset_scope = "external"\n\n[contracts]\n',
+        ),
+        encoding="utf-8",
+    )
+    environment = "SIGILICON_PLATFORM_TESTPDK_ROOT"
+    resources = Resources(environment={environment: str(package)})
+    project = Project.open(tmp_path)
+    snapshot = load_platform(project, "testpdk", resources=resources)
+
+    monkeypatch.setenv(environment, str(tmp_path / "ambient"))
+    assert resolve_platform_snapshot(project, "testpdk", snapshot=snapshot) is snapshot
+
+    other = tmp_path / "installed/other"
+    other.mkdir()
+    (other / "model.scs").write_text("// other model\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="platform identity drift"):
+        resolve_platform(
+            project,
+            "testpdk",
+            resources=Resources(environment={environment: str(other)}),
+            snapshot=snapshot,
+        )
+
+
+def test_platform_asset_environment_names_cannot_collide(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path, key="a-b")
+    write_test_platform(tmp_path, key="a_b")
+    catalog = tmp_path / "configs/platform/catalog.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            '[platforms]\na_b = "a_b/platform.toml"',
+            '[platforms]\na-b = "a-b/platform.toml"\na_b = "a_b/platform.toml"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="collide in asset environment"):
+        load_platform_catalog(Project.open(tmp_path))
 
 
 def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:
@@ -236,4 +342,6 @@ def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="owner must be 'test-platform'"):
-        load_platform(Project.open(tmp_path), "testpdk")
+        load_platform(
+            Project.open(tmp_path), "testpdk", resources=Resources()
+        )

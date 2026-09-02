@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 from sigilicon.external_tools import ConfirmedProcessGroupResult
+from sigilicon.execution.model import Resources
 from sigilicon.virtuoso.maestro_batch import (
     render_isolated_maestro_run_skill,
     run_isolated_maestro,
@@ -82,6 +83,15 @@ def _run_with_fake_process(
     work.mkdir(parents=True)
     worker_log = work / "virtuoso.log"
     rdb_path = work / "maestro-rdb.tsv"
+    executable = tmp_path / "virtuoso"
+    executable.write_text("tool\n", encoding="utf-8")
+    executable.chmod(0o755)
+    runtime = Resources(
+        environment={
+            "SIGILICON_CADENCE_VIRTUOSO": str(executable),
+            "XCELIUM_HOME": "/mock/xcelium",
+        }
+    )
     captured: dict[str, object] = {}
 
     def fake_process(command, **kwargs):
@@ -117,12 +127,8 @@ def _run_with_fake_process(
         )
 
     monkeypatch.setattr(
-        "sigilicon.virtuoso.maestro_batch._virtuoso_executable",
-        lambda: Path("/mock/bin/virtuoso"),
-    )
-    monkeypatch.setattr(
         "sigilicon.virtuoso.maestro_batch.cadence_subprocess_env",
-        lambda: {"XCELIUM_HOME": "/mock/xcelium"},
+        lambda base: dict(base),
     )
     monkeypatch.setattr(
         "sigilicon.virtuoso.maestro_batch.run_process_group_until_confirmed",
@@ -144,6 +150,7 @@ def _run_with_fake_process(
             nonce=NONCE,
             timeout=30,
             operation=operation,
+            resources=runtime,
             result_completion_probe=lambda _history: result_confirmed,
             rdb_export=rdb_path,
         )
@@ -164,8 +171,9 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
     )
 
     command = captured["command"]
-    assert command[0] == "/mock/bin/virtuoso"
-    assert command[1:3] == ("-nograph", "-nocdsinit")
+    assert any(part.endswith("/virtuoso") for part in command)
+    nograph = command.index("-nograph")
+    assert command[nograph : nograph + 2] == ("-nograph", "-nocdsinit")
     assert command[command.index("-cdslib") + 1].startswith(PROC_FD_PREFIX)
     assert command[command.index("-log") + 1].startswith(PROC_FD_PREFIX)
     assert command[command.index("-restore") + 1].startswith(PROC_FD_PREFIX)
@@ -280,6 +288,12 @@ def test_isolated_runner_rejects_log_outside_direct_work(
     client = object()
     work = tmp_path / "work"
     work.mkdir()
+    executable = tmp_path / "virtuoso"
+    executable.write_text("tool\n", encoding="utf-8")
+    executable.chmod(0o755)
+    runtime = Resources(
+        environment={"SIGILICON_CADENCE_VIRTUOSO": str(executable)}
+    )
     with workspace_factory(
         client,
         library="lib",
@@ -296,6 +310,7 @@ def test_isolated_runner_rejects_log_outside_direct_work(
                 nonce=NONCE,
                 timeout=30,
                 operation=operation,
+                resources=runtime,
                 result_completion_probe=lambda _history: True,
                 rdb_export=work / "maestro-rdb.tsv",
             )

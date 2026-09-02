@@ -23,6 +23,7 @@ from sigilicon.external_tools import (
     run_process_group_capture,
     xrun_env,
 )
+from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
 from sigilicon.workflows.xcelium import (
@@ -387,6 +388,7 @@ def plan_xcelium_ams_cell(
     contract_path: Path,
     *,
     project: Project,
+    resources: Resources,
 ) -> XceliumAmsCellPlan:
     """Resolve one AMS cell without finding or launching an external simulator."""
 
@@ -419,7 +421,11 @@ def plan_xcelium_ams_cell(
     native_cell, circuit, integration_check, release_records = (
         _locked_native_release(spec)
     )
-    platform = load_platform(repository, spec.ams.platform)
+    platform = load_platform(
+        repository,
+        spec.ams.platform,
+        resources=resources,
+    )
     model_set = platform.simulation.model_set(spec.ams.model_set)
     model_names = [path.name for path in model_set.files]
     if len(model_names) != len(set(model_names)):

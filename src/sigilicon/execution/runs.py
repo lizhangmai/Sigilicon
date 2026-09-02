@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Any, Mapping
 
@@ -29,6 +30,17 @@ from sigilicon.paths import ArtifactLayout, RunPaths
 
 class RunStoreError(ValueError):
     """A requested run is missing, unsafe, or internally inconsistent."""
+
+
+_SHA256_IDENTITY = re.compile(r"sha256-[0-9a-f]{64}\Z")
+
+
+def _valid_resources_identity(plan: Mapping[str, Any]) -> bool:
+    identity = plan.get("resources_identity")
+    return (
+        isinstance(identity, str)
+        and _SHA256_IDENTITY.fullmatch(identity) is not None
+    )
 
 
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
@@ -248,11 +260,12 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 4
+            plan.get("schema") != 5
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
             or plan.get("variant") != selected.variant
+            or not _valid_resources_identity(plan)
         ):
             raise RunStoreError("persisted execution plan identity drift")
         if (

@@ -112,6 +112,7 @@ def import_hierarchy(
     cell_evidence_role: str | None = None,
     timeout: int,
     operation: WorkspaceOperation,
+    resources: Any,
 ) -> tuple[str, ...]:
     """Import a preplanned hierarchy through single-cell adapters."""
 
@@ -169,6 +170,7 @@ def import_hierarchy(
                     run_dir=cell_run_dir,
                     timeout=timeout,
                     operation=operation,
+                    resources=resources,
                 )
         except Exception as exc:
             raise HierarchyImportError(

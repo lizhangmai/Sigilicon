@@ -180,6 +180,31 @@ printf 'native complete\\n' >"$log"
     )
 
 
+def test_cadence_executable_does_not_fall_back_to_ambient_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = _file(tmp_path / "ambient/xrun", executable=True)
+    monkeypatch.setenv("PATH", str(executable.parent))
+    resources = Resources(
+        frozenset({"tool.cadence-xcelium"}),
+        {"SIGILICON_CADENCE_XRUN": executable.name},
+    )
+    step = Step(
+        "rtl",
+        "cadence.xcelium",
+        {"success_marker": "RTL_SUMMARY failures=0", "timeout_seconds": 10},
+        sources=("rtl/design.sv",),
+    )
+
+    checks = XceliumBackend().preflight(step, resources)
+
+    assert any(
+        check.subject == "SIGILICON_CADENCE_XRUN" and check.status == "blocked"
+        for check in checks
+    )
+
+
 def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     tmp_path: Path,
 ) -> None:
@@ -269,10 +294,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         owner=lambda name: SimpleNamespace(root=owner) if name == "example" else None,
     )
     planning = SimpleNamespace(
-        platform=SimpleNamespace(
-            key="fixture-pdk",
-            installation_root_environment=None,
-        ),
+        platform=SimpleNamespace(key="fixture-pdk"),
         spec=SimpleNamespace(
             cell="tb_ams",
             ams=SimpleNamespace(circuit_role="circuit_netlist"),
@@ -296,7 +318,9 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     )
     monkeypatch.setattr(
         "sigilicon.workflows.xcelium_ams.plan_xcelium_ams_cell",
-        lambda _cell, *, project: planning if project is selected_project else None,
+        lambda _cell, *, project, resources: (
+            planning if project is selected_project else None
+        ),
     )
 
     def execute(
@@ -318,7 +342,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         execute,
     )
     backend = XceliumAmsBackend()
-    preparation = backend.prepare(selected_project, step)
+    preparation = backend.prepare(selected_project, step, resources)
     prepared = preparation.step
     context = _bind_preparation(context, preparation)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
@@ -372,6 +396,93 @@ def _oa_context(
     return context
 
 
+def test_native_oa_preflight_requires_explicit_virtuoso_executable(
+    tmp_path: Path,
+) -> None:
+    step = Step(
+        "native",
+        "cadence.native-oa",
+        {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
+        sources=("configs/oa.toml",),
+    )
+    environment = {
+        "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
+        "SIGILICON_VIRTUOSO_PORT": "65432",
+    }
+    capabilities = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
+
+    blocked = NativeOaBackend().preflight(
+        step,
+        Resources(capabilities, environment),
+    )
+
+    assert any(
+        check.subject == "SIGILICON_CADENCE_VIRTUOSO"
+        and check.status == "blocked"
+        for check in blocked
+    )
+
+    executable = _file(tmp_path / "tools/virtuoso", executable=True)
+    ready = NativeOaBackend().preflight(
+        step,
+        Resources(
+            capabilities,
+            {**environment, "SIGILICON_CADENCE_VIRTUOSO": str(executable)},
+        ),
+    )
+
+    assert all(check.status == "ready" for check in ready)
+
+
+def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> None:
+    step = Step(
+        "oa",
+        "cadence.oa-rebuild",
+        {
+            "config": {"owner": "example", "timeout_seconds": 10},
+            "prepared": {
+                "runtime_executables": (
+                    "SIGILICON_CADENCE_SPICEIN",
+                    "SIGILICON_CADENCE_CDSTEXTTO5X",
+                )
+            },
+        },
+        sources=("configs/oa.toml",),
+    )
+    environment = {
+        "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
+        "SIGILICON_VIRTUOSO_PORT": "65432",
+    }
+    capabilities = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
+    backend = next(
+        item for item in cadence_backends() if item.name == "cadence.oa-rebuild"
+    )
+
+    blocked = backend.preflight(step, Resources(capabilities, environment))
+
+    assert {
+        check.subject
+        for check in blocked
+        if check.status == "blocked"
+    } == {"SIGILICON_CADENCE_SPICEIN", "SIGILICON_CADENCE_CDSTEXTTO5X"}
+
+    spicein = _file(tmp_path / "tools/spiceIn", executable=True)
+    text_import = _file(tmp_path / "tools/cdsTextTo5x", executable=True)
+    ready = backend.preflight(
+        step,
+        Resources(
+            capabilities,
+            {
+                **environment,
+                "SIGILICON_CADENCE_SPICEIN": str(spicein),
+                "SIGILICON_CADENCE_CDSTEXTTO5X": str(text_import),
+            },
+        ),
+    )
+
+    assert all(check.status == "ready" for check in ready)
+
+
 def test_native_oa_backend_binds_operation_and_publishes_evidence(
     monkeypatch,
     tmp_path: Path,
@@ -402,8 +513,12 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         oa_assembly_for=lambda _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
+        "sigilicon.domain.platform.load_platform_inventory",
+        lambda _project, *, resources: object(),
+    )
+    monkeypatch.setattr(
         "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
-        lambda _manifest, *, project: plan,
+        lambda _manifest, *, project, platform_inventory: plan,
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.oa_plan_source_paths",
@@ -413,13 +528,17 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         "sigilicon.workflows.oa_library.validate_oa_plan_source_members",
         lambda _plan, _members: None,
     )
-    monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.virtuoso.client.get_client",
+        lambda _resources: object(),
+    )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.build_oa_layout_ir",
         lambda plan, **_kwargs: plan,
     )
 
     def execute(_plan, _selected, _client, *, artifacts, bind_operation, **_kwargs):
+        assert _kwargs["resources"] is context.resources
         operation = SimpleNamespace(operation_id=context.operation_id)
         bind_operation(operation)
         artifacts.write_json("outputs", ("evidence.json",), {"passed": True})
@@ -433,7 +552,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         execute,
     )
     backend = NativeOaBackend()
-    prepared = backend.prepare(project, step).step
+    prepared = backend.prepare(project, step, context.resources).step
     context = replace(
         context,
         step=prepared,
@@ -479,8 +598,12 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         oa_assembly_for=lambda _root: context.owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
+        "sigilicon.domain.platform.load_platform_inventory",
+        lambda _project, *, resources: object(),
+    )
+    monkeypatch.setattr(
         "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
-        lambda _manifest, *, project: planning,
+        lambda _manifest, *, project, platform_inventory: planning,
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.oa_plan_source_paths",
@@ -492,11 +615,14 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     )
     monkeypatch.setattr(
         "sigilicon.backends.cadence._oa_resource_identities",
-        lambda _project, _plan, _required: {
+        lambda _project, _plan, _required, _resources: {
             model: "pdk:fixture:simulation/nominal/model.scs"
         },
     )
-    monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.virtuoso.client.get_client",
+        lambda _resources: object(),
+    )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.build_oa_layout_ir",
         lambda plan, **_kwargs: plan,
@@ -512,6 +638,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         bind_operation,
         **_kwargs,
     ):
+        assert _kwargs["resources"] is context.resources
         assert source_paths[manifest] == context.source_root / "configs/oa.toml"
         assert source_paths[manifest] != manifest
         assert resource_paths[model].read_text(encoding="utf-8") == "sealed model\n"
@@ -528,7 +655,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         backend for backend in cadence_backends()
         if backend.name == "cadence.oa-rebuild"
     )
-    preparation = backend.prepare(project, step)
+    preparation = backend.prepare(project, step, context.resources)
     prepared = preparation.step
     context = _bind_preparation(context, preparation)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
@@ -578,10 +705,17 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.plan_layout_spec",
-        lambda _spec, *, project: planning,
+        "sigilicon.domain.platform.load_platform_inventory",
+        lambda _project, *, resources: object(),
     )
-    monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        lambda _spec, *, project, platform: planning,
+    )
+    monkeypatch.setattr(
+        "sigilicon.virtuoso.client.get_client",
+        lambda _resources: object(),
+    )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.build_managed_layout_ir",
         lambda _planning, **_kwargs: generated,
@@ -599,7 +733,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     )
 
     backend = LayoutBackend()
-    prepared = backend.prepare(project, step).step
+    prepared = backend.prepare(project, step, context.resources).step
     context = replace(
         context,
         step=prepared,
@@ -654,12 +788,16 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
         source_records={source: "stale typed snapshot\n"},
     )
     monkeypatch.setattr(
+        "sigilicon.domain.platform.load_platform_inventory",
+        lambda _project, *, resources: object(),
+    )
+    monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
-        lambda _spec, *, project: planning,
+        lambda _spec, *, project, platform: planning,
     )
 
     with pytest.raises(ContractError, match="typed backend source snapshot drift"):
-        LayoutBackend().prepare(project, step)
+        LayoutBackend().prepare(project, step, context.resources)
 
 
 def test_layout_verification_backend_publishes_classified_evidence(
@@ -690,10 +828,12 @@ def test_layout_verification_backend_publishes_classified_evidence(
                 "tool.calibre",
             }
         ),
-        {
-            "SIGILICON_CADENCE_XSTREAM": str(xstream),
-            "SIGILICON_CALIBRE": str(calibre),
-        },
+            {
+                "SIGILICON_CADENCE_XSTREAM": str(xstream),
+                "SIGILICON_CALIBRE": str(calibre),
+                "SIGILICON_VIRTUOSO_HOST": "127.0.0.1",
+                "SIGILICON_VIRTUOSO_PORT": "65432",
+            },
     )
     project_root = tmp_path / "source-project"
     owner_root = project_root / "ip/example"
@@ -742,10 +882,17 @@ def test_layout_verification_backend_publishes_classified_evidence(
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.plan_layout_spec",
-        lambda _spec, *, project: planning,
+        "sigilicon.domain.platform.load_platform_inventory",
+        lambda _project, *, resources: object(),
     )
-    monkeypatch.setattr("sigilicon.virtuoso.client.get_client", lambda: object())
+    monkeypatch.setattr(
+        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        lambda _spec, *, project, platform: planning,
+    )
+    monkeypatch.setattr(
+        "sigilicon.virtuoso.client.get_client",
+        lambda _resources: object(),
+    )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.build_managed_layout_ir",
         lambda _planning, **_kwargs: generated,
@@ -778,7 +925,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         verify,
     )
     backend = LayoutVerificationBackend()
-    preparation = backend.prepare(project, step)
+    preparation = backend.prepare(project, step, resources)
     prepared = preparation.step
     context = _bind_preparation(context, preparation)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
