@@ -74,17 +74,11 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
             f"{contract}: runtime.inherit_environment must be unique"
         )
     environment: dict[str, str] = {}
-    missing_environment: list[str] = []
     for name in inherit_environment:
         try:
             environment[name] = os.environ[name]
         except KeyError:
-            missing_environment.append(name)
-    if missing_environment:
-        raise ValueError(
-            f"{contract}: declared inherited environment is missing: "
-            f"{missing_environment}"
-        )
+            pass
 
     def table(name: str) -> dict[str, str]:
         value = runtime.get(name, {})

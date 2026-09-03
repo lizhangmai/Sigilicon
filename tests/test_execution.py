@@ -421,15 +421,19 @@ def test_project_freezes_inherited_environment_in_its_identity(
     assert second.identity != first_identity
 
 
-def test_project_requires_every_declared_inherited_environment_value(
+def test_project_records_an_absent_declared_environment_value(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
     monkeypatch.delenv("LM_LICENSE_FILE")
+    absent = Project.open(tmp_path)
 
-    with pytest.raises(ValueError, match="declared inherited environment is missing"):
-        Project.open(tmp_path)
+    assert absent.resources().environment == {}
+    assert absent.resources().environment_record == {"LM_LICENSE_FILE": None}
+
+    monkeypatch.setenv("LM_LICENSE_FILE", "now-present")
+    assert Project.open(tmp_path).identity != absent.identity
 
 
 def test_execution_resources_reject_a_tool_replaced_after_sealing(

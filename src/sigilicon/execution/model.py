@@ -1130,12 +1130,16 @@ class Resources:
         raise ContractError(f"runtime resource is not configured: {identity}")
 
     @property
-    def environment_record(self) -> dict[str, str]:
-        """Return a non-secret identity record for the frozen host environment."""
+    def environment_record(self) -> dict[str, str | None]:
+        """Identify every declared host value without persisting its contents."""
 
         return {
-            name: canonical_digest(value)
-            for name, value in sorted(self.environment.items())
+            name: (
+                canonical_digest(self.environment[name])
+                if name in self.environment
+                else None
+            )
+            for name in sorted(self.inherit_environment)
         }
 
     def matches(self, binding: ResourceBinding) -> bool:

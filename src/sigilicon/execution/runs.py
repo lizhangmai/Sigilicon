@@ -309,7 +309,11 @@ class RunStore:
             or list(environment) != sorted(environment)
             or set(environment) != set(inherit_environment)
             or any(
-                not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None
+                digest is not None
+                and (
+                    not isinstance(digest, str)
+                    or _DIGEST.fullmatch(digest) is None
+                )
                 for digest in environment.values()
             )
             or not isinstance(resources, list)
