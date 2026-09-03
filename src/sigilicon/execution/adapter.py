@@ -123,6 +123,7 @@ def plan_execution(
     captured = {(source.root, source.path): source for source in draft.sources}
     captured_names = {source.path: source.root for source in draft.sources}
     captured_resources: dict[str, ResourceBinding] = {}
+    validated_sources: set[tuple[Path, str]] = set()
     planned_steps: list[Step] = []
 
     for step in draft.steps:
@@ -162,12 +163,18 @@ def plan_execution(
                 raise ContractError(
                     f"adapter {step.uses!r} selected source with the wrong scope: {path}"
                 )
-            if not source.current():
-                raise ContractError(f"source changed during planning: {source.path}")
             previous_root = captured_names.get(source.path)
             if previous_root is not None and previous_root != source.root:
                 raise ContractError("source paths collide across scopes")
             previous = captured.get((source.root, source.path))
+            source_identity = (source.root, source.path)
+            if source_identity not in validated_sources:
+                baseline = source if previous is None else previous
+                if not baseline.current():
+                    raise ContractError(
+                        f"source changed during planning: {source.path}"
+                    )
+                validated_sources.add(source_identity)
             if previous is not None and previous.record != source.record:
                 raise ContractError(f"source snapshot collision: {source.path}")
             captured[(source.root, source.path)] = source
@@ -189,7 +196,11 @@ def plan_execution(
         }
         for identity in declared_resources:
             if identity not in step_resources:
-                step_resources[identity] = resources.capture(identity)
+                step_resources[identity] = (
+                    captured_resources[identity]
+                    if identity in captured_resources
+                    else resources.capture(identity)
+                )
         planned = replace(
             planned,
             resources=declared_resources,
@@ -199,14 +210,14 @@ def plan_execution(
         )
 
         for resource in planned._resource_bindings:
-            if not resources.matches(resource):
-                raise ContractError(
-                    f"external resource changed during planning: {resource.identity}"
-                )
             previous = captured_resources.get(resource.identity)
             if previous is not None and previous.record != resource.record:
                 raise ContractError(
                     f"external resource identity collision: {resource.identity}"
+                )
+            if previous is None and not resources.matches(resource):
+                raise ContractError(
+                    f"external resource changed during planning: {resource.identity}"
                 )
             captured_resources[resource.identity] = resource
         planned_steps.append(planned)

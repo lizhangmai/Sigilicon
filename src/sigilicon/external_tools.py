@@ -30,6 +30,7 @@ CADENCE_SPICEIN_TOOL = "cadence.spice-in"
 CADENCE_TEXT_IMPORT_TOOL = "cadence.cds-text-to-5x"
 PROCESS_TERM_GRACE_SECONDS = 10
 PROCESS_KILL_GRACE_SECONDS = 5
+PROCESS_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024
 # Some Python builds omit these Linux memfd constants even though libc and the
 # kernel support memfd_create(2).  Use the documented Linux ABI values as the
 # fallback so immutable child inputs do not depend on optional Python names.
@@ -94,6 +95,7 @@ class ProcessRequest:
     timeout_seconds: float
     pass_fds: tuple[int, ...] = ()
     executable: str | None = None
+    output_limit_bytes: int = PROCESS_OUTPUT_LIMIT_BYTES
     before_spawn: Callable[[], None] | None = field(
         default=None,
         repr=False,
@@ -134,6 +136,11 @@ class ProcessRequest:
             raise ValueError("process executable must be an absolute path")
         if self.before_spawn is not None and not callable(self.before_spawn):
             raise ValueError("process before_spawn hook must be callable")
+        if (
+            type(self.output_limit_bytes) is not int
+            or self.output_limit_bytes <= 0
+        ):
+            raise ValueError("process output limit must be a positive integer")
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "environment", MappingProxyType(environment))
         object.__setattr__(self, "pass_fds", pass_fds)
@@ -146,6 +153,8 @@ class ProcessResult:
     returncode: int
     stdout: str
     stderr: str
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 class ProcessPort(Protocol):
@@ -424,6 +433,38 @@ class OwnedDirectoryDescriptor:
 
 
 @dataclass(frozen=True)
+class OwnedInputClosureDescriptor:
+    """One held root for a mutation-monitored file and directory closure."""
+
+    fd: int
+    root: Path
+
+    @property
+    def child_path(self) -> str:
+        return owned_process_fd_path(self.fd)
+
+    def child(self, relative: Path | str) -> str:
+        value = Path(relative)
+        if (
+            value.is_absolute()
+            or not value.parts
+            or any(part in {"", ".", ".."} for part in value.parts)
+        ):
+            raise ValueError(f"input closure child must be relative: {relative!r}")
+        return f"{self.child_path}/{value.as_posix()}"
+
+    def require_visible(self) -> None:
+        metadata = os.fstat(self.fd)
+        visible = self.root.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (visible.st_dev, visible.st_ino)
+            != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise RuntimeError(f"owned input root changed: {self.root}")
+
+
+@dataclass(frozen=True)
 class OwnedExecutable:
     """Held executable target and any exact shebang interpreter."""
 
@@ -630,36 +671,121 @@ def _watch_owned_directory(descriptor: int) -> tuple[int, int]:
     return watch_fd, watch
 
 
-@contextmanager
-def owned_input_files(paths: Sequence[Path]) -> Iterator[None]:
-    """Monitor a file set with one watch and one descriptor per directory."""
-
-    grouped: dict[Path, list[Path]] = {}
-    for path in dict.fromkeys(Path(os.path.abspath(path)) for path in paths):
-        grouped.setdefault(path.parent, []).append(path)
-    watch_fd = _new_input_watch()
-    parents: dict[Path, int] = {}
-    watched: set[tuple[int, bytes]] = set()
-    captured: list[tuple[Path, int, os.stat_result]] = []
+def _closure_relative(root: Path, path: Path, label: str) -> Path:
+    absolute = Path(os.path.abspath(path))
     try:
-        for parent, members in grouped.items():
-            descriptor = _open_nofollow_directory(parent, create_missing=False)
-            parents[parent] = descriptor
-            watch = _add_input_watch(watch_fd, descriptor)
-            for path in members:
-                metadata = os.stat(
-                    path.name,
-                    dir_fd=descriptor,
-                    follow_symlinks=False,
-                )
-                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                    raise RuntimeError(
-                        f"external input is not an owned regular file: {path}"
-                    )
-                watched.add((watch, os.fsencode(path.name)))
-                captured.append((path, descriptor, metadata))
+        relative = absolute.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"{label} is outside its owned root: {absolute}") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise RuntimeError(f"{label} is not a canonical child: {absolute}")
+    return relative
+
+
+def _open_closure_directory(root_fd: int, relative: Path) -> int:
+    descriptor = os.dup(root_fd)
+    try:
+        for component in relative.parts:
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _closure_metadata(root_fd: int, relative: Path) -> os.stat_result:
+    parent = _open_closure_directory(root_fd, relative.parent)
+    try:
+        return os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+
+
+def _metadata_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_mode,
+        value.st_nlink,
+    )
+
+
+@contextmanager
+def owned_input_closure(
+    root: Path,
+    *,
+    files: Sequence[Path],
+    directories: Sequence[Path] = (),
+) -> Iterator[OwnedInputClosureDescriptor]:
+    """Hold one root and monitor an exact input closure without per-file FDs."""
+
+    absolute_root = Path(os.path.abspath(root))
+    root_fd = _open_nofollow_directory(absolute_root, create_missing=False)
+    root_metadata = os.fstat(root_fd)
+    watch_fd = _new_input_watch()
+    file_relatives = tuple(
+        dict.fromkeys(
+            _closure_relative(absolute_root, Path(path), "external input file")
+            for path in files
+        )
+    )
+    directory_relatives = tuple(
+        dict.fromkeys(
+            _closure_relative(
+                absolute_root,
+                Path(path),
+                "external input directory",
+            )
+            for path in directories
+            if Path(os.path.abspath(path)) != absolute_root
+        )
+    )
+    parent_watches: dict[Path, int] = {}
+    watched_names: dict[int, set[bytes]] = {}
+    closed_watches: set[int] = set()
+    captured_files: dict[Path, tuple[int, ...]] = {}
+    captured_directories: dict[Path, tuple[int, ...]] = {}
+
+    def watch_directory(relative: Path) -> int:
+        if relative in parent_watches:
+            return parent_watches[relative]
+        descriptor = _open_closure_directory(root_fd, relative)
         try:
-            yield
+            watch = _add_input_watch(watch_fd, descriptor)
+        finally:
+            os.close(descriptor)
+        parent_watches[relative] = watch
+        return watch
+
+    try:
+        for relative in file_relatives:
+            metadata = _closure_metadata(root_fd, relative)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise RuntimeError(
+                    "external input is not an owned regular file: "
+                    f"{absolute_root / relative}"
+                )
+            captured_files[relative] = _metadata_identity(metadata)
+            watch = watch_directory(relative.parent)
+            watched_names.setdefault(watch, set()).add(os.fsencode(relative.name))
+        for relative in directory_relatives:
+            descriptor = _open_closure_directory(root_fd, relative)
+            try:
+                metadata = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            captured_directories[relative] = _metadata_identity(metadata)
+            closed_watches.add(watch_directory(relative))
+        try:
+            yield OwnedInputClosureDescriptor(root_fd, absolute_root)
         finally:
             while True:
                 try:
@@ -683,41 +809,63 @@ def owned_input_files(paths: Sequence[Path]) -> Iterator[None]:
                     offset = end
                     if mask & (_IN_Q_OVERFLOW | _IN_IGNORED | _IN_UNMOUNT):
                         raise RuntimeError("external input watch became uncertain")
-                    if mask & (_IN_DELETE_SELF | _IN_MOVE_SELF) or (
-                        watch,
-                        name,
-                    ) in watched:
+                    if (
+                        mask & (_IN_DELETE_SELF | _IN_MOVE_SELF)
+                        or watch in closed_watches
+                        or name in watched_names.get(watch, set())
+                    ):
                         raise RuntimeError(
                             "external input pathname changed during invocation"
                         )
-            for path, descriptor, metadata in captured:
-                visible = os.stat(
-                    path.name,
-                    dir_fd=descriptor,
-                    follow_symlinks=False,
-                )
-                if (
-                    visible.st_dev,
-                    visible.st_ino,
-                    visible.st_size,
-                    visible.st_mtime_ns,
-                    visible.st_mode,
-                    visible.st_nlink,
-                ) != (
-                    metadata.st_dev,
-                    metadata.st_ino,
-                    metadata.st_size,
-                    metadata.st_mtime_ns,
-                    metadata.st_mode,
-                    metadata.st_nlink,
-                ):
+            for relative, expected in captured_files.items():
+                current = _closure_metadata(root_fd, relative)
+                if _metadata_identity(current) != expected:
                     raise RuntimeError(
-                        f"external input identity changed during invocation: {path}"
+                        "external input identity changed during invocation: "
+                        f"{absolute_root / relative}"
                     )
+            for relative, expected in captured_directories.items():
+                descriptor = _open_closure_directory(root_fd, relative)
+                try:
+                    current = os.fstat(descriptor)
+                finally:
+                    os.close(descriptor)
+                if _metadata_identity(current) != expected:
+                    raise RuntimeError(
+                        "external input directory changed during invocation: "
+                        f"{absolute_root / relative}"
+                    )
+            visible_root = absolute_root.stat(follow_symlinks=False)
+            if (
+                visible_root.st_dev,
+                visible_root.st_ino,
+                visible_root.st_mode,
+            ) != (
+                root_metadata.st_dev,
+                root_metadata.st_ino,
+                root_metadata.st_mode,
+            ):
+                raise RuntimeError(
+                    f"external input root changed during invocation: {absolute_root}"
+                )
     finally:
         os.close(watch_fd)
-        for descriptor in parents.values():
-            os.close(descriptor)
+        os.close(root_fd)
+
+
+@contextmanager
+def owned_input_files(paths: Sequence[Path]) -> Iterator[None]:
+    """Monitor files below one held common root without persistent parent FDs."""
+
+    absolute = tuple(dict.fromkeys(Path(os.path.abspath(path)) for path in paths))
+    if not absolute:
+        yield
+        return
+    common = Path(os.path.commonpath(tuple(os.fspath(path) for path in absolute)))
+    if common in absolute:
+        common = common.parent
+    with owned_input_closure(common, files=absolute):
+        yield
 
 
 @contextmanager
@@ -1387,14 +1535,40 @@ def _spawn_process_supervisor(
     return supervisor
 
 
+@dataclass
+class _BoundedTextCapture:
+    limit: int
+    payload: bytearray = field(default_factory=bytearray)
+    truncated: bool = False
+
+    def append(self, value: str) -> None:
+        encoded = value.encode("utf-8", errors="backslashreplace")
+        excess = len(self.payload) + len(encoded) - self.limit
+        if excess > 0:
+            self.truncated = True
+            if excess >= len(self.payload):
+                self.payload.clear()
+                encoded = encoded[-self.limit :]
+            else:
+                del self.payload[:excess]
+        self.payload.extend(encoded)
+
+    @property
+    def text(self) -> str:
+        body = self.payload.decode("utf-8", errors="replace")
+        if not self.truncated:
+            return body
+        return f"[output truncated; retained last {self.limit} bytes]\n{body}"
+
+
 def _drain_process_stream(
     stream: Any,
-    chunks: list[str],
+    capture: _BoundedTextCapture,
     errors: list[BaseException],
 ) -> None:
     try:
         while value := stream.read(64 * 1024):
-            chunks.append(value)
+            capture.append(value)
     except BaseException as exc:
         errors.append(exc)
 
@@ -1426,21 +1600,21 @@ def _run_process_group_owned(request: ProcessRequest) -> ProcessResult:
         pass_fds=request.pass_fds,
     )
     process = supervisor.process
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
+    stdout_capture = _BoundedTextCapture(request.output_limit_bytes)
+    stderr_capture = _BoundedTextCapture(request.output_limit_bytes)
     drain_errors: list[BaseException] = []
     drain_threads: list[threading.Thread] = []
     status: _SupervisorStatus | None = None
     try:
-        for stream, chunks in (
-            (process.stdout, stdout_chunks),
-            (process.stderr, stderr_chunks),
+        for stream, capture in (
+            (process.stdout, stdout_capture),
+            (process.stderr, stderr_capture),
         ):
             if stream is None:
                 continue
             thread = threading.Thread(
                 target=_drain_process_stream,
-                args=(stream, chunks, drain_errors),
+                args=(stream, capture, drain_errors),
                 daemon=True,
             )
             thread.start()
@@ -1474,8 +1648,10 @@ def _run_process_group_owned(request: ProcessRequest) -> ProcessResult:
     assert status is not None
     return ProcessResult(
         returncode=status.actual_returncode,
-        stdout="".join(stdout_chunks),
-        stderr="".join(stderr_chunks),
+        stdout=stdout_capture.text,
+        stderr=stderr_capture.text,
+        stdout_truncated=stdout_capture.truncated,
+        stderr_truncated=stderr_capture.truncated,
     )
 
 

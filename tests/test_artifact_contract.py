@@ -237,7 +237,7 @@ def test_concurrent_runs_never_overwrite_each_other(tmp_path: Path) -> None:
     )
 
 
-def test_file_registration_is_batched_at_run_checkpoints(
+def test_file_registration_is_persisted_once_at_terminal_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

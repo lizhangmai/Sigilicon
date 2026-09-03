@@ -15,6 +15,7 @@ from sigilicon.execution import (
     Adapter,
     ContractError,
     ExecutionError,
+    ExecutionPlan,
     Step,
     PreflightCheck,
     RunResult,
@@ -24,6 +25,7 @@ from sigilicon.execution import (
     StepResult,
 )
 from sigilicon.execution.model import _AdapterAction, ResourceBinding, Resources
+from sigilicon.canonical import canonical_digest
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
@@ -88,6 +90,38 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
         assert not hasattr(execution, removed)
     assert "_read_run" not in Project.__dict__
     assert "_clean_run" not in Project.__dict__
+
+
+def test_large_chain_plan_has_linear_topology_and_cached_identity(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.sv"
+    source_path.write_text("module source; endmodule\n", encoding="utf-8")
+    source = Source.capture(source_path, root=tmp_path, scope="project")
+    steps = tuple(
+        Step(
+            f"step-{index}",
+            "fake.copy",
+            _AdapterAction("fake.copy"),
+            needs=() if index == 0 else (f"step-{index - 1}",),
+            sources=(source.path,),
+        )
+        for index in range(2_000)
+    )
+
+    plan = ExecutionPlan(
+        project_identity=canonical_digest("project"),
+        owner="owner",
+        operation="large-chain",
+        variant=None,
+        steps=steps,
+        sources=(source,),
+        resources=(),
+    )
+
+    assert len(plan.steps) == 2_000
+    assert plan.steps[-1].id == "step-1999"
+    assert plan.identity is plan.identity
 
 
 def test_resources_require_typed_project_configuration(
@@ -1050,7 +1084,7 @@ def test_adapter_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
     project = _project(tmp_path, MutatingBackend(),)
     plan = _plan(project, "example:check")
 
-    with pytest.raises(ExecutionError, match="changed immediately before adapter"):
+    with pytest.raises(ExecutionError, match="changed after input sealing"):
         project.run(plan, run_id="b" * 32)
     failed = _read_run(project, "example:check", "b" * 32)
     assert failed.record["contract_kind"] == "run-failure"
@@ -1600,7 +1634,7 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
     project = _project(tmp_path, DriftingCopyAdapter(), UpperAdapter())
     plan = _plan(project, "example:all")
 
-    with pytest.raises(ExecutionError, match="changed immediately before adapter"):
+    with pytest.raises(ExecutionError, match="changed after input sealing"):
         project.run(
             plan,
             run_id="5" * 32,

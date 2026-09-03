@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import json
@@ -379,18 +380,19 @@ def validate_oa_plan_source_members(
 ) -> None:
     """Prove that Action sources are complete and match the typed OA snapshots."""
 
-    records = {member.location: member.read_text() for member in members}
+    records = {member.location: member for member in members}
     required = oa_plan_source_paths(plan)
     if not required.issubset(records):
         missing = sorted(path.as_posix() for path in required - records.keys())
         raise ValueError(f"typed OA plan source closure is incomplete: {missing}")
     exact, documents = _oa_plan_source_expectations(plan)
     for path, record in exact.items():
-        if records.get(path) != record:
+        member = records.get(path)
+        if member is None or member.read_text() != record:
             raise ValueError(f"typed OA plan source snapshot drift: {path}")
     for path, document in documents.items():
         try:
-            parsed = tomllib.loads(records[path])
+            parsed = tomllib.loads(records[path].read_text())
         except (KeyError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"typed OA plan document snapshot drift: {path}") from exc
         if json_value(parsed) != json_value(document):
@@ -418,20 +420,25 @@ def _topological_order(
     }
     if unknown:
         raise ValueError(f"{label} names unknown dependencies: {sorted(unknown)!r}")
+    dependents: dict[_T, list[_T]] = {item: [] for item in items}
+    for item in items:
+        for dependency in remaining[item]:
+            dependents[dependency].append(item)
+    ready = deque(item for item in items if not remaining[item])
     ordered: list[_T] = []
-    while remaining:
-        ready = sorted(
-            (item for item, values in remaining.items() if not values),
+    while ready:
+        item = ready.popleft()
+        ordered.append(item)
+        for dependent in dependents[item]:
+            remaining[dependent].remove(item)
+            if not remaining[dependent]:
+                ready.append(dependent)
+    if len(ordered) != len(items):
+        cycle = sorted(
+            (item for item in items if remaining[item]),
             key=position.__getitem__,
         )
-        if not ready:
-            cycle = sorted(remaining, key=position.__getitem__)
-            raise ValueError(f"{label} dependency cycle: {cycle!r}")
-        for item in ready:
-            ordered.append(item)
-            remaining.pop(item)
-        for values in remaining.values():
-            values.difference_update(ready)
+        raise ValueError(f"{label} dependency cycle: {cycle!r}")
     return tuple(ordered)
 
 

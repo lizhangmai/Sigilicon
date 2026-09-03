@@ -193,7 +193,7 @@ def _bind_source_paths(
     project: PlanningProject,
     owner_name: str,
     step: Step,
-    paths: Mapping[Path, str] | tuple[Path, ...] | frozenset[Path],
+    paths: Mapping[Path, str | Source] | tuple[Path, ...] | frozenset[Path],
 ) -> Mapping[Path, tuple[str, str]]:
     """Bind Project-owned inputs; package code and PDK files stay runtime resources."""
 
@@ -213,14 +213,24 @@ def _bind_source_paths(
             name = path.relative_to(project_root).as_posix()
         else:
             continue
-        snapshot = read_nofollow_text(path)
+        snapshot = None
         if isinstance(paths, Mapping):
             expected = paths[source]
-            if snapshot != expected:
-                raise ContractError(f"typed adapter source snapshot drift: {path}")
+            if isinstance(expected, Source):
+                if expected.location != path or not expected.current():
+                    raise ContractError(f"typed adapter source snapshot drift: {path}")
+                digest = expected.sha256
+            else:
+                snapshot = read_nofollow_text(path)
+                if snapshot != expected:
+                    raise ContractError(f"typed adapter source snapshot drift: {path}")
+                digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        else:
+            snapshot = read_nofollow_text(path)
+            digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
         selected[path] = (
             name,
-            hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
+            digest,
         )
     return MappingProxyType(selected)
 
@@ -230,7 +240,7 @@ def _validate_oa_plan_sources(
     owner_name: str,
     planning: Any,
     paths: frozenset[Path],
-) -> Mapping[Path, str]:
+) -> Mapping[Path, Source]:
     from sigilicon.workflows.oa_library import validate_oa_plan_source_members
 
     project_root = project.project_root.resolve()
@@ -252,7 +262,7 @@ def _validate_oa_plan_sources(
     except ValueError as exc:
         raise ContractError(str(exc)) from exc
     return MappingProxyType(
-        {member.location: member.read_text() for member in members}
+        {member.location: member for member in members}
     )
 
 
@@ -270,13 +280,13 @@ def _require_bound_sources(
 
 def _external_file_records(
     project: PlanningProject,
-    source_records: Mapping[Path, str],
+    source_records: Mapping[Path, str | Source],
     extra_paths: tuple[Path, ...] = (),
     identities: Mapping[Path, str] = MappingProxyType({}),
 ) -> tuple[ResourceBinding, ...]:
     project_root = project.project_root.resolve()
     artifact_root = project.artifact_root.resolve()
-    selected: dict[str, tuple[Path, str | None]] = {}
+    selected: dict[str, tuple[Path, str | Source | None]] = {}
     seen: set[Path] = set()
     entries = (
         *((source, False) for source in source_records),
@@ -319,7 +329,17 @@ def _external_file_records(
     )
     for resource in resources:
         expected = selected[resource.identity][1]
-        if expected is not None and expected.encode("utf-8") != resource.read_bytes():
+        if isinstance(expected, Source) and (
+            resource.sha256 != expected.sha256
+            or resource.record["size"] != expected.size
+        ):
+            raise ContractError(
+                f"external resource changed during planning: {resource.identity}"
+            )
+        if (
+            isinstance(expected, str)
+            and expected.encode("utf-8") != resource.read_bytes()
+        ):
             raise ContractError(
                 f"external resource changed during planning: {resource.identity}"
             )
@@ -329,7 +349,7 @@ def _external_file_records(
 def _oa_resource_identities(
     project: PlanningProject,
     planning: Any,
-    paths: Mapping[Path, str],
+    paths: Mapping[Path, str | Source],
     resources: Resources,
 ) -> Mapping[Path, str]:
     root = project.project_root.resolve()
@@ -368,6 +388,7 @@ def _captured_project_sources(
     project: PlanningProject,
     owner_name: str,
     sources: Mapping[Path, tuple[str, str]],
+    records: Mapping[Path, str | Source],
 ) -> tuple[Source, ...]:
     project_root = project.project_root.resolve()
     owner_root = project.owner(owner_name).root.resolve()
@@ -379,7 +400,13 @@ def _captured_project_sources(
             root, scope = project_root, "project"
         else:
             raise ContractError(f"prepared source is outside the Project: {path}")
-        captured.append(Source.capture(path, root=root, scope=scope))
+        existing = records.get(path)
+        if isinstance(existing, Source):
+            if existing.root != root or existing.scope != scope:
+                raise ContractError(f"prepared source has the wrong scope: {path}")
+            captured.append(existing)
+        else:
+            captured.append(Source.capture(path, root=root, scope=scope))
     return tuple(captured)
 
 
@@ -535,7 +562,7 @@ class _CadenceDomainAdapter:
         config: Mapping[str, Any],
         plan: object,
         prepared: Mapping[str, Any],
-        source_records: Mapping[Path, str],
+        source_records: Mapping[Path, str | Source],
         resource_identities: Mapping[Path, str],
         extra_resources: tuple[Path, ...] = (),
         runtime_identities: tuple[str, ...] = (),
@@ -555,7 +582,12 @@ class _CadenceDomainAdapter:
             plan=plan,
             prepared=prepared,
             sources=sources,
-            captured=_captured_project_sources(project, owner, sources),
+            captured=_captured_project_sources(
+                project,
+                owner,
+                sources,
+                source_records,
+            ),
             resources=external,
             runtime_bindings=_runtime_bindings(resources, *runtime_identities),
         )

@@ -14,6 +14,7 @@ from sigilicon.external_tools import (
     cadence_subprocess_env,
     owned_atomic_output_file,
     owned_directory,
+    owned_input_closure,
     owned_input_file,
     owned_input_files,
     owned_output_file,
@@ -468,6 +469,36 @@ def test_owned_input_group_scales_with_directories_not_file_count(
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
+def test_owned_input_group_does_not_hold_one_fd_per_parent(tmp_path: Path) -> None:
+    paths = []
+    for index in range(100):
+        directory = tmp_path / f"group-{index}"
+        directory.mkdir()
+        path = directory / "input.sv"
+        path.write_text(str(index), encoding="utf-8")
+        paths.append(path)
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(64, hard), hard))
+    try:
+        with owned_input_files(paths):
+            assert paths[-1].read_text(encoding="utf-8") == "99"
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_owned_directory_closure_rejects_new_members(tmp_path: Path) -> None:
+    asset = tmp_path / "asset"
+    asset.mkdir()
+
+    with pytest.raises(RuntimeError, match="pathname changed"):
+        with owned_input_closure(
+            tmp_path,
+            files=(),
+            directories=(asset,),
+        ):
+            (asset / "injected.model").write_text("drift", encoding="utf-8")
+
+
 def test_owned_input_group_detects_restored_path_swap(tmp_path: Path) -> None:
     source = tmp_path / "source.sv"
     original = tmp_path / "original.sv"
@@ -481,6 +512,25 @@ def test_owned_input_group_detects_restored_path_swap(tmp_path: Path) -> None:
             replacement.rename(source)
             source.unlink()
             original.rename(source)
+
+
+def test_managed_process_bounds_captured_output(tmp_path: Path) -> None:
+    result = managed_process.run(ProcessRequest(
+        argv=(
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('x' * 4096)",
+        ),
+        cwd=tmp_path,
+        environment={},
+        timeout_seconds=10,
+        output_limit_bytes=128,
+    ))
+
+    assert result.returncode == 0
+    assert result.stdout_truncated is True
+    assert result.stdout.endswith("x" * 128)
+    assert result.stderr == ""
 
 
 def test_owned_output_never_follows_a_replaced_directory_path(

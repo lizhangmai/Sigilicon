@@ -48,6 +48,7 @@ from sigilicon.external_tools import (
     ProcessResult,
     managed_process,
     owned_directory,
+    owned_input_closure,
     owned_input_file,
     owned_output_file,
     owned_scratch_directory,
@@ -294,22 +295,50 @@ def _run_script(
     with ExitStack() as stack:
         source_root = stack.enter_context(owned_directory(context.source_root))
         work_root = stack.enter_context(owned_directory(context.work_root))
-        for source in context.step.sources:
-            stack.enter_context(
-                owned_input_file(
-                    context.source_path(source),
-                    require_single_link=False,
-                )
+        source_closure = stack.enter_context(
+            owned_input_closure(
+                context.source_root,
+                files=tuple(
+                    context.source_path(source)
+                    for source in context.step.sources
+                ),
             )
-        for name, value in tuple(environment.items()):
-            path = Path(value)
-            if path.is_absolute() and path.is_relative_to(context.source_root):
+        )
+        resource_root = (
+            None
+            if context.resource_root is None
+            else stack.enter_context(owned_directory(context.resource_root))
+        )
+
+        def child_input(path: Path) -> str | None:
+            if path.is_relative_to(context.source_root):
                 relative = path.relative_to(context.source_root)
-                environment[name] = (
+                return (
                     source_root.child_path
                     if relative == Path(".")
                     else f"{source_root.child_path}/{relative.as_posix()}"
                 )
+            if (
+                resource_root is not None
+                and context.resource_root is not None
+                and path.is_relative_to(context.resource_root)
+            ):
+                relative = path.relative_to(context.resource_root)
+                return (
+                    resource_root.child_path
+                    if relative == Path(".")
+                    else f"{resource_root.child_path}/{relative.as_posix()}"
+                )
+            return None
+
+        for name, value in tuple(environment.items()):
+            path = Path(value)
+            if (
+                path.is_absolute()
+                and path.is_relative_to(context.source_root)
+                and (selected := child_input(path)) is not None
+            ):
+                environment[name] = selected
         executable_by_name = {}
         executables = []
         launchers = []
@@ -373,23 +402,34 @@ def _run_script(
             value = environment.get(name)
             if not value:
                 raise ExecutionError(f"runtime environment omitted {name}")
-            owned = stack.enter_context(
-                owned_input_file(Path(value), require_single_link=False)
-            )
-            environment[name] = owned.child_named_path
+            selected = child_input(Path(value))
+            if selected is not None and Path(value).is_file():
+                environment[name] = selected
+            else:
+                owned = stack.enter_context(
+                    owned_input_file(Path(value), require_single_link=False)
+                )
+                environment[name] = owned.child_named_path
         for name in held_directories:
             value = environment.get(name)
             if not value:
                 raise ExecutionError(f"runtime environment omitted {name}")
-            owned = stack.enter_context(owned_directory(Path(value)))
-            environment[name] = owned.child_path
+            selected = child_input(Path(value))
+            if selected is not None and Path(value).is_dir():
+                environment[name] = selected
+            else:
+                owned = stack.enter_context(owned_directory(Path(value)))
+                environment[name] = owned.child_path
         command = [shell_path, f"{source_root.child_path}/{runner}"]
         if argument:
             command.append(argument)
 
         def visible() -> None:
             source_root.require_visible()
+            source_closure.require_visible()
             work_root.require_visible()
+            if resource_root is not None:
+                resource_root.require_visible()
             for executable in executables:
                 executable.require_visible()
             for launcher in launchers:

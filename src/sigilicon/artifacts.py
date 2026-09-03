@@ -888,6 +888,18 @@ class RunRecord:
     _file_states: dict[str, tuple[int, int, int, str]] = field(
         default_factory=dict, repr=False
     )
+    _file_indexes: dict[str, dict[str, int]] = field(
+        default_factory=dict, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        self._file_indexes = {
+            role: {
+                reference["path"]: index
+                for index, reference in enumerate(entries)
+            }
+            for role, entries in self.manifest["files"].items()
+        }
 
     @classmethod
     def begin(
@@ -989,8 +1001,13 @@ class RunRecord:
                     raise ValueError("artifact file label must be a non-empty string")
                 reference["label"] = label
             entries = self.manifest["files"][role]
-            entries[:] = [entry for entry in entries if entry["path"] != reference["path"]]
-            entries.append(reference)
+            indexes = self._file_indexes[role]
+            index = indexes.get(reference["path"])
+            if index is None:
+                indexes[reference["path"]] = len(entries)
+                entries.append(reference)
+            else:
+                entries[index] = reference
             return reference
 
     def _verify_registered_files(self) -> None:
@@ -1093,14 +1110,6 @@ class RunRecord:
         validated = validate_manifest(candidate)
         atomic_write_json(self.paths.manifest, validated)
         self.manifest = validated
-
-    def checkpoint(self) -> Path:
-        """Persist the current inventory once after a logical execution step."""
-
-        with self._lock:
-            self._require_running("checkpoint a run")
-            self._persist_candidate(self.manifest)
-            return self.paths.manifest
 
     def _transition(
         self,

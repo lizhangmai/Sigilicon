@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 import hashlib
@@ -286,16 +287,7 @@ class Source:
 
     def current(self) -> bool:
         try:
-            metadata = self.location.stat(follow_symlinks=False)
-            if (
-                self.location.absolute() != self.location.resolve()
-                or not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_size != self.size
-                or bool(metadata.st_mode & 0o111) != self.executable
-                or metadata.st_dev != self.device
-                or metadata.st_ino != self.inode
-                or metadata.st_mtime_ns != self.mtime_ns
-            ):
+            if not self.metadata_current():
                 return False
             _, digest = _inspect_nofollow_file(
                 self.location,
@@ -303,6 +295,23 @@ class Source:
             )
             return (
                 digest == self.sha256
+            )
+        except (OSError, RuntimeError):
+            return False
+
+    def metadata_current(self) -> bool:
+        """Check stable source identity without rereading its payload."""
+
+        try:
+            metadata = self.location.stat(follow_symlinks=False)
+            return (
+                self.location.absolute() == self.location.resolve()
+                and stat.S_ISREG(metadata.st_mode)
+                and metadata.st_size == self.size
+                and bool(metadata.st_mode & 0o111) == self.executable
+                and metadata.st_dev == self.device
+                and metadata.st_ino == self.inode
+                and metadata.st_mtime_ns == self.mtime_ns
             )
         except (OSError, RuntimeError):
             return False
@@ -944,15 +953,22 @@ def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     }
     if unknown:
         raise ContractError(f"operation references unknown step dependencies: {sorted(unknown)}")
+    indegree = {step.id: len(step.needs) for step in steps}
+    dependents: dict[str, list[Step]] = {step.id: [] for step in steps}
+    for step in steps:
+        for dependency in step.needs:
+            dependents[dependency].append(step)
+    ready = deque(step for step in steps if indegree[step.id] == 0)
     ordered: list[Step] = []
-    waiting = list(steps)
-    while waiting:
-        ready = [step for step in waiting if all(item in {done.id for done in ordered} for item in step.needs)]
-        if not ready:
-            raise ContractError("operation step graph contains a cycle")
-        for step in ready:
-            waiting.remove(step)
-            ordered.append(step)
+    while ready:
+        step = ready.popleft()
+        ordered.append(step)
+        for dependent in dependents[step.id]:
+            indegree[dependent.id] -= 1
+            if indegree[dependent.id] == 0:
+                ready.append(dependent)
+    if len(ordered) != len(steps):
+        raise ContractError("operation step graph contains a cycle")
     return tuple(ordered)
 
 
@@ -973,6 +989,7 @@ class ExecutionPlan:
         compare=False,
     )
     _authority: object | None = field(default=None, repr=False, compare=False)
+    _identity: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_identity, str) or _DIGEST.fullmatch(
@@ -1000,9 +1017,10 @@ class ExecutionPlan:
             raise ContractError("execution plan contains duplicate source identities")
         if len({source.path for source in self.sources}) != len(self.sources):
             raise ContractError("execution plan source paths collide across scopes")
+        source_names = {item.path for item in self.sources}
         for step in self.steps:
             for source in step.sources:
-                if source not in {item.path for item in self.sources}:
+                if source not in source_names:
                     raise ContractError(
                         f"step {step.id!r} source is outside the plan source closure"
                     )
@@ -1021,6 +1039,7 @@ class ExecutionPlan:
                 "execution plan resource closure disagrees with its steps"
             )
         object.__setattr__(self, "steps", _topology(self.steps))
+        object.__setattr__(self, "_identity", canonical_digest(self.record))
 
     @property
     def record(self) -> dict[str, Any]:
@@ -1038,7 +1057,7 @@ class ExecutionPlan:
 
     @property
     def identity(self) -> str:
-        return canonical_digest(self.record)
+        return self._identity
 
 @dataclass(frozen=True)
 class Resources:

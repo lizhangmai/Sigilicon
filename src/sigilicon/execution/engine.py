@@ -28,7 +28,7 @@ from sigilicon.execution.model import (
 )
 from sigilicon.execution.adapter import AdapterRegistry
 from sigilicon.external_tools import (
-    owned_input_files,
+    owned_input_closure,
     process_group_cleanup_uncertainty,
 )
 from sigilicon.paths import ArtifactLayout, RunPaths
@@ -50,20 +50,37 @@ def _held_step_inputs(
 ) -> Iterator[None]:
     """Hold and monitor every file input visible to one adapter invocation."""
 
-    paths = [source_root / source for source in step.sources]
+    source_paths = [source_root / source for source in step.sources]
     bindings = {binding.identity: binding for binding in plan.resources}
+    resource_paths: list[Path] = []
+    resource_directories: list[Path] = []
     if resource_root is not None:
         for identity in step.resources:
             binding = bindings[identity]
             if binding.kind == "file":
-                paths.append(resource_root / binding.materialization_key)
+                resource_paths.append(resource_root / binding.materialization_key)
             elif binding.kind == "directory":
                 base = resource_root / binding.materialization_key
-                paths.extend(base / item.path for item in binding.files)
+                resource_paths.extend(base / item.path for item in binding.files)
+                resource_directories.extend(
+                    (base, *(base / relative for relative in binding.directories))
+                )
 
     monitor = ExitStack()
     try:
-        monitor.enter_context(owned_input_files(paths))
+        monitor.enter_context(
+            owned_input_closure(source_root, files=source_paths)
+        )
+        if resource_root is not None and (
+            resource_paths or resource_directories
+        ):
+            monitor.enter_context(
+                owned_input_closure(
+                    resource_root,
+                    files=resource_paths,
+                    directories=resource_directories,
+                )
+            )
     except (OSError, RuntimeError) as exc:
         raise InputIntegrityError(
             "could not bind the sealed adapter input closure"
@@ -288,6 +305,7 @@ def _run(
         raise ExecutionError(f"operation preflight is blocked: {blocked}")
     identity = new_identity() if run_id is None else run_id
     operation_id = new_identity()
+    plan_identity = plan.identity
     paths = ArtifactLayout(Path(artifact_root).resolve()).operation_run(
         owner=plan.owner,
         operation=plan.operation,
@@ -297,7 +315,7 @@ def _run(
     record = RunRecord.begin(
         paths,
         adapter="sigilicon.execution",
-        source={"plan_identity": plan.identity},
+        source={"plan_identity": plan_identity},
     )
     outcomes: list[StepOutcome] = []
     by_id: dict[str, StepResult] = {}
@@ -307,7 +325,7 @@ def _run(
         partial_failure=lambda: (
             {
                 "completed_steps": [outcome.step for outcome in outcomes],
-                "plan_identity": plan.identity,
+                "plan_identity": plan_identity,
             }
             if outcomes
             else None
@@ -341,26 +359,6 @@ def _run(
             },
         )
         record.write_json("inputs", ("preflight.json",), checked.record)
-        changed_at_seal = tuple(
-            source.path
-            for source in (*plan._composition_sources, *plan.sources)
-            if not source.current()
-        )
-        if changed_at_seal:
-            raise ExecutionError(
-                "operation source changed immediately before adapter input sealing: "
-                + ", ".join(sorted(set(changed_at_seal)))
-            )
-        changed_resources = tuple(
-            resource.identity
-            for resource in plan.resources
-            if not resources.matches(resource)
-        )
-        if changed_resources:
-            raise ExecutionError(
-                "external resource changed immediately before input sealing: "
-                + ", ".join(sorted(set(changed_resources)))
-            )
         source_root = _seal_sources(record, plan)
         resource_root = _seal_resources(record, plan)
         execution_resources = resources.for_execution(
@@ -383,11 +381,11 @@ def _run(
                 changed = tuple(
                     source.path
                     for source in (*plan._composition_sources, *plan.sources)
-                    if not source.current()
+                    if not source.metadata_current()
                 )
                 if changed:
                     raise ExecutionError(
-                        "operation source changed immediately before adapter start: "
+                        "operation source changed after input sealing: "
                         + ", ".join(sorted(set(changed)))
                     )
                 work_root = record.directory("work", step.id)
@@ -400,12 +398,12 @@ def _run(
                         "contract_kind": "step-action",
                         "run_id": identity,
                         "operation_id": operation_id,
-                        "plan_identity": plan.identity,
+                        "plan_identity": plan_identity,
                         "step": step.record,
                     },
                 )
                 context = StepContext(
-                    plan_identity=plan.identity,
+                    plan_identity=plan_identity,
                     step=step,
                     run_id=identity,
                     operation_id=operation_id,
@@ -507,7 +505,6 @@ def _run(
                         ],
                 },
             )
-            record.checkpoint()
             if progress is not None:
                 progress(step.id, result.status)
         step_statuses = {outcome.result.status for outcome in outcomes}
@@ -527,7 +524,7 @@ def _run(
             plan.variant,
             identity,
             operation_id,
-            plan.identity,
+            plan_identity,
             status,
             tuple(outcomes),
             paths.root,

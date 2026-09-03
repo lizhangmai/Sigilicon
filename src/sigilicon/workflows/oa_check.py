@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 import os
 from pathlib import Path
@@ -77,7 +78,9 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
     for source in plan.source.source_roots:
         owners.setdefault(source.owner, []).extend(cell.cell for cell in source.cells)
     for owner, cells in owners.items():
-        duplicates = sorted(cell for cell in set(cells) if cells.count(cell) > 1)
+        duplicates = sorted(
+            cell for cell, count in Counter(cells).items() if count > 1
+        )
         conflicts.extend(f"{owner}/{cell}" for cell in duplicates)
     project = plan.source.project
     unmanaged_consumed = any(

@@ -7,7 +7,6 @@ native-log checks, and raw-output existence checks.
 
 from __future__ import annotations
 
-from contextlib import ExitStack
 from dataclasses import dataclass
 import json
 import os
@@ -23,6 +22,7 @@ from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
     owned_directory,
+    owned_input_closure,
     owned_input_file,
     spectre_env,
 )
@@ -127,14 +127,16 @@ def run_spectre_deck(
     with (
         resources.owned_tool("cadence.spectre") as owned_spectre,
         owned_directory(work_dir) as owned_work,
-        ExitStack() as inputs_stack,
+        owned_input_closure(
+            input_root,
+            files=tuple(inputs.values()),
+        ) as owned_inputs,
     ):
-        owned_inputs = {
-            key: inputs_stack.enter_context(owned_input_file(path))
-            for key, path in inputs.items()
-        }
         tool_paths = {
-            key: owned.child_named_path for key, owned in owned_inputs.items()
+            key: owned_inputs.child(
+                Path(os.path.abspath(path)).relative_to(input_root)
+            )
+            for key, path in inputs.items()
         }
         invocation_deck = record.write_text(
             "work",
@@ -142,58 +144,54 @@ def run_spectre_deck(
             render_deck(tool_paths),
         )
         invocation_deck.chmod(0o444)
-        owned_deck = inputs_stack.enter_context(owned_input_file(invocation_deck))
-        command = (
-            *owned_spectre.command,
-            "-64",
-            "-format",
-            "psfascii",
-            "-raw",
-            owned_work.child_file("psf"),
-            owned_deck.child_named_path,
-        )
-        record.write_json(
-            "inputs",
-            ("simulator-command.json",),
-            {
-                "argv": list(command),
-                "cwd": str(Path(owned_work.child_path)),
-                "timeout_seconds": timeout,
-                "canonical_deck": str(canonical_deck),
-                "note": "argv is the exact guarded Spectre process invocation; /proc paths bind immutable open descriptors and are intentionally ephemeral after completion",
-            },
-        )
+        with owned_input_file(invocation_deck) as owned_deck:
+            command = (
+                *owned_spectre.command,
+                "-64",
+                "-format",
+                "psfascii",
+                "-raw",
+                owned_work.child_file("psf"),
+                owned_deck.child_named_path,
+            )
+            record.write_json(
+                "inputs",
+                ("simulator-command.json",),
+                {
+                    "argv": list(command),
+                    "cwd": str(Path(owned_work.child_path)),
+                    "timeout_seconds": timeout,
+                    "canonical_deck": str(canonical_deck),
+                    "note": "argv is the exact guarded Spectre process invocation; /proc paths bind immutable open descriptors and are intentionally ephemeral after completion",
+                },
+            )
 
-        def validate_spawn() -> None:
-            owned_spectre.require_visible()
-            for owned in (*owned_inputs.values(), owned_deck):
-                owned.require_visible()
+            def validate_spawn() -> None:
+                owned_spectre.require_visible()
+                owned_inputs.require_visible()
+                owned_deck.require_visible()
 
-        pass_fds = tuple(
-            dict.fromkeys(
-                (
-                    owned_work.fd,
-                    owned_spectre.target.fd,
-                    owned_spectre.target.directory_fd,
-                    owned_deck.fd,
-                    owned_deck.directory_fd,
-                    *(
-                        descriptor
-                        for owned in owned_inputs.values()
-                        for descriptor in (owned.fd, owned.directory_fd)
-                    ),
+            pass_fds = tuple(
+                dict.fromkeys(
+                    (
+                        owned_work.fd,
+                        owned_inputs.fd,
+                        owned_spectre.target.fd,
+                        owned_spectre.target.directory_fd,
+                        owned_deck.fd,
+                        owned_deck.directory_fd,
+                    )
                 )
             )
-        )
-        completed = process.run(ProcessRequest(
-            argv=tuple(command),
-            executable=owned_spectre.executable,
-            cwd=Path(owned_work.child_path),
-            environment=spectre_env(executable, resources.environment),
-            timeout_seconds=timeout,
-            before_spawn=validate_spawn,
-            pass_fds=pass_fds,
-        ))
+            completed = process.run(ProcessRequest(
+                argv=tuple(command),
+                executable=owned_spectre.executable,
+                cwd=Path(owned_work.child_path),
+                environment=spectre_env(executable, resources.environment),
+                timeout_seconds=timeout,
+                before_spawn=validate_spawn,
+                pass_fds=pass_fds,
+            ))
 
     assert completed is not None
     stdout_log = record.write_text(
