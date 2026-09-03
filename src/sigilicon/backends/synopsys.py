@@ -396,7 +396,7 @@ def _run_script(
                 launcher.require_visible()
         return managed_process.run(ProcessRequest(
             argv=tuple(command),
-            cwd=context.work_root,
+            cwd=Path(work_root.child_path),
             environment=environment,
             timeout_seconds=_positive_integer(
                 context.step.action.config, "timeout_seconds"

@@ -447,8 +447,28 @@ class SafeTree:
             os.close(parent)
 
 
-def copy_immutable_file(source: Path, destination: Path) -> Path:
-    """Stream one stable regular file to a new nofollow artifact path."""
+def copy_immutable_file(
+    source: Path,
+    destination: Path,
+    *,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
+) -> Path:
+    """Stream one stable, optionally identity-bound file to a nofollow path."""
+
+    if expected_size is not None and (
+        type(expected_size) is not int or expected_size < 0
+    ):
+        raise ValueError("expected file size must be a non-negative integer")
+    if expected_sha256 is not None and (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_sha256
+        )
+    ):
+        raise ValueError("expected file digest must be SHA-256")
 
     source_path = Path(os.path.abspath(source))
     target = Path(os.path.abspath(destination))
@@ -494,7 +514,11 @@ def copy_immutable_file(source: Path, destination: Path) -> Path:
             dir_fd=target_parent,
         )
         created = True
+        digest = hashlib.sha256()
+        copied_size = 0
         while chunk := os.read(source_fd, 1024 * 1024):
+            digest.update(chunk)
+            copied_size += len(chunk)
             remaining = memoryview(chunk)
             while remaining:
                 written = os.write(target_fd, remaining)
@@ -519,6 +543,10 @@ def copy_immutable_file(source: Path, destination: Path) -> Path:
             after.st_mtime_ns,
         ) or not _same_inode(after, visible_after):
             raise RuntimeError(f"artifact input changed while copying: {source_path}")
+        if expected_size is not None and copied_size != expected_size:
+            raise RuntimeError(f"artifact input size drifted: {source_path}")
+        if expected_sha256 is not None and digest.hexdigest() != expected_sha256:
+            raise RuntimeError(f"artifact input content drifted: {source_path}")
         os.fsync(target_fd)
         target_visible = os.stat(
             target.name,
@@ -1028,11 +1056,18 @@ class RunRecord:
         source: Path,
         *,
         label: str | None = None,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
     ) -> Path:
         with self._lock:
             self._require_running("copy a file")
             path = self.path(role, *components)
-            copy_immutable_file(source, path)
+            copy_immutable_file(
+                source,
+                path,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+            )
             self.add_file(role, path, label=label)
             return path
 

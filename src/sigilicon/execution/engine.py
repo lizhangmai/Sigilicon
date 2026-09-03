@@ -184,7 +184,13 @@ def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
     root = record.directory("inputs", "sources")
     for source in plan.sources:
         components = ("sources", *Path(source.path).parts)
-        path = record.copy_file("inputs", components, source.location)
+        path = record.copy_file(
+            "inputs",
+            components,
+            source.location,
+            expected_size=source.size,
+            expected_sha256=source.sha256,
+        )
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
         try:
             os.fchmod(descriptor, 0o555 if source.executable else 0o444)
@@ -215,7 +221,13 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
         components = ("resources", resource.materialization_key)
         if resource.kind == "file":
             item = resource.files[0]
-            path = record.copy_file("inputs", components, item.location)
+            path = record.copy_file(
+                "inputs",
+                components,
+                item.location,
+                expected_size=item.size,
+                expected_sha256=item.sha256,
+            )
             path.chmod(0o555 if item.executable else 0o444)
             continue
         resource_root = record.directory("inputs", *components)
@@ -226,6 +238,8 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
                 "inputs",
                 (*components, *PurePosixPath(item.path).parts),
                 item.location,
+                expected_size=item.size,
+                expected_sha256=item.sha256,
             )
             path.chmod(0o555 if item.executable else 0o444)
         for directory in sorted(

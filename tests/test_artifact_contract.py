@@ -9,6 +9,7 @@ import pytest
 from sigilicon.artifacts import (
     ArtifactManifestError,
     RunRecord,
+    copy_immutable_file,
     load_manifest,
     validate_manifest,
 )
@@ -26,6 +27,22 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
         execution,
         adapter="standalone",
     )
+
+
+def test_identity_bound_copy_rejects_unplanned_content(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    source.write_bytes(b"changed")
+
+    with pytest.raises(RuntimeError, match="content drifted"):
+        copy_immutable_file(
+            source,
+            destination,
+            expected_size=len(b"changed"),
+            expected_sha256="0" * 64,
+        )
+
+    assert not destination.exists()
 
 
 def test_artifact_manifest_records_git_source(

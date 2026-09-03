@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
+from sigilicon.artifacts import _inspect_nofollow_file, read_nofollow_text
 from sigilicon.domain.ip_integration import (
     IpIntegrationContract,
     IpIntegrationDependency,
@@ -121,7 +122,8 @@ def _filelist(
         raise FileNotFoundError(f"IP filelist is missing or unsafe: {path}")
     allowed = _allowed_files(contract, variant, fileset_name)
     sources: list[Path] = []
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    seen: set[Path] = set()
+    for raw_line in read_nofollow_text(path).splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -138,6 +140,9 @@ def _filelist(
                 "IP filelist may contain only owner files or explicitly selected "
                 f"component source files: {line}"
             )
+        if source in seen:
+            raise RuntimeError(f"IP filelist contains duplicate source: {line}")
+        seen.add(source)
         sources.append(source)
     if not sources:
         raise RuntimeError(f"IP filelist is empty: {path}")
@@ -156,9 +161,12 @@ def _fileset_source_plan(
         f"variant {variant.name}.filesets.{fileset.name}.filelist",
     )
     sources = _filelist(filelist_path, contract, variant, fileset.name)
+    filelist_metadata, filelist_digest = _inspect_nofollow_file(filelist_path)
     return {
         "name": fileset.name,
         "filelist": filelist_relative.as_posix(),
+        "filelist_size": filelist_metadata.st_size,
+        "filelist_sha256": filelist_digest,
         "sources": [
             path.relative_to(contract.project_root).as_posix() for path in sources
         ],

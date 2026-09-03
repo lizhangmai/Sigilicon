@@ -338,6 +338,7 @@ def run_xstream_export(
         owned_directory(work) as owned_work,
         ExitStack() as inputs,
     ):
+        child_work = Path(owned_work.child_path)
         owned_map = inputs.enter_context(owned_input_file(request.layer_map))
         owned_cds = inputs.enter_context(
             owned_input_file(request.cds_lib, require_single_link=False)
@@ -347,17 +348,17 @@ def run_xstream_export(
             "-library",
             request.library,
             "-strmFile",
-            str(work / "layout.gds"),
+            str(child_work / "layout.gds"),
             "-runDir",
-            str(work),
+            str(child_work),
             "-topCell",
             request.cell,
             "-view",
             request.view,
             "-logFile",
-            str(work / "strmout.log"),
+            str(child_work / "strmout.log"),
             "-summaryFile",
-            str(work / "strmout.sum"),
+            str(child_work / "strmout.sum"),
             "-techLib",
             request.technology_library,
             "-layerMap",
@@ -395,7 +396,7 @@ def run_xstream_export(
             completed = process.run(ProcessRequest(
                 argv=tuple(command),
                 executable=launcher.executable,
-                cwd=work,
+                cwd=child_work,
                 environment=xstream_environment(executable, environment),
                 timeout_seconds=request.timeout_seconds,
                 before_spawn=validate_spawn,

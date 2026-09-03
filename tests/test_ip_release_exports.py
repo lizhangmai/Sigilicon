@@ -756,6 +756,33 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     assert "nch_mac" in packaged
 
 
+def test_release_build_rejects_checkout_drift_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = _rtl_contract_fixture(tmp_path)
+    states = iter(
+        (
+            SimpleNamespace(commit="d" * 40, working_tree_dirty=False),
+            SimpleNamespace(commit="d" * 40, working_tree_dirty=True),
+        )
+    )
+    monkeypatch.setattr(
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: next(states),
+    )
+
+    with pytest.raises(ip_packaging.IpReleaseError, match="changed during"):
+        ip_packaging.build_ip_release(
+            contract_path,
+            project=Project.open(tmp_path),
+        )
+
+    object_root = tmp_path / "artifacts/release-store/rtl-fixture/objects"
+    assert not object_root.exists() or not tuple(object_root.iterdir())
+
+
 def test_native_oa_release_exposes_only_structural_synthesis_with_liberty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

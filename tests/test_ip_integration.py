@@ -1170,6 +1170,43 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
         )
 
 
+def test_ip_filelist_content_is_identified_and_sources_are_unique(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    artifact_root = tmp_path / "artifacts"
+    release_id, manifest = _write_release_fixture(artifact_root)
+    contract = _write_ip_fixture(project_root, release_id, manifest)
+    filelist = project_root / "ip/demo/rtl/simulation.f"
+
+    first = ip_integration.plan_ip_integration_fileset(
+        contract,
+        project=Project.open(project_root),
+        variant_name="default",
+    )
+    filelist.write_text("# selected closure\nip/demo/rtl/top.sv\n", encoding="utf-8")
+    second = ip_integration.plan_ip_integration_fileset(
+        contract,
+        project=Project.open(project_root),
+        variant_name="default",
+    )
+
+    assert first["sources"] == second["sources"]
+    assert first["filelist_sha256"] != second["filelist_sha256"]
+    assert second["filelist_size"] == filelist.stat().st_size
+
+    filelist.write_text(
+        "ip/demo/rtl/top.sv\nip/demo/rtl/top.sv\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="duplicate source"):
+        ip_integration.plan_ip_integration_fileset(
+            contract,
+            project=Project.open(project_root),
+            variant_name="default",
+        )
+
+
 def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     tmp_path: Path,
 ) -> None:

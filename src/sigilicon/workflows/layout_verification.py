@@ -514,6 +514,7 @@ def _run_calibre(
         owned_directory(work) as owned_work,
         ExitStack() as resources,
     ):
+        child_work = Path(owned_work.child_path)
         owned_gds = resources.enter_context(owned_input_file(gds))
         owned_source = (
             resources.enter_context(owned_input_file(source_cdl))
@@ -525,8 +526,8 @@ def _run_calibre(
                 source_text,
                 layout_path=owned_gds.child_named_path,
                 primary=spec.cell,
-                results_path=str(work / "drc-results.db"),
-                summary_path=str(work / "drc-summary.rep"),
+                results_path=str(child_work / "drc-results.db"),
+                summary_path=str(child_work / "drc-summary.rep"),
                 disabled_defines=spec.physical_verification.drc_disabled_defines,
             )
             if check == "drc"
@@ -535,7 +536,7 @@ def _run_calibre(
                 layout_path=owned_gds.child_named_path,
                 source_path=owned_source.child_named_path if owned_source else "",
                 primary=spec.cell,
-                work_dir=str(work),
+                work_dir=str(child_work),
             )
         )
         invocation_path = record.write_text(
@@ -553,7 +554,7 @@ def _run_calibre(
             ("calibre-command.json",),
             {
                 "argv": list(command),
-                "cwd": str(work),
+                "cwd": str(child_work),
                 "timeout_seconds": timeout,
                 "plan_stage": plan.stage,
             },
@@ -578,7 +579,7 @@ def _run_calibre(
         completed = managed_process.run(ProcessRequest(
             argv=tuple(command),
             executable=owned_launcher.executable,
-            cwd=work,
+            cwd=child_work,
             environment=calibre_environment(executable, resources.environment),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,

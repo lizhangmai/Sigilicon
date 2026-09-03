@@ -7,7 +7,6 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import stat
 import tomllib
 import uuid
@@ -17,6 +16,7 @@ from sigilicon.artifacts import (
     SafeTree,
     _inspect_nofollow_file,
     atomic_write_json,
+    copy_immutable_file,
     read_json_object,
 )
 from sigilicon.contracts import require_config_header
@@ -1423,6 +1423,18 @@ def _plan_loaded_ip_release(
                 library=oa_library,
             )
             native_bundle_metadata[(exported.name, "circuit_netlist")] = metadata
+    collateral_source_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in contract.collateral:
+        source = _project_path(
+            contract.project_root,
+            Path(item.source),
+            f"{item.export}/{item.role} source",
+        )
+        source_metadata, source_digest = _inspect_nofollow_file(source)
+        collateral_source_identity[(item.export, item.role)] = {
+            "source_size": source_metadata.st_size,
+            "source_sha256": source_digest,
+        }
     return {
         "ip_name": contract.name,
         "owner": contract.owner,
@@ -1463,6 +1475,7 @@ def _plan_loaded_ip_release(
                 "view": item.view,
                 "corner": item.corner,
                 "capabilities": list(item.capabilities),
+                **collateral_source_identity[(item.export, item.role)],
                 **native_bundle_metadata.get((item.export, item.role), {}),
             }
             for item in contract.collateral
@@ -1583,6 +1596,15 @@ def build_ip_release(
                 destination = temporary / item.package_path
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 expected = planned_collateral[(item.export, item.role)]
+                source_metadata, source_digest = _inspect_nofollow_file(source)
+                if (
+                    source_metadata.st_size != expected["source_size"]
+                    or source_digest != expected["source_sha256"]
+                ):
+                    raise IpReleaseError(
+                        "release source changed after planning: "
+                        f"{item.export}/{item.role}"
+                    )
                 if expected.get("composition") == "reachable-spectre-hierarchy":
                     if oa_library is None:
                         raise RuntimeError("native OA release source is unavailable")
@@ -1602,7 +1624,12 @@ def build_ip_release(
                         )
                     destination.write_text(text, encoding="utf-8")
                 else:
-                    shutil.copyfile(source, destination)
+                    copy_immutable_file(
+                        source,
+                        destination,
+                        expected_size=expected["source_size"],
+                        expected_sha256=expected["source_sha256"],
+                    )
                 packaged_metadata, packaged_digest = _inspect_nofollow_file(destination)
                 view = {
                     "export": item.export,
@@ -1628,6 +1655,15 @@ def build_ip_release(
                     if field in expected:
                         view[field] = expected[field]
                 views.append(view)
+            final_source_state = inspect_checkout(
+                contract.project_root,
+                contract.project.resources(),
+            )
+            if (
+                final_source_state.commit != plan["source_commit"]
+                or final_source_state.working_tree_dirty
+            ):
+                raise IpReleaseError("source checkout changed during release build")
             manifest: dict[str, Any] = {
                 "schema": 2,
                 "contract_kind": "ip-release-manifest",

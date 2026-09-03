@@ -154,6 +154,9 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
         observed.update(
             command=process_request.argv,
             cwd=process_request.cwd,
+            cwd_targets_work=(
+                process_request.cwd.resolve() == request.work_root.resolve()
+            ),
             env=process_request.environment,
             pass_fds=process_request.pass_fds,
         )
@@ -182,7 +185,8 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
     assert result.gds_path.read_bytes() == canonicalize_xstream_gdsii(
         _xstream_pcell_gds("787838128820")
     )
-    assert observed["cwd"] == request.work_root
+    assert observed["cwd"] != request.work_root
+    assert observed["cwd_targets_work"] is True
     assert observed["env"]["CDS_LIC_FILE"] == "snapshot"
     assert observed["env"]["PATH"] == "/snapshot/bin"
     command = tuple(observed["command"])
