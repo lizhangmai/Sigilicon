@@ -393,23 +393,12 @@ def _locked_release_manifest(
     return audited
 
 
-def _selected_lock(
-    contract: IpIntegrationContract, lock_path: Path | None
-) -> Path:
-    if lock_path is not None:
-        return lock_path
-    if contract.dependency_lock is None:
-        raise RuntimeError("IP integration has no dependency lock")
-    return contract.project_root / Path(contract.dependency_lock)
-
-
 def check_ip_integration(
     contract_path: Path,
     *,
     project: Project,
     variant_name: str,
     fileset_name: str | None = None,
-    lock_path: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve one variant through its explicitly selected immutable releases."""
 
@@ -437,10 +426,7 @@ def check_ip_integration(
     locked_by_name: dict[str, LockedIpRelease] = {}
     lock = None
     if selected_release_dependencies:
-        lock = load_ip_dependency_lock(
-            _selected_lock(contract, lock_path),
-            contract=contract,
-        )
+        lock = load_ip_dependency_lock(contract=contract)
         locked_by_name = {item.name: item for item in lock.dependencies}
 
     resolved_dependencies: list[dict[str, Any]] = []
@@ -529,7 +515,6 @@ def resolve_ip_integration_fileset(
     project: Project,
     variant_name: str,
     fileset_name: str | None = None,
-    lock_path: Path | None = None,
 ) -> tuple[Path, ...]:
     """Resolve one complete IP compilation unit for an execution adapter."""
 
@@ -538,7 +523,6 @@ def resolve_ip_integration_fileset(
         project=project,
         variant_name=variant_name,
         fileset_name=fileset_name,
-        lock_path=lock_path,
     )
     source_files = tuple(
         (project.project_root / Path(value)).resolve()

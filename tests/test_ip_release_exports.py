@@ -33,6 +33,24 @@ def _built_manifest(project: Project, built: dict[str, object]) -> Path:
     )
 
 
+def test_readonly_release_tree_rejects_symlink_members(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside.chmod(0o700)
+    (staging / "link").symlink_to(outside, target_is_directory=True)
+
+    try:
+        with pytest.raises(RuntimeError, match="unsafe member"):
+            ip_packaging._readonly_tree(staging)
+        assert outside.stat().st_mode & 0o777 == 0o700
+    finally:
+        outside.chmod(0o700)
+        staging.chmod(0o700)
+        (staging / "link").unlink(missing_ok=True)
+
+
 def _contract_fixture(root: Path) -> Path:
     write_project_context(root)
     owner = root / "ip/fixture"

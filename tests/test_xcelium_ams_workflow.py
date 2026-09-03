@@ -133,9 +133,18 @@ path_scope = "owner"
 owner = "native-provider"
 ''',
     )
+    write_component_owner(
+        root,
+        "native-provider",
+        filesets={
+            "release": ("ip/native-provider/configs/release.toml",),
+        },
+    )
     component = root / "ip/demo/component.toml"
     component.write_text(
-        component.read_text(encoding="utf-8").replace(
+        component.read_text(encoding="utf-8")
+        .replace('kind = "rtl-ip"', 'kind = "composite-ip"')
+        .replace(
             "[sources]\n",
             'dependency_lock = "dependency_lock"\n\n[sources]\n'
             'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n'
@@ -144,7 +153,7 @@ owner = "native-provider"
         + '''
 [[component]]
 name = "native-provider"
-contract = "ip/native-provider/configs/release.toml"
+contract = "ip/native-provider/component.toml"
 
 [component.release]
 export = "native-top"
@@ -163,10 +172,22 @@ contract_kind = "ip-operating-variant"
 path_scope = "variant"
 owner = "demo"
 
+[integration]
+variant = "no-recovery"
+component_contract = "ip/demo/component.toml"
+default_fileset = "ams"
+
 [filesets.ams]
+filelist = "ip/demo/configs/ams.f"
+required_capability = "simulation"
+
 [filesets.ams.dependency_roles]
 native-provider = ["circuit_netlist"]
 ''',
+    )
+    _write(
+        root / "ip/demo/configs/ams.f",
+        "ip/demo/rtl/native_adapter.sv\n",
     )
     release_root = circuit.parent
     interface = _write(
@@ -284,6 +305,7 @@ VSS = "inout"
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "demo"
+ip = "demo"
 
 [[dependency]]
 name = "native-provider"
@@ -395,7 +417,7 @@ def test_xcelium_ams_rejects_same_size_release_tampering(
     payload[0] ^= 1
     circuit.write_bytes(payload)
 
-    with pytest.raises(ValueError, match="release manifest"):
+    with pytest.raises(ValueError, match="release package"):
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),
@@ -422,7 +444,7 @@ def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
     end = source.index('"', start)
     lock.write_text(source[:start] + digest + source[end:], encoding="utf-8")
 
-    with pytest.raises(ValueError, match="release manifest"):
+    with pytest.raises(ValueError, match="release package"):
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),

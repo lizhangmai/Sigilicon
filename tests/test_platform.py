@@ -256,6 +256,21 @@ def test_platform_catalog_selects_explicit_manifest_only(tmp_path: Path) -> None
         load_platform_catalog(project)
 
 
+def test_platform_catalog_owner_must_match_the_project(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    catalog = tmp_path / "configs/platform/catalog.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            'owner = "test"', 'owner = "another-owner"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="owner must be 'test'"):
+        load_platform_catalog(Project.open(tmp_path))
+
+
 def test_external_platform_assets_are_not_source_documents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -474,5 +489,8 @@ def test_platform_set_rejects_source_drift(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="source identity drift|catalog snapshot"):
+    with pytest.raises(
+        ValueError,
+        match="source identity drift|catalog snapshot|owner must be",
+    ):
         resolve_platform_snapshot(project, "testpdk", snapshot=inventory)

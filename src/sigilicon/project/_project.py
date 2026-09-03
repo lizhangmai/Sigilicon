@@ -259,11 +259,9 @@ class Project:
             variant=variant,
             project_identity=self.operation_identity(owner.name),
         )
-        self.manifest_source_document()
-        manifest_source = Source.capture(
-            self.manifest_path,
-            root=self.project_root,
-            scope="project",
+        composition_sources = tuple(
+            Source.capture(path, root=self.project_root, scope="project")
+            for path in self._operation_composition_paths(owner)
         )
         return plan_execution(
             draft,
@@ -271,7 +269,7 @@ class Project:
             adapters=self._adapters(),
             resources=self._execution_resources(),
             authority=self._plan_authority,
-            composition_sources=(manifest_source,),
+            composition_sources=composition_sources,
         )
 
     def preflight(
@@ -323,11 +321,15 @@ class Project:
             raise ContractError("execution plan was not produced by this Project")
         owner_root = self.owner(plan.owner).root.resolve()
         project_root = self.project_root.resolve()
-        if (
-            len(plan._composition_sources) != 1
-            or plan._composition_sources[0].root != project_root
-            or plan._composition_sources[0].location != self.manifest_path
-            or plan._composition_sources[0].scope != "project"
+        expected_composition = set(
+            self._operation_composition_paths(self.owner(plan.owner))
+        )
+        actual_composition = {
+            source.location for source in plan._composition_sources
+        }
+        if actual_composition != expected_composition or any(
+            source.root != project_root or source.scope != "project"
+            for source in plan._composition_sources
         ):
             raise ContractError(
                 "execution plan composition monitor disagrees with this Project"
@@ -664,13 +666,12 @@ class Project:
         """Identify only the static project closure that selects one owner."""
 
         selected = self.owner(owner)
-        paths = [selected.component.path]
-        if selected.component.operation_catalog is not None:
-            paths.append(
-                self.project_root.joinpath(
-                    *selected.component.operation_catalog.parts
-                )
-            )
+        self._require_owner_snapshot(selected)
+        paths = [
+            path
+            for path in self._operation_composition_paths(selected)
+            if path != self.manifest_path
+        ]
         return canonical_digest(
             {
                 "project": _source_manifest(
@@ -691,6 +692,27 @@ class Project:
                 },
             }
         )
+
+    def _require_owner_snapshot(self, owner: RepositoryOwner) -> None:
+        """Fail when cached catalog/component facts no longer match source."""
+
+        catalog = self.ip_catalog_snapshot()
+        current_component = freeze_toml_document(read_toml(owner.component.path))
+        if current_component != owner.component.document:
+            raise ValueError("component snapshot source document drift")
+        if owner.name not in catalog.document.get("components", {}):
+            raise ValueError("IP catalog snapshot owner mapping drift")
+
+    def _operation_composition_paths(
+        self,
+        owner: RepositoryOwner,
+    ) -> tuple[Path, ...]:
+        paths = [self.manifest_path, self.catalog("ip"), owner.component.path]
+        if owner.component.operation_catalog is not None:
+            paths.append(
+                self.project_root.joinpath(*owner.component.operation_catalog.parts)
+            )
+        return tuple(dict.fromkeys(path.absolute() for path in paths))
 
     @property
     def project_root(self) -> Path:
@@ -746,6 +768,7 @@ class Project:
             path_scope="repository",
             owner=self.manifest_owner,
         )
+        current = freeze_toml_document(read_toml(snapshot.path))
         if (
             snapshot.path != self.catalog("ip")
             or not snapshot.path.is_relative_to(self.project_root)
@@ -753,8 +776,9 @@ class Project:
             or snapshot.role != "ip"
             or snapshot.contract_kind != header.contract_kind
             or snapshot.owner != header.owner
+            or current != snapshot.document
         ):
-            raise ValueError("IP catalog snapshot belongs to a different Project")
+            raise ValueError("IP catalog snapshot source document drift")
         unknown = set(snapshot.document) - _HEADER_FIELDS - {"components"}
         if unknown:
             raise ValueError(

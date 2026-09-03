@@ -66,9 +66,17 @@ def _safe_relative(value: object, label: str) -> PurePosixPath:
 
 
 @dataclass(frozen=True)
+class ComponentRelease:
+    export: str
+    required_maturity: str
+    roles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ComponentDependency:
     name: str
     contract: PurePosixPath
+    release: ComponentRelease | None
 
 
 @dataclass(frozen=True)
@@ -119,6 +127,32 @@ def _source_roles(
         assert resolved is not None
         selected[role] = resolved
     return MappingProxyType(selected)
+
+
+def _component_release(value: object, label: str) -> ComponentRelease | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a TOML table")
+    required = {"export", "required_maturity", "roles"}
+    if set(value) != required:
+        raise ValueError(f"{label} fields must be exactly {sorted(required)}")
+    roles_raw = value.get("roles")
+    if (
+        not isinstance(roles_raw, (list, tuple))
+        or not roles_raw
+        or any(not isinstance(role, str) or not role for role in roles_raw)
+        or len(set(roles_raw)) != len(roles_raw)
+    ):
+        raise ValueError(f"{label}.roles must be unique non-empty strings")
+    return ComponentRelease(
+        export=_string(value.get("export"), f"{label}.export"),
+        required_maturity=_string(
+            value.get("required_maturity"),
+            f"{label}.required_maturity",
+        ),
+        roles=tuple(roles_raw),
+    )
 
 
 def parse_component_contract(
@@ -235,6 +269,10 @@ def parse_component_contract(
                 name=name,
                 contract=_safe_relative(
                     value.get("contract"), f"component[{index}].contract"
+                ),
+                release=_component_release(
+                    value.get("release"),
+                    f"component[{index}].release",
                 ),
             )
         )

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from sigilicon.project._component import (
     ComponentContract,
+    ComponentRelease,
     load_component_contract,
     load_component_graph,
     resolve_component_contract,
@@ -61,19 +62,10 @@ def _hex_digest(
 
 
 @dataclass(frozen=True)
-class IpReleaseDependency:
-    """One producer export and the roles consumed from that same export."""
-
-    export: str
-    required_maturity: str
-    roles: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class IpIntegrationDependency:
     name: str
     component_contract: PurePosixPath
-    release: IpReleaseDependency | None
+    release: ComponentRelease | None
 
 
 @dataclass(frozen=True)
@@ -236,31 +228,6 @@ def parse_locked_ip_release(value: object, label: str) -> LockedIpRelease:
             f"{label}.manifest_sha256",
             lengths=(64,),
         ),
-    )
-
-
-def _release_dependency(value: object, label: str) -> IpReleaseDependency:
-    item = _table(value, label)
-    required_fields = {"export", "required_maturity", "roles"}
-    if set(item) != required_fields:
-        raise ValueError(f"{label} fields must be exactly {sorted(required_fields)}")
-    maturity = _string(item.get("required_maturity"), f"{label}.required_maturity")
-    if maturity not in RELEASE_MATURITY_LEVELS:
-        raise ValueError(f"{label}.required_maturity is unsupported: {maturity}")
-    roles_raw = item.get("roles")
-    if (
-        not isinstance(roles_raw, (list, tuple))
-        or not roles_raw
-        or any(not isinstance(role, str) or not role for role in roles_raw)
-        or len(set(roles_raw)) != len(roles_raw)
-    ):
-        raise ValueError(f"{label}.roles must be unique non-empty strings")
-    roles = tuple(roles_raw)
-    export = _string(item.get("export"), f"{label}.export")
-    return IpReleaseDependency(
-        export=export,
-        required_maturity=maturity,
-        roles=roles,
     )
 
 
@@ -520,27 +487,21 @@ def _operating_variant(
 def _integration_dependencies(
     component: ComponentContract,
 ) -> tuple[IpIntegrationDependency, ...]:
-    dependency_rows = component.document.get("component", ())
-    if not isinstance(dependency_rows, (list, tuple)):
-        raise ValueError("IP integration component dependencies must be an array")
     dependencies: list[IpIntegrationDependency] = []
-    for index, (base, value) in enumerate(
-        zip(component.components, dependency_rows, strict=True)
-    ):
-        row = _table(value, f"component[{index}]")
-        release_value = row.get("release")
+    for index, base in enumerate(component.components):
+        if (
+            base.release is not None
+            and base.release.required_maturity not in RELEASE_MATURITY_LEVELS
+        ):
+            raise ValueError(
+                f"component[{index}].release.required_maturity is unsupported: "
+                f"{base.release.required_maturity}"
+            )
         dependencies.append(
             IpIntegrationDependency(
                 name=base.name,
                 component_contract=base.contract,
-                release=(
-                    None
-                    if release_value is None
-                    else _release_dependency(
-                        release_value,
-                        f"component[{index}].release",
-                    )
-                ),
+                release=base.release,
             )
         )
     return tuple(dependencies)
@@ -741,16 +702,12 @@ def resolve_ip_integration_contract(
     return snapshot
 
 
-def load_ip_dependency_lock(
-    path: Path, *, contract: IpIntegrationContract
-) -> IpDependencyLock:
-    lock_path = path.resolve()
-    try:
-        relative = lock_path.relative_to(contract.project_root).as_posix()
-    except ValueError as exc:
-        raise ValueError(
-            "IP dependency lock must stay inside its owner root"
-        ) from exc
+def load_ip_dependency_lock(*, contract: IpIntegrationContract) -> IpDependencyLock:
+    """Load the sole dependency lock selected by the component contract."""
+
+    if contract.dependency_lock is None:
+        raise ValueError("IP integration has no dependency lock")
+    relative = contract.dependency_lock.as_posix()
     lock_path, _ = contract.project.resolve_owner_file(
         contract.owner,
         relative,

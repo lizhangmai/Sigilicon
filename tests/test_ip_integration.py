@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import tomllib
@@ -1115,24 +1116,26 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
     assert result["dependency_releases"] == []
 
 
-def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> None:
+def test_ip_integration_has_no_caller_selected_lock_path() -> None:
+    assert "lock_path" not in inspect.signature(check_ip_integration).parameters
+    assert "lock_path" not in inspect.signature(resolve_ip_integration_fileset).parameters
+
+
+def test_component_dependency_owns_its_typed_release_intent(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
-    contract = _write_ip_fixture(project_root, release_id, manifest)
-    foreign_lock = project_root / "ip/fixture/configs/demo.lock.toml"
-    foreign_lock.write_text(
-        (contract.parent / "dependency.lock.toml").read_text(encoding="utf-8"),
-        encoding="utf-8",
+    component = _write_ip_fixture(project_root, release_id, manifest)
+
+    contract = load_ip_integration_contract(
+        component,
+        project=Project.open(project_root).with_artifact_root(artifact_root),
     )
 
-    with pytest.raises(ValueError, match="stay inside owner 'demo' root"):
-        check_ip_integration(
-            contract,
-            project=Project.open(project_root).with_artifact_root(artifact_root),
-            variant_name="default",
-            lock_path=foreign_lock,
-        )
+    release = contract.component.components[0].release
+    assert release is not None
+    assert release.export == "macro"
+    assert release.required_maturity == "development"
 
 
 def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(

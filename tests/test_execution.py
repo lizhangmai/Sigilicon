@@ -11,6 +11,8 @@ import sys
 
 import pytest
 
+import sigilicon.execution.engine as execution_engine
+
 from sigilicon.execution.adapter import Adapter
 from sigilicon.execution._model import (
     Artifact,
@@ -436,7 +438,7 @@ def test_large_chain_execution_does_not_rescan_the_global_source_set(
 
     assert result.status == "succeeded"
     assert len(result.outcomes) == 250
-    assert metadata_checks <= len(plan.sources) + 2
+    assert metadata_checks <= len(plan.sources) + 2 * len(plan._composition_sources)
 
 
 def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
@@ -1530,6 +1532,29 @@ def test_project_rejects_composition_source_drift(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="project manifest snapshot source document drift"):
         project.preflight(plan)
+
+
+@pytest.mark.parametrize("relative", ("catalogs/ip.toml", "ip/example/component.toml"))
+def test_run_rejects_composition_drift_after_project_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter())
+    plan = _plan(project, "example:check")
+    original = execution_engine._seal_sources
+
+    def seal_then_change(record, current_plan):
+        source_root = original(record, current_plan)
+        path = tmp_path / relative
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        return source_root
+
+    monkeypatch.setattr(execution_engine, "_seal_sources", seal_then_change)
+
+    with pytest.raises(ExecutionError, match="project composition changed"):
+        project.run(plan, run_id="1" * 32)
 
 
 def test_project_rejects_owner_python_registration_fields_without_importing(

@@ -957,6 +957,7 @@ def _platform_catalog_document(
         catalog_path,
         contract_kind="platform-catalog",
         path_scope="repository",
+        owner=context.manifest_owner,
     )
     _reject_unknown(
         document,

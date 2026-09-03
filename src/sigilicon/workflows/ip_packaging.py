@@ -16,7 +16,10 @@ from sigilicon.artifacts import (
     _inspect_nofollow_file,
     atomic_write_json,
     copy_immutable_file,
+    ensure_nofollow_directory,
     read_json_object,
+    read_nofollow_bytes,
+    write_immutable_text,
 )
 from sigilicon.contracts import read_toml, require_config_header
 from sigilicon.domain.ip_release import (
@@ -1515,13 +1518,56 @@ def plan_ip_release_contract(
     )
 
 
+def _readonly_tree_at(parent_fd: int, name: str) -> None:
+    """Freeze one exact tree using only held descriptor-relative traversal."""
+
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    try:
+        for child in os.listdir(descriptor):
+            metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                _readonly_tree_at(descriptor, child)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError(f"release staging tree has an unsafe member: {child}")
+            file_fd = os.open(
+                child,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            try:
+                visible = os.fstat(file_fd)
+                if (visible.st_dev, visible.st_ino) != (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                ):
+                    raise RuntimeError(
+                        f"release staging member changed while freezing: {child}"
+                    )
+                os.fchmod(file_fd, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+            finally:
+                os.close(file_fd)
+        os.fchmod(
+            descriptor,
+            stat.S_IRUSR
+            | stat.S_IXUSR
+            | stat.S_IRGRP
+            | stat.S_IXGRP
+            | stat.S_IROTH
+            | stat.S_IXOTH,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def _readonly_tree(root: Path) -> None:
-    for path in sorted(root.rglob("*"), reverse=True):
-        if path.is_dir():
-            path.chmod(stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
-        else:
-            path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-    root.chmod(stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    absolute = Path(os.path.abspath(root))
+    with owned_directory(absolute.parent) as parent:
+        _readonly_tree_at(parent.fd, absolute.name)
 
 
 def _remove_tree_at(parent_fd: int, name: str) -> None:
@@ -1588,7 +1634,7 @@ def build_ip_release(
                     "collateral source",
                 )
                 destination = temporary / item.package_path
-                destination.parent.mkdir(parents=True, exist_ok=True)
+                ensure_nofollow_directory(destination.parent)
                 expected = planned_collateral[(item.export, item.role)]
                 source_metadata, source_digest = _inspect_nofollow_file(source)
                 if (
@@ -1616,7 +1662,7 @@ def build_ip_release(
                             "build: "
                             f"{item.export}"
                         )
-                    destination.write_text(text, encoding="utf-8")
+                    write_immutable_text(destination, text)
                 else:
                     copy_immutable_file(
                         source,
@@ -1684,7 +1730,7 @@ def build_ip_release(
             }
             atomic_write_json(temporary / "manifest.json", manifest)
             manifest_digest = hashlib.sha256(
-                (temporary / "manifest.json").read_bytes()
+                read_nofollow_bytes(temporary / "manifest.json")
             ).hexdigest()
             ref = ReleaseRef(
                 str(plan["release_store"]),
