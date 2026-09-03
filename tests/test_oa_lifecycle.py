@@ -151,6 +151,7 @@ def test_instance_parameter_validation_reads_parent_oa_properties(
     assert 'dbFindAnyInstByName(cv "X0")' in source
     assert 'dbFindProp(inst "lch")' in source
     assert 'dbFindProp(inst "w")' in source
-    assert 'inst~>master~>libName inst~>master~>cellName' in source
+    assert 'inst~>name inst~>libName inst~>cellName' in source
+    assert "inst~>master" not in source
     assert "unwindProtect" in source
     assert "dbClose" in source

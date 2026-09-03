@@ -877,7 +877,7 @@ def validate_instance_parameters(
       unless(cv error("cannot open generated schematic"))
       foreach(inst cv~>instances
         out = strcat(out sprintf(nil "I|%s|%s|%s\\n"
-          inst~>name inst~>master~>libName inst~>master~>cellName)))
+          inst~>name inst~>libName inst~>cellName)))
       {chr(10).join(queries)}
       out
     )
