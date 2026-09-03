@@ -9,9 +9,6 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.artifacts import read_nofollow_text
-
-
 CONFIG_SCHEMA = 1
 _CONFIG_SCHEMAS = {
     "ip-dependency-lock": 2,
@@ -113,19 +110,6 @@ def require_config_header(
     return ConfigHeader(schema, actual_kind, actual_scope, actual_owner)
 
 
-def read_toml_record(path: Path) -> tuple[dict[str, Any], str]:
-    """Read one TOML document and retain its exact UTF-8 source record."""
-
-    try:
-        record_text = read_nofollow_text(path)
-        value = tomllib.loads(record_text)
-    except (OSError, UnicodeError, RuntimeError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"cannot read TOML {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"TOML root must be a table: {path}")
-    return value, record_text
-
-
 def read_toml(path: Path) -> dict[str, Any]:
     """Read one TOML document and require a table root."""
 
@@ -147,7 +131,6 @@ __all__ = [
     "freeze_toml_document",
     "is_frozen_toml_document",
     "read_toml",
-    "read_toml_record",
     "require_config_header",
     "thaw_toml_document",
 ]

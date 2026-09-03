@@ -7,9 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 import sys
 
-from sigilicon.cli.common import emit_json
-from sigilicon.paths import discover_project_contract
-from sigilicon.project import Project
+from sigilicon.cli.common import emit_json, open_cli_project
 from sigilicon.workflows import ip_packaging
 
 
@@ -35,12 +33,7 @@ def main(argv: Sequence[str]) -> int:
         if args.command == "audit":
             emit_json(ip_packaging.audit_ip_release_manifest(args.manifest))
             return 0
-        root = (
-            discover_project_contract().parent
-            if args.project_root is None
-            else args.project_root
-        )
-        project = Project.open(root)
+        project = open_cli_project(args.project_root)
         contract = args.contract
         if not contract.is_absolute():
             contract = project.project_root / contract

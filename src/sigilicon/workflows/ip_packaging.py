@@ -1136,18 +1136,6 @@ def _availability(
     }
 
 
-def _release_project(
-    *,
-    project: Project,
-    artifact_root: Path | None,
-) -> Project:
-    return (
-        project
-        if artifact_root is None
-        else project.with_artifact_root(artifact_root)
-    )
-
-
 def _release_design_inventory(
     contract: IpContract,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None,
@@ -1486,17 +1474,12 @@ def plan_ip_release(
     contract_path: Path,
     *,
     project: Project,
-    artifact_root: Path | None = None,
     maturity: str | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
-    repository = _release_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_contract(contract_path, project=repository)
+    contract = load_ip_contract(contract_path, project=project)
     return plan_ip_release_contract(
         contract,
         maturity=maturity,
@@ -1556,14 +1539,9 @@ def build_ip_release(
     contract_path: Path,
     *,
     project: Project,
-    artifact_root: Path | None = None,
     maturity: str | None = None,
 ) -> dict[str, Any]:
-    repository = _release_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_contract(contract_path, project=repository)
+    contract = load_ip_contract(contract_path, project=project)
     plan = _plan_loaded_ip_release(contract, maturity=maturity)
     if plan["missing_items"]:
         missing = ", ".join(plan["missing_items"])
@@ -1574,7 +1552,7 @@ def build_ip_release(
         raise IpReleaseError(
             "IP releases require a clean source checkout"
         )
-    store = ReleaseStore.from_artifact_root(repository.artifact_root)
+    store = ReleaseStore.from_artifact_root(project.artifact_root)
     namespace = store.root / str(plan["release_store"]) / "objects"
     with owned_directory(namespace, create_missing=True) as release_namespace:
         temporary_name = f".{plan['release_id']}.{uuid.uuid4().hex}.tmp"
@@ -1711,14 +1689,6 @@ def build_ip_release(
                     pass
     audited = store.open(ref, validate=audit_ip_release_manifest)
     return _audit_loaded_ip_release(contract, plan, audited)
-
-
-def load_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
-    """Load and audit one immutable release without consulting a channel pointer."""
-
-    if manifest_path.name != "manifest.json" or not manifest_path.is_file():
-        raise FileNotFoundError(f"IP release manifest is missing: {manifest_path}")
-    return audit_ip_release_manifest(manifest_path)
 
 
 def _manifest_exports(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:

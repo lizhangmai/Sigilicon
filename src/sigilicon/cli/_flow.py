@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.cli.common import emit_json
+from sigilicon.cli.common import emit_json, open_cli_project
 from sigilicon.execution import (
     ContractError,
     ExecutionError,
@@ -17,7 +17,6 @@ from sigilicon.execution import (
     RunStoreError,
 )
 from sigilicon.execution.operations import parse_selector
-from sigilicon.paths import discover_project_contract
 from sigilicon.project import Project
 
 
@@ -44,10 +43,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _project(args: argparse.Namespace) -> Project:
-    root = args.project_root
-    if root is None:
-        return Project.open(discover_project_contract().parent)
-    return Project.open(root)
+    return open_cli_project(args.project_root)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

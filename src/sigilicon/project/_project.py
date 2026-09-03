@@ -23,7 +23,6 @@ from sigilicon.contracts import (
 from sigilicon.project._component import ComponentContract, load_component_contract
 from sigilicon.paths import (
     ProjectContext,
-    ProjectScope,
     validate_artifact_component,
 )
 from sigilicon.execution.model import ContractError, Resources, resource_identity
@@ -744,20 +743,6 @@ class Project:
         if not resolved.is_file():
             raise ValueError(f"{field} does not exist inside its owner root")
         return resolved, relative
-
-    def scope(self, owner: RepositoryOwner | str) -> ProjectScope:
-        """Bind one cataloged owner to this project's explicit runtime paths."""
-
-        selected = self.owner(owner) if isinstance(owner, str) else owner
-        if selected not in self.owners:
-            raise ValueError(
-                f"repository does not contain owner {selected.name!r}"
-            )
-        return ProjectScope._from_cataloged_owner(
-            self._paths,
-            selected.name,
-            selected.root,
-        )
 
     def owner_file(self, path: Path | str, fileset: str) -> Path | None:
         owner = self.require_owner(path)

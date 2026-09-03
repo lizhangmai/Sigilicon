@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import sigilicon.project._project as repository_module
 
+from sigilicon.cli.common import open_cli_project
 from sigilicon.paths import (
     ArtifactLayout,
     ProjectContext,
-    ProjectScope,
-    discover_project_context,
     validate_artifact_component,
 )
 from sigilicon.project import Project
@@ -26,7 +24,7 @@ def test_cli_discovery_uses_the_project_contract_not_pixi_environment(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PIXI_PROJECT_ROOT", "/not/the/project")
 
-    context = discover_project_context()
+    context = open_cli_project(None)
 
     assert context.project_root == tmp_path.resolve()
     assert context.workspace_root == (tmp_path / "virtuoso").resolve()
@@ -62,7 +60,11 @@ def test_ids_and_role_components_are_validated(tmp_path: Path) -> None:
 
 def test_project_root_cannot_be_reused_as_artifact_root(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="must not be the project root"):
-        ProjectContext.from_project_root(tmp_path, artifact_root=tmp_path)
+        ProjectContext.from_roots(
+            tmp_path,
+            artifact_root=tmp_path,
+            workspace_root=tmp_path / "virtuoso",
+        )
 
 
 def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
@@ -100,22 +102,6 @@ def test_project_is_the_single_manifest_parser(
     assert project.project_root == tmp_path.resolve()
     assert project.artifact_root == (tmp_path / "artifacts").resolve()
     assert manifest_reads == 1
-
-
-def test_project_scope_is_bound_to_the_cataloged_owner(tmp_path: Path) -> None:
-    write_component_owner(tmp_path, "example", filesets={})
-    project = Project.open(tmp_path)
-
-    scope = project.scope("example")
-
-    assert scope.project.project_root == project.project_root
-    assert scope.owner == "example"
-    assert scope.owner_root == (tmp_path / "ip/example").resolve()
-    selected = project.owner("example")
-    with pytest.raises(ValueError, match="does not contain owner"):
-        project.scope(replace(selected, root=(tmp_path / "ip").resolve()))
-    with pytest.raises(TypeError):
-        ProjectScope(scope.project, "bogus", tmp_path)
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

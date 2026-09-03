@@ -8,10 +8,9 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from sigilicon.cli.common import emit_json
+from sigilicon.cli.common import emit_json, open_cli_project
 from sigilicon.execution.model import Resources
-from sigilicon.paths import ProjectContext, discover_project_contract
-from sigilicon.project import Project
+from sigilicon.paths import ProjectContext
 from sigilicon.workflows.virtuoso_operations import close_cell, open_project_cell
 
 
@@ -42,12 +41,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        root = (
-            discover_project_contract().parent
-            if args.project_root is None
-            else args.project_root
-        )
-        project = Project.open(root)
+        project = open_cli_project(args.project_root)
         paths = ProjectContext.from_roots(
             project.project_root,
             artifact_root=project.artifact_root,

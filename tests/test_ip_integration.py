@@ -741,8 +741,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
 
     result = check_ip_integration(
         contract,
-        project=Project.open(project_root),
-        artifact_root=artifact_root,
+        project=Project.open(project_root).with_artifact_root(artifact_root),
         variant_name="default",
     )
 
@@ -764,8 +763,7 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
 
     resolved = resolve_ip_integration_fileset(
         contract,
-        project=Project.open(project_root),
-        artifact_root=artifact_root,
+        project=Project.open(project_root).with_artifact_root(artifact_root),
         variant_name="default",
     )
 
@@ -789,8 +787,7 @@ def test_integration_check_is_not_a_parallel_public_cli(
 
     result = check_ip_integration(
         contract,
-        project=Project.open(project_root),
-        artifact_root=artifact_root,
+        project=Project.open(project_root).with_artifact_root(artifact_root),
         variant_name="default",
     )
 
@@ -810,14 +807,16 @@ def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
 
     plan = plan_ip_integration(
         contract,
-        project=Project.open(project_root),
-        artifact_root=tmp_path / "artifacts",
+        project=Project.open(project_root).with_artifact_root(
+            tmp_path / "artifacts"
+        ),
     )
 
     result = check_ip_integration(
         contract,
-        project=Project.open(project_root),
-        artifact_root=tmp_path / "artifacts",
+        project=Project.open(project_root).with_artifact_root(
+            tmp_path / "artifacts"
+        ),
         variant_name="default",
     )
 
@@ -1105,8 +1104,7 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
 
     result = check_ip_integration(
         contract,
-        project=Project.open(project_root),
-        artifact_root=artifact_root,
+        project=Project.open(project_root).with_artifact_root(artifact_root),
         variant_name="default",
     )
 
@@ -1128,8 +1126,7 @@ def test_ip_integration_rejects_a_lock_inside_another_owner(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="stay inside owner 'demo' root"):
         check_ip_integration(
             contract,
-            project=Project.open(project_root),
-            artifact_root=artifact_root,
+            project=Project.open(project_root).with_artifact_root(artifact_root),
             variant_name="default",
             lock_path=foreign_lock,
         )
@@ -1193,8 +1190,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     with pytest.raises(RuntimeError, match="unavailable for synthesis"):
         check_ip_integration(
             contract,
-            project=Project.open(project_root),
-            artifact_root=artifact_root,
+            project=Project.open(project_root).with_artifact_root(artifact_root),
             variant_name="default",
         )
 
@@ -1208,8 +1204,7 @@ def test_ip_integration_keeps_physical_readiness_separate_from_synthesis(
     with pytest.raises(RuntimeError, match="physical binding is blocked"):
         check_ip_integration(
             contract,
-            project=Project.open(project_root),
-            artifact_root=artifact_root,
+            project=Project.open(project_root).with_artifact_root(artifact_root),
             variant_name="default",
         )
 
@@ -1273,7 +1268,6 @@ def test_ip_integration_rejects_invalid_locked_release_state(
     with pytest.raises((RuntimeError, FileNotFoundError), match=message):
         check_ip_integration(
             contract,
-            project=Project.open(project_root),
-            artifact_root=artifact_root,
+            project=Project.open(project_root).with_artifact_root(artifact_root),
             variant_name="default",
         )

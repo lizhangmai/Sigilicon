@@ -209,23 +209,10 @@ def _variant_source_plan(
     }
 
 
-def _integration_project(
-    *,
-    project: Project,
-    artifact_root: Path | None,
-) -> Project:
-    return (
-        project
-        if artifact_root is None
-        else project.with_artifact_root(artifact_root)
-    )
-
-
 def plan_ip_integration(
     contract_path: Path,
     *,
     project: Project,
-    artifact_root: Path | None = None,
     platform_inventory: Mapping[str, PdkConfig] | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
@@ -233,11 +220,7 @@ def plan_ip_integration(
 ) -> dict[str, Any]:
     """Validate source intent without resolving or consuming a dependency lock."""
 
-    repository = _integration_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_integration_contract(contract_path, project=repository)
+    contract = load_ip_integration_contract(contract_path, project=project)
     return plan_ip_integration_contract(
         contract,
         platform_inventory=platform_inventory,
@@ -416,18 +399,13 @@ def check_ip_integration(
     contract_path: Path,
     *,
     project: Project,
-    artifact_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
     lock_path: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve one variant through its explicitly selected immutable releases."""
 
-    repository = _integration_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
-    contract = load_ip_integration_contract(contract_path, project=repository)
+    contract = load_ip_integration_contract(contract_path, project=project)
     root = contract.project_root
     artifact_root = contract.project.artifact_root
     variant = contract.get_variant(variant_name)
@@ -542,30 +520,25 @@ def resolve_ip_integration_fileset(
     contract_path: Path,
     *,
     project: Project,
-    artifact_root: Path | None = None,
     variant_name: str,
     fileset_name: str | None = None,
     lock_path: Path | None = None,
 ) -> tuple[Path, ...]:
     """Resolve one complete IP compilation unit for an execution adapter."""
 
-    repository = _integration_project(
-        project=project,
-        artifact_root=artifact_root,
-    )
     result = check_ip_integration(
         contract_path,
-        project=repository,
+        project=project,
         variant_name=variant_name,
         fileset_name=fileset_name,
         lock_path=lock_path,
     )
     source_files = tuple(
-        (repository.project_root / Path(value)).resolve()
+        (project.project_root / Path(value)).resolve()
         for value in result["source_files"]
     )
     release_sources = tuple(
-        (repository.artifact_root / Path(value)).resolve()
+        (project.artifact_root / Path(value)).resolve()
         for value in result["release_sources"]
     )
     return (*source_files, *release_sources)

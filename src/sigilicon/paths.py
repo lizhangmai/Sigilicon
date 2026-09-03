@@ -6,7 +6,6 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-import tomllib
 from types import MappingProxyType
 from typing import Mapping
 
@@ -316,19 +315,6 @@ class ProjectContext:
         )
 
     @classmethod
-    def from_file(cls, path: Path | str) -> "ProjectContext":
-        """Load an explicit project-layout contract owned by the caller."""
-
-        contract = Path(path).resolve()
-        try:
-            with contract.open("rb") as stream:
-                raw = tomllib.load(stream)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise ValueError(f"cannot read Sigilicon project context {contract}: {exc}") from exc
-        source_raw = {key: value for key, value in raw.items() if key != "runtime"}
-        return cls.from_contract(contract, source_raw)
-
-    @classmethod
     def from_contract(
         cls,
         path: Path | str,
@@ -390,26 +376,6 @@ class ProjectContext:
             workspace_root=required("workspace_root"),
         )
 
-    @classmethod
-    def from_project_root(
-        cls,
-        project_root: Path | str,
-        *,
-        artifact_root: Path | str | None = None,
-    ) -> "ProjectContext":
-        """Load the project-owned context contract at an explicit root."""
-
-        root = Path(project_root).resolve()
-        context = cls.from_file(root / "sigilicon.toml")
-        if context.project_root != root:
-            raise ValueError(
-                f"{root / 'sigilicon.toml'} declares a different project root: "
-                f"{context.project_root}"
-            )
-        if artifact_root is None:
-            return context
-        return context.with_artifact_root(artifact_root)
-
     def with_artifact_root(
         self,
         artifact_root: Path | str,
@@ -421,34 +387,6 @@ class ProjectContext:
             artifact_root=artifact_root,
             workspace_root=self.workspace_root,
         )
-
-@dataclass(frozen=True, init=False)
-class ProjectScope:
-    """Neutral runtime paths bound by the repository ownership module."""
-
-    project: ProjectContext
-    owner: str
-    owner_root: Path
-
-    @classmethod
-    def _from_cataloged_owner(
-        cls,
-        project: ProjectContext,
-        owner: str,
-        owner_root: Path,
-    ) -> "ProjectScope":
-        """Bind one owner already selected from the canonical project catalog."""
-
-        identity = validate_artifact_component(owner, "project owner")
-        root = Path(owner_root).resolve()
-        if not root.is_relative_to(project.project_root):
-            raise ValueError("project owner root must stay below the project root")
-        scope = object.__new__(cls)
-        object.__setattr__(scope, "project", project)
-        object.__setattr__(scope, "owner", identity)
-        object.__setattr__(scope, "owner_root", root)
-        return scope
-
 
 def discover_project_contract(anchor: Path | str | None = None) -> Path:
     """Locate ``sigilicon.toml`` for a public CLI without parsing it."""
@@ -467,11 +405,5 @@ def discover_project_contract(anchor: Path | str | None = None) -> Path:
             if contract.is_file():
                 return contract.resolve()
     raise RuntimeError(
-        "cannot locate sigilicon.toml; run inside a configured project or pass a ProjectContext"
+        "cannot locate sigilicon.toml; run inside a configured project or pass --project-root"
     )
-
-
-def discover_project_context(anchor: Path | str | None = None) -> ProjectContext:
-    """Discover and load project runtime paths for a public CLI invocation."""
-
-    return ProjectContext.from_file(discover_project_contract(anchor))

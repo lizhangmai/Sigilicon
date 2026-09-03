@@ -9,7 +9,6 @@ from sigilicon.execution.model import Resources
 from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
-    owned_executable,
 )
 
 
@@ -25,7 +24,6 @@ class CheckoutState:
 def inspect_checkout(root: Path, resources: Resources) -> CheckoutState:
     """Inspect one checkout with the project-configured Git executable."""
 
-    git = resources.require_tool("vcs.git")
     environment = {
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -33,7 +31,7 @@ def inspect_checkout(root: Path, resources: Resources) -> CheckoutState:
         "GIT_TERMINAL_PROMPT": "0",
         "LC_ALL": "C",
     }
-    with owned_executable(git) as executable:
+    with resources.owned_tool("vcs.git") as executable:
 
         def invoke(*arguments: str):
             return managed_process.run(
