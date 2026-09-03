@@ -135,7 +135,7 @@ def load_design_spec(
         raise ValueError("design.source_netlist must stay below the project root")
     owner = repository.owner_for(spec_path)
     if owner is not None and not source_netlist.is_relative_to(owner.root):
-        raise ValueError("design.source_netlist must stay inside its owning active IP")
+        raise ValueError("design.source_netlist must stay inside its cataloged owner")
 
     inputs = _optional_names(ports.get("inputs"), "ports.inputs")
     outputs = _optional_names(ports.get("outputs"), "ports.outputs")

@@ -97,7 +97,7 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
         for path in (source.directory, *source.cell_roots)
     )
     return {
-        "active_ip_owners": {
+        "active_owners": {
             owner: sorted(set(cells)) for owner, cells in sorted(owners.items())
         },
         "conflicts": sorted(set(conflicts)),

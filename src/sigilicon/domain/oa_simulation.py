@@ -572,7 +572,7 @@ def _load_native_oa_simulation_spec(
     if not setup_source.is_relative_to(cell_root) or not setup_source.is_file():
         raise ValueError("setup.source must stay inside its testbench cell")
     if not setup_source.is_relative_to(owner_root.resolve()):
-        raise ValueError("setup.source must stay inside its owning active IP")
+        raise ValueError("setup.source must stay inside its cataloged owner")
     config_procedure = _identifier(
         setup.get("config_procedure"), "setup.config_procedure"
     )

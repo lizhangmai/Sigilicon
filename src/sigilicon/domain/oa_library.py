@@ -85,7 +85,7 @@ class OACellViewSource:
 
 @dataclass(frozen=True)
 class OACellSource:
-    """Canonical source and explicit view set owned by one IP."""
+    """Canonical source and explicit view set owned by one component."""
 
     owner: str
     source_manifest_path: Path
@@ -123,7 +123,7 @@ class OACellSource:
 
 @dataclass(frozen=True)
 class OASourceRoot:
-    """One IP-owned collection of OA cell sources."""
+    """One owner-scoped collection of OA cell sources."""
 
     owner: str
     manifest_path: Path
@@ -388,10 +388,12 @@ def _load_source_root(
         relative = Path(value)
         field = f"{path}: cell_roots[{index}]"
         if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
-            raise ValueError(f"{field} must stay inside its owning IP")
+            raise ValueError(f"{field} must stay inside its owning component")
         cell_root = (directory / relative).resolve()
         if not cell_root.is_relative_to(directory) or not cell_root.is_dir():
-            raise ValueError(f"{field} must be an existing directory inside its owning IP")
+            raise ValueError(
+                f"{field} must be an existing directory inside its owning component"
+            )
         all_children = tuple(
             item
             for item in sorted(cell_root.iterdir())

@@ -67,7 +67,7 @@ def test_cataloged_design_loader_rejects_cross_owner_source(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="owning active IP"):
+    with pytest.raises(ValueError, match="cataloged owner"):
         load_design_spec(path, project=Project.open(root))
 
 
