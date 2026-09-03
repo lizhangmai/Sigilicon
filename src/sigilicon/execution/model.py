@@ -864,7 +864,6 @@ class Step:
     _resource_bindings: tuple[ResourceBinding, ...] = field(
         default=(), repr=False, compare=False
     )
-    _payload: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _identifier(self.id, "step id"))
@@ -1624,7 +1623,7 @@ class StepContext:
         return result
 
     def require_step(self, step: Step) -> None:
-        """Reject an adapter call whose request disagrees with this context."""
+        """Reject an adapter call whose planned step disagrees with this context."""
 
         if not isinstance(step, Step) or step != self.step:
             raise ExecutionError("adapter Step disagrees with its StepContext")

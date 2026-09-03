@@ -334,6 +334,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert plan.variant is None
     assert [step.uses for step in plan.steps] == ["fake.copy"]
     assert plan.steps[0].action == _AdapterAction("fake.copy", {"text": "hello"})
+    assert not hasattr(plan.steps[0], "_payload")
     assert plan.steps[0].evidence.record == {
         "role": "regression",
         "level": "l0",

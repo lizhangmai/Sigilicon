@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
@@ -485,6 +485,43 @@ class _PreparedCadencePlan:
         )
 
 
+@dataclass(frozen=True)
+class _CadenceStep(Step):
+    """Adapter-private step carrying one validated Cadence domain plan."""
+
+    domain_plan: _PreparedCadencePlan = dataclass_field(
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def bind(
+        cls,
+        step: Step,
+        *,
+        action: _AdapterAction,
+        sources: tuple[str, ...],
+        resources: tuple[str, ...],
+        source_snapshots: tuple[Source, ...],
+        resource_bindings: tuple[ResourceBinding, ...],
+        domain_plan: _PreparedCadencePlan,
+    ) -> "_CadenceStep":
+        return cls(
+            id=step.id,
+            uses=step.uses,
+            action=action,
+            needs=step.needs,
+            sources=sources,
+            evidence=step.evidence,
+            resources=resources,
+            runtime=step.runtime,
+            _source_snapshots=source_snapshots,
+            _resource_bindings=resource_bindings,
+            domain_plan=domain_plan,
+        )
+
+
 class _CadenceDomainAdapter:
     """Attach a non-portable domain value to its fully recorded Step."""
 
@@ -554,22 +591,22 @@ class _CadenceDomainAdapter:
             combined_bindings
         ):
             raise ContractError("Cadence plan binds a runtime identity more than once")
-        return replace(
+        return _CadenceStep.bind(
             operation,
             action=_AdapterAction(operation.uses, config, portable),
             sources=tuple(
                 dict.fromkeys((*operation.sources, *(source.path for source in captured)))
             ),
             resources=tuple(resource.identity for resource in combined_bindings),
-            _source_snapshots=source_snapshots,
-            _resource_bindings=combined_bindings,
-            _payload=domain_plan,
+            source_snapshots=source_snapshots,
+            resource_bindings=combined_bindings,
+            domain_plan=domain_plan,
         )
 
     def _prepared_domain_plan(self, context: StepContext) -> _PreparedCadencePlan:
-        domain_plan = context.step._payload
-        if not isinstance(domain_plan, _PreparedCadencePlan):
+        if not isinstance(context.step, _CadenceStep):
             raise ExecutionError("Cadence Step has no planned Domain value")
+        domain_plan = context.step.domain_plan
         domain_plan.validate(context)
         return domain_plan
 
