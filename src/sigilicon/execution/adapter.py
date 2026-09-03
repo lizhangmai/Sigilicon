@@ -27,11 +27,17 @@ class OwnerView(Protocol):
 
 
 class PlanningProject(Protocol):
+    """Project capabilities consumed while adapters close an operation plan."""
+
     project_root: Path
+    artifact_root: Path
+    workspace_root: Path
 
     def owner(self, name: str) -> OwnerView: ...
 
     def owner_for(self, path: Path) -> OwnerView | None: ...
+
+    def oa_assembly_for(self, path: Path | str) -> Path | None: ...
 
 
 @runtime_checkable

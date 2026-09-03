@@ -391,12 +391,6 @@ def discover_subckt_interfaces(
     return dict(snapshot.interfaces)
 
 
-def discover_subckts(netlist: Path | NetlistSnapshot) -> tuple[str, ...]:
-    if isinstance(netlist, NetlistSnapshot):
-        return netlist.subckts
-    return load_netlist_snapshot(netlist).subckts
-
-
 def subckt_ports(netlist: Path | NetlistSnapshot, cell: str) -> tuple[str, ...]:
     interfaces = discover_subckt_interfaces(netlist)
     try:

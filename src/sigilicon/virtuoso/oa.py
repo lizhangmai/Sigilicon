@@ -961,51 +961,6 @@ def validate_instance_parameters(
     }
 
 
-def execute_owned_cellview_skill(
-    client: Any,
-    operation: Any,
-    source: str,
-    *,
-    label: str,
-    library: str,
-    cell: str,
-    view: str,
-    timeout: int,
-    mutation: bool,
-) -> str:
-    """Dispatch one audited synchronous cellview request through the OA seam."""
-
-    require_workspace_capability(
-        operation,
-        client,
-        library=library,
-        cell=cell,
-        view=view,
-    )
-    if mutation:
-        operation.require_active_mutation(
-            client,
-            library,
-            cell,
-            phase=label,
-        )
-    result = require_bridge_confirmation(
-        operation,
-        label,
-        lambda: client.execute_skill(
-            audit_cellview_delta_skill(
-                own_synchronous_cellview_delta_skill(source, label=label),
-                label=label,
-                mutation_target=(library, (cell,)) if mutation else None,
-            ),
-            timeout=timeout,
-        ),
-    )
-    if result.errors:
-        raise RuntimeError(result.errors[0])
-    return decode_skill_output(result.output or "")
-
-
 def virtuoso_workdir(client: Any) -> Path:
     result = client.execute_skill("getWorkingDir()", timeout=20)
     if result.errors:

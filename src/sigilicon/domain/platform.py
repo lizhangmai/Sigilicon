@@ -970,33 +970,6 @@ def _parse_oa_materialization(
     )
 
 
-def load_oa_materialization_mapping(
-    path: Path,
-) -> tuple[int, OaMaterializationMapping]:
-    """Load one atomic platform layout contract for an OA adapter."""
-
-    contract_path = Path(path).resolve()
-    raw = read_toml(contract_path)
-    require_config_header(
-        raw,
-        contract_path,
-        contract_kind="platform-layout",
-        path_scope="platform",
-    )
-    _reject_unknown(
-        raw,
-        _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization", "custom_layout"},
-        "platform layout contract",
-    )
-    dbu = raw.get("dbu_per_micron")
-    if isinstance(dbu, bool) or not isinstance(dbu, int) or dbu <= 0:
-        raise ValueError("layout.dbu_per_micron must be a positive integer")
-    mapping = _parse_oa_materialization(raw.get("oa_materialization"))
-    if mapping is None:
-        raise ValueError("platform layout contract omits oa_materialization")
-    return dbu, mapping
-
-
 def _load_layout(
     layout_path: Path,
     layout_raw: Mapping[str, Any],

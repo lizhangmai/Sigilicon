@@ -1028,16 +1028,6 @@ def cadence_subprocess_env(
     return env
 
 
-def find_xrun(
-    explicit: Path,
-) -> Path:
-    """Validate one explicitly configured Xcelium launcher."""
-
-    if explicit.is_file() and os.access(explicit, os.X_OK):
-        return Path(os.path.abspath(explicit))
-    raise FileNotFoundError(f"xrun does not exist or is not executable: {explicit}")
-
-
 def _xcelium_home(
     xrun: Path,
 ) -> Path:

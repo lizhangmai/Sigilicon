@@ -11,7 +11,6 @@ import pytest
 from sigilicon.external_tools import (
     cadence_ic_env,
     cadence_subprocess_env,
-    find_xrun,
     owned_atomic_output_file,
     owned_directory,
     owned_input_file,
@@ -68,7 +67,7 @@ def test_cadence_child_environment_removes_conflicting_license_variable() -> Non
     assert source["LM_LICENSE_FILE"] == "mentor-or-synopsys-license"
 
 
-def test_xrun_resolution_and_environment_use_one_installation(
+def test_xrun_environment_uses_the_explicit_installation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -81,13 +80,11 @@ def test_xrun_resolution_and_environment_use_one_installation(
     monkeypatch.delenv("IUS_HOME", raising=False)
     monkeypatch.setenv("PATH", "")
 
-    resolved = find_xrun(launcher)
     environment = xrun_env(
-        resolved,
+        launcher,
         {"XCELIUM_HOME": str(installation)},
     )
 
-    assert resolved == launcher.resolve()
     assert environment["XCELIUM_HOME"] == str(installation)
     assert environment["IUS_HOME"] == str(installation)
     assert environment["CDS_INST_DIR"] == str(installation)
@@ -100,20 +97,6 @@ def test_xrun_resolution_and_environment_use_one_installation(
     ]
     assert not environment["PATH"].endswith(os.pathsep)
     assert not environment["LD_LIBRARY_PATH"].endswith(os.pathsep)
-
-
-def test_xrun_resolution_ignores_ambient_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    installation = tmp_path / "ambient-xcelium"
-    launcher = installation / "tools/bin/xrun"
-    launcher.parent.mkdir(parents=True)
-    launcher.write_text("launcher\n", encoding="utf-8")
-    monkeypatch.setenv("XCELIUM_HOME", str(installation))
-
-    with pytest.raises(FileNotFoundError):
-        find_xrun(tmp_path / "not-configured/xrun")
 
 
 def test_spectre_environment_is_derived_from_configured_launcher(

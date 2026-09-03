@@ -8,11 +8,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.canonical import canonical_from_json, canonical_json
+from sigilicon.canonical import canonical_json
 from sigilicon.identifiers import bounded_identity
 from sigilicon.contracts import (
     freeze_toml_document,
-    read_toml,
     require_config_header,
 )
 
@@ -244,28 +243,6 @@ class LvsEvidence:
 PhysicalVerificationEvidence = DrcEvidence | LvsEvidence
 
 
-def drc_evidence_id(evidence: DrcEvidence) -> str:
-    return (
-        f"{evidence.layout.owner}:{evidence.layout.name}:"
-        f"drc:{evidence.completion.adapter}"
-    )
-
-
-def lvs_evidence_id(evidence: LvsEvidence) -> str:
-    return (
-        f"{evidence.layout.owner}:{evidence.layout.name}:"
-        f"lvs:{evidence.completion.adapter}"
-    )
-
-
-def drc_evidence_from_json(text: str) -> DrcEvidence:
-    return canonical_from_json(text, DrcEvidence)
-
-
-def lvs_evidence_from_json(text: str) -> LvsEvidence:
-    return canonical_from_json(text, LvsEvidence)
-
-
 def _table(value: object, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field} must be a table")
@@ -296,18 +273,6 @@ def _integer_map(value: object, field: str) -> Mapping[str, int]:
             raise ValueError(f"{field} must map names to integers")
         result[name] = item
     return MappingProxyType(result)
-
-
-def load_physical_verification_policy(
-    path: Path,
-    *,
-    owner: str,
-) -> PhysicalVerificationPolicy:
-    """Load one strict owner policy without resolving any EDA installation."""
-
-    resolved = path.resolve()
-    raw = read_toml(resolved)
-    return parse_physical_verification_policy(resolved, raw, owner=owner)
 
 
 def parse_physical_verification_policy(

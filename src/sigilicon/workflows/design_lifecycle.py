@@ -7,7 +7,7 @@ application workflows and must not be reimplemented by a design-local script.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -191,28 +191,3 @@ def attest_oa_design(
         "oa_views": ["schematic", "symbol"],
         "instance_parameters": parameter_report,
     }
-
-
-def attest_design_set(
-    spec_paths: Sequence[Path],
-    client: Any,
-    *,
-    project: Project,
-    timeout: int = 60,
-) -> dict[str, object]:
-    """Attest an explicit dependency set before a design-owned simulation.
-
-    Integration runners must name every schematic dependency they consume.
-    Keeping the iteration here prevents design-local scripts from inventing
-    weaker OA-view checks.
-    """
-
-    reports = tuple(
-        attest_oa_design(
-            inspect_design(path, project=project),
-            client,
-            timeout=timeout,
-        )
-        for path in spec_paths
-    )
-    return {"passed": True, "designs": reports}
