@@ -145,13 +145,6 @@ class Evidence:
     def record(self) -> dict[str, str]:
         return {"role": self.role, "level": self.level, "scope": self.scope}
 
-    @classmethod
-    def from_record(cls, value: object) -> "Evidence":
-        if not isinstance(value, Mapping) or set(value) != {"role", "level", "scope"}:
-            raise ContractError("evidence record must contain role, level, and scope")
-        return cls(value["role"], value["level"], value["scope"])
-
-
 @dataclass(frozen=True)
 class Source:
     """Exact no-follow snapshot of one project-owned source file."""
@@ -1606,9 +1599,6 @@ class StepContext:
 
     def owner_source_path(self, source: str) -> Path:
         return self.scoped_source_path("owner", source)
-
-    def project_source_path(self, source: str) -> Path:
-        return self.scoped_source_path("project", source)
 
     def bind_workspace_operation(self, operation: Any) -> None:
         """Bind one trusted OA operation to this run before it accesses tools."""

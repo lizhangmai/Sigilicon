@@ -174,32 +174,6 @@ class RunPaths:
         finally:
             os.close(root_descriptor)
 
-    def complete_partial_create(self) -> None:
-        """Safely finish an interrupted identity/role directory creation."""
-
-        if not self.root.exists():
-            try:
-                self.create()
-            except FileExistsError:
-                pass
-        if (
-            not self.root.is_dir()
-            or self.root.is_symlink()
-            or not self.root.resolve().is_relative_to(self.artifact_root)
-        ):
-            raise ValueError("managed run partial create path is unsafe")
-        known_roles = set(self.roles)
-        entries = {item.name: item for item in os.scandir(self.root)}
-        if set(entries) - known_roles:
-            raise ValueError("managed run partial create inventory conflicts")
-        for role in self.roles:
-            target = self.role(role)
-            if not target.exists():
-                target.mkdir()
-            if not target.is_dir() or target.is_symlink():
-                raise ValueError("managed run partial create role conflicts")
-
-
 @dataclass(frozen=True)
 class OperationIncidentPaths:
     artifact_root: Path

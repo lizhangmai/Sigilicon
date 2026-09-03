@@ -424,24 +424,6 @@ class RunStore:
         )
         return self._read_selected(selected)
 
-    def read_if_present(
-        self,
-        *,
-        owner: str,
-        operation: str,
-        variant: str | None = None,
-        run_id: str,
-    ) -> RunResult | RunFailure | None:
-        selected = self._select(
-            owner=owner,
-            operation=operation,
-            variant=variant,
-            run_id=run_id,
-        )
-        if not selected.paths.root.exists():
-            return None
-        return self._read_selected(selected)
-
     @staticmethod
     def _typed_result(
         result: Mapping[str, Any],
