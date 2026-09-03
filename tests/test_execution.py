@@ -132,6 +132,7 @@ def _bind_test_backends(monkeypatch: pytest.MonkeyPatch) -> None:
         "sigilicon.backends.trusted_adapters",
         lambda: _TEST_ADAPTERS,
     )
+    monkeypatch.setenv("LM_LICENSE_FILE", "test-license")
 
 
 def _write_project(root: Path) -> Path:
@@ -337,7 +338,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         project.preflight(plan)
 
 
-def test_project_plan_is_independent_of_runtime_resources(
+def test_project_plan_identity_includes_runtime_configuration(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
@@ -354,9 +355,10 @@ def test_project_plan_is_independent_of_runtime_resources(
     )
     without_runtime = _project(tmp_path, CopyAdapter())
     current = without_runtime.plan("example:check")
-    assert current.record == plan.record
+    assert current.record != plan.record
+    assert current.project_identity != plan.project_identity
     assert without_runtime.preflight(current).status == "blocked"
-    with pytest.raises(ContractError, match="not produced by this Project"):
+    with pytest.raises(ContractError, match="another project composition"):
         without_runtime.preflight(plan)
 
 
@@ -384,6 +386,52 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     assert plan.steps[0].runtime.values == {"SELECTED_VALUE": "test.value"}
 
 
+def test_project_rejects_runtime_manifest_drift(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    manifest = tmp_path / "sigilicon.toml"
+    project = Project.open(tmp_path)
+    original_identity = project.identity
+
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("/bin/true", "/bin/false"),
+        encoding="utf-8",
+    )
+
+    assert project.resources().require_tool("test.tool") == Path("/bin/true")
+    with pytest.raises(ValueError, match="manifest snapshot source document drift"):
+        _ = project.identity
+    assert original_identity
+
+
+def test_project_freezes_inherited_environment_in_its_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    monkeypatch.setenv("LM_LICENSE_FILE", "first-license")
+    first = Project.open(tmp_path)
+    first_identity = first.identity
+
+    monkeypatch.setenv("LM_LICENSE_FILE", "second-license")
+    second = Project.open(tmp_path)
+
+    assert first.resources().environment == {"LM_LICENSE_FILE": "first-license"}
+    assert second.resources().environment == {"LM_LICENSE_FILE": "second-license"}
+    assert first.identity == first_identity
+    assert second.identity != first_identity
+
+
+def test_project_requires_every_declared_inherited_environment_value(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    monkeypatch.delenv("LM_LICENSE_FILE")
+
+    with pytest.raises(ValueError, match="declared inherited environment is missing"):
+        Project.open(tmp_path)
+
+
 def test_execution_resources_reject_a_tool_replaced_after_sealing(
     tmp_path: Path,
 ) -> None:
@@ -401,6 +449,19 @@ def test_execution_resources_reject_a_tool_replaced_after_sealing(
     with pytest.raises(ExecutionError, match="changed after planning"):
         with execution.owned_tool("fixture.tool"):
             pytest.fail("a replaced planned tool must never be exposed")
+
+
+def test_resource_binding_includes_its_configured_location(tmp_path: Path) -> None:
+    first = tmp_path / "first-tool"
+    second = tmp_path / "second-tool"
+    first.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    first.chmod(0o755)
+    os.link(first, second)
+
+    planned = Resources(tools={"fixture.tool": str(first)}).capture("fixture.tool")
+    relocated = Resources(tools={"fixture.tool": str(second)})
+
+    assert not relocated.matches(planned)
 
 
 def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> None:
@@ -1015,6 +1076,9 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     assert bindings["configuration"]["values"] == {
         "test.value": "configured"
     }
+    assert set(bindings["environment"]) == {"LM_LICENSE_FILE"}
+    assert bindings["environment"]["LM_LICENSE_FILE"].startswith("sha256-")
+    assert "test-license" not in str(bindings)
     assert bindings["resources"][0]["kind"] == "file"
     assert str(live) not in str(bindings)
     store, owner, operation, variant = _run_store_call(project, "example:check")

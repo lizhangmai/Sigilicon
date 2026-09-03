@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from sigilicon.artifacts import (
@@ -29,6 +30,9 @@ from sigilicon.execution.model import (
 )
 from sigilicon.external_tools import retain_sealed_input
 from sigilicon.paths import ArtifactLayout, RunPaths
+
+
+_DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
 
 
 class RunStoreError(ValueError):
@@ -280,14 +284,16 @@ class RunStore:
             "contract_kind",
             "capabilities",
             "inherit_environment",
+            "environment",
             "configuration",
             "resources",
-        } or value.get("schema") != 3 or value.get("contract_kind") != (
+        } or value.get("schema") != 4 or value.get("contract_kind") != (
             "runtime-bindings"
         ):
             raise RunStoreError("persisted runtime bindings have an invalid shape")
         capabilities = value.get("capabilities")
         inherit_environment = value.get("inherit_environment")
+        environment = value.get("environment")
         configuration = value.get("configuration")
         resources = value.get("resources")
         if not isinstance(capabilities, list) or any(
@@ -299,6 +305,13 @@ class RunStore:
             or not isinstance(inherit_environment, list)
             or any(not isinstance(name, str) for name in inherit_environment)
             or inherit_environment != list(dict.fromkeys(inherit_environment))
+            or not isinstance(environment, Mapping)
+            or list(environment) != sorted(environment)
+            or set(environment) != set(inherit_environment)
+            or any(
+                not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None
+                for digest in environment.values()
+            )
             or not isinstance(resources, list)
             or any(not isinstance(resource, Mapping) for resource in resources)
         ):

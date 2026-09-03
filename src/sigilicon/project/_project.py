@@ -73,6 +73,18 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
         raise ValueError(
             f"{contract}: runtime.inherit_environment must be unique"
         )
+    environment: dict[str, str] = {}
+    missing_environment: list[str] = []
+    for name in inherit_environment:
+        try:
+            environment[name] = os.environ[name]
+        except KeyError:
+            missing_environment.append(name)
+    if missing_environment:
+        raise ValueError(
+            f"{contract}: declared inherited environment is missing: "
+            f"{missing_environment}"
+        )
 
     def table(name: str) -> dict[str, str]:
         value = runtime.get(name, {})
@@ -101,13 +113,14 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
             directories=table("directories"),
             values=table("values"),
             inherit_environment=tuple(inherit_environment),
+            environment=environment,
         )
     except ContractError as exc:
         raise ValueError(f"{contract}: invalid runtime configuration: {exc}") from exc
 
 
 def _source_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove host-specific runtime facts from the portable project contract."""
+    """Project the full deployment manifest onto the path contract schema."""
 
     return {key: value for key, value in raw.items() if key != "runtime"}
 
@@ -338,14 +351,9 @@ class Project:
             raise ContractError("execution plan runtime binding drifted")
 
     def _execution_resources(self) -> Resources:
-        """Bind project runtime configuration to a sanitized host snapshot."""
+        """Return the runtime deployment frozen when this Project was opened."""
 
-        environment = {
-            key: os.environ[key]
-            for key in self._runtime.inherit_environment
-            if key in os.environ
-        }
-        return replace(self._runtime, environment=environment)
+        return self._runtime
 
     def resources(self) -> Resources:
         """Snapshot the project-declared runtime deployment and allowed host state."""
@@ -506,7 +514,7 @@ class Project:
             manifest_owner=manifest_owner,
             catalog_paths=catalog_paths,
             owners=tuple(sorted(owners, key=lambda item: item.name)),
-            manifest_document=freeze_toml_document(source_raw),
+            manifest_document=freeze_toml_document(raw),
             _manifest_path=contract,
             _manifest_context=project,
             _ip_catalog=(
@@ -534,13 +542,13 @@ class Project:
         contract = self.manifest_path
         try:
             current = freeze_toml_document(
-                _source_manifest(tomllib.loads(read_nofollow_text(contract)))
+                tomllib.loads(read_nofollow_text(contract))
             )
         except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
             raise ValueError("project manifest snapshot source document drift") from exc
         if current != raw:
             raise ValueError("project manifest snapshot source document drift")
-        source_paths = ProjectContext.from_contract(contract, raw)
+        source_paths = ProjectContext.from_contract(contract, _source_manifest(raw))
         if (
             (
                 self._manifest_context is not None
@@ -614,6 +622,7 @@ class Project:
                     }
                     for path in sorted(paths)
                 ],
+                "environment": self._runtime.environment_record,
             }
         )
 

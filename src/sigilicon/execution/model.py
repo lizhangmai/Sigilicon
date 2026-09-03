@@ -291,7 +291,7 @@ class ResourceBinding:
     identity: str
     kind: str
     sha256: str
-    location: Path | None = field(repr=False, compare=False)
+    location: Path | None = field(repr=False)
     files: tuple[ResourceFile, ...] = field(repr=False, compare=False)
     directories: tuple[str, ...] = ()
     value: str | None = field(default=None, repr=False)
@@ -1129,6 +1129,15 @@ class Resources:
             )
         raise ContractError(f"runtime resource is not configured: {identity}")
 
+    @property
+    def environment_record(self) -> dict[str, str]:
+        """Return a non-secret identity record for the frozen host environment."""
+
+        return {
+            name: canonical_digest(value)
+            for name, value in sorted(self.environment.items())
+        }
+
     def matches(self, binding: ResourceBinding) -> bool:
         """Return whether this deployment still provides one exact binding."""
 
@@ -1143,7 +1152,8 @@ class Resources:
         try:
             current = self.capture(binding.identity)
             return (
-                current.record == binding.record
+                current.location == binding.location
+                and current.record == binding.record
                 and current._fingerprint == binding._fingerprint
             )
         except (OSError, RuntimeError, ContractError):

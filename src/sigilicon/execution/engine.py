@@ -313,10 +313,11 @@ def _run(
             "inputs",
             ("runtime-bindings.json",),
             {
-                "schema": 3,
+                "schema": 4,
                 "contract_kind": "runtime-bindings",
                 "capabilities": sorted(resources.capabilities),
                 "inherit_environment": list(resources.inherit_environment),
+                "environment": resources.environment_record,
                 "configuration": {
                     "tools": dict(sorted(resources.tools.items())),
                     "files": dict(sorted(resources.files.items())),
