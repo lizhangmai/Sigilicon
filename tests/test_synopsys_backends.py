@@ -19,6 +19,7 @@ from sigilicon.backends.synopsys import (
 )
 from sigilicon.execution._model import (
     ContractError,
+    ExecutionError,
     Resources,
     RuntimeEnvironment,
     Step,
@@ -312,6 +313,14 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         release_liberty_sha256=liberty_digest,
         release_sources=(tmp_path / "manifest.json", tmp_path / "unsealed.lib"),
     )
+    structural_link = _PreparedStructuralLink(
+        planning,
+        (owner_sources[4],),
+        owner_sources[2],
+        owner_sources[3],
+        manifest_resource,
+        liberty_resource,
+    )
     step = _prepare_step(
         _StructuralLinkStep(
             "link",
@@ -319,16 +328,12 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
             config,
             sources=owner_sources,
             resources=(manifest_resource, liberty_resource),
-            structural_link=_PreparedStructuralLink(
-                planning,
-                (owner_sources[4],),
-                owner_sources[2],
-                owner_sources[3],
-                manifest_resource,
-                liberty_resource,
-            ),
+            structural_link=structural_link,
         ),
-        prepared=prepared,
+        prepared={
+            **prepared,
+            "domain_plan_identity": structural_link.identity,
+        },
     )
     context = StepContext(
         "1" * 64,
@@ -363,6 +368,14 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
     assert observed[0].release_liberty == (
         resource_root / resource_materialization_key(liberty_resource)
     )
+
+    object.__setattr__(
+        step.structural_link,
+        "plan",
+        replace(planning, top="identity_drift"),
+    )
+    with pytest.raises(ExecutionError, match="structural-link plan identity drift"):
+        backend.run(context)
 
 
 def test_dc_backend_collects_only_declared_delivery_files(tmp_path: Path) -> None:

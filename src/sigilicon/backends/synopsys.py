@@ -970,7 +970,47 @@ class _PreparedStructuralLink:
     release_manifest_resource: str
     release_liberty_resource: str
 
+    @property
+    def record(self) -> Mapping[str, Any]:
+        return {
+            "owner": self.plan.owner,
+            "variant": self.plan.variant,
+            "top": self.plan.top,
+            "rtl_sources": list(self.rtl_sources),
+            "compile_script": self.compile_script,
+            "link_script": self.link_script,
+            "library_name": self.plan.library_name,
+            "macro_cell": self.plan.macro_cell,
+            "parameter_overrides": dict(self.plan.parameter_overrides),
+            "expected_macro_instances": self.plan.expected_macro_instances,
+            "expected_unresolved_references": (
+                self.plan.expected_unresolved_references
+            ),
+            "library_compiler_version": self.plan.library_compiler_version,
+            "release_id": self.plan.release_id,
+            "release_source_commit": self.plan.release_source_commit,
+            "release_store": self.plan.release_store,
+            "release_manifest_resource": self.release_manifest_resource,
+            "release_manifest_sha256": self.plan.release_manifest_sha256,
+            "release_liberty_resource": self.release_liberty_resource,
+            "release_liberty_sha256": self.plan.release_liberty_sha256,
+        }
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(json_value(self.record))
+
+    def validate(self, context: StepContext) -> None:
+        recorded = dict(context.step._prepared)
+        identity = recorded.pop("domain_plan_identity", None)
+        if (
+            identity != self.identity
+            or canonical_digest(json_value(recorded)) != self.identity
+        ):
+            raise ExecutionError("structural-link plan identity drift")
+
     def runtime(self, context: StepContext) -> StructuralLinkPlan:
+        self.validate(context)
         return replace(
             self.plan,
             rtl_sources=tuple(
@@ -1208,14 +1248,18 @@ class StructuralLinkAdapter(DirectAdapter):
             raise ContractError(
                 "structural-link release changed while its Step was being bound"
             )
-        prepared_record = self._planning_record(
+        structural_link = _PreparedStructuralLink(
             planning,
-            rtl_sources=rtl_names,
-            compile_script=compile_name,
-            link_script=link_name,
-            release_manifest_resource=external[0].identity,
-            release_liberty_resource=external[1].identity,
+            rtl_names,
+            compile_name,
+            link_name,
+            external[0].identity,
+            external[1].identity,
         )
+        prepared_record = {
+            **structural_link.record,
+            "domain_plan_identity": structural_link.identity,
+        }
         source_names = tuple(
             dict.fromkeys(
                 (*step.sources, *(source.path for _scope, source in captured_sources))
@@ -1236,48 +1280,9 @@ class StructuralLinkAdapter(DirectAdapter):
                 )
             ),
             resource_bindings=external,
-            structural_link=_PreparedStructuralLink(
-                planning,
-                rtl_names,
-                compile_name,
-                link_name,
-                external[0].identity,
-                external[1].identity,
-            ),
+            structural_link=structural_link,
         )
         return prepared
-
-    @staticmethod
-    def _planning_record(
-        plan: StructuralLinkPlan,
-        *,
-        rtl_sources: tuple[str, ...],
-        compile_script: str,
-        link_script: str,
-        release_manifest_resource: str,
-        release_liberty_resource: str,
-    ) -> Mapping[str, Any]:
-        return {
-            "owner": plan.owner,
-            "variant": plan.variant,
-            "top": plan.top,
-            "rtl_sources": list(rtl_sources),
-            "compile_script": compile_script,
-            "link_script": link_script,
-            "library_name": plan.library_name,
-            "macro_cell": plan.macro_cell,
-            "parameter_overrides": dict(plan.parameter_overrides),
-            "expected_macro_instances": plan.expected_macro_instances,
-            "expected_unresolved_references": plan.expected_unresolved_references,
-            "library_compiler_version": plan.library_compiler_version,
-            "release_id": plan.release_id,
-            "release_source_commit": plan.release_source_commit,
-            "release_store": plan.release_store,
-            "release_manifest_resource": release_manifest_resource,
-            "release_manifest_sha256": plan.release_manifest_sha256,
-            "release_liberty_resource": release_liberty_resource,
-            "release_liberty_sha256": plan.release_liberty_sha256,
-        }
 
     def _execute(
         self,
