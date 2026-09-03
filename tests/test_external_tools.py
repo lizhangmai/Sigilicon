@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import math
 import os
 import resource
@@ -34,6 +35,7 @@ from sigilicon.workflows.spectre import (
     run_spectre_deck,
     run_spectre_measurement,
 )
+from sigilicon.workflows import spectre as spectre_workflow
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
@@ -329,7 +331,75 @@ def test_spectre_completion_preserves_all_three_log_sources(tmp_path: Path) -> N
         encoding="utf-8"
     ).endswith("0 errors\n")
     assert record.path("logs", "spectre.out").is_file()
-    assert result.raw_outputs["result.prn"].is_file()
+    assert result.raw_outputs["result.prn"] == b"time value\n0 1\n"
+
+
+def test_spectre_captures_native_outputs_before_releasing_work_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = tmp_path / "run"
+    record = StepWorkspace(
+        run_id="spectre-held-output",
+        root=run,
+        input_root=run / "inputs",
+        work_root=run / "work",
+        output_root=run / "outputs",
+        log_root=run / "logs",
+        source={},
+    )
+    model = record.write_text("inputs", ("model.scs",), "// model\n")
+    original_owned_directory = spectre_workflow.owned_directory
+
+    @contextmanager
+    def replace_outputs_after_guard(path: Path, *, create_missing: bool = False):
+        with original_owned_directory(
+            path,
+            create_missing=create_missing,
+        ) as owned:
+            yield owned
+        if Path(path) == record.work_root:
+            (Path(path) / "spectre.out").write_text(
+                "replacement without completion evidence\n",
+                encoding="utf-8",
+            )
+            (Path(path) / "result.prn").write_text(
+                "replacement\n",
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(
+        spectre_workflow,
+        "owned_directory",
+        replace_outputs_after_guard,
+    )
+
+    def execute(request: ProcessRequest) -> ProcessResult:
+        request.before_spawn()
+        (request.cwd / "spectre.out").write_text(
+            "spectre completes with 0 errors\n",
+            encoding="utf-8",
+        )
+        (request.cwd / "result.prn").write_text(
+            "time value\n0 1\n",
+            encoding="utf-8",
+        )
+        return ProcessResult(returncode=0, stdout="", stderr="")
+
+    result = run_spectre_deck(
+        record,
+        render_deck=lambda paths: f'include "{paths["model"]}"\n',
+        inputs={"model": model},
+        output_names=("result.prn",),
+        timeout=5,
+        resources=Resources(tools={"cadence.spectre": "/bin/true"}),
+        process=SimpleNamespace(run=execute),
+    )
+
+    assert result.raw_outputs == {"result.prn": b"time value\n0 1\n"}
+    assert record.path("logs", "spectre.out").read_text(encoding="utf-8") == (
+        "spectre completes with 0 errors\n"
+    )
 
 
 def test_spectre_measurement_rejects_truthy_non_boolean_passed(
@@ -622,6 +692,7 @@ def test_owned_output_never_follows_a_replaced_directory_path(
 def test_owned_atomic_output_accepts_a_regular_rename_commit(tmp_path: Path) -> None:
     with owned_directory(tmp_path) as owned_root:
         with owned_atomic_output_file(owned_root, "detail.csv") as output:
+            assert output.read_bytes() == b""
             temporary = tmp_path / "detail.csv.tmp"
             temporary.write_bytes(b"canonical result\n")
             os.replace(temporary, tmp_path / "detail.csv")
@@ -634,10 +705,26 @@ def test_owned_atomic_output_rejects_a_symlink_result(tmp_path: Path) -> None:
     outside.write_bytes(b"not owned\n")
     with owned_directory(tmp_path) as owned_root:
         with owned_atomic_output_file(owned_root, "detail.csv") as output:
+            assert output.read_bytes() == b""
+            (tmp_path / "detail.csv").unlink()
             (tmp_path / "detail.csv").symlink_to(outside)
 
             with pytest.raises(RuntimeError, match="readable regular file"):
                 output.read_bytes()
+
+
+def test_owned_atomic_output_rejects_a_replaced_spawn_reservation(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside.csv"
+    outside.write_bytes(b"not owned\n")
+    with owned_directory(tmp_path) as owned_root:
+        with owned_atomic_output_file(owned_root, "detail.csv") as output:
+            (tmp_path / "detail.csv").unlink()
+            (tmp_path / "detail.csv").symlink_to(outside)
+
+            with pytest.raises(RuntimeError, match="reservation changed"):
+                output.require_reserved()
 
 
 def test_normal_leader_exit_succeeds_only_after_residual_descendants_are_cleaned(

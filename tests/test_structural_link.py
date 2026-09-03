@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from sigilicon.workflows.structural_link import (
     execute_structural_link,
     plan_structural_link,
 )
+from sigilicon.workflows import structural_link as structural_link_workflow
 from sigilicon.external_tools import ProcessRequest, managed_process, owned_executable
 
 
@@ -258,7 +260,7 @@ def test_structural_link_rejects_same_size_release_tampering(
         _fixture(tmp_path, monkeypatch, tamper_liberty=True)
 
 
-def test_structural_link_executes_both_tools_and_publishes_typed_evidence(
+def test_structural_link_captures_tool_outputs_before_releasing_work_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -292,6 +294,30 @@ printf 'checkpoint\n' > "$SIGILICON_STRUCTURAL_CHECKPOINT"
 printf 'SIGILICON_STRUCTURAL_LINK_PASS top=%s macro_instances=1 unresolved=0\n' "$SIGILICON_STRUCTURAL_TOP"
 ''',
         executable=True,
+    )
+    original_owned_directory = structural_link_workflow.owned_directory
+
+    @contextmanager
+    def replace_report_after_guard(path: Path, *, create_missing: bool = False):
+        with original_owned_directory(
+            path,
+            create_missing=create_missing,
+        ) as owned:
+            yield owned
+        if Path(path) == artifacts.work_root:
+            report = Path(path) / "structural-link.rpt"
+            report.write_text(
+                report.read_text(encoding="utf-8").replace(
+                    "macro_instances=1",
+                    "macro_instances=99",
+                ),
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(
+        structural_link_workflow,
+        "owned_directory",
+        replace_report_after_guard,
     )
 
     result = execute_structural_link(

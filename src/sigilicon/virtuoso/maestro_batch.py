@@ -344,6 +344,7 @@ def run_isolated_maestro(
                     owned_cds_lib.require_visible()
                     owned_worker_cds.require_visible()
                     owned_script.require_sealed()
+                    owned_rdb.require_reserved()
                     require_workspace_capability(
                         operation,
                         client,

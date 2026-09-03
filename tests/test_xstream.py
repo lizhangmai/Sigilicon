@@ -300,6 +300,7 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
                 encoding="utf-8",
             )
             (cwd / "strmout.sum").write_text("complete\n", encoding="utf-8")
+            (cwd / "layout.gds").unlink()
             (cwd / "layout.gds").symlink_to(target)
         else:
             _write_success(cwd)

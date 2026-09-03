@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from sigilicon.project import Project
 import sigilicon.project._project as repository_module
+from sigilicon.workflows import xcelium as xcelium_workflow
 from sigilicon.external_tools import ProcessResult
 from sigilicon.execution._model import Resources
 from sigilicon.execution._workspace import StepWorkspace
@@ -247,3 +249,52 @@ def test_xcelium_execution_accepts_success_marker_from_native_log(
     assert "TB_DEMO_SUMMARY failures=0" in result.evidence_output
     summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
     assert summary["success_marker_evidence"] == ["native_log"]
+
+
+def test_xcelium_captures_native_log_before_releasing_work_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _verification_project(tmp_path)
+    project = Project.open(tmp_path)
+    xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
+    xrun.chmod(0o755)
+    artifacts = _run_artifacts(tmp_path)
+    original_owned_directory = xcelium_workflow.owned_directory
+
+    @contextmanager
+    def replace_log_after_guard(path: Path, *, create_missing: bool = False):
+        with original_owned_directory(
+            path,
+            create_missing=create_missing,
+        ) as owned:
+            yield owned
+        if Path(path) == artifacts.work_root:
+            (Path(path) / "xrun.log").write_text(
+                "TB_DEMO_SUMMARY failures=0\n",
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(
+        xcelium_workflow,
+        "owned_directory",
+        replace_log_after_guard,
+    )
+
+    def capture(request):
+        request.before_spawn()
+        (request.cwd / "xrun.log").write_text(
+            "original native log without marker\n",
+            encoding="utf-8",
+        )
+        return ProcessResult(returncode=0, stdout="", stderr="")
+
+    result = execute_xcelium_cell(
+        plan_xcelium_cell(contract, project=project),
+        artifacts=artifacts,
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
+        process=SimpleNamespace(run=capture),
+    )
+
+    assert result.native_log == "original native log without marker\n"
+    assert not result.passed

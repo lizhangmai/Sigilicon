@@ -297,21 +297,24 @@ def execute_xcelium_invocation(
             before_spawn=validate_spawn,
             pass_fds=(owned_work.fd, owned_xcelium.fd),
         ))
+        native_log_bytes = owned_work.read_child_bytes(
+            "xrun.log",
+            missing_ok=True,
+        )
     stdout_path = artifacts.write_text(
         "logs", ("xrun.stdout.log",), completed.stdout
     )
     stderr_path = artifacts.write_text(
         "logs", ("xrun.stderr.log",), completed.stderr
     )
-    native_log = work_dir / "xrun.log"
     native_output = (
-        native_log.read_text(encoding="utf-8", errors="replace")
-        if native_log.is_file()
+        native_log_bytes.decode("utf-8", errors="replace")
+        if native_log_bytes is not None
         else ""
     )
     native_log_path = (
-        artifacts.copy_file("logs", ("xrun.log",), native_log)
-        if native_log.is_file()
+        artifacts.write_bytes("logs", ("xrun.log",), native_log_bytes)
+        if native_log_bytes is not None
         else None
     )
     success_marker_evidence = [

@@ -242,12 +242,15 @@ def _base_checks(step: Step) -> list[PreflightCheck]:
 def _write_filelist(context: StepContext, name: str, sources: tuple[str, ...]) -> Path:
     if not sources:
         raise ExecutionError(f"managed {name} source set is empty")
-    path = context.work_root / f"{name}.f"
-    path.write_text(
+    return context.workspace(
+        "synopsys",
+        {},
+        tool_work_root=context.work_root,
+    ).write_text(
+        "work",
+        (f"{name}.f",),
         "".join(f"{context.source_path(source)}\n" for source in sources),
-        encoding="utf-8",
     )
-    return path
 
 
 def _logs(context: StepContext, stdout: str, stderr: str) -> tuple[Artifact, ...]:

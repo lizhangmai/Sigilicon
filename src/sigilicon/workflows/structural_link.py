@@ -40,13 +40,11 @@ def _sha256_fd(descriptor: int) -> str:
 
 
 def _structural_report(
-    path: Path,
+    payload: bytes,
     plan: "StructuralLinkPlan",
 ) -> tuple[int, int] | None:
-    if not path.is_file() or path.is_symlink():
-        return None
     fields: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in payload.decode("utf-8", errors="replace").splitlines():
         if "=" not in line:
             continue
         name, value = line.split("=", 1)
@@ -284,9 +282,7 @@ def execute_structural_link(
     """Run Library Compiler and DC while every input and output root is held."""
 
     work = artifacts.directory("work")
-    macro_db = work / "structural-macro.db"
-    report = work / "structural-link.rpt"
-    checkpoint = work / f"{plan.top}.ddc"
+    checkpoint_name = f"{plan.top}.ddc"
     child_environment = dict(environment)
     child_environment.pop("LD_PRELOAD", None)
     child_environment.update(
@@ -361,21 +357,26 @@ def execute_structural_link(
         ))
         artifacts.write_text("outputs", ("library-compiler.stdout.log",), lc.stdout)
         artifacts.write_text("outputs", ("library-compiler.stderr.log",), lc.stderr or "")
+        macro_db = held_work.read_child_bytes(
+            "structural-macro.db",
+            missing_ok=True,
+        )
         lc_marker = f"SIGILICON_STRUCTURAL_DB_PASS library={plan.library_name}"
         observed_lc_version = _observed_library_compiler_version(lc.stdout)
         lc_clean = (
             lc.returncode == 0
             and observed_lc_version == plan.library_compiler_version
             and lc_marker in lc.stdout
-            and macro_db.is_file()
-            and not macro_db.is_symlink()
-            and macro_db.stat().st_size > 0
+            and macro_db is not None
+            and len(macro_db) > 0
             and not any(
                 line.startswith(("Error:", "Fatal:"))
                 for line in f"{lc.stdout}\n{lc.stderr or ''}".splitlines()
             )
         )
         dc = None
+        report = None
+        checkpoint = None
         if lc_clean:
             dc = managed_process.run(ProcessRequest(
                 argv=(*held_dc.command, "-f", held_link.child_named_path),
@@ -388,8 +389,16 @@ def execute_structural_link(
             ))
             artifacts.write_text("outputs", ("design-compiler.stdout.log",), dc.stdout)
             artifacts.write_text("outputs", ("design-compiler.stderr.log",), dc.stderr or "")
+            report = held_work.read_child_bytes(
+                "structural-link.rpt",
+                missing_ok=True,
+            )
+            checkpoint = held_work.read_child_bytes(
+                checkpoint_name,
+                missing_ok=True,
+            )
 
-    observed = _structural_report(report, plan)
+    observed = _structural_report(report, plan) if report is not None else None
     marker = (
         f"SIGILICON_STRUCTURAL_LINK_PASS top={plan.top} "
         f"macro_instances={plan.expected_macro_instances} "
@@ -399,9 +408,8 @@ def execute_structural_link(
         dc is not None
         and dc.returncode == 0
         and marker in dc.stdout
-        and checkpoint.is_file()
-        and not checkpoint.is_symlink()
-        and checkpoint.stat().st_size > 0
+        and checkpoint is not None
+        and len(checkpoint) > 0
         and observed
         == (
             plan.expected_macro_instances,
@@ -414,9 +422,12 @@ def execute_structural_link(
     )
     passed = lc_clean and dc_clean
     if passed:
-        artifacts.copy_file("outputs", ("structural-macro.db",), macro_db)
-        artifacts.copy_file("outputs", ("structural-link.rpt",), report)
-        artifacts.copy_file("outputs", (f"{plan.top}.ddc",), checkpoint)
+        assert macro_db is not None
+        assert report is not None
+        assert checkpoint is not None
+        artifacts.write_bytes("outputs", ("structural-macro.db",), macro_db)
+        artifacts.write_bytes("outputs", ("structural-link.rpt",), report)
+        artifacts.write_bytes("outputs", (checkpoint_name,), checkpoint)
     facts: dict[str, object] = {
         "passed": passed,
         "library_compiler_version": observed_lc_version,

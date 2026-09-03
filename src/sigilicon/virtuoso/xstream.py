@@ -472,6 +472,9 @@ def run_xstream_export(
             launcher.require_visible()
             owned_map.require_visible()
             owned_cds.require_visible()
+            native_log.require_reserved()
+            summary.require_reserved()
+            gds.require_reserved()
 
         try:
             completed = process.run(ProcessRequest(

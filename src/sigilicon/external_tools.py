@@ -431,6 +431,129 @@ class OwnedDirectoryDescriptor:
         ):
             raise RuntimeError(f"owned directory identity changed: {self.path}")
 
+    def read_child_bytes(
+        self,
+        relative: Path | str,
+        *,
+        missing_ok: bool = False,
+    ) -> bytes | None:
+        """Capture one stable regular child through the held directory."""
+
+        value = Path(relative)
+        if (
+            value.is_absolute()
+            or not value.parts
+            or "\\" in str(relative)
+            or any(part in {"", ".", ".."} for part in value.parts)
+        ):
+            raise ValueError(f"owned directory child must be relative: {relative!r}")
+        current = self.fd
+        held_directories: list[tuple[int, str, int, os.stat_result]] = []
+        descriptor: int | None = None
+        try:
+            try:
+                for component in value.parts[:-1]:
+                    visible = os.stat(
+                        component,
+                        dir_fd=current,
+                        follow_symlinks=False,
+                    )
+                    child = os.open(
+                        component,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_CLOEXEC
+                        | os.O_NOFOLLOW,
+                        dir_fd=current,
+                    )
+                    held = os.fstat(child)
+                    if (
+                        not stat.S_ISDIR(held.st_mode)
+                        or (visible.st_dev, visible.st_ino)
+                        != (held.st_dev, held.st_ino)
+                    ):
+                        os.close(child)
+                        raise RuntimeError(
+                            f"owned directory child changed: {self.path / value}"
+                        )
+                    held_directories.append((current, component, child, held))
+                    current = child
+                descriptor = os.open(
+                    value.name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+            except FileNotFoundError:
+                if missing_ok:
+                    return None
+                raise RuntimeError(
+                    f"owned directory child is missing: {self.path / value}"
+                ) from None
+            before = os.fstat(descriptor)
+            visible = os.stat(
+                value.name,
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or (visible.st_dev, visible.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                raise RuntimeError(
+                    f"owned directory child is not a stable regular file: "
+                    f"{self.path / value}"
+                )
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            visible_after = os.stat(
+                value.name,
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_nlink,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_nlink,
+            ) or (visible_after.st_dev, visible_after.st_ino) != (
+                after.st_dev,
+                after.st_ino,
+            ):
+                raise RuntimeError(
+                    f"owned directory child changed while reading: {self.path / value}"
+                )
+            return b"".join(chunks)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            for parent, name, child, held in reversed(held_directories):
+                try:
+                    visible = os.stat(
+                        name,
+                        dir_fd=parent,
+                        follow_symlinks=False,
+                    )
+                    if (visible.st_dev, visible.st_ino) != (
+                        held.st_dev,
+                        held.st_ino,
+                    ):
+                        raise RuntimeError(
+                            f"owned directory child changed: {self.path / value}"
+                        )
+                finally:
+                    os.close(child)
+
 
 @dataclass(frozen=True)
 class OwnedInputClosureDescriptor:
@@ -533,6 +656,7 @@ class OwnedOutputDescriptor:
 class OwnedAtomicOutputDescriptor:
     """A child-created output that may be committed by atomic rename."""
 
+    reservation_fd: int
     directory_fd: int
     path: Path
     name: str
@@ -572,6 +696,25 @@ class OwnedAtomicOutputDescriptor:
             )
         return descriptor
 
+    def require_reserved(self) -> None:
+        """Prove the safe placeholder still owns the pathname before spawn."""
+
+        reserved = os.fstat(self.reservation_fd)
+        visible = os.stat(
+            self.name,
+            dir_fd=self.directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(reserved.st_mode)
+            or reserved.st_nlink != 1
+            or (visible.st_dev, visible.st_ino)
+            != (reserved.st_dev, reserved.st_ino)
+        ):
+            raise RuntimeError(
+                f"owned atomic output reservation changed: {self.path}"
+            )
+
     def require_visible(self) -> None:
         descriptor = self._open_visible()
         os.close(descriptor)
@@ -579,18 +722,31 @@ class OwnedAtomicOutputDescriptor:
     def read_bytes(self) -> bytes:
         descriptor = self._open_visible()
         try:
+            before = os.fstat(descriptor)
             chunks: list[bytes] = []
             while chunk := os.read(descriptor, 1024 * 1024):
                 chunks.append(chunk)
-            metadata = os.fstat(descriptor)
+            after = os.fstat(descriptor)
             visible = os.stat(
                 self.name,
                 dir_fd=self.directory_fd,
                 follow_symlinks=False,
             )
-            if (visible.st_dev, visible.st_ino) != (
-                metadata.st_dev,
-                metadata.st_ino,
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_nlink,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_nlink,
+            ) or (visible.st_dev, visible.st_ino) != (
+                after.st_dev,
+                after.st_ino,
             ):
                 raise RuntimeError(
                     f"owned atomic output changed while reading: {self.path}"
@@ -1270,29 +1426,37 @@ def owned_atomic_output_file(
     directory: OwnedDirectoryDescriptor,
     name: str,
 ) -> Iterator[OwnedAtomicOutputDescriptor]:
-    """Reserve one absent child pathname for a trusted atomic writer.
+    """Reserve one safe regular pathname for a trusted atomic writer.
 
     Cadence exporters commonly write a sibling temporary file and rename it
-    over the requested result.  The held parent directory and post-write
-    nofollow open preserve ownership without incorrectly pinning the original
-    inode.
+    over the requested result.  A held placeholder prevents the initial path
+    from being a symlink; post-write reads bind whichever regular inode the
+    exporter committed through the held parent directory.
     """
 
     if not name or Path(name).name != name:
         raise ValueError(f"owned atomic output must be one filename: {name!r}")
-    try:
-        os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        raise RuntimeError(
-            f"owned atomic output path already exists: {directory.path / name}"
-        )
-    yield OwnedAtomicOutputDescriptor(
+    reservation = os.open(
+        name,
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_CLOEXEC
+        | os.O_NOFOLLOW,
+        0o644,
+        dir_fd=directory.fd,
+    )
+    output = OwnedAtomicOutputDescriptor(
+        reservation_fd=reservation,
         directory_fd=directory.fd,
         path=directory.path / name,
         name=name,
     )
+    try:
+        output.require_reserved()
+        yield output
+    finally:
+        os.close(reservation)
 
 
 def cadence_subprocess_env(

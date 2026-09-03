@@ -703,6 +703,14 @@ def write_immutable_text(path: Path, value: str) -> None:
     _write_exclusive_bytes(Path(path), value.encode("utf-8"))
 
 
+def write_immutable_bytes(path: Path, value: bytes) -> None:
+    """Create one nofollow regular binary artifact without replacement semantics."""
+
+    if not isinstance(value, bytes):
+        raise ValueError("immutable binary artifact must be bytes")
+    _write_exclusive_bytes(Path(path), value)
+
+
 def _safe_manifest_relative(value: object, label: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ArtifactManifestError(f"manifest {label} must be a non-empty string")

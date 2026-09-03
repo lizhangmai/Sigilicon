@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from sigilicon.artifacts import (
     copy_immutable_file,
     ensure_nofollow_directory,
+    write_immutable_bytes,
     write_immutable_text,
 )
 from sigilicon.paths import validate_artifact_component
@@ -90,6 +91,16 @@ class StepWorkspace:
     ) -> Path:
         destination = self.path(role, *components)
         write_immutable_text(destination, value)
+        return destination
+
+    def write_bytes(
+        self,
+        role: str,
+        components: Sequence[str],
+        value: bytes,
+    ) -> Path:
+        destination = self.path(role, *components)
+        write_immutable_bytes(destination, value)
         return destination
 
     def write_json(

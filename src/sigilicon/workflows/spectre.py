@@ -12,9 +12,9 @@ import json
 import os
 from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
-from sigilicon.artifacts import read_nofollow_text
 from sigilicon.execution._model import Resources
 from sigilicon.execution._workspace import StepWorkspace
 from sigilicon.external_tools import (
@@ -33,7 +33,7 @@ _SPECTRE_ZERO_ERRORS = re.compile(r"spectre completes with\s+0 errors", re.IGNOR
 class SpectreExecution:
     """Evidence from one direct Spectre process-group invocation."""
 
-    raw_outputs: Mapping[str, Path]
+    raw_outputs: Mapping[str, bytes]
 
 
 @dataclass(frozen=True)
@@ -185,6 +185,15 @@ def run_spectre_deck(
                 before_spawn=validate_spawn,
                 pass_fds=pass_fds,
             ))
+            native_log_bytes = owned_work.read_child_bytes(
+                "spectre.out",
+                missing_ok=True,
+            )
+            raw_outputs: dict[str, bytes] = {}
+            for name in output_names:
+                payload = owned_work.read_child_bytes(name, missing_ok=True)
+                if payload is not None:
+                    raw_outputs[name] = payload
 
     assert completed is not None
     record.write_text(
@@ -197,16 +206,15 @@ def run_spectre_deck(
         ("spectre.stderr.log",),
         completed.stderr,
     )
-    native_log_candidate = record.path("work", "spectre.out")
     proof_sources = [completed.stdout, completed.stderr]
-    if native_log_candidate.is_file():
-        copied_native_log = record.copy_file(
+    if native_log_bytes is not None:
+        record.write_bytes(
             "logs",
             ("spectre.out",),
-            native_log_candidate,
+            native_log_bytes,
         )
         proof_sources.append(
-            read_nofollow_text(copied_native_log, errors="replace")
+            native_log_bytes.decode("utf-8", errors="replace")
         )
     if completed.returncode != 0:
         tail = "\n".join(
@@ -215,14 +223,11 @@ def run_spectre_deck(
         raise RuntimeError(f"Spectre exited {completed.returncode}\n{tail}")
     if not _SPECTRE_ZERO_ERRORS.search("\n".join(proof_sources)):
         raise RuntimeError("could not prove a Spectre completion with zero errors")
-    raw_outputs: dict[str, Path] = {}
     for name in output_names:
-        output = record.path("work", *Path(name).parts)
-        if not output.is_file():
+        if name not in raw_outputs:
             raise RuntimeError(f"Spectre did not produce declared direct-print output {name}")
-        raw_outputs[name] = output
     return SpectreExecution(
-        raw_outputs=raw_outputs,
+        raw_outputs=MappingProxyType(raw_outputs),
     )
 
 
@@ -279,12 +284,12 @@ def run_spectre_measurement(
         resources=resources,
         process=process,
     )
-    raw = artifacts.copy_file(
+    artifacts.write_bytes(
         "outputs",
         (raw_result_name,),
         execution.raw_outputs[output_name],
     )
-    parsed = parse(read_nofollow_text(raw, errors="strict"))
+    parsed = parse(execution.raw_outputs[output_name].decode("utf-8", errors="strict"))
     artifacts.write_text(
         "outputs",
         (normalized_name,),
