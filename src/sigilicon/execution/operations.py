@@ -15,6 +15,7 @@ from sigilicon.execution._model import (
     RuntimeEnvironment,
     Source,
     Step,
+    _prepare_step,
     adapter_identity,
 )
 from sigilicon.paths import validate_artifact_component
@@ -194,25 +195,22 @@ def _step(
         project_root=project_root,
         field=f"{field}.filesets",
     )
-    return (
-        Step(
-            id=step_id,
+    step = Step(
+        id=step_id,
+        uses=uses,
+        config=_config(raw.get("config"), f"{field}.config"),
+        needs=_strings(raw.get("needs"), f"{field}.needs"),
+        sources=tuple(source.path for source in sources),
+        evidence=_evidence(raw.get("evidence"), f"{field}.evidence"),
+        runtime=_runtime(
+            raw.get("runtime"),
             uses=uses,
-            config=_config(raw.get("config"), f"{field}.config"),
-            needs=_strings(raw.get("needs"), f"{field}.needs"),
-            sources=tuple(source.path for source in sources),
-            evidence=_evidence(raw.get("evidence"), f"{field}.evidence"),
-            runtime=_runtime(
-                raw.get("runtime"),
-                uses=uses,
-                profiles=runtime_profiles,
-                defaults=runtime_defaults,
-                field=f"{field}.runtime",
-            ),
-            _source_snapshots=sources,
+            profiles=runtime_profiles,
+            defaults=runtime_defaults,
+            field=f"{field}.runtime",
         ),
-        sources,
     )
+    return _prepare_step(step, source_snapshots=sources), sources
 
 
 def compile_operation(

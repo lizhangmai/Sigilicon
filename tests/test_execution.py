@@ -27,6 +27,7 @@ from sigilicon.execution._model import (
     StepContext,
     StepOutcome,
     StepResult,
+    _prepare_step,
 )
 from sigilicon.execution._model import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
@@ -824,10 +825,10 @@ def test_adapter_planning_closes_over_discovered_sources_deterministically(
                 for path in self.paths
             )
             names = tuple(sorted(source.path for source in sources))
-            return replace(
+            return _prepare_step(
                 step,
                 sources=tuple(dict.fromkeys((*step.sources, *names))),
-                _source_snapshots=tuple(
+                source_snapshots=tuple(
                     sorted(
                         (*step._source_snapshots, *sources),
                         key=lambda source: source.path,
@@ -910,10 +911,10 @@ source = ["value"]
     class ForeignSourceAdapter(CopyAdapter):
         def plan(self, project, step, resources):
             source = Source.capture(value, root=foreign, scope="owner")
-            return replace(
+            return _prepare_step(
                 step,
                 sources=(*step.sources, source.path),
-                _source_snapshots=(*step._source_snapshots, source),
+                source_snapshots=(*step._source_snapshots, source),
             )
 
     project = _project(tmp_path, ForeignSourceAdapter())
@@ -932,10 +933,10 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
     class SymlinkSourceAdapter(CopyAdapter):
         def plan(self, project, step, resources):
             source = Source.capture(link, root=owner.parent, scope="owner")
-            return replace(
+            return _prepare_step(
                 step,
                 sources=(*step.sources, source.path),
-                _source_snapshots=(*step._source_snapshots, source),
+                source_snapshots=(*step._source_snapshots, source),
             )
 
     project = _project(tmp_path, SymlinkSourceAdapter())
@@ -1236,10 +1237,10 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return replace(
+            return _prepare_step(
                 step,
                 resources=(resource.identity,),
-                _resource_bindings=(resource,),
+                resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1275,6 +1276,60 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
     assert "proprietary model" not in persisted
 
 
+def test_sealed_resource_lookup_does_not_recapture_the_live_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project(tmp_path)
+    live = tmp_path / "site/pdk/library"
+    live.mkdir(parents=True)
+    for index in range(200):
+        (live / f"model-{index}.scs").write_text(
+            f"model {index}\n",
+            encoding="utf-8",
+        )
+
+    class ResourceAdapter(CopyAdapter):
+        def plan(self, _project, step, resources):
+            resource = ResourceBinding.capture(
+                live,
+                identity="pdk:fixture/library",
+            )
+            return _prepare_step(
+                step,
+                resources=(resource.identity,),
+                resource_bindings=(resource,),
+            )
+
+        def run(self, context: StepContext) -> StepResult:
+            identity = context.step.resources[0]
+            selected = context.resource_path(identity)
+            for _index in range(500):
+                assert context.resource_path(identity) == selected
+            return StepResult.succeeded()
+
+    project = _project(tmp_path, ResourceAdapter())
+    plan = _plan(project, "example:check")
+    captures = 0
+    original = ResourceBinding.capture.__func__
+
+    def counted_capture(cls, path, *, identity, kind=None):
+        nonlocal captures
+        captures += 1
+        return original(cls, path, identity=identity, kind=kind)
+
+    monkeypatch.setattr(
+        ResourceBinding,
+        "capture",
+        classmethod(counted_capture),
+    )
+
+    result = project.run(plan, run_id="6" * 32)
+
+    assert result.status == "succeeded"
+    assert captures == 1
+
+
 def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None:
     _write_project(tmp_path)
     live = tmp_path / "site/pdk/table.bin"
@@ -1285,10 +1340,10 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     class BinaryAdapter(CopyAdapter):
         def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/table")
-            return replace(
+            return _prepare_step(
                 step,
                 resources=(resource.identity,),
-                _resource_bindings=(resource,),
+                resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1352,10 +1407,10 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
     class DirectoryAdapter(CopyAdapter):
         def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/library")
-            return replace(
+            return _prepare_step(
                 step,
                 resources=(resource.identity,),
-                _resource_bindings=(resource,),
+                resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1436,10 +1491,10 @@ def test_run_store_keeps_tools_as_external_content_references(tmp_path: Path) ->
     class ToolAdapter(CopyAdapter):
         def plan(self, _project, step, resources):
             binding = resources.capture("test.tool")
-            return replace(
+            return _prepare_step(
                 step,
                 resources=(binding.identity,),
-                _resource_bindings=(binding,),
+                resource_bindings=(binding,),
             )
 
     project = _project(tmp_path, ToolAdapter())
@@ -1472,10 +1527,10 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return replace(
+            return _prepare_step(
                 step,
                 resources=(resource.identity,),
-                _resource_bindings=(resource,),
+                resource_bindings=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1589,6 +1644,15 @@ def test_public_execution_models_reject_inconsistent_values() -> None:
     assert "run_root" not in RunResult.__dataclass_fields__
     assert "_run_root" not in RunResult.__dataclass_fields__
     assert not {
+        "_prepared",
+        "_source_snapshots",
+        "_resource_bindings",
+    } & inspect.signature(Step).parameters.keys()
+    assert not {
+        "_composition_sources",
+        "_authority",
+    } & inspect.signature(ExecutionPlan).parameters.keys()
+    assert not {
         "work_root",
         "output_root",
         "source_root",
@@ -1596,6 +1660,13 @@ def test_public_execution_models_reject_inconsistent_values() -> None:
     } & StepContext.__dataclass_fields__.keys()
     with pytest.raises(ContractError, match="config must be a mapping"):
         Step("bad", "fake.copy", "not-config")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        Step(  # type: ignore[call-arg]
+            "bad",
+            "fake.copy",
+            {},
+            _prepared={},
+        )
     step = Step("good", "fake.copy", {"nested": {"value": [1, 2]}})
     with pytest.raises(TypeError):
         step.config["changed"] = True  # type: ignore[index]
@@ -1880,6 +1951,50 @@ def test_concurrent_callers_cannot_mix_the_same_run_identity(tmp_path: Path) -> 
     assert sum(isinstance(value, RunResult) for value in values) == 1
     assert sum(isinstance(value, FileExistsError) for value in values) == 1
     assert _read_run(project, "example:check", "4" * 32).status == "succeeded"
+
+
+def test_run_identity_claim_is_exclusive_across_processes(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    gate = tmp_path / "start"
+    script = """
+from pathlib import Path
+import sys
+
+from sigilicon.artifacts import RunRecord
+from sigilicon.paths import ArtifactLayout
+
+artifact_root = Path(sys.argv[1])
+gate = Path(sys.argv[2])
+while not gate.exists():
+    pass
+paths = ArtifactLayout(artifact_root).operation_run(
+    owner="example",
+    operation="check",
+    variant=None,
+    run_id="5" * 32,
+)
+try:
+    RunRecord.begin(
+        paths,
+        adapter="race-test",
+        source={"plan_identity": "6" * 64},
+    )
+except FileExistsError:
+    raise SystemExit(17)
+"""
+    processes = tuple(
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(artifact_root), str(gate)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _index in range(2)
+    )
+    gate.touch()
+    completed = tuple(process.communicate(timeout=30) for process in processes)
+
+    assert sorted(process.returncode for process in processes) == [0, 17], completed
 
 
 def test_project_import_does_not_load_tool_capability_modules() -> None:

@@ -18,6 +18,8 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
+    _bind_execution_plan,
+    _prepare_step,
     adapter_identity,
 )
 
@@ -198,10 +200,10 @@ def plan_execution(
                     if identity in captured_resources
                     else resources.capture(identity)
                 )
-        planned = replace(
+        planned = _prepare_step(
             planned,
             resources=declared_resources,
-            _resource_bindings=tuple(
+            resource_bindings=tuple(
                 step_resources[identity] for identity in declared_resources
             ),
         )
@@ -219,23 +221,26 @@ def plan_execution(
             captured_resources[resource.identity] = resource
         planned_steps.append(planned)
 
-    return ExecutionPlan(
-        project_identity=draft.project_identity,
-        owner=draft.owner,
-        operation=draft.operation,
-        variant=draft.variant,
-        steps=tuple(planned_steps),
-        sources=tuple(
-            source
-            for _key, source in sorted(
-                captured.items(), key=lambda item: (str(item[0][0]), item[0][1])
-            )
+    return _bind_execution_plan(
+        ExecutionPlan(
+            project_identity=draft.project_identity,
+            owner=draft.owner,
+            operation=draft.operation,
+            variant=draft.variant,
+            steps=tuple(planned_steps),
+            sources=tuple(
+                source
+                for _key, source in sorted(
+                    captured.items(),
+                    key=lambda item: (str(item[0][0]), item[0][1]),
+                )
+            ),
+            resources=tuple(
+                captured_resources[name] for name in sorted(captured_resources)
+            ),
         ),
-        resources=tuple(
-            captured_resources[name] for name in sorted(captured_resources)
-        ),
-        _composition_sources=composition_sources,
-        _authority=authority,
+        composition_sources=composition_sources,
+        authority=authority,
     )
 
 

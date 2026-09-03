@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.execution._workspace import StepWorkspace
 from sigilicon.layout.generator import build_layout_plan_from_sources
 from sigilicon.workflows.layout_generation import (
     LayoutPlanningResult,
@@ -199,7 +200,15 @@ def build_layout_plan(spec):
             recipe: sealed_recipe,
             netlist: sealed_netlist,
         },
-        managed_project_root=tmp_path / "managed",
+        workspace=StepWorkspace(
+            run_id="layout-ir-test",
+            root=tmp_path / "managed",
+            input_root=tmp_path / "managed/inputs",
+            work_root=tmp_path / "managed/work",
+            output_root=tmp_path / "managed/outputs",
+            log_root=tmp_path / "managed/logs",
+            source={},
+        ),
     )
 
     assert managed.plan is not None

@@ -35,6 +35,7 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
+    _prepare_step,
     json_value,
 )
 from sigilicon.execution.runtime import (
@@ -1005,19 +1006,21 @@ class _StructuralLinkStep(Step):
         resource_bindings: tuple[ResourceBinding, ...],
         structural_link: _PreparedStructuralLink,
     ) -> "_StructuralLinkStep":
-        return cls(
-            id=step.id,
-            uses=step.uses,
-            config=config,
-            needs=step.needs,
-            sources=sources,
-            evidence=step.evidence,
-            resources=resources,
-            runtime=step.runtime,
-            _prepared=prepared,
-            _source_snapshots=source_snapshots,
-            _resource_bindings=resource_bindings,
-            structural_link=structural_link,
+        return _prepare_step(
+            cls(
+                id=step.id,
+                uses=step.uses,
+                config=config,
+                needs=step.needs,
+                sources=sources,
+                evidence=step.evidence,
+                resources=resources,
+                runtime=step.runtime,
+                structural_link=structural_link,
+            ),
+            prepared=prepared,
+            source_snapshots=source_snapshots,
+            resource_bindings=resource_bindings,
         )
 
 

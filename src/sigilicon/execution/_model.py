@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 import hashlib
 import math
@@ -913,13 +913,14 @@ class Step:
     runtime: RuntimeEnvironment = field(default_factory=RuntimeEnvironment)
     _prepared: Mapping[str, JsonValue] = field(
         default_factory=dict,
+        init=False,
         repr=False,
     )
     _source_snapshots: tuple[Source, ...] = field(
-        default=(), repr=False, compare=False
+        default=(), init=False, repr=False, compare=False
     )
     _resource_bindings: tuple[ResourceBinding, ...] = field(
-        default=(), repr=False, compare=False
+        default=(), init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
@@ -996,6 +997,74 @@ class Step:
             "evidence": None if self.evidence is None else self.evidence.record,
         }
 
+
+_UNSET = object()
+
+
+def _prepare_step(
+    step: Step,
+    *,
+    config: Mapping[str, JsonValue] | object = _UNSET,
+    sources: tuple[str, ...] | object = _UNSET,
+    resources: tuple[str, ...] | object = _UNSET,
+    prepared: Mapping[str, JsonValue] | object = _UNSET,
+    source_snapshots: tuple[Source, ...] | object = _UNSET,
+    resource_bindings: tuple[ResourceBinding, ...] | object = _UNSET,
+) -> Step:
+    """Return one internally bound Step without exposing closure fields."""
+
+    public: dict[str, object] = {}
+    if config is not _UNSET:
+        public["config"] = config
+    if sources is not _UNSET:
+        public["sources"] = sources
+    if resources is not _UNSET:
+        public["resources"] = resources
+    result = replace(step, **public)
+    selected_prepared = step._prepared if prepared is _UNSET else prepared
+    selected_sources = (
+        step._source_snapshots
+        if source_snapshots is _UNSET
+        else source_snapshots
+    )
+    selected_resources = (
+        step._resource_bindings
+        if resource_bindings is _UNSET
+        else resource_bindings
+    )
+    if not isinstance(selected_prepared, Mapping):
+        raise ContractError("prepared step state must be a mapping")
+    if not isinstance(selected_sources, tuple) or any(
+        not isinstance(source, Source) for source in selected_sources
+    ):
+        raise ContractError("step source closure must contain Source values")
+    if selected_sources and {
+        source.path for source in selected_sources
+    } != set(result.sources):
+        raise ContractError("step source names disagree with their exact closure")
+    if not isinstance(selected_resources, tuple) or any(
+        not isinstance(resource, ResourceBinding)
+        for resource in selected_resources
+    ):
+        raise ContractError(
+            "step resource closure must contain ResourceBinding values"
+        )
+    if selected_resources and {
+        resource.identity for resource in selected_resources
+    } != set(result.resources):
+        raise ContractError(
+            "step resource names disagree with their exact closure"
+        )
+    object.__setattr__(
+        result,
+        "_prepared",
+        _freeze(selected_prepared, "prepared step state"),
+    )
+    object.__setattr__(result, "_source_snapshots", selected_sources)
+    object.__setattr__(result, "_resource_bindings", selected_resources)
+    return result
+
+
 def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     by_id = {step.id: step for step in steps}
     if len(by_id) != len(steps):
@@ -1040,10 +1109,16 @@ class ExecutionPlan:
     resources: tuple[ResourceBinding, ...] = field(repr=False)
     _composition_sources: tuple[Source, ...] = field(
         default=(),
+        init=False,
         repr=False,
         compare=False,
     )
-    _authority: object | None = field(default=None, repr=False, compare=False)
+    _authority: object | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
     _identity: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -1113,6 +1188,24 @@ class ExecutionPlan:
     @property
     def identity(self) -> str:
         return self._identity
+
+
+def _bind_execution_plan(
+    plan: ExecutionPlan,
+    *,
+    composition_sources: tuple[Source, ...],
+    authority: object,
+) -> ExecutionPlan:
+    """Bind Project-only monitoring and authority to a new public plan value."""
+
+    if not isinstance(composition_sources, tuple) or any(
+        not isinstance(source, Source) for source in composition_sources
+    ):
+        raise ContractError("execution plan composition monitor is invalid")
+    object.__setattr__(plan, "_composition_sources", composition_sources)
+    object.__setattr__(plan, "_authority", authority)
+    return plan
+
 
 @dataclass(frozen=True)
 class Resources:

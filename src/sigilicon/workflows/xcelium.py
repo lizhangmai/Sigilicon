@@ -69,7 +69,6 @@ class XceliumCellPlan:
 class XceliumExecution:
     """Common Xcelium result for digital or AMS verification."""
 
-    plan: XceliumCellPlan
     run_summary: Path
     returncode: int
     passed: bool
@@ -201,9 +200,12 @@ def execute_xcelium_cell(
 ) -> XceliumExecution:
     """Execute a resolved cell without creating or completing a run record."""
 
-    return _execute_xcelium(
-        plan,
+    return execute_xcelium_invocation(
         artifacts=artifacts,
+        plan_record=plan.as_dict(),
+        cell=plan.spec.cell,
+        dut=plan.spec.dut,
+        success_marker=plan.spec.success_marker,
         command_factory=lambda xrun_bin, work_path, xcelium_path: [
             str(xrun_bin),
             "-64bit",
@@ -233,10 +235,13 @@ def _require_xcelium_sources(plan: XceliumCellPlan) -> None:
             )
 
 
-def _execute_xcelium(
-    plan: XceliumCellPlan,
+def execute_xcelium_invocation(
     *,
     artifacts: StepWorkspace,
+    plan_record: Mapping[str, object],
+    cell: str,
+    dut: str,
+    success_marker: str,
     command_factory: Callable[[Path, str, str], list[str]],
     prepare_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
@@ -258,7 +263,7 @@ def _execute_xcelium(
     artifacts.write_json(
         "inputs",
         ("source-manifest.json",),
-        {"schema": 1, "plan": plan.as_dict()},
+        {"schema": 1, "plan": plan_record},
     )
     work_dir = artifacts.directory("work")
     xcelium_dir = artifacts.directory("work", "xcelium.d")
@@ -315,18 +320,18 @@ def _execute_xcelium(
             ("stdout", completed.stdout),
             ("native_log", native_output),
         )
-        if plan.spec.success_marker in output
+        if success_marker in output
     ]
     success_marker_seen = bool(success_marker_evidence)
     passed = completed.returncode == 0 and success_marker_seen
     summary = {
         "schema": 1,
-        "cell": plan.spec.cell,
-        "dut": plan.spec.dut,
+        "cell": cell,
+        "dut": dut,
         "xrun": str(xrun_bin),
         "command": command,
         "returncode": completed.returncode,
-        "success_marker": plan.spec.success_marker,
+        "success_marker": success_marker,
         "success_marker_seen": success_marker_seen,
         "success_marker_evidence": success_marker_evidence,
         "passed": passed,
@@ -345,7 +350,6 @@ def _execute_xcelium(
         "outputs", ("summary.json",), summary
     )
     return XceliumExecution(
-        plan=plan,
         run_summary=summary_path,
         returncode=completed.returncode,
         passed=passed,

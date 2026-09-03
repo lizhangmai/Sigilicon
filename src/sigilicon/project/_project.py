@@ -284,7 +284,7 @@ class Project:
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
         resources = self._execution_resources()
-        self._require_project_plan(plan, resources)
+        self._require_project_plan(plan)
         return _preflight(plan, resources, self._adapters())
 
     def run(
@@ -302,7 +302,7 @@ class Project:
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")
         resources = self._execution_resources()
-        self._require_project_plan(plan, resources)
+        self._require_project_plan(plan)
         return _run(
             plan,
             resources,
@@ -312,7 +312,7 @@ class Project:
             progress=progress,
         )
 
-    def _require_project_plan(self, plan: ExecutionPlan, resources: Resources) -> None:
+    def _require_project_plan(self, plan: ExecutionPlan) -> None:
         """Require a plan produced from this exact project composition."""
 
         if plan.project_identity != self.operation_identity(plan.owner):
@@ -340,8 +340,6 @@ class Project:
                 expected_root
             ):
                 raise ContractError("execution plan source escaped its project scope")
-        if any(not resources.matches(binding) for binding in plan.resources):
-            raise ContractError("execution plan runtime binding drifted")
 
     def _execution_resources(self) -> Resources:
         """Return the runtime deployment frozen when this Project was opened."""

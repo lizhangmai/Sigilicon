@@ -33,7 +33,7 @@ from sigilicon.workflows.ip_integration import check_ip_integration
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
-    _execute_xcelium,
+    execute_xcelium_invocation,
     resolve_xcelium_contract,
     snapshot_verification_sources,
 )
@@ -456,9 +456,12 @@ def execute_xcelium_ams_cell(
             ),
         )
 
-    return _execute_xcelium(
-        plan,
+    return execute_xcelium_invocation(
         artifacts=artifacts,
+        plan_record=plan.as_dict(),
+        cell=plan.spec.cell,
+        dut=plan.spec.dut,
+        success_marker=plan.spec.success_marker,
         prepare_inputs=prepare_inputs,
         command_factory=lambda xrun_bin, work_path, xcelium_path: [
             str(xrun_bin),

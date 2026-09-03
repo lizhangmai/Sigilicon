@@ -26,18 +26,15 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
+    _prepare_step,
     json_value,
 )
 from sigilicon.external_tools import (
     CADENCE_SPICEIN_TOOL,
     CADENCE_TEXT_IMPORT_TOOL,
     CADENCE_VIRTUOSO_TOOL,
-    ProcessRequest,
-    managed_process,
-    owned_directory,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
-    xrun_env,
 )
 from sigilicon.virtuoso.bridge import (
     VIRTUOSO_BRIDGE_HOST,
@@ -545,19 +542,21 @@ class _CadenceStep(Step):
         resource_bindings: tuple[ResourceBinding, ...],
         domain_plan: _PreparedCadencePlan,
     ) -> "_CadenceStep":
-        return cls(
-            id=step.id,
-            uses=step.uses,
-            config=config,
-            needs=step.needs,
-            sources=sources,
-            evidence=step.evidence,
-            resources=resources,
-            runtime=step.runtime,
-            _prepared=prepared,
-            _source_snapshots=source_snapshots,
-            _resource_bindings=resource_bindings,
-            domain_plan=domain_plan,
+        return _prepare_step(
+            cls(
+                id=step.id,
+                uses=step.uses,
+                config=config,
+                needs=step.needs,
+                sources=sources,
+                evidence=step.evidence,
+                resources=resources,
+                runtime=step.runtime,
+                domain_plan=domain_plan,
+            ),
+            prepared=prepared,
+            source_snapshots=source_snapshots,
+            resource_bindings=resource_bindings,
         )
 
 
@@ -691,71 +690,60 @@ class XceliumAdapter(DirectAdapter):
         resources: Resources,
     ) -> Step:
         del project
-        return replace(
+        return _prepare_step(
             step,
             resources=(_XRUN,),
-            _resource_bindings=_runtime_bindings(resources, _XRUN),
+            resource_bindings=_runtime_bindings(resources, _XRUN),
         )
 
     def run(self, context: StepContext) -> StepResult:
         step = context.step
+        from sigilicon.workflows.xcelium import execute_xcelium_invocation
+
         config = _strict_config(context.step, self._fields)
         source_names = self._hdl_sources(context.step)
         sources = tuple(
             context.owner_source_path(_relative(source, "hdl source"))
             for source in source_names
         )
-        executable = _configured_executable(context.resources, _XRUN)
-        if executable is None:
-            raise ExecutionError("configured Xcelium executable is unavailable")
         timeout = _positive_integer(config, "timeout_seconds")
         marker = _text(config, "success_marker")
-        with (
-            context.resources.owned_tool(_XRUN) as owned_launcher,
-            owned_directory(context.work_root) as work,
-            owned_scratch_directory(
-                prefix=f"sigilicon-xcelium-{context.run_id}-"
-            ) as library,
-        ):
-            command = (
-                *owned_launcher.command,
-                "-64bit",
-                "-sv",
-                "-timescale",
-                "1ns/1ps",
-                "-xmlibdirname",
-                library.child_path,
-                "-log",
-                f"{work.child_path}/xrun.log",
-                *(str(source) for source in sources),
+        with owned_scratch_directory(
+            prefix=f"sigilicon-xcelium-{context.run_id}-"
+        ) as scratch:
+            workspace = context.workspace(
+                "xcelium",
+                {"step": step.id},
+                tool_work_root=scratch.path,
             )
-            completed = managed_process.run(ProcessRequest(
-                argv=tuple(command),
-                executable=owned_launcher.executable,
-                cwd=Path(work.child_path),
-                environment=xrun_env(executable, context.resources.environment),
-                timeout_seconds=timeout,
-                before_spawn=(
-                    lambda: (
-                        owned_launcher.require_visible(),
-                        work.require_visible(),
-                        library.require_visible(),
-                    )
-                ),
-                pass_fds=(work.fd, library.fd),
-            ))
-        native = context.work_root / "xrun.log"
-        native_text = (
-            native.read_text(encoding="utf-8", errors="replace")
-            if native.is_file() and not native.is_symlink()
-            else ""
-        )
-        marker_sources = tuple(
-            name
-            for name, value in (("stdout", completed.stdout), ("native-log", native_text))
-            if marker in value
-        )
-        passed = completed.returncode == 0 and bool(marker_sources)
+            completed = execute_xcelium_invocation(
+                artifacts=workspace,
+                plan_record={
+                    "schema": 1,
+                    "contract_kind": "direct-xcelium-plan",
+                    "step": step.id,
+                    "sources": list(source_names),
+                    "success_marker": marker,
+                },
+                cell=step.id,
+                dut=step.id,
+                success_marker=marker,
+                command_factory=lambda xrun, work, library: [
+                    str(xrun),
+                    "-64bit",
+                    "-sv",
+                    "-timescale",
+                    "1ns/1ps",
+                    "-xmlibdirname",
+                    library,
+                    "-log",
+                    f"{work}/xrun.log",
+                    *(str(source) for source in sources),
+                ],
+                resources=context.resources,
+                environment_values=context.resources.environment,
+                timeout=timeout,
+            )
         artifacts = (
             Artifact(
                 "xcelium",
@@ -770,33 +758,17 @@ class XceliumAdapter(DirectAdapter):
             Artifact(
                 "xcelium",
                 "log.cadence-xcelium",
-                context.write_text("xcelium", "xrun.log", native_text),
+                context.write_text("xcelium", "xrun.log", completed.native_log),
             ),
-        )
-        summary = {
-            "schema": 1,
-            "contract_kind": "cadence-execution",
-            "tool": "xcelium",
-            "returncode": completed.returncode,
-            "completion_proven": bool(marker_sources),
-            "success_marker": marker,
-            "success_marker_sources": list(marker_sources),
-            "passed": passed,
-        }
-        artifacts += (
             Artifact(
                 "xcelium",
                 "summary.cadence-xcelium",
-                context.write_text(
-                    "xcelium",
-                    "summary.json",
-                    json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n",
-                ),
+                completed.run_summary,
             ),
         )
         return (
             StepResult.succeeded(artifacts=artifacts, facts={"passed": True})
-            if passed
+            if completed.passed
             else StepResult(
                 "failed",
                 artifacts,
@@ -1032,7 +1004,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         plan = build_oa_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
-            managed_project_root=context.work_root / "layout-ir",
+            workspace=context.workspace("layout-ir", {}),
         )
         matches = tuple(item for item in plan.testbenches if item.cell == testbench)
         if len(matches) != 1:
@@ -1241,7 +1213,7 @@ class _OaAdapter(_CadenceDomainAdapter):
             planning = build_oa_layout_ir(
                 planning,
                 source_paths=prepared.source_paths(context),
-                managed_project_root=context.work_root / "layout-ir",
+                workspace=context.workspace("layout-ir", {}),
             )
         selected = None
         if self.spec.requires_testbench:
@@ -1388,7 +1360,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         planning = build_managed_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
-            managed_project_root=context.work_root / "layout-ir",
+            workspace=context.workspace("layout-ir", {}),
         )
         return self._execute(context, planning)
 
@@ -1537,7 +1509,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         planning = build_managed_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
-            managed_project_root=context.work_root / "layout-ir",
+            workspace=context.workspace("layout-ir", {}),
         )
         return self._execute(
             context,

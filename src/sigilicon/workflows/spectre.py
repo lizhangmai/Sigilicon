@@ -33,12 +33,6 @@ _SPECTRE_ZERO_ERRORS = re.compile(r"spectre completes with\s+0 errors", re.IGNOR
 class SpectreExecution:
     """Evidence from one direct Spectre process-group invocation."""
 
-    executable: Path
-    canonical_deck: Path
-    invocation_deck: Path
-    stdout_log: Path
-    stderr_log: Path
-    native_log: Path | None
     raw_outputs: Mapping[str, Path]
 
 
@@ -123,7 +117,6 @@ def run_spectre_deck(
     executable = resources.require_tool("cadence.spectre")
     work_dir = record.directory("work")
     completed = None
-    invocation_deck: Path | None = None
     with (
         resources.owned_tool("cadence.spectre") as owned_spectre,
         owned_directory(work_dir) as owned_work,
@@ -194,26 +187,27 @@ def run_spectre_deck(
             ))
 
     assert completed is not None
-    stdout_log = record.write_text(
+    record.write_text(
         "logs",
         ("spectre.stdout.log",),
         completed.stdout,
     )
-    stderr_log = record.write_text(
+    record.write_text(
         "logs",
         ("spectre.stderr.log",),
         completed.stderr,
     )
     native_log_candidate = record.path("work", "spectre.out")
-    native_log: Path | None = None
     proof_sources = [completed.stdout, completed.stderr]
     if native_log_candidate.is_file():
-        native_log = record.copy_file(
+        copied_native_log = record.copy_file(
             "logs",
             ("spectre.out",),
             native_log_candidate,
         )
-        proof_sources.append(read_nofollow_text(native_log, errors="replace"))
+        proof_sources.append(
+            read_nofollow_text(copied_native_log, errors="replace")
+        )
     if completed.returncode != 0:
         tail = "\n".join(
             f"{completed.stdout}\n{completed.stderr}".splitlines()[-80:]
@@ -228,12 +222,6 @@ def run_spectre_deck(
             raise RuntimeError(f"Spectre did not produce declared direct-print output {name}")
         raw_outputs[name] = output
     return SpectreExecution(
-        executable=executable,
-        canonical_deck=canonical_deck,
-        invocation_deck=invocation_deck,
-        stdout_log=stdout_log,
-        stderr_log=stderr_log,
-        native_log=native_log,
         raw_outputs=raw_outputs,
     )
 

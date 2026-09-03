@@ -184,7 +184,6 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
 
     assert result.returncode == 0
     assert result.passed
-    assert result.plan.spec.project is project
     assert result.run_summary == artifacts.path("outputs", "summary.json")
     summary = json.loads(result.run_summary.read_text(encoding="utf-8"))
     assert summary["success_marker_seen"] is True

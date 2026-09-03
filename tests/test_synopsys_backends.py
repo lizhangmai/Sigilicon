@@ -24,6 +24,7 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
+    _prepare_step,
 )
 from sigilicon.execution._model import resource_materialization_key
 from sigilicon.workflows.structural_link import StructuralLinkPlan
@@ -311,21 +312,23 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         release_liberty_sha256=liberty_digest,
         release_sources=(tmp_path / "manifest.json", tmp_path / "unsealed.lib"),
     )
-    step = _StructuralLinkStep(
-        "link",
-        "synopsys.structural-link",
-        config,
-        _prepared=prepared,
-        sources=owner_sources,
-        resources=(manifest_resource, liberty_resource),
-        structural_link=_PreparedStructuralLink(
-            planning,
-            (owner_sources[4],),
-            owner_sources[2],
-            owner_sources[3],
-            manifest_resource,
-            liberty_resource,
+    step = _prepare_step(
+        _StructuralLinkStep(
+            "link",
+            "synopsys.structural-link",
+            config,
+            sources=owner_sources,
+            resources=(manifest_resource, liberty_resource),
+            structural_link=_PreparedStructuralLink(
+                planning,
+                (owner_sources[4],),
+                owner_sources[2],
+                owner_sources[3],
+                manifest_resource,
+                liberty_resource,
+            ),
         ),
+        prepared=prepared,
     )
     context = StepContext(
         "1" * 64,

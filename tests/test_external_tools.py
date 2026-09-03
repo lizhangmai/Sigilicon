@@ -325,8 +325,11 @@ def test_spectre_completion_preserves_all_three_log_sources(tmp_path: Path) -> N
         process=SimpleNamespace(run=execute),
     )
 
-    assert result.stderr_log.read_text(encoding="utf-8").endswith("0 errors\n")
-    assert result.native_log is not None
+    assert record.path("logs", "spectre.stderr.log").read_text(
+        encoding="utf-8"
+    ).endswith("0 errors\n")
+    assert record.path("logs", "spectre.out").is_file()
+    assert result.raw_outputs["result.prn"].is_file()
 
 
 def test_spectre_measurement_rejects_truthy_non_boolean_passed(

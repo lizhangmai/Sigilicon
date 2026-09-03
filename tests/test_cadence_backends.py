@@ -22,6 +22,7 @@ from sigilicon.execution._model import (
     ExecutionError,
     Step,
     StepContext,
+    _prepare_step,
 )
 from sigilicon.execution._model import Resources
 from sigilicon.workflows.oa_library import oa_plan_source_paths
@@ -469,17 +470,19 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
 
 
 def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> None:
-    step = Step(
-        "oa",
-        "cadence.oa-rebuild",
-        {"owner": "example", "timeout_seconds": 10},
-        _prepared={
+    step = _prepare_step(
+        Step(
+            "oa",
+            "cadence.oa-rebuild",
+            {"owner": "example", "timeout_seconds": 10},
+            sources=("configs/oa.toml",),
+        ),
+        prepared={
             "runtime_executables": (
                 "cadence.spice-in",
                 "cadence.cds-text-to-5x",
             )
         },
-        sources=("configs/oa.toml",),
     )
     values = {
         "virtuoso-bridge.host": "127.0.0.1",

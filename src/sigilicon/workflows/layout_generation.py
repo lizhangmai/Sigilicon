@@ -121,16 +121,16 @@ def build_managed_layout_ir(
     planning: LayoutPlanningResult,
     *,
     source_paths: Mapping[Path, Path],
-    managed_project_root: Path,
+    workspace: StepWorkspace,
 ) -> LayoutPlanningResult:
     """Generate LayoutIR from sealed inputs inside one managed work tree."""
 
     if planning.plan is not None:
         raise ValueError("managed LayoutIR generation requires a pure snapshot")
-    root = Path(managed_project_root).absolute()
+    root = workspace.path("work", "layout-ir")
     if root.exists():
         raise ValueError("managed layout project root must be new")
-    root.mkdir(parents=True)
+    workspace.directory("work", "layout-ir")
     original_root = planning.spec.project_root.resolve()
     materialized: dict[Path, Path] = {}
     for original, expected in planning.source_records.items():
@@ -144,9 +144,12 @@ def build_managed_layout_ir(
         text = read_nofollow_text(sealed)
         if text != expected:
             raise ValueError("sealed layout source disagrees with its snapshot")
-        target = root / source.relative_to(original_root)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        relative = source.relative_to(original_root)
+        target = workspace.write_text(
+            "work",
+            ("layout-ir", *relative.parts),
+            text,
+        )
         materialized[source] = target
 
     def bound(source: Path) -> Path:
