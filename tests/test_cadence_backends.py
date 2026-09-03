@@ -23,7 +23,7 @@ from sigilicon.execution import (
     Step,
     StepContext,
 )
-from sigilicon.execution.model import Resources
+from sigilicon.execution.model import _AdapterAction, Resources
 from sigilicon.workflows.oa_library import oa_plan_source_paths
 
 
@@ -221,7 +221,10 @@ def test_cadence_executable_does_not_fall_back_to_ambient_path(
     step = Step(
         "rtl",
         "cadence.xcelium",
-        {"success_marker": "RTL_SUMMARY failures=0", "timeout_seconds": 10},
+        _AdapterAction(
+            "cadence.xcelium",
+            {"success_marker": "RTL_SUMMARY failures=0", "timeout_seconds": 10},
+        ),
         sources=("rtl/design.sv",),
     )
 
@@ -241,10 +244,10 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     step = Step(
         "rtl",
         "cadence.xcelium",
-        {
+        _AdapterAction("cadence.xcelium", {
                 "success_marker": marker,
             "timeout_seconds": 10,
-        },
+        }),
         sources=("rtl/design.sv", "dv/testbench.sv"),
     )
     resources = Resources(
@@ -277,7 +280,10 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     assert result.facts == {"passed": True}
     assert not (context.work_root / "xcelium.d").exists()
     with pytest.raises(ExecutionError, match="disagrees"):
-        backend.run(replace(context, step=step), replace(step, request={}),)
+        backend.run(
+            replace(context, step=step),
+            replace(step, action=_AdapterAction("cadence.xcelium")),
+        )
 
 
 def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
@@ -288,11 +294,11 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     step = Step(
         "ams",
         "cadence.xcelium-ams",
-        {
+        _AdapterAction("cadence.xcelium-ams", {
             "owner": "example",
             "cell": "dv/tb_ams/cell.toml",
             "timeout_seconds": 10,
-        },
+        }),
         sources=("dv/tb_ams/cell.toml",),
         evidence=Evidence("diagnostic", "l2", "native-adapter-wiring"),
     )
@@ -441,7 +447,10 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
     step = Step(
         "native",
         "cadence.native-oa",
-        {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
+        _AdapterAction(
+            "cadence.native-oa",
+            {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
+        ),
         sources=("configs/oa.toml",),
     )
     values = {
@@ -478,15 +487,16 @@ def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> No
     step = Step(
         "oa",
         "cadence.oa-rebuild",
-        {
-            "config": {"owner": "example", "timeout_seconds": 10},
-            "prepared": {
+        _AdapterAction(
+            "cadence.oa-rebuild",
+            {"owner": "example", "timeout_seconds": 10},
+            {
                 "runtime_executables": (
                     "cadence.spice-in",
                     "cadence.cds-text-to-5x",
                 )
             },
-        },
+        ),
         sources=("configs/oa.toml",),
     )
     values = {
@@ -533,7 +543,10 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     step = Step(
         "native",
         "cadence.native-oa",
-        {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
+        _AdapterAction(
+            "cadence.native-oa",
+            {"owner": "example", "testbench": "tb_EXAMPLE", "timeout_seconds": 10},
+        ),
         sources=("configs/oa.toml",),
     )
     registered: list[object] = []
@@ -615,7 +628,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     step = Step(
         "oa",
         "cadence.oa-rebuild",
-        {"owner": "example", "timeout_seconds": 10},
+        _AdapterAction("cadence.oa-rebuild", {"owner": "example", "timeout_seconds": 10}),
         sources=("configs/oa.toml",),
     )
     registered: list[object] = []
@@ -713,11 +726,11 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     step = Step(
         "layout",
         "cadence.layout",
-        {
+        _AdapterAction("cadence.layout", {
             "owner": "example",
             "spec": "design/CELL/layout.toml",
             "timeout_seconds": 10,
-        },
+        }),
         sources=("design/CELL/layout.toml",),
     )
     registered: list[object] = []
@@ -810,11 +823,11 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     step = Step(
         "layout",
         "cadence.layout",
-        {
+        _AdapterAction("cadence.layout", {
             "owner": "example",
             "spec": "design/CELL/layout.toml",
             "timeout_seconds": 10,
-        },
+        }),
         sources=("design/CELL/layout.toml",),
     )
     context = _oa_context(tmp_path, step, registered=[])
@@ -858,13 +871,13 @@ def test_layout_verification_backend_publishes_classified_evidence(
     step = Step(
         "verify",
         "cadence.layout-verify",
-        {
+        _AdapterAction("cadence.layout-verify", {
             "owner": "example",
             "spec": "design/CELL/layout.toml",
             "check": "lvs",
             "xstream_timeout_seconds": 10,
             "calibre_timeout_seconds": 20,
-        },
+        }),
         sources=("design/CELL/layout.toml",),
         evidence=Evidence("regression", "l1", "physical-layout"),
     )

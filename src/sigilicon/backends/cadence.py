@@ -15,6 +15,7 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution.model import (
+    _AdapterAction,
     Artifact,
     ContractError,
     ExecutionError,
@@ -63,14 +64,7 @@ def _runtime_bindings(
 
 
 def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
-    request = step.request
-    if set(request) == {"config", "prepared"}:
-        nested = request["config"]
-        if not isinstance(nested, Mapping):
-            raise ContractError("prepared Cadence config must be a mapping")
-        config = nested
-    else:
-        config = request
+    config = step.action.config
     unknown = set(config) - fields
     missing = fields - set(config)
     if unknown or missing:
@@ -389,16 +383,6 @@ def _captured_project_sources(
     return tuple(captured)
 
 
-def _portable_request(
-    config: Mapping[str, Any],
-    prepared: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    return {
-        "config": dict(config),
-        "prepared": dict(prepared),
-    }
-
-
 @dataclass(frozen=True)
 class _PreparedCadencePlan:
     """Adapter-private domain plan plus its sealed-path correspondence."""
@@ -456,10 +440,7 @@ class _PreparedCadencePlan:
         )
 
     def validate(self, context: StepContext) -> None:
-        expected = context.step.request.get("prepared")
-        if not isinstance(expected, Mapping):
-            raise ExecutionError("Cadence Domain plan identity drift")
-        recorded = dict(expected)
+        recorded = dict(context.step.action.prepared)
         identity = recorded.pop("domain_plan_identity", None)
         if (
             identity != self.identity
@@ -575,7 +556,7 @@ class _CadenceDomainAdapter:
             raise ContractError("Cadence plan binds a runtime identity more than once")
         return replace(
             operation,
-            request=_portable_request(config, portable),
+            action=_AdapterAction(operation.uses, config, portable),
             sources=tuple(
                 dict.fromkeys((*operation.sources, *(source.path for source in captured)))
             ),
@@ -1052,9 +1033,6 @@ class _OaAdapter(_CadenceDomainAdapter):
         self.name = f"cadence.oa-{self.spec.name}"
 
     def _config(self, step: Step) -> Mapping[str, Any]:
-        request = step.request.get("config", step.request)
-        if not isinstance(request, Mapping):
-            raise ContractError("prepared OA config must be a mapping")
         fields = self._base_fields | (
             {"testbench"} if self.spec.requires_testbench else set()
         )
@@ -1069,11 +1047,9 @@ class _OaAdapter(_CadenceDomainAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
-        prepared = step.request.get("prepared")
+        prepared = step.action.prepared
         runtime_executables: tuple[str, ...] = ()
-        if prepared is not None:
-            if not isinstance(prepared, Mapping):
-                raise ContractError("prepared OA identity must be a mapping")
+        if prepared:
             selected = prepared.get("runtime_executables")
             if not isinstance(selected, tuple) or any(
                 item not in {CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL}

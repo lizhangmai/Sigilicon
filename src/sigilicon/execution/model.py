@@ -122,6 +122,40 @@ def json_value(value: Any) -> Any:
     return value
 
 
+JsonScalar = None | bool | int | float | str
+JsonValue = JsonScalar | tuple["JsonValue", ...] | Mapping[str, "JsonValue"]
+
+
+@dataclass(frozen=True)
+class _AdapterAction:
+    """Portable, adapter-owned command embedded in an execution plan."""
+
+    kind: str
+    config: Mapping[str, JsonValue] = field(default_factory=dict)
+    prepared: Mapping[str, JsonValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", adapter_identity(self.kind))
+        if not isinstance(self.config, Mapping):
+            raise ContractError("action config must be a mapping")
+        if not isinstance(self.prepared, Mapping):
+            raise ContractError("prepared action state must be a mapping")
+        object.__setattr__(self, "config", _freeze(self.config, "action config"))
+        object.__setattr__(
+            self,
+            "prepared",
+            _freeze(self.prepared, "prepared action state"),
+        )
+
+    @property
+    def record(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "config": json_value(self.config),
+            "prepared": json_value(self.prepared),
+        }
+
+
 @dataclass(frozen=True)
 class Evidence:
     """Cross-domain classification attached to one execution step."""
@@ -814,11 +848,11 @@ class RuntimeEnvironment:
 
 @dataclass(frozen=True)
 class Step:
-    """Fully planned adapter request and its exact input closure."""
+    """Fully planned adapter action and its exact input closure."""
 
     id: str
     uses: str
-    request: Mapping[str, Any] = field(default_factory=dict)
+    action: _AdapterAction
     needs: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     evidence: Evidence | None = None
@@ -835,8 +869,10 @@ class Step:
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _identifier(self.id, "step id"))
         object.__setattr__(self, "uses", adapter_identity(self.uses))
-        if not isinstance(self.request, Mapping):
-            raise ContractError("prepared step request must be a mapping")
+        if not isinstance(self.action, _AdapterAction):
+            raise ContractError("prepared step action must be an adapter action")
+        if self.action.kind != self.uses:
+            raise ContractError("prepared step action kind must match its adapter")
         if not isinstance(self.needs, tuple):
             raise ContractError("prepared step needs must be a tuple")
         needs = tuple(_identifier(value, "step dependency") for value in self.needs)
@@ -883,7 +919,6 @@ class Step:
         object.__setattr__(self, "needs", needs)
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "resources", resources)
-        object.__setattr__(self, "request", _freeze(self.request, "prepared step request"))
 
     @property
     def record(self) -> dict[str, Any]:
@@ -891,7 +926,7 @@ class Step:
             "id": self.id,
             "uses": self.uses,
             "needs": list(self.needs),
-            "request": json_value(self.request),
+            "action": self.action.record,
             "sources": list(self.sources),
             "resources": list(self.resources),
             "runtime": self.runtime.record,
@@ -991,7 +1026,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 11,
+            "schema": 12,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,

@@ -15,7 +15,7 @@ from sigilicon.backends.synopsys import (
     VcsAdapter,
 )
 from sigilicon.execution import RuntimeEnvironment, Step, StepContext, StepResult
-from sigilicon.execution.model import Resources
+from sigilicon.execution.model import _AdapterAction, Resources
 from sigilicon.execution.model import resource_materialization_key
 
 
@@ -82,14 +82,14 @@ printf 'managed vcs\n'
     step = Step(
         "rtl",
         "synopsys.vcs",
-        {
+        _AdapterAction("synopsys.vcs", {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
             "rtl_root": "rtl",
             "testbench_root": "dv",
             "timeout_seconds": 10,
-        },
+        }),
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
             tools={
@@ -138,14 +138,14 @@ printf 'tampered\n' >>"$source_file"
     step = Step(
         "rtl",
         "synopsys.vcs",
-        {
+        _AdapterAction("synopsys.vcs", {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
             "rtl_root": "rtl",
             "testbench_root": "dv",
             "timeout_seconds": 10,
-        },
+        }),
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
             tools={
@@ -230,7 +230,7 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
     step = Step(
         "link",
         "synopsys.structural-link",
-        {"config": config, "prepared": prepared},
+        _AdapterAction("synopsys.structural-link", config, prepared),
         sources=owner_sources,
         resources=(manifest_resource, liberty_resource),
     )
@@ -325,7 +325,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
     step = Step(
         "synthesis",
         "synopsys.dc",
-        {
+        _AdapterAction("synopsys.dc", {
             "runner": runner.relative_to(sources).as_posix(),
             "constraints": "impl/syn/constraints.sdc",
             "variant": "test",
@@ -333,7 +333,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
             "rtl_root": "rtl",
             "timeout_seconds": 10,
             "reports": ("check_design.rpt", "area.rpt"),
-        },
+        }),
         sources=(
             "impl/syn/run_dc.sh",
             "impl/syn/constraints.sdc",
@@ -423,7 +423,7 @@ raise SystemExit(1)
     step = Step(
         "qualification",
         "synopsys.hspice",
-        {
+        _AdapterAction("synopsys.hspice", {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "formal",
             "variant": "test",
@@ -445,7 +445,7 @@ raise SystemExit(1)
                 "campaign-summary": "common_mode_qualified/statistics.json",
                 "qualification-evidence": "qualification.json",
             },
-        },
+        }),
         sources=(
             "verification/hspice/run_hspice.sh",
             "tools/evaluate.py",
@@ -531,7 +531,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
     step = Step(
         "reference-library",
         "synopsys.fc",
-        {
+        _AdapterAction("synopsys.fc", {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "library",
             "variant": "test",
@@ -539,7 +539,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
             "top": "design",
             "reference_library_output": "test.ndm",
             "timeout_seconds": 10,
-        },
+        }),
         sources=("impl/pnr/run_fc.sh",),
         runtime=RuntimeEnvironment(
             tools={

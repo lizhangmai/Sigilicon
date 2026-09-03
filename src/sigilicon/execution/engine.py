@@ -382,10 +382,10 @@ def _run(
                 output_root = record.directory("outputs", step.id)
                 record.write_json(
                     "inputs",
-                    (f"step-{step.id}-request.json",),
+                    (f"step-{step.id}-action.json",),
                     {
                         "schema": 1,
-                        "contract_kind": "step-request",
+                        "contract_kind": "step-action",
                         "run_id": identity,
                         "operation_id": operation_id,
                         "plan_identity": plan.identity,

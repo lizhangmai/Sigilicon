@@ -25,6 +25,7 @@ from sigilicon.artifacts import (
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution.model import (
+    _AdapterAction,
     Artifact,
     ContractError,
     ExecutionError,
@@ -138,7 +139,7 @@ def _source_members(
     *,
     suffix: str,
 ) -> tuple[str, ...]:
-    root = _safe_relative(_text(step.request, root_name), root_name)
+    root = _safe_relative(_text(step.action.config, root_name), root_name)
     prefix = f"{root}/"
     return tuple(
         source
@@ -148,7 +149,7 @@ def _source_members(
 
 
 def _runner(step: Step) -> str:
-    runner = _safe_relative(_text(step.request, "runner"), "runner")
+    runner = _safe_relative(_text(step.action.config, "runner"), "runner")
     if runner not in step.sources:
         raise ContractError("Synopsys runner must be inside the step source closure")
     return runner
@@ -212,7 +213,7 @@ def _runtime_environment(
 
 def _base_checks(step: Step) -> list[PreflightCheck]:
     runner = _runner(step)
-    _positive_integer(step.request, "timeout_seconds")
+    _positive_integer(step.action.config, "timeout_seconds")
     if not step.runtime.tools:
         raise ContractError("Synopsys step requires a runtime profile with a tool")
     if _RUNNER_SHELL not in step.runtime.tools:
@@ -398,7 +399,7 @@ def _run_script(
             cwd=context.work_root,
             environment=environment,
             timeout_seconds=_positive_integer(
-                context.step.request, "timeout_seconds"
+                context.step.action.config, "timeout_seconds"
             ),
             before_spawn=visible,
         ))
@@ -409,7 +410,7 @@ class VcsAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        _target(step.request)
+        _target(step.action.config)
         _source_members(step, "rtl_root", suffix=".sv")
         _source_members(step, "testbench_root", suffix=".sv")
         checks.extend(preflight_environment(step.runtime, resources))
@@ -417,7 +418,7 @@ class VcsAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.request
+        config = context.step.action.config
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -464,8 +465,8 @@ class DcAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        constraints = _safe_relative(_text(step.request, "constraints"), "constraints")
-        _text(step.request, "corner")
+        constraints = _safe_relative(_text(step.action.config, "constraints"), "constraints")
+        _text(step.action.config, "corner")
         if constraints not in step.sources:
             raise ContractError("DC constraints must be inside the step source closure")
         _source_members(step, "rtl_root", suffix=".sv")
@@ -474,7 +475,7 @@ class DcAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.request
+        config = context.step.action.config
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
         environment.update(
@@ -552,8 +553,8 @@ class FcAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        target = _target(step.request)
-        _text(step.request, "corner")
+        target = _target(step.action.config)
+        _text(step.action.config, "corner")
         if target not in {"library", "pnr"}:
             raise ContractError(f"unsupported FC target {target!r}")
         checks.extend(preflight_environment(step.runtime, resources))
@@ -561,7 +562,7 @@ class FcAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.request
+        config = context.step.action.config
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -713,10 +714,10 @@ class HspiceAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        _target(step.request)
+        _target(step.action.config)
         checks.extend(preflight_environment(step.runtime, resources))
-        environment = _mapping(step.request, "environment")
-        prefix = _text(step.request, "environment_prefix")
+        environment = _mapping(step.action.config, "environment")
+        prefix = _text(step.action.config, "environment_prefix")
         if any(
             not isinstance(name, str)
             or _ENVIRONMENT.fullmatch(name) is None
@@ -727,12 +728,12 @@ class HspiceAdapter(DirectAdapter):
             raise ContractError(
                 "HSPICE owner environment must use its declared uppercase prefix"
             )
-        collect = _mapping(step.request, "collect")
+        collect = _mapping(step.action.config, "collect")
         for role, relative in collect.items():
             if not isinstance(role, str) or not isinstance(relative, str):
                 raise ContractError("HSPICE collect must map roles to relative paths")
             _safe_relative(relative, f"HSPICE collect {role}")
-        for name, value in _mapping(step.request, "source_environment").items():
+        for name, value in _mapping(step.action.config, "source_environment").items():
             if (
                 not isinstance(name, str)
                 or _ENVIRONMENT.fullmatch(name) is None
@@ -742,7 +743,7 @@ class HspiceAdapter(DirectAdapter):
                 raise ContractError(
                     "HSPICE source_environment must map environment names to step sources"
                 )
-        for name, value in _mapping(step.request, "output_environment").items():
+        for name, value in _mapping(step.action.config, "output_environment").items():
             if (
                 not isinstance(name, str)
                 or _ENVIRONMENT.fullmatch(name) is None
@@ -752,8 +753,8 @@ class HspiceAdapter(DirectAdapter):
                     "HSPICE output_environment must map environment names to relative paths"
                 )
             _safe_relative(value, f"HSPICE output_environment {name}")
-        _boolean(step.request, "requires_python")
-        if _boolean(step.request, "requires_python") and _PYTHON not in (
+        _boolean(step.action.config, "requires_python")
+        if _boolean(step.action.config, "requires_python") and _PYTHON not in (
             step.runtime.tools
         ):
             raise ContractError(
@@ -763,7 +764,7 @@ class HspiceAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.request
+        config = context.step.action.config
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -861,14 +862,7 @@ class StructuralLinkAdapter(DirectAdapter):
         }
     )
     def _config(self, step: Step) -> Mapping[str, Any]:
-        request = step.request
-        if set(request) == {"config", "prepared"}:
-            nested = request["config"]
-            if not isinstance(nested, Mapping):
-                raise ContractError("structural-link prepared config must be a mapping")
-            config = nested
-        else:
-            config = request
+        config = step.action.config
         unknown = set(config) - self._fields
         missing = self._fields - set(config)
         if unknown or missing:
@@ -1041,7 +1035,7 @@ class StructuralLinkAdapter(DirectAdapter):
         )
         prepared = replace(
             step,
-            request={"config": dict(config), "prepared": prepared_record},
+            action=_AdapterAction(step.uses, config, prepared_record),
             sources=source_names,
             resources=tuple(resource.identity for resource in external),
             _source_snapshots=tuple(
@@ -1175,7 +1169,7 @@ class StructuralLinkAdapter(DirectAdapter):
         from sigilicon.workflows.structural_link import StructuralLinkPlan
 
         config = self._config(step)
-        prepared = step.request.get("prepared")
+        prepared = step.action.prepared
         if not isinstance(prepared, Mapping):
             raise ExecutionError("structural-link request was not prepared")
         rtl_names = tuple(

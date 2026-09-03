@@ -23,7 +23,7 @@ from sigilicon.execution import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.model import ResourceBinding, Resources
+from sigilicon.execution.model import _AdapterAction, ResourceBinding, Resources
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
@@ -284,10 +284,12 @@ class CopyAdapter:
         )
 
     def run(self, context: StepContext, step: Step) -> StepResult:
-        output = context.write_text("source", "value.txt", str(step.request["text"]))
+        output = context.write_text(
+            "source", "value.txt", str(step.action.config["text"])
+        )
         return StepResult.succeeded(
             artifacts=(Artifact("source", "text.plain", output),),
-            facts={"length": len(str(step.request["text"]))},
+            facts={"length": len(str(step.action.config["text"]))},
         )
 
 
@@ -331,13 +333,13 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert plan.operation == "check"
     assert plan.variant is None
     assert [step.uses for step in plan.steps] == ["fake.copy"]
-    assert plan.steps[0].request == {"text": "hello"}
+    assert plan.steps[0].action == _AdapterAction("fake.copy", {"text": "hello"})
     assert plan.steps[0].evidence.record == {
         "role": "regression",
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 11
+    assert json.loads(json.dumps(plan.record))["schema"] == 12
     assert "resources_identity" not in plan.record
     assert [resource["identity"] for resource in plan.record["resources"]] == [
         "test.value"
@@ -1396,8 +1398,13 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 
 
 def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
-    with pytest.raises(ContractError, match="mapping"):
-        Step("bad", "fake.copy", "not-a-mapping")  # type: ignore[arg-type]
+    with pytest.raises(ContractError, match="adapter action"):
+        Step("bad", "fake.copy", "not-an-action")  # type: ignore[arg-type]
+    with pytest.raises(ContractError, match="kind must match"):
+        Step("bad", "fake.copy", _AdapterAction("fake.upper"))
+    action = _AdapterAction("fake.copy", {"nested": {"value": [1, 2]}})
+    with pytest.raises(TypeError):
+        action.config["changed"] = True  # type: ignore[index]
     outcome = StepOutcome("run", "fake.copy", StepResult.succeeded())
     with pytest.raises(ContractError, match="disagrees"):
         RunResult(

@@ -9,6 +9,7 @@ from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.execution.model import (
+    _AdapterAction,
     ContractError,
     Evidence,
     ExecutionPlan,
@@ -198,7 +199,7 @@ def _step(
         Step(
             id=step_id,
             uses=uses,
-            request=_config(raw.get("config"), f"{field}.config"),
+            action=_AdapterAction(uses, _config(raw.get("config"), f"{field}.config")),
             needs=_strings(raw.get("needs"), f"{field}.needs"),
             sources=tuple(source.path for source in sources),
             evidence=_evidence(raw.get("evidence"), f"{field}.evidence"),
