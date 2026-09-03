@@ -248,8 +248,14 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
             path.chmod(0o555 if item.executable else 0o444)
             continue
         resource_root = record.directory("inputs", *components)
+        record.add_file("inputs", resource_root)
         for relative in resource.directories:
-            record.directory("inputs", *components, *PurePosixPath(relative).parts)
+            directory = record.directory(
+                "inputs",
+                *components,
+                *PurePosixPath(relative).parts,
+            )
+            record.add_file("inputs", directory)
         for item in resource.files:
             path = record.copy_file(
                 "inputs",
@@ -338,27 +344,30 @@ def _run(
             "inputs",
             ("runtime-bindings.json",),
             {
-                "schema": 4,
+                "schema": 5,
                 "contract_kind": "runtime-bindings",
                 "capabilities": sorted(resources.capabilities),
                 "inherit_environment": list(resources.inherit_environment),
                 "environment": resources.environment_record,
                 "configuration": {
-                    "tools": dict(sorted(resources.tools.items())),
-                    "files": dict(sorted(resources.files.items())),
-                    "directories": dict(sorted(resources.directories.items())),
-                    "values": dict(sorted(resources.values.items())),
-                },
-                "resources": [
-                    resource.record
-                    for resource in sorted(
-                        plan.resources,
-                        key=lambda selected: selected.identity,
+                    label: {
+                        binding.identity: table[binding.identity]
+                        for binding in sorted(
+                            plan.resources,
+                            key=lambda selected: selected.identity,
+                        )
+                        if binding.kind == kind
+                        and binding.identity in table
+                    }
+                    for label, kind, table in (
+                        ("tools", "tool", resources.tools),
+                        ("files", "file", resources.files),
+                        ("directories", "directory", resources.directories),
+                        ("values", "value", resources.values),
                     )
-                ],
+                },
             },
         )
-        record.write_json("inputs", ("preflight.json",), checked.record)
         source_root = _seal_sources(record, plan)
         resource_root = _seal_resources(record, plan)
         execution_resources = resources.for_execution(
@@ -390,18 +399,7 @@ def _run(
                     )
                 work_root = record.directory("work", step.id)
                 output_root = record.directory("outputs", step.id)
-                record.write_json(
-                    "inputs",
-                    (f"step-{step.id}-action.json",),
-                    {
-                        "schema": 1,
-                        "contract_kind": "step-action",
-                        "run_id": identity,
-                        "operation_id": operation_id,
-                        "plan_identity": plan_identity,
-                        "step": step.record,
-                    },
-                )
+                record.add_file("outputs", output_root)
                 context = StepContext(
                     plan_identity=plan_identity,
                     step=step,

@@ -46,6 +46,7 @@ class _SelectedRun:
     variant: str | None
     run_id: str
 
+
 @dataclass(frozen=True)
 class RunStore:
     """Read or clean one exact managed execution result."""
@@ -103,52 +104,73 @@ class RunStore:
         *,
         verify_content: bool = False,
     ) -> None:
-        references: dict[str, Mapping[str, Any]] = {}
+        references: dict[str, dict[Path, Mapping[str, Any]]] = {
+            role: {} for role in paths.roles
+        }
         for entries in manifest["files"].values():
             for entry in entries:
-                value = entry["path"]
-                if value in references:
+                value = Path(entry["path"])
+                role = value.parts[0]
+                relative = Path(*value.parts[1:])
+                if relative in references[role]:
                     raise RunStoreError("run manifest file inventory is duplicated")
-                references[value] = entry
-        try:
-            trees = {role: SafeTree(paths.role(role)) for role in paths.roles}
-        except (OSError, RuntimeError) as exc:
-            raise RunStoreError(f"run role root is unsafe: {exc}") from exc
-        for value, reference in references.items():
-            relative = Path(value)
-            role = relative.parts[0]
-            member = Path(*relative.parts[1:]).as_posix()
-            if reference["kind"] == "file":
-                try:
-                    path = trees[role].path(member, "run artifact")
-                    metadata = path.stat(follow_symlinks=False)
-                    valid = (
-                        path.is_file()
-                        and not path.is_symlink()
-                        and metadata.st_nlink == 1
-                        and metadata.st_size == reference["size"]
+                references[role][relative] = entry
+        for role in paths.roles:
+            try:
+                inventory = SafeTree(paths.role(role)).inventory(
+                    verify_content=verify_content
+                )
+            except (OSError, RuntimeError) as exc:
+                raise RunStoreError(f"run role root is unsafe: {exc}") from exc
+            role_references = references[role]
+            expected_files = {
+                relative
+                for relative, reference in role_references.items()
+                if reference["kind"] == "file"
+            }
+            explicit_directories = {
+                relative
+                for relative, reference in role_references.items()
+                if reference["kind"] == "directory"
+            }
+            expected_directories = {
+                parent
+                for relative in role_references
+                for parent in relative.parents
+                if parent != Path(".")
+            } | explicit_directories
+            if role != "work" and (
+                set(inventory.files) != expected_files
+                or set(inventory.directories) != expected_directories
+            ):
+                raise RunStoreError(
+                    f"run {role} inventory disagrees with its manifest"
+                )
+            for relative, reference in role_references.items():
+                if reference["kind"] == "directory":
+                    if relative not in inventory.directories:
+                        raise RunStoreError(
+                            "run directory metadata disagrees with its manifest"
+                        )
+                    continue
+                file = inventory.files.get(relative)
+                if (
+                    file is None
+                    or file.size != reference["size"]
+                    or (
+                        verify_content
+                        and file.sha256 != reference.get("sha256")
                     )
-                    if valid and verify_content:
-                        file = trees[role].file(member, "run artifact")
-                        valid = file.sha256 == reference.get("sha256")
-                except (KeyError, OSError, RuntimeError):
-                    valid = False
-                if not valid:
-                    raise RunStoreError("run file metadata disagrees with its manifest")
-            else:
-                try:
-                    path = trees[role].path(member, "run directory")
-                    valid = path.is_dir() and not path.is_symlink()
-                except (KeyError, OSError, RuntimeError):
-                    valid = False
-                if not valid:
+                ):
                     raise RunStoreError(
-                        "run directory metadata disagrees with its manifest"
+                        "run file metadata disagrees with its manifest"
                     )
 
     def _manifest(
         self,
         selected: _SelectedRun,
+        *,
+        verify_content: bool = False,
     ) -> dict[str, Any]:
         root = selected.paths.root
         if not root.is_dir() or root.is_symlink() or root.resolve() != root.absolute():
@@ -159,7 +181,7 @@ class RunStore:
             raise RunStoreError(str(exc)) from exc
         source = manifest.get("source")
         if (
-            manifest.get("schema") != 2
+            manifest.get("schema") != 3
             or manifest.get("contract_kind") != "run-manifest"
             or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
@@ -171,15 +193,19 @@ class RunStore:
             or not isinstance(source.get("plan_identity"), str)
         ):
             raise RunStoreError("execution manifest identity or terminal state drift")
-        self._validate_inventory(selected.paths, manifest)
+        self._validate_inventory(
+            selected.paths,
+            manifest,
+            verify_content=verify_content,
+        )
         return manifest
 
     def _records(
         self,
         selected: _SelectedRun,
+        manifest: Mapping[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         root = selected.paths.root
-        manifest = self._manifest(selected)
         try:
             plan = read_json_object(
                 selected.paths.role("inputs") / "execution-plan.json",
@@ -195,7 +221,14 @@ class RunStore:
             )
         except (OSError, RuntimeError) as exc:
             raise RunStoreError(str(exc)) from exc
-        self._validate_runtime_bindings(selected.paths, runtime_bindings)
+        plan_resources = plan.get("resources")
+        if not isinstance(plan_resources, list):
+            raise RunStoreError("persisted execution plan resources are malformed")
+        self._validate_runtime_bindings(
+            selected.paths,
+            runtime_bindings,
+            plan_resources,
+        )
         identity = canonical_digest(plan)
         expected = {
             "owner": selected.owner,
@@ -205,7 +238,7 @@ class RunStore:
             "plan_identity": identity,
         }
         if (
-            manifest.get("schema") != 2
+            manifest.get("schema") != 3
             or manifest.get("contract_kind") != "run-manifest"
             or manifest.get("owner") != selected.owner
             or manifest.get("operation") != selected.operation
@@ -220,7 +253,6 @@ class RunStore:
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
             or plan.get("variant") != selected.variant
-            or plan.get("resources") != runtime_bindings.get("resources")
         ):
             raise RunStoreError("persisted execution plan identity drift")
         if (
@@ -385,6 +417,7 @@ class RunStore:
     def _validate_runtime_bindings(
         paths: RunPaths,
         value: Mapping[str, Any],
+        resources: list[Any],
     ) -> None:
         if set(value) != {
             "schema",
@@ -393,8 +426,7 @@ class RunStore:
             "inherit_environment",
             "environment",
             "configuration",
-            "resources",
-        } or value.get("schema") != 4 or value.get("contract_kind") != (
+        } or value.get("schema") != 5 or value.get("contract_kind") != (
             "runtime-bindings"
         ):
             raise RunStoreError("persisted runtime bindings have an invalid shape")
@@ -402,7 +434,6 @@ class RunStore:
         inherit_environment = value.get("inherit_environment")
         environment = value.get("environment")
         configuration = value.get("configuration")
-        resources = value.get("resources")
         if not isinstance(capabilities, list) or any(
             not isinstance(capability, str) for capability in capabilities
         ):
@@ -423,8 +454,6 @@ class RunStore:
                 )
                 for digest in environment.values()
             )
-            or not isinstance(resources, list)
-            or any(not isinstance(resource, Mapping) for resource in resources)
         ):
             raise RunStoreError("persisted runtime bindings are not canonical")
         if not isinstance(configuration, Mapping) or set(configuration) != {
@@ -468,7 +497,8 @@ class RunStore:
         expected_files: dict[Path, tuple[int, bool]] = {}
         expected_directories: set[Path] = set()
         for record in resources:
-            assert isinstance(record, Mapping)
+            if not isinstance(record, Mapping):
+                raise RunStoreError("persisted runtime resource record is malformed")
             identity = record.get("identity")
             if not isinstance(identity, str) or identity in identities:
                 raise RunStoreError("persisted runtime resource identity is invalid")
@@ -504,6 +534,10 @@ class RunStore:
                 )
         if ordered_identities != sorted(ordered_identities):
             raise RunStoreError("persisted runtime resources are not canonical")
+        if not configured_identities.issubset(identities):
+            raise RunStoreError(
+                "persisted runtime configuration is outside the plan closure"
+            )
         if expected_files or expected_directories:
             try:
                 inventory = SafeTree(resource_root).inventory(verify_content=False)
@@ -600,7 +634,7 @@ class RunStore:
     def _read_selected(self, selected: _SelectedRun) -> RunResult | RunFailure:
         manifest = self._manifest(selected)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
-            manifest, _plan, result = self._records(selected)
+            manifest, _plan, result = self._records(selected, manifest)
             return self._typed_result(result, selected.paths.root, manifest)
         details = manifest.get("details")
         error_type = details.get("error_type") if isinstance(details, Mapping) else None
@@ -643,8 +677,7 @@ class RunStore:
             raise RunStoreError(f"missing execution run: {run_id}") from exc
         manifest = self._manifest(selected)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
-            self._records(selected)
-        self._validate_inventory(selected.paths, manifest)
+            self._records(selected, manifest)
         try:
             tree.remove(expected)
         except (OSError, RuntimeError) as exc:
@@ -666,12 +699,7 @@ class RunStore:
             variant=variant,
             run_id=run_id,
         )
-        manifest = self._manifest(selected)
-        self._validate_inventory(
-            selected.paths,
-            manifest,
-            verify_content=True,
-        )
+        self._manifest(selected, verify_content=True)
 
 
 __all__ = ["RunStore", "RunStoreError"]

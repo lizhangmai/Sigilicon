@@ -26,6 +26,7 @@ def _record(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
     return RunRecord.begin(
         execution,
         adapter="standalone",
+        source={"plan_identity": "sha256-" + "0" * 64},
     )
 
 
@@ -74,7 +75,19 @@ def test_artifact_manifest_records_git_source(
         }
     }
     assert validate_manifest(record.manifest)["source"] == record.manifest["source"]
+    assert record.manifest["schema"] == 3
 
+
+def test_artifact_manifest_requires_source_provenance(tmp_path: Path) -> None:
+    execution = ArtifactLayout(tmp_path / "artifacts").operation_run(
+        owner="lib",
+        operation="spectre",
+        variant="nominal",
+        run_id="5" * 32,
+    )
+
+    with pytest.raises(ArtifactManifestError, match="non-empty object"):
+        RunRecord.begin(execution, adapter="standalone", source={})
 
 
 def test_status_machine_requires_proof_and_forbids_terminal_rewrite(tmp_path: Path) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import os
@@ -653,7 +652,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     if set(value) != required:
         raise ArtifactManifestError("run manifest fields are invalid")
-    if value.get("schema") != 2 or value.get("contract_kind") != "run-manifest":
+    if value.get("schema") != 3 or value.get("contract_kind") != "run-manifest":
         raise ArtifactManifestError("run manifest header is invalid")
     status = value.get("status")
     if status not in ARTIFACT_STATUSES:
@@ -666,8 +665,8 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value.get("files"), dict):
         raise ArtifactManifestError("manifest files must be an object")
     source = value.get("source")
-    if source is not None and not isinstance(source, dict):
-        raise ArtifactManifestError("manifest source must be an object or null")
+    if not isinstance(source, dict) or not source:
+        raise ArtifactManifestError("manifest source must be a non-empty object")
     for field_name in ("owner", "operation", "adapter", "created_at"):
         if not isinstance(value.get(field_name), str) or not value[field_name]:
             raise ArtifactManifestError(f"manifest {field_name} must be a non-empty string")
@@ -907,11 +906,11 @@ class RunRecord:
         paths: RunPaths,
         *,
         adapter: str,
-        source: Mapping[str, Any] | None = None,
+        source: Mapping[str, Any],
     ) -> "RunRecord":
         files = {role: [] for role in paths.roles}
         manifest = {
-            "schema": 2,
+            "schema": 3,
             "contract_kind": "run-manifest",
             "owner": paths.owner,
             "operation": paths.operation,
@@ -922,7 +921,7 @@ class RunRecord:
             "created_at": utc_now(),
             "completed_at": None,
             "status": "running",
-            "source": None if source is None else dict(source),
+            "source": dict(source),
             "files": files,
             "partial_failure": None,
             "uncertain_reason": None,
@@ -1181,7 +1180,7 @@ class RunRecord:
                 raise RuntimeError("uncertain artifact status requires a reason")
             if status == "partial" and not partial_failure:
                 raise RuntimeError("partial artifact status requires provenance")
-            candidate_manifest = copy.deepcopy(self.manifest)
+            candidate_manifest = dict(self.manifest)
             candidate_manifest.update(
                 {
                     "status": status,
@@ -1269,7 +1268,7 @@ class RunRecord:
             existing = self.manifest.get("incident_reference")
             if existing not in {None, reference}:
                 raise RuntimeError("artifact already refers to a different operation incident")
-            candidate_manifest = copy.deepcopy(self.manifest)
+            candidate_manifest = dict(self.manifest)
             candidate_manifest["incident_reference"] = reference
             self._persist_candidate(candidate_manifest)
 
@@ -1282,7 +1281,7 @@ class RunRecord:
             existing = self.manifest.get("operation_id")
             if existing not in {None, identity}:
                 raise RuntimeError("artifact belongs to a different workspace operation")
-            candidate_manifest = copy.deepcopy(self.manifest)
+            candidate_manifest = dict(self.manifest)
             candidate_manifest["operation_id"] = identity
             self._persist_candidate(candidate_manifest)
 

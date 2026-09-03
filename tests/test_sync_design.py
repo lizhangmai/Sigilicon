@@ -145,6 +145,7 @@ def _import_artifact(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
             run_id=identity,
         ),
         adapter="offline",
+        source={"kind": "offline-test"},
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -982,27 +983,24 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
     outside.mkdir()
     sentinel = outside / "sentinel.txt"
     sentinel.write_text("keep", encoding="utf-8")
-    original = RunStore._validate_inventory
-    calls = 0
+    original = RunStore._records
 
-    def replace_after_validation(_cls, paths, manifest):
-        nonlocal calls
-        original(paths, manifest)
-        calls += 1
-        if calls == 3:
-            outputs = paths.role("outputs")
-            outputs.chmod(0o700)
-            for child in outputs.rglob("*"):
-                if child.is_file():
-                    child.chmod(0o600)
-            for child in sorted(
-                outputs.rglob("*"), key=lambda path: len(path.parts), reverse=True
-            ):
-                child.rmdir() if child.is_dir() else child.unlink()
-            outputs.rmdir()
-            outputs.symlink_to(outside, target_is_directory=True)
+    def replace_after_validation(store, selected, manifest):
+        records = original(store, selected, manifest)
+        outputs = selected.paths.role("outputs")
+        outputs.chmod(0o700)
+        for child in outputs.rglob("*"):
+            if child.is_file():
+                child.chmod(0o600)
+        for child in sorted(
+            outputs.rglob("*"), key=lambda path: len(path.parts), reverse=True
+        ):
+            child.rmdir() if child.is_dir() else child.unlink()
+        outputs.rmdir()
+        outputs.symlink_to(outside, target_is_directory=True)
+        return records
 
-    monkeypatch.setattr(RunStore, "_validate_inventory", replace_after_validation)
+    monkeypatch.setattr(RunStore, "_records", replace_after_validation)
 
     _clean_run(project, "example:check", result.run_id)
 
@@ -1233,15 +1231,18 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     bindings = json.loads(
         (result.run_root / "inputs/runtime-bindings.json").read_text()
     )
-    assert bindings["configuration"]["tools"] == {"test.tool": "/bin/true"}
+    assert bindings["configuration"]["tools"] == {}
     assert bindings["configuration"]["values"] == {
         "test.value": "configured"
     }
     assert set(bindings["environment"]) == {"LM_LICENSE_FILE"}
     assert bindings["environment"]["LM_LICENSE_FILE"].startswith("sha256-")
     assert "test-license" not in str(bindings)
-    assert bindings["resources"][0]["kind"] == "file"
     assert str(live) not in str(bindings)
+    plan_resources = json.loads(
+        (result.run_root / "inputs/execution-plan.json").read_text()
+    )["resources"]
+    assert any(resource["kind"] == "file" for resource in plan_resources)
     store, owner, operation, variant = _run_store_call(project, "example:check")
     selected = store._select(
         owner=owner,
@@ -1249,10 +1250,17 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
         variant=variant,
         run_id=result.run_id,
     )
-    store._validate_runtime_bindings(selected.paths, bindings)
-    bindings["resources"][0]["size"] += 1
+    store._validate_runtime_bindings(selected.paths, bindings, plan_resources)
+    drifted_resources = copy.deepcopy(plan_resources)
+    next(
+        resource for resource in drifted_resources if resource["kind"] == "file"
+    )["size"] += 1
     with pytest.raises(RunStoreError, match="resource identity drift"):
-        store._validate_runtime_bindings(selected.paths, bindings)
+        store._validate_runtime_bindings(
+            selected.paths,
+            bindings,
+            drifted_resources,
+        )
 
 
 def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) -> None:
@@ -1290,8 +1298,14 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
     bindings = json.loads(
         (result.run_root / "inputs/runtime-bindings.json").read_text()
     )
-    assert bindings["resources"][0]["kind"] == "directory"
-    assert bindings["resources"][0]["directories"] == ["nested", "nested/empty"]
+    assert "resources" not in bindings
+    plan_resources = json.loads(
+        (result.run_root / "inputs/execution-plan.json").read_text()
+    )["resources"]
+    directory = next(
+        resource for resource in plan_resources if resource["kind"] == "directory"
+    )
+    assert directory["directories"] == ["nested", "nested/empty"]
 
 
 def test_directory_resource_rejects_symlink_members(tmp_path: Path) -> None:
@@ -1664,6 +1678,24 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     payload["variant"] = "tampered"
     result_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RunStoreError, match="manifest|result"):
+        _read_run(project, "example:check", result.run_id)
+
+
+def test_run_store_rejects_unregistered_immutable_role_members(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter())
+    result = project.run(
+        _plan(project, "example:check"),
+        run_id="8" * 32,
+    )
+    (result.run_root / "outputs/unregistered.txt").write_text(
+        "not in manifest\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RunStoreError, match="outputs inventory"):
         _read_run(project, "example:check", result.run_id)
 
 
