@@ -20,7 +20,7 @@ from sigilicon.domain.platform import (
     resolve_platforms,
     resolve_platform_snapshot,
 )
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.project import Project
 
 

@@ -27,8 +27,8 @@ from sigilicon.external_tools import (
     spectre_env,
     xrun_env,
 )
-from sigilicon.execution.step_files import StepFiles
-from sigilicon.execution.model import Resources
+from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._model import Resources
 from sigilicon.workflows.spectre import (
     StagedSpectreInput,
     run_spectre_deck,
@@ -290,7 +290,7 @@ def test_process_boundaries_reject_nonfinite_timeouts(timeout: float) -> None:
 
 def test_spectre_completion_preserves_all_three_log_sources(tmp_path: Path) -> None:
     run = tmp_path / "run"
-    record = StepFiles(
+    record = StepWorkspace(
         run_id="spectre-proof",
         root=run,
         input_root=run / "inputs",
@@ -333,7 +333,7 @@ def test_spectre_measurement_rejects_truthy_non_boolean_passed(
     tmp_path: Path,
 ) -> None:
     run = tmp_path / "run"
-    record = StepFiles(
+    record = StepWorkspace(
         run_id="spectre-measurement",
         root=run,
         input_root=run / "inputs",

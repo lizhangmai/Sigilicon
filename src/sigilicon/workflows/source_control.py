@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,

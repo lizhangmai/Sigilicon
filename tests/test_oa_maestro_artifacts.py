@@ -8,7 +8,7 @@ import pytest
 
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import load_text_source_snapshot
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.workflows import oa_simulation
 
 

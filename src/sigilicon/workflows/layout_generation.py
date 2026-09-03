@@ -23,7 +23,7 @@ from sigilicon.virtuoso.layout_generation import (
     write_layout_plan,
 )
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.execution.step_files import StepFiles
+from sigilicon.execution._workspace import StepWorkspace
 
 
 @dataclass(frozen=True)
@@ -221,7 +221,7 @@ def generate_layout(
     overwrite: bool = False,
     timeout: int = 120,
     disposable: bool = False,
-    artifacts: StepFiles | None = None,
+    artifacts: StepWorkspace | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
     record_uncertainty: Callable[[str], None] | None = None,
@@ -264,7 +264,7 @@ def _generate_layout_impl(
     timeout: int = 120,
     disposable: bool = False,
     _disposable_work: DisposableWork | None = None,
-    artifacts: StepFiles | None = None,
+    artifacts: StepWorkspace | None = None,
     operation_id: str | None = None,
     bind_operation: Any | None = None,
     record_uncertainty: Callable[[str], None] | None = None,

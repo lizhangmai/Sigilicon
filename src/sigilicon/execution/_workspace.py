@@ -6,7 +6,8 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from types import MappingProxyType
+from typing import Any, Mapping, Sequence
 
 from sigilicon.artifacts import (
     copy_immutable_file,
@@ -15,15 +16,9 @@ from sigilicon.artifacts import (
 )
 from sigilicon.paths import validate_artifact_component
 
-class _StepContext(Protocol):
-    run_id: str
-    work_root: Path
-    output_root: Path
-
-
 @dataclass(frozen=True)
-class StepFiles:
-    """Narrow file interface for one Backend Step."""
+class StepWorkspace:
+    """Single filesystem interface for one managed workflow invocation."""
 
     run_id: str
     root: Path
@@ -33,34 +28,25 @@ class StepFiles:
     log_root: Path
     source: Mapping[str, Any]
 
-    @classmethod
-    def from_context(
-        cls,
-        context: _StepContext,
-        output_role: str,
-        source: Mapping[str, Any],
-        *,
-        tool_work_root: Path | None = None,
-    ) -> "StepFiles":
-        role = validate_artifact_component(output_role, "output role")
-        run_root = context.output_root.parents[1]
-        return cls(
-            run_id=context.run_id,
-            root=run_root,
-            input_root=context.work_root / "inputs",
-            work_root=(
-                context.work_root / "tool"
-                if tool_work_root is None
-                else Path(tool_work_root).absolute()
-            ),
-            output_root=context.output_root / role,
-            log_root=context.work_root / "logs",
-            source=source,
-        )
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, str) or not self.run_id:
+            raise ValueError("step workspace run id must be non-empty text")
+        for name in ("root", "input_root", "work_root", "output_root", "log_root"):
+            object.__setattr__(self, name, Path(getattr(self, name)).absolute())
+        if self.root == Path(self.root.anchor):
+            raise ValueError("step workspace root cannot be a filesystem root")
+        if any(
+            not path.is_relative_to(self.root)
+            for path in (self.input_root, self.output_root, self.log_root)
+        ):
+            raise ValueError("step workspace roles must remain inside the run root")
+        if not isinstance(self.source, Mapping):
+            raise ValueError("step workspace source metadata must be a mapping")
+        object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
 
-    def scoped(self, component: str) -> "StepFiles":
+    def scoped(self, component: str) -> "StepWorkspace":
         name = validate_artifact_component(component, "step file scope")
-        return StepFiles(
+        return StepWorkspace(
             run_id=self.run_id,
             root=self.root,
             input_root=self.input_root / name,

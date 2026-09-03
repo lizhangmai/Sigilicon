@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.project import Project
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.workflows.oa_check import (
     _library_ownership,

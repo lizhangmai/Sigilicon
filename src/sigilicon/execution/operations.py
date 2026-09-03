@@ -8,7 +8,7 @@ import tomllib
 from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     ContractError,
     Evidence,
     ExecutionPlan,

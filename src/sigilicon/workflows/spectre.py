@@ -15,8 +15,8 @@ import re
 from typing import Any, Callable, Mapping, Sequence
 
 from sigilicon.artifacts import read_nofollow_text
-from sigilicon.execution.model import Resources
-from sigilicon.execution.step_files import StepFiles
+from sigilicon.execution._model import Resources
+from sigilicon.execution._workspace import StepWorkspace
 from sigilicon.external_tools import (
     ProcessPort,
     ProcessRequest,
@@ -68,7 +68,7 @@ class MeasurementContractFailure(RuntimeError):
 
 
 def run_spectre_deck(
-    record: StepFiles,
+    record: StepWorkspace,
     *,
     render_deck: Callable[[Mapping[str, str]], str],
     inputs: Mapping[str, Path],
@@ -239,7 +239,7 @@ def run_spectre_deck(
 
 
 def _stage_inputs(
-    record: StepFiles,
+    record: StepWorkspace,
     inputs: Sequence[StagedSpectreInput],
 ) -> Mapping[str, Path]:
     staged: dict[str, Path] = {}
@@ -265,7 +265,7 @@ def run_spectre_measurement(
     normalized_name: str,
     evaluate: Callable[[Any], Mapping[str, object]],
     timeout: int,
-    artifacts: StepFiles,
+    artifacts: StepWorkspace,
     resources: Resources,
     process: ProcessPort = managed_process,
 ) -> SpectreRunResult:

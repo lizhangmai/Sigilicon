@@ -7,8 +7,8 @@ import shutil
 
 import pytest
 
-from sigilicon.execution.step_files import StepFiles
-from sigilicon.execution.model import Resources
+from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._model import Resources
 from sigilicon.workflows.structural_link import (
     execute_structural_link,
     plan_structural_link,
@@ -230,7 +230,7 @@ maturity = "development"
         artifact_root=tmp_path / "artifacts",
     )
     root = tmp_path / "run"
-    artifacts = StepFiles(
+    artifacts = StepWorkspace(
         run_id="managed-run",
         root=root,
         input_root=root / "work/link/inputs",

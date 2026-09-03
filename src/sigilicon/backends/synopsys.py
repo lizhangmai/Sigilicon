@@ -24,7 +24,7 @@ from sigilicon.artifacts import (
 )
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     Artifact,
     ContractError,
     ExecutionError,
@@ -1256,7 +1256,7 @@ class StructuralLinkAdapter(DirectAdapter):
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
             is not None,
         ) as scratch:
-            artifacts = context.files(
+            artifacts = context.workspace(
                 "structural-link",
                 {"owner": planning.owner, "variant": planning.variant},
                 tool_work_root=scratch.path,

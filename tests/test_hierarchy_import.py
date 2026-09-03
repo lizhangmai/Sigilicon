@@ -7,7 +7,7 @@ import pytest
 
 import sigilicon.workflows.hierarchy_import as hierarchy
 from sigilicon.artifacts import RunRecord
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
 

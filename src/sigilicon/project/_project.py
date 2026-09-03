@@ -26,7 +26,7 @@ from sigilicon.paths import (
     ProjectContext,
     validate_artifact_component,
 )
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     ContractError,
     Resources,
     Source,
@@ -47,7 +47,7 @@ _RUNTIME_FIELDS = frozenset(
 
 if TYPE_CHECKING:
     from sigilicon.execution.adapter import AdapterRegistry
-    from sigilicon.execution.model import (
+    from sigilicon.execution._model import (
         ExecutionPlan,
         PreflightResult,
         RunResult,
@@ -281,7 +281,7 @@ class Project:
         """Check a plan without creating a run or starting an adapter."""
 
         from sigilicon.execution.engine import _preflight
-        from sigilicon.execution.model import ExecutionPlan
+        from sigilicon.execution._model import ExecutionPlan
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.preflight requires an ExecutionPlan")
@@ -299,7 +299,7 @@ class Project:
         """Execute one source-current plan through its selected adapters."""
 
         from sigilicon.execution.engine import _run
-        from sigilicon.execution.model import ExecutionPlan
+        from sigilicon.execution._model import ExecutionPlan
 
         if not isinstance(plan, ExecutionPlan):
             raise TypeError("Project.run requires an ExecutionPlan")

@@ -16,14 +16,14 @@ from sigilicon.backends.cadence import (
     XceliumAmsAdapter,
     cadence_adapters,
 )
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     ContractError,
     Evidence,
     ExecutionError,
     Step,
     StepContext,
 )
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.workflows.oa_library import oa_plan_source_paths
 
 
@@ -139,6 +139,7 @@ def _context(
         runtime_step,
         "2" * 32,
         "3" * 64,
+        run_root,
         work,
         output,
         sources,

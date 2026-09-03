@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from sigilicon.external_tools import ConfirmedProcessGroupResult
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.virtuoso.maestro_batch import (
     render_isolated_maestro_run_skill,
     run_isolated_maestro,

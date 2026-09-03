@@ -16,7 +16,7 @@ from sigilicon.artifacts import (
     read_nofollow_text,
 )
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     Artifact,
     ContractError,
     RunFailure,

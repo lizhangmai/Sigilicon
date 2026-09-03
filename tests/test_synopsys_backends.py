@@ -17,7 +17,7 @@ from sigilicon.backends.synopsys import (
     _PreparedStructuralLink,
     _StructuralLinkStep,
 )
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     ContractError,
     Resources,
     RuntimeEnvironment,
@@ -25,7 +25,7 @@ from sigilicon.execution.model import (
     StepContext,
     StepResult,
 )
-from sigilicon.execution.model import resource_materialization_key
+from sigilicon.execution._model import resource_materialization_key
 from sigilicon.workflows.structural_link import StructuralLinkPlan
 
 
@@ -55,6 +55,7 @@ def _context(
         step,
         "2" * 32,
         "3" * 64,
+        run_root,
         roots[0],
         roots[1],
         roots[2],
@@ -294,6 +295,7 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         step,
         "2" * 32,
         "3" * 64,
+        tmp_path / "run",
         tmp_path / "run/work/link",
         tmp_path / "run/outputs/link",
         source_root,

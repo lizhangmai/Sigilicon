@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.external_tools import ProcessResult
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.domain.systemverilog import module_port_signatures

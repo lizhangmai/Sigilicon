@@ -9,12 +9,12 @@ from dataclasses import dataclass, field as dataclass_field, replace
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     Artifact,
     ContractError,
     ExecutionError,
@@ -51,6 +51,18 @@ _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _BRIDGE_RESOURCES = (VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT)
+
+
+class _CadencePlanningProject(PlanningProject, Protocol):
+    """Cadence planning adds an explicitly configured workspace."""
+
+    workspace_root: Path
+
+
+class _OaPlanningProject(_CadencePlanningProject, Protocol):
+    """Native OA planning additionally resolves the owner's assembly."""
+
+    def oa_assembly_for(self, path: Path | str) -> Path | None: ...
 
 
 def _runtime_bindings(
@@ -559,7 +571,7 @@ class _CadenceDomainAdapter:
 
     def _prepare_domain_step(
         self,
-        project: PlanningProject,
+        project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
         *,
@@ -818,7 +830,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: PlanningProject,
+        project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -873,7 +885,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
             is not None,
         ) as scratch:
-            artifacts = context.files(
+            artifacts = context.workspace(
                 "xcelium-ams",
                 {
                     "owner": owner,
@@ -956,7 +968,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: PlanningProject,
+        project: _OaPlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -1038,7 +1050,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
                 retain_on_error=lambda exc: bool(uncertainty)
                 or process_group_cleanup_uncertainty(exc) is not None,
             ) as scratch:
-                artifacts = context.files(
+                artifacts = context.workspace(
                     "maestro",
                     {"owner": owner, "testbench": testbench},
                     tool_work_root=scratch.path,
@@ -1148,7 +1160,7 @@ class _OaAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: PlanningProject,
+        project: _OaPlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -1331,7 +1343,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: PlanningProject,
+        project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -1398,7 +1410,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
                 retain_on_error=lambda exc: bool(uncertainty)
                 or process_group_cleanup_uncertainty(exc) is not None,
             ) as scratch:
-                artifacts = context.files(
+                artifacts = context.workspace(
                     "layout",
                     {"owner": owner, "spec": str(config["spec"])},
                     tool_work_root=scratch.path,
@@ -1468,7 +1480,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: PlanningProject,
+        project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -1556,7 +1568,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
                 retain_on_error=lambda exc: bool(uncertainty)
                 or process_group_cleanup_uncertainty(exc) is not None,
             ) as scratch:
-                artifacts = context.files(
+                artifacts = context.workspace(
                     "verification",
                     {
                         "owner": owner,

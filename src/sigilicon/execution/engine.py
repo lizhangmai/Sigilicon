@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack, contextmanager
 import hashlib
 import os
@@ -11,13 +11,14 @@ import stat
 from typing import Any, Iterator
 
 from sigilicon.artifacts import RunRecord, new_identity, read_nofollow_text
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     Artifact,
     ContractError,
     ExecutionPlan,
     ExecutionError,
     PreflightCheck,
     PreflightResult,
+    ResourceBinding,
     Resources,
     RunResult,
     Step,
@@ -43,15 +44,14 @@ class InputIntegrityError(ExecutionError):
 
 @contextmanager
 def _held_step_inputs(
-    plan: ExecutionPlan,
     step: Step,
     source_root: Path,
     resource_root: Path | None,
+    bindings: Mapping[str, ResourceBinding],
 ) -> Iterator[None]:
     """Hold and monitor every file input visible to one adapter invocation."""
 
     source_paths = [source_root / source for source in step.sources]
-    bindings = {binding.identity: binding for binding in plan.resources}
     resource_paths: list[Path] = []
     resource_directories: list[Path] = []
     if resource_root is not None:
@@ -367,6 +367,18 @@ def _run(
         )
         source_root = _seal_sources(record, plan)
         resource_root = _seal_resources(record, plan)
+        changed_composition = tuple(
+            source.path
+            for source in plan._composition_sources
+            if not source.metadata_current()
+        )
+        if changed_composition:
+            raise ExecutionError(
+                "project composition changed after input sealing: "
+                + ", ".join(sorted(set(changed_composition)))
+            )
+        sources = {source.path: source for source in plan.sources}
+        bindings = {binding.identity: binding for binding in plan.resources}
         execution_resources = resources.for_execution(
             plan.resources,
             resource_root,
@@ -384,16 +396,6 @@ def _run(
                     message=f"dependencies did not succeed: {', '.join(failed_dependencies)}",
                 )
             else:
-                changed = tuple(
-                    source.path
-                    for source in (*plan._composition_sources, *plan.sources)
-                    if not source.metadata_current()
-                )
-                if changed:
-                    raise ExecutionError(
-                        "operation source changed after input sealing: "
-                        + ", ".join(sorted(set(changed)))
-                    )
                 work_root = record.directory("work", step.id)
                 output_root = record.directory("outputs", step.id)
                 record.add_file("outputs", output_root)
@@ -402,26 +404,21 @@ def _run(
                     step=step,
                     run_id=identity,
                     operation_id=operation_id,
+                    run_root=paths.root,
                     work_root=work_root,
                     output_root=output_root,
                     source_root=source_root,
                     resources=execution_resources,
                     dependencies=dependencies,
                     source_scopes={
-                        source.path: source.scope
-                        for source in plan.sources
-                        if source.path in step.sources
+                        name: sources[name].scope for name in step.sources
                     },
                     resource_root=resource_root,
                     resource_digests={
-                        resource.identity: resource.sha256
-                        for resource in plan.resources
-                        if resource.identity in step.resources
+                        name: bindings[name].sha256 for name in step.resources
                     },
                     resource_kinds={
-                        resource.identity: resource.kind
-                        for resource in plan.resources
-                        if resource.identity in step.resources
+                        name: bindings[name].kind for name in step.resources
                     },
                     _register_operation=(
                         lambda operation: operation.register_artifact(record)
@@ -435,10 +432,10 @@ def _run(
                     ) from exc
                 try:
                     with _held_step_inputs(
-                        plan,
                         step,
                         source_root,
                         resource_root,
+                        bindings,
                     ):
                         try:
                             result = adapter.run(context, step)

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     ContractError,
     ExecutionPlan,
     PreflightCheck,
@@ -27,17 +27,14 @@ class OwnerView(Protocol):
 
 
 class PlanningProject(Protocol):
-    """Project capabilities consumed while adapters close an operation plan."""
+    """Repository capabilities shared by every planning adapter."""
 
     project_root: Path
     artifact_root: Path
-    workspace_root: Path
 
     def owner(self, name: str) -> OwnerView: ...
 
     def owner_for(self, path: Path) -> OwnerView | None: ...
-
-    def oa_assembly_for(self, path: Path | str) -> Path | None: ...
 
 
 @runtime_checkable

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sigilicon.execution.model import ResourceBinding, Resources
+from sigilicon.execution._model import ResourceBinding, Resources
 from sigilicon.virtuoso.bridge import (
     VIRTUOSO_BRIDGE_HOST,
     VIRTUOSO_BRIDGE_PORT,

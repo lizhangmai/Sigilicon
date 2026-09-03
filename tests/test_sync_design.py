@@ -8,7 +8,7 @@ from virtuoso_bridge import ExecutionStatus, VirtuosoResult
 
 from sigilicon.artifacts import RunRecord
 from sigilicon.domain.design import load_design_spec
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.project import Project
 from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy

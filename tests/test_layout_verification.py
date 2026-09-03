@@ -8,8 +8,8 @@ import pytest
 
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.workflows import layout_verification
-from sigilicon.execution.step_files import StepFiles
-from sigilicon.execution.model import Resources
+from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._model import Resources
 
 
 def _drc_summary(*, violation_count: int = 0) -> str:
@@ -74,7 +74,7 @@ def test_xstream_artifacts_preserve_separate_output_streams(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "run"
-    artifacts = StepFiles(
+    artifacts = StepWorkspace(
         run_id="xstream-streams",
         root=root,
         input_root=root / "inputs",
@@ -136,7 +136,7 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "run"
-    artifacts = StepFiles(
+    artifacts = StepWorkspace(
         run_id="1" * 32,
         root=root,
         input_root=root / "work/verify/inputs",

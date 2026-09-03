@@ -12,7 +12,7 @@ import sys
 import pytest
 
 from sigilicon.execution.adapter import Adapter
-from sigilicon.execution.model import (
+from sigilicon.execution._model import (
     Artifact,
     ContractError,
     ExecutionError,
@@ -25,11 +25,12 @@ from sigilicon.execution.model import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.model import ResourceBinding, Resources
+from sigilicon.execution._model import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
+from sigilicon.paths import ArtifactLayout
 from sigilicon.project import Project
 
 
@@ -46,6 +47,16 @@ def _run_store_call(
 ) -> tuple[RunStore, str, str, str | None]:
     owner, operation, variant = parse_selector(selector)
     return RunStore(project.artifact_root), owner, operation, variant
+
+
+def _run_root(project: Project, selector: str, run_id: str) -> Path:
+    owner, operation, variant = parse_selector(selector)
+    return ArtifactLayout(project.artifact_root).operation_run(
+        owner=owner,
+        operation=operation,
+        variant=variant,
+        run_id=run_id,
+    ).root
 
 
 def _read_run(project: Project, selector: str, run_id: str):
@@ -77,6 +88,7 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
         "ExecutionPlan",
         "RunResult",
         "RunStore",
+        "StepWorkspace",
     )
     assert execution.__all__ == list(public)
     for name in public:
@@ -181,13 +193,13 @@ def test_source_reference_is_binary_safe_and_does_not_retain_payload(
     assert source.current()
 
 
-def test_step_files_does_not_import_the_execution_model() -> None:
+def test_step_workspace_does_not_import_the_execution_model() -> None:
     source = (
         Path(__file__).parents[1]
-        / "src/sigilicon/execution/step_files.py"
+        / "src/sigilicon/execution/_workspace.py"
     ).read_text(encoding="utf-8")
 
-    assert "sigilicon.execution.model" not in source
+    assert "sigilicon.execution._model" not in source
 
 
 @pytest.fixture(autouse=True)
@@ -373,6 +385,59 @@ def _project(root: Path, *adapters) -> Project:
     return Project.open(root)
 
 
+def test_large_chain_execution_does_not_rescan_the_global_source_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    operations = _write_project(tmp_path)
+    steps = "\n".join(
+        (
+            "[[operations.scale.steps]]\n"
+            f'id = "step-{index}"\n'
+            'uses = "fake.noop"\n'
+            'filesets = ["value"]\n'
+            + (f'needs = ["step-{index - 1}"]\n' if index else "")
+        )
+        for index in range(250)
+    )
+    operations.write_text(
+        operations.read_text(encoding="utf-8")
+        + "\n[operations.scale]\n"
+        + steps,
+        encoding="utf-8",
+    )
+
+    class NoopAdapter:
+        name = "fake.noop"
+
+        def plan(self, _project, step, _resources):
+            return step
+
+        def preflight(self, _step, _resources):
+            return ()
+
+        def run(self, context: StepContext, step: Step) -> StepResult:
+            context.require_step(step)
+            return StepResult.succeeded()
+
+    project = _project(tmp_path, NoopAdapter())
+    plan = project.plan("example:scale")
+    metadata_checks = 0
+    original = Source.metadata_current
+
+    def counted(source: Source) -> bool:
+        nonlocal metadata_checks
+        metadata_checks += 1
+        return original(source)
+
+    monkeypatch.setattr(Source, "metadata_current", counted)
+    result = project.run(plan)
+
+    assert result.status == "succeeded"
+    assert len(result.outcomes) == 250
+    assert metadata_checks <= len(plan.sources) + 2
+
+
 def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     tmp_path: Path,
 ) -> None:
@@ -385,8 +450,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert plan.variant is None
     assert [step.uses for step in plan.steps] == ["fake.copy"]
     assert plan.steps[0].config == {"text": "hello"}
-    assert plan.steps[0]._prepared == {}
-    assert not hasattr(plan.steps[0], "_payload")
+    assert plan.steps[0].record["prepared"] == {}
     assert plan.steps[0].evidence.record == {
         "role": "regression",
         "level": "l0",
@@ -948,7 +1012,7 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
     assert stored.plan_identity == plan.identity
 
     _clean_run(project, "example:all", "a" * 32)
-    assert not result.run_root.exists()
+    assert not _run_root(project, "example:all", result.run_id).exists()
     with pytest.raises(RunStoreError):
         _read_run(project, "example:all", "a" * 32)
 
@@ -989,7 +1053,7 @@ def test_run_clean_never_follows_a_role_replaced_after_validation(
     _clean_run(project, "example:check", result.run_id)
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert not result.run_root.exists()
+    assert not _run_root(project, "example:check", result.run_id).exists()
 
 
 def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> None:
@@ -1003,7 +1067,7 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
 
     assert plan.variant == "fast"
     assert result.variant == "fast"
-    assert result.run_root == (
+    assert _run_root(project, "example:check@fast", result.run_id) == (
         tmp_path / "artifacts/runs/example/check/variants/fast" / ("1" * 32)
     )
     assert _read_run(project, "example:check@fast", result.run_id).variant == "fast"
@@ -1054,7 +1118,9 @@ def test_adapter_defects_propagate_after_terminalizing_the_run(tmp_path: Path) -
     assert failure.error_type == "RuntimeError"
 
 
-def test_adapter_preflight_cannot_hide_source_replacement(tmp_path: Path) -> None:
+def test_same_content_source_metadata_drift_keeps_the_sealed_snapshot(
+    tmp_path: Path,
+) -> None:
     _write_project(tmp_path)
     source = tmp_path / "ip/example/configs/value.txt"
 
@@ -1066,12 +1132,10 @@ def test_adapter_preflight_cannot_hide_source_replacement(tmp_path: Path) -> Non
     project = _project(tmp_path, MutatingBackend(),)
     plan = _plan(project, "example:check")
 
-    with pytest.raises(ExecutionError, match="changed after input sealing"):
-        project.run(plan, run_id="b" * 32)
-    failed = _read_run(project, "example:check", "b" * 32)
-    assert failed.record["contract_kind"] == "run-failure"
-    assert failed.status == "failed"
-    _clean_run(project, "example:check", "b" * 32)
+    result = project.run(plan, run_id="b" * 32)
+
+    assert result.status == "succeeded"
+    assert result.outcomes[0].result.artifacts[0].read_text() == "hello"
 
 
 def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
@@ -1101,7 +1165,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     )
 
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "hello\n"
-    sealed = result.run_root / "inputs/sources/configs/value.txt"
+    sealed = _run_root(project, "example:check", result.run_id) / "inputs/sources/configs/value.txt"
     assert sealed.stat().st_mode & 0o777 == 0o444
     assert sealed.parent.stat().st_mode & 0o777 == 0o555
 
@@ -1176,7 +1240,7 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
 
     output = result.outcomes[0].result.artifacts[0].path
     assert output.read_text(encoding="utf-8") == "proprietary model\n"
-    persisted = (result.run_root / "inputs/execution-plan.json").read_text(
+    persisted = (_run_root(project, "example:check", result.run_id) / "inputs/execution-plan.json").read_text(
         encoding="utf-8"
     )
     assert str(live) not in persisted
@@ -1213,7 +1277,7 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
 
     assert result.outcomes[0].result.facts == {"size": len(payload)}
     bindings = json.loads(
-        (result.run_root / "inputs/runtime-bindings.json").read_text()
+        (_run_root(project, "example:check", result.run_id) / "inputs/runtime-bindings.json").read_text()
     )
     assert bindings["configuration"]["tools"] == {}
     assert bindings["configuration"]["values"] == {
@@ -1224,7 +1288,7 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     assert "test-license" not in str(bindings)
     assert str(live) not in str(bindings)
     plan_resources = json.loads(
-        (result.run_root / "inputs/execution-plan.json").read_text()
+        (_run_root(project, "example:check", result.run_id) / "inputs/execution-plan.json").read_text()
     )["resources"]
     assert any(resource["kind"] == "file" for resource in plan_resources)
     store, owner, operation, variant = _run_store_call(project, "example:check")
@@ -1280,11 +1344,11 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
 
     assert result.outcomes[0].result.facts == {"tree": True}
     bindings = json.loads(
-        (result.run_root / "inputs/runtime-bindings.json").read_text()
+        (_run_root(project, "example:check", result.run_id) / "inputs/runtime-bindings.json").read_text()
     )
     assert "resources" not in bindings
     plan_resources = json.loads(
-        (result.run_root / "inputs/execution-plan.json").read_text()
+        (_run_root(project, "example:check", result.run_id) / "inputs/execution-plan.json").read_text()
     )["resources"]
     directory = next(
         resource for resource in plan_resources if resource["kind"] == "directory"
@@ -1351,7 +1415,7 @@ def test_run_store_keeps_tools_as_external_content_references(tmp_path: Path) ->
     project = _project(tmp_path, ToolAdapter())
     result = project.run(_plan(project, "example:check"), run_id="6" * 32)
 
-    assert not (result.run_root / "inputs/resources").exists()
+    assert not (_run_root(project, "example:check", result.run_id) / "inputs/resources").exists()
     tool.unlink()
     stored = _read_run(project, "example:check", result.run_id)
     assert stored.status == "succeeded"
@@ -1468,6 +1532,7 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 
 
 def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
+    assert "run_root" not in RunResult.__dataclass_fields__
     with pytest.raises(ContractError, match="config must be a mapping"):
         Step("bad", "fake.copy", "not-config")  # type: ignore[arg-type]
     step = Step("good", "fake.copy", {"nested": {"value": [1, 2]}})
@@ -1524,7 +1589,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     )
 
     assert result.status == "uncertain"
-    assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
+    assert json.loads((_run_root(project, "example:check", result.run_id) / "manifest.json").read_text())["status"] == (
         "uncertain"
     )
     restored = _read_run(project, "example:check", result.run_id)
@@ -1570,7 +1635,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     )
 
     assert result.status == "cancelled"
-    assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
+    assert json.loads((_run_root(project, "example:check", result.run_id) / "manifest.json").read_text())["status"] == (
         "cancelled"
     )
     assert _read_run(project, "example:check", result.run_id).status == "cancelled"
@@ -1597,7 +1662,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     )
 
     assert result.status == "failed"
-    assert json.loads((result.run_root / "manifest.json").read_text())["status"] == (
+    assert json.loads((_run_root(project, "example:check", result.run_id) / "manifest.json").read_text())["status"] == (
         "failed"
     )
     assert result.outcomes[0].result.artifacts[0].path.read_text() == "{}\n"
@@ -1617,7 +1682,9 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     )
 
 
-def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Path) -> None:
+def test_running_plan_is_independent_of_later_live_source_changes(
+    tmp_path: Path,
+) -> None:
     _write_project(tmp_path)
     live = tmp_path / "ip/example/configs/value.txt"
 
@@ -1630,14 +1697,12 @@ def test_failure_after_a_completed_step_records_partial_provenance(tmp_path: Pat
     project = _project(tmp_path, DriftingCopyAdapter(), UpperAdapter())
     plan = _plan(project, "example:all")
 
-    with pytest.raises(ExecutionError, match="changed after input sealing"):
-        project.run(
-            plan,
-            run_id="5" * 32,
-        )
+    result = project.run(plan, run_id="5" * 32)
     stored = _read_run(project, "example:all", "5" * 32)
-    assert stored.status == "partial"
-    assert stored.provenance["completed_steps"] == ("source",)
+
+    assert result.status == "succeeded"
+    assert stored.status == "succeeded"
+    assert stored.outcomes[-1].result.artifacts[0].read_text() == "HELLO"
 
 
 def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper(
@@ -1655,7 +1720,7 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
     stored = _read_run(project, "example:check", result.run_id)
     assert stored.status == "succeeded"
 
-    result_path = result.run_root / "outputs/run-result.json"
+    result_path = _run_root(project, "example:check", result.run_id) / "outputs/run-result.json"
     payload = json.loads(result_path.read_text(encoding="utf-8"))
     payload["variant"] = "tampered"
     result_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -1672,7 +1737,7 @@ def test_run_store_rejects_unregistered_immutable_role_members(
         _plan(project, "example:check"),
         run_id="8" * 32,
     )
-    (result.run_root / "outputs/unregistered.txt").write_text(
+    (_run_root(project, "example:check", result.run_id) / "outputs/unregistered.txt").write_text(
         "not in manifest\n",
         encoding="utf-8",
     )

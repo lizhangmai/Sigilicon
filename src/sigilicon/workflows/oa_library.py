@@ -34,7 +34,7 @@ from sigilicon.domain.platform import (
 )
 from sigilicon.project import Project
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
-from sigilicon.execution.model import Source, json_value
+from sigilicon.execution._model import Source, json_value
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec, load_layout_spec
 from sigilicon.virtuoso.attestation import attest_native_setup
@@ -871,7 +871,7 @@ def plan_oa_library_rebuild(
         )
     definitions, netlist_snapshots = _load_definitions(source)
     if platform_inventory is None:
-        from sigilicon.execution.model import Resources
+        from sigilicon.execution._model import Resources
 
         platform_snapshot: PlatformSnapshot = load_platform(
             source.project,

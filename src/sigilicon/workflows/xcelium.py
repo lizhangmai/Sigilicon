@@ -19,8 +19,8 @@ from sigilicon.external_tools import (
     owned_directory,
     xrun_env,
 )
-from sigilicon.execution.step_files import StepFiles
-from sigilicon.execution.model import Resources, json_value
+from sigilicon.execution._workspace import StepWorkspace
+from sigilicon.execution._model import Resources, json_value
 
 
 _HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
@@ -192,7 +192,7 @@ def plan_xcelium_cell(
 def execute_xcelium_cell(
     plan: XceliumCellPlan,
     *,
-    artifacts: StepFiles,
+    artifacts: StepWorkspace,
     resources: Resources,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
@@ -236,7 +236,7 @@ def _require_xcelium_sources(plan: XceliumCellPlan) -> None:
 def _execute_xcelium(
     plan: XceliumCellPlan,
     *,
-    artifacts: StepFiles,
+    artifacts: StepWorkspace,
     command_factory: Callable[[Path, str, str], list[str]],
     prepare_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,

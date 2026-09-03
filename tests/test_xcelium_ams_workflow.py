@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.project import Project
-from sigilicon.execution.model import Resources
+from sigilicon.execution._model import Resources
 from sigilicon.external_tools import ProcessResult
 from sigilicon.workflows import xcelium_ams
-from sigilicon.execution.step_files import StepFiles
+from sigilicon.execution._workspace import StepWorkspace
 from sigilicon.workflows.xcelium_ams import (
     execute_xcelium_ams_cell,
     plan_xcelium_ams_cell,
@@ -26,9 +26,9 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _run_artifacts(root: Path) -> StepFiles:
+def _run_artifacts(root: Path) -> StepWorkspace:
     run = root / "run"
-    return StepFiles(
+    return StepWorkspace(
         run_id="managed-run",
         root=run,
         input_root=run / "work/action/inputs",

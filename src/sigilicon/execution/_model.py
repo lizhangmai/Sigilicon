@@ -17,16 +17,14 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 from sigilicon.artifacts import (
     _inspect_nofollow_file,
     _open_nofollow_directory,
-    ensure_nofollow_directory,
     read_nofollow_bytes,
     read_nofollow_text,
-    write_immutable_text,
 )
 from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 if TYPE_CHECKING:
-    from sigilicon.execution.step_files import StepFiles
+    from sigilicon.execution._workspace import StepWorkspace
     from sigilicon.external_tools import OwnedExecutable
 
 
@@ -1543,6 +1541,7 @@ class StepContext:
     step: Step
     run_id: str
     operation_id: str
+    run_root: Path
     work_root: Path
     output_root: Path
     source_root: Path
@@ -1576,6 +1575,7 @@ class StepContext:
         validate_artifact_id(self.run_id, "run id")
         validate_artifact_id(self.operation_id, "operation id")
         validate_artifact_id(self.plan_identity, "plan identity")
+        object.__setattr__(self, "run_root", Path(self.run_root).absolute())
         object.__setattr__(self, "work_root", Path(self.work_root).absolute())
         object.__setattr__(self, "output_root", Path(self.output_root).absolute())
         object.__setattr__(self, "source_root", Path(self.source_root).absolute())
@@ -1597,7 +1597,9 @@ class StepContext:
             raise ContractError("step dependencies must map names to StepResult values")
         if set(self.dependencies) != set(self.step.needs):
             raise ContractError("step context dependency closure disagrees with the plan")
-        run_root = self.work_root.parent.parent
+        run_root = self.run_root
+        if run_root == Path(run_root.anchor):
+            raise ContractError("step context run root cannot be a filesystem root")
         if (
             self.work_root != run_root / "work" / self.step.id
             or self.output_root != run_root / "outputs" / self.step.id
@@ -1767,9 +1769,8 @@ class StepContext:
         self._register_operation(operation)
 
     def output_path(self, role: str, filename: str) -> Path:
-        """Reserve a tool path; external tools must use held-fd output helpers."""
+        """Return a managed output path through the workflow workspace."""
 
-        role_name = _identifier(role, "output role")
         relative = PurePosixPath(filename)
         if (
             relative.is_absolute()
@@ -1778,36 +1779,39 @@ class StepContext:
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise ExecutionError(f"output filename must be canonical and relative: {filename!r}")
-        role_root = ensure_nofollow_directory(self.output_root / role_name)
-        result = role_root.joinpath(*relative.parts)
-        ensure_nofollow_directory(result.parent)
-        if not result.absolute().is_relative_to(self.output_root):
-            raise ExecutionError("output path escaped its managed step root")
-        return result
+        return self.workspace(role, {}).path("outputs", *relative.parts)
 
     def write_text(self, role: str, filename: str, value: str) -> Path:
         """Create one immutable text output without following path components."""
 
-        result = self.output_path(role, filename)
-        write_immutable_text(result, value)
-        return result
+        relative = PurePosixPath(filename)
+        self.output_path(role, filename)
+        return self.workspace(role, {}).write_text("outputs", relative.parts, value)
 
-    def files(
+    def workspace(
         self,
         output_role: str,
         source: Mapping[str, Any],
         *,
         tool_work_root: Path | None = None,
-    ) -> "StepFiles":
+    ) -> "StepWorkspace":
         """Create the file view owned by this Step."""
 
-        from sigilicon.execution.step_files import StepFiles
+        from sigilicon.execution._workspace import StepWorkspace
 
-        return StepFiles.from_context(
-            self,
-            output_role,
-            source,
-            tool_work_root=tool_work_root,
+        role = validate_artifact_component(output_role, "output role")
+        return StepWorkspace(
+            run_id=self.run_id,
+            root=self.run_root,
+            input_root=self.work_root / "inputs",
+            work_root=(
+                self.work_root / "tool"
+                if tool_work_root is None
+                else Path(tool_work_root).absolute()
+            ),
+            output_root=self.output_root / role,
+            log_root=self.work_root / "logs",
+            source=source,
         )
 
     def artifacts(self, dependency: str, role: str | None = None) -> tuple[Artifact, ...]:
@@ -1845,7 +1849,7 @@ class RunResult:
     plan_identity: str
     status: str
     outcomes: tuple[StepOutcome, ...]
-    run_root: Path
+    _run_root: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner", _identifier(self.owner, "run owner"))
@@ -1876,7 +1880,7 @@ class RunResult:
             expected_status = "failed"
         if self.status != expected_status:
             raise ContractError("run status disagrees with its step outcomes")
-        root = Path(self.run_root).absolute()
+        root = Path(self._run_root).absolute()
         if root == Path(root.anchor):
             raise ContractError("run root cannot be a filesystem root")
         for outcome in self.outcomes:
@@ -1888,7 +1892,7 @@ class RunResult:
                 raise ContractError(
                     f"step {outcome.step!r} published outside its managed output root"
                 )
-        object.__setattr__(self, "run_root", root)
+        object.__setattr__(self, "_run_root", root)
 
     @property
     def record(self) -> dict[str, Any]:
@@ -1914,7 +1918,7 @@ class RunResult:
                             "role": artifact.role,
                             "kind": artifact.kind,
                             "path": artifact.path.relative_to(
-                                self.run_root
+                                self._run_root
                             ).as_posix(),
                             "qualifiers": json_value(artifact.qualifiers),
                         }
@@ -1979,28 +1983,3 @@ class RunFailure:
             "error": {"type": self.error_type, "message": self.message},
             "provenance": json_value(self.provenance),
         }
-
-
-__all__ = [
-    "Artifact",
-    "ContractError",
-    "Evidence",
-    "ExecutionError",
-    "ExecutionPlan",
-    "ResourceBinding",
-    "ResourceFile",
-    "Step",
-    "PreflightCheck",
-    "PreflightResult",
-    "Resources",
-    "RunResult",
-    "RunFailure",
-    "Source",
-    "StepContext",
-    "StepOutcome",
-    "StepResult",
-    "json_value",
-    "adapter_identity",
-    "resource_identity",
-    "resource_materialization_key",
-]
