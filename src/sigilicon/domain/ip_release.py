@@ -14,6 +14,7 @@ from sigilicon.contracts import (
     read_toml,
     require_config_header,
 )
+from sigilicon.domain.oa_library import find_oa_assembly
 
 if TYPE_CHECKING:
     from sigilicon.project._component import ComponentContract
@@ -530,7 +531,7 @@ def _parse_ip_contract(
         )
     ]
     if oa_exports:
-        oa_assembly_path = repository.oa_assembly_for(contract_path)
+        oa_assembly_path = find_oa_assembly(repository, contract_path)
         if oa_assembly_path is None:
             raise ValueError("OA release owner must declare one OA assembly")
         oa_assembly = PurePosixPath(

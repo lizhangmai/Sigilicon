@@ -140,13 +140,10 @@ def _context(
         "2" * 32,
         "3" * 64,
         run_root,
-        work,
-        output,
-        sources,
         resources,
         {},
         source_scopes={} if scopes is None else scopes,
-        _register_operation=register_operation,
+        _register_mutation=register_operation,
     )
 
 
@@ -175,7 +172,6 @@ def _bind_plan(context: StepContext, step: Step) -> StepContext:
         context,
         step=step,
         source_scopes={source: "owner" for source in step.sources},
-        resource_root=root if sealed else None,
         resource_digests={
             resource.identity: resource.sha256
             for resource in step._resource_bindings
@@ -268,17 +264,13 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     backend = XceliumAdapter()
 
     assert all(check.status == "ready" for check in backend.preflight(step, resources))
-    result = backend.run(context, step)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert len(result.artifacts) == 4
     assert result.facts == {"passed": True}
     assert not (context.work_root / "xcelium.d").exists()
-    with pytest.raises(ExecutionError, match="disagrees"):
-        backend.run(
-            replace(context, step=step),
-            replace(step, config={}),
-        )
+    assert tuple(inspect.signature(backend.run).parameters) == ("context",)
 
 
 def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
@@ -387,7 +379,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     assert all(
         check.status == "ready" for check in backend.preflight(prepared, resources)
     )
-    result = backend.run(context, prepared)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {
@@ -554,7 +546,10 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         owner=lambda name: SimpleNamespace(root=owner_root)
         if name == "example"
         else None,
-        oa_assembly_for=lambda _root: owner_root / "configs/oa.toml",
+    )
+    monkeypatch.setattr(
+        "sigilicon.backends.cadence.find_oa_assembly",
+        lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
         "sigilicon.domain.platform.resolve_platforms",
@@ -600,7 +595,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
-    result = backend.run(context, prepared)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {"passed": True, "evidence_status": "passed"}
@@ -639,7 +634,10 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         artifact_root=project_root / "artifacts",
         workspace_root=workspace_root,
         owner=lambda _name: SimpleNamespace(root=owner_root),
-        oa_assembly_for=lambda _root: owner_root / "configs/oa.toml",
+    )
+    monkeypatch.setattr(
+        "sigilicon.backends.cadence.find_oa_assembly",
+        lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
         "sigilicon.domain.platform.resolve_platforms",
@@ -704,13 +702,13 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
-    result = backend.run(context, prepared)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert registered[0].operation_id == context.operation_id
     response["passed"] = "false"
     with pytest.raises(ExecutionError, match="boolean 'passed'"):
-        backend.run(context, prepared)
+        backend.run(context)
 
 
 def test_layout_backend_binds_mutation_and_preserves_uncertainty(
@@ -787,7 +785,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     prepared = backend.plan(project, step, context.resources)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
-    result = backend.run(context, prepared)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {"instance_count": 3}
@@ -806,7 +804,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         _oa_context(tmp_path / "uncertain", step, registered=[]),
         prepared,
     )
-    result = backend.run(second, prepared)
+    result = backend.run(second)
     assert result.status == "uncertain"
     assert result.facts["workspace_uncertainty"] == (
         "workspace cleanup could not be proven",
@@ -996,7 +994,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
     assert all(
         check.status == "ready" for check in backend.preflight(prepared, resources)
     )
-    result = backend.run(context, prepared)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {

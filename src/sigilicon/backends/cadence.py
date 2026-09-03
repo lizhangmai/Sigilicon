@@ -13,6 +13,7 @@ from typing import Any, Mapping, Protocol
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
+from sigilicon.domain.oa_library import find_oa_assembly
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution._model import (
     Artifact,
@@ -57,12 +58,6 @@ class _CadencePlanningProject(PlanningProject, Protocol):
     """Cadence planning adds an explicitly configured workspace."""
 
     workspace_root: Path
-
-
-class _OaPlanningProject(_CadencePlanningProject, Protocol):
-    """Native OA planning additionally resolves the owner's assembly."""
-
-    def oa_assembly_for(self, path: Path | str) -> Path | None: ...
 
 
 def _runtime_bindings(
@@ -702,8 +697,8 @@ class XceliumAdapter(DirectAdapter):
             _resource_bindings=_runtime_bindings(resources, _XRUN),
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         config = _strict_config(context.step, self._fields)
         source_names = self._hdl_sources(context.step)
         sources = tuple(
@@ -872,8 +867,8 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             runtime_identities=(_XRUN,),
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         from sigilicon.workflows.xcelium_ams import execute_xcelium_ams_cell
 
         config = _strict_config(step, self._fields)
@@ -968,7 +963,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: _OaPlanningProject,
+        project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -982,7 +977,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         config = _strict_config(initial, self._fields)
         owner = _text(config, "owner")
         selected_owner = project.owner(owner)
-        manifest = project.oa_assembly_for(selected_owner.root)
+        manifest = find_oa_assembly(project, selected_owner.root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
         platforms = resolve_platforms(project, resources)
@@ -1024,8 +1019,8 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             runtime_identities=(*_BRIDGE_RESOURCES, CADENCE_VIRTUOSO_TOOL),
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.oa_library import build_oa_layout_ir
         from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
@@ -1061,7 +1056,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
                     get_client(context.resources),
                     artifacts=artifacts,
                     operation_id=context.operation_id,
-                    bind_operation=context.bind_workspace_operation,
+                    bind_operation=context.register_mutation,
                     resources=context.resources,
                     record_uncertainty=uncertainty.append,
                     timeout=_positive_integer(config, "timeout_seconds"),
@@ -1160,7 +1155,7 @@ class _OaAdapter(_CadenceDomainAdapter):
 
     def plan(
         self,
-        project: _OaPlanningProject,
+        project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
     ) -> Step:
@@ -1173,7 +1168,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         initial = step
         config = self._config(initial)
         owner = _text(config, "owner")
-        manifest = project.oa_assembly_for(project.owner(owner).root)
+        manifest = find_oa_assembly(project, project.owner(owner).root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
         platforms = resolve_platforms(project, resources)
@@ -1228,8 +1223,8 @@ class _OaAdapter(_CadenceDomainAdapter):
             ),
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         from sigilicon.workflows.oa_client import get_client
         from sigilicon.workflows.oa_check import check_oa_library
         from sigilicon.workflows.oa_library import (
@@ -1272,7 +1267,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 record_incident=False,
                 operation_id=context.operation_id,
             ) as operation:
-                context.bind_workspace_operation(operation)
+                context.register_mutation(operation)
                 payload = check_oa_library(
                     planning,
                     client=client,
@@ -1288,7 +1283,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 resources=context.resources,
                 timeout=timeout,
                 operation_id=context.operation_id,
-                bind_operation=context.bind_workspace_operation,
+                bind_operation=context.register_mutation,
             )
         else:
             if selected is None:
@@ -1299,7 +1294,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 client,
                 timeout=timeout,
                 operation_id=context.operation_id,
-                bind_operation=context.bind_workspace_operation,
+                bind_operation=context.register_mutation,
             )
         passed = payload.get("passed")
         if type(passed) is not bool:
@@ -1385,8 +1380,8 @@ class LayoutAdapter(_CadenceDomainAdapter):
             runtime_identities=_BRIDGE_RESOURCES,
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
         prepared = self._prepared_domain_plan(context)
@@ -1420,7 +1415,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
                     get_client(context.resources),
                     artifacts=artifacts,
                     operation_id=context.operation_id,
-                    bind_operation=context.bind_workspace_operation,
+                    bind_operation=context.register_mutation,
                     record_uncertainty=uncertainty.append,
                     timeout=_positive_integer(config, "timeout_seconds"),
                 )
@@ -1532,8 +1527,8 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             runtime_identities=(*_BRIDGE_RESOURCES, _XSTREAM, _CALIBRE),
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
         config = _strict_config(step, self._fields)
@@ -1585,7 +1580,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
                     resources=context.resources,
                     external_sources=external_sources,
                     operation_id=context.operation_id,
-                    bind_operation=context.bind_workspace_operation,
+                    bind_operation=context.register_mutation,
                     record_uncertainty=uncertainty.append,
                     xstream_timeout=_positive_integer(
                         config, "xstream_timeout_seconds"

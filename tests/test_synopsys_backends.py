@@ -56,9 +56,6 @@ def _context(
         "2" * 32,
         "3" * 64,
         run_root,
-        roots[0],
-        roots[1],
-        roots[2],
         resources,
         {},
     )
@@ -165,7 +162,7 @@ printf 'managed vcs\n'
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context, step)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {"log"}
@@ -181,7 +178,7 @@ printf 'managed vcs\n'
     _file(missing.source_root / "rtl/design.sv")
     _file(missing.source_root / "dv/testbench.sv")
 
-    failed = backend.run(missing, step)
+    failed = backend.run(missing)
 
     assert failed.status == "failed"
     assert failed.message == "VCS runner omitted its declared success marker"
@@ -227,7 +224,7 @@ printf 'tampered\n' >>"$source_file"
     )
 
     with pytest.raises(RuntimeError, match="changed during invocation"):
-        VcsAdapter().run(_context(tmp_path, step, resources), step)
+        VcsAdapter().run(_context(tmp_path, step, resources))
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
@@ -336,13 +333,9 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         "2" * 32,
         "3" * 64,
         tmp_path / "run",
-        tmp_path / "run/work/link",
-        tmp_path / "run/outputs/link",
-        source_root,
         Resources(),
         {},
         source_scopes={name: "owner" for name in owner_sources},
-        resource_root=resource_root,
         resource_digests={
             manifest_resource: manifest_digest,
             liberty_resource: liberty_digest,
@@ -360,7 +353,7 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         lambda _context, plan: observed.append(plan) or StepResult.succeeded(),
     )
 
-    result = backend.run(context, step)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert observed[0].top == "top"
@@ -453,7 +446,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context, step)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {
@@ -577,7 +570,7 @@ raise SystemExit(1)
             ),
             context.resources,
         )
-    result = backend.run(context, step)
+    result = backend.run(context)
 
     assert result.status == "failed"
     assert {artifact.role for artifact in result.artifacts} == {
@@ -668,7 +661,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
-    result = backend.run(context, step)
+    result = backend.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {

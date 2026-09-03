@@ -484,8 +484,8 @@ class VcsAdapter(DirectAdapter):
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         config = _strict_config(context.step, self._fields)
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
@@ -560,8 +560,8 @@ class DcAdapter(DirectAdapter):
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         config = _strict_config(context.step, self._fields)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -662,8 +662,8 @@ class FcAdapter(DirectAdapter):
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         config = _strict_config(context.step, self._fields)
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
@@ -880,8 +880,8 @@ class HspiceAdapter(DirectAdapter):
             )
         return tuple(checks)
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         config = _strict_config(context.step, self._fields)
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
@@ -1356,8 +1356,8 @@ class StructuralLinkAdapter(DirectAdapter):
         )
 
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
-        context.require_step(step)
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         if not isinstance(step, _StructuralLinkStep):
             raise ExecutionError("structural-link Step has no typed plan")
         return self._execute(context, step.structural_link.runtime(context))

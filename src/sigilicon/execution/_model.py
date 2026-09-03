@@ -1542,9 +1542,6 @@ class StepContext:
     run_id: str
     operation_id: str
     run_root: Path
-    work_root: Path
-    output_root: Path
-    source_root: Path
     resources: Resources
     dependencies: Mapping[str, StepResult]
     source_scopes: Mapping[str, str] = field(
@@ -1552,7 +1549,6 @@ class StepContext:
         repr=False,
         compare=False,
     )
-    resource_root: Path | None = field(default=None, repr=False, compare=False)
     resource_digests: Mapping[str, str] = field(
         default_factory=dict,
         repr=False,
@@ -1563,8 +1559,23 @@ class StepContext:
         repr=False,
         compare=False,
     )
-    _register_operation: Callable[[Any], None] | None = field(
+    _register_mutation: Callable[[Any], None] | None = field(
         default=None,
+        repr=False,
+        compare=False,
+    )
+    _source_paths: Mapping[str, Path] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _scoped_source_paths: Mapping[tuple[str, str], Path] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _resource_paths: Mapping[str, Path] = field(
+        init=False,
         repr=False,
         compare=False,
     )
@@ -1576,15 +1587,6 @@ class StepContext:
         validate_artifact_id(self.operation_id, "operation id")
         validate_artifact_id(self.plan_identity, "plan identity")
         object.__setattr__(self, "run_root", Path(self.run_root).absolute())
-        object.__setattr__(self, "work_root", Path(self.work_root).absolute())
-        object.__setattr__(self, "output_root", Path(self.output_root).absolute())
-        object.__setattr__(self, "source_root", Path(self.source_root).absolute())
-        if self.resource_root is not None:
-            object.__setattr__(
-                self,
-                "resource_root",
-                Path(self.resource_root).absolute(),
-            )
         if not isinstance(self.source_scopes, Mapping) or any(
             name not in self.step.sources or scope not in {"owner", "project"}
             for name, scope in self.source_scopes.items()
@@ -1600,21 +1602,6 @@ class StepContext:
         run_root = self.run_root
         if run_root == Path(run_root.anchor):
             raise ContractError("step context run root cannot be a filesystem root")
-        if (
-            self.work_root != run_root / "work" / self.step.id
-            or self.output_root != run_root / "outputs" / self.step.id
-            or self.source_root != run_root / "inputs" / "sources"
-        ):
-            raise ContractError("step context roots disagree with the managed run layout")
-        expected_resource_root = run_root / "inputs" / "resources"
-        sealed_data = any(
-            kind in {"file", "directory"}
-            for kind in self.resource_kinds.values()
-        )
-        if sealed_data and self.resource_root != expected_resource_root:
-            raise ContractError(
-                "step context resource root disagrees with the managed run layout"
-            )
         if (
             not isinstance(self.resource_digests, Mapping)
             or set(self.resource_digests) != set(self.step.resources)
@@ -1654,6 +1641,55 @@ class StepContext:
             "resource_kinds",
             MappingProxyType(dict(self.resource_kinds)),
         )
+        source_paths = {
+            name: self.source_root.joinpath(*PurePosixPath(name).parts)
+            for name in self.step.sources
+        }
+        object.__setattr__(self, "_source_paths", MappingProxyType(source_paths))
+        object.__setattr__(
+            self,
+            "_scoped_source_paths",
+            MappingProxyType(
+                {
+                    (scope, name): source_paths[name]
+                    for name, scope in self.source_scopes.items()
+                }
+            ),
+        )
+        resource_root = self.resource_root
+        object.__setattr__(
+            self,
+            "_resource_paths",
+            MappingProxyType(
+                {
+                    name: resource_root / resource_materialization_key(name)
+                    for name, kind in self.resource_kinds.items()
+                    if kind in {"file", "directory"}
+                    and resource_root is not None
+                }
+            ),
+        )
+
+    @property
+    def work_root(self) -> Path:
+        return self.run_root / "work" / self.step.id
+
+    @property
+    def output_root(self) -> Path:
+        return self.run_root / "outputs" / self.step.id
+
+    @property
+    def source_root(self) -> Path:
+        return self.run_root / "inputs" / "sources"
+
+    @property
+    def resource_root(self) -> Path | None:
+        if any(
+            kind in {"file", "directory"}
+            for kind in self.resource_kinds.values()
+        ):
+            return self.run_root / "inputs" / "resources"
+        return None
 
     def source_path(self, source: str) -> Path:
         """Return a run-local tool path for trusted package adapter code."""
@@ -1668,9 +1704,9 @@ class StepContext:
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise ExecutionError(f"source path must be canonical and relative: {name!r}")
-        if name not in self.step.sources:
+        result = self._source_paths.get(name)
+        if result is None:
             raise ExecutionError(f"source is outside this step: {name!r}")
-        result = self.source_root.joinpath(*relative.parts)
         if (
             result.absolute() != result
             or result.resolve() != result
@@ -1679,12 +1715,6 @@ class StepContext:
         ):
             raise ExecutionError(f"sealed source is missing or unsafe: {name!r}")
         return result
-
-    def require_step(self, step: Step) -> None:
-        """Reject an adapter call whose planned step disagrees with this context."""
-
-        if not isinstance(step, Step) or step != self.step:
-            raise ExecutionError("adapter Step disagrees with its StepContext")
 
     def source_text(self, source: str) -> str:
         """Read a step source through the held-fd no-follow input primitive."""
@@ -1697,29 +1727,31 @@ class StepContext:
         name = resource_identity(resource)
         if self.resource_kinds.get(name) in {"tool", "value"}:
             raise ExecutionError(f"external resource is not sealed data: {name!r}")
-        if name not in self.step.resources or self.resource_root is None:
+        result = self._resource_paths.get(name)
+        if result is None:
             raise ExecutionError(f"external resource is outside this step: {name!r}")
-        result = self.resource_root / resource_materialization_key(name)
-        if (
-            result.absolute() != result
-            or result.resolve() != result
-            or result.is_symlink()
-        ):
-            raise ExecutionError(
-                f"sealed external resource is missing or unsafe: {name!r}"
-            )
+        expected_kind = self.resource_kinds[name]
         try:
-            sealed = ResourceBinding.capture(result, identity=name)
-        except (OSError, RuntimeError, ContractError) as exc:
+            metadata = result.stat(follow_symlinks=False)
+        except OSError as exc:
             raise ExecutionError(
                 f"sealed external resource is missing or unsafe: {name!r}"
             ) from exc
         if (
-            sealed.kind != self.resource_kinds[name]
-            or sealed.sha256 != self.resource_digests[name]
+            result.absolute() != result
+            or result.resolve() != result
+            or result.is_symlink()
+            or (
+                expected_kind == "file"
+                and not stat.S_ISREG(metadata.st_mode)
+            )
+            or (
+                expected_kind == "directory"
+                and not stat.S_ISDIR(metadata.st_mode)
+            )
         ):
             raise ExecutionError(
-                f"sealed external resource identity drift: {name!r}"
+                f"sealed external resource is missing or unsafe: {name!r}"
             )
         return result
 
@@ -1745,28 +1777,24 @@ class StepContext:
     def scoped_source_path(self, scope: str, source: str) -> Path:
         """Resolve one owner- or project-relative source from the sealed closure."""
 
-        matches = tuple(
-            name
-            for name in self.step.sources
-            if self.source_scopes.get(name) == scope and name == source
-        )
-        if len(matches) != 1:
+        result = self._scoped_source_paths.get((scope, source))
+        if result is None:
             raise ExecutionError(
                 f"step source {scope}:{source} is missing or ambiguous"
             )
-        return self.source_path(matches[0])
+        return self.source_path(source)
 
     def owner_source_path(self, source: str) -> Path:
         return self.scoped_source_path("owner", source)
 
-    def bind_workspace_operation(self, operation: Any) -> None:
-        """Bind one trusted OA operation to this run before it accesses tools."""
+    def register_mutation(self, operation: Any) -> None:
+        """Attach one trusted mutation journal to this managed run."""
 
-        if self._register_operation is None:
-            raise ExecutionError("step context cannot bind a workspace operation")
+        if self._register_mutation is None:
+            raise ExecutionError("step context cannot register a mutation")
         if getattr(operation, "operation_id", None) != self.operation_id:
-            raise ExecutionError("workspace operation identity disagrees with this run")
-        self._register_operation(operation)
+            raise ExecutionError("mutation identity disagrees with this run")
+        self._register_mutation(operation)
 
     def output_path(self, role: str, filename: str) -> Path:
         """Return a managed output path through the workflow workspace."""
@@ -1849,7 +1877,6 @@ class RunResult:
     plan_identity: str
     status: str
     outcomes: tuple[StepOutcome, ...]
-    _run_root: Path = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner", _identifier(self.owner, "run owner"))
@@ -1880,19 +1907,9 @@ class RunResult:
             expected_status = "failed"
         if self.status != expected_status:
             raise ContractError("run status disagrees with its step outcomes")
-        root = Path(self._run_root).absolute()
-        if root == Path(root.anchor):
-            raise ContractError("run root cannot be a filesystem root")
         for outcome in self.outcomes:
-            expected = root / "outputs" / outcome.step
-            if any(
-                not artifact.path.is_relative_to(expected)
-                for artifact in outcome.result.artifacts
-            ):
-                raise ContractError(
-                    f"step {outcome.step!r} published outside its managed output root"
-                )
-        object.__setattr__(self, "_run_root", root)
+            for artifact in outcome.result.artifacts:
+                _run_artifact_path(outcome.step, artifact.path)
 
     @property
     def record(self) -> dict[str, Any]:
@@ -1917,9 +1934,10 @@ class RunResult:
                         {
                             "role": artifact.role,
                             "kind": artifact.kind,
-                            "path": artifact.path.relative_to(
-                                self._run_root
-                            ).as_posix(),
+                            "path": _run_artifact_path(
+                                outcome.step,
+                                artifact.path,
+                            ),
                             "qualifiers": json_value(artifact.qualifiers),
                         }
                         for artifact in outcome.result.artifacts
@@ -1928,6 +1946,25 @@ class RunResult:
                 for outcome in self.outcomes
             ],
         }
+
+
+def _run_artifact_path(step: str, path: Path) -> str:
+    """Recover the canonical stored reference without retaining a run root."""
+
+    parts = Path(path).absolute().parts
+    positions = tuple(
+        index
+        for index in range(len(parts) - 2)
+        if parts[index : index + 2] == ("outputs", step)
+    )
+    if not positions:
+        raise ContractError(
+            f"step {step!r} published outside its managed output root"
+        )
+    relative = PurePosixPath(*parts[positions[-1] :])
+    if len(relative.parts) < 3:
+        raise ContractError(f"step {step!r} published no artifact filename")
+    return relative.as_posix()
 
 
 @dataclass(frozen=True)

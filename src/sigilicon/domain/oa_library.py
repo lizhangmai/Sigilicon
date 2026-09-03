@@ -65,6 +65,21 @@ _ASSEMBLY_FIELDS = {
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
+def find_oa_assembly(project: Project, path: Path | str) -> Path | None:
+    """Return the one OA assembly selected by the path's component owner."""
+
+    owner = project.require_owner(path)
+    matches = tuple(
+        source
+        for source in owner.files("oa_source")
+        if source.suffix == ".toml"
+        and read_toml(source).get("contract_kind") == "oa-assembly"
+    )
+    if len(matches) > 1:
+        raise ValueError(f"owner {owner.name!r} has multiple OA assemblies")
+    return matches[0] if matches else None
+
+
 @dataclass(frozen=True, order=True)
 class OAViewReference:
     """One exact library-local cell/view dependency."""

@@ -842,15 +842,3 @@ class Project:
         if not resolved.is_file():
             raise ValueError(f"{field} does not exist inside its owner root")
         return resolved, relative
-
-    def oa_assembly_for(self, path: Path | str) -> Path | None:
-        owner = self.require_owner(path)
-        matches = tuple(
-            source
-            for source in owner.files("oa_source")
-            if source.suffix == ".toml"
-            and read_toml(source).get("contract_kind") == "oa-assembly"
-        )
-        if len(matches) > 1:
-            raise ValueError(f"owner {owner.name!r} has multiple OA assemblies")
-        return matches[0] if matches else None

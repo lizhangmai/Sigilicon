@@ -4,6 +4,7 @@ import copy
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+import inspect
 import os
 from pathlib import Path
 import subprocess
@@ -91,7 +92,6 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
         "ExecutionPlan",
         "RunResult",
         "RunStore",
-        "StepWorkspace",
     )
     assert execution.__all__ == list(public)
     for name in public:
@@ -116,12 +116,14 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
         "StepContext",
         "StepOutcome",
         "StepResult",
+        "StepWorkspace",
         "_RunStore",
         "Resources",
     ):
         assert not hasattr(execution, removed)
     assert "_read_run" not in Project.__dict__
     assert "_clean_run" not in Project.__dict__
+    assert tuple(inspect.signature(Adapter.run).parameters) == ("self", "context")
 
 
 def test_large_chain_plan_has_linear_topology_and_cached_identity(
@@ -349,7 +351,8 @@ class CopyAdapter:
             ),
         )
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
+    def run(self, context: StepContext) -> StepResult:
+        step = context.step
         output = context.write_text(
             "source", "value.txt", str(step.config["text"])
         )
@@ -368,7 +371,7 @@ class UpperAdapter:
     def preflight(self, step, resources):
         return ()
 
-    def run(self, context: StepContext, step: Step) -> StepResult:
+    def run(self, context: StepContext) -> StepResult:
         source = context.artifacts("source", "source")[0]
         output = context.write_text(
             "result",
@@ -419,8 +422,7 @@ def test_large_chain_execution_does_not_rescan_the_global_source_set(
         def preflight(self, _step, _resources):
             return ()
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
-            context.require_step(step)
+        def run(self, context: StepContext) -> StepResult:
             return StepResult.succeeded()
 
     project = _project(tmp_path, NoopAdapter())
@@ -1129,7 +1131,7 @@ def test_adapter_defects_propagate_after_terminalizing_the_run(tmp_path: Path) -
     _write_project(tmp_path)
 
     class BrokenAdapter(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             raise RuntimeError("broken run implementation")
 
     project = _project(tmp_path, BrokenAdapter())
@@ -1170,7 +1172,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     live = tmp_path / "ip/example/configs/value.txt"
 
     class SealedSourceBackend(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             live.write_text("later\n", encoding="utf-8")
             output = context.write_text(
                 "source",
@@ -1201,7 +1203,7 @@ def test_sealed_input_mutation_is_uncertain_and_remains_readable(
     _write_project(tmp_path)
 
     class MutatingAdapter(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             sealed = context.source_path("configs/value.txt")
             sealed.chmod(0o644)
             sealed.write_text("changed during execution\n", encoding="utf-8")
@@ -1240,7 +1242,8 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
                 _resource_bindings=(resource,),
             )
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
+            step = context.step
             live.write_text("changed after sealing\n", encoding="utf-8")
             output = context.write_text(
                 "source",
@@ -1288,7 +1291,8 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
                 _resource_bindings=(resource,),
             )
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
+            step = context.step
             assert context.resource_bytes(step.resources[0]) == payload
             with pytest.raises(ExecutionError, match="not UTF-8"):
                 context.resource_text(step.resources[0])
@@ -1354,7 +1358,8 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
                 _resource_bindings=(resource,),
             )
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
+            step = context.step
             sealed = context.resource_path(step.resources[0])
             assert (sealed / "model.bin").read_bytes() == b"\x00model"
             assert (sealed / "nested/empty").is_dir()
@@ -1473,7 +1478,8 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
                 _resource_bindings=(resource,),
             )
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
+            step = context.step
             sealed = context.resource_path(step.resources[0])
             metadata = sealed.stat()
             sealed.chmod(0o600)
@@ -1579,8 +1585,15 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
     assert not marker.exists()
 
 
-def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
+def test_public_execution_models_reject_inconsistent_values() -> None:
     assert "run_root" not in RunResult.__dataclass_fields__
+    assert "_run_root" not in RunResult.__dataclass_fields__
+    assert not {
+        "work_root",
+        "output_root",
+        "source_root",
+        "resource_root",
+    } & StepContext.__dataclass_fields__.keys()
     with pytest.raises(ContractError, match="config must be a mapping"):
         Step("bad", "fake.copy", "not-config")  # type: ignore[arg-type]
     step = Step("good", "fake.copy", {"nested": {"value": [1, 2]}})
@@ -1597,7 +1610,6 @@ def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> N
             "9" * 64,
             "failed",
             (outcome,),
-            tmp_path / "artifacts/run",
         )
 
 
@@ -1608,7 +1620,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
         def preflight(self, step, resources):
             return ()
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             published = context.write_text("source", "published.txt", "published")
             context.write_text("source", "extra.txt", "extra")
             return StepResult.succeeded(
@@ -1631,7 +1643,7 @@ def test_failed_backend_cannot_leave_an_incomplete_output_inventory(
         def preflight(self, step, resources):
             return ()
 
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             context.write_text("diagnostic", "unpublished.log", "diagnostic\n")
             return StepResult.failed("tool failed")
 
@@ -1646,7 +1658,7 @@ def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Pa
     _write_project(tmp_path)
 
     class UncertainBackend(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             return StepResult.uncertain("descendant cleanup could not be proven")
 
     project = _project(tmp_path, UncertainBackend(),)
@@ -1670,7 +1682,7 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
     _write_project(tmp_path)
 
     class CleanupUnknownBackend(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             raise ProcessGroupCleanupUncertainError(
                 "descendant cleanup could not be proven"
             )
@@ -1692,7 +1704,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
     class CancelledBackend(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             return StepResult.cancelled("operator cancelled the tool")
 
     project = _project(tmp_path, CancelledBackend(),)
@@ -1713,7 +1725,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
     class RejectingBackend(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
+        def run(self, context: StepContext) -> StepResult:
             evidence = context.write_text("evidence", "failure.json", "{}\n")
             return StepResult(
                 "failed",
@@ -1757,8 +1769,8 @@ def test_running_plan_is_independent_of_later_live_source_changes(
     live = tmp_path / "ip/example/configs/value.txt"
 
     class DriftingCopyAdapter(CopyAdapter):
-        def run(self, context: StepContext, step: Step) -> StepResult:
-            result = super().run(context, step)
+        def run(self, context: StepContext) -> StepResult:
+            result = super().run(context)
             live.write_text("changed\n", encoding="utf-8")
             return result
 

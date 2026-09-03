@@ -388,7 +388,9 @@ def _run(
                 progress(step.id, "running")
             dependencies = {name: by_id[name] for name in step.needs}
             failed_dependencies = tuple(
-                name for name, result in dependencies.items() if result.status != "succeeded"
+                name
+                for name, result in dependencies.items()
+                if result.status != "succeeded"
             )
             if failed_dependencies:
                 result = StepResult(
@@ -396,7 +398,7 @@ def _run(
                     message=f"dependencies did not succeed: {', '.join(failed_dependencies)}",
                 )
             else:
-                work_root = record.directory("work", step.id)
+                record.directory("work", step.id)
                 output_root = record.directory("outputs", step.id)
                 record.add_file("outputs", output_root)
                 context = StepContext(
@@ -405,22 +407,18 @@ def _run(
                     run_id=identity,
                     operation_id=operation_id,
                     run_root=paths.root,
-                    work_root=work_root,
-                    output_root=output_root,
-                    source_root=source_root,
                     resources=execution_resources,
                     dependencies=dependencies,
                     source_scopes={
                         name: sources[name].scope for name in step.sources
                     },
-                    resource_root=resource_root,
                     resource_digests={
                         name: bindings[name].sha256 for name in step.resources
                     },
                     resource_kinds={
                         name: bindings[name].kind for name in step.resources
                     },
-                    _register_operation=(
+                    _register_mutation=(
                         lambda operation: operation.register_artifact(record)
                     ),
                 )
@@ -438,7 +436,7 @@ def _run(
                         bindings,
                     ):
                         try:
-                            result = adapter.run(context, step)
+                            result = adapter.run(context)
                             if not isinstance(result, StepResult):
                                 raise TypeError("adapter run must return StepResult")
                             for artifact in result.artifacts:
@@ -481,17 +479,19 @@ def _run(
                     "step": step.id,
                     "uses": step.uses,
                     "status": result.status,
-                        "message": result.message,
-                        "facts": json_value(result.facts),
-                        "artifacts": [
-                            {
-                                "role": artifact.role,
-                                "kind": artifact.kind,
-                                "path": artifact.path.relative_to(paths.root).as_posix(),
-                                "qualifiers": json_value(artifact.qualifiers),
-                            }
-                            for artifact in result.artifacts
-                        ],
+                    "message": result.message,
+                    "facts": json_value(result.facts),
+                    "artifacts": [
+                        {
+                            "role": artifact.role,
+                            "kind": artifact.kind,
+                            "path": artifact.path.relative_to(
+                                paths.root
+                            ).as_posix(),
+                            "qualifiers": json_value(artifact.qualifiers),
+                        }
+                        for artifact in result.artifacts
+                    ],
                 },
             )
             if progress is not None:
@@ -516,7 +516,6 @@ def _run(
             plan_identity,
             status,
             tuple(outcomes),
-            paths.root,
         )
         result_path = record.write_json(
             "outputs",

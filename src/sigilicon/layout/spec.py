@@ -17,7 +17,11 @@ from sigilicon.domain.netlist import (
     select_subckt_snapshot,
     subckt_ports,
 )
-from sigilicon.domain.oa_library import OALibrarySource, load_oa_library_source
+from sigilicon.domain.oa_library import (
+    OALibrarySource,
+    find_oa_assembly,
+    load_oa_library_source,
+)
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import (
     PlatformSnapshot,
@@ -124,7 +128,7 @@ def _owner_oa_assembly(
     if oa_source is None:
         if repository.owner_for(spec_path) is None:
             return None
-        manifest = repository.oa_assembly_for(spec_path)
+        manifest = find_oa_assembly(repository, spec_path)
         if manifest is None:
             return None
         source = load_oa_library_source(manifest, project=repository)
