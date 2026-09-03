@@ -196,7 +196,7 @@ def _publish_tree(context: StepContext, role: str, kind: str) -> tuple[Artifact,
 
 
 def _bind_source_paths(
-    project: Any,
+    project: PlanningProject,
     owner_name: str,
     step: Step,
     paths: Mapping[Path, str] | tuple[Path, ...] | frozenset[Path],
@@ -205,9 +205,7 @@ def _bind_source_paths(
 
     project_root = project.project_root.resolve()
     owner_root = project.owner(owner_name).root.resolve()
-    artifact_root = Path(
-        getattr(project, "artifact_root", project_root / "artifacts")
-    ).resolve()
+    artifact_root = project.artifact_root.resolve()
     selected: dict[Path, tuple[str, str]] = {}
     for source in paths:
         path = Path(source).absolute()
@@ -234,7 +232,7 @@ def _bind_source_paths(
 
 
 def _validate_oa_plan_sources(
-    project: Any,
+    project: PlanningProject,
     owner_name: str,
     planning: Any,
     paths: frozenset[Path],
@@ -275,16 +273,13 @@ def _require_bound_sources(
 
 
 def _external_file_records(
-    project: Any,
+    project: PlanningProject,
     source_records: Mapping[Path, str],
     extra_paths: tuple[Path, ...] = (),
     identities: Mapping[Path, str] = MappingProxyType({}),
 ) -> tuple[ResourceBinding, ...]:
     project_root = project.project_root.resolve()
-    artifact_root = getattr(project, "artifact_root", None)
-    artifact_root = (
-        None if artifact_root is None else Path(artifact_root).resolve()
-    )
+    artifact_root = project.artifact_root.resolve()
     selected: dict[str, tuple[Path, str | None]] = {}
     seen: set[Path] = set()
     entries = (
@@ -296,7 +291,7 @@ def _external_file_records(
         if path != path.resolve():
             raise ContractError(f"external resource must not traverse a symlink: {path}")
         if (
-            not (artifact_root is not None and path.is_relative_to(artifact_root))
+            not path.is_relative_to(artifact_root)
             and path.is_relative_to(project_root)
             and not include_project
         ):
@@ -304,7 +299,7 @@ def _external_file_records(
         if path in seen:
             continue
         expected = source_records.get(source)
-        if artifact_root is not None and path.is_relative_to(artifact_root):
+        if path.is_relative_to(artifact_root):
             identity = identities.get(
                 path,
                 "release:" + path.relative_to(artifact_root).as_posix(),
@@ -336,7 +331,7 @@ def _external_file_records(
 
 
 def _oa_resource_identities(
-    project: Any,
+    project: PlanningProject,
     planning: Any,
     paths: Mapping[Path, str],
     resources: Resources,
@@ -374,7 +369,7 @@ def _oa_resource_identities(
 
 
 def _captured_project_sources(
-    project: Any,
+    project: PlanningProject,
     owner_name: str,
     sources: Mapping[Path, tuple[str, str]],
 ) -> tuple[Source, ...]:

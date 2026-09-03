@@ -319,6 +319,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     _file(context.source_root / "dv/tb_ams/cell.toml")
     selected_project = SimpleNamespace(
         project_root=project,
+        artifact_root=project / "artifacts",
         owner=lambda name: SimpleNamespace(root=owner) if name == "example" else None,
     )
     planning = SimpleNamespace(
@@ -549,6 +550,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
     )
     project = SimpleNamespace(
         project_root=source_project,
+        artifact_root=source_project / "artifacts",
         owner=lambda name: SimpleNamespace(root=owner_root)
         if name == "example"
         else None,
@@ -632,6 +634,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     )
     project = SimpleNamespace(
         project_root=context.project_root,
+        artifact_root=context.project_root / "artifacts",
         owner=lambda _name: SimpleNamespace(root=context.owner_root),
         oa_assembly_for=lambda _root: context.owner_root / "configs/oa.toml",
     )
@@ -722,6 +725,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     assert context.project_root is not None and context.owner_root is not None
     project = SimpleNamespace(
         project_root=context.project_root,
+        artifact_root=context.project_root / "artifacts",
         owner=lambda _name: SimpleNamespace(root=context.owner_root),
     )
     source = context.owner_root / "design/CELL/layout.toml"
@@ -818,6 +822,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     source = context.owner_root / "design/CELL/layout.toml"
     project = SimpleNamespace(
         project_root=context.project_root,
+        artifact_root=context.project_root / "artifacts",
         owner=lambda _name: SimpleNamespace(root=context.owner_root),
     )
     planning = SimpleNamespace(
@@ -899,6 +904,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
     source = _file(owner_root / "design/CELL/layout.toml")
     project = SimpleNamespace(
         project_root=project_root,
+        artifact_root=project_root / "artifacts",
         owner=lambda _name: SimpleNamespace(root=owner_root),
     )
     layermap = _file(project_root / "configs/platform/pdk/layermap", "map\n")

@@ -778,15 +778,6 @@ class Project:
             raise ValueError(f"{field} does not exist inside its owner root")
         return resolved, relative
 
-    def owner_file(self, path: Path | str, fileset: str) -> Path | None:
-        owner = self.require_owner(path)
-        files = owner.files(fileset)
-        if len(files) > 1:
-            raise ValueError(
-                f"owner {owner.name!r} fileset {fileset!r} must select at most one file"
-            )
-        return files[0] if files else None
-
     def oa_assembly_for(self, path: Path | str) -> Path | None:
         owner = self.require_owner(path)
         matches = tuple(

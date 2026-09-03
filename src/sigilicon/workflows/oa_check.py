@@ -21,17 +21,6 @@ def _exception(error: BaseException) -> dict[str, str]:
     return {"type": type(error).__name__, "message": str(error)}
 
 
-class UnavailableBridge:
-    """Client-shaped read-only failure used when Bridge is unavailable."""
-
-    def __init__(self, error: BaseException | str) -> None:
-        self.error = str(error)
-
-    def execute_skill(self, source: str, *, timeout: int = 300) -> Any:
-        del source, timeout
-        raise RuntimeError(self.error)
-
-
 def _view_dict(value: Any) -> dict[str, Any]:
     return {
         "library": value.library,

@@ -556,32 +556,6 @@ def _validate_immutable_platform_snapshot(snapshot: PdkConfig) -> None:
         raise ValueError("platform snapshot typed mapping identity drift")
 
 
-def resolve_platform(
-    context: Project,
-    key: str,
-    *,
-    resources: PlatformResources,
-    snapshot: PdkConfig | None = None,
-) -> PdkConfig:
-    """Load a platform or validate one loader-sealed plan snapshot.
-
-    ``resources`` is the only source of host-dependent platform facts.  A
-    supplied snapshot is still checked against the explicit resources so
-    that changing an external asset root cannot silently change an operation.
-    """
-
-    if not isinstance(resources, PlatformResources):
-        raise TypeError("platform resources must provide require_directory")
-    if snapshot is None:
-        return load_platform(context, key, resources=resources)
-    return _validate_platform_snapshot(
-        context,
-        key,
-        snapshot,
-        resources=resources,
-    )
-
-
 def _validate_platform_snapshot(
     context: Project,
     key: str,

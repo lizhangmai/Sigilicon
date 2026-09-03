@@ -421,19 +421,6 @@ def resolve_component_graph(
     return snapshot
 
 
-def resolve_component_fileset(
-    graph: Mapping[str, ComponentContract], component: str, fileset: str
-) -> tuple[PurePosixPath, ...]:
-    """Resolve one named fileset through an already validated component graph."""
-
-    if component not in graph:
-        raise ValueError(f"unknown component in release contract: {component}")
-    values = graph[component].filesets.get(fileset)
-    if values is None:
-        raise ValueError(f"component {component!r} has no fileset {fileset!r}")
-    return values
-
-
 def resolve_component_source(
     graph: Mapping[str, ComponentContract], component: str, source: str
 ) -> PurePosixPath:

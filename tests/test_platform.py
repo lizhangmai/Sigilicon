@@ -18,7 +18,6 @@ from sigilicon.domain.platform import (
     load_platform_contract,
     load_platform_contract_inventory,
     load_platform_inventory,
-    resolve_platform,
     resolve_platform_snapshot,
 )
 from sigilicon.execution.model import Resources
@@ -122,9 +121,7 @@ def test_resolve_platform_rejects_typed_and_source_drift(tmp_path: Path) -> None
 
     snapshot.layout.layout_path.unlink()
     with pytest.raises(ValueError, match="source identity drift"):
-        resolve_platform(
-            project, "testpdk", resources=Resources(), snapshot=snapshot
-        )
+        resolve_platform_snapshot(project, "testpdk", snapshot=snapshot)
 
 
 def test_platform_contract_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -367,18 +364,6 @@ def test_external_platform_snapshot_ignores_ambient_and_detects_explicit_drift(
 
     monkeypatch.setenv("SIGILICON_PLATFORM_TESTPDK_ROOT", str(tmp_path / "ambient"))
     assert resolve_platform_snapshot(project, "testpdk", snapshot=snapshot) is snapshot
-
-    other = tmp_path / "installed/other"
-    other.mkdir()
-    (other / "model.scs").write_text("// other model\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="platform identity drift"):
-        resolve_platform(
-            project,
-            "testpdk",
-            resources=Resources(directories={resource: str(other)}),
-            snapshot=snapshot,
-        )
-
 
 def test_platform_asset_resources_preserve_distinct_catalog_keys(tmp_path: Path) -> None:
     write_project_context(tmp_path)
