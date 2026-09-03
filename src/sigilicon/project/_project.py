@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Mapping, cast
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.contracts import (
+    DocumentStore,
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
@@ -278,7 +279,7 @@ class Project:
             component_filesets=owner.component.filesets,
             operation=operation,
             variant=variant,
-            project_identity=self.identity,
+            project_identity=self.operation_identity(owner.name),
         )
         self.manifest_source_document()
         manifest_source = Source.capture(
@@ -341,7 +342,7 @@ class Project:
     def _require_project_plan(self, plan: ExecutionPlan, resources: Resources) -> None:
         """Require a plan produced from this exact project composition."""
 
-        if plan.project_identity != self.identity:
+        if plan.project_identity != self.operation_identity(plan.owner):
             raise ContractError("execution plan belongs to another project composition")
         if plan._authority is not self._plan_authority:
             raise ContractError("execution plan was not produced by this Project")
@@ -375,6 +376,47 @@ class Project:
 
         self.manifest_source_document()
         return self._execution_resources()
+
+    def configuration_documents(self) -> DocumentStore:
+        """Capture the complete catalog-reachable TOML closure for checking."""
+
+        expected: dict[Path, Mapping[str, Any]] = {
+            self.manifest_path: self.manifest_source_document(),
+            **{
+                owner.component.path: owner.component.document
+                for owner in self.owners
+            },
+        }
+        if self.find_catalog("ip") is not None:
+            catalog = self.ip_catalog_snapshot()
+            expected[catalog.path] = catalog.document
+        documents = DocumentStore.capture_trees(
+            self.project_root,
+            self.configuration_roots,
+            paths={
+                self.manifest_path,
+                *(path for _, path in self.catalog_paths),
+            },
+        )
+        documents.verify("Project source snapshot", expected)
+        return documents
+
+    @property
+    def configuration_roots(self) -> tuple[Path, ...]:
+        """Return the exact owner roots selected for configuration checking."""
+
+        return tuple(
+            sorted(
+                {
+                    *(owner.root for owner in self.owners),
+                    *(
+                        path.parent
+                        for role, path in self.catalog_paths
+                        if role == "platform"
+                    ),
+                }
+            )
+        )
 
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:
@@ -640,6 +682,38 @@ class Project:
                     }
                     for path in sorted(paths)
                 ],
+            }
+        )
+
+    def operation_identity(self, owner: str) -> str:
+        """Identify only the static project closure that selects one owner."""
+
+        selected = self.owner(owner)
+        paths = [selected.component.path]
+        if selected.component.operation_catalog is not None:
+            paths.append(
+                self.project_root.joinpath(
+                    *selected.component.operation_catalog.parts
+                )
+            )
+        return canonical_digest(
+            {
+                "project": _source_manifest(
+                    thaw_toml_document(self.manifest_source_document())
+                ),
+                "owner": {
+                    "name": selected.name,
+                    "root": selected.root.relative_to(self.project_root).as_posix(),
+                    "sources": [
+                        {
+                            "path": path.relative_to(self.project_root).as_posix(),
+                            "sha256": hashlib.sha256(
+                                read_nofollow_text(path).encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        for path in sorted(paths)
+                    ],
+                },
             }
         )
 

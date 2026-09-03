@@ -377,6 +377,62 @@ def test_project_plan_identity_excludes_runtime_configuration(
         without_runtime.preflight(plan)
 
 
+def test_plan_identity_excludes_unselected_owner_changes(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    foreign = tmp_path / "ip/foreign"
+    (foreign / "configs").mkdir(parents=True)
+    (foreign / "component.toml").write_text(
+        '''schema = 2
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "foreign"
+name = "foreign"
+kind = "rtl-ip"
+operation_catalog = "ip/foreign/configs/operations.toml"
+
+[sources]
+operations = "ip/foreign/configs/operations.toml"
+
+[filesets]
+operation_catalog = ["operations"]
+''',
+        encoding="utf-8",
+    )
+    operations = foreign / "configs/operations.toml"
+    operations.write_text(
+        '''schema = 3
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "foreign"
+
+[operations.check]
+uses = "fake.copy"
+filesets = ["operation_catalog"]
+''',
+        encoding="utf-8",
+    )
+    catalog = tmp_path / "catalogs/ip.toml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8")
+        + '''
+[components.foreign]
+contract = "ip/foreign/component.toml"
+root = "ip/foreign"
+''',
+        encoding="utf-8",
+    )
+
+    before_project = _project(tmp_path, CopyAdapter())
+    before = before_project.plan("example:check")
+    repository_identity = before_project.identity
+    operations.write_text(operations.read_text(encoding="utf-8") + "\n")
+    after_project = _project(tmp_path, CopyAdapter())
+    after = after_project.plan("example:check")
+
+    assert after.record == before.record
+    assert after_project.identity != repository_identity
+
+
 def test_project_runtime_configuration_replaces_sigilicon_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

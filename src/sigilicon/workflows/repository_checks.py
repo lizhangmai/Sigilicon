@@ -9,7 +9,6 @@ from typing import Any
 
 from sigilicon.project._component import load_component_graph
 from sigilicon.domain.config_contracts import (
-    RepositorySourceInventory,
     inspect_project_configuration_sources,
 )
 from sigilicon.contracts import (
@@ -145,7 +144,7 @@ def inspect_repository_designs(
 
     context = project
     root = context.project_root
-    source_inventory = RepositorySourceInventory.for_project(context)
+    source_inventory = context.configuration_documents()
     operation_catalog_inventory = {
         owner.name: context.project_root.joinpath(
             *owner.component.operation_catalog.parts

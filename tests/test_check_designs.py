@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 import tomllib
 
@@ -115,6 +116,30 @@ def test_check_designs_parses_the_project_manifest_once(
     assert manifest_reads == 1
     assert toml_reads == 1
     assert '"passed": true' in capsys.readouterr().out
+
+
+def test_check_cli_defaults_to_an_operator_sized_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert sigilicon_main(["check"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+
+    assert summary["passed"] is True
+    assert summary["configuration"]["documents"] >= 1
+    assert set(summary) == {
+        "passed",
+        "project",
+        "configuration",
+        "components",
+        "operations",
+        "releases",
+        "oa_assemblies",
+        "platforms",
+    }
 
 
 def test_project_manifest_source_document_is_frozen_and_resolved(

@@ -339,14 +339,8 @@ class PlatformCatalogSnapshot:
 _PLATFORM_INVENTORY_AUTHORITY = object()
 
 
-class PlatformInventory(Mapping[str, PdkConfig]):
-    """Validated platform set trusted only within one repository operation.
-
-    Standalone APIs accept only loader-sealed ``PdkConfig`` snapshots and
-    validate their complete source identity. Repository workflows use this
-    immutable capability after loading the catalog and every selected platform
-    once.
-    """
+class PlatformSet(Mapping[str, "ResolvedPlatform"]):
+    """One validated logical or runtime-bound platform catalog."""
 
     __slots__ = ("_catalog", "_platforms", "_project")
 
@@ -356,31 +350,36 @@ class PlatformInventory(Mapping[str, PdkConfig]):
         _authority: object,
         project: Project,
         catalog: PlatformCatalogSnapshot,
-        platforms: Mapping[str, PdkConfig],
+        platforms: Mapping[str, "ResolvedPlatform"],
     ) -> None:
         if _authority is not _PLATFORM_INVENTORY_AUTHORITY:
-            raise ValueError("platform inventory must be built by its loader")
+            raise ValueError("platform set must be built by its loader")
         if (
             catalog.project_root != project.project_root
             or catalog.path != project.catalog("platform")
         ):
-            raise ValueError("platform inventory catalog identity drift")
+            raise ValueError("platform set catalog identity drift")
         _validate_immutable_platform_catalog(catalog)
         selected = dict(platforms)
         if set(selected) != set(catalog.manifests):
-            raise ValueError("platform inventory does not cover its complete catalog")
+            raise ValueError("platform set does not cover its complete catalog")
         for key, platform in selected.items():
-            _validate_immutable_platform_snapshot(platform)
+            if isinstance(platform, PdkConfig):
+                _validate_immutable_platform_snapshot(platform)
             if (
-                not platform.runtime_bound
+                not isinstance(platform, (PdkConfig, PlatformContract))
                 or platform.key != key
                 or platform.path != catalog.manifest(key)
                 or platform.catalog_document != catalog.document
                 or not platform.source_paths
                 or platform.source_paths[0] != catalog.path
+            ):
+                raise ValueError("platform set identity drift")
+            if isinstance(platform, PdkConfig) and (
+                not platform.runtime_bound
                 or set(platform.source_documents) != set(platform.source_paths[1:])
             ):
-                raise ValueError("platform inventory identity drift")
+                raise ValueError("runtime platform identity drift")
         object.__setattr__(self, "_project", project)
         object.__setattr__(self, "_catalog", catalog)
         object.__setattr__(self, "_platforms", MappingProxyType(selected))
@@ -394,13 +393,13 @@ class PlatformInventory(Mapping[str, PdkConfig]):
         return self._catalog
 
     @property
-    def platforms(self) -> Mapping[str, PdkConfig]:
+    def platforms(self) -> Mapping[str, "ResolvedPlatform"]:
         return self._platforms
 
     def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError("platform inventory is immutable")
+        raise AttributeError("platform set is immutable")
 
-    def __getitem__(self, key: str) -> PdkConfig:
+    def __getitem__(self, key: str) -> "ResolvedPlatform":
         return self.platforms[key]
 
     def __iter__(self) -> Iterator[str]:
@@ -409,111 +408,32 @@ class PlatformInventory(Mapping[str, PdkConfig]):
     def __len__(self) -> int:
         return len(self.platforms)
 
-    def resolve_catalog(self, context: Project) -> PlatformCatalogSnapshot:
-        """Return the catalog after a cheap operation-identity check."""
-
+    def resolve(self, context: Project, key: str) -> "ResolvedPlatform":
         context.manifest_source_document()
         if (
             context is not self.project
             or self.catalog.project_root != context.project_root
             or self.catalog.path != context.catalog("platform")
         ):
-            raise ValueError("platform inventory belongs to a different operation")
-        return self.catalog
-
-    def resolve(self, context: Project, key: str) -> PdkConfig:
-        """Select one already-validated platform for this exact operation."""
-
-        self.resolve_catalog(context)
+            raise ValueError("platform set belongs to a different operation")
         try:
             platform = self.platforms[key]
         except KeyError as exc:
-            raise ValueError(f"platform inventory has no {key!r} entry") from exc
+            raise ValueError(f"platform set has no {key!r} entry") from exc
         if (
             self.catalog.manifest(key) != platform.path
             or platform.key != key
             or not platform.source_paths
             or platform.source_paths[0] != self.catalog.path
         ):
-            raise ValueError("platform inventory identity drift")
+            raise ValueError("platform set identity drift")
         return platform
-
-
-class PlatformContractInventory(Mapping[str, PlatformContract]):
-    """Complete source-only platform catalog for repository planning."""
-
-    __slots__ = ("_catalog", "_platforms", "_project")
-
-    def __init__(
-        self,
-        *,
-        _authority: object,
-        project: Project,
-        catalog: PlatformCatalogSnapshot,
-        platforms: Mapping[str, PlatformContract],
-    ) -> None:
-        if _authority is not _PLATFORM_INVENTORY_AUTHORITY:
-            raise ValueError("platform contract inventory must be built by its loader")
-        if (
-            catalog.project_root != project.project_root
-            or catalog.path != project.catalog("platform")
-        ):
-            raise ValueError("platform contract inventory catalog identity drift")
-        _validate_immutable_platform_catalog(catalog)
-        selected = dict(platforms)
-        if set(selected) != set(catalog.manifests):
-            raise ValueError("platform contract inventory is incomplete")
-        for key, contract in selected.items():
-            if (
-                not isinstance(contract, PlatformContract)
-                or contract.key != key
-                or contract.path != catalog.manifest(key)
-                or contract.catalog_document != catalog.document
-            ):
-                raise ValueError("platform contract inventory identity drift")
-        object.__setattr__(self, "_project", project)
-        object.__setattr__(self, "_catalog", catalog)
-        object.__setattr__(self, "_platforms", MappingProxyType(selected))
-
-    @property
-    def project(self) -> Project:
-        return self._project
-
-    @property
-    def catalog(self) -> PlatformCatalogSnapshot:
-        return self._catalog
-
-    @property
-    def platforms(self) -> Mapping[str, PlatformContract]:
-        return self._platforms
-
-    def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError("platform contract inventory is immutable")
-
-    def __getitem__(self, key: str) -> PlatformContract:
-        return self.platforms[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.platforms)
-
-    def __len__(self) -> int:
-        return len(self.platforms)
-
-    def resolve(self, context: Project, key: str) -> PlatformContract:
-        context.manifest_source_document()
-        if context is not self.project:
-            raise ValueError("platform contract inventory belongs to another operation")
-        try:
-            return self.platforms[key]
-        except KeyError as exc:
-            raise ValueError(f"platform contract inventory has no {key!r} entry") from exc
 
 
 PlatformSnapshot = (
     PdkConfig
-    | PlatformInventory
+    | PlatformSet
     | PlatformContract
-    | PlatformContractInventory
 )
 ResolvedPlatform = PdkConfig | PlatformContract
 ResolvedLayoutPlatform = LayoutPdkConfig | LayoutPlatformContract
@@ -601,9 +521,7 @@ def resolve_platform_snapshot(
 ) -> ResolvedPlatform:
     """Resolve a public snapshot or select an operation-trusted inventory."""
 
-    if isinstance(snapshot, PlatformInventory):
-        return snapshot.resolve(context, key)
-    if isinstance(snapshot, PlatformContractInventory):
+    if isinstance(snapshot, PlatformSet):
         return snapshot.resolve(context, key)
     if isinstance(snapshot, PlatformContract):
         if snapshot.key != key:
@@ -1360,7 +1278,7 @@ def load_platform_inventory(
     *,
     resources: PlatformResources,
     catalog: PlatformCatalogSnapshot | None = None,
-) -> PlatformInventory:
+) -> PlatformSet:
     """Load the complete project platform set once for one operation."""
 
     selected_catalog = (
@@ -1374,7 +1292,7 @@ def load_platform_inventory(
         key: load_platform(context, key, resources=resources, catalog=selected_catalog)
         for key in selected_catalog.manifests
     }
-    return PlatformInventory(
+    return PlatformSet(
         _authority=_PLATFORM_INVENTORY_AUTHORITY,
         project=context,
         catalog=selected_catalog,
@@ -1386,7 +1304,7 @@ def load_platform_contract_inventory(
     context: Project,
     *,
     catalog: PlatformCatalogSnapshot | None = None,
-) -> PlatformContractInventory:
+) -> PlatformSet:
     """Validate every project-owned platform contract without host assets."""
 
     selected_catalog = (
@@ -1398,7 +1316,7 @@ def load_platform_contract_inventory(
         key: load_platform_contract(context, key, catalog=selected_catalog)
         for key in selected_catalog.manifests
     }
-    return PlatformContractInventory(
+    return PlatformSet(
         _authority=_PLATFORM_INVENTORY_AUTHORITY,
         project=context,
         catalog=selected_catalog,

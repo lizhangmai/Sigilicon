@@ -4,9 +4,7 @@ from typing import Any, Mapping
 
 import pytest
 
-import sigilicon.domain.config_contracts as config_contracts
 from sigilicon.domain.config_contracts import (
-    RepositorySourceInventory,
     inspect_project_configuration_sources,
 )
 from sigilicon.contracts import freeze_toml_document, require_config_header
@@ -109,7 +107,7 @@ def _inspect(
     *,
     documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> dict[str, object]:
-    sources = RepositorySourceInventory.for_project(project)
+    sources = project.configuration_documents()
     catalogs = {
         owner.name: project.project_root.joinpath(
             *owner.component.operation_catalog.parts
@@ -150,9 +148,8 @@ owner = "alpha"
     assert "ip/alpha" in report["roots"]
 
 
-def test_repository_source_inventory_is_operation_bound_and_closed(
+def test_project_document_store_is_reusable_and_closed(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_selected_catalogs(tmp_path)
     seeded = (tmp_path / "ip/alpha/seeded.toml").resolve()
@@ -176,7 +173,7 @@ owner = "beta"
 ''',
     )
     context = Project.open(tmp_path)
-    inventory = RepositorySourceInventory.for_project(context)
+    inventory = context.configuration_documents()
     catalogs = {
         "example": (
             context.project_root / "ip/example/configs/operations.toml"
@@ -187,7 +184,7 @@ owner = "beta"
     )
     inventory.verify("seeded fixture", {seeded: seeded_document})
 
-    with pytest.raises(ValueError, match="disagrees with another source"):
+    with pytest.raises(ValueError, match="disagrees with captured source"):
         inventory.verify(
             "conflicting owner catalog snapshot",
             {catalogs["example"]: freeze_toml_document({"schema": 999})},
@@ -195,11 +192,11 @@ owner = "beta"
 
     assert inventory.resolve(seeded) == seeded_document
     assert inventory.resolve(fallback)["contract_kind"] == "fallback-contract"
-    with pytest.raises(AttributeError, match="immutable"):
-        inventory._documents = {}
+    with pytest.raises(AttributeError):
+        inventory.documents = {}
     with pytest.raises(ValueError, match="must be frozen"):
         inventory.verify("mutable fixture", {seeded: {"schema": 1}})
-    with pytest.raises(ValueError, match="disagrees with another source"):
+    with pytest.raises(ValueError, match="disagrees with captured source"):
         inventory.verify(
             "conflicting fixture",
             {seeded: freeze_toml_document({"schema": 2})},
@@ -215,19 +212,10 @@ path_scope = "owner"
 owner = "alpha"
 ''',
     )
-    with pytest.raises(ValueError, match="outside the captured inventory"):
+    with pytest.raises(ValueError, match="outside the captured store"):
         inventory.resolve(late)
     fallback.write_text("not valid TOML = [\n", encoding="utf-8")
 
-    reads: list[Path] = []
-    original_read_source = config_contracts.read_nofollow_text
-
-    def counted_read_source(path: Path):
-        if path.resolve() in {seeded, fallback}:
-            reads.append(path.resolve())
-        return original_read_source(path)
-
-    monkeypatch.setattr(config_contracts, "read_nofollow_text", counted_read_source)
     report = inspect_project_configuration_sources(
         context,
         operation_catalog_inventory=catalogs,
@@ -238,17 +226,14 @@ owner = "alpha"
     assert "seeded-contract" in report["contract_kinds"]
     assert "fallback-contract" in report["contract_kinds"]
     assert "late-contract" not in report["contract_kinds"]
-    assert seeded not in reads
-    assert fallback not in reads
-    with pytest.raises(ValueError, match="another operation"):
-        inspect_project_configuration_sources(
-            Project.open(tmp_path),
-            operation_catalog_inventory=catalogs,
-            sources=inventory,
-        )
+    assert inspect_project_configuration_sources(
+        Project.open(tmp_path),
+        operation_catalog_inventory=catalogs,
+        sources=inventory,
+    )["passed"] is True
 
 
-def test_repository_source_inventory_rejects_symlinked_directory(
+def test_project_document_store_rejects_symlinked_directory(
     tmp_path: Path,
 ) -> None:
     _write_selected_catalogs(tmp_path)
@@ -262,7 +247,7 @@ def test_repository_source_inventory_rejects_symlinked_directory(
     context = Project.open(tmp_path)
 
     with pytest.raises(ValueError, match="is a symlink"):
-        RepositorySourceInventory.for_project(context)
+        context.configuration_documents()
 
 
 def test_project_configuration_rejects_partial_common_header(tmp_path: Path) -> None:

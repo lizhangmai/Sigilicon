@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time
+import os
 from pathlib import Path
 import tomllib
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
+
+from sigilicon.artifacts import read_nofollow_text
 
 CONFIG_SCHEMA = 1
 _CONFIG_SCHEMAS = {
@@ -63,6 +66,125 @@ class ConfigHeader:
     contract_kind: str
     path_scope: str
     owner: str
+
+
+@dataclass(frozen=True)
+class DocumentStore:
+    """One immutable, no-follow TOML closure below a project root."""
+
+    root: Path
+    documents: Mapping[Path, Mapping[str, Any]]
+
+    def __post_init__(self) -> None:
+        root = self.root.resolve()
+        checked: dict[Path, Mapping[str, Any]] = {}
+        for path, document in self.documents.items():
+            resolved = path.resolve()
+            if (
+                path != resolved
+                or not resolved.is_relative_to(root)
+                or not is_frozen_toml_document(document)
+            ):
+                raise ValueError(f"document store source identity drift: {path}")
+            checked[resolved] = document
+        object.__setattr__(self, "root", root)
+        object.__setattr__(self, "documents", MappingProxyType(checked))
+
+    @classmethod
+    def capture(cls, root: Path, paths: Iterable[Path]) -> "DocumentStore":
+        project_root = root.resolve()
+        documents: dict[Path, Mapping[str, Any]] = {}
+        for path in sorted(set(paths)):
+            resolved = path.resolve()
+            if (
+                path != resolved
+                or not resolved.is_relative_to(project_root)
+                or path.suffix != ".toml"
+            ):
+                raise ValueError(f"configuration source is unsafe: {path}")
+            try:
+                raw = tomllib.loads(read_nofollow_text(resolved))
+            except (
+                OSError,
+                RuntimeError,
+                UnicodeError,
+                tomllib.TOMLDecodeError,
+            ) as exc:
+                raise ValueError(f"cannot read TOML {path}: {exc}") from exc
+            documents[resolved] = freeze_toml_document(raw)
+        return cls(project_root, documents)
+
+    @classmethod
+    def capture_trees(
+        cls,
+        root: Path,
+        trees: Iterable[Path],
+        *,
+        paths: Iterable[Path] = (),
+    ) -> "DocumentStore":
+        """Capture TOML files below exact non-symlink directory roots."""
+
+        selected = set(paths)
+        pending = list(trees)
+        while pending:
+            current = pending.pop()
+            if current != current.resolve() or not current.is_dir():
+                raise ValueError(
+                    f"configuration owner root is missing or unsafe: {current}"
+                )
+            try:
+                with os.scandir(current) as scanned:
+                    entries = sorted(scanned, key=lambda entry: entry.name)
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot inspect configuration owner root {current}: {exc}"
+                ) from exc
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    if entry.is_symlink():
+                        if path.suffix == ".toml" or entry.is_dir():
+                            raise ValueError(
+                                f"configuration source path is a symlink: {path}"
+                            )
+                    elif entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                    elif entry.is_file(follow_symlinks=False):
+                        if path.suffix == ".toml":
+                            selected.add(path)
+                    elif path.suffix == ".toml":
+                        raise ValueError(
+                            f"configuration source must be a regular file: {path}"
+                        )
+                except OSError as exc:
+                    raise ValueError(
+                        f"cannot inspect configuration source {path}: {exc}"
+                    ) from exc
+        return cls.capture(root, selected)
+
+    def resolve(self, path: Path) -> Mapping[str, Any]:
+        resolved = path.resolve()
+        if path != resolved:
+            raise ValueError("document store lookup must be resolved")
+        try:
+            return self.documents[resolved]
+        except KeyError as exc:
+            raise ValueError(
+                f"configuration source is outside the captured store: {path}"
+            ) from exc
+
+    def verify(
+        self,
+        label: str,
+        expected: Mapping[Path, Mapping[str, Any]],
+    ) -> None:
+        if not isinstance(label, str) or not label:
+            raise ValueError("document store label must be non-empty")
+        for path, document in expected.items():
+            if not is_frozen_toml_document(document):
+                raise ValueError(f"{label} must be frozen: {path}")
+            if self.resolve(path) != document:
+                raise ValueError(f"{label} disagrees with captured source: {path}")
 
 
 def contract_schema(contract_kind: str) -> int:
@@ -126,6 +248,7 @@ def read_toml(path: Path) -> dict[str, Any]:
 __all__ = [
     "CONFIG_SCHEMA",
     "ConfigHeader",
+    "DocumentStore",
     "PATH_SCOPES",
     "contract_schema",
     "freeze_toml_document",

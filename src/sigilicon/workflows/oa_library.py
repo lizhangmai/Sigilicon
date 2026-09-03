@@ -26,7 +26,7 @@ from sigilicon.domain.oa_library import (
     load_oa_library_source,
 )
 from sigilicon.domain.platform import (
-    PlatformInventory,
+    PlatformSet,
     PlatformSnapshot,
     ResolvedPlatform,
     load_platform,
@@ -873,7 +873,7 @@ def plan_oa_library_rebuild(
             resources=Resources(),
         )
     else:
-        if isinstance(platform_inventory, PlatformInventory):
+        if isinstance(platform_inventory, PlatformSet):
             platform_snapshot = platform_inventory
         else:
             try:
