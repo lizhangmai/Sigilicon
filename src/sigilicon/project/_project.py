@@ -25,7 +25,12 @@ from sigilicon.paths import (
     ProjectContext,
     validate_artifact_component,
 )
-from sigilicon.execution.model import ContractError, Resources, resource_identity
+from sigilicon.execution.model import (
+    ContractError,
+    Resources,
+    Source,
+    resource_identity,
+)
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
 _RUNTIME_FIELDS = frozenset(
@@ -275,12 +280,28 @@ class Project:
             variant=variant,
             project_identity=self.identity,
         )
+        manifest_source = Source.capture(
+            self.manifest_path,
+            root=self.project_root,
+            scope="project",
+        )
+        try:
+            captured_manifest = freeze_toml_document(
+                tomllib.loads(manifest_source.text)
+            )
+        except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(
+                "project manifest snapshot source document drift"
+            ) from exc
+        if captured_manifest != self.manifest_document:
+            raise ValueError("project manifest snapshot source document drift")
         return plan_execution(
             draft,
             project=self,
             adapters=self._adapters(),
             resources=self._execution_resources(),
             authority=self._plan_authority,
+            composition_sources=(manifest_source,),
         )
 
     def preflight(
@@ -335,6 +356,15 @@ class Project:
             raise ContractError("execution plan was not produced by this Project")
         owner_root = self.owner(plan.owner).root.resolve()
         project_root = self.project_root.resolve()
+        if (
+            len(plan.composition_sources) != 1
+            or plan.composition_sources[0].root != project_root
+            or plan.composition_sources[0].location != self.manifest_path
+            or plan.composition_sources[0].scope != "project"
+        ):
+            raise ContractError(
+                "execution plan composition source disagrees with this Project"
+            )
         for source in plan.sources:
             expected_root = owner_root if source.scope == "owner" else project_root
             if source.root != expected_root or not source.location.is_relative_to(
@@ -352,6 +382,7 @@ class Project:
     def resources(self) -> Resources:
         """Snapshot the project-declared runtime deployment and allowed host state."""
 
+        self.manifest_source_document()
         return self._execution_resources()
 
     @property

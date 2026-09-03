@@ -111,6 +111,7 @@ def plan_execution(
     adapters: AdapterRegistry,
     resources: Resources,
     authority: object,
+    composition_sources: tuple[Source, ...] = (),
 ) -> ExecutionPlan:
     """Resolve every step to one complete, immutable input closure."""
 
@@ -225,6 +226,7 @@ def plan_execution(
         resources=tuple(
             captured_resources[name] for name in sorted(captured_resources)
         ),
+        composition_sources=composition_sources,
         _authority=authority,
     )
 

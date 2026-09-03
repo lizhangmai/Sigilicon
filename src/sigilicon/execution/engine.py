@@ -105,9 +105,7 @@ def _preflight(
 
     checks: list[PreflightCheck] = []
     seen_sources: set[tuple[Path, str]] = set()
-    for source in (
-        *plan.sources,
-    ):
+    for source in (*plan.composition_sources, *plan.sources):
         identity = (source.root, source.path)
         if identity in seen_sources:
             continue
@@ -335,7 +333,9 @@ def _run(
         )
         record.write_json("inputs", ("preflight.json",), checked.record)
         changed_at_seal = tuple(
-            source.path for source in plan.sources if not source.current()
+            source.path
+            for source in (*plan.composition_sources, *plan.sources)
+            if not source.current()
         )
         if changed_at_seal:
             raise ExecutionError(
@@ -373,7 +373,7 @@ def _run(
             else:
                 changed = tuple(
                     source.path
-                    for source in plan.sources
+                    for source in (*plan.composition_sources, *plan.sources)
                     if not source.current()
                 )
                 if changed:

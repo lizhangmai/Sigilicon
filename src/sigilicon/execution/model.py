@@ -878,6 +878,7 @@ class ExecutionPlan:
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
     resources: tuple[ResourceBinding, ...] = field(repr=False)
+    composition_sources: tuple[Source, ...] = field(default=(), repr=False)
     _authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -897,6 +898,20 @@ class ExecutionPlan:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
             raise ContractError("execution plan sources must be Source values")
+        if not isinstance(self.composition_sources, tuple) or any(
+            not isinstance(source, Source) for source in self.composition_sources
+        ):
+            raise ContractError(
+                "execution plan composition sources must be Source values"
+            )
+        composition_closure = {
+            (source.root, source.path): source
+            for source in self.composition_sources
+        }
+        if len(composition_closure) != len(self.composition_sources):
+            raise ContractError(
+                "execution plan contains duplicate composition source identities"
+            )
         closure = {(source.root, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
@@ -927,12 +942,15 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 9,
+            "schema": 10,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
             "operation": self.operation,
             "variant": self.variant,
+            "composition_sources": [
+                source.record for source in self.composition_sources
+            ],
             "sources": [source.record for source in self.sources],
             "resources": [resource.record for resource in self.resources],
             "steps": [step.record for step in self.steps],

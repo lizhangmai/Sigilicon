@@ -322,7 +322,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 9
+    assert json.loads(json.dumps(plan.record))["schema"] == 10
     assert "resources_identity" not in plan.record
     assert [resource["identity"] for resource in plan.record["resources"]] == [
         "test.value"
@@ -397,10 +397,36 @@ def test_project_rejects_runtime_manifest_drift(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert project.resources().require_tool("test.tool") == Path("/bin/true")
+    with pytest.raises(ValueError, match="manifest snapshot source document drift"):
+        project.resources()
     with pytest.raises(ValueError, match="manifest snapshot source document drift"):
         _ = project.identity
     assert original_identity
+
+
+def test_engine_rejects_manifest_drift_after_project_plan_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import sigilicon.execution.engine as engine
+
+    _write_project(tmp_path)
+    manifest = tmp_path / "sigilicon.toml"
+    project = _project(tmp_path, CopyAdapter())
+    plan = project.plan("example:check")
+    original_run = engine._run
+
+    def drift_then_run(*args, **kwargs):
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_run", drift_then_run)
+
+    with pytest.raises(ExecutionError, match="operation preflight is blocked"):
+        project.run(plan, run_id="f" * 32)
 
 
 def test_project_freezes_inherited_environment_in_its_identity(
