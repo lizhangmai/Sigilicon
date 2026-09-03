@@ -55,7 +55,7 @@ owner = "consumer"
 [filesets.synthesis]
 top_module = "consumer_top"
 [filesets.synthesis.dependency_roles]
-cim-compute-v2 = ["raw_macro_liberty_or_db"]
+macro-provider = ["raw_macro_liberty_or_db"]
 [integration]
 variant = "no-recovery"
 ''',
@@ -63,7 +63,7 @@ variant = "no-recovery"
     rtl = (_write(owner / "rtl/top.sv", "module consumer_top; endmodule\n"),)
     release = (
         tmp_path
-        / "artifacts/exports/cim-compute-v2/package/development-0123456789ab"
+        / "artifacts/exports/macro-provider/package/development-0123456789ab"
     )
     liberty = _write(
         release / "exports/native/synthesis/native.lib",
@@ -74,13 +74,13 @@ variant = "no-recovery"
         '''schema = 1
 contract_kind = "ip-interface"
 path_scope = "owner"
-owner = "cim-compute-v2"
+owner = "macro-provider"
 
 [physical]
 library = "native_macro"
 cell = "NATIVE_TOP"
 port_count = 1
-canonical_port_contract = "ip/cim_compute_v2/configs/ports.toml"
+canonical_port_contract = "ip/macro_provider/configs/ports.toml"
 
 [behavior]
 result = "native response"
@@ -104,25 +104,25 @@ A = "input"
     )
     views = [
         {
-            "export": "mx-block-v2",
+            "export": "macro-top",
             "role": "interface_contract",
             "path": "exports/native/interface.toml",
-            "source": "ip/cim_compute_v2/configs/interface.toml",
+            "source": "ip/macro_provider/configs/interface.toml",
             "format": "toml",
             "size": interface.stat().st_size,
             "sha256": hashlib.sha256(interface.read_bytes()).hexdigest(),
         },
         {
-            "export": "mx-block-v2",
+            "export": "macro-top",
             "role": "oa_port_contract",
             "path": "exports/native/ports.toml",
-            "source": "ip/cim_compute_v2/configs/ports.toml",
+            "source": "ip/macro_provider/configs/ports.toml",
             "format": "toml",
             "size": ports.stat().st_size,
             "sha256": hashlib.sha256(ports.read_bytes()).hexdigest(),
         },
         {
-            "export": "mx-block-v2",
+            "export": "macro-top",
             "role": "circuit_netlist",
             "path": "exports/native/circuit.scs",
             "format": "spectre-source",
@@ -133,7 +133,7 @@ A = "input"
             "sha256": hashlib.sha256(circuit.read_bytes()).hexdigest(),
         },
         {
-            "export": "mx-block-v2",
+            "export": "macro-top",
             "role": "raw_macro_liberty_or_db",
             "path": "exports/native/synthesis/native.lib",
             "format": "liberty",
@@ -151,11 +151,11 @@ A = "input"
                 "release_kind": "source-package",
                 "release_id": "development-0123456789ab",
                 "source_commit": "0" * 40,
-                "ip_name": "cim-compute-v2",
-                "owner": "cim-compute-v2",
+                "ip_name": "macro-provider",
+                "owner": "macro-provider",
                 "exports": [
                     {
-                        "name": "mx-block-v2",
+                        "name": "macro-top",
                         "oa": {
                             "library": "native_macro",
                             "cell": "NATIVE_TOP",
@@ -164,7 +164,7 @@ A = "input"
                         },
                         "interface": {
                             "kind": "oa-native",
-                            "contract": "ip/cim_compute_v2/configs/interface.toml",
+                            "contract": "ip/macro_provider/configs/interface.toml",
                         },
                         "maturity": {"required_roles": [
                             "interface_contract",
@@ -197,7 +197,7 @@ contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "consumer"
 [[dependency]]
-name = "cim-compute-v2"
+name = "macro-provider"
 release_id = "development-0123456789ab"
 store = "fixture"
 object = "{object_id}"
@@ -213,7 +213,7 @@ maturity = "development"
         liberty.write_bytes(payload)
     plan = plan_structural_link(
         owner="consumer",
-        dependency="cim-compute-v2",
+        dependency="macro-provider",
         dependency_lock_path=lock,
         variant_path=variant,
         variant="no-recovery",
@@ -226,7 +226,7 @@ maturity = "development"
         expected_macro_instances=1,
         expected_unresolved_references=0,
         library_compiler_version=_COMPAT_LC_VERSION,
-        release_export="mx-block-v2",
+        release_export="macro-top",
         liberty_role="raw_macro_liberty_or_db",
         artifact_root=tmp_path / "artifacts",
     )

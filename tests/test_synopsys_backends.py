@@ -393,7 +393,7 @@ set -euo pipefail
 mkdir -p "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified"
 printf '{}\n' >"$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/statistics.json"
 ln -s statistics.json "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/latest.json"
-"$SIGILICON_PYTHON" "$SIGILICON_COMPARATOR_QUALIFICATION_EVALUATOR"
+"$SIGILICON_PYTHON" "$SIGILICON_FIXTURE_QUALIFICATION_EVALUATOR"
 """,
         executable=True,
     )
@@ -401,7 +401,7 @@ ln -s statistics.json "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/lates
         sources / "tools/evaluate.py",
         """import os
 from pathlib import Path
-Path(os.environ["SIGILICON_COMPARATOR_QUALIFICATION_OUTPUT"]).write_text(
+Path(os.environ["SIGILICON_FIXTURE_QUALIFICATION_OUTPUT"]).write_text(
     '{"passed":false}\\n', encoding="utf-8"
 )
 raise SystemExit(1)
@@ -430,16 +430,16 @@ raise SystemExit(1)
             "corner": "tt",
             "model_section": "TT",
             "timeout_seconds": 10,
-            "environment_prefix": "COMPARATOR_",
-            "environment": {"COMPARATOR_MISMATCH_SAMPLES": 2},
+            "environment_prefix": "FIXTURE_",
+            "environment": {"FIXTURE_MISMATCH_SAMPLES": 2},
             "requires_mismatch": True,
             "requires_python": True,
             "source_environment": {
-                "SIGILICON_COMPARATOR_QUALIFICATION_EVALUATOR": "tools/evaluate.py",
-                "SIGILICON_COMPARATOR_QUALIFICATION_SPEC": "configs/qualification.toml",
+                "SIGILICON_FIXTURE_QUALIFICATION_EVALUATOR": "tools/evaluate.py",
+                "SIGILICON_FIXTURE_QUALIFICATION_SPEC": "configs/qualification.toml",
             },
             "output_environment": {
-                "SIGILICON_COMPARATOR_QUALIFICATION_OUTPUT": "qualification.json",
+                "SIGILICON_FIXTURE_QUALIFICATION_OUTPUT": "qualification.json",
             },
             "collect": {
                 "campaign-summary": "common_mode_qualified/statistics.json",

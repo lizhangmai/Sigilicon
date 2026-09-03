@@ -911,7 +911,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
             view="layout",
             generator="fixture",
             stage="routed",
-            pdk=SimpleNamespace(key="tsmc28"),
+            pdk=SimpleNamespace(key="fixture-pdk"),
             layout_pdk=SimpleNamespace(
                 layermap=layermap,
                 drc_deck=drc_deck,
