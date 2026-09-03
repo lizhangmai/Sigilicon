@@ -9,6 +9,7 @@ import pytest
 from sigilicon.project import Project
 import sigilicon.project._project as repository_module
 from sigilicon.external_tools import ProcessResult
+from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.workflows.xcelium import (
     execute_xcelium_cell,
@@ -176,7 +177,7 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
     result = execute_xcelium_cell(
         plan,
         artifacts=artifacts,
-        xrun=xrun,
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
         timeout=17,
         process=SimpleNamespace(run=capture),
     )
@@ -209,7 +210,7 @@ def test_xcelium_execution_reports_absent_success_marker(
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
         artifacts=_run_artifacts(tmp_path),
-        xrun=xrun,
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
 
@@ -239,7 +240,7 @@ def test_xcelium_execution_accepts_success_marker_from_native_log(
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
         artifacts=_run_artifacts(tmp_path),
-        xrun=xrun,
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
 

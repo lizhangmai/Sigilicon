@@ -17,7 +17,6 @@ from sigilicon.external_tools import (
     cadence_ic_env,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_input_file,
     owned_output_file,
     owned_process_fd_path,
@@ -517,7 +516,7 @@ def _import_netlist(
         return "\n".join(rows).encode("utf-8")
 
     with (
-        owned_executable(executable) as owned_launcher,
+        resources.owned_tool(CADENCE_SPICEIN_TOOL) as owned_launcher,
         owned_directory(run_dir, create_missing=True) as owned_run_dir,
         owned_output_file(owned_run_dir, "spiceIn.il") as owned_parameter,
         owned_output_file(owned_run_dir, "cds.lib") as owned_staged_cds,

@@ -23,7 +23,6 @@ from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_input_file,
     spectre_env,
 )
@@ -68,22 +67,6 @@ class MeasurementContractFailure(RuntimeError):
         self.result = result
 
 
-def find_spectre(
-    explicit: Path,
-) -> Path:
-    """Validate a configured Cadence launcher without resolving its symlink.
-
-    Cadence's public ``spectre`` launcher may be a symlink whose resolved
-    target expects its original bin-directory layout.  Returning the absolute
-    launcher path rather than ``Path.resolve()`` preserves that contract.
-    """
-
-    absolute = Path(os.path.abspath(explicit))
-    if absolute.is_file() and os.access(absolute, os.X_OK):
-        return absolute
-    raise FileNotFoundError(f"spectre does not exist or is not executable: {explicit}")
-
-
 def run_spectre_deck(
     record: StepFiles,
     *,
@@ -91,8 +74,7 @@ def run_spectre_deck(
     inputs: Mapping[str, Path],
     output_names: Sequence[str],
     timeout: int,
-    spectre: Path,
-    environment: Mapping[str, str],
+    resources: Resources,
     process: ProcessPort = managed_process,
 ) -> SpectreExecution:
     """Render, execute, and prove one direct Spectre deck.
@@ -138,17 +120,17 @@ def run_spectre_deck(
         render_deck(canonical_paths),
     )
     canonical_deck.chmod(0o444)
-    executable = find_spectre(spectre)
+    executable = resources.require_tool("cadence.spectre")
     work_dir = record.directory("work")
     completed = None
     invocation_deck: Path | None = None
     with (
-        owned_executable(executable) as owned_spectre,
+        resources.owned_tool("cadence.spectre") as owned_spectre,
         owned_directory(work_dir) as owned_work,
-        ExitStack() as resources,
+        ExitStack() as inputs_stack,
     ):
         owned_inputs = {
-            key: resources.enter_context(owned_input_file(path))
+            key: inputs_stack.enter_context(owned_input_file(path))
             for key, path in inputs.items()
         }
         tool_paths = {
@@ -160,7 +142,7 @@ def run_spectre_deck(
             render_deck(tool_paths),
         )
         invocation_deck.chmod(0o444)
-        owned_deck = resources.enter_context(owned_input_file(invocation_deck))
+        owned_deck = inputs_stack.enter_context(owned_input_file(invocation_deck))
         command = (
             *owned_spectre.command,
             "-64",
@@ -207,7 +189,7 @@ def run_spectre_deck(
             argv=tuple(command),
             executable=owned_spectre.executable,
             cwd=Path(owned_work.child_path),
-            environment=spectre_env(executable, environment),
+            environment=spectre_env(executable, resources.environment),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=pass_fds,
@@ -308,8 +290,7 @@ def run_spectre_measurement(
         inputs=staged,
         output_names=(output_name,),
         timeout=timeout,
-        spectre=resources.require_tool("cadence.spectre"),
-        environment=resources.environment,
+        resources=resources,
         process=process,
     )
     raw = artifacts.copy_file(

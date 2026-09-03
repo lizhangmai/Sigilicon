@@ -16,7 +16,6 @@ from sigilicon.external_tools import (
     cadence_ic_env,
     owned_atomic_output_file,
     owned_directory,
-    owned_executable,
     owned_input_file,
     owned_output_file,
     owned_sealed_input,
@@ -278,7 +277,7 @@ def run_isolated_maestro(
     executable = _virtuoso_executable(resources)
     simulation_root = absolute_work / "simulation"
     with (
-        owned_executable(executable) as owned_launcher,
+        resources.owned_tool(CADENCE_VIRTUOSO_TOOL) as owned_launcher,
         owned_input_file(cds_lib) as owned_cds_lib,
         owned_directory(operation.root) as owned_workspace,
         owned_directory(absolute_work) as owned_work,

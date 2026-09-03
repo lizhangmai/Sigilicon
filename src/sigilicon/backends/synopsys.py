@@ -47,7 +47,6 @@ from sigilicon.external_tools import (
     ProcessResult,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_input_file,
     owned_output_file,
     owned_scratch_directory,
@@ -317,7 +316,12 @@ def _run_script(
             value = environment.get(name)
             if not value:
                 raise ExecutionError(f"runtime environment omitted {name}")
-            owned = stack.enter_context(owned_executable(Path(value)))
+            identity = context.step.runtime.tools.get(name)
+            if identity is None:
+                raise ExecutionError(
+                    f"runtime executable {name} is outside the Step tool bindings"
+                )
+            owned = stack.enter_context(context.resources.owned_tool(identity))
             executable_by_name[name] = owned
             executables.append(owned)
         runner_shell = executable_by_name.get(_RUNNER_SHELL)
@@ -1091,10 +1095,12 @@ class StructuralLinkAdapter(DirectAdapter):
         config = self._config(context.step)
         runtime = _runtime_environment(context.resources, context.step)
         try:
-            library_compiler = Path(
-                runtime.values["SIGILICON_SYNOPSYS_LIBRARY_COMPILER"]
-            )
-            design_compiler = Path(runtime.values["SIGILICON_SYNOPSYS_DC_SHELL"])
+            library_compiler = context.step.runtime.tools[
+                "SIGILICON_SYNOPSYS_LIBRARY_COMPILER"
+            ]
+            design_compiler = context.step.runtime.tools[
+                "SIGILICON_SYNOPSYS_DC_SHELL"
+            ]
         except KeyError as exc:
             raise ContractError(
                 "structural-link runtime profile must bind both compiler roles"
@@ -1112,6 +1118,7 @@ class StructuralLinkAdapter(DirectAdapter):
             result = execute_structural_link(
                 planning,
                 artifacts=artifacts,
+                resources=context.resources,
                 library_compiler=library_compiler,
                 design_compiler=design_compiler,
                 environment=runtime.values,

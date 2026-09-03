@@ -9,6 +9,7 @@ import pytest
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.workflows import layout_verification
 from sigilicon.execution.step_files import StepFiles
+from sigilicon.execution.model import Resources
 
 
 def _drc_summary(*, violation_count: int = 0) -> str:
@@ -118,8 +119,7 @@ def test_xstream_artifacts_preserve_separate_output_streams(
         artifacts,
         spec,
         layermap_source="M1 drawing 1 0\n",
-        executable=tmp_path / "strmout",
-        environment={},
+        resources=Resources(tools={"cadence.xstream": "/bin/true"}),
         timeout=5,
     )
 
@@ -247,9 +247,7 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
         client,
         check="drc",
         artifacts=artifacts,
-        xstream=tmp_path / "strmout",
-        calibre=tmp_path / "calibre",
-        environment={},
+        resources=Resources(),
         external_sources={
             layermap.resolve(): "bound layermap\n",
             drc_deck.resolve(): "bound drc deck\n",

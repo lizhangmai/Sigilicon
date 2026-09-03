@@ -448,7 +448,7 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
             resources=Resources(),
         ),
         artifacts=_run_artifacts(tmp_path),
-        xrun=xrun,
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
 
@@ -486,7 +486,7 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
             resources=Resources(),
         ),
         artifacts=_run_artifacts(tmp_path),
-        xrun=xrun,
+        resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
 

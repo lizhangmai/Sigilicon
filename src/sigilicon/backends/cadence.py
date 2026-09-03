@@ -34,7 +34,6 @@ from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
     xrun_env,
@@ -671,7 +670,7 @@ class XceliumAdapter(DirectAdapter):
         timeout = _positive_integer(config, "timeout_seconds")
         marker = _text(config, "success_marker")
         with (
-            owned_executable(executable) as owned_launcher,
+            context.resources.owned_tool(_XRUN) as owned_launcher,
             owned_directory(context.work_root) as work,
             owned_scratch_directory(
                 prefix=f"sigilicon-xcelium-{context.run_id}-"
@@ -847,9 +846,6 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
         owner = _text(config, "owner")
         prepared = self._prepared_domain_plan(context)
         planning = prepared.plan
-        xrun = _configured_executable(context.resources, _XRUN)
-        if xrun is None:
-            raise ExecutionError("configured Xcelium executable is unavailable")
         with owned_scratch_directory(
             prefix=f"sigilicon-xcelium-ams-{context.run_id}-",
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
@@ -868,7 +864,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             result = execute_xcelium_ams_cell(
                 planning,
                 artifacts=artifacts,
-                xrun=xrun,
+                resources=context.resources,
                 source_paths=bound_sources,
                 environment_values=context.resources.environment,
                 timeout=_positive_integer(config, "timeout_seconds"),
@@ -1566,12 +1562,6 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
-        xstream = _configured_executable(context.resources, _XSTREAM)
-        calibre = _configured_executable(context.resources, _CALIBRE)
-        if xstream is None or calibre is None:
-            raise ExecutionError(
-                "configured XStream and Calibre executables are required"
-            )
         uncertainty: list[str] = []
         try:
             with owned_scratch_directory(
@@ -1593,9 +1583,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
                     get_client(context.resources),
                     check=_text(config, "check"),
                     artifacts=artifacts,
-                    xstream=xstream,
-                    calibre=calibre,
-                    environment=context.resources.environment,
+                    resources=context.resources,
                     external_sources=external_sources,
                     operation_id=context.operation_id,
                     bind_operation=context.bind_workspace_operation,

@@ -428,6 +428,7 @@ class OwnedExecutable:
     """Held executable target and any exact shebang interpreter."""
 
     command: tuple[str, ...]
+    path: Path
     target: OwnedFileDescriptor
     interpreter: OwnedFileDescriptor | None = None
     executable: str | None = None
@@ -827,6 +828,7 @@ def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
         if not header.startswith(b"#!"):
             held = OwnedExecutable(
                 (str(absolute),),
+                absolute,
                 target,
                 executable=target.child_path,
             )
@@ -867,6 +869,7 @@ def owned_executable(path: Path) -> Iterator[OwnedExecutable]:
                 )
             held = OwnedExecutable(
                 command,
+                absolute,
                 target,
                 interpreter,
             )

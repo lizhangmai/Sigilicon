@@ -15,14 +15,12 @@ from sigilicon.domain.verification_cell import VerificationCellSpec, load_verifi
 from sigilicon.external_tools import (
     ProcessPort,
     ProcessRequest,
-    find_xrun,
     managed_process,
     owned_directory,
-    owned_executable,
     xrun_env,
 )
 from sigilicon.execution.step_files import StepFiles
-from sigilicon.execution.model import json_value
+from sigilicon.execution.model import Resources, json_value
 
 
 _HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
@@ -195,7 +193,7 @@ def execute_xcelium_cell(
     plan: XceliumCellPlan,
     *,
     artifacts: StepFiles,
-    xrun: Path,
+    resources: Resources,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
@@ -221,7 +219,7 @@ def execute_xcelium_cell(
         validate_inputs=lambda: _require_xcelium_sources(plan),
         before_spawn=before_spawn,
         environment_values=environment_values,
-        xrun=xrun,
+        resources=resources,
         timeout=timeout,
         process=process,
     )
@@ -243,7 +241,7 @@ def _execute_xcelium(
     prepare_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
     summary_fields: Mapping[str, object] | None = None,
-    xrun: Path,
+    resources: Resources,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
@@ -254,7 +252,7 @@ def _execute_xcelium(
     selected_environment = (
         {} if environment_values is None else dict(environment_values)
     )
-    xrun_bin = find_xrun(xrun)
+    xrun_bin = resources.require_tool("cadence.xrun")
     if prepare_inputs is not None:
         prepare_inputs()
     artifacts.write_json(
@@ -265,7 +263,7 @@ def _execute_xcelium(
     work_dir = artifacts.directory("work")
     xcelium_dir = artifacts.directory("work", "xcelium.d")
     with (
-        owned_executable(xrun_bin) as owned_xrun,
+        resources.owned_tool("cadence.xrun") as owned_xrun,
         owned_directory(work_dir) as owned_work,
         owned_directory(xcelium_dir) as owned_xcelium,
     ):

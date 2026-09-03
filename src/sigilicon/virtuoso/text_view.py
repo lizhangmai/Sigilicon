@@ -17,7 +17,6 @@ from sigilicon.external_tools import (
     cadence_ic_env,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_output_file,
     owned_sealed_input,
 )
@@ -192,7 +191,7 @@ def import_oa_text_view(
         )
     library_path = operation.require_project_library_target(client, library)
     with (
-        owned_executable(executable) as owned_launcher,
+        resources.owned_tool(CADENCE_TEXT_IMPORT_TOOL) as owned_launcher,
         owned_sealed_input(
             snapshot.text.encode("utf-8"),
             name=snapshot.source_path.name,

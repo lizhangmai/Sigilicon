@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.external_tools import ProcessResult
+from sigilicon.execution.model import Resources
 from sigilicon.virtuoso.xstream import (
     XStreamExportError,
     XStreamExportRequest,
@@ -26,7 +27,6 @@ def _request(tmp_path: Path) -> XStreamExportRequest:
     cds_lib = tmp_path / "cds.lib"
     cds_lib.write_text("DEFINE scratch ./scratch\n", encoding="utf-8")
     return XStreamExportRequest(
-        executable=executable,
         library="scratch",
         cell="neutral",
         view="layout",
@@ -164,11 +164,19 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
             stderr="",
         )
 
-    result = run_xstream_export(
-        request,
+    resources = Resources(
+        tools={
+            "cadence.xstream": str(tmp_path / "cadence/tools/bin/strmout")
+        },
         environment={"PATH": "/snapshot/bin", "CDS_LIC_FILE": "snapshot"},
-        process=SimpleNamespace(run=runner),
     )
+    with resources.owned_tool("cadence.xstream") as launcher:
+        result = run_xstream_export(
+            request,
+            launcher=launcher,
+            environment=resources.environment,
+            process=SimpleNamespace(run=runner),
+        )
 
     assert result.exit_code == 0
     assert result.gds_path.read_bytes() == canonicalize_xstream_gdsii(
@@ -196,10 +204,10 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
     wrapper.parent.mkdir(parents=True)
     wrapper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     wrapper.chmod(0o755)
-    request.executable.unlink()
-    request.executable.symlink_to(wrapper)
+    launcher = tmp_path / "cadence/tools/bin/strmout"
+    launcher.unlink()
+    launcher.symlink_to(wrapper)
     request = XStreamExportRequest(
-        executable=request.executable,
         library=request.library,
         cell=request.cell,
         view=request.view,
@@ -220,10 +228,17 @@ def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
             stderr="",
         )
 
-    run_xstream_export(request, process=SimpleNamespace(run=runner))
+    resources = Resources(tools={"cadence.xstream": str(launcher)})
+    with resources.owned_tool("cadence.xstream") as owned:
+        run_xstream_export(
+            request,
+            launcher=owned,
+            environment=resources.environment,
+            process=SimpleNamespace(run=runner),
+        )
 
-    assert request.executable.is_symlink()
-    assert str(request.executable) in tuple(observed["command"])
+    assert launcher.is_symlink()
+    assert str(launcher) in tuple(observed["command"])
 
 
 @pytest.mark.parametrize(
@@ -273,7 +288,20 @@ def test_xstream_export_separates_failed_or_unproven_outputs(
         )
 
     with pytest.raises(XStreamExportError, match=expected) as error:
-        run_xstream_export(request, process=SimpleNamespace(run=runner))
+        resources = Resources(
+            tools={
+                "cadence.xstream": str(
+                    tmp_path / "cadence/tools/bin/strmout"
+                )
+            }
+        )
+        with resources.owned_tool("cadence.xstream") as launcher:
+            run_xstream_export(
+                request,
+                launcher=launcher,
+                environment=resources.environment,
+                process=SimpleNamespace(run=runner),
+            )
 
     assert error.value.executed
     assert error.value.exit_code == (9 if failure == "nonzero" else 0)

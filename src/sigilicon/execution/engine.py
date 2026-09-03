@@ -209,14 +209,16 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
     """Materialize host resources without persisting their original locations."""
 
     materialized = tuple(
-        resource for resource in plan.resources if resource.kind != "value"
+        resource
+        for resource in plan.resources
+        if resource.kind in {"file", "directory"}
     )
     if not materialized:
         return None
     root = record.directory("inputs", "resources")
     for resource in materialized:
         components = ("resources", resource.materialization_key)
-        if resource.kind in {"tool", "file"}:
+        if resource.kind == "file":
             item = resource.files[0]
             path = record.write_bytes("inputs", components, item.data)
             path.chmod(0o555 if item.executable else 0o444)

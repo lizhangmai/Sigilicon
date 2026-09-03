@@ -28,9 +28,9 @@ from sigilicon.external_tools import (
     cadence_subprocess_env,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_input_file,
 )
+from sigilicon.execution.model import Resources
 from sigilicon.layout.ir import LayoutPlan
 from sigilicon.layout.spec import LayoutSpec
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
@@ -421,8 +421,7 @@ def _run_xstream(
     spec: LayoutSpec,
     *,
     layermap_source: str,
-    executable: Path,
-    environment: Mapping[str, str],
+    resources: Resources,
     timeout: int,
 ) -> Path:
     layermap = record.write_text("inputs", ("layermap",), layermap_source)
@@ -431,22 +430,23 @@ def _run_xstream(
         raise RuntimeError(f"workspace cds.lib is unavailable: {cds_lib}")
     work = record.directory("work")
     try:
-        exported = run_xstream_export(
-            XStreamExportRequest(
-                executable=executable,
-                library=spec.library,
-                cell=spec.cell,
-                view=spec.view,
-                technology_library=spec.pdk.oa.technology_library,
-                layer_map=layermap,
-                cds_lib=cds_lib,
-                work_root=work,
-                timeout_seconds=timeout,
-                flatten_pcells=spec.layout_pdk.xstream_flatten_pcells,
-                suppressed_warnings=spec.layout_pdk.xstream_suppressed_warnings,
-            ),
-            environment=environment,
-        )
+        with resources.owned_tool("cadence.xstream") as launcher:
+            exported = run_xstream_export(
+                XStreamExportRequest(
+                    library=spec.library,
+                    cell=spec.cell,
+                    view=spec.view,
+                    technology_library=spec.pdk.oa.technology_library,
+                    layer_map=layermap,
+                    cds_lib=cds_lib,
+                    work_root=work,
+                    timeout_seconds=timeout,
+                    flatten_pcells=spec.layout_pdk.xstream_flatten_pcells,
+                    suppressed_warnings=spec.layout_pdk.xstream_suppressed_warnings,
+                ),
+                launcher=launcher,
+                environment=resources.environment,
+            )
     except XStreamExportError as exc:
         for name in ("strmout.log", "strmout.sum"):
             candidate = work / name
@@ -471,8 +471,7 @@ def _run_calibre(
     *,
     check: str,
     deck_source: str,
-    executable: Path,
-    environment: Mapping[str, str],
+    resources: Resources,
     gds: Path,
     timeout: int,
 ) -> PhysicalVerificationEvidence:
@@ -509,8 +508,9 @@ def _run_calibre(
     )
     record.write_text("inputs", (f"run.{check}",), canonical_deck)
 
+    executable = resources.require_tool("mentor.calibre")
     with (
-        owned_executable(executable) as owned_launcher,
+        resources.owned_tool("mentor.calibre") as owned_launcher,
         owned_directory(work) as owned_work,
         ExitStack() as resources,
     ):
@@ -579,7 +579,7 @@ def _run_calibre(
             argv=tuple(command),
             executable=owned_launcher.executable,
             cwd=work,
-            environment=calibre_environment(executable, environment),
+            environment=calibre_environment(executable, resources.environment),
             timeout_seconds=timeout,
             before_spawn=validate_spawn,
             pass_fds=tuple(dict.fromkeys(descriptors)),
@@ -657,9 +657,7 @@ def run_layout_verification(
     *,
     check: str,
     artifacts: StepFiles,
-    xstream: Path,
-    calibre: Path,
-    environment: Mapping[str, str],
+    resources: Resources,
     external_sources: Mapping[Path, str],
     operation_id: str,
     bind_operation: Callable[[Any], None],
@@ -725,8 +723,7 @@ def run_layout_verification(
                     artifacts,
                     spec,
                     layermap_source=layermap_source,
-                    executable=xstream,
-                    environment=environment,
+                    resources=resources,
                     timeout=xstream_timeout,
                 )
                 evidence = _run_calibre(
@@ -735,8 +732,7 @@ def run_layout_verification(
                     plan,
                     check=check,
                     deck_source=deck_source,
-                    executable=calibre,
-                    environment=environment,
+                    resources=resources,
                     gds=gds,
                     timeout=calibre_timeout,
                 )

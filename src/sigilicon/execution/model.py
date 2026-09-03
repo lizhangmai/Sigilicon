@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 import hashlib
 import math
 import os
@@ -10,7 +11,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 
 from sigilicon.artifacts import (
     _open_nofollow_directory,
@@ -24,6 +25,7 @@ from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 if TYPE_CHECKING:
     from sigilicon.execution.step_files import StepFiles
+    from sigilicon.external_tools import OwnedExecutable
 
 
 _ADAPTER = re.compile(r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\Z")
@@ -682,6 +684,41 @@ class ResourceBinding:
         except (OSError, RuntimeError, ContractError):
             return False
 
+    def matches_owned_tool(self, owned: OwnedExecutable) -> bool:
+        """Match a held executable to this exact planned tool binding."""
+
+        if self.kind != "tool" or self.location is None:
+            return False
+        try:
+            launcher = self.location.stat(follow_symlinks=False)
+            target = os.fstat(owned.target.fd)
+            actual = (
+                (
+                    "launcher",
+                    launcher.st_dev,
+                    launcher.st_ino,
+                    launcher.st_size,
+                    launcher.st_mtime_ns,
+                    launcher.st_mode,
+                ),
+                (
+                    "target",
+                    target.st_dev,
+                    target.st_ino,
+                    target.st_size,
+                    target.st_mtime_ns,
+                    target.st_mode,
+                ),
+            )
+            return (
+                actual == self._fingerprint
+                and self.location.resolve(strict=True) == owned.target.path
+                and hashlib.sha256(os.pread(owned.target.fd, target.st_size, 0)).hexdigest()
+                == self.sha256
+            )
+        except (OSError, RuntimeError):
+            return False
+
 
 @dataclass(frozen=True)
 class RuntimeEnvironment:
@@ -916,6 +953,11 @@ class Resources:
     values: Mapping[str, str] = field(default_factory=dict)
     inherit_environment: tuple[str, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict)
+    _tool_bindings: Mapping[str, ResourceBinding] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.capabilities, frozenset) or any(
@@ -970,6 +1012,24 @@ class Resources:
         ):
             raise ContractError("host environment must map non-empty strings to strings")
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
+        if (
+            not isinstance(self._tool_bindings, Mapping)
+            or any(
+                identity not in self.tools
+                or not isinstance(binding, ResourceBinding)
+                or binding.identity != identity
+                or binding.kind != "tool"
+                or binding.location is None
+                or str(binding.location) != self.tools[identity]
+                for identity, binding in self._tool_bindings.items()
+            )
+        ):
+            raise ContractError("held tool bindings disagree with configured tools")
+        object.__setattr__(
+            self,
+            "_tool_bindings",
+            MappingProxyType(dict(self._tool_bindings)),
+        )
 
     def configured_tool(self, name: str) -> Path | None:
         """Return a configured executable when it currently exists."""
@@ -991,6 +1051,22 @@ class Resources:
                 f"required runtime tool is missing or not executable: {identity}"
             )
         return path
+
+    @contextmanager
+    def owned_tool(self, name: str) -> Iterator[OwnedExecutable]:
+        """Hold a tool and prove it matches the execution plan before use."""
+
+        from sigilicon.external_tools import owned_executable
+
+        identity = resource_identity(name)
+        path = self.require_tool(identity)
+        with owned_executable(path) as owned:
+            binding = self._tool_bindings.get(identity)
+            if binding is not None and not binding.matches_owned_tool(owned):
+                raise ExecutionError(
+                    f"runtime tool changed after planning: {identity}"
+                )
+            yield owned
 
     def require_file(self, name: str) -> Path:
         """Return one required project-configured regular file."""
@@ -1108,6 +1184,11 @@ class Resources:
             values=tables["values"],
             inherit_environment=self.inherit_environment,
             environment=self.environment,
+            _tool_bindings={
+                binding.identity: binding
+                for binding in bindings
+                if binding.kind == "tool"
+            },
         )
 
 

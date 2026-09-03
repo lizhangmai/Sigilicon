@@ -18,9 +18,9 @@ from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_input_file,
 )
+from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
@@ -278,8 +278,9 @@ def execute_structural_link(
     plan: StructuralLinkPlan,
     *,
     artifacts: StepFiles,
-    library_compiler: Path,
-    design_compiler: Path,
+    resources: Resources,
+    library_compiler: str,
+    design_compiler: str,
     environment: Mapping[str, str],
     timeout: int,
 ) -> StructuralLinkExecution:
@@ -303,8 +304,8 @@ def execute_structural_link(
     )
     with ExitStack() as stack:
         held_work = stack.enter_context(owned_directory(work))
-        held_lc = stack.enter_context(owned_executable(library_compiler))
-        held_dc = stack.enter_context(owned_executable(design_compiler))
+        held_lc = stack.enter_context(resources.owned_tool(library_compiler))
+        held_dc = stack.enter_context(resources.owned_tool(design_compiler))
         held_compile = stack.enter_context(
             owned_input_file(plan.compile_script, require_single_link=False)
         )

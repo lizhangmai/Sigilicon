@@ -5,18 +5,17 @@ from __future__ import annotations
 from contextlib import ExitStack
 from collections.abc import Mapping
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import re
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.external_tools import (
+    OwnedExecutable,
     ProcessPort,
     ProcessRequest,
     cadence_ic_env,
     managed_process,
     owned_directory,
-    owned_executable,
     owned_input_file,
 )
 
@@ -231,7 +230,6 @@ class XStreamExportError(RuntimeError):
 
 @dataclass(frozen=True)
 class XStreamExportRequest:
-    executable: Path
     library: str
     cell: str
     view: str
@@ -266,14 +264,6 @@ class XStreamExportRequest:
             )
         if len(set(self.suppressed_warnings)) != len(self.suppressed_warnings):
             raise ValueError("XStream suppressed warnings contain duplicates")
-        # Cadence launchers are commonly multicall symlinks whose invoked path
-        # determines their installation root.  Preserve that exact explicit
-        # launcher while resolving ordinary data and managed directory paths.
-        object.__setattr__(
-            self,
-            "executable",
-            Path(os.path.abspath(self.executable)),
-        )
         for name in ("layer_map", "cds_lib", "work_root"):
             object.__setattr__(self, name, Path(getattr(self, name)).resolve())
 
@@ -325,18 +315,13 @@ def _write_failure_diagnostic(
 def run_xstream_export(
     request: XStreamExportRequest,
     *,
-    environment: Mapping[str, str] | None = None,
+    launcher: OwnedExecutable,
+    environment: Mapping[str, str],
     process: ProcessPort = managed_process,
 ) -> XStreamExportResult:
     """Export one exact OA cellview and require authoritative XStream completion."""
 
-    executable = Path(os.path.abspath(request.executable))
-    if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise XStreamExportError(
-            "resolved XStream executable is unavailable",
-            executed=False,
-            exit_code=None,
-        )
+    executable = launcher.path
     for path, label in (
         (request.layer_map, "XStream layer map"),
         (request.cds_lib, "XStream cds.lib"),
@@ -350,16 +335,15 @@ def run_xstream_export(
     work = request.work_root
     work.mkdir(parents=True, exist_ok=True)
     with (
-        owned_executable(executable) as owned_launcher,
         owned_directory(work) as owned_work,
-        ExitStack() as resources,
+        ExitStack() as inputs,
     ):
-        owned_map = resources.enter_context(owned_input_file(request.layer_map))
-        owned_cds = resources.enter_context(
+        owned_map = inputs.enter_context(owned_input_file(request.layer_map))
+        owned_cds = inputs.enter_context(
             owned_input_file(request.cds_lib, require_single_link=False)
         )
         command_parts = [
-            *owned_launcher.command,
+            *launcher.command,
             "-library",
             request.library,
             "-strmFile",
@@ -403,14 +387,14 @@ def run_xstream_export(
         command = tuple(command_parts)
 
         def validate_spawn() -> None:
-            owned_launcher.require_visible()
+            launcher.require_visible()
             owned_map.require_visible()
             owned_cds.require_visible()
 
         try:
             completed = process.run(ProcessRequest(
                 argv=tuple(command),
-                executable=owned_launcher.executable,
+                executable=launcher.executable,
                 cwd=work,
                 environment=xstream_environment(executable, environment),
                 timeout_seconds=request.timeout_seconds,

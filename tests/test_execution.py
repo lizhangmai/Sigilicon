@@ -384,6 +384,25 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     assert plan.steps[0].runtime.values == {"SELECTED_VALUE": "test.value"}
 
 
+def test_execution_resources_reject_a_tool_replaced_after_sealing(
+    tmp_path: Path,
+) -> None:
+    tool = tmp_path / "tool"
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    resources = Resources(tools={"fixture.tool": str(tool)})
+    planned = resources.capture("fixture.tool")
+    execution = resources.for_execution((planned,), None)
+
+    tool.unlink()
+    tool.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    tool.chmod(0o755)
+
+    with pytest.raises(ExecutionError, match="changed after planning"):
+        with execution.owned_tool("fixture.tool"):
+            pytest.fail("a replaced planned tool must never be exposed")
+
+
 def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> None:
     _write_project(tmp_path)
     local = Project.open(tmp_path).plan("example:check")

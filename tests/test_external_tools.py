@@ -27,7 +27,8 @@ from sigilicon.external_tools import (
     xrun_env,
 )
 from sigilicon.execution.step_files import StepFiles
-from sigilicon.workflows.spectre import find_spectre, run_spectre_deck
+from sigilicon.execution.model import Resources
+from sigilicon.workflows.spectre import run_spectre_deck
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
@@ -113,20 +114,6 @@ def test_xrun_resolution_ignores_ambient_environment(
 
     with pytest.raises(FileNotFoundError):
         find_xrun(tmp_path / "not-configured/xrun")
-
-
-def test_spectre_resolution_uses_only_explicit_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    launcher = tmp_path / "spectre"
-    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
-    launcher.chmod(0o755)
-    monkeypatch.setenv("VB_SPECTRE_BIN", str(launcher))
-
-    with pytest.raises(FileNotFoundError):
-        find_spectre(tmp_path / "not-configured/spectre")
-    assert find_spectre(launcher) == launcher.absolute()
 
 
 def test_spectre_environment_is_derived_from_configured_launcher(
@@ -345,8 +332,7 @@ def test_spectre_completion_preserves_all_three_log_sources(tmp_path: Path) -> N
         inputs={"model": model},
         output_names=("result.prn",),
         timeout=5,
-        spectre=Path("/bin/true"),
-        environment={},
+        resources=Resources(tools={"cadence.spectre": "/bin/true"}),
         process=SimpleNamespace(run=execute),
     )
 

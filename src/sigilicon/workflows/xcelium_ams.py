@@ -484,7 +484,7 @@ def execute_xcelium_ams_cell(
     *,
     artifacts: StepFiles,
     source_paths: Mapping[Path, Path] | None = None,
-    xrun: Path,
+    resources: Resources,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
     timeout: int = 600,
@@ -550,7 +550,7 @@ def execute_xcelium_ams_cell(
         },
         before_spawn=before_spawn,
         environment_values=environment_values,
-        xrun=xrun,
+        resources=resources,
         timeout=timeout,
         process=process,
     )

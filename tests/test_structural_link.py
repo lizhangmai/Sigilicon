@@ -8,6 +8,7 @@ import shutil
 import pytest
 
 from sigilicon.execution.step_files import StepFiles
+from sigilicon.execution.model import Resources
 from sigilicon.workflows.structural_link import (
     execute_structural_link,
     plan_structural_link,
@@ -24,6 +25,15 @@ def _write(path: Path, text: str, *, executable: bool = False) -> Path:
     if executable:
         path.chmod(0o755)
     return path
+
+
+def _tool_resources(library_compiler: Path, design_compiler: Path) -> Resources:
+    return Resources(
+        tools={
+            "fixture.library-compiler": str(library_compiler),
+            "fixture.design-compiler": str(design_compiler),
+        }
+    )
 
 
 def _fixture(
@@ -288,8 +298,9 @@ printf 'SIGILICON_STRUCTURAL_LINK_PASS top=%s macro_instances=1 unresolved=0\n' 
     result = execute_structural_link(
         plan,
         artifacts=artifacts,
-        library_compiler=library_compiler,
-        design_compiler=design_compiler,
+        resources=_tool_resources(library_compiler, design_compiler),
+        library_compiler="fixture.library-compiler",
+        design_compiler="fixture.design-compiler",
         environment={"PATH": "/bin"},
         timeout=10,
     )
@@ -320,8 +331,9 @@ def test_structural_link_missing_completion_marker_is_failed_evidence(
     result = execute_structural_link(
         plan,
         artifacts=artifacts,
-        library_compiler=incomplete,
-        design_compiler=incomplete,
+        resources=_tool_resources(incomplete, incomplete),
+        library_compiler="fixture.library-compiler",
+        design_compiler="fixture.design-compiler",
         environment={"PATH": "/bin"},
         timeout=10,
     )
@@ -378,8 +390,9 @@ esac
     result = execute_structural_link(
         plan,
         artifacts=artifacts,
-        library_compiler=library_compiler,
-        design_compiler=design_compiler,
+        resources=_tool_resources(library_compiler, design_compiler),
+        library_compiler="fixture.library-compiler",
+        design_compiler="fixture.design-compiler",
         environment={"PATH": "/bin"},
         timeout=10,
     )
@@ -411,8 +424,9 @@ printf 'SIGILICON_STRUCTURAL_DB_PASS library=%s\n' "$SIGILICON_STRUCTURAL_LIBRAR
     result = execute_structural_link(
         plan,
         artifacts=artifacts,
-        library_compiler=library_compiler,
-        design_compiler=design_compiler,
+        resources=_tool_resources(library_compiler, design_compiler),
+        library_compiler="fixture.library-compiler",
+        design_compiler="fixture.design-compiler",
         environment={"PATH": "/bin"},
         timeout=10,
     )
@@ -454,8 +468,9 @@ def test_structural_link_rejects_release_drift_after_planning(
         execute_structural_link(
             plan,
             artifacts=artifacts,
-            library_compiler=tool,
-            design_compiler=tool,
+            resources=_tool_resources(tool, tool),
+            library_compiler="fixture.library-compiler",
+            design_compiler="fixture.design-compiler",
             environment={"PATH": "/bin"},
             timeout=10,
         )
@@ -488,8 +503,9 @@ printf 'SIGILICON_STRUCTURAL_LINK_PASS top=%s macro_instances=1 unresolved=0\n' 
     result = execute_structural_link(
         plan,
         artifacts=artifacts,
-        library_compiler=library_compiler,
-        design_compiler=design_compiler,
+        resources=_tool_resources(library_compiler, design_compiler),
+        library_compiler="fixture.library-compiler",
+        design_compiler="fixture.design-compiler",
         environment={"PATH": "/bin"},
         timeout=10,
     )
