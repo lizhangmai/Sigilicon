@@ -5,12 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import sysconfig
-import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.project._component import ComponentContract, load_component_graph
-from sigilicon.contracts import freeze_toml_document, require_config_header
+from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
 from sigilicon.domain.design import IDENTIFIER_RE
 from sigilicon.domain.netlist import (
     NetlistSnapshot,
@@ -278,17 +277,12 @@ def load_layout_spec(
     platform: PlatformSnapshot | None = None,
     netlist_inventory: Mapping[Path, NetlistSnapshot] | None = None,
 ) -> LayoutSpec:
-    spec_path = path.resolve()
+    spec_path = path.absolute()
     repository = project
     root = repository.project_root
-    try:
-        spec_payload = spec_path.read_bytes()
-    except OSError as exc:
-        raise ValueError(f"cannot read layout TOML {spec_path}: {exc}") from exc
-    try:
-        raw = tomllib.loads(spec_payload.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"cannot read layout TOML {spec_path}: {exc}") from exc
+    if spec_path.resolve() != spec_path:
+        raise ValueError(f"layout TOML must not traverse a symlink: {spec_path}")
+    raw = read_toml(spec_path)
     if repository.owner_for(spec_path) is not None:
         require_config_header(
             raw,

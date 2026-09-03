@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -25,7 +25,6 @@ from sigilicon.artifacts import (
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution.model import (
-    _AdapterAction,
     Artifact,
     ContractError,
     ExecutionError,
@@ -53,6 +52,11 @@ from sigilicon.external_tools import (
     owned_output_file,
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
+)
+from sigilicon.workflows.structural_link import (
+    StructuralLinkPlan,
+    execute_structural_link,
+    plan_structural_link,
 )
 
 
@@ -140,7 +144,7 @@ def _source_members(
     *,
     suffix: str,
 ) -> tuple[str, ...]:
-    root = _safe_relative(_text(step.action.config, root_name), root_name)
+    root = _safe_relative(_text(step.config, root_name), root_name)
     prefix = f"{root}/"
     return tuple(
         source
@@ -150,7 +154,7 @@ def _source_members(
 
 
 def _runner(step: Step) -> str:
-    runner = _safe_relative(_text(step.action.config, "runner"), "runner")
+    runner = _safe_relative(_text(step.config, "runner"), "runner")
     if runner not in step.sources:
         raise ContractError("Synopsys runner must be inside the step source closure")
     return runner
@@ -214,7 +218,7 @@ def _runtime_environment(
 
 def _base_checks(step: Step) -> list[PreflightCheck]:
     runner = _runner(step)
-    _positive_integer(step.action.config, "timeout_seconds")
+    _positive_integer(step.config, "timeout_seconds")
     if not step.runtime.tools:
         raise ContractError("Synopsys step requires a runtime profile with a tool")
     if _RUNNER_SHELL not in step.runtime.tools:
@@ -439,7 +443,7 @@ def _run_script(
             cwd=Path(work_root.child_path),
             environment=environment,
             timeout_seconds=_positive_integer(
-                context.step.action.config, "timeout_seconds"
+                context.step.config, "timeout_seconds"
             ),
             before_spawn=visible,
         ))
@@ -450,7 +454,8 @@ class VcsAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        _target(step.action.config)
+        _target(step.config)
+        _text(step.config, "success_marker")
         _source_members(step, "rtl_root", suffix=".sv")
         _source_members(step, "testbench_root", suffix=".sv")
         checks.extend(preflight_environment(step.runtime, resources))
@@ -458,7 +463,7 @@ class VcsAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.action.config
+        config = context.step.config
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -497,6 +502,13 @@ class VcsAdapter(DirectAdapter):
             return StepResult(
                 "failed", logs, message=f"VCS runner exited {completed.returncode}"
             )
+        marker = _text(config, "success_marker")
+        if marker not in completed.stdout:
+            return StepResult(
+                "failed",
+                logs,
+                message="VCS runner omitted its declared success marker",
+            )
         return StepResult.succeeded(artifacts=logs)
 
 
@@ -505,8 +517,8 @@ class DcAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        constraints = _safe_relative(_text(step.action.config, "constraints"), "constraints")
-        _text(step.action.config, "corner")
+        constraints = _safe_relative(_text(step.config, "constraints"), "constraints")
+        _text(step.config, "corner")
         if constraints not in step.sources:
             raise ContractError("DC constraints must be inside the step source closure")
         _source_members(step, "rtl_root", suffix=".sv")
@@ -515,7 +527,7 @@ class DcAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.action.config
+        config = context.step.config
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
         environment.update(
@@ -593,8 +605,8 @@ class FcAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        target = _target(step.action.config)
-        _text(step.action.config, "corner")
+        target = _target(step.config)
+        _text(step.config, "corner")
         if target not in {"library", "pnr"}:
             raise ContractError(f"unsupported FC target {target!r}")
         checks.extend(preflight_environment(step.runtime, resources))
@@ -602,7 +614,7 @@ class FcAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.action.config
+        config = context.step.config
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -754,10 +766,10 @@ class HspiceAdapter(DirectAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         checks = _base_checks(step)
-        _target(step.action.config)
+        _target(step.config)
         checks.extend(preflight_environment(step.runtime, resources))
-        environment = _mapping(step.action.config, "environment")
-        prefix = _text(step.action.config, "environment_prefix")
+        environment = _mapping(step.config, "environment")
+        prefix = _text(step.config, "environment_prefix")
         if any(
             not isinstance(name, str)
             or _ENVIRONMENT.fullmatch(name) is None
@@ -768,12 +780,12 @@ class HspiceAdapter(DirectAdapter):
             raise ContractError(
                 "HSPICE owner environment must use its declared uppercase prefix"
             )
-        collect = _mapping(step.action.config, "collect")
+        collect = _mapping(step.config, "collect")
         for role, relative in collect.items():
             if not isinstance(role, str) or not isinstance(relative, str):
                 raise ContractError("HSPICE collect must map roles to relative paths")
             _safe_relative(relative, f"HSPICE collect {role}")
-        for name, value in _mapping(step.action.config, "source_environment").items():
+        for name, value in _mapping(step.config, "source_environment").items():
             if (
                 not isinstance(name, str)
                 or _ENVIRONMENT.fullmatch(name) is None
@@ -783,7 +795,7 @@ class HspiceAdapter(DirectAdapter):
                 raise ContractError(
                     "HSPICE source_environment must map environment names to step sources"
                 )
-        for name, value in _mapping(step.action.config, "output_environment").items():
+        for name, value in _mapping(step.config, "output_environment").items():
             if (
                 not isinstance(name, str)
                 or _ENVIRONMENT.fullmatch(name) is None
@@ -793,8 +805,8 @@ class HspiceAdapter(DirectAdapter):
                     "HSPICE output_environment must map environment names to relative paths"
                 )
             _safe_relative(value, f"HSPICE output_environment {name}")
-        _boolean(step.action.config, "requires_python")
-        if _boolean(step.action.config, "requires_python") and _PYTHON not in (
+        _boolean(step.config, "requires_python")
+        if _boolean(step.config, "requires_python") and _PYTHON not in (
             step.runtime.tools
         ):
             raise ContractError(
@@ -804,7 +816,7 @@ class HspiceAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.action.config
+        config = context.step.config
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -877,6 +889,72 @@ class HspiceAdapter(DirectAdapter):
             return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
+@dataclass(frozen=True)
+class _PreparedStructuralLink:
+    """Typed structural-link plan plus its sealed runtime path bindings."""
+
+    plan: StructuralLinkPlan
+    rtl_sources: tuple[str, ...]
+    compile_script: str
+    link_script: str
+    release_manifest_resource: str
+    release_liberty_resource: str
+
+    def runtime(self, context: StepContext) -> StructuralLinkPlan:
+        return replace(
+            self.plan,
+            rtl_sources=tuple(
+                context.owner_source_path(name) for name in self.rtl_sources
+            ),
+            compile_script=context.owner_source_path(self.compile_script),
+            link_script=context.owner_source_path(self.link_script),
+            release_liberty=context.resource_path(self.release_liberty_resource),
+            release_sources=(
+                context.resource_path(self.release_manifest_resource),
+                context.resource_path(self.release_liberty_resource),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _StructuralLinkStep(Step):
+    """Adapter-private Step carrying its validated structural-link plan."""
+
+    structural_link: _PreparedStructuralLink = field(
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def bind(
+        cls,
+        step: Step,
+        *,
+        config: Mapping[str, Any],
+        prepared: Mapping[str, Any],
+        sources: tuple[str, ...],
+        resources: tuple[str, ...],
+        source_snapshots: tuple[Source, ...],
+        resource_bindings: tuple[ResourceBinding, ...],
+        structural_link: _PreparedStructuralLink,
+    ) -> "_StructuralLinkStep":
+        return cls(
+            id=step.id,
+            uses=step.uses,
+            config=config,
+            needs=step.needs,
+            sources=sources,
+            evidence=step.evidence,
+            resources=resources,
+            runtime=step.runtime,
+            _prepared=prepared,
+            _source_snapshots=source_snapshots,
+            _resource_bindings=resource_bindings,
+            structural_link=structural_link,
+        )
+
+
 class StructuralLinkAdapter(DirectAdapter):
     """Link owner RTL against one locked, uncharacterized macro release."""
 
@@ -902,7 +980,7 @@ class StructuralLinkAdapter(DirectAdapter):
         }
     )
     def _config(self, step: Step) -> Mapping[str, Any]:
-        config = step.action.config
+        config = step.config
         unknown = set(config) - self._fields
         missing = self._fields - set(config)
         if unknown or missing:
@@ -975,8 +1053,6 @@ class StructuralLinkAdapter(DirectAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.workflows.structural_link import plan_structural_link
-
         initial = step
         config = self._config(initial)
         owner = _text(config, "owner")
@@ -1073,12 +1149,13 @@ class StructuralLinkAdapter(DirectAdapter):
                 (*step.sources, *(source.path for _scope, source in captured_sources))
             )
         )
-        prepared = replace(
+        prepared = _StructuralLinkStep.bind(
             step,
-            action=_AdapterAction(step.uses, config, prepared_record),
+            config=config,
+            prepared=prepared_record,
             sources=source_names,
             resources=tuple(resource.identity for resource in external),
-            _source_snapshots=tuple(
+            source_snapshots=tuple(
                 dict.fromkeys(
                     (
                         *step._source_snapshots,
@@ -1086,13 +1163,21 @@ class StructuralLinkAdapter(DirectAdapter):
                     )
                 )
             ),
-            _resource_bindings=external,
+            resource_bindings=external,
+            structural_link=_PreparedStructuralLink(
+                planning,
+                rtl_names,
+                compile_name,
+                link_name,
+                external[0].identity,
+                external[1].identity,
+            ),
         )
         return prepared
 
     @staticmethod
     def _planning_record(
-        plan: Any,
+        plan: StructuralLinkPlan,
         *,
         rtl_sources: tuple[str, ...],
         compile_script: str,
@@ -1122,9 +1207,11 @@ class StructuralLinkAdapter(DirectAdapter):
             "release_liberty_sha256": plan.release_liberty_sha256,
         }
 
-    def _execute(self, context: StepContext, planning: Any) -> StepResult:
-        from sigilicon.workflows.structural_link import execute_structural_link
-
+    def _execute(
+        self,
+        context: StepContext,
+        planning: StructuralLinkPlan,
+    ) -> StepResult:
         config = self._config(context.step)
         runtime = _runtime_environment(context.resources, context.step)
         try:
@@ -1205,65 +1292,9 @@ class StructuralLinkAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        from sigilicon.workflows.structural_link import StructuralLinkPlan
-
-        config = self._config(step)
-        prepared = step.action.prepared
-        if not isinstance(prepared, Mapping):
-            raise ExecutionError("structural-link request was not prepared")
-        rtl_names = tuple(
-            _safe_relative(name, "structural-link RTL source")
-            for name in self._rtl_sources(context.step)
-        )
-        compile_script = _safe_relative(
-            _text(config, "compile_script"), "Liberty compile script"
-        )
-        link_script = _safe_relative(
-            _text(config, "link_script"), "structural link script"
-        )
-        release_resource = _text(
-            prepared,
-            "release_liberty_resource",
-        )
-        manifest_resource = _text(
-            prepared,
-            "release_manifest_resource",
-        )
-        planning = StructuralLinkPlan(
-            owner=_text(prepared, "owner"),
-            variant=_text(prepared, "variant"),
-            top=_text(prepared, "top"),
-            rtl_sources=tuple(context.owner_source_path(name) for name in rtl_names),
-            compile_script=context.owner_source_path(compile_script),
-            link_script=context.owner_source_path(link_script),
-            library_name=_text(prepared, "library_name"),
-            macro_cell=_text(prepared, "macro_cell"),
-            parameter_overrides=_mapping(prepared, "parameter_overrides"),
-            expected_macro_instances=_positive_integer(
-                prepared, "expected_macro_instances"
-            ),
-            expected_unresolved_references=int(
-                prepared["expected_unresolved_references"]
-            ),
-            library_compiler_version=_text(
-                prepared, "library_compiler_version"
-            ),
-            release_liberty=context.resource_path(release_resource),
-            release_id=_text(prepared, "release_id"),
-            release_source_commit=_text(prepared, "release_source_commit"),
-            release_store=_text(prepared, "release_store"),
-            release_manifest_sha256=_text(
-                prepared, "release_manifest_sha256"
-            ),
-            release_liberty_sha256=_text(
-                prepared, "release_liberty_sha256"
-            ),
-            release_sources=(
-                context.resource_path(manifest_resource),
-                context.resource_path(release_resource),
-            ),
-        )
-        return self._execute(context, planning)
+        if not isinstance(step, _StructuralLinkStep):
+            raise ExecutionError("structural-link Step has no typed plan")
+        return self._execute(context, step.structural_link.runtime(context))
 
 
 def synopsys_adapters() -> tuple[

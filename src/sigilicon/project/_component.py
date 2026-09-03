@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -12,6 +11,7 @@ from sigilicon.contracts import (
     contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
+    read_toml,
     require_config_header,
 )
 
@@ -240,15 +240,17 @@ def parse_component_contract(
 
 def load_component_contract(path: Path, *, project_root: Path) -> ComponentContract:
     root = project_root.resolve()
-    contract_path = path.resolve()
-    if not contract_path.is_relative_to(root) or not contract_path.is_file():
+    contract_path = path.absolute()
+    if (
+        contract_path.resolve() != contract_path
+        or not contract_path.is_relative_to(root)
+        or not contract_path.is_file()
+    ):
         raise FileNotFoundError("component contract is missing or outside the project root")
-    with contract_path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
     return parse_component_contract(
         contract_path,
         project_root=root,
-        document=raw,
+        document=read_toml(contract_path),
     )
 
 

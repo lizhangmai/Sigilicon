@@ -15,7 +15,6 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.adapter import DirectAdapter, PlanningProject
 from sigilicon.execution.model import (
-    _AdapterAction,
     Artifact,
     ContractError,
     ExecutionError,
@@ -64,7 +63,7 @@ def _runtime_bindings(
 
 
 def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
-    config = step.action.config
+    config = step.config
     unknown = set(config) - fields
     missing = fields - set(config)
     if unknown or missing:
@@ -418,6 +417,7 @@ class _PreparedCadencePlan:
     prepared: Mapping[str, Any]
     sources: Mapping[Path, tuple[str, str]]
     resources: tuple[tuple[Path, str, str], ...]
+    workspace_root: Path
 
     def __post_init__(self) -> None:
         if not isinstance(self.prepared, Mapping):
@@ -430,6 +430,7 @@ class _PreparedCadencePlan:
             raise ContractError("prepared Cadence resources contain duplicate identities")
         object.__setattr__(self, "prepared", MappingProxyType(dict(self.prepared)))
         object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
+        object.__setattr__(self, "workspace_root", self.workspace_root.resolve())
 
     @classmethod
     def create(
@@ -438,6 +439,7 @@ class _PreparedCadencePlan:
         prepared: Mapping[str, Any],
         sources: Mapping[Path, tuple[str, str]],
         resources: tuple[ResourceBinding, ...],
+        workspace_root: Path,
     ) -> "_PreparedCadencePlan":
         return cls(
             plan,
@@ -447,6 +449,7 @@ class _PreparedCadencePlan:
                 (resource.location, resource.identity, resource.sha256)
                 for resource in resources
             ),
+            workspace_root,
         )
 
     @property
@@ -467,7 +470,7 @@ class _PreparedCadencePlan:
         )
 
     def validate(self, context: StepContext) -> None:
-        recorded = dict(context.step.action.prepared)
+        recorded = dict(context.step._prepared)
         identity = recorded.pop("domain_plan_identity", None)
         if (
             identity != self.identity
@@ -527,7 +530,8 @@ class _CadenceStep(Step):
         cls,
         step: Step,
         *,
-        action: _AdapterAction,
+        config: Mapping[str, Any],
+        prepared: Mapping[str, Any],
         sources: tuple[str, ...],
         resources: tuple[str, ...],
         source_snapshots: tuple[Source, ...],
@@ -537,12 +541,13 @@ class _CadenceStep(Step):
         return cls(
             id=step.id,
             uses=step.uses,
-            action=action,
+            config=config,
             needs=step.needs,
             sources=sources,
             evidence=step.evidence,
             resources=resources,
             runtime=step.runtime,
+            _prepared=prepared,
             _source_snapshots=source_snapshots,
             _resource_bindings=resource_bindings,
             domain_plan=domain_plan,
@@ -590,6 +595,7 @@ class _CadenceDomainAdapter:
             ),
             resources=external,
             runtime_bindings=_runtime_bindings(resources, *runtime_identities),
+            workspace_root=project.workspace_root,
         )
         self.preflight(prepared_step, resources)
         return prepared_step
@@ -605,12 +611,14 @@ class _CadenceDomainAdapter:
         captured: tuple[Source, ...],
         resources: tuple[ResourceBinding, ...],
         runtime_bindings: tuple[ResourceBinding, ...] = (),
+        workspace_root: Path,
     ) -> Step:
         domain_plan = _PreparedCadencePlan.create(
             plan,
             prepared,
             sources,
             resources,
+            workspace_root,
         )
         portable = {**prepared, "domain_plan_identity": domain_plan.identity}
         source_snapshots = tuple(
@@ -625,7 +633,8 @@ class _CadenceDomainAdapter:
             raise ContractError("Cadence plan binds a runtime identity more than once")
         return _CadenceStep.bind(
             operation,
-            action=_AdapterAction(operation.uses, config, portable),
+            config=config,
+            prepared=portable,
             sources=tuple(
                 dict.fromkeys((*operation.sources, *(source.path for source in captured)))
             ),
@@ -951,7 +960,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import load_platforms
+        from sigilicon.domain.platform import resolve_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
@@ -964,7 +973,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         manifest = project.oa_assembly_for(selected_owner.root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = load_platforms(project, resources=resources)
+        platforms = resolve_platforms(project, resources)
         planning = plan_oa_library_rebuild(
             manifest,
             project=project,
@@ -1116,7 +1125,7 @@ class _OaAdapter(_CadenceDomainAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
-        prepared = step.action.prepared
+        prepared = step._prepared
         runtime_executables: tuple[str, ...] = ()
         if prepared:
             selected = prepared.get("runtime_executables")
@@ -1143,7 +1152,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import load_platforms
+        from sigilicon.domain.platform import resolve_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
@@ -1155,7 +1164,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         manifest = project.oa_assembly_for(project.owner(owner).root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = load_platforms(project, resources=resources)
+        platforms = resolve_platforms(project, resources)
         planning = plan_oa_library_rebuild(
             manifest,
             project=project,
@@ -1219,8 +1228,6 @@ class _OaAdapter(_CadenceDomainAdapter):
 
         config = self._config(step)
         owner = _text(config, "owner")
-        if context.workspace_root is None:
-            raise ExecutionError("OA management requires Project runtime roots")
         prepared = self._prepared_domain_plan(context)
         planning = prepared.plan
         if self.spec.materializes_layout_ir:
@@ -1246,7 +1253,7 @@ class _OaAdapter(_CadenceDomainAdapter):
 
             with workspace_operation(
                 client,
-                context.workspace_root,
+                prepared.workspace_root,
                 "check-oa-library",
                 policy=OperationPolicy.READ_ONLY,
                 acquire_flow_lock=False,
@@ -1327,7 +1334,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> Step:
         from sigilicon.domain.platform import (
-            load_platforms,
+            resolve_platforms,
             platform_resource_identities,
         )
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1338,7 +1345,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = load_platforms(project, resources=resources)
+        platforms = resolve_platforms(project, resources)
         planning = plan_layout_spec(
             spec,
             project=project,
@@ -1464,7 +1471,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> Step:
         from sigilicon.domain.platform import (
-            load_platforms,
+            resolve_platforms,
             platform_resource_identities,
         )
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1475,7 +1482,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = load_platforms(project, resources=resources)
+        platforms = resolve_platforms(project, resources)
         planning = plan_layout_spec(
             spec,
             project=project,

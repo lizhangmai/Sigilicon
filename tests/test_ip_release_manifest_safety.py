@@ -124,7 +124,7 @@ def test_release_store_performs_one_audit_before_and_after_domain_validation(
     object_root.parent.mkdir(parents=True)
     temporary.rename(object_root)
     calls = 0
-    original = release_store.audit_release_package
+    original = release_store._audit_release_package
 
     def counted(path: Path, *, manifest_sha256: str | None = None):
         nonlocal calls
@@ -132,13 +132,13 @@ def test_release_store_performs_one_audit_before_and_after_domain_validation(
         return original(path, manifest_sha256=manifest_sha256)
 
     validated: list[str] = []
-    monkeypatch.setattr(release_store, "audit_release_package", counted)
+    monkeypatch.setattr(release_store, "_audit_release_package", counted)
     result = ReleaseStore(tmp_path / "store").open(
         ReleaseRef("fixture", digest),
         validate=lambda package: validated.append(str(package.manifest["ip_name"])),
     )
 
-    assert result.ref.object == f"sha256-{digest}"
+    assert result.ref == ReleaseRef("fixture", digest)
     assert validated == ["fixture"]
     assert calls == 2
 

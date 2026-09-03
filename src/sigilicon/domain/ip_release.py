@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
@@ -12,6 +11,7 @@ from sigilicon.contracts import (
     contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
+    read_toml,
     require_config_header,
 )
 
@@ -515,8 +515,7 @@ def _parse_ip_contract(
             source_interface_documents is None
             and interface_path not in interface_documents
         ):
-            with interface_path.open("rb") as stream:
-                interface_raw: dict[str, Any] = tomllib.load(stream)
+            interface_raw = read_toml(interface_path)
             interface_documents[interface_path] = freeze_toml_document(interface_raw)
         exports.append(exported)
 
@@ -571,8 +570,7 @@ def load_ip_contract(
     contract_path = path.resolve()
     if not contract_path.is_relative_to(repository.project_root):
         raise ValueError("IP contract must be inside the project root")
-    with contract_path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
+    raw = read_toml(contract_path)
     return _parse_ip_contract(
         contract_path,
         repository=repository,

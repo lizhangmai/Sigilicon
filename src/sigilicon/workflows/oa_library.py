@@ -29,7 +29,6 @@ from sigilicon.domain.oa_library import (
 from sigilicon.domain.platform import (
     PlatformSet,
     PlatformSnapshot,
-    ResolvedPlatform,
     load_platform,
     resolve_platform_snapshot,
 )
@@ -839,7 +838,7 @@ def plan_oa_library_rebuild(
     *,
     project: Project,
     library: str | None = None,
-    platform_inventory: Mapping[str, ResolvedPlatform] | None = None,
+    platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OALibraryRebuildPlan:

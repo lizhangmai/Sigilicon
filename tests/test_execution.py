@@ -11,9 +11,9 @@ import sys
 
 import pytest
 
-from sigilicon.execution import (
+from sigilicon.execution.adapter import Adapter
+from sigilicon.execution.model import (
     Artifact,
-    Adapter,
     ContractError,
     ExecutionError,
     ExecutionPlan,
@@ -25,7 +25,7 @@ from sigilicon.execution import (
     StepOutcome,
     StepResult,
 )
-from sigilicon.execution.model import _AdapterAction, ResourceBinding, Resources
+from sigilicon.execution.model import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
@@ -71,20 +71,36 @@ def _clean_run(project: Project, selector: str, run_id: str) -> None:
 def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
     import sigilicon.execution as execution
 
-    for name in (
+    public = (
         "Step",
         "Adapter",
         "ExecutionPlan",
         "RunResult",
         "RunStore",
-    ):
+    )
+    assert execution.__all__ == list(public)
+    for name in public:
         assert getattr(execution, name).__name__ == name
     for removed in (
+        "Artifact",
+        "AdapterRegistry",
+        "ContractError",
+        "Evidence",
+        "ExecutionError",
         "OperationStep",
         "PreparedStep",
         "Backend",
         "Operation",
         "Preparation",
+        "PreflightCheck",
+        "PreflightResult",
+        "RunFailure",
+        "RunStoreError",
+        "RuntimeEnvironment",
+        "Source",
+        "StepContext",
+        "StepOutcome",
+        "StepResult",
         "_RunStore",
         "Resources",
     ):
@@ -103,7 +119,7 @@ def test_large_chain_plan_has_linear_topology_and_cached_identity(
         Step(
             f"step-{index}",
             "fake.copy",
-            _AdapterAction("fake.copy"),
+            {},
             needs=() if index == 0 else (f"step-{index - 1}",),
             sources=(source.path,),
         )
@@ -320,11 +336,11 @@ class CopyAdapter:
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         output = context.write_text(
-            "source", "value.txt", str(step.action.config["text"])
+            "source", "value.txt", str(step.config["text"])
         )
         return StepResult.succeeded(
             artifacts=(Artifact("source", "text.plain", output),),
-            facts={"length": len(str(step.action.config["text"]))},
+            facts={"length": len(str(step.config["text"]))},
         )
 
 
@@ -368,14 +384,15 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert plan.operation == "check"
     assert plan.variant is None
     assert [step.uses for step in plan.steps] == ["fake.copy"]
-    assert plan.steps[0].action == _AdapterAction("fake.copy", {"text": "hello"})
+    assert plan.steps[0].config == {"text": "hello"}
+    assert plan.steps[0]._prepared == {}
     assert not hasattr(plan.steps[0], "_payload")
     assert plan.steps[0].evidence.record == {
         "role": "regression",
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 12
+    assert json.loads(json.dumps(plan.record))["schema"] == 13
     assert "resources_identity" not in plan.record
     assert [resource["identity"] for resource in plan.record["resources"]] == [
         "test.value"
@@ -614,60 +631,42 @@ def test_execution_plan_is_stable_across_project_processes(tmp_path: Path) -> No
                 "import json,sys; "
                 "from sigilicon.project import Project; "
                 "print(json.dumps(Project.open(sys.argv[1]).plan("
-                "json.load(sys.stdin)).record, sort_keys=True))"
+                "sys.argv[2]).record, sort_keys=True))"
             ),
             str(tmp_path),
+            "example:check",
         ),
         check=True,
         capture_output=True,
-        input=json.dumps(local.record),
         text=True,
     )
 
     assert json.loads(completed.stdout) == local.record
 
 
-def test_execution_plan_record_restoration_requires_current_sources(
-    tmp_path: Path,
-) -> None:
-    operations = _write_project(tmp_path)
-    project = _project(tmp_path, CopyAdapter())
-    record = project.plan("example:check").record
-    operations.write_text("invalid = true\n", encoding="utf-8")
-
-    with pytest.raises((ContractError, ValueError)):
-        project.plan(json.loads(json.dumps(record)))
-
-
-def test_execution_plan_record_rejects_modified_evidence(
-    tmp_path: Path,
-) -> None:
+def test_project_plan_accepts_only_a_selector(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = _project(tmp_path, CopyAdapter())
     record = project.plan("example:check").record
-    record["steps"][0]["evidence"]["role"] = []
 
-    with pytest.raises(ValueError, match="current project closure"):
-        project.plan(record)
+    with pytest.raises(TypeError, match="owner:operation selector"):
+        project.plan(record)  # type: ignore[arg-type]
 
 
-def test_cli_preflight_consumes_a_portable_plan_record(
+def test_cli_preflight_compiles_the_current_selector(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from sigilicon.cli.main import main as sigilicon_main
 
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyAdapter())
-    plan_path = tmp_path / "plan.json"
-    plan_path.write_text(json.dumps(project.plan("example:check").record))
+    _project(tmp_path, CopyAdapter())
 
     assert sigilicon_main(
         (
             "flow",
             "preflight",
-            "--plan-file",
-            str(plan_path),
+            "example:check",
             "--project-root",
             str(tmp_path),
         )
@@ -675,23 +674,20 @@ def test_cli_preflight_consumes_a_portable_plan_record(
     assert json.loads(capsys.readouterr().out)["status"] == "ready"
 
 
-def test_cli_run_consumes_a_portable_plan_record(
+def test_cli_run_compiles_the_current_selector(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from sigilicon.cli.main import main as sigilicon_main
 
     _write_project(tmp_path)
-    project = _project(tmp_path, CopyAdapter())
-    plan_path = tmp_path / "plan.json"
-    plan_path.write_text(json.dumps(project.plan("example:check").record))
+    _project(tmp_path, CopyAdapter())
 
     assert sigilicon_main(
         (
             "flow",
             "run",
-            "--plan-file",
-            str(plan_path),
+            "example:check",
             "--project-root",
             str(tmp_path),
             "--run-id",
@@ -722,32 +718,6 @@ def test_cli_audit_stream_verifies_a_closed_run(
         )
     ) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "verified"
-
-
-def test_cli_rejects_a_symlinked_plan_file(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from sigilicon.cli.main import main as sigilicon_main
-
-    _write_project(tmp_path)
-    project = _project(tmp_path, CopyAdapter())
-    target = tmp_path / "target-plan.json"
-    target.write_text(json.dumps(project.plan("example:check").record))
-    plan_path = tmp_path / "plan.json"
-    plan_path.symlink_to(target)
-
-    assert sigilicon_main(
-        (
-            "flow",
-            "preflight",
-            "--plan-file",
-            str(plan_path),
-            "--project-root",
-            str(tmp_path),
-        )
-    ) == 2
-    assert "cannot read execution plan" in capsys.readouterr().err
 
 
 def test_adapter_planning_closes_over_discovered_sources_deterministically(
@@ -1484,13 +1454,11 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 
 
 def test_public_execution_models_reject_inconsistent_values(tmp_path: Path) -> None:
-    with pytest.raises(ContractError, match="adapter action"):
-        Step("bad", "fake.copy", "not-an-action")  # type: ignore[arg-type]
-    with pytest.raises(ContractError, match="kind must match"):
-        Step("bad", "fake.copy", _AdapterAction("fake.upper"))
-    action = _AdapterAction("fake.copy", {"nested": {"value": [1, 2]}})
+    with pytest.raises(ContractError, match="config must be a mapping"):
+        Step("bad", "fake.copy", "not-config")  # type: ignore[arg-type]
+    step = Step("good", "fake.copy", {"nested": {"value": [1, 2]}})
     with pytest.raises(TypeError):
-        action.config["changed"] = True  # type: ignore[index]
+        step.config["changed"] = True  # type: ignore[index]
     outcome = StepOutcome("run", "fake.copy", StepResult.succeeded())
     with pytest.raises(ContractError, match="disagrees"):
         RunResult(

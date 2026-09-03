@@ -47,7 +47,7 @@ _RUNTIME_FIELDS = frozenset(
 
 if TYPE_CHECKING:
     from sigilicon.execution.adapter import AdapterRegistry
-    from sigilicon.execution import (
+    from sigilicon.execution.model import (
         ExecutionPlan,
         PreflightResult,
         RunResult,
@@ -235,36 +235,14 @@ class Project:
             raise ValueError("sigilicon.toml declares a different project root")
         return project
 
-    def plan(self, selector: str | Mapping[str, Any]) -> ExecutionPlan:
+    def plan(self, selector: str) -> ExecutionPlan:
         """Compile a selector to its complete source and runtime closure."""
 
         from sigilicon.execution.adapter import plan_execution
-        from sigilicon.execution.model import ExecutionPlan
         from sigilicon.execution.operations import compile_operation, parse_selector
 
-        if isinstance(selector, Mapping):
-            owner_name = selector.get("owner")
-            operation_name = selector.get("operation")
-            variant = selector.get("variant")
-            if (
-                not isinstance(owner_name, str)
-                or not isinstance(operation_name, str)
-                or (variant is not None and not isinstance(variant, str))
-            ):
-                raise ValueError(
-                    "execution plan record must identify owner, operation, and variant"
-                )
-            identity = f"{owner_name}:{operation_name}" + (
-                "" if variant is None else f"@{variant}"
-            )
-            current = self.plan(identity)
-            if current.record != dict(selector):
-                raise ValueError(
-                    "execution plan record does not match the current project closure"
-                )
-            return current
         if not isinstance(selector, str):
-            raise TypeError("Project.plan requires a selector or execution plan record")
+            raise TypeError("Project.plan requires an owner:operation selector")
         owner_name, operation, variant = parse_selector(selector)
         owner = self.owner(owner_name)
         relative = owner.component.operation_catalog
@@ -332,9 +310,6 @@ class Project:
             resources,
             self._adapters(),
             artifact_root=self.artifact_root,
-            project_root=self.project_root,
-            owner_root=self.owner(plan.owner).root,
-            workspace_root=self.workspace_root,
             run_id=run_id,
             progress=progress,
         )

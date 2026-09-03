@@ -85,8 +85,8 @@ def test_mapping_contract_reuses_an_immutable_source_snapshot(
         document = freeze_toml_document(tomllib.load(stream))
     inventory = MappingProxyType({resolved: document})
     monkeypatch.setattr(
-        code_mapping_domain.tomllib,
-        "load",
+        code_mapping_domain,
+        "read_toml",
         lambda *_args, **_kwargs: pytest.fail("mapping contract was reloaded"),
     )
 

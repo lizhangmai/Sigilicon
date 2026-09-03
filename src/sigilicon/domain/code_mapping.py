@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.contracts import (
     is_frozen_toml_document,
+    read_toml,
     require_config_header,
 )
 
@@ -93,15 +93,11 @@ def load_integer_code_mapping_contract(
 ) -> IntegerCodeMapping:
     """Load a mapping from an explicitly described caller-owned contract."""
 
-    contract_path = path.resolve()
+    contract_path = path.absolute()
+    if contract_path.resolve() != contract_path:
+        raise ValueError("code mapping contract must not traverse a symlink")
     if source_documents is None:
-        try:
-            with contract_path.open("rb") as stream:
-                raw = tomllib.load(stream)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise ValueError(
-                f"cannot read code mapping contract {contract_path}: {exc}"
-            ) from exc
+        raw = read_toml(contract_path)
     else:
         if not isinstance(source_documents, _MAPPING_PROXY_TYPE):
             raise ValueError("code mapping source inventory must be immutable")

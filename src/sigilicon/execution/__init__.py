@@ -1,44 +1,14 @@
-"""Typed planning, adapter execution, and durable run records."""
+"""The small public vocabulary for planning and managed execution."""
 
-from sigilicon.execution.model import (
-    Artifact,
-    ContractError,
-    Evidence,
-    ExecutionError,
-    ExecutionPlan,
-    Step,
-    PreflightCheck,
-    PreflightResult,
-    RunFailure,
-    RunResult,
-    RuntimeEnvironment,
-    Source,
-    StepContext,
-    StepOutcome,
-    StepResult,
-)
-from sigilicon.execution.adapter import Adapter, AdapterRegistry
-from sigilicon.execution.runs import RunStore, RunStoreError
+from sigilicon.execution.adapter import Adapter
+from sigilicon.execution.model import ExecutionPlan, RunResult, Step
+from sigilicon.execution.runs import RunStore
 
 
 __all__ = [
-    "Artifact",
-    "Adapter",
-    "AdapterRegistry",
-    "ContractError",
-    "Evidence",
-    "ExecutionError",
-    "ExecutionPlan",
     "Step",
-    "PreflightCheck",
-    "PreflightResult",
-    "RunFailure",
+    "Adapter",
+    "ExecutionPlan",
     "RunResult",
-    "RuntimeEnvironment",
     "RunStore",
-    "RunStoreError",
-    "Source",
-    "StepContext",
-    "StepOutcome",
-    "StepResult",
 ]

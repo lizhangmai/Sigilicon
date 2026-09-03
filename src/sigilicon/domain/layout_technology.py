@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-import tomllib
+from types import MappingProxyType
 from typing import Mapping
 
-from sigilicon.contracts import require_config_header
+from sigilicon.contracts import read_toml, require_config_header
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -195,8 +195,7 @@ def load_layout_technology(
     """Load common roles from a native contract or a named domain payload."""
 
     contract = path.resolve()
-    payload = contract.read_bytes()
-    raw = tomllib.loads(payload.decode("utf-8"))
+    raw = read_toml(contract)
     require_config_header(
         raw,
         contract,
@@ -204,6 +203,17 @@ def load_layout_technology(
         path_scope=path_scope,
         owner=owner,
     )
+    return parse_layout_technology(raw, owner=owner, payload_key=payload_key)
+
+
+def parse_layout_technology(
+    raw: Mapping[str, object],
+    *,
+    owner: str,
+    payload_key: str | None = None,
+) -> LayoutTechnology:
+    """Parse custom-layout roles from an already validated domain document."""
+
     if payload_key is None:
         technology_raw = raw
     else:
@@ -371,10 +381,15 @@ def load_layout_technology(
         raise ValueError("cdf_callback_bypass_parameters contains duplicates")
     return LayoutTechnology(
         owner=owner,
-        model_polarities=model_polarities,
-        layers=layers,
-        vias=vias,
-        via_landings=via_landings,
+        model_polarities=MappingProxyType(model_polarities),
+        layers=MappingProxyType(layers),
+        vias=MappingProxyType(vias),
+        via_landings=MappingProxyType(
+            {
+                role: MappingProxyType(landings)
+                for role, landings in via_landings.items()
+            }
+        ),
         mom_pcell=mom_pcell,
         resistor_pcell=resistor_pcell,
         mos_pcell=MosPcellInterface(
@@ -437,4 +452,5 @@ __all__ = [
     "MosPcellInterface",
     "ResistorPcellInterface",
     "load_layout_technology",
+    "parse_layout_technology",
 ]

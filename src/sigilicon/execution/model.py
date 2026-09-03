@@ -128,36 +128,6 @@ JsonValue = JsonScalar | tuple["JsonValue", ...] | Mapping[str, "JsonValue"]
 
 
 @dataclass(frozen=True)
-class _AdapterAction:
-    """Portable, adapter-owned command embedded in an execution plan."""
-
-    kind: str
-    config: Mapping[str, JsonValue] = field(default_factory=dict)
-    prepared: Mapping[str, JsonValue] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "kind", adapter_identity(self.kind))
-        if not isinstance(self.config, Mapping):
-            raise ContractError("action config must be a mapping")
-        if not isinstance(self.prepared, Mapping):
-            raise ContractError("prepared action state must be a mapping")
-        object.__setattr__(self, "config", _freeze(self.config, "action config"))
-        object.__setattr__(
-            self,
-            "prepared",
-            _freeze(self.prepared, "prepared action state"),
-        )
-
-    @property
-    def record(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "config": json_value(self.config),
-            "prepared": json_value(self.prepared),
-        }
-
-
-@dataclass(frozen=True)
 class Evidence:
     """Cross-domain classification attached to one execution step."""
 
@@ -778,6 +748,7 @@ class ResourceBinding:
         except (OSError, RuntimeError, ContractError):
             return False
 
+
     def matches_owned_tool(self, owned: OwnedExecutable) -> bool:
         """Match a held executable to this exact planned tool binding."""
 
@@ -816,6 +787,81 @@ class ResourceBinding:
             )
         except (OSError, RuntimeError):
             return False
+
+
+def validate_resource_record(record: Mapping[str, Any]) -> str:
+    """Validate one portable ResourceBinding record through its typed model."""
+
+    if not isinstance(record, Mapping):
+        raise ContractError("resource record must be a mapping")
+    common = {"identity", "kind", "sha256", "size"}
+    identity = record.get("identity")
+    kind = record.get("kind")
+    digest = record.get("sha256")
+    size = record.get("size")
+    if (
+        not isinstance(identity, str)
+        or kind not in {"tool", "file", "directory", "value"}
+        or not isinstance(digest, str)
+        or type(size) is not int
+        or size < 0
+    ):
+        raise ContractError("resource record header is invalid")
+    if kind == "value":
+        value = record.get("value")
+        if set(record) != common | {"value"} or not isinstance(value, str):
+            raise ContractError("value resource record is invalid")
+        binding = ResourceBinding(identity, kind, digest, None, (), value=value)
+    elif kind in {"tool", "file"}:
+        executable = record.get("executable")
+        if set(record) != common | {"executable"} or not isinstance(
+            executable, bool
+        ):
+            raise ContractError("file resource record is invalid")
+        binding = ResourceBinding(
+            identity,
+            kind,
+            digest,
+            Path("/"),
+            (ResourceFile("", digest, size, Path("/"), executable),),
+        )
+    else:
+        directories = record.get("directories")
+        files = record.get("files")
+        if (
+            set(record) != common | {"directories", "files"}
+            or not isinstance(directories, list)
+            or not isinstance(files, list)
+        ):
+            raise ContractError("directory resource record is invalid")
+        try:
+            entries = tuple(
+                ResourceFile(
+                    item["path"],
+                    item["sha256"],
+                    item["size"],
+                    Path("/"),
+                    item["executable"],
+                )
+                for item in files
+                if isinstance(item, Mapping)
+                and set(item) == {"path", "sha256", "size", "executable"}
+            )
+        except (KeyError, TypeError) as exc:
+            raise ContractError("directory resource file record is invalid") from exc
+        if len(entries) != len(files):
+            raise ContractError("directory resource file record is invalid")
+        binding = ResourceBinding(
+            identity,
+            kind,
+            digest,
+            Path("/"),
+            entries,
+            tuple(directories),
+        )
+    if binding.record != dict(record):
+        raise ContractError("resource record is not canonical")
+    return binding.kind
 
 
 @dataclass(frozen=True)
@@ -861,12 +907,16 @@ class Step:
 
     id: str
     uses: str
-    action: _AdapterAction
+    config: Mapping[str, JsonValue]
     needs: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     evidence: Evidence | None = None
     resources: tuple[str, ...] = ()
     runtime: RuntimeEnvironment = field(default_factory=RuntimeEnvironment)
+    _prepared: Mapping[str, JsonValue] = field(
+        default_factory=dict,
+        repr=False,
+    )
     _source_snapshots: tuple[Source, ...] = field(
         default=(), repr=False, compare=False
     )
@@ -877,10 +927,10 @@ class Step:
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _identifier(self.id, "step id"))
         object.__setattr__(self, "uses", adapter_identity(self.uses))
-        if not isinstance(self.action, _AdapterAction):
-            raise ContractError("prepared step action must be an adapter action")
-        if self.action.kind != self.uses:
-            raise ContractError("prepared step action kind must match its adapter")
+        if not isinstance(self.config, Mapping):
+            raise ContractError("step config must be a mapping")
+        if not isinstance(self._prepared, Mapping):
+            raise ContractError("prepared step state must be a mapping")
         if not isinstance(self.needs, tuple):
             raise ContractError("prepared step needs must be a tuple")
         needs = tuple(_identifier(value, "step dependency") for value in self.needs)
@@ -927,6 +977,12 @@ class Step:
         object.__setattr__(self, "needs", needs)
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "resources", resources)
+        object.__setattr__(self, "config", _freeze(self.config, "step config"))
+        object.__setattr__(
+            self,
+            "_prepared",
+            _freeze(self._prepared, "prepared step state"),
+        )
 
     @property
     def record(self) -> dict[str, Any]:
@@ -934,7 +990,8 @@ class Step:
             "id": self.id,
             "uses": self.uses,
             "needs": list(self.needs),
-            "action": self.action.record,
+            "config": json_value(self.config),
+            "prepared": json_value(self._prepared),
             "sources": list(self.sources),
             "resources": list(self.resources),
             "runtime": self.runtime.record,
@@ -1044,7 +1101,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 12,
+            "schema": 13,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
@@ -1491,9 +1548,6 @@ class StepContext:
     source_root: Path
     resources: Resources
     dependencies: Mapping[str, StepResult]
-    project_root: Path | None = field(default=None, repr=False, compare=False)
-    owner_root: Path | None = field(default=None, repr=False, compare=False)
-    workspace_root: Path | None = field(default=None, repr=False, compare=False)
     source_scopes: Mapping[str, str] = field(
         default_factory=dict,
         repr=False,
@@ -1531,23 +1585,6 @@ class StepContext:
                 "resource_root",
                 Path(self.resource_root).absolute(),
             )
-        runtime_roots = (self.project_root, self.owner_root, self.workspace_root)
-        if any(root is None for root in runtime_roots) and any(
-            root is not None for root in runtime_roots
-        ):
-            raise ContractError("step context runtime roots must be supplied together")
-        if all(root is not None for root in runtime_roots):
-            assert self.project_root is not None
-            assert self.owner_root is not None
-            assert self.workspace_root is not None
-            project_root = Path(self.project_root).resolve()
-            owner_root = Path(self.owner_root).resolve()
-            workspace_root = Path(self.workspace_root).resolve()
-            if not owner_root.is_relative_to(project_root):
-                raise ContractError("step context owner root escaped its project")
-            object.__setattr__(self, "project_root", project_root)
-            object.__setattr__(self, "owner_root", owner_root)
-            object.__setattr__(self, "workspace_root", workspace_root)
         if not isinstance(self.source_scopes, Mapping) or any(
             name not in self.step.sources or scope not in {"owner", "project"}
             for name, scope in self.source_scopes.items()

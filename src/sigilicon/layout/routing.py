@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from sigilicon.layout.technology import LayoutTechnology
+from sigilicon.domain.layout_technology import LayoutTechnology
 
 
 class RoutingCanvas:

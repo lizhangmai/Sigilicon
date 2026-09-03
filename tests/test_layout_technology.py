@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.layout.technology import load_layout_technology
+from sigilicon.domain.layout_technology import load_layout_technology
 
 
 def _write_contract(path: Path) -> None:

@@ -9,10 +9,9 @@ import json
 import os
 from pathlib import Path
 import re
-import tomllib
 from typing import Any, Mapping
 
-from sigilicon.artifacts import read_nofollow_text
+from sigilicon.contracts import read_toml
 from sigilicon.domain.ip_integration import parse_locked_ip_release
 from sigilicon.external_tools import (
     ProcessRequest,
@@ -75,8 +74,8 @@ def _structural_report(
 
 def _toml(path: Path, label: str) -> dict[str, Any]:
     try:
-        return tomllib.loads(read_nofollow_text(path))
-    except (OSError, UnicodeError, RuntimeError, tomllib.TOMLDecodeError) as exc:
+        return read_toml(path)
+    except ValueError as exc:
         raise ValueError(f"cannot read structural-link {label}") from exc
 
 

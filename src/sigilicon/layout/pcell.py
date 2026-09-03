@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from sigilicon.layout.ir import LayoutInstance, LayoutPlan, lower_laygo2_design
-from sigilicon.layout.technology import LayoutTechnology
+from sigilicon.domain.layout_technology import LayoutTechnology
 
 
 def _expected_terminals(

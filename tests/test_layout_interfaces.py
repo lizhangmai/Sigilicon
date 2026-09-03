@@ -16,7 +16,7 @@ from sigilicon.workflows.layout_generation import (
 from sigilicon.layout.ir import LayoutInstance, LayoutPlan
 from sigilicon.layout.pcell import apply_pcell_semantics
 from sigilicon.layout.routing import RoutingStack
-from sigilicon.layout.technology import LayoutTechnology, MosPcellInterface
+from sigilicon.domain.layout_technology import LayoutTechnology, MosPcellInterface
 
 
 def _technology() -> LayoutTechnology:

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
-import tomllib
 
 import pytest
 
@@ -92,9 +91,7 @@ def test_check_designs_parses_the_project_manifest_once(
 ) -> None:
     contract = (tmp_path / "sigilicon.toml").resolve()
     original = repository_module.read_toml
-    original_load = tomllib.load
     manifest_reads = 0
-    toml_reads = 0
 
     def counted(path: Path):
         nonlocal manifest_reads
@@ -102,19 +99,11 @@ def test_check_designs_parses_the_project_manifest_once(
             manifest_reads += 1
         return original(path)
 
-    def counted_load(stream):
-        nonlocal toml_reads
-        if Path(stream.name).resolve() == contract:
-            toml_reads += 1
-        return original_load(stream)
-
     monkeypatch.setattr(repository_module, "read_toml", counted)
-    monkeypatch.setattr(tomllib, "load", counted_load)
     monkeypatch.chdir(tmp_path)
 
     assert sigilicon_main(["check"]) == 0
     assert manifest_reads == 1
-    assert toml_reads == 1
     assert '"passed": true' in capsys.readouterr().out
 
 

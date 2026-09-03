@@ -13,10 +13,18 @@ from sigilicon.backends.synopsys import (
     HspiceAdapter,
     StructuralLinkAdapter,
     VcsAdapter,
+    _PreparedStructuralLink,
+    _StructuralLinkStep,
 )
-from sigilicon.execution import RuntimeEnvironment, Step, StepContext, StepResult
-from sigilicon.execution.model import _AdapterAction, Resources
+from sigilicon.execution.model import (
+    Resources,
+    RuntimeEnvironment,
+    Step,
+    StepContext,
+    StepResult,
+)
 from sigilicon.execution.model import resource_materialization_key
+from sigilicon.workflows.structural_link import StructuralLinkPlan
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -82,14 +90,15 @@ printf 'managed vcs\n'
     step = Step(
         "rtl",
         "synopsys.vcs",
-        _AdapterAction("synopsys.vcs", {
+        {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
             "rtl_root": "rtl",
             "testbench_root": "dv",
+            "success_marker": "managed vcs",
             "timeout_seconds": 10,
-        }),
+        },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
             tools={
@@ -120,6 +129,20 @@ printf 'managed vcs\n'
     assert "managed vcs" in result.artifacts[0].path.read_text()
     assert not (context.work_root / "tool").exists()
 
+    missing = _context(tmp_path / "missing-marker", step, resources)
+    _file(
+        missing.source_root / "dv/run_vcs.sh",
+        "#!/usr/bin/env bash\nprintf 'incomplete vcs run\\n'\n",
+        executable=True,
+    )
+    _file(missing.source_root / "rtl/design.sv")
+    _file(missing.source_root / "dv/testbench.sv")
+
+    failed = backend.run(missing, step)
+
+    assert failed.status == "failed"
+    assert failed.message == "VCS runner omitted its declared success marker"
+
 
 def test_owner_runner_cannot_mutate_a_watched_step_source(tmp_path: Path) -> None:
     sources = tmp_path / "run/inputs/sources"
@@ -138,14 +161,15 @@ printf 'tampered\n' >>"$source_file"
     step = Step(
         "rtl",
         "synopsys.vcs",
-        _AdapterAction("synopsys.vcs", {
+        {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "rtl",
             "variant": "test",
             "rtl_root": "rtl",
             "testbench_root": "dv",
+            "success_marker": "must not reach completion",
             "timeout_seconds": 10,
-        }),
+        },
         sources=("dv/run_vcs.sh", "rtl/design.sv", "dv/testbench.sv"),
         runtime=RuntimeEnvironment(
             tools={
@@ -164,7 +188,7 @@ printf 'tampered\n' >>"$source_file"
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
 
 
-def test_structural_link_run_consumes_the_prepared_record_without_replanning(
+def test_structural_link_run_consumes_its_typed_plan_without_replanning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -226,18 +250,43 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "release_liberty_resource": liberty_resource,
         "release_liberty_sha256": liberty_digest,
     }
-    step = Step(
+    planning = StructuralLinkPlan(
+        owner="example",
+        variant="default",
+        top="top",
+        rtl_sources=(tmp_path / owner_sources[4],),
+        compile_script=tmp_path / owner_sources[2],
+        link_script=tmp_path / owner_sources[3],
+        library_name="fixture",
+        macro_cell="MACRO",
+        parameter_overrides={"ROWS": 1},
+        expected_macro_instances=1,
+        expected_unresolved_references=0,
+        library_compiler_version="U-2022.12-SP6-T-20250827",
+        release_liberty=tmp_path / "unsealed.lib",
+        release_id="development-" + "a" * 40,
+        release_source_commit="a" * 40,
+        release_store="fixture",
+        release_manifest_sha256=manifest_digest,
+        release_liberty_sha256=liberty_digest,
+        release_sources=(tmp_path / "manifest.json", tmp_path / "unsealed.lib"),
+    )
+    step = _StructuralLinkStep(
         "link",
         "synopsys.structural-link",
-        _AdapterAction("synopsys.structural-link", config, prepared),
+        config,
+        _prepared=prepared,
         sources=owner_sources,
         resources=(manifest_resource, liberty_resource),
+        structural_link=_PreparedStructuralLink(
+            planning,
+            (owner_sources[4],),
+            owner_sources[2],
+            owner_sources[3],
+            manifest_resource,
+            liberty_resource,
+        ),
     )
-    project_root = tmp_path / "project"
-    owner_root = project_root / "ip/example"
-    workspace_root = tmp_path / "workspace"
-    owner_root.mkdir(parents=True)
-    workspace_root.mkdir()
     context = StepContext(
         "1" * 64,
         step,
@@ -248,9 +297,6 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         source_root,
         Resources(),
         {},
-        project_root=project_root,
-        owner_root=owner_root,
-        workspace_root=workspace_root,
         source_scopes={name: "owner" for name in owner_sources},
         resource_root=resource_root,
         resource_digests={
@@ -264,10 +310,6 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
     )
     backend = StructuralLinkAdapter()
     observed = []
-    monkeypatch.setattr(
-        "sigilicon.workflows.structural_link.plan_structural_link",
-        lambda **_kwargs: pytest.fail("run replanned a prepared structural step"),
-    )
     monkeypatch.setattr(
         backend,
         "_execute",
@@ -324,7 +366,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
     step = Step(
         "synthesis",
         "synopsys.dc",
-        _AdapterAction("synopsys.dc", {
+        {
             "runner": runner.relative_to(sources).as_posix(),
             "constraints": "impl/syn/constraints.sdc",
             "variant": "test",
@@ -332,7 +374,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
             "rtl_root": "rtl",
             "timeout_seconds": 10,
             "reports": ("check_design.rpt", "area.rpt"),
-        }),
+        },
         sources=(
             "impl/syn/run_dc.sh",
             "impl/syn/constraints.sdc",
@@ -422,7 +464,7 @@ raise SystemExit(1)
     step = Step(
         "qualification",
         "synopsys.hspice",
-        _AdapterAction("synopsys.hspice", {
+        {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "formal",
             "variant": "test",
@@ -444,7 +486,7 @@ raise SystemExit(1)
                 "campaign-summary": "common_mode_qualified/statistics.json",
                 "qualification-evidence": "qualification.json",
             },
-        }),
+        },
         sources=(
             "verification/hspice/run_hspice.sh",
             "tools/evaluate.py",
@@ -530,7 +572,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
     step = Step(
         "reference-library",
         "synopsys.fc",
-        _AdapterAction("synopsys.fc", {
+        {
             "runner": runner.relative_to(sources).as_posix(),
             "target": "library",
             "variant": "test",
@@ -538,7 +580,7 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
             "top": "design",
             "reference_library_output": "test.ndm",
             "timeout_seconds": 10,
-        }),
+        },
         sources=("impl/pnr/run_fc.sh",),
         runtime=RuntimeEnvironment(
             tools={

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import InitVar, dataclass, field
-import os
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
@@ -15,6 +14,7 @@ from sigilicon.contracts import (
     read_toml,
     require_config_header,
 )
+from sigilicon.domain.layout_technology import LayoutTechnology, parse_layout_technology
 from sigilicon.project import Project
 
 
@@ -124,9 +124,8 @@ class LayoutPdkConfig:
     qrc_tech_file: Path | None
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
-    xstream_bin: Path | None = None
-    calibre_bin: Path | None = None
     oa_materialization: OaMaterializationMapping | None = None
+    technology: LayoutTechnology | None = None
 
 
 @dataclass(frozen=True)
@@ -183,9 +182,8 @@ class LayoutPlatformContract:
     qrc_tech_file: PurePosixPath | None
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
-    xstream_bin: PurePosixPath | None = None
-    calibre_bin: PurePosixPath | None = None
     oa_materialization: OaMaterializationMapping | None = None
+    technology: LayoutTechnology | None = None
 
 
 _PDK_CONFIG_AUTHORITY = object()
@@ -307,8 +305,6 @@ class PlatformContract:
                     self.layout.drc_deck,
                     self.layout.lvs_deck,
                     self.layout.qrc_tech_file,
-                    self.layout.xstream_bin,
-                    self.layout.calibre_bin,
                 )
                 if path is not None
             )
@@ -686,21 +682,6 @@ def _required_file(
     return result
 
 
-def _optional_executable(
-    base: Path,
-    value: object,
-    field: str,
-    *,
-    require_asset: bool = True,
-) -> Path | None:
-    if value is None:
-        return None
-    result = _asset_path(base, value, field)
-    if require_asset and (not result.is_file() or not os.access(result, os.X_OK)):
-        raise ValueError(f"{field} must be executable: {result}")
-    return result
-
-
 def _contract(
     manifest: Path,
     contracts: Mapping[str, Any],
@@ -889,8 +870,6 @@ def _load_layout(
             "qrc_tech_file",
             "xstream_flatten_pcells",
             "xstream_suppressed_warnings",
-            "xstream_bin",
-            "calibre_bin",
         },
         "platform verification contract",
     )
@@ -947,19 +926,16 @@ def _load_layout(
         ),
         xstream_flatten_pcells=xstream_flatten,
         xstream_suppressed_warnings=warnings,
-        xstream_bin=_optional_executable(
-            asset_root,
-            verification_raw.get("xstream_bin"),
-            "xstream_bin",
-            require_asset=require_assets,
-        ),
-        calibre_bin=_optional_executable(
-            asset_root,
-            verification_raw.get("calibre_bin"),
-            "calibre_bin",
-            require_asset=require_assets,
-        ),
         oa_materialization=oa_materialization,
+        technology=(
+            None
+            if "custom_layout" not in layout_raw
+            else parse_layout_technology(
+                layout_raw,
+                owner=_text(layout_raw.get("owner"), "layout.owner"),
+                payload_key="custom_layout",
+            )
+        ),
     )
 
 
@@ -1244,17 +1220,8 @@ def load_platform_contract(
             xstream_suppressed_warnings=(
                 runtime_layout.xstream_suppressed_warnings
             ),
-            xstream_bin=(
-                None
-                if runtime_layout.xstream_bin is None
-                else logical(runtime_layout.xstream_bin)
-            ),
-            calibre_bin=(
-                None
-                if runtime_layout.calibre_bin is None
-                else logical(runtime_layout.calibre_bin)
-            ),
             oa_materialization=runtime_layout.oa_materialization,
+            technology=runtime_layout.technology,
         )
     )
     return PlatformContract(
@@ -1273,7 +1240,7 @@ def load_platform_contract(
     )
 
 
-def load_platforms(
+def _load_platforms(
     context: Project,
     *,
     resources: PlatformResources | None = None,
@@ -1307,3 +1274,26 @@ def load_platforms(
         catalog=selected_catalog,
         platforms=MappingProxyType(platforms),
     )
+
+
+def load_platforms(
+    context: Project,
+    *,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PlatformSet:
+    """Load the complete source-owned platform catalog."""
+
+    return _load_platforms(context, catalog=catalog)
+
+
+def resolve_platforms(
+    context: Project,
+    resources: PlatformResources,
+    *,
+    catalog: PlatformCatalogSnapshot | None = None,
+) -> PlatformSet:
+    """Resolve the complete platform catalog against explicit runtime assets."""
+
+    if not isinstance(resources, PlatformResources):
+        raise TypeError("platform resources must provide require_directory")
+    return _load_platforms(context, resources=resources, catalog=catalog)

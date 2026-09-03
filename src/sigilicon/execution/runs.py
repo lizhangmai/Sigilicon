@@ -15,7 +15,7 @@ from sigilicon.artifacts import (
     read_json_object,
     read_nofollow_text,
 )
-from sigilicon.canonical import canonical_digest, canonical_json
+from sigilicon.canonical import canonical_digest
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
@@ -26,12 +26,12 @@ from sigilicon.execution.model import (
     adapter_identity,
     resource_identity,
     resource_materialization_key,
+    validate_resource_record,
 )
 from sigilicon.paths import ArtifactLayout, RunPaths
 
 
 _DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
-_HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class RunStoreError(ValueError):
@@ -248,7 +248,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 12
+            plan.get("schema") != 13
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -314,104 +314,6 @@ class RunStore:
                 ):
                     raise RunStoreError("persisted run artifact is unsafe or unregistered")
         return manifest, plan, result
-
-    @staticmethod
-    def _validate_resource_record(record: Mapping[str, Any]) -> str:
-        common = {"identity", "kind", "sha256", "size"}
-        identity = record.get("identity")
-        kind = record.get("kind")
-        digest = record.get("sha256")
-        size = record.get("size")
-        try:
-            if not isinstance(identity, str):
-                raise ContractError("resource identity must be text")
-            resource_identity(identity)
-        except ContractError as exc:
-            raise RunStoreError(
-                "persisted runtime resource identity is invalid"
-            ) from exc
-        if (
-            kind not in {"tool", "file", "directory", "value"}
-            or not isinstance(digest, str)
-            or _HEX_DIGEST.fullmatch(digest) is None
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-        ):
-            raise RunStoreError("persisted runtime resource record is malformed")
-        if kind == "value":
-            value = record.get("value")
-            if (
-                set(record) != common | {"value"}
-                or not isinstance(value, str)
-                or not value
-                or len(value.encode("utf-8")) != size
-                or hashlib.sha256(value.encode("utf-8")).hexdigest() != digest
-            ):
-                raise RunStoreError("persisted runtime value identity drift")
-            return kind
-        if kind in {"tool", "file"}:
-            if set(record) != common | {"executable"} or not isinstance(
-                record.get("executable"), bool
-            ):
-                raise RunStoreError("persisted runtime file record is malformed")
-            return kind
-
-        directories = record.get("directories")
-        files = record.get("files")
-        if (
-            set(record) != common | {"directories", "files"}
-            or not isinstance(directories, list)
-            or not isinstance(files, list)
-        ):
-            raise RunStoreError("persisted runtime directory record is malformed")
-        paths: list[str] = []
-        total_size = 0
-        for item in files:
-            if not isinstance(item, Mapping) or set(item) != {
-                "path",
-                "sha256",
-                "size",
-                "executable",
-            }:
-                raise RunStoreError("persisted runtime directory file is malformed")
-            path = item.get("path")
-            item_digest = item.get("sha256")
-            item_size = item.get("size")
-            if (
-                not isinstance(path, str)
-                or not path
-                or not isinstance(item_digest, str)
-                or _HEX_DIGEST.fullmatch(item_digest) is None
-                or not isinstance(item_size, int)
-                or isinstance(item_size, bool)
-                or item_size < 0
-                or not isinstance(item.get("executable"), bool)
-            ):
-                raise RunStoreError("persisted runtime directory file is malformed")
-            paths.append(path)
-            total_size += item_size
-        entries = [*directories, *paths]
-        if any(
-            not isinstance(path, str)
-            or not path
-            or "\\" in path
-            or PurePosixPath(path).is_absolute()
-            or PurePosixPath(path).as_posix() != path
-            or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
-            for path in entries
-        ) or directories != sorted(set(directories)) or paths != sorted(set(paths)):
-            raise RunStoreError("persisted runtime directory paths are not canonical")
-        if set(directories) & set(paths):
-            raise RunStoreError("persisted runtime directory paths collide")
-        expected_digest = hashlib.sha256(
-            canonical_json({"directories": directories, "files": files}).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        if total_size != size or expected_digest != digest:
-            raise RunStoreError("persisted runtime directory identity drift")
-        return kind
 
     @staticmethod
     def _validate_runtime_bindings(
@@ -506,7 +408,7 @@ class RunStore:
             ordered_identities.append(identity)
             try:
                 materialization_key = resource_materialization_key(identity)
-                kind = RunStore._validate_resource_record(record)
+                kind = validate_resource_record(record)
             except (RuntimeError, ContractError) as exc:
                 raise RunStoreError(
                     "persisted runtime resource record is unsafe"

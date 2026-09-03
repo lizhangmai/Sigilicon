@@ -4,19 +4,16 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-import json
 from pathlib import Path
 import sys
 
-from sigilicon.artifacts import read_nofollow_text
 from sigilicon.cli.common import emit_json, open_cli_project
-from sigilicon.execution import (
+from sigilicon.execution.model import (
     ContractError,
     ExecutionError,
-    RunStore,
-    RunStoreError,
 )
 from sigilicon.execution.operations import parse_selector
+from sigilicon.execution.runs import RunStore, RunStoreError
 from sigilicon.project import Project
 
 
@@ -28,10 +25,8 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("plan", "preflight", "run"):
         command = commands.add_parser(name)
-        command.add_argument("selector", nargs="?", help="owner:operation[@variant]")
+        command.add_argument("selector", help="owner:operation[@variant]")
         command.add_argument("--project-root", type=Path)
-        if name in {"preflight", "run"}:
-            command.add_argument("--plan-file", type=Path)
         if name == "run":
             command.add_argument("--run-id")
     for name in ("status", "audit", "clean"):
@@ -101,21 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
             return 0
-        plan_file = getattr(args, "plan_file", None)
-        if (args.selector is None) == (plan_file is None):
-            raise ContractError(
-                "plan/preflight/run requires exactly one selector or --plan-file"
-            )
-        if plan_file is None:
-            plan = project.plan(args.selector)
-        else:
-            try:
-                record = json.loads(read_nofollow_text(plan_file))
-            except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
-                raise ContractError(f"cannot read execution plan: {plan_file}") from exc
-            if not isinstance(record, dict):
-                raise ContractError("execution plan file must contain a JSON object")
-            plan = project.plan(record)
+        plan = project.plan(args.selector)
         if args.command == "plan":
             emit_json(plan.record)
             return 0

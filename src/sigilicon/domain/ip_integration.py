@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
@@ -18,6 +17,7 @@ from sigilicon.project._component import (
 from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
+    read_toml,
     require_config_header,
 )
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
@@ -282,8 +282,7 @@ def _implementation_profiles(
             f"implementation.{name}",
         )
         if source_documents is None:
-            with path.open("rb") as stream:
-                profile: Mapping[str, Any] = tomllib.load(stream)
+            profile: Mapping[str, Any] = read_toml(path)
         else:
             profile = source_documents.get(path)
             if not isinstance(profile, Mapping):
@@ -317,8 +316,7 @@ def _operating_variant(
     source_document: Mapping[str, Any] | None = None,
 ) -> IpOperatingVariant:
     if source_document is None:
-        with path.open("rb") as stream:
-            raw: Mapping[str, Any] = tomllib.load(stream)
+        raw: Mapping[str, Any] = read_toml(path)
     else:
         raw = source_document
     require_config_header(
@@ -797,8 +795,7 @@ def load_ip_dependency_lock(
         relative,
         "IP dependency lock",
     )
-    with lock_path.open("rb") as stream:
-        raw: dict[str, Any] = tomllib.load(stream)
+    raw = read_toml(lock_path)
     require_config_header(
         raw,
         lock_path,

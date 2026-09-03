@@ -12,7 +12,7 @@ from sigilicon.domain.netlist import (
     lower_subckt_default_parameters,
 )
 from sigilicon.layout.generator import LayoutGeneratorInput
-from sigilicon.layout.technology import LayoutTechnology
+from sigilicon.domain.layout_technology import LayoutTechnology
 
 
 _MOS = re.compile(

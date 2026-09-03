@@ -24,9 +24,9 @@ from sigilicon.domain.ip_release import (
     safe_relative,
 )
 from sigilicon.domain.oa_library import OALibrarySource
-from sigilicon.domain.platform import PdkConfig
+from sigilicon.domain.platform import PlatformSet
 from sigilicon.project import Project
-from sigilicon.release_store import AuditedRelease, ReleaseRef, ReleaseStore
+from sigilicon.release_store import ReleasePackage, ReleaseRef, ReleaseStore
 from sigilicon.workflows.ip_packaging import (
     plan_ip_release_contract,
     validate_ip_release_package,
@@ -221,7 +221,7 @@ def plan_ip_integration(
     contract_path: Path,
     *,
     project: Project,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: PlatformSet | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
@@ -241,7 +241,7 @@ def plan_ip_integration(
 def plan_ip_integration_contract(
     contract: IpIntegrationContract,
     *,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: PlatformSet | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
@@ -327,7 +327,7 @@ def resolve_locked_ip_release(
     *,
     artifact_root: Path,
     pinned: LockedIpRelease,
-) -> AuditedRelease:
+) -> ReleasePackage:
     """Resolve one exact cross-owner release without following producer state."""
 
     release = ReleaseStore.from_artifact_root(artifact_root).open(
@@ -358,7 +358,7 @@ def _locked_release_manifest(
     artifact_root: Path,
     dependency: IpIntegrationDependency,
     pinned: LockedIpRelease,
-) -> AuditedRelease:
+) -> ReleasePackage:
     release = dependency.release
     if release is None:
         raise RuntimeError(f"IP dependency {dependency.name} has no release contract")

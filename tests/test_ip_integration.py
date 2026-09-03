@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import sigilicon.contracts as contract_io
 import sigilicon.workflows.ip_integration as ip_integration
 from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
@@ -725,16 +726,16 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     release_id, manifest = _write_release_fixture(artifact_root)
     contract = _write_ip_fixture(project_root, release_id, manifest)
     catalog = (project_root / "ip/catalog.toml").resolve()
-    original_toml_load = tomllib.load
+    original_read = contract_io.read_nofollow_text
     catalog_reads = 0
 
-    def counted_load(stream):
+    def counted_read(path: Path):
         nonlocal catalog_reads
-        if Path(stream.name).resolve() == catalog:
+        if path.resolve() == catalog:
             catalog_reads += 1
-        return original_toml_load(stream)
+        return original_read(path)
 
-    monkeypatch.setattr(tomllib, "load", counted_load)
+    monkeypatch.setattr(contract_io, "read_nofollow_text", counted_read)
 
     result = check_ip_integration(
         contract,

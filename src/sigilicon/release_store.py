@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -32,12 +32,12 @@ class ReleaseRef:
         if _SHA256.fullmatch(self.manifest_sha256) is None:
             raise ValueError("release manifest digest must be SHA-256")
 
-    @property
-    def object(self) -> str:
-        return validate_artifact_id(
-            f"sha256-{self.manifest_sha256}",
-            "release object",
-        )
+
+def _release_object_name(ref: ReleaseRef) -> str:
+    return validate_artifact_id(
+        f"sha256-{ref.manifest_sha256}",
+        "release object",
+    )
 
 
 @dataclass(frozen=True)
@@ -53,13 +53,13 @@ class ReleaseArtifact:
 
 
 @dataclass(frozen=True)
-class AuditedRelease:
-    """A release whose locator, inventory, and payloads have been audited."""
+class ReleasePackage:
+    """One audited release manifest and its exact payload closure."""
 
-    ref: ReleaseRef
     manifest_path: Path
     manifest: Mapping[str, Any]
     artifacts: tuple[ReleaseArtifact, ...]
+    ref: ReleaseRef | None = None
 
     def role(self, export: str, role: str) -> ReleaseArtifact:
         matches = tuple(
@@ -80,16 +80,7 @@ class AuditedRelease:
         return artifact
 
 
-@dataclass(frozen=True)
-class ReleasePackage:
-    """One structurally audited release manifest and its exact file closure."""
-
-    manifest_path: Path
-    manifest: Mapping[str, Any]
-    artifacts: tuple[ReleaseArtifact, ...]
-
-
-def audit_release_package(
+def _audit_release_package(
     manifest_path: Path,
     *,
     manifest_sha256: str | None = None,
@@ -194,6 +185,30 @@ def audit_release_package(
     )
 
 
+def audit_release_package(
+    manifest_path: Path,
+    *,
+    manifest_sha256: str | None = None,
+    validate: Callable[[ReleasePackage], None] | None = None,
+) -> ReleasePackage:
+    """Audit structure and optional domain semantics against one stable package."""
+
+    package = _audit_release_package(
+        manifest_path,
+        manifest_sha256=manifest_sha256,
+    )
+    if validate is None:
+        return package
+    validate(package)
+    checked = _audit_release_package(
+        manifest_path,
+        manifest_sha256=manifest_sha256,
+    )
+    if dict(checked.manifest) != dict(package.manifest):
+        raise RuntimeError("release changed during domain validation")
+    return checked
+
+
 class ReleaseStore:
     """Open exact immutable packages without exposing storage layout to consumers."""
 
@@ -205,7 +220,7 @@ class ReleaseStore:
         return cls(Path(artifact_root).absolute() / "release-store")
 
     def object_root(self, ref: ReleaseRef) -> Path:
-        result = self.root / ref.store / "objects" / ref.object
+        result = self.root / ref.store / "objects" / _release_object_name(ref)
         if result.absolute() != result or result.resolve() != result:
             raise RuntimeError("release store path traverses a symlink")
         return result
@@ -215,51 +230,31 @@ class ReleaseStore:
         ref: ReleaseRef,
         *,
         validate: Callable[[ReleasePackage], None] | None = None,
-    ) -> AuditedRelease:
+    ) -> ReleasePackage:
         """Audit one object, apply domain validation, then prove it stayed stable."""
 
-        release = self._audit(ref)
-        if validate is not None:
-            validate(
-                ReleasePackage(
-                    release.manifest_path,
-                    release.manifest,
-                    release.artifacts,
-                )
-            )
-            checked = self._audit(ref)
-            if dict(checked.manifest) != dict(release.manifest):
-                raise RuntimeError("release changed during domain validation")
-            release = checked
-        return release
-
-    def _audit(self, ref: ReleaseRef) -> AuditedRelease:
         root = self.object_root(ref)
+        object_name = _release_object_name(ref)
         try:
             package = audit_release_package(
                 root / "manifest.json",
                 manifest_sha256=ref.manifest_sha256,
+                validate=validate,
             )
         except FileNotFoundError as exc:
             raise FileNotFoundError(
-                f"release store {ref.store!r} has no object {ref.object!r}"
+                f"release store {ref.store!r} has no object {object_name!r}"
             ) from exc
         except (OSError, RuntimeError) as exc:
             if not root.is_dir():
                 raise FileNotFoundError(
-                    f"release store {ref.store!r} has no object {ref.object!r}"
+                    f"release store {ref.store!r} has no object {object_name!r}"
                 ) from exc
             raise
-        return AuditedRelease(
-            ref,
-            package.manifest_path,
-            package.manifest,
-            package.artifacts,
-        )
+        return replace(package, ref=ref)
 
 
 __all__ = [
-    "AuditedRelease",
     "ReleaseArtifact",
     "ReleasePackage",
     "ReleaseRef",

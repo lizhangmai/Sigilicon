@@ -8,7 +8,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
-import tomllib
 import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -19,7 +18,7 @@ from sigilicon.artifacts import (
     copy_immutable_file,
     read_json_object,
 )
-from sigilicon.contracts import require_config_header
+from sigilicon.contracts import read_toml, require_config_header
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
@@ -48,10 +47,10 @@ from sigilicon.domain.systemverilog import (
 )
 from sigilicon.external_tools import owned_directory
 from sigilicon.release_store import (
-    AuditedRelease,
     ReleasePackage,
     ReleaseRef,
     ReleaseStore,
+    _release_object_name,
     audit_release_package,
 )
 from sigilicon.workflows.source_control import inspect_checkout
@@ -59,7 +58,7 @@ from sigilicon.workflows.source_control import inspect_checkout
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
     from sigilicon.domain.oa_library import OALibrarySource
-    from sigilicon.domain.platform import PdkConfig
+    from sigilicon.domain.platform import PlatformSet
     from sigilicon.workflows.oa_library import OALibraryRebuildPlan
 
 
@@ -244,8 +243,7 @@ def _oa_port_contract_document(
     design_inventory: Mapping[Path, DesignSpec] | None,
 ) -> Mapping[str, Any]:
     if design_inventory is None:
-        with path.open("rb") as stream:
-            return tomllib.load(stream)
+        return read_toml(path)
     try:
         design_snapshot = design_inventory[path]
     except KeyError as exc:
@@ -305,8 +303,7 @@ def _development_interface_check_with_design_inventory(
     if raw is None and documents:
         raise ValueError("IP release interface snapshot is incomplete")
     if raw is None:
-        with interface_path.open("rb") as stream:
-            raw = tomllib.load(stream)
+        raw = read_toml(interface_path)
     physical = _table(raw.get("physical_macro"), "physical_macro")
     transaction = _table(raw.get("transaction_boundary"), "transaction_boundary")
     by_role = {item.role: item for item in exported.collateral}
@@ -437,8 +434,7 @@ def _native_oa_development_interface_check(
     if raw is None:
         if contract.interface_documents:
             raise ValueError("IP release interface snapshot is incomplete")
-        with interface_path.open("rb") as stream:
-            raw = tomllib.load(stream)
+        raw = read_toml(interface_path)
     port_count, port_contract_relative = _native_oa_interface_contract(
         raw,
         path=interface_path,
@@ -556,8 +552,7 @@ def _rtl_development_interface_check(
     if raw is None:
         if contract.interface_documents:
             raise ValueError("IP release interface snapshot is incomplete")
-        with interface_path.open("rb") as stream:
-            raw = tomllib.load(stream)
+        raw = read_toml(interface_path)
     module, public_module = _rtl_module_contract(
         raw,
         module_name=interface.module,
@@ -648,7 +643,7 @@ def _resolve_release_oa_source(
 def _source_inputs(
     contract: IpContract,
     *,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
     resolved_oa_source: OALibrarySource | None = None,
@@ -830,8 +825,7 @@ def _source_inputs(
         for layout_spec in cell.layout_specs:
             paths.add(layout_spec)
             if oa_plan is None:
-                with layout_spec.open("rb") as stream:
-                    layout_raw = tomllib.load(stream).get("layout", {})
+                layout_raw = read_toml(layout_spec).get("layout", {})
                 if not isinstance(layout_raw, Mapping):
                     raise ValueError(f"layout must be a TOML table: {layout_spec}")
                 for field in ("generator_source", "source_netlist"):
@@ -1297,7 +1291,7 @@ def _plan_loaded_ip_release(
     contract: IpContract,
     *,
     maturity: str | None = None,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
@@ -1488,7 +1482,7 @@ def plan_ip_release(
     *,
     project: Project,
     maturity: str | None = None,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
@@ -1506,7 +1500,7 @@ def plan_ip_release_contract(
     contract: IpContract,
     *,
     maturity: str | None = None,
-    platform_inventory: Mapping[str, PdkConfig] | None = None,
+    platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> dict[str, Any]:
@@ -1696,9 +1690,10 @@ def build_ip_release(
                 str(plan["release_store"]),
                 manifest_digest,
             )
+            object_name = _release_object_name(ref)
             try:
                 existing = os.stat(
-                    ref.object,
+                    object_name,
                     dir_fd=release_namespace.fd,
                     follow_symlinks=False,
                 )
@@ -1706,7 +1701,7 @@ def build_ip_release(
                 _readonly_tree(temporary)
                 os.rename(
                     temporary_name,
-                    ref.object,
+                    object_name,
                     src_dir_fd=release_namespace.fd,
                     dst_dir_fd=release_namespace.fd,
                 )
@@ -1714,7 +1709,7 @@ def build_ip_release(
             else:
                 if not stat.S_ISDIR(existing.st_mode):
                     raise RuntimeError(
-                        f"release store object path is unsafe: {ref.object}"
+                        f"release store object path is unsafe: {object_name}"
                     )
         finally:
             if not installed:
@@ -1815,10 +1810,9 @@ def _packaged_rtl_interface_check(
     ).get("module") != module_name:
         raise RuntimeError(
             f"packaged {export_name}/{source_role} module disagrees with its interface"
-        )
+    )
     try:
-        with contract_path.open("rb") as stream:
-            raw: dict[str, Any] = tomllib.load(stream)
+        raw = read_toml(contract_path)
         module, public_module = _rtl_module_contract(
             raw,
             module_name=module_name,
@@ -1835,7 +1829,7 @@ def _packaged_rtl_interface_check(
         actual_ports = module_port_signatures(
             rtl_source.read_text(encoding="utf-8"), module_name
         )
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise RuntimeError(
             f"packaged {export_name} RTL interface is invalid: {exc}"
         ) from exc
@@ -1884,10 +1878,9 @@ def _packaged_native_oa_interface_check(
     if contract_view.get("source") != contract_source:
         raise RuntimeError(
             f"packaged {export_name} interface contract provenance drifted"
-        )
+    )
     try:
-        with contract_path.open("rb") as stream:
-            raw: dict[str, Any] = tomllib.load(stream)
+        raw = read_toml(contract_path)
         owner = manifest.get("owner")
         if not isinstance(owner, str) or not owner:
             raise ValueError("release owner identity is missing")
@@ -1906,8 +1899,7 @@ def _packaged_native_oa_interface_check(
         port_contract_path = resolve_release_role(
             manifest, manifest_path, "oa_port_contract", export=export_name
         )
-        with port_contract_path.open("rb") as stream:
-            expected_ports = _oa_port_contract(tomllib.load(stream))
+        expected_ports = _oa_port_contract(read_toml(port_contract_path))
         if len(expected_ports) != port_count:
             raise ValueError("OA port count disagrees with the interface")
         circuit_path = resolve_release_role(
@@ -1963,7 +1955,7 @@ def _packaged_native_oa_interface_check(
         if set(hierarchy.primitive_counts) != set(primitive_masters):
             raise ValueError("native OA circuit primitive inventory drifted")
         circuit_ports = hierarchy.definitions[str(oa["cell"])].ports
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise RuntimeError(
             f"packaged {export_name} native OA interface is invalid: {exc}"
         ) from exc
@@ -2028,13 +2020,12 @@ def _packaged_interface_check(
             manifest, manifest_path, "interface_contract", export=export_name
         )
         try:
-            with contract_path.open("rb") as stream:
-                raw: dict[str, Any] = tomllib.load(stream)
+            raw = read_toml(contract_path)
             physical = _table(raw.get("physical_macro"), "physical_macro")
             transaction = _table(
                 raw.get("transaction_boundary"), "transaction_boundary"
             )
-        except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, ValueError) as exc:
             raise RuntimeError(
                 f"packaged {export_name} interface contract is invalid: {exc}"
             ) from exc
@@ -2092,15 +2083,16 @@ def _packaged_interface_check(
                 sources["physical_blackbox"].read_text(encoding="utf-8"),
                 physical_module,
             )
-            with sources["oa_port_contract"].open("rb") as stream:
-                expected_physical_ports = _oa_port_contract(tomllib.load(stream))
+            expected_physical_ports = _oa_port_contract(
+                read_toml(sources["oa_port_contract"])
+            )
             circuit_ports = subckt_ports(
                 sources["circuit_netlist"], physical_module
             )
             bindings = named_port_connections(
                 shell_text, str(shell_module), physical_module
             )
-        except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, ValueError) as exc:
             raise RuntimeError(
                 f"packaged {export_name} SystemVerilog interface is invalid: {exc}"
             ) from exc
@@ -2280,18 +2272,17 @@ def validate_ip_release_package(package: ReleasePackage) -> None:
 def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Audit an exact immutable package without consulting producer source."""
 
-    first = audit_release_package(manifest_path)
-    validate_ip_release_package(first)
-    second = audit_release_package(manifest_path)
-    if dict(first.manifest) != dict(second.manifest):
-        raise RuntimeError("IP release changed during semantic audit")
-    return dict(second.manifest)
+    package = audit_release_package(
+        manifest_path,
+        validate=validate_ip_release_package,
+    )
+    return dict(package.manifest)
 
 
 def _audit_loaded_ip_release(
     contract: IpContract,
     plan: Mapping[str, Any],
-    audited: AuditedRelease,
+    audited: ReleasePackage,
 ) -> dict[str, Any]:
     release_root = audited.manifest_path.parent
     manifest = audited.manifest
@@ -2401,6 +2392,8 @@ def _audit_loaded_ip_release(
         or set(inventory.directories) != expected_directories
     ):
         raise RuntimeError("IP release inventory does not match its manifest")
+    if audited.ref is None:
+        raise RuntimeError("stored IP release lost its release reference")
     return {
         **manifest,
         "store": audited.ref.store,

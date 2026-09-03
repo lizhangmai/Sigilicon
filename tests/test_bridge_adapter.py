@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sigilicon.execution import ContractError
-from sigilicon.execution.model import Resources
+from sigilicon.execution.model import ContractError, Resources
 from sigilicon.virtuoso import bridge
 from sigilicon.workflows import oa_client as client_adapter
 

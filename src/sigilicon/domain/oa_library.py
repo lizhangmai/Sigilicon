@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.contracts import (
     freeze_toml_document,
     is_frozen_toml_document,
+    read_toml,
     require_config_header,
 )
 from sigilicon.domain.physical_verification import (
@@ -163,14 +163,7 @@ class OALibrarySource:
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
-    try:
-        with path.open("rb") as stream:
-            value = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"cannot read TOML {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"TOML root must be a table: {path}")
-    return value
+    return read_toml(path)
 
 
 def _identifier(value: object, field: str) -> str:

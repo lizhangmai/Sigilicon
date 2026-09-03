@@ -293,9 +293,6 @@ def _run(
     adapters: AdapterRegistry,
     *,
     artifact_root: Path,
-    project_root: Path,
-    owner_root: Path,
-    workspace_root: Path,
     run_id: str | None = None,
     progress: Progress | None = None,
 ) -> RunResult:
@@ -410,9 +407,6 @@ def _run(
                     source_root=source_root,
                     resources=execution_resources,
                     dependencies=dependencies,
-                    project_root=project_root,
-                    owner_root=owner_root,
-                    workspace_root=workspace_root,
                     source_scopes={
                         source.path: source.scope
                         for source in plan.sources

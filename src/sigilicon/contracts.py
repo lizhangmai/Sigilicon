@@ -236,9 +236,8 @@ def read_toml(path: Path) -> dict[str, Any]:
     """Read one TOML document and require a table root."""
 
     try:
-        with path.open("rb") as stream:
-            value = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        value = tomllib.loads(read_nofollow_text(path))
+    except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"cannot read TOML {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"TOML root must be a table: {path}")

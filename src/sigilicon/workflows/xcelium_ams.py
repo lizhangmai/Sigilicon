@@ -8,11 +8,11 @@ import json
 from pathlib import Path
 from pathlib import PurePosixPath
 from collections.abc import Callable
-import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
+from sigilicon.contracts import read_toml
 from sigilicon.domain.ip_integration import parse_locked_ip_release
 from sigilicon.domain.platform import (
     PdkConfig,
@@ -172,8 +172,8 @@ def _project_source(root: Path, value: object, label: str) -> Path:
 
 def _toml(path: Path, label: str) -> dict[str, Any]:
     try:
-        return tomllib.loads(read_nofollow_text(path))
-    except tomllib.TOMLDecodeError as exc:
+        return read_toml(path)
+    except ValueError as exc:
         raise ValueError(f"Xcelium AMS {label} is invalid TOML") from exc
 
 
