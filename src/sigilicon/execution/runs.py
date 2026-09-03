@@ -171,6 +171,8 @@ class RunStore:
         selected: _SelectedRun,
         *,
         verify_content: bool = False,
+        require_terminal: bool = True,
+        validate_inventory: bool = True,
     ) -> dict[str, Any]:
         root = selected.paths.root
         if not root.is_dir() or root.is_symlink() or root.resolve() != root.absolute():
@@ -187,17 +189,21 @@ class RunStore:
             or manifest.get("operation") != selected.operation
             or manifest.get("variant") != selected.variant
             or manifest.get("run_id") != selected.run_id
-            or manifest.get("status")
-            not in {"succeeded", "failed", "partial", "uncertain", "cancelled"}
+            or (
+                require_terminal
+                and manifest.get("status")
+                not in {"succeeded", "failed", "partial", "uncertain", "cancelled"}
+            )
             or not isinstance(source, Mapping)
             or not isinstance(source.get("plan_identity"), str)
         ):
             raise RunStoreError("execution manifest identity or terminal state drift")
-        self._validate_inventory(
-            selected.paths,
-            manifest,
-            verify_content=verify_content,
-        )
+        if validate_inventory:
+            self._validate_inventory(
+                selected.paths,
+                manifest,
+                verify_content=verify_content,
+            )
         return manifest
 
     def _records(
@@ -577,7 +583,13 @@ class RunStore:
             tree = SafeTree(root)
         except (OSError, RuntimeError) as exc:
             raise RunStoreError(f"missing execution run: {run_id}") from exc
-        manifest = self._manifest(selected)
+        manifest = self._manifest(
+            selected,
+            require_terminal=False,
+            validate_inventory=False,
+        )
+        if manifest["status"] != "running":
+            self._validate_inventory(selected.paths, manifest)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
             self._records(selected, manifest)
         try:

@@ -64,6 +64,46 @@ def _context(
     )
 
 
+@pytest.mark.parametrize("adapter", (VcsAdapter(), DcAdapter(), FcAdapter()))
+def test_synopsys_adapters_reject_unknown_configuration_fields(adapter) -> None:
+    common = {
+        "runner": "flow/run.sh",
+        "variant": "test",
+        "timeout_seconds": 1,
+    }
+    configs = {
+        "synopsys.vcs": {
+            **common,
+            "target": "rtl",
+            "rtl_root": "rtl",
+            "testbench_root": "dv",
+            "success_marker": "passed",
+        },
+        "synopsys.dc": {
+            **common,
+            "constraints": "flow/constraints.sdc",
+            "corner": "tt",
+            "rtl_root": "rtl",
+        },
+        "synopsys.fc": {
+            **common,
+            "target": "library",
+            "corner": "tt",
+        },
+    }
+    config = {**configs[adapter.name], "misspelled_field": True}
+    step = Step(
+        "check",
+        adapter.name,
+        config,
+        sources=("flow/run.sh", "flow/constraints.sdc", "rtl/top.sv", "dv/tb.sv"),
+        runtime=RuntimeEnvironment(tools={"SHELL": "runtime.bash"}),
+    )
+
+    with pytest.raises(ContractError, match="unknown config fields.*misspelled_field"):
+        adapter.preflight(step, Resources())
+
+
 def test_vcs_backend_runs_one_sealed_owner_script(tmp_path: Path) -> None:
     sources = tmp_path / "run/inputs/sources"
     runner = _file(

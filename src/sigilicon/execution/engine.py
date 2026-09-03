@@ -464,7 +464,7 @@ def _run(
                     for path in output_root.rglob("*")
                     if path.is_file() and not path.is_symlink()
                 }
-                if result.status == "succeeded" and actual_outputs != published:
+                if actual_outputs != published:
                     raise ExecutionError(
                         f"adapter {step.uses!r} output inventory does not match "
                         "its published artifacts"

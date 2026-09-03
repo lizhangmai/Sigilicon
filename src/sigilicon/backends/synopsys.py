@@ -461,8 +461,21 @@ def _run_script(
 
 class VcsAdapter(DirectAdapter):
     name = "synopsys.vcs"
+    _fields = frozenset(
+        {
+            "rtl_root",
+            "runner",
+            "success_marker",
+            "synthesis_step",
+            "target",
+            "testbench_root",
+            "timeout_seconds",
+            "variant",
+        }
+    )
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        _strict_config(step, self._fields)
         checks = _base_checks(step)
         _target(step.config)
         _text(step.config, "success_marker")
@@ -473,7 +486,7 @@ class VcsAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.config
+        config = _strict_config(context.step, self._fields)
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -524,8 +537,20 @@ class VcsAdapter(DirectAdapter):
 
 class DcAdapter(DirectAdapter):
     name = "synopsys.dc"
+    _fields = frozenset(
+        {
+            "constraints",
+            "corner",
+            "reports",
+            "rtl_root",
+            "runner",
+            "timeout_seconds",
+            "variant",
+        }
+    )
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        _strict_config(step, self._fields)
         checks = _base_checks(step)
         constraints = _safe_relative(_text(step.config, "constraints"), "constraints")
         _text(step.config, "corner")
@@ -537,7 +562,7 @@ class DcAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.config
+        config = _strict_config(context.step, self._fields)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
         environment.update(
@@ -612,8 +637,23 @@ class DcAdapter(DirectAdapter):
 
 class FcAdapter(DirectAdapter):
     name = "synopsys.fc"
+    _fields = frozenset(
+        {
+            "corner",
+            "outputs",
+            "reference_library_output",
+            "reference_step",
+            "runner",
+            "synthesis_step",
+            "target",
+            "timeout_seconds",
+            "top",
+            "variant",
+        }
+    )
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        _strict_config(step, self._fields)
         checks = _base_checks(step)
         target = _target(step.config)
         _text(step.config, "corner")
@@ -624,7 +664,7 @@ class FcAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.config
+        config = _strict_config(context.step, self._fields)
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values
@@ -842,7 +882,7 @@ class HspiceAdapter(DirectAdapter):
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
-        config = context.step.config
+        config = _strict_config(context.step, self._fields)
         target = _target(config)
         runtime = _runtime_environment(context.resources, context.step)
         environment = runtime.values

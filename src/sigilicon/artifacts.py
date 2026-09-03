@@ -101,6 +101,16 @@ def _read_nofollow_bytes(path: Path) -> bytes:
             after.st_mtime_ns,
         ):
             raise RuntimeError(f"artifact input changed while reading: {absolute}")
+        visible_after = os.stat(
+            absolute.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if (visible_after.st_dev, visible_after.st_ino) != (
+            metadata.st_dev,
+            metadata.st_ino,
+        ):
+            raise RuntimeError(f"artifact input pathname changed: {absolute}")
         return b"".join(chunks)
     finally:
         if descriptor is not None:
@@ -695,6 +705,7 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     if set(files) != RUN_ROLES:
         raise ArtifactManifestError(f"run manifest file roles are invalid: {sorted(files)}")
     registered_paths: set[str] = set()
+    registered_files: set[str] = set()
     for role, references in files.items():
         if not isinstance(references, list):
             raise ArtifactManifestError(f"manifest file role {role} must be a list")
@@ -740,6 +751,8 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                     f"manifest file reference is duplicated: {relative}"
                 )
             registered_paths.add(relative)
+            if kind == "file":
+                registered_files.add(relative)
     completion_evidence = value.get("completion_evidence")
     if not isinstance(completion_evidence, list) or not all(
         isinstance(path, str) and path in registered_paths for path in completion_evidence
@@ -749,6 +762,10 @@ def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     if len(completion_evidence) != len(set(completion_evidence)):
         raise ArtifactManifestError("manifest completion_evidence must be unique")
+    if any(path not in registered_files for path in completion_evidence):
+        raise ArtifactManifestError(
+            "manifest completion_evidence must reference regular files"
+        )
     if any(Path(path).parts[0] != "outputs" for path in completion_evidence):
         raise ArtifactManifestError(
             "manifest completion_evidence for this artifact must use outputs/"
@@ -1144,19 +1161,13 @@ class RunRecord:
                 ):
                     raise RuntimeError(f"invalid completion evidence: {candidate}")
                 relative = candidate.relative_to(self.paths.root.resolve()).as_posix()
-                registered = next(
-                    (
-                        entry
-                        for entries in self.manifest["files"].values()
-                        for entry in entries
-                        if entry["path"] == relative
-                    ),
-                    None,
-                )
-                if registered is None:
+                role = Path(relative).parts[0]
+                index = self._file_indexes[role].get(relative)
+                if index is None:
                     raise RuntimeError(
                         f"completion evidence is not registered in manifest: {relative}"
                     )
+                registered = self.manifest["files"][role][index]
                 metadata, digest = _inspect_nofollow_file(candidate)
                 current_state = (
                     metadata.st_ino,

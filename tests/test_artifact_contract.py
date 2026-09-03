@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import copy
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 
 import pytest
+
+import sigilicon.artifacts as artifacts
 
 from sigilicon.artifacts import (
     ArtifactManifestError,
@@ -12,6 +15,7 @@ from sigilicon.artifacts import (
     copy_immutable_file,
     load_manifest,
     validate_manifest,
+    read_nofollow_bytes,
 )
 from sigilicon.paths import ArtifactLayout
 
@@ -136,6 +140,48 @@ def test_run_completion_evidence_cannot_come_from_logs(tmp_path: Path) -> None:
     with pytest.raises(ArtifactManifestError, match="must use outputs/"):
         record.succeed(completion_evidence=(log,))
     assert record.status == "running"
+
+
+def test_manifest_completion_evidence_must_be_a_regular_file(
+    tmp_path: Path,
+) -> None:
+    record = _record(tmp_path)
+    directory = record.directory("outputs", "claimed-proof")
+    record.add_file("outputs", directory)
+    hostile = copy.deepcopy(record.manifest)
+    hostile["status"] = "succeeded"
+    hostile["completed_at"] = "2026-01-01T00:00:00+00:00"
+    hostile["completion_evidence"] = ["outputs/claimed-proof"]
+
+    with pytest.raises(ArtifactManifestError, match="regular files"):
+        validate_manifest(hostile)
+
+
+def test_nofollow_read_rejects_a_path_replaced_after_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.bin"
+    original = tmp_path / "original.bin"
+    replacement = tmp_path / "replacement.bin"
+    source.write_bytes(b"original")
+    replacement.write_bytes(b"replacement")
+    original_read = os.read
+    swapped = False
+
+    def swap_after_read(descriptor: int, count: int) -> bytes:
+        nonlocal swapped
+        payload = original_read(descriptor, count)
+        if payload and not swapped:
+            source.rename(original)
+            replacement.rename(source)
+            swapped = True
+        return payload
+
+    monkeypatch.setattr(artifacts.os, "read", swap_after_read)
+
+    with pytest.raises(RuntimeError, match="pathname changed"):
+        read_nofollow_bytes(source)
 
 
 def test_manifest_rejects_noncanonical_incident_reference(tmp_path: Path) -> None:

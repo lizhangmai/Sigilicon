@@ -517,6 +517,23 @@ def test_owned_input_closure_scales_with_directories_not_file_count(
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
+def test_owned_input_closure_closes_descriptors_when_arguments_are_invalid(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.sv"
+    outside.write_text("fixture\n", encoding="utf-8")
+    before = len(os.listdir("/proc/self/fd"))
+
+    for _ in range(20):
+        with pytest.raises(RuntimeError, match="outside its owned root"):
+            with owned_input_closure(root, files=(outside,)):
+                raise AssertionError("invalid closure unexpectedly opened")
+
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
 def test_owned_input_closure_does_not_hold_one_fd_per_parent(tmp_path: Path) -> None:
     paths = []
     for index in range(100):

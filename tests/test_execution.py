@@ -30,6 +30,7 @@ from sigilicon.canonical import canonical_digest
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError, RunStore
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
+from sigilicon.artifacts import RunRecord
 from sigilicon.paths import ArtifactLayout
 from sigilicon.project import Project
 
@@ -1017,6 +1018,28 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
         _read_run(project, "example:all", "a" * 32)
 
 
+def test_run_store_can_clean_an_abandoned_running_run(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter())
+    run_id = "e" * 32
+    paths = ArtifactLayout(project.artifact_root).operation_run(
+        owner="example",
+        operation="check",
+        variant=None,
+        run_id=run_id,
+    )
+    record = RunRecord.begin(
+        paths,
+        adapter="sigilicon.execution",
+        source={"plan_identity": "f" * 64},
+    )
+    record.write_text("outputs", ("unregistered-after-crash.log",), "partial\n")
+
+    _clean_run(project, "example:check", run_id)
+
+    assert not paths.root.exists()
+
+
 def test_run_clean_never_follows_a_role_replaced_after_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1572,6 +1595,26 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
 
     with pytest.raises(ExecutionError, match="output inventory"):
         project.run(plan, run_id="c" * 32)
+
+
+def test_failed_backend_cannot_leave_an_incomplete_output_inventory(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+
+    class ExtraDiagnosticBackend(CopyAdapter):
+        def preflight(self, step, resources):
+            return ()
+
+        def run(self, context: StepContext, step: Step) -> StepResult:
+            context.write_text("diagnostic", "unpublished.log", "diagnostic\n")
+            return StepResult.failed("tool failed")
+
+    project = _project(tmp_path, ExtraDiagnosticBackend())
+    plan = _plan(project, "example:check")
+
+    with pytest.raises(ExecutionError, match="output inventory"):
+        project.run(plan, run_id="d" * 32)
 
 
 def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Path) -> None:

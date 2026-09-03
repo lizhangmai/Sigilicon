@@ -763,25 +763,33 @@ def owned_input_closure(
 
     absolute_root = Path(os.path.abspath(root))
     root_fd = _open_nofollow_directory(absolute_root, create_missing=False)
-    root_metadata = os.fstat(root_fd)
-    watch_fd = _new_input_watch()
-    file_relatives = tuple(
-        dict.fromkeys(
-            _closure_relative(absolute_root, Path(path), "external input file")
-            for path in files
-        )
-    )
-    directory_relatives = tuple(
-        dict.fromkeys(
-            _closure_relative(
-                absolute_root,
-                Path(path),
-                "external input directory",
+    watch_fd: int | None = None
+    try:
+        root_metadata = os.fstat(root_fd)
+        watch_fd = _new_input_watch()
+        file_relatives = tuple(
+            dict.fromkeys(
+                _closure_relative(absolute_root, Path(path), "external input file")
+                for path in files
             )
-            for path in directories
-            if Path(os.path.abspath(path)) != absolute_root
         )
-    )
+        directory_relatives = tuple(
+            dict.fromkeys(
+                _closure_relative(
+                    absolute_root,
+                    Path(path),
+                    "external input directory",
+                )
+                for path in directories
+                if Path(os.path.abspath(path)) != absolute_root
+            )
+        )
+    except BaseException:
+        if watch_fd is not None:
+            os.close(watch_fd)
+        os.close(root_fd)
+        raise
+    assert watch_fd is not None
     parent_watches: dict[Path, int] = {}
     watched_names: dict[int, set[bytes]] = {}
     closed_watches: set[int] = set()

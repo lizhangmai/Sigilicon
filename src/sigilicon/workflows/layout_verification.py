@@ -512,12 +512,12 @@ def _run_calibre(
     with (
         resources.owned_tool("mentor.calibre") as owned_launcher,
         owned_directory(work) as owned_work,
-        ExitStack() as resources,
+        ExitStack() as held_inputs,
     ):
         child_work = Path(owned_work.child_path)
-        owned_gds = resources.enter_context(owned_input_file(gds))
+        owned_gds = held_inputs.enter_context(owned_input_file(gds))
         owned_source = (
-            resources.enter_context(owned_input_file(source_cdl))
+            held_inputs.enter_context(owned_input_file(source_cdl))
             if source_cdl is not None
             else None
         )
@@ -542,7 +542,7 @@ def _run_calibre(
         invocation_path = record.write_text(
             "work", (f"run.tool.{check}",), invocation
         )
-        owned_deck = resources.enter_context(owned_input_file(invocation_path))
+        owned_deck = held_inputs.enter_context(owned_input_file(invocation_path))
         command = (
             *owned_launcher.command,
             f"-{check}",

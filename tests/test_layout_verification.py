@@ -69,6 +69,72 @@ def test_calibre_environment_uses_the_resource_snapshot(tmp_path: Path) -> None:
     assert environment["CALIBRE_HOME"] == str(executable.parent.parent)
 
 
+def test_calibre_reaches_the_managed_process_seam(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    record = StepWorkspace(
+        run_id="calibre-managed-process",
+        root=root,
+        input_root=root / "inputs",
+        work_root=root / "work",
+        output_root=root / "outputs",
+        log_root=root / "logs",
+        source={},
+    )
+    executable = tmp_path / "calibre/bin/calibre"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    gds = tmp_path / "layout.gds"
+    gds.write_bytes(b"gds")
+    policy = PhysicalVerificationPolicy(
+        path=tmp_path / "physical-verification.toml",
+        drc_disabled_defines=MappingProxyType({}),
+        drc_configuration_warnings=(),
+        drc_waiver_layers=(),
+    )
+    spec = SimpleNamespace(
+        cell="TOP",
+        physical_verification=policy,
+    )
+    plan = SimpleNamespace(stage="routed")
+
+    class Submitted(RuntimeError):
+        pass
+
+    class FakeProcess:
+        @staticmethod
+        def run(request):
+            assert request.environment["MGLS_LICENSE_FILE"] == "fixture-license"
+            assert request.before_spawn is not None
+            request.before_spawn()
+            raise Submitted("process submitted")
+
+    monkeypatch.setattr(layout_verification, "managed_process", FakeProcess())
+
+    with pytest.raises(Submitted, match="process submitted"):
+        layout_verification._run_calibre(
+            record,
+            spec,
+            plan,
+            check="drc",
+            deck_source=(
+                'LAYOUT PATH "GDSFILENAME"\n'
+                'LAYOUT PRIMARY "TOPCELLNAME"\n'
+                'DRC RESULTS DATABASE "DRC_RES.db"\n'
+                'DRC SUMMARY REPORT "DRC.rep"  // HIER\n'
+            ),
+            resources=Resources(
+                tools={"mentor.calibre": str(executable)},
+                environment={"MGLS_LICENSE_FILE": "fixture-license"},
+            ),
+            gds=gds,
+            timeout=5,
+        )
+
+
 def test_xstream_artifacts_preserve_separate_output_streams(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
