@@ -727,32 +727,44 @@ def _safe_manifest_relative(value: object, label: str) -> Path:
 
 
 def _resolved_artifact_member(root: Path, member: Path, label: str) -> Path:
-    """Resolve an artifact member while rejecting every existing symlink component."""
+    """Validate an artifact member through held nofollow directory descriptors."""
 
     lexical_root = Path(os.path.abspath(root))
     lexical_member = Path(os.path.abspath(member))
     if not lexical_member.is_relative_to(lexical_root):
         raise RuntimeError(f"artifact {label} is outside its role: {lexical_member}")
-    root_descriptor = _open_nofollow_directory(
-        lexical_root,
-        create_missing=False,
-    )
-    os.close(root_descriptor)
     relative = lexical_member.relative_to(lexical_root)
-    current = lexical_root
-    for component in relative.parts:
-        current /= component
-        try:
-            mode = current.lstat().st_mode
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(mode):
-            raise RuntimeError(f"artifact {label} cannot traverse a symlink: {current}")
-    resolved_root = lexical_root.resolve()
-    resolved_member = lexical_member.resolve()
-    if not resolved_member.is_relative_to(resolved_root):
-        raise RuntimeError(f"artifact {label} escaped its role: {resolved_member}")
-    return resolved_member
+    descriptor = _open_nofollow_directory(lexical_root, create_missing=False)
+    try:
+        for index, component in enumerate(relative.parts):
+            visible = os.stat(
+                component,
+                dir_fd=descriptor,
+                follow_symlinks=False,
+            )
+            current = lexical_root.joinpath(*relative.parts[: index + 1])
+            if stat.S_ISLNK(visible.st_mode):
+                raise RuntimeError(
+                    f"artifact {label} cannot traverse a symlink: {current}"
+                )
+            if index == len(relative.parts) - 1:
+                break
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            held = os.fstat(child)
+            if not _same_inode(visible, held):
+                os.close(child)
+                raise RuntimeError(
+                    f"artifact {label} changed while traversing: {current}"
+                )
+            os.close(descriptor)
+            descriptor = child
+    finally:
+        os.close(descriptor)
+    return lexical_member
 
 
 def validate_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1115,7 +1127,14 @@ class RunRecord:
             try:
                 metadata, digest = _inspect_nofollow_file(candidate)
             except IsADirectoryError:
-                metadata = candidate.stat(follow_symlinks=False)
+                descriptor = _open_nofollow_directory(
+                    candidate,
+                    create_missing=False,
+                )
+                try:
+                    metadata = os.fstat(descriptor)
+                finally:
+                    os.close(descriptor)
                 digest = ""
             if stat.S_ISREG(metadata.st_mode):
                 reference = {
@@ -1283,11 +1302,7 @@ class RunRecord:
                 candidate = _resolved_artifact_member(
                     self.paths.root, Path(path), "completion evidence"
                 )
-                if not candidate.is_file() or not candidate.is_relative_to(
-                    self.paths.root.resolve()
-                ):
-                    raise RuntimeError(f"invalid completion evidence: {candidate}")
-                relative = candidate.relative_to(self.paths.root.resolve()).as_posix()
+                relative = candidate.relative_to(self.paths.root).as_posix()
                 role = Path(relative).parts[0]
                 index = self._file_indexes[role].get(relative)
                 if index is None:
@@ -1395,12 +1410,10 @@ class RunRecord:
             operation_id = self.manifest.get("operation_id")
             if not isinstance(operation_id, str):
                 raise RuntimeError("artifact has no bound operation identity")
-            root = self.paths.artifact_root.resolve()
+            root = Path(os.path.abspath(self.paths.artifact_root))
             incident = _resolved_artifact_member(
                 root, Path(incident_path), "operation incident"
             )
-            if not incident.is_file():
-                raise RuntimeError(f"operation incident is outside artifacts: {incident}")
             load_operation_incident(incident, operation_id)
             reference = incident.relative_to(root).as_posix()
             existing = self.manifest.get("incident_reference")
