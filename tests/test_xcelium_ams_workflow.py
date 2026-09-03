@@ -59,13 +59,16 @@ success_marker = "TB_DEMO_AMS_SUMMARY failures=0"
 [ams]
 platform = "testpdk"
 model_set = "nominal"
-integration_contract = "../../../component.toml"
+transient_stop = "1u"
+ie_voltage = 0.9
+
+[ams.circuit]
+kind = "ip-release"
+contract = "../../../component.toml"
 variant = "no-recovery"
 fileset = "ams"
 dependency = "native-provider"
-circuit_role = "circuit_netlist"
-transient_stop = "1u"
-ie_voltage = 0.9
+role = "circuit_netlist"
 ''',
     )
     testbench = _write(cell / "testbench.vams", "module tb_demo_ams; endmodule\n")
@@ -98,7 +101,7 @@ def _patch_native_resolution(
     monkeypatch.setattr(
         xcelium_ams,
         "_locked_native_release",
-        lambda _spec: (
+        lambda _spec, _selection: (
             "NATIVE_TOP",
             circuit,
             {
@@ -322,6 +325,41 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     assert circuit.read_text(encoding="utf-8") not in serialized
 
 
+def test_xcelium_ams_plan_accepts_a_project_owned_standalone_circuit(
+    tmp_path: Path,
+) -> None:
+    contract, _release_circuit = _ams_project(tmp_path)
+    circuit = _write(
+        tmp_path / "ip/demo/design/analog_top.scs",
+        "simulator lang=spectre\nsubckt ANALOG_TOP A VSS\nends ANALOG_TOP\n",
+    )
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            '''kind = "ip-release"
+contract = "../../../component.toml"
+variant = "no-recovery"
+fileset = "ams"
+dependency = "native-provider"
+role = "circuit_netlist"''',
+            '''kind = "source"
+path = "../../../design/analog_top.scs"
+cell = "ANALOG_TOP"''',
+        ),
+        encoding="utf-8",
+    )
+
+    plan = plan_xcelium_ams_cell(
+        contract,
+        project=Project.open(tmp_path),
+        resources=Resources(),
+    )
+
+    assert plan.native_cell == "ANALOG_TOP"
+    assert plan.circuit_netlist == circuit.resolve()
+    assert plan.integration_check["contract_kind"] == "source-circuit-selection"
+    assert plan.circuit_sha256 == hashlib.sha256(circuit.read_bytes()).hexdigest()
+
+
 def test_xcelium_ams_rejects_unknown_dependency_lock_fields(
     tmp_path: Path,
 ) -> None:
@@ -406,7 +444,7 @@ def test_xcelium_ams_plan_rejects_spectre_compile_input(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="locked release role"):
+    with pytest.raises(ValueError, match="AMS circuit selection"):
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),

@@ -120,13 +120,16 @@ def _as_xcelium_ams(contract: Path, *, stop: str = "1u") -> None:
 [ams]
 platform = "testpdk"
 model_set = "nominal"
-integration_contract = "../../../component.toml"
+transient_stop = "{stop}"
+ie_voltage = 0.9
+
+[ams.circuit]
+kind = "ip-release"
+contract = "../../../component.toml"
 variant = "no-recovery"
 fileset = "ams"
 dependency = "native-provider"
-circuit_role = "circuit_netlist"
-transient_stop = "{stop}"
-ie_voltage = 0.9
+role = "circuit_netlist"
 ''',
         encoding="utf-8",
     )
@@ -140,12 +143,46 @@ def test_verification_cell_loads_typed_xcelium_ams_inputs(tmp_path: Path) -> Non
 
     assert spec.ams is not None
     assert spec.ams.platform == "testpdk"
-    assert spec.ams.integration_contract == tmp_path / "ip/demo/component.toml"
-    assert spec.ams.circuit_role == "circuit_netlist"
+    assert spec.ams.circuit.contract == tmp_path / "ip/demo/component.toml"
+    assert spec.ams.circuit.role == "circuit_netlist"
     assert spec.ams.transient_stop == "1u"
     assert spec.ams.ie_voltage == 0.9
-    assert spec.ams.integration_contract in spec.source_inputs
-    assert spec.ams.integration_contract in spec.source_documents
+    assert spec.ams.circuit.contract in spec.source_inputs
+    assert spec.ams.circuit.contract in spec.source_documents
+
+
+def test_verification_cell_accepts_a_standalone_ams_circuit_source(
+    tmp_path: Path,
+) -> None:
+    contract = _contract(tmp_path)
+    circuit = _write(
+        tmp_path,
+        "ip/demo/design/standalone.scs",
+        "simulator lang=spectre\nsubckt ANALOG_TOP A VSS\nends ANALOG_TOP\n",
+    )
+    _as_xcelium_ams(contract)
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            '''kind = "ip-release"
+contract = "../../../component.toml"
+variant = "no-recovery"
+fileset = "ams"
+dependency = "native-provider"
+role = "circuit_netlist"''',
+            '''kind = "source"
+path = "../../../design/standalone.scs"
+cell = "ANALOG_TOP"''',
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_verification_cell(contract, project=Project.open(tmp_path))
+
+    assert spec.ams is not None
+    assert spec.ams.circuit.path == circuit.resolve()
+    assert spec.ams.circuit.cell == "ANALOG_TOP"
+    assert circuit.resolve() in spec.source_inputs
+    assert circuit.resolve() not in spec.source_documents
 
 
 def test_verification_cell_requires_ams_only_for_xcelium_ams(tmp_path: Path) -> None:
@@ -189,7 +226,7 @@ def test_verification_cell_rejects_incomplete_ams_table(tmp_path: Path) -> None:
     _as_xcelium_ams(contract)
     contract.write_text(
         contract.read_text(encoding="utf-8").replace(
-            'circuit_role = "circuit_netlist"\n',
+            'role = "circuit_netlist"\n',
             'unexpected = "value"\n',
         ),
         encoding="utf-8",

@@ -18,7 +18,12 @@ from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platfo
 from sigilicon.project import Project
 from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
-from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
+from sigilicon.domain.verification_cell import (
+    VerificationCellSpec,
+    XceliumAmsReleaseCircuit,
+    XceliumAmsSourceCircuit,
+    load_verification_cell,
+)
 from sigilicon.external_tools import ProcessPort, managed_process
 from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
@@ -115,12 +120,10 @@ class XceliumAmsCellPlan(XceliumCellPlan):
             "sources": [
                 path.relative_to(root).as_posix() for path in self.sources
             ],
-            "native_release": {
-                "dependency": ams.dependency,
-                "role": ams.circuit_role,
+            "circuit": {
                 "cell": self.native_cell,
                 "circuit_sha256": self.circuit_sha256,
-                "integration_check": dict(self.integration_check),
+                "selection": dict(self.integration_check),
             },
             "platform_model": {
                 "platform": self.platform.key,
@@ -165,48 +168,51 @@ def _toml(path: Path, label: str) -> dict[str, Any]:
 
 def _locked_native_release(
     spec: VerificationCellSpec,
+    circuit_selection: XceliumAmsReleaseCircuit,
 ) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     """Resolve only the consumer-owned declaration, lock, and immutable package."""
 
-    ams = spec.ams
-    assert ams is not None
-    component = _toml(ams.integration_contract, "integration contract")
+    component = _toml(circuit_selection.contract, "integration contract")
     dependencies = component.get("component")
     matches = (
         [
             dependency
             for dependency in dependencies
             if isinstance(dependency, Mapping)
-            and dependency.get("name") == ams.dependency
+            and dependency.get("name") == circuit_selection.dependency
         ]
         if isinstance(dependencies, list)
         else []
     )
     if len(matches) != 1 or not isinstance(matches[0].get("release"), Mapping):
         raise ValueError(
-            f"Xcelium AMS dependency is not one released dependency: {ams.dependency}"
+            "Xcelium AMS dependency is not one released dependency: "
+            f"{circuit_selection.dependency}"
         )
     release = matches[0]["release"]
     variants = component.get("variants")
-    if not isinstance(variants, Mapping) or ams.variant not in variants:
+    if (
+        not isinstance(variants, Mapping)
+        or circuit_selection.variant not in variants
+    ):
         raise ValueError("Xcelium AMS integration contract omits its variant")
     variant = _toml(
         _project_source(
             spec.project_root,
-            variants[ams.variant],
+            variants[circuit_selection.variant],
             "variant contract",
         ),
         "variant contract",
     )
     try:
-        required_roles = variant["filesets"][ams.fileset]["dependency_roles"][
-            ams.dependency
-        ]
+        required_roles = variant["filesets"][circuit_selection.fileset][
+            "dependency_roles"
+        ][circuit_selection.dependency]
     except (KeyError, TypeError) as exc:
         raise ValueError("Xcelium AMS fileset omits its release roles") from exc
     if (
         not isinstance(required_roles, list)
-        or ams.circuit_role not in required_roles
+        or circuit_selection.role not in required_roles
         or any(not isinstance(role, str) or not role for role in required_roles)
         or len(required_roles) != len(set(required_roles))
     ):
@@ -230,7 +236,8 @@ def _locked_native_release(
         [
             item
             for item in pinned_dependencies
-            if isinstance(item, Mapping) and item.get("name") == ams.dependency
+            if isinstance(item, Mapping)
+            and item.get("name") == circuit_selection.dependency
         ]
         if isinstance(pinned_dependencies, list)
         else []
@@ -256,8 +263,8 @@ def _locked_native_release(
     manifest = audited.manifest
     manifest_digest = ref.manifest_sha256
     if (
-        manifest.get("ip_name") != ams.dependency
-        or manifest.get("owner") != ams.dependency
+        manifest.get("ip_name") != circuit_selection.dependency
+        or manifest.get("owner") != circuit_selection.dependency
         or manifest.get("release_id") != pin.release_id
         or manifest.get("source_commit") != pin.source_commit
     ):
@@ -348,7 +355,7 @@ def _locked_native_release(
     if set(by_role) != set(required_roles) or len(selected_roles) != len(by_role):
         raise ValueError("Xcelium AMS package omits or duplicates a selected role")
     try:
-        circuit_artifact = audited.role(export, ams.circuit_role)
+        circuit_artifact = audited.role(export, circuit_selection.role)
     except RuntimeError as exc:
         raise ValueError(
             "Xcelium AMS release circuit is missing or unsafe"
@@ -361,7 +368,7 @@ def _locked_native_release(
         "passed": True,
         "dependency_releases": [
             {
-                "name": ams.dependency,
+                "name": circuit_selection.dependency,
                 "export": export,
                 "release_id": pin.release_id,
                 "source_commit": pin.source_commit,
@@ -379,6 +386,32 @@ def _locked_native_release(
         }
     )
     return str(oa["cell"]), circuit, result, release_sources
+
+
+def _resolve_circuit(
+    spec: VerificationCellSpec,
+) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
+    ams = spec.ams
+    assert ams is not None
+    circuit = ams.circuit
+    if isinstance(circuit, XceliumAmsReleaseCircuit):
+        return _locked_native_release(spec, circuit)
+    assert isinstance(circuit, XceliumAmsSourceCircuit)
+    digest = _sha256(circuit.path)
+    return (
+        circuit.cell,
+        circuit.path,
+        MappingProxyType(
+            {
+                "schema": 1,
+                "contract_kind": "source-circuit-selection",
+                "passed": True,
+                "source": circuit.path.relative_to(spec.project_root).as_posix(),
+                "cell": circuit.cell,
+            }
+        ),
+        MappingProxyType({circuit.path: digest}),
+    )
 
 
 def plan_xcelium_ams_cell(
@@ -413,10 +446,10 @@ def plan_xcelium_ams_cell(
         )
         raise ValueError(
             "Xcelium AMS compile inputs must be HDL/Verilog-AMS sources; "
-            f"Spectre circuits must come from a locked release role: {invalid}"
+            f"Spectre circuits must come from the AMS circuit selection: {invalid}"
         )
     native_cell, circuit, integration_check, release_records = (
-        _locked_native_release(spec)
+        _resolve_circuit(spec)
     )
     platform = load_platform(
         repository,

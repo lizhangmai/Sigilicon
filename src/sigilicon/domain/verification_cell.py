@@ -42,15 +42,15 @@ _AMS_FIELDS = frozenset(
     {
         "platform",
         "model_set",
-        "integration_contract",
-        "variant",
-        "fileset",
-        "dependency",
-        "circuit_role",
+        "circuit",
         "transient_stop",
         "ie_voltage",
     }
 )
+_AMS_RELEASE_CIRCUIT_FIELDS = frozenset(
+    {"kind", "contract", "variant", "fileset", "dependency", "role"}
+)
+_AMS_SOURCE_CIRCUIT_FIELDS = frozenset({"kind", "path", "cell"})
 _AMS_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _SPECTRE_TIME = re.compile(
     r"(?P<value>(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)(?:[fpnum])?\Z"
@@ -153,7 +153,7 @@ class VerificationCellSpec:
             *self.compile_sources,
             *self.support_files,
             *self.contracts,
-            *((self.ams.integration_contract,) if self.ams is not None else ()),
+            *(self.ams.circuit.source_inputs if self.ams is not None else ()),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -181,16 +181,59 @@ class VerificationCellSpec:
 
 
 @dataclass(frozen=True)
-class XceliumAmsConfiguration:
-    """Typed native-circuit inputs for one Xcelium AMS verification cell."""
+class XceliumAmsReleaseCircuit:
+    """One native circuit selected through a locked IP release."""
 
-    platform: str
-    model_set: str
-    integration_contract: Path
+    contract: Path
     variant: str
     fileset: str
     dependency: str
-    circuit_role: str
+    role: str
+
+    @property
+    def source_inputs(self) -> tuple[Path, ...]:
+        return (self.contract,)
+
+    def as_dict(self, *, root: Path) -> dict[str, object]:
+        return {
+            "kind": "ip-release",
+            "contract": self.contract.relative_to(root).as_posix(),
+            "variant": self.variant,
+            "fileset": self.fileset,
+            "dependency": self.dependency,
+            "role": self.role,
+        }
+
+
+@dataclass(frozen=True)
+class XceliumAmsSourceCircuit:
+    """One project-owned standalone Spectre circuit source."""
+
+    path: Path
+    cell: str
+
+    @property
+    def source_inputs(self) -> tuple[Path, ...]:
+        return (self.path,)
+
+    def as_dict(self, *, root: Path) -> dict[str, object]:
+        return {
+            "kind": "source",
+            "path": self.path.relative_to(root).as_posix(),
+            "cell": self.cell,
+        }
+
+
+XceliumAmsCircuit = XceliumAmsReleaseCircuit | XceliumAmsSourceCircuit
+
+
+@dataclass(frozen=True)
+class XceliumAmsConfiguration:
+    """Typed platform and circuit inputs for one Xcelium AMS cell."""
+
+    platform: str
+    model_set: str
+    circuit: XceliumAmsCircuit
     transient_stop: str
     ie_voltage: float
 
@@ -198,16 +241,77 @@ class XceliumAmsConfiguration:
         return {
             "platform": self.platform,
             "model_set": self.model_set,
-            "integration_contract": self.integration_contract.relative_to(
-                root
-            ).as_posix(),
-            "variant": self.variant,
-            "fileset": self.fileset,
-            "dependency": self.dependency,
-            "circuit_role": self.circuit_role,
+            "circuit": self.circuit.as_dict(root=root),
             "transient_stop": self.transient_stop,
             "ie_voltage": self.ie_voltage,
         }
+
+
+def _parse_xcelium_ams_circuit(
+    value: object,
+    *,
+    field: str,
+    cell_root: Path,
+    project_root: Path,
+    owner: str,
+    repository: Project,
+) -> XceliumAmsCircuit:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a table")
+    kind = _text(value.get("kind"), f"{field}.kind")
+    if kind == "ip-release":
+        expected = _AMS_RELEASE_CIRCUIT_FIELDS
+        unknown = set(value) - expected
+        missing = expected - set(value)
+        if unknown or missing:
+            raise ValueError(
+                f"{field} fields must be exactly {sorted(expected)}; "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        contract = _file(
+            value.get("contract"),
+            cell_root=cell_root,
+            project_root=project_root,
+            field=f"{field}.contract",
+        )
+        integration_owner = repository.require_owner(contract).name
+        if integration_owner != owner:
+            raise ValueError(
+                f"{field}.contract owner must be {owner!r}, "
+                f"got {integration_owner!r}"
+            )
+        return XceliumAmsReleaseCircuit(
+            contract=contract,
+            variant=_token(value.get("variant"), f"{field}.variant"),
+            fileset=_token(value.get("fileset"), f"{field}.fileset"),
+            dependency=_token(value.get("dependency"), f"{field}.dependency"),
+            role=_token(value.get("role"), f"{field}.role"),
+        )
+    if kind == "source":
+        expected = _AMS_SOURCE_CIRCUIT_FIELDS
+        unknown = set(value) - expected
+        missing = expected - set(value)
+        if unknown or missing:
+            raise ValueError(
+                f"{field} fields must be exactly {sorted(expected)}; "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        path = _file(
+            value.get("path"),
+            cell_root=cell_root,
+            project_root=project_root,
+            field=f"{field}.path",
+        )
+        circuit_owner = repository.require_owner(path).name
+        if circuit_owner != owner:
+            raise ValueError(
+                f"{field}.path owner must be {owner!r}, got {circuit_owner!r}"
+            )
+        return XceliumAmsSourceCircuit(
+            path=path,
+            cell=_token(value.get("cell"), f"{field}.cell"),
+        )
+    raise ValueError(f"{field}.kind must be 'ip-release' or 'source'")
 
 
 def _parse_xcelium_ams_configuration(
@@ -229,18 +333,14 @@ def _parse_xcelium_ams_configuration(
             f"{field} fields must be exactly {sorted(_AMS_FIELDS)}; "
             f"missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
-    integration_contract = _file(
-        value.get("integration_contract"),
+    circuit = _parse_xcelium_ams_circuit(
+        value.get("circuit"),
+        field=f"{field}.circuit",
         cell_root=cell_root,
         project_root=project_root,
-        field=f"{field}.integration_contract",
+        owner=owner,
+        repository=repository,
     )
-    integration_owner = repository.require_owner(integration_contract).name
-    if integration_owner != owner:
-        raise ValueError(
-            f"{field}.integration_contract owner must be {owner!r}, "
-            f"got {integration_owner!r}"
-        )
     transient_stop = _text(value.get("transient_stop"), f"{field}.transient_stop")
     time_match = _SPECTRE_TIME.fullmatch(transient_stop)
     if time_match is None or float(time_match.group("value")) <= 0.0:
@@ -258,11 +358,7 @@ def _parse_xcelium_ams_configuration(
     return XceliumAmsConfiguration(
         platform=_token(value.get("platform"), f"{field}.platform"),
         model_set=_token(value.get("model_set"), f"{field}.model_set"),
-        integration_contract=integration_contract,
-        variant=_token(value.get("variant"), f"{field}.variant"),
-        fileset=_token(value.get("fileset"), f"{field}.fileset"),
-        dependency=_token(value.get("dependency"), f"{field}.dependency"),
-        circuit_role=_token(value.get("circuit_role"), f"{field}.circuit_role"),
+        circuit=circuit,
         transient_stop=transient_stop,
         ie_voltage=float(ie_voltage),
     )
@@ -395,24 +491,25 @@ def _parse_verification_cell(
             owner=owner,
             repository=repository,
         )
-        integration_raw = (
-            None
-            if contract_documents is None
-            else contract_documents.get(ams.integration_contract)
-        )
-        if integration_raw is None:
-            integration_raw = read_toml(ams.integration_contract)
-        require_config_header(
-            integration_raw,
-            ams.integration_contract,
-            contract_kind="ip-component",
-            path_scope="owner",
-            owner=owner,
-            schema=contract_schema("ip-component"),
-        )
-        source_documents[ams.integration_contract] = freeze_toml_document(
-            integration_raw
-        )
+        if isinstance(ams.circuit, XceliumAmsReleaseCircuit):
+            integration_raw = (
+                None
+                if contract_documents is None
+                else contract_documents.get(ams.circuit.contract)
+            )
+            if integration_raw is None:
+                integration_raw = read_toml(ams.circuit.contract)
+            require_config_header(
+                integration_raw,
+                ams.circuit.contract,
+                contract_kind="ip-component",
+                path_scope="owner",
+                owner=owner,
+                schema=contract_schema("ip-component"),
+            )
+            source_documents[ams.circuit.contract] = freeze_toml_document(
+                integration_raw
+            )
     else:
         if ams_raw is not None:
             raise ValueError(
@@ -424,7 +521,7 @@ def _parse_verification_cell(
         *compile_sources,
         *support_files,
         *contracts,
-        *((ams.integration_contract,) if ams is not None else ()),
+        *(ams.circuit.source_inputs if ams is not None else ()),
     )
     if len(set(source_inputs)) != len(source_inputs):
         raise ValueError(
