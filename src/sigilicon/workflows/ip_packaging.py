@@ -692,13 +692,12 @@ def _source_inputs(
     )
     paths.update(library.source_documents)
     from sigilicon.domain.platform import load_platform, resolve_platform_snapshot
-    from sigilicon.execution.model import Resources
 
     if platform_inventory is None:
         release_platform = load_platform(
             library.project,
             library.pdk,
-            resources=Resources(),
+            resources=library.project.resources(),
         )
     else:
         try:

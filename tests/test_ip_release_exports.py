@@ -503,8 +503,24 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
 
 
 def test_oa_release_derives_complete_platform_source_closure(tmp_path: Path) -> None:
+    contract_path = _oa_source_closure_fixture(tmp_path)
+    platform = tmp_path / "configs/platform/testpdk"
+    manifest = platform / "platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '\nasset_scope = "external"\n\n[contracts]\n',
+        ),
+        encoding="utf-8",
+    )
+    project_manifest = tmp_path / "sigilicon.toml"
+    project_manifest.write_text(
+        project_manifest.read_text(encoding="utf-8")
+        + f'\n[runtime.directories]\n"platform.testpdk" = "{platform}"\n',
+        encoding="utf-8",
+    )
     contract = load_ip_contract(
-        _oa_source_closure_fixture(tmp_path),
+        contract_path,
         project=Project.open(tmp_path),
     )
 
