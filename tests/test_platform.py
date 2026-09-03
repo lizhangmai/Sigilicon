@@ -125,7 +125,7 @@ def test_runtime_platform_snapshot_rejects_project_manifest_drift(
         (root / "model.scs").write_text("// installed model\n", encoding="utf-8")
     contract.write_text(
         contract.read_text(encoding="utf-8")
-        + f'\n[runtime.directories]\n"platform.testpdk" = "{first}"\n',
+        + f'\n"platform.testpdk" = "{first}"\n',
         encoding="utf-8",
     )
     project = Project.open(tmp_path)

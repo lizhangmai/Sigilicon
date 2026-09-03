@@ -17,7 +17,7 @@ def write_project_context(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     contract = root / "sigilicon.toml"
     contract.write_text(
-        """schema = 1
+        f"""schema = 1
 contract_kind = "sigilicon-project"
 path_scope = "repository"
 owner = "test"
@@ -34,6 +34,10 @@ artifact_root = "artifacts"
 [runtime.values]
 "virtuoso-bridge.host" = "127.0.0.1"
 "virtuoso-bridge.port" = "50051"
+
+[runtime.directories]
+"release-store.fixture" = "{root / 'artifacts/release-store'}"
+"release-store.native-provider" = "{root / 'artifacts/release-store'}"
 """,
         encoding="utf-8",
     )

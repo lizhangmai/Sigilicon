@@ -1219,7 +1219,7 @@ class StructuralLinkAdapter(DirectAdapter):
             library_compiler_version=_text(config, "library_compiler_version"),
             release_export=_text(config, "release_export"),
             liberty_role=_text(config, "liberty_role"),
-            artifact_root=project.artifact_root,
+            resources=resources,
         )
         external = (
             ResourceBinding.capture(

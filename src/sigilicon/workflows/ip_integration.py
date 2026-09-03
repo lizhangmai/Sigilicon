@@ -26,7 +26,12 @@ from sigilicon.domain.ip_release import (
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PlatformSet
 from sigilicon.project import Project
-from sigilicon.release_store import ReleasePackage, ReleaseRef, ReleaseStore
+from sigilicon.release_store import (
+    ReleasePackage,
+    ReleaseRef,
+    ReleaseStore,
+    release_store_resource,
+)
 from sigilicon.workflows.ip_packaging import (
     plan_ip_release_contract,
     validate_ip_release_package,
@@ -325,12 +330,12 @@ def _level_satisfies(actual: str, required: str) -> bool:
 
 def resolve_locked_ip_release(
     *,
-    artifact_root: Path,
+    release_store_root: Path,
     pinned: LockedIpRelease,
 ) -> ReleasePackage:
     """Resolve one exact cross-owner release without following producer state."""
 
-    release = ReleaseStore.from_artifact_root(artifact_root).open(
+    release = ReleaseStore(release_store_root).open(
         ReleaseRef(pinned.store, pinned.manifest_sha256),
         validate=validate_ip_release_package,
     )
@@ -355,7 +360,7 @@ def resolve_locked_ip_release(
 def _locked_release_manifest(
     *,
     contract: IpIntegrationContract,
-    artifact_root: Path,
+    release_store_root: Path,
     dependency: IpIntegrationDependency,
     pinned: LockedIpRelease,
 ) -> ReleasePackage:
@@ -363,7 +368,7 @@ def _locked_release_manifest(
     if release is None:
         raise RuntimeError(f"IP dependency {dependency.name} has no release contract")
     audited = resolve_locked_ip_release(
-        artifact_root=artifact_root,
+        release_store_root=release_store_root,
         pinned=pinned,
     )
     manifest = audited.manifest
@@ -404,7 +409,7 @@ def check_ip_integration(
 
     contract = load_ip_integration_contract(contract_path, project=project)
     root = contract.project_root
-    artifact_root = contract.project.artifact_root
+    runtime = contract.project.resources()
     variant = contract.get_variant(variant_name)
     fileset = variant.get_fileset(fileset_name)
     binding = variant.physical_binding
@@ -435,9 +440,12 @@ def check_ip_integration(
         release = dependency.release
         assert release is not None
         pinned = locked_by_name[dependency.name]
+        store_root = Path(
+            runtime.require_directory(release_store_resource(pinned.store))
+        )
         audited = _locked_release_manifest(
             contract=contract,
-            artifact_root=artifact_root,
+            release_store_root=store_root,
             dependency=dependency,
             pinned=pinned,
         )
@@ -474,8 +482,16 @@ def check_ip_integration(
                     f"IP dependency role {role!r} is unavailable from export "
                     f"{release.export!r} for {fileset.required_capability}"
                 )
-            role_path = audited.role(release.export, role).path
-            relative_paths.append(role_path.relative_to(artifact_root).as_posix())
+            artifact = audited.role(release.export, role)
+            relative_paths.append(
+                (
+                    Path("release-store")
+                    / pinned.store
+                    / "objects"
+                    / f"sha256-{pinned.manifest_sha256}"
+                    / artifact.relative_path
+                ).as_posix()
+            )
         release_sources.extend(relative_paths)
         resolved_dependencies.append(
             {
@@ -528,8 +544,26 @@ def resolve_ip_integration_fileset(
         (project.project_root / Path(value)).resolve()
         for value in result["source_files"]
     )
-    release_sources = tuple(
-        (project.artifact_root / Path(value)).resolve()
-        for value in result["release_sources"]
-    )
+    runtime = project.resources()
+    release_sources: list[Path] = []
+    for dependency in result["dependency_releases"]:
+        pinned = LockedIpRelease(
+            name=dependency["name"],
+            release_id=dependency["release_id"],
+            store=dependency["store"],
+            maturity=dependency["maturity"],
+            source_commit=dependency["source_commit"],
+            manifest_sha256=dependency["manifest_sha256"],
+        )
+        store_root = Path(
+            runtime.require_directory(release_store_resource(pinned.store))
+        )
+        package = resolve_locked_ip_release(
+            release_store_root=store_root,
+            pinned=pinned,
+        )
+        release_sources.extend(
+            package.role(dependency["export"], role).path
+            for role in dependency["roles"]
+        )
     return (*source_files, *release_sources)

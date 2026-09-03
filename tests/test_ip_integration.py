@@ -252,7 +252,10 @@ def test_locked_release_rejects_a_symlinked_manifest_parent(tmp_path: Path) -> N
     )
 
     with pytest.raises((FileNotFoundError, RuntimeError), match="symlink"):
-        resolve_locked_ip_release(artifact_root=artifact_root, pinned=pinned)
+        resolve_locked_ip_release(
+            release_store_root=artifact_root / "release-store",
+            pinned=pinned,
+        )
 
 
 def _select_rtl_dependency(contract: Path) -> None:
@@ -579,10 +582,13 @@ root = "ip/fixture"
         encoding="utf-8",
     )
     (project_root / "sigilicon.toml").write_text(
-        '''schema = 1
+        f'''schema = 1
 contract_kind = "sigilicon-project"
 path_scope = "repository"
 owner = "repository"
+
+[runtime.directories]
+"release-store.fixture" = "{project_root.parent / 'artifacts/release-store'}"
 
 [catalogs]
 ip = "ip/catalog.toml"

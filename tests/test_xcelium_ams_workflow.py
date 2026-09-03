@@ -101,7 +101,7 @@ def _patch_native_resolution(
     monkeypatch.setattr(
         xcelium_ams,
         "_locked_native_release",
-        lambda _spec, _selection: (
+        lambda _spec, _selection, _resources: (
             "NATIVE_TOP",
             circuit,
             {
@@ -329,7 +329,7 @@ def test_xcelium_ams_plan_resolves_locked_circuit_and_platform(
     plan = plan_xcelium_ams_cell(
         contract,
         project=Project.open(tmp_path),
-        resources=Resources(),
+        resources=Project.open(tmp_path).resources(),
     )
 
     assert plan.native_cell == "NATIVE_TOP"
@@ -374,7 +374,7 @@ cell = "ANALOG_TOP"''',
     plan = plan_xcelium_ams_cell(
         contract,
         project=Project.open(tmp_path),
-        resources=Resources(),
+        resources=Project.open(tmp_path).resources(),
     )
 
     assert plan.native_cell == "ANALOG_TOP"
@@ -404,7 +404,7 @@ def test_xcelium_ams_rejects_unknown_dependency_lock_fields(
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),
-            resources=Resources(),
+            resources=Project.open(tmp_path).resources(),
         )
 
 
@@ -421,7 +421,7 @@ def test_xcelium_ams_rejects_same_size_release_tampering(
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),
-            resources=Resources(),
+            resources=Project.open(tmp_path).resources(),
         )
 
 
@@ -448,7 +448,7 @@ def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),
-            resources=Resources(),
+            resources=Project.open(tmp_path).resources(),
         )
 
 
@@ -472,7 +472,7 @@ def test_xcelium_ams_plan_rejects_spectre_compile_input(
         plan_xcelium_ams_cell(
             contract,
             project=Project.open(tmp_path),
-            resources=Resources(),
+            resources=Project.open(tmp_path).resources(),
         )
 
 
@@ -507,7 +507,7 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
         plan_xcelium_ams_cell(
             contract,
             project=project,
-            resources=Resources(),
+            resources=Project.open(tmp_path).resources(),
         ),
         artifacts=_run_artifacts(tmp_path),
         resources=Resources(tools={"cadence.xrun": str(xrun)}),
@@ -545,7 +545,7 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
         plan_xcelium_ams_cell(
             contract,
             project=project,
-            resources=Resources(),
+            resources=Project.open(tmp_path).resources(),
         ),
         artifacts=_run_artifacts(tmp_path),
         resources=Resources(tools={"cadence.xrun": str(xrun)}),

@@ -40,6 +40,13 @@ def _release_object_name(ref: ReleaseRef) -> str:
     )
 
 
+def release_store_resource(store: str) -> str:
+    """Return the deployment resource identity for one named release store."""
+
+    name = validate_artifact_component(store, "release store")
+    return f"release-store.{name}"
+
+
 @dataclass(frozen=True)
 class ReleaseArtifact:
     """One digest-bound role in an audited release package."""
@@ -215,10 +222,6 @@ class ReleaseStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).absolute()
 
-    @classmethod
-    def from_artifact_root(cls, artifact_root: Path) -> "ReleaseStore":
-        return cls(Path(artifact_root).absolute() / "release-store")
-
     def object_root(self, ref: ReleaseRef) -> Path:
         result = self.root / ref.store / "objects" / _release_object_name(ref)
         if result.absolute() != result or result.resolve() != result:
@@ -260,4 +263,5 @@ __all__ = [
     "ReleaseRef",
     "ReleaseStore",
     "audit_release_package",
+    "release_store_resource",
 ]

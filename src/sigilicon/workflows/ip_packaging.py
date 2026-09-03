@@ -1605,7 +1605,7 @@ def build_ip_release(
         raise IpReleaseError(
             "IP releases require a clean source checkout"
         )
-    store = ReleaseStore.from_artifact_root(project.artifact_root)
+    store = ReleaseStore(project.artifact_root / "release-store")
     namespace = store.root / str(plan["release_store"]) / "objects"
     with owned_directory(namespace, create_missing=True) as release_namespace:
         temporary_name = f".{plan['release_id']}.{uuid.uuid4().hex}.tmp"

@@ -18,7 +18,11 @@ from sigilicon.domain.platform import (
     model_resource_identities,
 )
 from sigilicon.project import Project
-from sigilicon.release_store import ReleaseRef, ReleaseStore
+from sigilicon.release_store import (
+    ReleaseRef,
+    ReleaseStore,
+    release_store_resource,
+)
 from sigilicon.domain.verification_cell import (
     VerificationCellSpec,
     XceliumAmsReleaseCircuit,
@@ -147,6 +151,7 @@ class XceliumAmsCellPlan(XceliumCellPlan):
 def _locked_native_release(
     spec: VerificationCellSpec,
     circuit_selection: XceliumAmsReleaseCircuit,
+    resources: Resources,
 ) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     """Resolve one native circuit through the canonical integration workflow."""
 
@@ -174,7 +179,10 @@ def _locked_native_release(
         raise ValueError("Xcelium AMS circuit role is not selected by its fileset")
     ref = ReleaseRef(selected["store"], selected["manifest_sha256"])
     try:
-        audited = ReleaseStore.from_artifact_root(spec.project.artifact_root).open(
+        store_root = Path(
+            resources.require_directory(release_store_resource(ref.store))
+        )
+        audited = ReleaseStore(store_root).open(
             ref,
             validate=validate_ip_release_package,
         )
@@ -240,12 +248,13 @@ def _locked_native_release(
 
 def _resolve_circuit(
     spec: VerificationCellSpec,
+    resources: Resources,
 ) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     ams = spec.ams
     assert ams is not None
     circuit = ams.circuit
     if isinstance(circuit, XceliumAmsReleaseCircuit):
-        return _locked_native_release(spec, circuit)
+        return _locked_native_release(spec, circuit, resources)
     assert isinstance(circuit, XceliumAmsSourceCircuit)
     digest = _sha256(circuit.path)
     return (
@@ -338,7 +347,7 @@ def plan_xcelium_ams_cell(
             f"Spectre circuits must come from the AMS circuit selection: {invalid}"
         )
     native_cell, circuit, integration_check, release_records = (
-        _resolve_circuit(spec)
+        _resolve_circuit(spec, resources)
     )
     platform = load_platform(
         repository,

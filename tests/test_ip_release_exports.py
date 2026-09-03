@@ -537,7 +537,7 @@ def test_oa_release_derives_complete_platform_source_closure(tmp_path: Path) -> 
     project_manifest = tmp_path / "sigilicon.toml"
     project_manifest.write_text(
         project_manifest.read_text(encoding="utf-8")
-        + f'\n[runtime.directories]\n"platform.testpdk" = "{platform}"\n',
+        + f'\n"platform.testpdk" = "{platform}"\n',
         encoding="utf-8",
     )
     contract = load_ip_contract(

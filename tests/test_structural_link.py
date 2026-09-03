@@ -229,7 +229,13 @@ maturity = "development"
         library_compiler_version=_COMPAT_LC_VERSION,
         release_export="macro-top",
         liberty_role="raw_macro_liberty_or_db",
-        artifact_root=tmp_path / "artifacts",
+        resources=Resources(
+            directories={
+                "release-store.fixture": str(
+                    tmp_path / "artifacts/release-store"
+                )
+            }
+        ),
     )
     root = tmp_path / "run"
     artifacts = StepWorkspace(

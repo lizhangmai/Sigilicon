@@ -21,7 +21,11 @@ from sigilicon.external_tools import (
 )
 from sigilicon.execution._model import Resources
 from sigilicon.execution._workspace import StepWorkspace
-from sigilicon.release_store import ReleaseRef, ReleaseStore
+from sigilicon.release_store import (
+    ReleaseRef,
+    ReleaseStore,
+    release_store_resource,
+)
 from sigilicon.workflows.ip_packaging import validate_ip_release_package
 
 
@@ -141,7 +145,7 @@ def plan_structural_link(
     library_compiler_version: str,
     release_export: str,
     liberty_role: str,
-    artifact_root: Path,
+    resources: Resources,
 ) -> StructuralLinkPlan:
     """Validate direct operation inputs and one exact locked release."""
 
@@ -213,7 +217,10 @@ def plan_structural_link(
         matches[0], "structural-link dependency lock entry"
     )
     ref = ReleaseRef(pinned.store, pinned.manifest_sha256)
-    audited = ReleaseStore.from_artifact_root(artifact_root).open(
+    release_store_root = Path(
+        resources.require_directory(release_store_resource(ref.store))
+    )
+    audited = ReleaseStore(release_store_root).open(
         ref,
         validate=validate_ip_release_package,
     )
