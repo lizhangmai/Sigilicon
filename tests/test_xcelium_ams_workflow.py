@@ -137,7 +137,9 @@ owner = "native-provider"
     component.write_text(
         component.read_text(encoding="utf-8").replace(
             "[sources]\n",
-            'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n\n[sources]\n',
+            'dependency_lock = "dependency_lock"\n\n[sources]\n'
+            'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n'
+            'no_recovery_variant = "ip/demo/configs/variants/no_recovery.toml"\n',
         )
         + '''
 [[component]]
@@ -150,7 +152,7 @@ required_maturity = "development"
 roles = ["circuit_netlist"]
 
 [variants]
-no-recovery = "ip/demo/configs/variants/no_recovery.toml"
+no-recovery = "no_recovery_variant"
 ''',
         encoding="utf-8",
     )

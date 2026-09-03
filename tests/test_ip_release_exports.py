@@ -44,7 +44,7 @@ def _contract_fixture(root: Path) -> Path:
         "schema = 1\n"
         'contract_kind = "oa-assembly"\n'
         'path_scope = "owner"\n'
-        'owner = "fixture"\n'
+        'owner = "fixture-ip"\n'
         'name = "fixture-lib"\n',
         encoding="utf-8",
     )
@@ -56,17 +56,18 @@ def _contract_fixture(root: Path) -> Path:
             f"name = '{name}'\n", encoding="utf-8"
         )
     (configs / "ip.toml").write_text(
-        """schema = 2
+        """schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
-owner = "fixture"
+owner = "fixture-ip"
 
 name = "fixture-ip"
 kind = "composite-ip"
-release_contract = "ip/fixture/configs/release.toml"
+release_contract = "release"
 
 [sources]
 oa = "ip/fixture/configs/oa.toml"
+release = "ip/fixture/configs/release.toml"
 left = "ip/fixture/sources/left.toml"
 right = "ip/fixture/sources/right.toml"
 
@@ -80,7 +81,7 @@ oa_source = ["oa"]
         """schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
-owner = "fixture"
+owner = "fixture-ip"
 
 name = "fixture-ip"
 default_maturity = "development"
@@ -186,18 +187,19 @@ ports = [
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "rtl-fixture"
 
 name = "rtl-fixture"
 kind = "rtl-ip"
-public_interface = "ip/rtl_fixture/configs/interface.toml"
-release_contract = "ip/rtl_fixture/configs/release.toml"
+public_interface = "interface"
+release_contract = "release"
 
 [sources]
 interface = "ip/rtl_fixture/configs/interface.toml"
+release = "ip/rtl_fixture/configs/release.toml"
 rtl = "ip/rtl_fixture/rtl/top.sv"
 ''',
         encoding="utf-8",
@@ -282,7 +284,7 @@ def _oa_source_closure_fixture(root: Path) -> Path:
         '''schema = 1
 contract_kind = "oa-assembly"
 path_scope = "owner"
-owner = "fixture"
+owner = "fixture-ip"
 
 name = "fixture_lib"
 pdk = "testpdk"
@@ -306,7 +308,7 @@ cell_roots = ["sources"]
             f'''schema = 1
 contract_kind = "oa-cell"
 path_scope = "cell"
-owner = "fixture"
+owner = "fixture-ip"
 
 cell = "{cell}"
 role = "design"
@@ -380,17 +382,18 @@ OUT = "output"
         encoding="utf-8",
     )
     (configs / "ip.toml").write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "native-fixture"
 
 name = "native-fixture"
 kind = "hard-macro"
-release_contract = "ip/native_fixture/configs/release.toml"
+release_contract = "release"
 
 [sources]
 oa = "ip/native_fixture/configs/oa.toml"
+release = "ip/native_fixture/configs/release.toml"
 interface = "ip/native_fixture/configs/interface.toml"
 ports = "ip/native_fixture/sources/design.toml"
 circuit = "ip/native_fixture/sources/circuit.scs"
@@ -488,7 +491,7 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
     contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.open(tmp_path))
 
     assert contract.name == "fixture-ip"
-    assert contract.owner == "fixture"
+    assert contract.owner == "fixture-ip"
     assert [item.name for item in contract.exports] == ["left", "right"]
     left = contract.get_export("left").interface
     right = contract.get_export("right").interface
@@ -631,7 +634,7 @@ def test_release_must_be_declared_by_its_owner_component(tmp_path: Path) -> None
     component = tmp_path / "ip/rtl_fixture/configs/ip.toml"
     component.write_text(
         component.read_text(encoding="utf-8").replace(
-            'release_contract = "ip/rtl_fixture/configs/release.toml"\n',
+            'release_contract = "release"\n',
             "",
         ),
         encoding="utf-8",
@@ -1189,7 +1192,7 @@ def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:
     contract_path = _contract_fixture(tmp_path)
     contract_path.write_text(
         contract_path.read_text(encoding="utf-8").replace(
-            'owner = "fixture"', 'owner = "other"', 1
+            'owner = "fixture-ip"', 'owner = "other"', 1
         ),
         encoding="utf-8",
     )

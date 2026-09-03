@@ -122,14 +122,12 @@ def _integration_variant_inventory(
     """Select a complete preloaded variant set, or preserve standalone loading."""
 
     component = context.require_owner(component_path).component
-    variants = component.document.get("variants")
-    if not isinstance(variants, Mapping) or not variants:
+    if not component.variants:
         return None
-    paths: list[Path] = []
-    for value in variants.values():
-        if not isinstance(value, str):
-            return None
-        paths.append((context.project_root / Path(value)).resolve())
+    paths = [
+        (context.project_root / Path(value)).resolve()
+        for value in component.variants.values()
+    ]
     if any(path not in architecture_source_documents for path in paths):
         return None
     return MappingProxyType(

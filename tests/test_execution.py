@@ -256,13 +256,13 @@ owner = "test"
         encoding="utf-8",
     )
     (owner / "component.toml").write_text(
-        """schema = 2
+        """schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "example"
 name = "example"
 kind = "rtl-ip"
-operation_catalog = "ip/example/configs/operations.toml"
+operation_catalog = "operations"
 
 [sources]
 operations = "ip/example/configs/operations.toml"
@@ -437,13 +437,13 @@ def test_plan_identity_excludes_unselected_owner_changes(tmp_path: Path) -> None
     foreign = tmp_path / "ip/foreign"
     (foreign / "configs").mkdir(parents=True)
     (foreign / "component.toml").write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"
 name = "foreign"
 kind = "rtl-ip"
-operation_catalog = "ip/foreign/configs/operations.toml"
+operation_catalog = "operations"
 
 [sources]
 operations = "ip/foreign/configs/operations.toml"
@@ -486,6 +486,20 @@ root = "ip/foreign"
 
     assert after.record == before.record
     assert after_project.identity != repository_identity
+
+
+def test_project_catalog_identity_matches_component_owner(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    component = tmp_path / "ip/example/component.toml"
+    component.write_text(
+        component.read_text(encoding="utf-8").replace(
+            'owner = "example"', 'owner = "different-owner"', 1
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="identity disagrees"):
+        Project.open(tmp_path)
 
 
 def test_project_runtime_configuration_replaces_sigilicon_environment(
@@ -806,7 +820,7 @@ root = "ip/foreign"
     foreign = tmp_path / "ip/foreign"
     foreign.mkdir()
     (foreign / "component.toml").write_text(
-        """schema = 2
+        """schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "foreign"

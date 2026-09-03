@@ -28,7 +28,7 @@ def _write_component(
         for value in values:
             source_ids.setdefault(value, f"source_{len(source_ids)}")
     rows = [
-        "schema = 2",
+        "schema = 3",
         'contract_kind = "ip-component"',
         'path_scope = "owner"',
         f'owner = "{name}"',

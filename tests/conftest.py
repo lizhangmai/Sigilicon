@@ -87,7 +87,7 @@ def write_component_owner(
         rendered = ", ".join(f'"{source_ids[value]}"' for value in values)
         fileset_lines.append(f"{name} = [{rendered}]")
     component.write_text(
-        f'''schema = 2
+        f'''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "{owner}"
@@ -137,9 +137,8 @@ owner = "test"
         f'''schema = 1
 contract_kind = "platform-definition"
 path_scope = "platform"
-owner = "test-platform"
+owner = "{key}"
 
-key = "{key}"
 name = "Test PDK"
 
 [contracts]
@@ -149,10 +148,10 @@ oa = "oa.toml"
         encoding="utf-8",
     )
     (platform / "simulation.toml").write_text(
-        '''schema = 1
+        f'''schema = 1
 contract_kind = "platform-simulation"
 path_scope = "platform"
-owner = "test-platform"
+owner = "{key}"
 
 default_model_set = "nominal"
 
@@ -163,10 +162,10 @@ sections = ["tt"]
         encoding="utf-8",
     )
     (platform / "oa.toml").write_text(
-        '''schema = 1
+        f'''schema = 1
 contract_kind = "platform-oa"
 path_scope = "platform"
-owner = "test-platform"
+owner = "{key}"
 
 technology_library = "techLib"
 reference_libraries = ["deviceLib"]
@@ -190,19 +189,19 @@ def write_test_layout_platform(root: Path, key: str = "testpdk") -> None:
         encoding="utf-8",
     )
     (platform / "layout.toml").write_text(
-        '''schema = 1
+        f'''schema = 1
 contract_kind = "platform-layout"
 path_scope = "platform"
-owner = "test-platform"
+owner = "{key}"
 dbu_per_micron = 1000
 ''',
         encoding="utf-8",
     )
     (platform / "verification.toml").write_text(
-        '''schema = 1
+        f'''schema = 1
 contract_kind = "platform-verification"
 path_scope = "platform"
-owner = "test-platform"
+owner = "{key}"
 layermap = "layermap"
 drc_deck = "drc.deck"
 lvs_deck = "lvs.deck"

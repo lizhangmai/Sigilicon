@@ -17,7 +17,7 @@ def test_source_library_is_a_first_class_component_kind(tmp_path: Path) -> None:
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -56,7 +56,7 @@ def test_component_lifecycle_is_typed_and_frozen(tmp_path: Path) -> None:
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -97,7 +97,7 @@ def test_component_filesets_only_compose_unique_source_identities(
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -127,6 +127,41 @@ python = ["missing"]
         load_component_contract(contract, project_root=tmp_path)
 
 
+def test_component_roles_reference_source_identities(tmp_path: Path) -> None:
+    owner = tmp_path / "ip/shared"
+    owner.mkdir(parents=True)
+    operations = owner / "operations.toml"
+    operations.write_text("operations\n", encoding="utf-8")
+    contract = owner / "ip.toml"
+    contract.write_text(
+        '''schema = 3
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "shared"
+name = "shared"
+kind = "rtl-ip"
+operation_catalog = "operations"
+
+[sources]
+operations = "ip/shared/operations.toml"
+''',
+        encoding="utf-8",
+    )
+
+    loaded = load_component_contract(contract, project_root=tmp_path)
+    assert loaded.operation_catalog == loaded.sources["operations"]
+
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            'operation_catalog = "operations"',
+            'operation_catalog = "ip/shared/operations.toml"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="references unknown source"):
+        load_component_contract(contract, project_root=tmp_path)
+
+
 def test_component_graph_rejects_a_snapshot_from_another_root(
     tmp_path: Path,
 ) -> None:
@@ -135,7 +170,7 @@ def test_component_graph_rejects_a_snapshot_from_another_root(
     source.write_text("VALUE = 1\n", encoding="utf-8")
     contract = tmp_path / "ip/shared/ip.toml"
     contract.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "shared"
@@ -169,7 +204,7 @@ def test_component_graph_still_loads_dependencies_below_a_root_snapshot(
     child_source.write_text("VALUE = 1\n", encoding="utf-8")
     child = tmp_path / "ip/child/ip.toml"
     child.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "child"
@@ -187,7 +222,7 @@ python = ["library"]
     root_contract_path = tmp_path / "ip/top/ip.toml"
     root_contract_path.parent.mkdir(parents=True)
     root_contract_path.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "top"

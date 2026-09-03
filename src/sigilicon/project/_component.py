@@ -83,9 +83,42 @@ class ComponentContract:
     sources: Mapping[str, PurePosixPath]
     filesets: Mapping[str, tuple[PurePosixPath, ...]]
     components: tuple[ComponentDependency, ...]
+    variants: Mapping[str, PurePosixPath]
+    implementations: Mapping[str, PurePosixPath]
     document: Mapping[str, Any] = field(repr=False, compare=False)
     operation_catalog: PurePosixPath | None = None
     release_contract: PurePosixPath | None = None
+    dependency_lock: PurePosixPath | None = None
+
+
+def _source_role(
+    value: object,
+    label: str,
+    sources: Mapping[str, PurePosixPath],
+) -> PurePosixPath | None:
+    if value is None:
+        return None
+    identity = _string(value, label)
+    try:
+        return sources[identity]
+    except KeyError as exc:
+        raise ValueError(f"{label} references unknown source {identity!r}") from exc
+
+
+def _source_roles(
+    value: object,
+    label: str,
+    sources: Mapping[str, PurePosixPath],
+) -> Mapping[str, PurePosixPath]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a TOML table")
+    selected: dict[str, PurePosixPath] = {}
+    for name, identity in value.items():
+        role = _string(name, f"{label} name")
+        resolved = _source_role(identity, f"{label}.{role}", sources)
+        assert resolved is not None
+        selected[role] = resolved
+    return MappingProxyType(selected)
 
 
 def parse_component_contract(
@@ -117,13 +150,6 @@ def parse_component_contract(
     if lifecycle not in COMPONENT_LIFECYCLES:
         raise ValueError(f"unsupported component lifecycle: {lifecycle}")
 
-    interface_value = document.get("public_interface")
-    public_interface = (
-        None
-        if interface_value is None
-        else _safe_relative(interface_value, "public_interface")
-    )
-
     sources_raw = document.get("sources", {})
     if not isinstance(sources_raw, Mapping):
         raise ValueError("sources must be a TOML table")
@@ -137,6 +163,33 @@ def parse_component_contract(
             raise ValueError(f"source path has multiple identities: {source}")
         sources[name] = source
         source_paths.add(source)
+
+    public_interface = _source_role(
+        document.get("public_interface"),
+        "public_interface",
+        sources,
+    )
+    operation_catalog = _source_role(
+        document.get("operation_catalog"),
+        "operation_catalog",
+        sources,
+    )
+    release_contract = _source_role(
+        document.get("release_contract"),
+        "release_contract",
+        sources,
+    )
+    dependency_lock = _source_role(
+        document.get("dependency_lock"),
+        "dependency_lock",
+        sources,
+    )
+    variants = _source_roles(document.get("variants", {}), "variants", sources)
+    implementations = _source_roles(
+        document.get("implementation", {}),
+        "implementation",
+        sources,
+    )
 
     filesets_raw = document.get("filesets", {})
     if not isinstance(filesets_raw, Mapping):
@@ -186,19 +239,6 @@ def parse_component_contract(
             )
         )
 
-    operation_catalog_value = document.get("operation_catalog")
-    operation_catalog = (
-        None
-        if operation_catalog_value is None
-        else _safe_relative(operation_catalog_value, "operation_catalog")
-    )
-    release_value = document.get("release_contract")
-    release_contract = (
-        None
-        if release_value is None
-        else _safe_relative(release_value, "release_contract")
-    )
-
     result = ComponentContract(
         path=contract_path,
         project_root=root,
@@ -210,15 +250,14 @@ def parse_component_contract(
         sources=MappingProxyType(sources),
         filesets=MappingProxyType(filesets),
         components=tuple(dependencies),
+        variants=variants,
+        implementations=implementations,
         operation_catalog=operation_catalog,
         release_contract=release_contract,
+        dependency_lock=dependency_lock,
         document=freeze_toml_document(document),
     )
     referenced = list(result.sources.values())
-    if result.public_interface is not None:
-        referenced.append(result.public_interface)
-    if result.release_contract is not None:
-        referenced.append(result.release_contract)
     referenced.extend(item.contract for item in result.components)
     for relative in referenced:
         resolved = (root / Path(relative)).resolve()

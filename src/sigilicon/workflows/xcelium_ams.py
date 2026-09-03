@@ -147,29 +147,6 @@ class XceliumAmsCellPlan(XceliumCellPlan):
         }
 
 
-def _project_source(root: Path, value: object, label: str) -> Path:
-    if not isinstance(value, str):
-        raise ValueError(f"Xcelium AMS {label} must be a project-relative path")
-    relative = PurePosixPath(value)
-    if (
-        relative.is_absolute()
-        or "\\" in value
-        or relative.as_posix() != value
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
-        raise ValueError(f"Xcelium AMS {label} must be a canonical relative path")
-    configured = (root / Path(*relative.parts)).absolute()
-    path = configured.resolve()
-    if (
-        configured != path
-        or not path.is_relative_to(root)
-        or not path.is_file()
-        or path.is_symlink()
-    ):
-        raise ValueError(f"Xcelium AMS {label} is missing or unsafe")
-    return path
-
-
 def _toml(path: Path, label: str) -> dict[str, Any]:
     try:
         return read_toml(path)
@@ -183,7 +160,11 @@ def _locked_native_release(
 ) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     """Resolve only the consumer-owned declaration, lock, and immutable package."""
 
-    component = _toml(circuit_selection.contract, "integration contract")
+    owned = spec.project.require_owner(circuit_selection.contract)
+    if owned.component.path != circuit_selection.contract:
+        raise ValueError("Xcelium AMS integration contract is not canonical")
+    component_contract = owned.component
+    component = component_contract.document
     dependencies = component.get("component")
     matches = (
         [
@@ -192,7 +173,7 @@ def _locked_native_release(
             if isinstance(dependency, Mapping)
             and dependency.get("name") == circuit_selection.dependency
         ]
-        if isinstance(dependencies, list)
+        if isinstance(dependencies, (list, tuple))
         else []
     )
     if len(matches) != 1 or not isinstance(matches[0].get("release"), Mapping):
@@ -201,18 +182,11 @@ def _locked_native_release(
             f"{circuit_selection.dependency}"
         )
     release = matches[0]["release"]
-    variants = component.get("variants")
-    if (
-        not isinstance(variants, Mapping)
-        or circuit_selection.variant not in variants
-    ):
+    variant_relative = component_contract.variants.get(circuit_selection.variant)
+    if variant_relative is None:
         raise ValueError("Xcelium AMS integration contract omits its variant")
     variant = _toml(
-        _project_source(
-            spec.project_root,
-            variants[circuit_selection.variant],
-            "variant contract",
-        ),
+        spec.project_root.joinpath(*variant_relative.parts),
         "variant contract",
     )
     try:
@@ -229,17 +203,15 @@ def _locked_native_release(
     ):
         raise ValueError("Xcelium AMS circuit role is not selected by its fileset")
     declared_roles = release.get("roles")
-    if not isinstance(declared_roles, list) or not set(required_roles).issubset(
-        declared_roles
-    ):
+    if not isinstance(declared_roles, (list, tuple)) or not set(
+        required_roles
+    ).issubset(declared_roles):
         raise ValueError("Xcelium AMS fileset roles exceed its release declaration")
 
+    if component_contract.dependency_lock is None:
+        raise ValueError("Xcelium AMS integration contract omits its dependency lock")
     lock = _toml(
-        _project_source(
-            spec.project_root,
-            component.get("dependency_lock"),
-            "dependency lock",
-        ),
+        spec.project_root.joinpath(*component_contract.dependency_lock.parts),
         "dependency lock",
     )
     pinned_dependencies = lock.get("dependency")

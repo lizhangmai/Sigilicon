@@ -265,22 +265,15 @@ def _release_dependency(value: object, label: str) -> IpReleaseDependency:
 
 
 def _implementation_profiles(
-    raw: Mapping[str, Any],
+    component: ComponentContract,
     *,
     project: Project,
-    owner: str,
     source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> tuple[Mapping[str, PurePosixPath], Mapping[Path, Mapping[str, Any]]]:
-    values = _table(raw.get("implementation", {}), "implementation")
     result: dict[str, PurePosixPath] = {}
     documents: dict[Path, Mapping[str, Any]] = {}
-    for name, value in values.items():
-        name = _string(name, "implementation profile name")
-        path, relative = project.resolve_owner_file(
-            owner,
-            value,
-            f"implementation.{name}",
-        )
+    for name, relative in component.implementations.items():
+        path = project.project_root.joinpath(*relative.parts)
         if source_documents is None:
             profile: Mapping[str, Any] = read_toml(path)
         else:
@@ -295,7 +288,7 @@ def _implementation_profiles(
                 f"implementation.{name}.contract_kind",
             ),
             path_scope="owner",
-            owner=owner,
+            owner=component.owner,
         )
         result[name] = relative
         documents[path] = (
@@ -576,7 +569,6 @@ def load_ip_integration_contract(
         raise ValueError("IP integration owner disagrees with the project catalog")
     if component.kind != "composite-ip":
         raise ValueError("IP integration requires a composite-ip component")
-    raw = component.document
     graph = load_component_graph(
         component.path,
         project_root=root,
@@ -587,16 +579,8 @@ def load_ip_integration_contract(
     dependencies = _integration_dependencies(component)
     by_name = {item.name: item for item in dependencies}
 
-    lock_value = raw.get("dependency_lock")
-    dependency_lock: PurePosixPath | None = None
-    if lock_value is not None:
-        _, dependency_lock = repository.resolve_owner_file(
-            cataloged_owner,
-            lock_value,
-            "dependency_lock",
-        )
+    dependency_lock = component.dependency_lock
 
-    variants_raw = _table(raw.get("variants"), "variants")
     if (
         variant_source_documents is not None
         and not isinstance(variant_source_documents, _MAPPING_PROXY_TYPE)
@@ -604,13 +588,8 @@ def load_ip_integration_contract(
         raise ValueError("IP operating variant source inventory must be immutable")
     variants: list[IpOperatingVariant] = []
     source_documents: dict[Path, Mapping[str, Any]] = {}
-    for name, value in variants_raw.items():
-        name = _string(name, "variant name")
-        variant_path, _ = repository.resolve_owner_file(
-            cataloged_owner,
-            value,
-            f"variants.{name}",
-        )
+    for name, relative in component.variants.items():
+        variant_path = root.joinpath(*relative.parts)
         variant_document = None
         if variant_source_documents is not None:
             variant_document = variant_source_documents.get(variant_path)
@@ -638,9 +617,8 @@ def load_ip_integration_contract(
         raise ValueError("IP operating variant source inventory identity drift")
 
     implementation_profiles, implementation_documents = _implementation_profiles(
-        raw,
+        component,
         project=repository,
-        owner=component.owner,
     )
     source_documents.update(implementation_documents)
     return IpIntegrationContract(
@@ -717,27 +695,11 @@ def resolve_ip_integration_contract(
 
     dependencies = _integration_dependencies(component)
     by_name = {item.name: item for item in dependencies}
-    raw = component.document
-    lock_value = raw.get("dependency_lock")
-    dependency_lock = (
-        None
-        if lock_value is None
-        else project.resolve_owner_file(
-            owner,
-            lock_value,
-            "dependency_lock",
-        )[1]
-    )
-    variants_raw = _table(raw.get("variants"), "variants")
+    dependency_lock = component.dependency_lock
     variants: list[IpOperatingVariant] = []
     expected_paths: set[Path] = set()
-    for name, value in variants_raw.items():
-        name = _string(name, "variant name")
-        variant_path, _ = project.resolve_owner_file(
-            owner,
-            value,
-            f"variants.{name}",
-        )
+    for name, relative in component.variants.items():
+        variant_path = root.joinpath(*relative.parts)
         expected_paths.add(variant_path)
         document = snapshot.source_documents.get(variant_path)
         if not isinstance(document, Mapping):
@@ -753,9 +715,8 @@ def resolve_ip_integration_contract(
             )
         )
     implementation_profiles, implementation_documents = _implementation_profiles(
-        raw,
+        component,
         project=project,
-        owner=component.owner,
         source_documents=snapshot.source_documents,
     )
     expected_paths.update(implementation_documents)

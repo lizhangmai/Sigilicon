@@ -423,6 +423,15 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
             or platform.source_paths[0] != self.catalog.path
         ):
             raise ValueError("platform set identity drift")
+        current_catalog = resolve_platform_catalog(context, snapshot=self.catalog)
+        if isinstance(platform, PdkConfig):
+            _validate_platform_snapshot(context, key, platform, resources=None)
+        elif load_platform_contract(
+            context,
+            key,
+            catalog=current_catalog,
+        ) != platform:
+            raise ValueError("platform set source identity drift")
         return platform
 
 
@@ -541,13 +550,8 @@ def resolve_platform_catalog(
     if snapshot is None:
         return load_platform_catalog(context)
     _validate_immutable_platform_catalog(snapshot)
-    validated = parse_platform_catalog(context, snapshot.document)
-    if (
-        snapshot.project_root != validated.project_root
-        or snapshot.path != validated.path
-    ):
-        raise ValueError("platform catalog snapshot belongs to a different project")
-    if snapshot.owner != validated.owner or snapshot.manifests != validated.manifests:
+    current = load_platform_catalog(context)
+    if current != snapshot or current.document != snapshot.document:
         raise ValueError("platform catalog snapshot identity drift")
     return snapshot
 
@@ -1045,11 +1049,11 @@ def _load_platform(
     )
     _reject_unknown(
         raw,
-        _HEADER_FIELDS | {"key", "name", "asset_scope", "contracts"},
+        _HEADER_FIELDS | {"name", "asset_scope", "contracts"},
         "platform definition",
     )
-    if raw.get("key") != key:
-        raise ValueError(f"platform manifest key must be {key!r}")
+    if header.owner != key:
+        raise ValueError(f"platform manifest owner must be {key!r}")
     asset_root, root_resource = _platform_asset_root(
         manifest,
         key,

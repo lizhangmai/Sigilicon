@@ -483,7 +483,7 @@ class Project:
                 component_path,
                 project_root=project.project_root,
             )
-            if component.name != owner:
+            if component.name != owner or component.owner != owner:
                 raise ValueError(
                     f"{ip_catalog}: component {name!r} identity disagrees with its contract"
                 )

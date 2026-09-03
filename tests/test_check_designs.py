@@ -204,7 +204,7 @@ owner = "example"
     )
     component.write_text(
         component.read_text(encoding="utf-8")
-        + '\n[variants]\ndefault = "ip/example/configs/variant.toml"\n',
+        + '\n[variants]\ndefault = "source_1"\n',
         encoding="utf-8",
     )
 

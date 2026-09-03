@@ -334,7 +334,7 @@ blockers = ["implementation_release_missing"]
         '''schema = 1
 contract_kind = "ip-interface"
 path_scope = "owner"
-owner = "fixture"
+owner = "fixture-ip"
 
 [physical]
 library = "fixture"
@@ -359,7 +359,7 @@ domains = []
     (release_root / "rtl").rmdir()
 
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload["owner"] = "fixture"
+    payload["owner"] = "fixture-ip"
     exported = payload["exports"][0]
     exported["oa"] = {
         "library": "fixture",
@@ -431,17 +431,18 @@ def _write_ip_fixture(project_root: Path, release_id: str, manifest: str) -> Pat
     (owner_root / "rtl").mkdir()
     (dependency_root / "configs").mkdir(parents=True)
     (dependency_root / "configs/ip.toml").write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
-owner = "fixture"
+owner = "fixture-ip"
 
 name = "fixture-ip"
 kind = "rtl-ip"
-release_contract = "ip/fixture/configs/release.toml"
+release_contract = "release"
 
 [sources]
 manifest = "ip/fixture/configs/ip.toml"
+release = "ip/fixture/configs/release.toml"
 
 [filesets]
 source = ["manifest"]
@@ -452,7 +453,7 @@ source = ["manifest"]
         '''schema = 2
 contract_kind = "ip-release"
 path_scope = "owner"
-owner = "fixture"
+owner = "fixture-ip"
 ''',
         encoding="utf-8",
     )
@@ -517,14 +518,14 @@ manifest_sha256 = "{manifest_sha256}"
     )
     contract = owner_root / "configs/ip.toml"
     contract.write_text(
-        """schema = 2
+        """schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "demo"
 
 name = "demo"
 kind = "composite-ip"
-dependency_lock = "ip/demo/configs/dependency.lock.toml"
+dependency_lock = "dependency_lock"
 
 [[component]]
 name = "fixture-ip"
@@ -536,12 +537,13 @@ required_maturity = "development"
 roles = ["transaction_model", "integration_adapter", "physical_blackbox"]
 
 [variants]
-default = "ip/demo/configs/variants/default.toml"
+default = "default_variant"
 
 [sources]
 top = "ip/demo/rtl/top.sv"
 simulation_filelist = "ip/demo/rtl/simulation.f"
 default_variant = "ip/demo/configs/variants/default.toml"
+dependency_lock = "ip/demo/configs/dependency.lock.toml"
 
 [filesets]
 rtl = ["top", "simulation_filelist", "default_variant"]
@@ -617,7 +619,7 @@ def _write_source_component_fixture(project_root: Path) -> Path:
         "module leaf(input logic clk); endmodule\n", encoding="utf-8"
     )
     (dependency / "configs/ip.toml").write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "leaf"
@@ -670,7 +672,7 @@ owner = "composite"
     )
     contract = owner / "configs/ip.toml"
     contract.write_text(
-        '''schema = 2
+        '''schema = 3
 contract_kind = "ip-component"
 path_scope = "owner"
 owner = "composite"
@@ -679,15 +681,16 @@ name = "composite"
 kind = "composite-ip"
 
 [implementation]
-fixture = "ip/composite/configs/tool.toml"
+fixture = "tool"
 
 [variants]
-default = "ip/composite/configs/variants/default.toml"
+default = "default_variant"
 
 [sources]
 top = "ip/composite/rtl/top.sv"
 simulation_filelist = "ip/composite/rtl/simulation.f"
 default_variant = "ip/composite/configs/variants/default.toml"
+tool = "ip/composite/configs/tool.toml"
 
 [filesets]
 rtl = ["top", "simulation_filelist", "default_variant"]
@@ -1087,7 +1090,7 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
     contract = _write_ip_fixture(project_root, release_id, manifest)
     contract.write_text(
         contract.read_text(encoding="utf-8").replace(
-            'dependency_lock = "ip/demo/configs/dependency.lock.toml"\n',
+            'dependency_lock = "dependency_lock"\n',
             "",
         ),
         encoding="utf-8",

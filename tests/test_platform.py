@@ -425,12 +425,54 @@ def test_platform_contract_owner_matches_manifest(tmp_path: Path) -> None:
     simulation = tmp_path / "configs/platform/testpdk/simulation.toml"
     simulation.write_text(
         simulation.read_text(encoding="utf-8").replace(
-            'owner = "test-platform"', 'owner = "another-owner"'
+            'owner = "testpdk"', 'owner = "another-owner"'
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="owner must be 'test-platform'"):
+    with pytest.raises(ValueError, match="owner must be 'testpdk'"):
         load_platform(
             Project.open(tmp_path), "testpdk", resources=Resources()
         )
+
+
+def test_platform_manifest_owner_is_its_catalog_identity(tmp_path: Path) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'owner = "testpdk"', 'owner = "another-owner"', 1
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="platform manifest owner"):
+        load_platform_contract(Project.open(tmp_path), "testpdk")
+
+
+@pytest.mark.parametrize("changed", ("catalog", "platform"))
+def test_platform_set_rejects_source_drift(
+    tmp_path: Path,
+    changed: str,
+) -> None:
+    write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    project = Project.open(tmp_path)
+    inventory = load_platforms(project)
+    path = (
+        tmp_path / "configs/platform/catalog.toml"
+        if changed == "catalog"
+        else tmp_path / "configs/platform/testpdk/platform.toml"
+    )
+    source = path.read_text(encoding="utf-8")
+    path.write_text(
+        source.replace(
+            'owner = "test"' if changed == "catalog" else 'name = "Test PDK"',
+            'owner = "changed"' if changed == "catalog" else 'name = "Changed PDK"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="source identity drift|catalog snapshot"):
+        resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
