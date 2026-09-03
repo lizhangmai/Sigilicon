@@ -23,8 +23,5 @@ test = [
 [project.scripts]
 sigilicon = "sigilicon.cli.main:main"
 
-[tool.setuptools.package-data]
-"sigilicon.workflows" = ["*.tcl"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
