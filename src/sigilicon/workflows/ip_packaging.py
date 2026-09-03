@@ -618,10 +618,7 @@ def _resolve_release_oa_source(
         Path(contract.oa_assembly),
         "OA assembly",
     )
-    from sigilicon.domain.oa_library import (
-        load_oa_library_source,
-        resolve_oa_library_source,
-    )
+    from sigilicon.domain.oa_library import load_oa_library_source
 
     if resolved_oa_source is not None:
         if (
@@ -639,7 +636,7 @@ def _resolve_release_oa_source(
             raise ValueError(
                 f"OA source inventory has no {oa_manifest} entry"
             ) from exc
-        library = resolve_oa_library_source(
+        library = load_oa_library_source(
             oa_manifest,
             project=contract.project,
             snapshot=source_snapshot,

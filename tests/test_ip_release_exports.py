@@ -981,9 +981,6 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         oa_library_domain, "load_oa_library_source", reject_oa_load
     )
     monkeypatch.setattr(
-        oa_library_domain, "resolve_oa_library_source", reject_oa_load
-    )
-    monkeypatch.setattr(
         ip_packaging,
         "inspect_checkout",
         lambda _root, _resources: SimpleNamespace(

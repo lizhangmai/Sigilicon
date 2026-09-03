@@ -24,7 +24,6 @@ from sigilicon.domain.oa_library import (
     OALibrarySource,
     OAViewReference,
     load_oa_library_source,
-    resolve_oa_library_source,
 )
 from sigilicon.domain.platform import (
     PlatformInventory,
@@ -852,7 +851,7 @@ def plan_oa_library_rebuild(
             raise ValueError(
                 f"OA source inventory has no {resolved_manifest} entry"
             ) from exc
-        source = resolve_oa_library_source(
+        source = load_oa_library_source(
             resolved_manifest,
             project=project,
             snapshot=source_snapshot,
