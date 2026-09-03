@@ -342,6 +342,9 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
                 }
             ]
         },
+        resource_identities={
+            model: "pdk:fixture-pdk:simulation/nominal/0-model.scs"
+        },
         as_dict=lambda: {"cell": "tb_ams", "model": str(model)},
     )
     monkeypatch.setattr(
@@ -819,6 +822,14 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     )
     planning = SimpleNamespace(
         source_records={source: "stale typed snapshot\n"},
+        spec=SimpleNamespace(
+            library="FIXTURE",
+            cell="CELL",
+            view="layout",
+            generator="fixture",
+            stage="source",
+            pdk=object(),
+        ),
     )
     monkeypatch.setattr(
         "sigilicon.domain.platform.load_platform_inventory",

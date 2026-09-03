@@ -358,6 +358,12 @@ cell = "ANALOG_TOP"''',
     assert plan.circuit_netlist == circuit.resolve()
     assert plan.integration_check["contract_kind"] == "source-circuit-selection"
     assert plan.circuit_sha256 == hashlib.sha256(circuit.read_bytes()).hexdigest()
+    assert circuit not in plan.resource_identities
+    assert set(plan.resource_identities) == set(plan.model_set.files)
+    assert all(
+        identity.startswith("pdk:testpdk:simulation/nominal/")
+        for identity in plan.resource_identities.values()
+    )
 
 
 def test_xcelium_ams_rejects_unknown_dependency_lock_fields(

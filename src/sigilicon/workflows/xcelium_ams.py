@@ -14,7 +14,12 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.ip_integration import parse_locked_ip_release
-from sigilicon.domain.platform import PdkConfig, SimulationModelSet, load_platform
+from sigilicon.domain.platform import (
+    PdkConfig,
+    SimulationModelSet,
+    load_platform,
+    model_resource_identities,
+)
 from sigilicon.project import Project
 from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
@@ -59,6 +64,7 @@ class XceliumAmsCellPlan(XceliumCellPlan):
     model_set: SimulationModelSet
     model_sha256: Mapping[Path, str]
     integration_check: Mapping[str, Any]
+    resource_identities: Mapping[Path, str]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -75,6 +81,11 @@ class XceliumAmsCellPlan(XceliumCellPlan):
             self,
             "integration_check",
             MappingProxyType(dict(self.integration_check)),
+        )
+        object.__setattr__(
+            self,
+            "resource_identities",
+            MappingProxyType(dict(self.resource_identities)),
         )
 
     def render_ams_control(
@@ -414,6 +425,45 @@ def _resolve_circuit(
     )
 
 
+def _external_resource_identities(
+    spec: VerificationCellSpec,
+    platform: PdkConfig,
+    model_set: SimulationModelSet,
+    circuit: Path,
+    selection: Mapping[str, Any],
+    circuit_records: Mapping[Path, str],
+) -> Mapping[Path, str]:
+    """Bind PDK and immutable-release inputs at their owning domain seam."""
+
+    selected = dict(model_resource_identities(platform, model_set))
+    ams = spec.ams
+    assert ams is not None
+    if isinstance(ams.circuit, XceliumAmsSourceCircuit):
+        return MappingProxyType(selected)
+    releases = selection.get("dependency_releases")
+    if not isinstance(releases, list) or len(releases) != 1:
+        raise ValueError("Xcelium AMS release identity is unavailable")
+    release = releases[0]
+    if not isinstance(release, Mapping):
+        raise ValueError("Xcelium AMS release identity is invalid")
+    dependency = release.get("name")
+    release_id = release.get("release_id")
+    if not isinstance(dependency, str) or not isinstance(release_id, str):
+        raise ValueError("Xcelium AMS release identity is incomplete")
+    prefix = f"release:{dependency}:{release_id}"
+    selected[circuit.absolute()] = f"{prefix}/role/{ams.circuit.role}"
+    manifests = tuple(
+        path
+        for path in circuit_records
+        if path != circuit and path.name == "manifest.json"
+    )
+    if len(manifests) > 1:
+        raise ValueError("Xcelium AMS release manifest identity is ambiguous")
+    if manifests:
+        selected[manifests[0].absolute()] = f"{prefix}/manifest"
+    return MappingProxyType(selected)
+
+
 def plan_xcelium_ams_cell(
     contract_path: Path,
     *,
@@ -507,6 +557,14 @@ def plan_xcelium_ams_cell(
         model_set=model_set,
         model_sha256=model_sha256,
         integration_check=integration_check,
+        resource_identities=_external_resource_identities(
+            spec,
+            platform,
+            model_set,
+            circuit,
+            integration_check,
+            release_records,
+        ),
         command_template=command_template,
         source_records=source_records,
     )

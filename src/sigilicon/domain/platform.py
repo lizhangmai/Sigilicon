@@ -224,6 +224,41 @@ class PdkConfig:
         return self.asset_root is not None
 
 
+def platform_resource_identities(platform: PdkConfig) -> Mapping[Path, str]:
+    """Name every external platform asset by its domain identity."""
+
+    selected: dict[Path, str] = {}
+    simulation = getattr(platform, "simulation", None)
+    if simulation is not None:
+        for name, model_set in sorted(simulation.model_sets.items()):
+            for index, path in enumerate(model_set.files):
+                selected[path.absolute()] = (
+                    f"pdk:{platform.key}:simulation/{name}/{index}-{path.name}"
+                )
+    layout = getattr(platform, "layout", None)
+    if layout is not None:
+        for role in ("layermap", "drc_deck", "lvs_deck", "qrc_tech_file"):
+            path = getattr(layout, role, None)
+            if path is not None:
+                selected[path.absolute()] = f"pdk:{platform.key}:layout/{role}"
+    return MappingProxyType(selected)
+
+
+def model_resource_identities(
+    platform: PdkConfig,
+    model_set: SimulationModelSet,
+) -> Mapping[Path, str]:
+    """Name the selected simulator model assets within their platform."""
+
+    selected = dict(platform_resource_identities(platform))
+    for index, path in enumerate(model_set.files):
+        selected[path.absolute()] = (
+            f"pdk:{platform.key}:simulation/"
+            f"{model_set.name}/{index}-{path.name}"
+        )
+    return MappingProxyType(selected)
+
+
 _PLATFORM_CONTRACT_AUTHORITY = object()
 
 

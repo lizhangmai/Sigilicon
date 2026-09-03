@@ -335,65 +335,6 @@ def _external_file_records(
     return resources
 
 
-def _platform_resource_identities(platform: Any) -> Mapping[Path, str]:
-    selected: dict[Path, str] = {}
-    key = getattr(platform, "key", None)
-    if not isinstance(key, str) or not key:
-        return MappingProxyType(selected)
-    simulation = getattr(platform, "simulation", None)
-    model_sets = getattr(simulation, "model_sets", {})
-    if isinstance(model_sets, Mapping):
-        for name, model_set in sorted(model_sets.items()):
-            for index, path in enumerate(model_set.files):
-                selected[Path(path).absolute()] = (
-                    f"pdk:{key}:simulation/{name}/{index}-{Path(path).name}"
-                )
-    layout = getattr(platform, "layout", None)
-    if layout is not None:
-        for role in ("layermap", "drc_deck", "lvs_deck", "qrc_tech_file"):
-            path = getattr(layout, role, None)
-            if path is not None:
-                selected[Path(path).absolute()] = f"pdk:{key}:layout/{role}"
-    return MappingProxyType(selected)
-
-
-def _model_resource_identities(platform: Any, model_set: Any) -> Mapping[Path, str]:
-    selected = dict(_platform_resource_identities(platform))
-    key = getattr(platform, "key", None)
-    name = getattr(model_set, "name", None)
-    if not isinstance(key, str) or not key or not isinstance(name, str) or not name:
-        return MappingProxyType(selected)
-    for index, path in enumerate(model_set.files):
-        selected[Path(path).absolute()] = (
-            f"pdk:{key}:simulation/{name}/{index}-{Path(path).name}"
-        )
-    return MappingProxyType(selected)
-
-
-def _ams_resource_identities(planning: Any) -> Mapping[Path, str]:
-    selected = dict(
-        _model_resource_identities(planning.platform, planning.model_set)
-    )
-    releases = planning.integration_check.get("dependency_releases")
-    if not isinstance(releases, list) or len(releases) != 1:
-        raise ContractError("Xcelium AMS release identity is unavailable")
-    release = releases[0]
-    if not isinstance(release, Mapping):
-        raise ContractError("Xcelium AMS release identity is invalid")
-    dependency = release.get("name")
-    release_id = release.get("release_id")
-    if not isinstance(dependency, str) or not isinstance(release_id, str):
-        raise ContractError("Xcelium AMS release identity is incomplete")
-    role = planning.spec.ams.circuit_role
-    prefix = f"release:{dependency}:{release_id}"
-    selected[planning.circuit_netlist.absolute()] = f"{prefix}/role/{role}"
-    for source in planning.source_records:
-        path = Path(source).absolute()
-        if path.name == "manifest.json" and path.parent.parent.name == "objects":
-            selected[path] = f"{prefix}/manifest"
-    return MappingProxyType(selected)
-
-
 def _oa_resource_identities(
     project: Any,
     planning: Any,
@@ -403,13 +344,13 @@ def _oa_resource_identities(
     root = project.project_root.resolve()
     if not any(not Path(path).absolute().is_relative_to(root) for path in paths):
         return MappingProxyType({})
-    from sigilicon.domain.platform import load_platform
+    from sigilicon.domain.platform import load_platform, platform_resource_identities
 
     pdk = getattr(getattr(planning, "source", None), "pdk", None)
     if not isinstance(pdk, str) or not pdk:
         raise ContractError("OA plan external resources have no platform identity")
     platform = load_platform(project, pdk, resources=resources)
-    selected = dict(_platform_resource_identities(platform))
+    selected = dict(platform_resource_identities(platform))
     asset_root = platform.asset_root
     if asset_root is not None:
         for source in paths:
@@ -568,6 +509,43 @@ class _PreparedCadencePlan:
 
 class _CadenceDomainAdapter:
     """Attach a non-portable domain value to its fully recorded Step."""
+
+    def _prepare_domain_step(
+        self,
+        project: PlanningProject,
+        step: Step,
+        resources: Resources,
+        *,
+        owner: str,
+        config: Mapping[str, Any],
+        plan: object,
+        prepared: Mapping[str, Any],
+        source_records: Mapping[Path, str],
+        resource_identities: Mapping[Path, str],
+        extra_resources: tuple[Path, ...] = (),
+        runtime_identities: tuple[str, ...] = (),
+    ) -> Step:
+        """Seal one typed Cadence plan through the common execution boundary."""
+
+        sources = _bind_source_paths(project, owner, step, source_records)
+        external = _external_file_records(
+            project,
+            source_records,
+            extra_resources,
+            identities=resource_identities,
+        )
+        prepared_step = self._bind_domain_plan(
+            step,
+            config=config,
+            plan=plan,
+            prepared=prepared,
+            sources=sources,
+            captured=_captured_project_sources(project, owner, sources),
+            resources=external,
+            runtime_bindings=_runtime_bindings(resources, *runtime_identities),
+        )
+        self.preflight(prepared_step, resources)
+        return prepared_step
 
     def _bind_domain_plan(
         self,
@@ -812,31 +790,19 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
         )
         if required != frozenset(planning.source_records):
             raise ContractError("Xcelium AMS plan source snapshot is incomplete")
-        bindings = _bind_source_paths(
-            project,
-            owner,
-            step,
-            planning.source_records,
-        )
-        external = _external_file_records(
-            project,
-            planning.source_records,
-            identities=_ams_resource_identities(planning),
-        )
-        captured = _captured_project_sources(project, owner, bindings)
         prepared_identity = {"identity": canonical_digest(planning.as_dict())}
-        prepared = self._bind_domain_plan(
+        return self._prepare_domain_step(
+            project,
             step,
+            resources,
+            owner=owner,
             config=config,
             plan=planning,
             prepared=prepared_identity,
-            sources=bindings,
-            captured=captured,
-            resources=external,
-            runtime_bindings=_runtime_bindings(resources, _XRUN),
+            source_records=planning.source_records,
+            resource_identities=planning.resource_identities,
+            runtime_identities=(_XRUN,),
         )
-        self.preflight(prepared, resources)
-        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -967,44 +933,28 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             planning,
             oa_plan_source_paths(planning),
         )
-        sources = _bind_source_paths(
-            project,
-            owner,
-            step,
-            required,
-        )
-        external = _external_file_records(
-            project,
-            required,
-            identities=_oa_resource_identities(
-                project,
-                planning,
-                required,
-                resources,
-            ),
-        )
-        captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
             "assembly_identity": canonical_digest(planning.as_dict()),
             "library": planning.library,
             "testbench": matches[0].cell,
         }
-        prepared = self._bind_domain_plan(
+        return self._prepare_domain_step(
+            project,
             step,
+            resources,
+            owner=owner,
             config=config,
             plan=planning,
             prepared=prepared_identity,
-            sources=sources,
-            captured=captured,
-            resources=external,
-            runtime_bindings=_runtime_bindings(
+            source_records=required,
+            resource_identities=_oa_resource_identities(
+                project,
+                planning,
+                required,
                 resources,
-                *_BRIDGE_RESOURCES,
-                CADENCE_VIRTUOSO_TOOL,
             ),
+            runtime_identities=(*_BRIDGE_RESOURCES, CADENCE_VIRTUOSO_TOOL),
         )
-        self.preflight(prepared, resources)
-        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -1076,28 +1026,45 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         )
 
 
+@dataclass(frozen=True)
+class _OaOperationSpec:
+    name: str
+    requires_testbench: bool = False
+    materializes_layout_ir: bool = False
+
+
+_OA_OPERATIONS = MappingProxyType(
+    {
+        "check": _OaOperationSpec("check", materializes_layout_ir=True),
+        "rebuild": _OaOperationSpec("rebuild", materializes_layout_ir=True),
+        "attest": _OaOperationSpec("attest", requires_testbench=True),
+    }
+)
+
+
 class _OaAdapter(_CadenceDomainAdapter):
     """Execute one fixed native-OA operation against a plan-bound assembly."""
 
     _base_fields = frozenset({"owner", "timeout_seconds"})
 
     def __init__(self, operation: str) -> None:
-        if operation not in {"check", "rebuild", "attest"}:
-            raise ValueError(f"unsupported OA operation: {operation}")
-        self.operation = operation
-        self.name = f"cadence.oa-{operation}"
+        try:
+            self.spec = _OA_OPERATIONS[operation]
+        except KeyError as exc:
+            raise ValueError(f"unsupported OA operation: {operation}") from exc
+        self.name = f"cadence.oa-{self.spec.name}"
 
     def _config(self, step: Step) -> Mapping[str, Any]:
         request = step.request.get("config", step.request)
         if not isinstance(request, Mapping):
             raise ContractError("prepared OA config must be a mapping")
         fields = self._base_fields | (
-            {"testbench"} if self.operation == "attest" else set()
+            {"testbench"} if self.spec.requires_testbench else set()
         )
         config = _strict_config(step, frozenset(fields))
         _text(config, "owner")
         _positive_integer(config, "timeout_seconds")
-        if self.operation == "attest":
+        if self.spec.requires_testbench:
             _text(config, "testbench")
         if "configs/oa.toml" not in step.sources:
             raise ContractError("OA management step must close over configs/oa.toml")
@@ -1153,7 +1120,7 @@ class _OaAdapter(_CadenceDomainAdapter):
             platform_inventory=platforms,
         )
         selected = None
-        if self.operation == "attest":
+        if self.spec.requires_testbench:
             testbench = _text(config, "testbench")
             matches = tuple(
                 item for item in planning.testbenches if item.cell == testbench
@@ -1167,44 +1134,36 @@ class _OaAdapter(_CadenceDomainAdapter):
             planning,
             oa_plan_source_paths(planning),
         )
-        sources = _bind_source_paths(project, owner, step, required)
-        external = _external_file_records(
+        prepared_identity = {
+            "assembly_identity": canonical_digest(planning.as_dict()),
+            "library": planning.library,
+            "operation": self.spec.name,
+            "testbench": None if selected is None else selected.cell,
+            "runtime_executables": _oa_runtime_executables(
+                planning,
+                self.spec.name,
+            ),
+        }
+        return self._prepare_domain_step(
             project,
-            required,
-            identities=_oa_resource_identities(
+            step,
+            resources,
+            owner=owner,
+            config=config,
+            plan=planning,
+            prepared=prepared_identity,
+            source_records=required,
+            resource_identities=_oa_resource_identities(
                 project,
                 planning,
                 required,
                 resources,
             ),
-        )
-        captured = _captured_project_sources(project, owner, sources)
-        prepared_identity = {
-            "assembly_identity": canonical_digest(planning.as_dict()),
-            "library": planning.library,
-            "operation": self.operation,
-            "testbench": None if selected is None else selected.cell,
-            "runtime_executables": _oa_runtime_executables(
-                planning,
-                self.operation,
-            ),
-        }
-        prepared = self._bind_domain_plan(
-            step,
-            config=config,
-            plan=planning,
-            prepared=prepared_identity,
-            sources=sources,
-            captured=captured,
-            resources=external,
-            runtime_bindings=_runtime_bindings(
-                resources,
+            runtime_identities=(
                 *_BRIDGE_RESOURCES,
-                *_oa_runtime_executables(planning, self.operation),
+                *_oa_runtime_executables(planning, self.spec.name),
             ),
         )
-        self.preflight(prepared, resources)
-        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -1222,14 +1181,14 @@ class _OaAdapter(_CadenceDomainAdapter):
             raise ExecutionError("OA management requires Project runtime roots")
         prepared = self._prepared_domain_plan(context)
         planning = prepared.plan
-        if self.operation in {"check", "rebuild"}:
+        if self.spec.materializes_layout_ir:
             planning = build_oa_layout_ir(
                 planning,
                 source_paths=prepared.source_paths(context),
                 managed_project_root=context.work_root / "layout-ir",
             )
         selected = None
-        if self.operation == "attest":
+        if self.spec.requires_testbench:
             testbench = _text(config, "testbench")
             matches = tuple(item for item in planning.testbenches if item.cell == testbench)
             if len(matches) != 1:
@@ -1237,7 +1196,7 @@ class _OaAdapter(_CadenceDomainAdapter):
             selected = matches[0]
         timeout = _positive_integer(config, "timeout_seconds")
         client = get_client(context.resources)
-        if self.operation == "check":
+        if self.spec.name == "check":
             from sigilicon.virtuoso.workspace import (
                 OperationPolicy,
                 workspace_operation,
@@ -1259,7 +1218,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                     timeout=timeout,
                     operation=operation,
                 )
-        elif self.operation == "rebuild":
+        elif self.spec.name == "rebuild":
             payload = rebuild_oa_library(
                 planning,
                 client,
@@ -1283,12 +1242,12 @@ class _OaAdapter(_CadenceDomainAdapter):
             )
         output = context.write_text(
             "oa",
-            f"{self.operation}.json",
+            f"{self.spec.name}.json",
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         )
         passed = bool(payload.get("passed"))
         artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
-        facts = {"passed": passed, "operation": self.operation}
+        facts = {"passed": passed, "operation": self.spec.name}
         return (
             StepResult.succeeded(artifacts=artifacts, facts=facts)
             if passed
@@ -1296,7 +1255,7 @@ class _OaAdapter(_CadenceDomainAdapter):
                 "failed",
                 artifacts,
                 facts,
-                f"OA {self.operation} did not pass",
+                f"OA {self.spec.name} did not pass",
             )
         )
 
@@ -1325,7 +1284,10 @@ class LayoutAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import load_platform_inventory
+        from sigilicon.domain.platform import (
+            load_platform_inventory,
+            platform_resource_identities,
+        )
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
         initial = step
@@ -1340,18 +1302,6 @@ class LayoutAdapter(_CadenceDomainAdapter):
             project=project,
             platform=platforms,
         )
-        sources = _bind_source_paths(
-            project,
-            owner,
-            step,
-            planning.source_records,
-        )
-        external = _external_file_records(
-            project,
-            planning.source_records,
-            identities=_platform_resource_identities(planning.spec.pdk),
-        )
-        captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
             "library": planning.spec.library,
             "cell": planning.spec.cell,
@@ -1359,18 +1309,18 @@ class LayoutAdapter(_CadenceDomainAdapter):
             "generator": planning.spec.generator,
             "stage": planning.spec.stage,
         }
-        prepared = self._bind_domain_plan(
+        return self._prepare_domain_step(
+            project,
             step,
+            resources,
+            owner=owner,
             config=config,
             plan=planning,
             prepared=prepared_identity,
-            sources=sources,
-            captured=captured,
-            resources=external,
-            runtime_bindings=_runtime_bindings(resources, *_BRIDGE_RESOURCES),
+            source_records=planning.source_records,
+            resource_identities=platform_resource_identities(planning.spec.pdk),
+            runtime_identities=_BRIDGE_RESOURCES,
         )
-        self.preflight(prepared, resources)
-        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
@@ -1471,7 +1421,10 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import load_platform_inventory
+        from sigilicon.domain.platform import (
+            load_platform_inventory,
+            platform_resource_identities,
+        )
         from sigilicon.workflows.layout_generation import plan_layout_spec
 
         initial = step
@@ -1493,20 +1446,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             if _text(config, "check") == "drc"
             else planning.spec.layout_pdk.lvs_deck
         )
-        sources = _bind_source_paths(
-            project,
-            owner,
-            step,
-            planning.source_records,
-        )
-        external = _external_file_records(
-            project,
-            planning.source_records,
-            (planning.spec.layout_pdk.layermap, deck),
-            identities=_platform_resource_identities(planning.spec.pdk),
-        )
         check = _text(config, "check")
-        captured = _captured_project_sources(project, owner, sources)
         prepared_identity = {
             "library": planning.spec.library,
             "cell": planning.spec.cell,
@@ -1515,23 +1455,19 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             "stage": planning.spec.stage,
             "check": check,
         }
-        prepared = self._bind_domain_plan(
+        return self._prepare_domain_step(
+            project,
             step,
+            resources,
+            owner=owner,
             config=config,
             plan=planning,
             prepared=prepared_identity,
-            sources=sources,
-            captured=captured,
-            resources=external,
-            runtime_bindings=_runtime_bindings(
-                resources,
-                *_BRIDGE_RESOURCES,
-                _XSTREAM,
-                _CALIBRE,
-            ),
+            source_records=planning.source_records,
+            resource_identities=platform_resource_identities(planning.spec.pdk),
+            extra_resources=(planning.spec.layout_pdk.layermap, deck),
+            runtime_identities=(*_BRIDGE_RESOURCES, _XSTREAM, _CALIBRE),
         )
-        self.preflight(prepared, resources)
-        return prepared
 
     def run(self, context: StepContext, step: Step) -> StepResult:
         context.require_step(step)
