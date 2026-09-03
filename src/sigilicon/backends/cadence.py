@@ -919,7 +919,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import load_platform_inventory
+        from sigilicon.domain.platform import load_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
@@ -932,7 +932,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         manifest = project.oa_assembly_for(selected_owner.root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = load_platform_inventory(project, resources=resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_oa_library_rebuild(
             manifest,
             project=project,
@@ -1111,7 +1111,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import load_platform_inventory
+        from sigilicon.domain.platform import load_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
@@ -1123,7 +1123,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         manifest = project.oa_assembly_for(project.owner(owner).root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = load_platform_inventory(project, resources=resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_oa_library_rebuild(
             manifest,
             project=project,
@@ -1295,7 +1295,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> Step:
         from sigilicon.domain.platform import (
-            load_platform_inventory,
+            load_platforms,
             platform_resource_identities,
         )
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1306,7 +1306,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = load_platform_inventory(project, resources=resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_layout_spec(
             spec,
             project=project,
@@ -1432,7 +1432,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> Step:
         from sigilicon.domain.platform import (
-            load_platform_inventory,
+            load_platforms,
             platform_resource_identities,
         )
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1443,7 +1443,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = load_platform_inventory(project, resources=resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_layout_spec(
             spec,
             project=project,

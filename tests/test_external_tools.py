@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import resource
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from sigilicon.external_tools import (
     owned_atomic_output_file,
     owned_directory,
     owned_input_file,
+    owned_input_files,
     owned_output_file,
     owned_scratch_directory,
     owned_sealed_input,
@@ -443,6 +445,38 @@ def test_owned_input_detects_a_path_swap_even_when_original_is_restored(
 
     with pytest.raises(RuntimeError, match="pathname changed during invocation"):
         with owned_input_file(source):
+            source.rename(original)
+            replacement.rename(source)
+            source.unlink()
+            original.rename(source)
+
+
+def test_owned_input_group_scales_with_directories_not_file_count(
+    tmp_path: Path,
+) -> None:
+    paths = []
+    for index in range(100):
+        path = tmp_path / f"input-{index}.sv"
+        path.write_text(str(index), encoding="utf-8")
+        paths.append(path)
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(64, hard), hard))
+    try:
+        with owned_input_files(paths):
+            assert paths[-1].read_text(encoding="utf-8") == "99"
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_owned_input_group_detects_restored_path_swap(tmp_path: Path) -> None:
+    source = tmp_path / "source.sv"
+    original = tmp_path / "original.sv"
+    replacement = tmp_path / "replacement.sv"
+    source.write_text("original", encoding="utf-8")
+    replacement.write_text("replacement", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="pathname changed during invocation"):
+        with owned_input_files((source,)):
             source.rename(original)
             replacement.rename(source)
             source.unlink()

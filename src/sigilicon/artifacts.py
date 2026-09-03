@@ -337,7 +337,7 @@ class SafeFile:
     path: Path
     mode: int
     size: int
-    sha256: str
+    sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -373,7 +373,7 @@ class SafeTree:
             digest,
         )
 
-    def inventory(self) -> SafeTreeInventory:
+    def inventory(self, *, verify_content: bool = True) -> SafeTreeInventory:
         files: dict[Path, SafeFile] = {}
         directories: dict[Path, int] = {}
         for path in self.root.rglob("*"):
@@ -382,7 +382,20 @@ class SafeTree:
             if stat.S_ISLNK(metadata.st_mode):
                 raise RuntimeError(f"safe tree cannot contain symlinks: {relative}")
             if stat.S_ISREG(metadata.st_mode):
-                inspected, digest = _inspect_nofollow_file(path)
+                if verify_content:
+                    inspected, digest = _inspect_nofollow_file(path)
+                else:
+                    inspected = self.path(relative.as_posix()).stat(
+                        follow_symlinks=False
+                    )
+                    if (
+                        not stat.S_ISREG(inspected.st_mode)
+                        or inspected.st_nlink != 1
+                    ):
+                        raise RuntimeError(
+                            f"safe tree contains an unsafe file: {relative}"
+                        )
+                    digest = None
                 files[relative] = SafeFile(
                     relative,
                     path,

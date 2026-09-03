@@ -570,7 +570,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         oa_assembly_for=lambda _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.load_platform_inventory",
+        "sigilicon.domain.platform.load_platforms",
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
@@ -652,7 +652,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         oa_assembly_for=lambda _root: context.owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.load_platform_inventory",
+        "sigilicon.domain.platform.load_platforms",
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
@@ -759,7 +759,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.load_platform_inventory",
+        "sigilicon.domain.platform.load_platforms",
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
@@ -850,7 +850,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
         ),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.load_platform_inventory",
+        "sigilicon.domain.platform.load_platforms",
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
@@ -945,7 +945,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.load_platform_inventory",
+        "sigilicon.domain.platform.load_platforms",
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(

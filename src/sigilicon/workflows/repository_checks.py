@@ -21,7 +21,7 @@ from sigilicon.execution.operations import compile_operation, parse_selector
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
-from sigilicon.domain.platform import load_platform_contract_inventory
+from sigilicon.domain.platform import load_platforms
 from sigilicon.project import Project
 from sigilicon.layout.spec import resolve_layout_spec
 from sigilicon.workflows.oa_library import plan_oa_library_rebuild
@@ -179,7 +179,7 @@ def inspect_repository_designs(
     platform_inventory = (
         {}
         if context.find_catalog("platform") is None
-        else load_platform_contract_inventory(context)
+        else load_platforms(context)
     )
     platform_catalog = getattr(platform_inventory, "catalog", None)
 

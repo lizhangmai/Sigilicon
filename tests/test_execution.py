@@ -1295,6 +1295,43 @@ def test_tool_resource_binds_a_multicall_symlink_and_its_exact_target(
     assert not resources.matches(binding)
 
 
+def test_run_store_keeps_tools_as_external_content_references(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    tool = tmp_path / "site/tool"
+    tool.parent.mkdir()
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    manifest = tmp_path / "sigilicon.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("/bin/true", str(tool)),
+        encoding="utf-8",
+    )
+
+    class ToolAdapter(CopyAdapter):
+        def plan(self, _project, step, resources):
+            binding = resources.capture("test.tool")
+            return replace(
+                step,
+                resources=(binding.identity,),
+                _resource_bindings=(binding,),
+            )
+
+    project = _project(tmp_path, ToolAdapter())
+    result = project.run(_plan(project, "example:check"), run_id="6" * 32)
+
+    assert not (result.run_root / "inputs/resources").exists()
+    tool.unlink()
+    stored = _read_run(project, "example:check", result.run_id)
+    assert stored.status == "succeeded"
+    store, owner, operation, variant = _run_store_call(project, "example:check")
+    store.audit(
+        owner=owner,
+        operation=operation,
+        variant=variant,
+        run_id=result.run_id,
+    )
+
+
 def test_external_resource_reader_rejects_sealed_content_tampering(
     tmp_path: Path,
 ) -> None:

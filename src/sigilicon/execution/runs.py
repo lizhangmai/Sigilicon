@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 from typing import Any, Mapping
 
@@ -14,11 +15,10 @@ from sigilicon.artifacts import (
     read_json_object,
     read_nofollow_text,
 )
-from sigilicon.canonical import canonical_digest
+from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.execution.model import (
     Artifact,
     ContractError,
-    ResourceBinding,
     RunFailure,
     RunResult,
     StepOutcome,
@@ -31,6 +31,7 @@ from sigilicon.paths import ArtifactLayout, RunPaths
 
 
 _DIGEST = re.compile(r"sha256-[0-9a-f]{64}\Z")
+_HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class RunStoreError(ValueError):
@@ -283,6 +284,104 @@ class RunStore:
         return manifest, plan, result
 
     @staticmethod
+    def _validate_resource_record(record: Mapping[str, Any]) -> str:
+        common = {"identity", "kind", "sha256", "size"}
+        identity = record.get("identity")
+        kind = record.get("kind")
+        digest = record.get("sha256")
+        size = record.get("size")
+        try:
+            if not isinstance(identity, str):
+                raise ContractError("resource identity must be text")
+            resource_identity(identity)
+        except ContractError as exc:
+            raise RunStoreError(
+                "persisted runtime resource identity is invalid"
+            ) from exc
+        if (
+            kind not in {"tool", "file", "directory", "value"}
+            or not isinstance(digest, str)
+            or _HEX_DIGEST.fullmatch(digest) is None
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
+            raise RunStoreError("persisted runtime resource record is malformed")
+        if kind == "value":
+            value = record.get("value")
+            if (
+                set(record) != common | {"value"}
+                or not isinstance(value, str)
+                or not value
+                or len(value.encode("utf-8")) != size
+                or hashlib.sha256(value.encode("utf-8")).hexdigest() != digest
+            ):
+                raise RunStoreError("persisted runtime value identity drift")
+            return kind
+        if kind in {"tool", "file"}:
+            if set(record) != common | {"executable"} or not isinstance(
+                record.get("executable"), bool
+            ):
+                raise RunStoreError("persisted runtime file record is malformed")
+            return kind
+
+        directories = record.get("directories")
+        files = record.get("files")
+        if (
+            set(record) != common | {"directories", "files"}
+            or not isinstance(directories, list)
+            or not isinstance(files, list)
+        ):
+            raise RunStoreError("persisted runtime directory record is malformed")
+        paths: list[str] = []
+        total_size = 0
+        for item in files:
+            if not isinstance(item, Mapping) or set(item) != {
+                "path",
+                "sha256",
+                "size",
+                "executable",
+            }:
+                raise RunStoreError("persisted runtime directory file is malformed")
+            path = item.get("path")
+            item_digest = item.get("sha256")
+            item_size = item.get("size")
+            if (
+                not isinstance(path, str)
+                or not path
+                or not isinstance(item_digest, str)
+                or _HEX_DIGEST.fullmatch(item_digest) is None
+                or not isinstance(item_size, int)
+                or isinstance(item_size, bool)
+                or item_size < 0
+                or not isinstance(item.get("executable"), bool)
+            ):
+                raise RunStoreError("persisted runtime directory file is malformed")
+            paths.append(path)
+            total_size += item_size
+        entries = [*directories, *paths]
+        if any(
+            not isinstance(path, str)
+            or not path
+            or "\\" in path
+            or PurePosixPath(path).is_absolute()
+            or PurePosixPath(path).as_posix() != path
+            or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+            for path in entries
+        ) or directories != sorted(set(directories)) or paths != sorted(set(paths)):
+            raise RunStoreError("persisted runtime directory paths are not canonical")
+        if set(directories) & set(paths):
+            raise RunStoreError("persisted runtime directory paths collide")
+        expected_digest = hashlib.sha256(
+            canonical_json({"directories": directories, "files": files}).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if total_size != size or expected_digest != digest:
+            raise RunStoreError("persisted runtime directory identity drift")
+        return kind
+
+    @staticmethod
     def _validate_runtime_bindings(
         paths: RunPaths,
         value: Mapping[str, Any],
@@ -366,7 +465,8 @@ class RunStore:
         resource_root = paths.role("inputs") / "resources"
         identities: set[str] = set()
         ordered_identities: list[str] = []
-        expected_members: set[str] = set()
+        expected_files: dict[Path, tuple[int, bool]] = {}
+        expected_directories: set[Path] = set()
         for record in resources:
             assert isinstance(record, Mapping)
             identity = record.get("identity")
@@ -376,43 +476,51 @@ class RunStore:
             ordered_identities.append(identity)
             try:
                 materialization_key = resource_materialization_key(identity)
-                kind = record.get("kind")
-                if kind == "value":
-                    binding = ResourceBinding.capture_value(
-                        record.get("value"),
-                        identity=identity,
-                    )
-                else:
-                    binding = ResourceBinding.capture(
-                        resource_root / materialization_key,
-                        identity=identity,
-                        kind=kind,
-                    )
-            except (OSError, RuntimeError, ContractError) as exc:
+                kind = RunStore._validate_resource_record(record)
+            except (RuntimeError, ContractError) as exc:
                 raise RunStoreError(
-                    "persisted runtime resource is missing or unsafe"
+                    "persisted runtime resource record is unsafe"
                 ) from exc
-            if binding.record != dict(record):
-                raise RunStoreError("persisted runtime resource identity drift")
-            if binding.kind != "value":
-                expected_members.add(materialization_key)
+            if kind == "file":
+                expected_files[Path(materialization_key)] = (
+                    record["size"],
+                    record["executable"],
+                )
+            elif kind == "directory":
+                root = Path(materialization_key)
+                expected_directories.add(root)
+                expected_directories.update(
+                    root.joinpath(*PurePosixPath(path).parts)
+                    for path in record["directories"]
+                )
+                expected_files.update(
+                    {
+                        root.joinpath(*PurePosixPath(item["path"]).parts): (
+                            item["size"],
+                            item["executable"],
+                        )
+                        for item in record["files"]
+                    }
+                )
         if ordered_identities != sorted(ordered_identities):
             raise RunStoreError("persisted runtime resources are not canonical")
-        if expected_members:
+        if expected_files or expected_directories:
             try:
-                inventory = SafeTree(resource_root).inventory()
-                actual_members = {
-                    path.parts[0]
-                    for path in (*inventory.files, *inventory.directories)
-                }
+                inventory = SafeTree(resource_root).inventory(verify_content=False)
             except (OSError, RuntimeError) as exc:
                 raise RunStoreError(
                     "persisted runtime resource closure is missing"
                 ) from exc
-            if actual_members != expected_members:
+            if (
+                set(inventory.files) != set(expected_files)
+                or set(inventory.directories) != expected_directories
+            ):
                 raise RunStoreError("persisted runtime resource closure drift")
-        elif any(record.get("kind") != "value" for record in resources):
-            raise RunStoreError("persisted runtime resource closure is missing")
+            if any(
+                (file.size, bool(file.mode & 0o111)) != expected_files[path]
+                for path, file in inventory.files.items()
+            ):
+                raise RunStoreError("persisted runtime resource identity drift")
         elif resource_root.exists():
             raise RunStoreError("persisted runtime resource closure is unexpected")
 

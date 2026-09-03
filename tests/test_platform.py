@@ -16,8 +16,7 @@ from sigilicon.domain.platform import (
     load_platform,
     load_platform_catalog,
     load_platform_contract,
-    load_platform_contract_inventory,
-    load_platform_inventory,
+    load_platforms,
     resolve_platform_snapshot,
 )
 from sigilicon.execution.model import Resources
@@ -84,7 +83,7 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     project = Project.open(tmp_path)
-    inventory = load_platform_inventory(project, resources=Resources())
+    inventory = load_platforms(project, resources=Resources())
 
     assert (
         resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
@@ -129,7 +128,7 @@ def test_runtime_platform_snapshot_rejects_project_manifest_drift(
         encoding="utf-8",
     )
     project = Project.open(tmp_path)
-    inventory = load_platform_inventory(project, resources=project.resources())
+    inventory = load_platforms(project, resources=project.resources())
     snapshot = inventory if snapshot_kind == "inventory" else inventory["testpdk"]
 
     contract.write_text(
@@ -305,7 +304,7 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
         encoding="utf-8",
     )
 
-    inventory = load_platform_contract_inventory(Project.open(tmp_path))
+    inventory = load_platforms(Project.open(tmp_path))
     platform = inventory["testpdk"]
 
     assert isinstance(platform, PlatformContract)

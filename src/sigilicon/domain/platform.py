@@ -1273,47 +1273,32 @@ def load_platform_contract(
     )
 
 
-def load_platform_inventory(
+def load_platforms(
     context: Project,
     *,
-    resources: PlatformResources,
+    resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
 ) -> PlatformSet:
-    """Load the complete project platform set once for one operation."""
+    """Load every platform, resolving host assets only when resources are supplied."""
 
     selected_catalog = (
         load_platform_catalog(context)
         if catalog is None
         else resolve_platform_catalog(context, snapshot=catalog)
     )
-    if not isinstance(resources, PlatformResources):
+    if resources is not None and not isinstance(resources, PlatformResources):
         raise TypeError("platform resources must provide require_directory")
     platforms = {
-        key: load_platform(context, key, resources=resources, catalog=selected_catalog)
-        for key in selected_catalog.manifests
-    }
-    return PlatformSet(
-        _authority=_PLATFORM_INVENTORY_AUTHORITY,
-        project=context,
-        catalog=selected_catalog,
-        platforms=MappingProxyType(platforms),
-    )
-
-
-def load_platform_contract_inventory(
-    context: Project,
-    *,
-    catalog: PlatformCatalogSnapshot | None = None,
-) -> PlatformSet:
-    """Validate every project-owned platform contract without host assets."""
-
-    selected_catalog = (
-        load_platform_catalog(context)
-        if catalog is None
-        else resolve_platform_catalog(context, snapshot=catalog)
-    )
-    platforms = {
-        key: load_platform_contract(context, key, catalog=selected_catalog)
+        key: (
+            load_platform_contract(context, key, catalog=selected_catalog)
+            if resources is None
+            else load_platform(
+                context,
+                key,
+                resources=resources,
+                catalog=selected_catalog,
+            )
+        )
         for key in selected_catalog.manifests
     }
     return PlatformSet(

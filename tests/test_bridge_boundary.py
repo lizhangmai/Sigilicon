@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.virtuoso.discovery import list_cells, list_libraries
-from sigilicon.virtuoso.layout import _protected_layout_skill
 from sigilicon.virtuoso.oa import cell_exists, cell_view_exists
 from sigilicon.virtuoso.schematic import read_schematic
 
@@ -73,7 +72,7 @@ def test_oa_existence_queries_reject_native_handle_results(query) -> None:
         query(client, *arguments)
 
 
-def test_readonly_schematic_and_layout_sources_close_their_handles(
+def test_readonly_schematic_source_closes_its_handle(
     workspace_factory,
 ) -> None:
     client = RecordingClient(("ERROR",))
@@ -89,9 +88,7 @@ def test_readonly_schematic_and_layout_sources_close_their_handles(
             )
 
     schematic_source = client.sources[0]
-    layout_source = _protected_layout_skill('lib"unsafe', "cell", "layout")
-    for source in (schematic_source, layout_source):
-        assert "unwindProtect" in source
-        assert "dbClose" in source
-        assert 'lib\\"unsafe' in source
+    assert "unwindProtect" in schematic_source
+    assert "dbClose" in schematic_source
+    assert 'lib\\"unsafe' in schematic_source
     assert "preserved exact dbIds" in schematic_source

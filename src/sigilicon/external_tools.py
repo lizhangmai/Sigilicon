@@ -588,22 +588,25 @@ def _open_nofollow_directory(path: Path, *, create_missing: bool) -> int:
         raise
 
 
-def _watch_owned_directory(descriptor: int) -> tuple[int, int]:
-    """Start a nonblocking mutation audit on an already-held exact directory."""
-
+def _new_input_watch() -> int:
     libc = ctypes.CDLL(None, use_errno=True)
     libc.inotify_init1.argtypes = (ctypes.c_int,)
     libc.inotify_init1.restype = ctypes.c_int
+    watch_fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+    if watch_fd < 0:
+        error = ctypes.get_errno()
+        raise RuntimeError(f"cannot create external input watch: {os.strerror(error)}")
+    return watch_fd
+
+
+def _add_input_watch(watch_fd: int, descriptor: int) -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
     libc.inotify_add_watch.argtypes = (
         ctypes.c_int,
         ctypes.c_char_p,
         ctypes.c_uint32,
     )
     libc.inotify_add_watch.restype = ctypes.c_int
-    watch_fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
-    if watch_fd < 0:
-        error = ctypes.get_errno()
-        raise RuntimeError(f"cannot create external input watch: {os.strerror(error)}")
     watch = libc.inotify_add_watch(
         watch_fd,
         os.fsencode(owned_process_fd_path(descriptor)),
@@ -611,9 +614,110 @@ def _watch_owned_directory(descriptor: int) -> tuple[int, int]:
     )
     if watch < 0:
         error = ctypes.get_errno()
-        os.close(watch_fd)
         raise RuntimeError(f"cannot watch external input directory: {os.strerror(error)}")
+    return watch
+
+
+def _watch_owned_directory(descriptor: int) -> tuple[int, int]:
+    """Start a nonblocking mutation audit on an already-held exact directory."""
+
+    watch_fd = _new_input_watch()
+    try:
+        watch = _add_input_watch(watch_fd, descriptor)
+    except BaseException:
+        os.close(watch_fd)
+        raise
     return watch_fd, watch
+
+
+@contextmanager
+def owned_input_files(paths: Sequence[Path]) -> Iterator[None]:
+    """Monitor a file set with one watch and one descriptor per directory."""
+
+    grouped: dict[Path, list[Path]] = {}
+    for path in dict.fromkeys(Path(os.path.abspath(path)) for path in paths):
+        grouped.setdefault(path.parent, []).append(path)
+    watch_fd = _new_input_watch()
+    parents: dict[Path, int] = {}
+    watched: set[tuple[int, bytes]] = set()
+    captured: list[tuple[Path, int, os.stat_result]] = []
+    try:
+        for parent, members in grouped.items():
+            descriptor = _open_nofollow_directory(parent, create_missing=False)
+            parents[parent] = descriptor
+            watch = _add_input_watch(watch_fd, descriptor)
+            for path in members:
+                metadata = os.stat(
+                    path.name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise RuntimeError(
+                        f"external input is not an owned regular file: {path}"
+                    )
+                watched.add((watch, os.fsencode(path.name)))
+                captured.append((path, descriptor, metadata))
+        try:
+            yield
+        finally:
+            while True:
+                try:
+                    payload = os.read(watch_fd, 64 * 1024)
+                except BlockingIOError:
+                    break
+                if not payload:
+                    raise RuntimeError("external input watch ended")
+                offset = 0
+                while offset < len(payload):
+                    if len(payload) - offset < _INOTIFY_EVENT.size:
+                        raise RuntimeError("invalid external input watch event")
+                    watch, mask, _cookie, name_length = _INOTIFY_EVENT.unpack_from(
+                        payload, offset
+                    )
+                    offset += _INOTIFY_EVENT.size
+                    end = offset + name_length
+                    if end > len(payload):
+                        raise RuntimeError("invalid external input watch event")
+                    name = payload[offset:end].split(b"\0", 1)[0]
+                    offset = end
+                    if mask & (_IN_Q_OVERFLOW | _IN_IGNORED | _IN_UNMOUNT):
+                        raise RuntimeError("external input watch became uncertain")
+                    if mask & (_IN_DELETE_SELF | _IN_MOVE_SELF) or (
+                        watch,
+                        name,
+                    ) in watched:
+                        raise RuntimeError(
+                            "external input pathname changed during invocation"
+                        )
+            for path, descriptor, metadata in captured:
+                visible = os.stat(
+                    path.name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    visible.st_dev,
+                    visible.st_ino,
+                    visible.st_size,
+                    visible.st_mtime_ns,
+                    visible.st_mode,
+                    visible.st_nlink,
+                ) != (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                    metadata.st_mode,
+                    metadata.st_nlink,
+                ):
+                    raise RuntimeError(
+                        f"external input identity changed during invocation: {path}"
+                    )
+    finally:
+        os.close(watch_fd)
+        for descriptor in parents.values():
+            os.close(descriptor)
 
 
 @contextmanager

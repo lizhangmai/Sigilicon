@@ -28,7 +28,7 @@ from sigilicon.execution.model import (
 )
 from sigilicon.execution.adapter import AdapterRegistry
 from sigilicon.external_tools import (
-    owned_input_file,
+    owned_input_files,
     process_group_cleanup_uncertainty,
 )
 from sigilicon.paths import ArtifactLayout, RunPaths
@@ -61,12 +61,10 @@ def _held_step_inputs(
                 base = resource_root / binding.materialization_key
                 paths.extend(base / item.path for item in binding.files)
 
-    stack = ExitStack()
+    monitor = ExitStack()
     try:
-        for path in paths:
-            stack.enter_context(owned_input_file(path))
+        monitor.enter_context(owned_input_files(paths))
     except (OSError, RuntimeError) as exc:
-        stack.close()
         raise InputIntegrityError(
             "could not bind the sealed adapter input closure"
         ) from exc
@@ -74,7 +72,7 @@ def _held_step_inputs(
         yield
     except BaseException as execution_error:
         try:
-            stack.close()
+            monitor.close()
         except (OSError, RuntimeError):
             raise InputIntegrityError(
                 "sealed adapter input changed during execution"
@@ -82,7 +80,7 @@ def _held_step_inputs(
         raise
     else:
         try:
-            stack.close()
+            monitor.close()
         except (OSError, RuntimeError) as exc:
             raise InputIntegrityError(
                 "sealed adapter input changed during execution"
