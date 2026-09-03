@@ -383,43 +383,152 @@ class SafeTree:
         )
 
     def inventory(self, *, verify_content: bool = True) -> SafeTreeInventory:
+        """Return one stable descriptor-relative inventory of the exact tree."""
+
         files: dict[Path, SafeFile] = {}
         directories: dict[Path, int] = {}
-        for path in self.root.rglob("*"):
-            relative = path.relative_to(self.root)
-            metadata = path.stat(follow_symlinks=False)
-            if stat.S_ISLNK(metadata.st_mode):
-                raise RuntimeError(f"safe tree cannot contain symlinks: {relative}")
-            if stat.S_ISREG(metadata.st_mode):
-                if verify_content:
-                    inspected, digest = _inspect_nofollow_file(path)
-                else:
-                    inspected = self.path(relative.as_posix()).stat(
-                        follow_symlinks=False
+        root_fd = _open_nofollow_directory(self.root, create_missing=False)
+        expected_root = os.fstat(root_fd)
+
+        def stable_directory_state(value: os.stat_result) -> tuple[int, ...]:
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_size,
+                value.st_mtime_ns,
+            )
+
+        def inspect_file(
+            directory_fd: int,
+            name: str,
+            relative: Path,
+        ) -> SafeFile:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            try:
+                before = os.fstat(descriptor)
+                visible = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                    or not _same_inode(before, visible)
+                ):
+                    raise RuntimeError(
+                        f"safe tree contains an unsafe file: {relative}"
                     )
-                    if (
-                        not stat.S_ISREG(inspected.st_mode)
-                        or inspected.st_nlink != 1
-                    ):
-                        raise RuntimeError(
-                            f"safe tree contains an unsafe file: {relative}"
-                        )
-                    digest = None
-                files[relative] = SafeFile(
+                digest: str | None = None
+                if verify_content:
+                    content = hashlib.sha256()
+                    while chunk := os.read(descriptor, 1024 * 1024):
+                        content.update(chunk)
+                    digest = content.hexdigest()
+                after = os.fstat(descriptor)
+                visible_after = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_nlink,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_nlink,
+                ) or not _same_inode(after, visible_after):
+                    raise RuntimeError(
+                        f"safe tree file changed while inspecting: {relative}"
+                    )
+                return SafeFile(
                     relative,
-                    path,
-                    inspected.st_mode,
-                    inspected.st_size,
+                    self.root / relative,
+                    after.st_mode,
+                    after.st_size,
                     digest,
                 )
-            elif stat.S_ISDIR(metadata.st_mode):
-                descriptor = _open_nofollow_directory(path, create_missing=False)
+            finally:
                 os.close(descriptor)
-                directories[relative] = metadata.st_mode
-            else:
-                raise RuntimeError(
-                    f"safe tree contains an unsupported entry: {relative}"
+
+        def walk(directory_fd: int, prefix: Path) -> None:
+            before = os.fstat(directory_fd)
+            names = sorted(os.listdir(directory_fd))
+            for name in names:
+                relative = prefix / name
+                visible = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
                 )
+                if stat.S_ISLNK(visible.st_mode):
+                    raise RuntimeError(
+                        f"safe tree cannot contain symlinks: {relative}"
+                    )
+                if stat.S_ISREG(visible.st_mode):
+                    files[relative] = inspect_file(directory_fd, name, relative)
+                    continue
+                if not stat.S_ISDIR(visible.st_mode):
+                    raise RuntimeError(
+                        f"safe tree contains an unsupported entry: {relative}"
+                    )
+                child = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    held = os.fstat(child)
+                    if not _same_inode(visible, held):
+                        raise RuntimeError(
+                            f"safe tree directory changed while opening: {relative}"
+                        )
+                    directories[relative] = held.st_mode
+                    walk(child, relative)
+                    visible_after = os.stat(
+                        name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if not _same_inode(held, visible_after):
+                        raise RuntimeError(
+                            f"safe tree directory changed while inspecting: {relative}"
+                        )
+                finally:
+                    os.close(child)
+            after = os.fstat(directory_fd)
+            if (
+                names != sorted(os.listdir(directory_fd))
+                or stable_directory_state(before) != stable_directory_state(after)
+            ):
+                label = prefix if prefix.parts else Path(".")
+                raise RuntimeError(
+                    f"safe tree directory changed while inspecting: {label}"
+                )
+
+        try:
+            walk(root_fd, Path())
+            visible_fd = _open_nofollow_directory(self.root, create_missing=False)
+            try:
+                if not _same_inode(expected_root, os.fstat(visible_fd)):
+                    raise RuntimeError(
+                        f"safe tree root changed while inspecting: {self.root}"
+                    )
+            finally:
+                os.close(visible_fd)
+        finally:
+            os.close(root_fd)
         return SafeTreeInventory(
             MappingProxyType(files),
             MappingProxyType(directories),
@@ -948,7 +1057,17 @@ class RunRecord:
         }
         validate_manifest(manifest)
         paths.create()
-        atomic_write_json(paths.manifest, manifest)
+        expected_root = paths.root.stat(follow_symlinks=False)
+        try:
+            atomic_write_json(paths.manifest, manifest)
+        except BaseException as error:
+            try:
+                SafeTree(paths.root).remove(expected_root)
+            except BaseException as cleanup_error:
+                error.add_note(
+                    f"could not remove half-initialized run: {cleanup_error}"
+                )
+            raise
         return cls(paths=paths, manifest=manifest)
 
     @property

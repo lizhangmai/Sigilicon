@@ -1725,6 +1725,46 @@ def test_failed_backend_cannot_leave_an_incomplete_output_inventory(
         project.run(plan, run_id="d" * 32)
 
 
+def test_backend_cannot_leave_an_unpublished_empty_output_directory(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+
+    class EmptyDirectoryBackend(CopyAdapter):
+        def preflight(self, step, resources):
+            return ()
+
+        def run(self, context: StepContext) -> StepResult:
+            (context.output_root / "unpublished").mkdir()
+            return StepResult.succeeded()
+
+    project = _project(tmp_path, EmptyDirectoryBackend())
+    plan = _plan(project, "example:check")
+
+    with pytest.raises(ExecutionError, match="output inventory"):
+        project.run(plan, run_id="e" * 32)
+
+
+def test_backend_cannot_leave_an_unpublished_output_symlink(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class SymlinkOutputBackend(CopyAdapter):
+        def preflight(self, step, resources):
+            return ()
+
+        def run(self, context: StepContext) -> StepResult:
+            target = context.work_root / "target.txt"
+            target.write_text("outside output\n", encoding="utf-8")
+            (context.output_root / "unpublished").symlink_to(target)
+            return StepResult.succeeded()
+
+    project = _project(tmp_path, SymlinkOutputBackend())
+    plan = _plan(project, "example:check")
+
+    with pytest.raises(ExecutionError, match="output inventory"):
+        project.run(plan, run_id="f" * 32)
+
+
 def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Path) -> None:
     _write_project(tmp_path)
 

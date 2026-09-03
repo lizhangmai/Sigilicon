@@ -94,6 +94,32 @@ def test_artifact_manifest_requires_source_provenance(tmp_path: Path) -> None:
         RunRecord.begin(execution, adapter="standalone", source={})
 
 
+def test_begin_removes_half_initialized_run_when_manifest_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution = ArtifactLayout(tmp_path / "artifacts").operation_run(
+        owner="lib",
+        operation="spectre",
+        variant="nominal",
+        run_id="6" * 32,
+    )
+
+    def fail_manifest_write(path: Path, value: object) -> None:
+        raise OSError("injected manifest write failure")
+
+    monkeypatch.setattr(artifacts, "atomic_write_json", fail_manifest_write)
+
+    with pytest.raises(OSError, match="injected manifest write failure"):
+        RunRecord.begin(
+            execution,
+            adapter="standalone",
+            source={"plan_identity": "sha256-" + "0" * 64},
+        )
+
+    assert not execution.root.exists()
+
+
 def test_status_machine_requires_proof_and_forbids_terminal_rewrite(tmp_path: Path) -> None:
     record = _record(tmp_path)
     with pytest.raises(RuntimeError, match="without completion evidence"):

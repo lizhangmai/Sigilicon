@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import stat
 from typing import Any, Iterator
 
-from sigilicon.artifacts import RunRecord, new_identity, read_nofollow_text
+from sigilicon.artifacts import RunRecord, SafeTree, new_identity, read_nofollow_text
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -192,6 +192,40 @@ def _validate_artifact(
     ):
         raise ExecutionError(
             f"adapter published an unsafe or missing artifact: {artifact.path}"
+        )
+
+
+def _validate_output_inventory(
+    result: StepResult,
+    *,
+    output_root: Path,
+    adapter: str,
+) -> None:
+    """Require the adapter to publish the exact regular-file output closure."""
+
+    try:
+        inventory = SafeTree(output_root).inventory(verify_content=False)
+    except (OSError, RuntimeError) as exc:
+        raise ExecutionError(
+            f"adapter {adapter!r} output inventory is unsafe: {exc}"
+        ) from exc
+    published = {
+        artifact.path.absolute().relative_to(output_root)
+        for artifact in result.artifacts
+    }
+    required_directories = {
+        parent
+        for relative in published
+        for parent in relative.parents
+        if parent != Path(".")
+    }
+    if (
+        set(inventory.files) != published
+        or set(inventory.directories) != required_directories
+    ):
+        raise ExecutionError(
+            f"adapter {adapter!r} output inventory does not match "
+            "its published artifacts"
         )
 
 
@@ -445,7 +479,6 @@ def _run(
                                     output_root=output_root,
                                     run_root=paths.root,
                                 )
-                                record.add_file("outputs", artifact.path)
                         except (KeyboardInterrupt, SystemExit):
                             raise
                         except Exception as exc:
@@ -456,17 +489,13 @@ def _run(
                 except InputIntegrityError as exc:
                     integrity_failure.append(str(exc))
                     raise
-                published = {artifact.path for artifact in result.artifacts}
-                actual_outputs = {
-                    path.absolute()
-                    for path in output_root.rglob("*")
-                    if path.is_file() and not path.is_symlink()
-                }
-                if actual_outputs != published:
-                    raise ExecutionError(
-                        f"adapter {step.uses!r} output inventory does not match "
-                        "its published artifacts"
-                    )
+                _validate_output_inventory(
+                    result,
+                    output_root=output_root,
+                    adapter=step.uses,
+                )
+                for artifact in result.artifacts:
+                    record.add_file("outputs", artifact.path)
             by_id[step.id] = result
             outcome = StepOutcome(step.id, step.uses, result)
             outcomes.append(outcome)
