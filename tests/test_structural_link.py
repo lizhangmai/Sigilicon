@@ -192,7 +192,7 @@ A = "input"
     liberty = release / "exports/native/synthesis/native.lib"
     lock = _write(
         owner / "configs/dependency.lock.toml",
-        f'''schema = 2
+        f'''schema = 3
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "consumer"
@@ -200,7 +200,6 @@ owner = "consumer"
 name = "macro-provider"
 release_id = "development-0123456789ab"
 store = "fixture"
-object = "{object_id}"
 source_commit = "{'0' * 40}"
 manifest_sha256 = "{digest}"
 maturity = "development"

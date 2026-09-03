@@ -1076,7 +1076,6 @@ class StructuralLinkAdapter(DirectAdapter):
             "release_id": plan.release_id,
             "release_source_commit": plan.release_source_commit,
             "release_store": plan.release_store,
-            "release_object": plan.release_object,
             "release_manifest_resource": release_manifest_resource,
             "release_manifest_sha256": plan.release_manifest_sha256,
             "release_liberty_resource": release_liberty_resource,
@@ -1213,7 +1212,6 @@ class StructuralLinkAdapter(DirectAdapter):
             release_id=_text(prepared, "release_id"),
             release_source_commit=_text(prepared, "release_source_commit"),
             release_store=_text(prepared, "release_store"),
-            release_object=_text(prepared, "release_object"),
             release_manifest_sha256=_text(
                 prepared, "release_manifest_sha256"
             ),

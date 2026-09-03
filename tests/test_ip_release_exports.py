@@ -28,7 +28,7 @@ def _built_manifest(project: Project, built: dict[str, object]) -> Path:
         / "release-store"
         / str(built["store"])
         / "objects"
-        / str(built["object"])
+        / f"sha256-{built['manifest_sha256']}"
         / "manifest.json"
     )
 
@@ -723,7 +723,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         project=contract.project,
     )
     assert built["store"] == "native-fixture"
-    assert built["object"] == f"sha256-{built['manifest_sha256']}"
+    assert "object" not in built
     assert "manifest" not in built
     manifest = _built_manifest(contract.project, built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
@@ -737,9 +737,9 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         project=contract.project,
     )
     assert {
-        key: repeated[key] for key in ("store", "object", "manifest_sha256")
+        key: repeated[key] for key in ("store", "manifest_sha256")
     } == {
-        key: built[key] for key in ("store", "object", "manifest_sha256")
+        key: built[key] for key in ("store", "manifest_sha256")
     }
     assert manifest.read_bytes() == snapshot
     assert audited["exports"] == plan["exports"]

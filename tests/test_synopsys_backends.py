@@ -221,7 +221,6 @@ def test_structural_link_run_consumes_the_prepared_record_without_replanning(
         "release_id": "development-" + "a" * 40,
         "release_source_commit": "a" * 40,
         "release_store": "fixture",
-        "release_object": "sha256-" + manifest_digest,
         "release_manifest_resource": manifest_resource,
         "release_manifest_sha256": manifest_digest,
         "release_liberty_resource": liberty_resource,

@@ -114,7 +114,7 @@ def _patch_native_resolution(
                         "export": "native-top",
                         "release_id": "development-123456789abc",
                         "store": "native-provider",
-                        "object": "sha256-" + "1" * 64,
+                        "manifest_sha256": "1" * 64,
                         "roles": {"circuit_netlist": relative},
                     }
                 ],
@@ -278,7 +278,7 @@ VSS = "inout"
         _write(published / source.name, source.read_text(encoding="utf-8"))
     _write(
         root / "ip/demo/configs/dependency.lock.toml",
-        f'''schema = 2
+        f'''schema = 3
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "demo"
@@ -287,7 +287,6 @@ owner = "demo"
 name = "native-provider"
 release_id = "development-{'a' * 40}"
 store = "native-provider"
-object = "{object_id}"
 source_commit = "{'a' * 40}"
 manifest_sha256 = "{digest}"
 maturity = "development"
@@ -411,16 +410,11 @@ def test_xcelium_ams_rejects_a_schema_two_package_without_exports(
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload.pop("exports")
     manifest.write_text(json.dumps(payload), encoding="utf-8")
-    old_object = manifest.parent.name
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     new_object = f"sha256-{digest}"
     manifest.parent.rename(manifest.parent.parent / new_object)
     lock = tmp_path / "ip/demo/configs/dependency.lock.toml"
     source = lock.read_text(encoding="utf-8")
-    source = source.replace(
-        f'object = "{old_object}"',
-        f'object = "{new_object}"',
-    )
     marker = 'manifest_sha256 = "'
     start = source.index(marker) + len(marker)
     end = source.index('"', start)

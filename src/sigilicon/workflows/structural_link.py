@@ -23,7 +23,7 @@ from sigilicon.external_tools import (
 from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.release_store import ReleaseRef, ReleaseStore
-from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
+from sigilicon.workflows.ip_packaging import validate_ip_release_package
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -114,7 +114,6 @@ class StructuralLinkPlan:
     release_id: str
     release_source_commit: str
     release_store: str
-    release_object: str
     release_manifest_sha256: str
     release_liberty_sha256: str
     release_sources: tuple[Path, ...]
@@ -196,7 +195,7 @@ def plan_structural_link(
 
     lock = _toml(dependency_lock_path, "dependency lock")
     if (
-        lock.get("schema") != 2
+        lock.get("schema") != 3
         or lock.get("contract_kind") != "ip-dependency-lock"
         or lock.get("owner") != owner
     ):
@@ -216,10 +215,10 @@ def plan_structural_link(
     pinned = parse_locked_ip_release(
         matches[0], "structural-link dependency lock entry"
     )
-    ref = ReleaseRef(pinned.store, pinned.object, pinned.manifest_sha256)
+    ref = ReleaseRef(pinned.store, pinned.manifest_sha256)
     audited = ReleaseStore.from_artifact_root(artifact_root).open(
         ref,
-        validate=audit_ip_release_manifest,
+        validate=validate_ip_release_package,
     )
     release_manifest = audited.manifest_path
     manifest = audited.manifest
@@ -267,7 +266,6 @@ def plan_structural_link(
         release_id=pinned.release_id,
         release_source_commit=pinned.source_commit,
         release_store=ref.store,
-        release_object=ref.object,
         release_manifest_sha256=manifest_digest,
         release_liberty_sha256=liberty_digest,
         release_sources=(release_manifest, release_liberty),
@@ -450,7 +448,6 @@ def execute_structural_link(
             "release_id": plan.release_id,
             "release_source_commit": plan.release_source_commit,
             "release_store": plan.release_store,
-            "release_object": plan.release_object,
             "manifest_sha256": plan.release_manifest_sha256,
             "macro_liberty_sha256": plan.release_liberty_sha256,
             **facts,

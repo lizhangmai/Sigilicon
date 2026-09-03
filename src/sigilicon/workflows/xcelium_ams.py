@@ -32,7 +32,7 @@ from sigilicon.domain.verification_cell import (
 from sigilicon.external_tools import ProcessPort, managed_process
 from sigilicon.execution.model import Resources
 from sigilicon.execution.step_files import StepFiles
-from sigilicon.workflows.ip_packaging import audit_ip_release_manifest
+from sigilicon.workflows.ip_packaging import validate_ip_release_package
 from sigilicon.workflows.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
@@ -256,17 +256,17 @@ def _locked_native_release(
     if len(pinned) != 1:
         raise ValueError("Xcelium AMS dependency lock is ambiguous")
     if (
-        lock.get("schema") != 2
+        lock.get("schema") != 3
         or lock.get("contract_kind") != "ip-dependency-lock"
         or lock.get("owner") != component.get("owner")
     ):
         raise ValueError("Xcelium AMS dependency lock identity is invalid")
     pin = parse_locked_ip_release(pinned[0], "Xcelium AMS dependency lock entry")
-    ref = ReleaseRef(pin.store, pin.object, pin.manifest_sha256)
+    ref = ReleaseRef(pin.store, pin.manifest_sha256)
     try:
         audited = ReleaseStore.from_artifact_root(spec.project.artifact_root).open(
             ref,
-            validate=audit_ip_release_manifest,
+            validate=validate_ip_release_package,
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise ValueError("Xcelium AMS release manifest is invalid") from exc
@@ -384,7 +384,6 @@ def _locked_native_release(
                 "release_id": pin.release_id,
                 "source_commit": pin.source_commit,
                 "store": ref.store,
-                "object": ref.object,
                 "manifest_sha256": pin.manifest_sha256,
                 "roles": {role: by_role[role]["path"] for role in required_roles},
             }

@@ -27,8 +27,8 @@ from sigilicon.domain.platform import PdkConfig
 from sigilicon.project import Project
 from sigilicon.release_store import AuditedRelease, ReleaseRef, ReleaseStore
 from sigilicon.workflows.ip_packaging import (
-    audit_ip_release_manifest,
     plan_ip_release_contract,
+    validate_ip_release_package,
 )
 
 if TYPE_CHECKING:
@@ -323,8 +323,8 @@ def resolve_locked_ip_release(
     """Resolve one exact cross-owner release without following producer state."""
 
     release = ReleaseStore.from_artifact_root(artifact_root).open(
-        ReleaseRef(pinned.store, pinned.object, pinned.manifest_sha256),
-        validate=audit_ip_release_manifest,
+        ReleaseRef(pinned.store, pinned.manifest_sha256),
+        validate=validate_ip_release_package,
     )
     manifest = release.manifest
     if (
@@ -490,7 +490,6 @@ def check_ip_integration(
                 "release_id": pinned.release_id,
                 "source_commit": pinned.source_commit,
                 "store": pinned.store,
-                "object": pinned.object,
                 "manifest_sha256": pinned.manifest_sha256,
                 "maturity": actual_level,
                 "roles": {

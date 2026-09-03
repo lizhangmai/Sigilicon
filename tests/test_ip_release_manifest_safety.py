@@ -9,6 +9,8 @@ import pytest
 
 from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.project import Project
+from sigilicon import release_store
+from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.workflows import ip_packaging
 
 from conftest import write_project_context
@@ -107,6 +109,38 @@ def test_exact_release_audit_rejects_unmanifested_directories(
 
     with pytest.raises(RuntimeError, match="inventory"):
         ip_packaging.audit_ip_release_manifest(manifest_path)
+
+
+def test_release_store_performs_one_audit_before_and_after_domain_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary = tmp_path / "temporary"
+    manifest_path = _write_release(temporary)
+    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    object_root = (
+        tmp_path / "store" / "fixture" / "objects" / f"sha256-{digest}"
+    )
+    object_root.parent.mkdir(parents=True)
+    temporary.rename(object_root)
+    calls = 0
+    original = release_store.audit_release_package
+
+    def counted(path: Path, *, manifest_sha256: str | None = None):
+        nonlocal calls
+        calls += 1
+        return original(path, manifest_sha256=manifest_sha256)
+
+    validated: list[str] = []
+    monkeypatch.setattr(release_store, "audit_release_package", counted)
+    result = ReleaseStore(tmp_path / "store").open(
+        ReleaseRef("fixture", digest),
+        validate=lambda package: validated.append(str(package.manifest["ip_name"])),
+    )
+
+    assert result.ref.object == f"sha256-{digest}"
+    assert validated == ["fixture"]
+    assert calls == 2
 
 
 def test_release_audit_is_reachable_only_through_the_public_cli(

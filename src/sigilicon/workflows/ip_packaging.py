@@ -49,6 +49,7 @@ from sigilicon.domain.systemverilog import (
 from sigilicon.external_tools import owned_directory
 from sigilicon.release_store import (
     AuditedRelease,
+    ReleasePackage,
     ReleaseRef,
     ReleaseStore,
     audit_release_package,
@@ -1657,7 +1658,6 @@ def build_ip_release(
             ).hexdigest()
             ref = ReleaseRef(
                 str(plan["release_store"]),
-                f"sha256-{manifest_digest}",
                 manifest_digest,
             )
             try:
@@ -1686,7 +1686,7 @@ def build_ip_release(
                     _remove_tree_at(release_namespace.fd, temporary_name)
                 except FileNotFoundError:
                     pass
-    audited = store.open(ref, validate=audit_ip_release_manifest)
+    audited = store.open(ref, validate=validate_ip_release_package)
     return _audit_loaded_ip_release(contract, plan, audited)
 
 
@@ -2236,12 +2236,16 @@ def _packaged_maturity_check(
         )
 
 
+def validate_ip_release_package(package: ReleasePackage) -> None:
+    _packaged_interface_check(package.manifest, package.manifest_path)
+    _packaged_maturity_check(package.manifest, package.manifest_path)
+
+
 def audit_ip_release_manifest(manifest_path: Path) -> dict[str, Any]:
     """Audit an exact immutable package without consulting producer source."""
 
     first = audit_release_package(manifest_path)
-    _packaged_interface_check(first.manifest, first.manifest_path)
-    _packaged_maturity_check(first.manifest, first.manifest_path)
+    validate_ip_release_package(first)
     second = audit_release_package(manifest_path)
     if dict(first.manifest) != dict(second.manifest):
         raise RuntimeError("IP release changed during semantic audit")
@@ -2364,7 +2368,6 @@ def _audit_loaded_ip_release(
     return {
         **manifest,
         "store": audited.ref.store,
-        "object": audited.ref.object,
         "manifest_sha256": audited.ref.manifest_sha256,
         "audit": {"passed": True},
     }

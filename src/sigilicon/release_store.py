@@ -25,18 +25,19 @@ class ReleaseRef:
     """Immutable release locator recorded by a dependency lock."""
 
     store: str
-    object: str
     manifest_sha256: str
 
     def __post_init__(self) -> None:
         validate_artifact_component(self.store, "release store")
-        validate_artifact_id(self.object, "release object")
-        if self.object != f"sha256-{self.manifest_sha256}" or _SHA256.fullmatch(
-            self.manifest_sha256
-        ) is None:
-            raise ValueError(
-                "release object must be the content address of its manifest"
-            )
+        if _SHA256.fullmatch(self.manifest_sha256) is None:
+            raise ValueError("release manifest digest must be SHA-256")
+
+    @property
+    def object(self) -> str:
+        return validate_artifact_id(
+            f"sha256-{self.manifest_sha256}",
+            "release object",
+        )
 
 
 @dataclass(frozen=True)
@@ -213,16 +214,23 @@ class ReleaseStore:
         self,
         ref: ReleaseRef,
         *,
-        validate: Callable[[Path], Mapping[str, Any]] | None = None,
+        validate: Callable[[ReleasePackage], None] | None = None,
     ) -> AuditedRelease:
-        """Audit one object, optionally apply domain validation, then re-audit it."""
+        """Audit one object, apply domain validation, then prove it stayed stable."""
 
         release = self._audit(ref)
         if validate is not None:
-            validated = validate(release.manifest_path)
-            if dict(validated) != dict(release.manifest):
-                raise RuntimeError("release validator changed the manifest projection")
-            release = self._audit(ref)
+            validate(
+                ReleasePackage(
+                    release.manifest_path,
+                    release.manifest,
+                    release.artifacts,
+                )
+            )
+            checked = self._audit(ref)
+            if dict(checked.manifest) != dict(release.manifest):
+                raise RuntimeError("release changed during domain validation")
+            release = checked
         return release
 
     def _audit(self, ref: ReleaseRef) -> AuditedRelease:

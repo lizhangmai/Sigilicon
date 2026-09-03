@@ -244,7 +244,6 @@ def test_locked_release_rejects_a_symlinked_manifest_parent(tmp_path: Path) -> N
         name="fixture-ip",
         release_id=release_id,
         store="fixture",
-        object=f"sha256-{digest}",
         maturity="development",
         source_commit="a" * 40,
         manifest_sha256=digest,
@@ -414,7 +413,6 @@ def _refresh_lock_manifest_digest(contract: Path, manifest_path: Path) -> None:
         "manifest_sha256",
         digest,
     )
-    _replace_lock_value(lock_path, "object", object_id)
 
 
 def _replace_lock_value(lock_path: Path, field: str, value: str) -> None:
@@ -499,7 +497,7 @@ blockers = ["implementation_release_missing"]
         else "b" * 64
     )
     (owner_root / "configs/dependency.lock.toml").write_text(
-        f"""schema = 2
+        f"""schema = 3
 contract_kind = "ip-dependency-lock"
 path_scope = "owner"
 owner = "demo"
@@ -510,7 +508,6 @@ ip = "demo"
 name = "fixture-ip"
 release_id = "{release_id}"
 store = "fixture"
-object = "{Path(manifest).parent.name}"
 maturity = "development"
 source_commit = "{'a' * 40}"
 manifest_sha256 = "{manifest_sha256}"
@@ -759,7 +756,9 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     ]
     selected = result["dependency_releases"][0]
     assert selected["store"] == "fixture"
-    assert selected["object"] == Path(manifest).parts[3]
+    assert selected["manifest_sha256"] == Path(manifest).parts[3].removeprefix(
+        "sha256-"
+    )
 
     resolved = resolve_ip_integration_fileset(
         contract,

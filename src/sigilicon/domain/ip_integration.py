@@ -185,13 +185,12 @@ class LockedIpRelease:
     name: str
     release_id: str
     store: str
-    object: str
     maturity: str
     source_commit: str
     manifest_sha256: str
 
     def __post_init__(self) -> None:
-        ReleaseRef(self.store, self.object, self.manifest_sha256)
+        ReleaseRef(self.store, self.manifest_sha256)
 
 
 @dataclass(frozen=True)
@@ -205,7 +204,6 @@ _LOCKED_IP_RELEASE_FIELDS = {
     "name",
     "release_id",
     "store",
-    "object",
     "maturity",
     "source_commit",
     "manifest_sha256",
@@ -227,7 +225,6 @@ def parse_locked_ip_release(value: object, label: str) -> LockedIpRelease:
         name=_string(item.get("name"), f"{label}.name"),
         release_id=_string(item.get("release_id"), f"{label}.release_id"),
         store=_string(item.get("store"), f"{label}.store"),
-        object=_string(item.get("object"), f"{label}.object"),
         maturity=maturity,
         source_commit=_hex_digest(
             item.get("source_commit"),
@@ -808,7 +805,7 @@ def load_ip_dependency_lock(
         contract_kind="ip-dependency-lock",
         path_scope="owner",
         owner=contract.owner,
-        schema=2,
+        schema=3,
     )
     if raw.get("ip") != contract.name:
         raise ValueError("IP dependency lock identity does not match its component")
