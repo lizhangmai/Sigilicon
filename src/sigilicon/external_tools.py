@@ -541,11 +541,13 @@ class OwnedAtomicOutputDescriptor:
     def child_path(self) -> str:
         return f"{owned_process_fd_path(self.directory_fd)}/{self.name}"
 
-    def _open_visible(self) -> int:
+    def _open_visible(self, *, writable: bool = False) -> int:
         try:
             descriptor = os.open(
                 self.name,
-                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                (os.O_RDWR if writable else os.O_RDONLY)
+                | os.O_CLOEXEC
+                | os.O_NOFOLLOW,
                 dir_fd=self.directory_fd,
             )
         except OSError as exc:
@@ -594,6 +596,38 @@ class OwnedAtomicOutputDescriptor:
                     f"owned atomic output changed while reading: {self.path}"
                 )
             return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+
+    def write_bytes(self, payload: bytes) -> None:
+        """Replace the contents of the exact visible output inode."""
+
+        descriptor = self._open_visible(writable=True)
+        try:
+            os.ftruncate(descriptor, 0)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise RuntimeError(
+                        f"could not persist owned atomic output: {self.path}"
+                    )
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            metadata = os.fstat(descriptor)
+            visible = os.stat(
+                self.name,
+                dir_fd=self.directory_fd,
+                follow_symlinks=False,
+            )
+            if (visible.st_dev, visible.st_ino) != (
+                metadata.st_dev,
+                metadata.st_ino,
+            ):
+                raise RuntimeError(
+                    f"owned atomic output changed while writing: {self.path}"
+                )
+            os.fsync(self.directory_fd)
         finally:
             os.close(descriptor)
 
@@ -851,21 +885,6 @@ def owned_input_closure(
     finally:
         os.close(watch_fd)
         os.close(root_fd)
-
-
-@contextmanager
-def owned_input_files(paths: Sequence[Path]) -> Iterator[None]:
-    """Monitor files below one held common root without persistent parent FDs."""
-
-    absolute = tuple(dict.fromkeys(Path(os.path.abspath(path)) for path in paths))
-    if not absolute:
-        yield
-        return
-    common = Path(os.path.commonpath(tuple(os.fspath(path) for path in absolute)))
-    if common in absolute:
-        common = common.parent
-    with owned_input_closure(common, files=absolute):
-        yield
 
 
 @contextmanager

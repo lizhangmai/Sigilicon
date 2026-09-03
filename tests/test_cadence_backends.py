@@ -670,6 +670,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         "sigilicon.workflows.oa_library.build_oa_layout_ir",
         lambda plan, **_kwargs: plan,
     )
+    response: dict[str, object] = {"passed": True}
 
     def rebuild(
         _plan,
@@ -688,7 +689,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         assert resource_paths[model] != model
         operation = SimpleNamespace(operation_id=operation_id)
         bind_operation(operation)
-        return {"passed": True}
+        return dict(response)
 
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.rebuild_oa_library",
@@ -706,6 +707,9 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
 
     assert result.status == "succeeded"
     assert registered[0].operation_id == context.operation_id
+    response["passed"] = "false"
+    with pytest.raises(ExecutionError, match="boolean 'passed'"):
+        backend.run(context, prepared)
 
 
 def test_layout_backend_binds_mutation_and_preserves_uncertainty(

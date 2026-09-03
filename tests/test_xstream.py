@@ -199,6 +199,32 @@ def test_xstream_export_uses_owned_inputs_and_authoritative_completion(
     assert len(observed["pass_fds"]) == 5
 
 
+def test_xstream_export_rejects_work_directory_replacement(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+
+    def runner(process_request):
+        process_request.before_spawn()
+        _write_success(process_request.cwd)
+        request.work_root.rename(tmp_path / "displaced-work")
+        request.work_root.mkdir()
+        _write_success(request.work_root)
+        return ProcessResult(returncode=0, stdout="", stderr="")
+
+    resources = Resources(
+        tools={"cadence.xstream": str(tmp_path / "cadence/tools/bin/strmout")}
+    )
+    with (
+        resources.owned_tool("cadence.xstream") as launcher,
+        pytest.raises(RuntimeError, match="owned directory identity changed"),
+    ):
+        run_xstream_export(
+            request,
+            launcher=launcher,
+            environment=resources.environment,
+            process=SimpleNamespace(run=runner),
+        )
+
+
 def test_xstream_export_preserves_explicit_multicall_launcher_symlink(
     monkeypatch,
     tmp_path: Path,

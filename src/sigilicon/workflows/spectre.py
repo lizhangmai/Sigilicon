@@ -305,6 +305,9 @@ def run_spectre_measurement(
     payload = dict(evaluate(parsed))
     payload.setdefault("contract_version", 1)
     payload.setdefault("condition", dict(condition))
+    passed = payload.get("passed")
+    if type(passed) is not bool:
+        raise ValueError("Spectre measurement must contain a boolean 'passed' field")
     measurements = artifacts.write_json(
         "outputs",
         ("measurements.json",),
@@ -313,7 +316,7 @@ def run_spectre_measurement(
     artifacts.add_file("work", artifacts.directory("work"))
     result = SpectreRunResult(
         measurements=measurements,
-        passed=bool(payload.get("passed")),
+        passed=passed,
     )
     if not result.passed:
         raise MeasurementContractFailure("machine measurement contract failed", result)

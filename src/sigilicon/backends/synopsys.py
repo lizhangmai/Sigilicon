@@ -126,6 +126,16 @@ def _mapping(config: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return value
 
 
+def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
+    unknown = set(step.config) - fields
+    if unknown:
+        raise ContractError(
+            f"{step.uses} step {step.id!r} has unknown config fields: "
+            f"{', '.join(sorted(unknown))}"
+        )
+    return step.config
+
+
 def _safe_relative(value: str, label: str) -> str:
     relative = PurePosixPath(value)
     if (
@@ -763,13 +773,30 @@ class FcAdapter(DirectAdapter):
 
 class HspiceAdapter(DirectAdapter):
     name = "synopsys.hspice"
+    _fields = frozenset(
+        {
+            "collect",
+            "corner",
+            "environment",
+            "environment_prefix",
+            "model_section",
+            "output_environment",
+            "requires_python",
+            "runner",
+            "source_environment",
+            "target",
+            "timeout_seconds",
+            "variant",
+        }
+    )
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
+        config = _strict_config(step, self._fields)
         checks = _base_checks(step)
-        _target(step.config)
+        _target(config)
         checks.extend(preflight_environment(step.runtime, resources))
-        environment = _mapping(step.config, "environment")
-        prefix = _text(step.config, "environment_prefix")
+        environment = _mapping(config, "environment")
+        prefix = _text(config, "environment_prefix")
         if any(
             not isinstance(name, str)
             or _ENVIRONMENT.fullmatch(name) is None
@@ -780,12 +807,12 @@ class HspiceAdapter(DirectAdapter):
             raise ContractError(
                 "HSPICE owner environment must use its declared uppercase prefix"
             )
-        collect = _mapping(step.config, "collect")
+        collect = _mapping(config, "collect")
         for role, relative in collect.items():
             if not isinstance(role, str) or not isinstance(relative, str):
                 raise ContractError("HSPICE collect must map roles to relative paths")
             _safe_relative(relative, f"HSPICE collect {role}")
-        for name, value in _mapping(step.config, "source_environment").items():
+        for name, value in _mapping(config, "source_environment").items():
             if (
                 not isinstance(name, str)
                 or _ENVIRONMENT.fullmatch(name) is None
@@ -795,7 +822,7 @@ class HspiceAdapter(DirectAdapter):
                 raise ContractError(
                     "HSPICE source_environment must map environment names to step sources"
                 )
-        for name, value in _mapping(step.config, "output_environment").items():
+        for name, value in _mapping(config, "output_environment").items():
             if (
                 not isinstance(name, str)
                 or _ENVIRONMENT.fullmatch(name) is None
@@ -805,8 +832,7 @@ class HspiceAdapter(DirectAdapter):
                     "HSPICE output_environment must map environment names to relative paths"
                 )
             _safe_relative(value, f"HSPICE output_environment {name}")
-        _boolean(step.config, "requires_python")
-        if _boolean(step.config, "requires_python") and _PYTHON not in (
+        if _boolean(config, "requires_python") and _PYTHON not in (
             step.runtime.tools
         ):
             raise ContractError(

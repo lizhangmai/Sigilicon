@@ -8,15 +8,19 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-from sigilicon.artifacts import read_nofollow_text
 from sigilicon.external_tools import (
+    OwnedAtomicOutputDescriptor,
+    OwnedDirectoryDescriptor,
     OwnedExecutable,
     ProcessPort,
     ProcessRequest,
+    ProcessResult,
     cadence_ic_env,
     managed_process,
+    owned_atomic_output_file,
     owned_directory,
     owned_input_file,
+    owned_output_file,
 )
 
 
@@ -289,7 +293,9 @@ def xstream_environment(
 
 
 def _write_failure_diagnostic(
-    work: Path,
+    work: OwnedDirectoryDescriptor,
+    native_log: OwnedAtomicOutputDescriptor,
+    summary: OwnedAtomicOutputDescriptor,
     *,
     exit_code: int,
     stdout: str,
@@ -297,19 +303,85 @@ def _write_failure_diagnostic(
     """Persist bounded translator evidence before raising on a nonzero exit."""
 
     sections = [f"exit_code={exit_code}", "", "[stdout]", stdout[-65536:]]
-    for name in ("strmout.log", "strmout.sum"):
-        path = work / name
+    for name, output in (("strmout.log", native_log), ("strmout.sum", summary)):
         sections.extend(("", f"[{name}]"))
-        if not path.is_file() or path.is_symlink():
-            sections.append("<not a regular file>")
-            continue
         try:
-            sections.append(read_nofollow_text(path, errors="replace")[-65536:])
-        except OSError as exc:
+            sections.append(output.read_bytes().decode("utf-8", errors="replace")[-65536:])
+        except (OSError, RuntimeError) as exc:
             sections.append(f"<unreadable: {exc}>")
-    diagnostic = work / "xstream-failure.log"
-    diagnostic.write_text("\n".join(sections), encoding="utf-8")
-    return diagnostic
+    with owned_output_file(work, "xstream-failure.log") as diagnostic:
+        diagnostic.write_bytes("\n".join(sections).encode("utf-8"))
+        return diagnostic.path
+
+
+def _finish_xstream_export(
+    work: OwnedDirectoryDescriptor,
+    *,
+    command: tuple[str, ...],
+    completed: ProcessResult,
+    native_log: OwnedAtomicOutputDescriptor,
+    summary: OwnedAtomicOutputDescriptor,
+    gds: OwnedAtomicOutputDescriptor,
+) -> XStreamExportResult:
+    if completed.returncode != 0:
+        diagnostic = _write_failure_diagnostic(
+            work,
+            native_log,
+            summary,
+            exit_code=completed.returncode,
+            stdout=completed.stdout + completed.stderr,
+        )
+        raise XStreamExportError(
+            f"XStream exited {completed.returncode}; see managed xstream-failure.log",
+            executed=True,
+            exit_code=completed.returncode,
+            diagnostic_path=diagnostic,
+        )
+    for output, label in (
+        (native_log, "native log"),
+        (summary, "summary"),
+        (gds, "GDSII output"),
+    ):
+        try:
+            output.require_visible()
+        except (OSError, RuntimeError) as exc:
+            raise XStreamExportError(
+                f"XStream did not produce a regular {label}",
+                executed=True,
+                exit_code=0,
+            ) from exc
+    proof = "\n".join(
+        (
+            native_log.read_bytes().decode("utf-8", errors="replace"),
+            summary.read_bytes().decode("utf-8", errors="replace"),
+            completed.stdout,
+            completed.stderr,
+        )
+    )
+    if _XSTREAM_COMPLETE.search(proof) is None:
+        raise XStreamExportError(
+            "XStream summary does not prove a zero-warning translation",
+            executed=True,
+            exit_code=0,
+        )
+    try:
+        canonical_gds = canonicalize_xstream_gdsii(gds.read_bytes())
+        gds.write_bytes(canonical_gds)
+    except (OSError, RuntimeError, _GdsError) as exc:
+        raise XStreamExportError(
+            f"XStream produced invalid GDSII: {exc}",
+            executed=True,
+            exit_code=0,
+        ) from exc
+    return XStreamExportResult(
+        command=command,
+        exit_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        gds_path=gds.path,
+        native_log_path=native_log.path,
+        summary_path=summary.path,
+    )
 
 
 def run_xstream_export(
@@ -339,6 +411,15 @@ def run_xstream_export(
         ExitStack() as inputs,
     ):
         child_work = Path(owned_work.child_path)
+        native_log = inputs.enter_context(
+            owned_atomic_output_file(owned_work, "strmout.log")
+        )
+        summary = inputs.enter_context(
+            owned_atomic_output_file(owned_work, "strmout.sum")
+        )
+        gds = inputs.enter_context(
+            owned_atomic_output_file(owned_work, "layout.gds")
+        )
         owned_map = inputs.enter_context(owned_input_file(request.layer_map))
         owned_cds = inputs.enter_context(
             owned_input_file(request.cds_lib, require_single_link=False)
@@ -348,7 +429,7 @@ def run_xstream_export(
             "-library",
             request.library,
             "-strmFile",
-            str(child_work / "layout.gds"),
+            gds.child_path,
             "-runDir",
             str(child_work),
             "-topCell",
@@ -356,9 +437,9 @@ def run_xstream_export(
             "-view",
             request.view,
             "-logFile",
-            str(child_work / "strmout.log"),
+            native_log.child_path,
             "-summaryFile",
-            str(child_work / "strmout.sum"),
+            summary.child_path,
             "-techLib",
             request.technology_library,
             "-layerMap",
@@ -421,64 +502,14 @@ def run_xstream_export(
                 exit_code=None,
             ) from exc
 
-    native_log = work / "strmout.log"
-    summary = work / "strmout.sum"
-    gds = work / "layout.gds"
-    if completed.returncode != 0:
-        diagnostic = _write_failure_diagnostic(
-            work,
-            exit_code=completed.returncode,
-            stdout=completed.stdout + completed.stderr,
+        return _finish_xstream_export(
+            owned_work,
+            command=command,
+            completed=completed,
+            native_log=native_log,
+            summary=summary,
+            gds=gds,
         )
-        raise XStreamExportError(
-            f"XStream exited {completed.returncode}; see managed xstream-failure.log",
-            executed=True,
-            exit_code=completed.returncode,
-            diagnostic_path=diagnostic,
-        )
-    for path, label in (
-        (native_log, "native log"),
-        (summary, "summary"),
-        (gds, "GDSII output"),
-    ):
-        if not path.is_file() or path.is_symlink():
-            raise XStreamExportError(
-                f"XStream did not produce a regular {label}",
-                executed=True,
-                exit_code=0,
-            )
-    proof = "\n".join(
-        (
-            read_nofollow_text(native_log, errors="replace"),
-            read_nofollow_text(summary, errors="replace"),
-            completed.stdout,
-            completed.stderr,
-        )
-    )
-    if _XSTREAM_COMPLETE.search(proof) is None:
-        raise XStreamExportError(
-            "XStream summary does not prove a zero-warning translation",
-            executed=True,
-            exit_code=0,
-        )
-    try:
-        canonical_gds = canonicalize_xstream_gdsii(gds.read_bytes())
-    except (OSError, _GdsError) as exc:
-        raise XStreamExportError(
-            f"XStream produced invalid GDSII: {exc}",
-            executed=True,
-            exit_code=0,
-        ) from exc
-    gds.write_bytes(canonical_gds)
-    return XStreamExportResult(
-        command=command,
-        exit_code=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        gds_path=gds,
-        native_log_path=native_log,
-        summary_path=summary,
-    )
 
 
 __all__ = [

@@ -16,7 +16,6 @@ from sigilicon.external_tools import (
     owned_directory,
     owned_input_closure,
     owned_input_file,
-    owned_input_files,
     owned_output_file,
     owned_scratch_directory,
     owned_sealed_input,
@@ -30,7 +29,11 @@ from sigilicon.external_tools import (
 )
 from sigilicon.execution.step_files import StepFiles
 from sigilicon.execution.model import Resources
-from sigilicon.workflows.spectre import run_spectre_deck
+from sigilicon.workflows.spectre import (
+    StagedSpectreInput,
+    run_spectre_deck,
+    run_spectre_measurement,
+)
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:
@@ -326,6 +329,51 @@ def test_spectre_completion_preserves_all_three_log_sources(tmp_path: Path) -> N
     assert result.native_log is not None
 
 
+def test_spectre_measurement_rejects_truthy_non_boolean_passed(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "run"
+    record = StepFiles(
+        run_id="spectre-measurement",
+        root=run,
+        input_root=run / "inputs",
+        work_root=run / "work",
+        output_root=run / "outputs",
+        log_root=run / "logs",
+        source={},
+    )
+    model = tmp_path / "model.scs"
+    model.write_text("// model\n", encoding="utf-8")
+
+    def execute(request: ProcessRequest) -> ProcessResult:
+        assert request.before_spawn is not None
+        request.before_spawn()
+        (request.cwd / "result.prn").write_text("0 1\n", encoding="utf-8")
+        return ProcessResult(
+            returncode=0,
+            stdout="spectre completes with 0 errors\n",
+            stderr="",
+        )
+
+    with pytest.raises(ValueError, match="boolean 'passed'"):
+        run_spectre_measurement(
+            condition={},
+            inputs=(StagedSpectreInput("model", model, ("model.scs",)),),
+            external_input_references={},
+            render=lambda paths: f'include "{paths["model"]}"\n',
+            output_name="result.prn",
+            raw_result_name="raw.prn",
+            parse=lambda _text: object(),
+            normalize=lambda _parsed: "normalized\n",
+            normalized_name="normalized.prn",
+            evaluate=lambda _parsed: {"passed": "false"},
+            timeout=5,
+            artifacts=record,
+            resources=Resources(tools={"cadence.spectre": "/bin/true"}),
+            process=SimpleNamespace(run=execute),
+        )
+
+
 def test_confirmed_process_group_can_clean_its_own_lingering_worker(
     tmp_path: Path,
 ) -> None:
@@ -452,7 +500,7 @@ def test_owned_input_detects_a_path_swap_even_when_original_is_restored(
             original.rename(source)
 
 
-def test_owned_input_group_scales_with_directories_not_file_count(
+def test_owned_input_closure_scales_with_directories_not_file_count(
     tmp_path: Path,
 ) -> None:
     paths = []
@@ -463,13 +511,13 @@ def test_owned_input_group_scales_with_directories_not_file_count(
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (min(64, hard), hard))
     try:
-        with owned_input_files(paths):
+        with owned_input_closure(tmp_path, files=paths):
             assert paths[-1].read_text(encoding="utf-8") == "99"
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
-def test_owned_input_group_does_not_hold_one_fd_per_parent(tmp_path: Path) -> None:
+def test_owned_input_closure_does_not_hold_one_fd_per_parent(tmp_path: Path) -> None:
     paths = []
     for index in range(100):
         directory = tmp_path / f"group-{index}"
@@ -480,7 +528,7 @@ def test_owned_input_group_does_not_hold_one_fd_per_parent(tmp_path: Path) -> No
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (min(64, hard), hard))
     try:
-        with owned_input_files(paths):
+        with owned_input_closure(tmp_path, files=paths):
             assert paths[-1].read_text(encoding="utf-8") == "99"
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
@@ -499,7 +547,7 @@ def test_owned_directory_closure_rejects_new_members(tmp_path: Path) -> None:
             (asset / "injected.model").write_text("drift", encoding="utf-8")
 
 
-def test_owned_input_group_detects_restored_path_swap(tmp_path: Path) -> None:
+def test_owned_input_closure_detects_restored_path_swap(tmp_path: Path) -> None:
     source = tmp_path / "source.sv"
     original = tmp_path / "original.sv"
     replacement = tmp_path / "replacement.sv"
@@ -507,7 +555,7 @@ def test_owned_input_group_detects_restored_path_swap(tmp_path: Path) -> None:
     replacement.write_text("replacement", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="pathname changed during invocation"):
-        with owned_input_files((source,)):
+        with owned_input_closure(tmp_path, files=(source,)):
             source.rename(original)
             replacement.rename(source)
             source.unlink()

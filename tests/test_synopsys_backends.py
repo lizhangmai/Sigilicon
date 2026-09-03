@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -17,6 +18,7 @@ from sigilicon.backends.synopsys import (
     _StructuralLinkStep,
 )
 from sigilicon.execution.model import (
+    ContractError,
     Resources,
     RuntimeEnvironment,
     Step,
@@ -473,7 +475,6 @@ raise SystemExit(1)
             "timeout_seconds": 10,
             "environment_prefix": "FIXTURE_",
             "environment": {"FIXTURE_MISMATCH_SAMPLES": 2},
-            "requires_mismatch": True,
             "requires_python": True,
             "source_environment": {
                 "SIGILICON_FIXTURE_QUALIFICATION_EVALUATOR": "tools/evaluate.py",
@@ -526,6 +527,14 @@ raise SystemExit(1)
         check.status == "ready"
         for check in backend.preflight(step, context.resources)
     )
+    with pytest.raises(ContractError, match="unknown config fields: requires_mismatch"):
+        backend.preflight(
+            replace(
+                step,
+                config={**step.config, "requires_mismatch": True},
+            ),
+            context.resources,
+        )
     result = backend.run(context, step)
 
     assert result.status == "failed"

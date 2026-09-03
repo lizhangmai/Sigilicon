@@ -1289,12 +1289,14 @@ class _OaAdapter(_CadenceDomainAdapter):
                 operation_id=context.operation_id,
                 bind_operation=context.bind_workspace_operation,
             )
+        passed = payload.get("passed")
+        if type(passed) is not bool:
+            raise ExecutionError("OA evidence must contain a boolean 'passed' field")
         output = context.write_text(
             "oa",
             f"{self.spec.name}.json",
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         )
-        passed = bool(payload.get("passed"))
         artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
         facts = {"passed": passed, "operation": self.spec.name}
         return (
