@@ -412,6 +412,7 @@ class PlatformInventory(Mapping[str, PdkConfig]):
     def resolve_catalog(self, context: Project) -> PlatformCatalogSnapshot:
         """Return the catalog after a cheap operation-identity check."""
 
+        context.manifest_source_document()
         if (
             context is not self.project
             or self.catalog.project_root != context.project_root
@@ -499,6 +500,7 @@ class PlatformContractInventory(Mapping[str, PlatformContract]):
         return len(self.platforms)
 
     def resolve(self, context: Project, key: str) -> PlatformContract:
+        context.manifest_source_document()
         if context is not self.project:
             raise ValueError("platform contract inventory belongs to another operation")
         try:
@@ -565,6 +567,7 @@ def _validate_platform_snapshot(
 ) -> PdkConfig:
     """Validate a platform snapshot without consulting ambient process state."""
 
+    context.manifest_source_document()
     if snapshot is None:
         raise TypeError("platform snapshot must be PdkConfig")
     if snapshot.key != key:
@@ -1046,6 +1049,7 @@ def _platform_catalog_document(
     context: Project,
     document: Mapping[str, Any],
 ) -> tuple[Path, Path, str, Mapping[str, Any]]:
+    context.manifest_source_document()
     root = context.project_root
     catalog_path = context.catalog("platform")
     if not catalog_path.is_file() or not catalog_path.is_relative_to(root):

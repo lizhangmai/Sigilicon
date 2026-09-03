@@ -103,6 +103,44 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.parametrize("snapshot_kind", ("inventory", "platform"))
+def test_runtime_platform_snapshot_rejects_project_manifest_drift(
+    tmp_path: Path,
+    snapshot_kind: str,
+) -> None:
+    contract = write_project_context(tmp_path)
+    write_test_platform(tmp_path)
+    platform_manifest = tmp_path / "configs/platform/testpdk/platform.toml"
+    platform_manifest.write_text(
+        platform_manifest.read_text(encoding="utf-8").replace(
+            "\n[contracts]\n",
+            '\nasset_scope = "external"\n\n[contracts]\n',
+        ),
+        encoding="utf-8",
+    )
+    first = tmp_path / "installed/first"
+    second = tmp_path / "installed/second"
+    for root in (first, second):
+        root.mkdir(parents=True)
+        (root / "model.scs").write_text("// installed model\n", encoding="utf-8")
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + f'\n[runtime.directories]\n"platform.testpdk" = "{first}"\n',
+        encoding="utf-8",
+    )
+    project = Project.open(tmp_path)
+    inventory = load_platform_inventory(project, resources=project.resources())
+    snapshot = inventory if snapshot_kind == "inventory" else inventory["testpdk"]
+
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(str(first), str(second)),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="project manifest snapshot"):
+        resolve_platform_snapshot(project, "testpdk", snapshot=snapshot)
+
+
 def test_resolve_platform_rejects_typed_and_source_drift(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_layout_platform(tmp_path)
