@@ -30,6 +30,7 @@ from sigilicon.execution._model import (
     json_value,
 )
 from sigilicon.external_tools import (
+    CADENCE_SPECTRE_TOOL,
     CADENCE_SPICEIN_TOOL,
     CADENCE_TEXT_IMPORT_TOOL,
     CADENCE_VIRTUOSO_TOOL,
@@ -793,7 +794,10 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
         _positive_integer(config, "timeout_seconds")
         if step.evidence is None:
             raise ContractError("Xcelium AMS execution requires an evidence envelope")
-        return (_executable_check(resources, _XRUN),)
+        return (
+            _executable_check(resources, _XRUN),
+            _executable_check(resources, CADENCE_SPECTRE_TOOL),
+        )
 
     def plan(
         self,
@@ -836,7 +840,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             prepared=prepared_identity,
             source_records=planning.source_records,
             resource_identities=planning.resource_identities,
-            runtime_identities=(_XRUN,),
+            runtime_identities=(_XRUN, CADENCE_SPECTRE_TOOL),
         )
 
     def run(self, context: StepContext) -> StepResult:

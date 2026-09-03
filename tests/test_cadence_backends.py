@@ -279,6 +279,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     tmp_path: Path,
 ) -> None:
     executable = _file(tmp_path / "bin/xrun", executable=True)
+    spectre = _file(tmp_path / "bin/spectre", executable=True)
     step = Step(
         "ams",
         "cadence.xcelium-ams",
@@ -291,7 +292,10 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         evidence=Evidence("diagnostic", "l2", "native-adapter-wiring"),
     )
     resources = Resources(
-        tools={"cadence.xrun": str(executable)},
+        tools={
+            "cadence.xrun": str(executable),
+            "cadence.spectre": str(spectre),
+        },
         environment={"PATH": "/snapshot/bin"},
     )
     project = tmp_path / "source-project"
@@ -376,6 +380,11 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     record = prepared.record
     assert str(model) not in str(record)
     assert "model snapshot" not in str(record)
+    assert set(prepared.resources) == {
+        "cadence.xrun",
+        "cadence.spectre",
+        "pdk:fixture-pdk:simulation/nominal/0-model.scs",
+    }
 
     assert all(
         check.status == "ready" for check in backend.preflight(prepared, resources)

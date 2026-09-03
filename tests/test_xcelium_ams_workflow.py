@@ -488,11 +488,18 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
         "#!/bin/sh\nexit 99\n",
     )
     xrun.chmod(0o755)
+    spectre = _write(
+        tmp_path / "tools/spectre/tools/bin/spectre",
+        "#!/bin/sh\nexit 99\n",
+    )
+    spectre.chmod(0o755)
 
     def capture(request):
         assert str(request.cwd).startswith("/proc/") and "/fd/" in str(request.cwd)
         assert len(request.pass_fds) == 2
         request.before_spawn()
+        spectre_index = request.argv.index("-spectre_path") + 1
+        assert request.argv[spectre_index] == str(spectre.parent)
         control = Path(request.argv[-1]).read_text(encoding="utf-8")
         assert "/inputs/release/circuit.scs" in control
         assert "/inputs/pdk/model.scs" in control
@@ -510,7 +517,12 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
             resources=Project.open(tmp_path).resources(),
         ),
         artifacts=_run_artifacts(tmp_path),
-        resources=Resources(tools={"cadence.xrun": str(xrun)}),
+        resources=Resources(
+            tools={
+                "cadence.xrun": str(xrun),
+                "cadence.spectre": str(spectre),
+            }
+        ),
         process=SimpleNamespace(run=capture),
     )
 
@@ -531,6 +543,11 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
         "#!/bin/sh\nexit 99\n",
     )
     xrun.chmod(0o755)
+    spectre = _write(
+        tmp_path / "tools/spectre/tools/bin/spectre",
+        "#!/bin/sh\nexit 99\n",
+    )
+    spectre.chmod(0o755)
 
     def capture(request):
         request.before_spawn()
@@ -548,7 +565,12 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
             resources=Project.open(tmp_path).resources(),
         ),
         artifacts=_run_artifacts(tmp_path),
-        resources=Resources(tools={"cadence.xrun": str(xrun)}),
+        resources=Resources(
+            tools={
+                "cadence.xrun": str(xrun),
+                "cadence.spectre": str(spectre),
+            }
+        ),
         process=SimpleNamespace(run=capture),
     )
 

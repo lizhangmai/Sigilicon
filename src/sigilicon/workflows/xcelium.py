@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
@@ -13,6 +14,7 @@ from sigilicon.artifacts import read_nofollow_text
 from sigilicon.project import Project
 from sigilicon.domain.verification_cell import VerificationCellSpec, load_verification_cell
 from sigilicon.external_tools import (
+    CADENCE_SPECTRE_TOOL,
     ProcessPort,
     ProcessRequest,
     managed_process,
@@ -249,6 +251,7 @@ def execute_xcelium_invocation(
     resources: Resources,
     before_spawn: Callable[[], None] | None = None,
     environment_values: Mapping[str, str] | None = None,
+    spectre_required: bool = False,
     timeout: int = 600,
     process: ProcessPort = managed_process,
 ) -> XceliumExecution:
@@ -267,20 +270,34 @@ def execute_xcelium_invocation(
     )
     work_dir = artifacts.directory("work")
     xcelium_dir = artifacts.directory("work", "xcelium.d")
-    with (
-        resources.owned_tool("cadence.xrun") as owned_xrun,
-        owned_directory(work_dir) as owned_work,
-        owned_directory(xcelium_dir) as owned_xcelium,
-    ):
+    with ExitStack() as stack:
+        owned_xrun = stack.enter_context(resources.owned_tool("cadence.xrun"))
+        owned_spectre = (
+            stack.enter_context(resources.owned_tool(CADENCE_SPECTRE_TOOL))
+            if spectre_required
+            else None
+        )
+        owned_work = stack.enter_context(owned_directory(work_dir))
+        owned_xcelium = stack.enter_context(owned_directory(xcelium_dir))
         requested_command = command_factory(
             xrun_bin,
             owned_work.child_path,
             owned_xcelium.child_path,
         )
+        if owned_spectre is not None:
+            # Xcelium expects the directory containing the Spectre launcher,
+            # while the project contract binds and the run holds the exact
+            # launcher executable inside that directory.
+            requested_command[1:1] = [
+                "-spectre_path",
+                str(owned_spectre.path.parent),
+            ]
         command = [*owned_xrun.command, *requested_command[1:]]
 
         def validate_spawn() -> None:
             owned_xrun.require_visible()
+            if owned_spectre is not None:
+                owned_spectre.require_visible()
             owned_work.require_visible()
             owned_xcelium.require_visible()
             if before_spawn is not None:

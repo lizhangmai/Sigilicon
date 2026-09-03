@@ -492,6 +492,7 @@ def execute_xcelium_ams_cell(
         },
         before_spawn=before_spawn,
         environment_values=environment_values,
+        spectre_required=True,
         resources=resources,
         timeout=timeout,
         process=process,
