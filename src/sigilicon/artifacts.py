@@ -109,7 +109,11 @@ def _read_nofollow_bytes(path: Path) -> bytes:
         os.close(parent_fd)
 
 
-def _inspect_nofollow_file(path: Path) -> tuple[os.stat_result, str]:
+def _inspect_nofollow_file(
+    path: Path,
+    *,
+    require_single_link: bool = True,
+) -> tuple[os.stat_result, str]:
     """Hash one held regular inode and prove its visible pathname identity."""
 
     absolute = Path(os.path.abspath(path))
@@ -127,7 +131,7 @@ def _inspect_nofollow_file(path: Path) -> tuple[os.stat_result, str]:
             raise IsADirectoryError(absolute)
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
+            or (require_single_link and before.st_nlink != 1)
             or (visible.st_dev, visible.st_ino) != (before.st_dev, before.st_ino)
         ):
             raise RuntimeError(f"artifact file identity is unsafe: {absolute}")
@@ -431,11 +435,105 @@ class SafeTree:
 
 
 def copy_immutable_file(source: Path, destination: Path) -> Path:
-    """Copy one stable regular file to a new nofollow artifact path."""
+    """Stream one stable regular file to a new nofollow artifact path."""
 
+    source_path = Path(os.path.abspath(source))
     target = Path(os.path.abspath(destination))
-    _write_exclusive_bytes(target, _read_nofollow_bytes(Path(source)))
-    return target
+    source_parent = _open_nofollow_directory(
+        source_path.parent,
+        create_missing=False,
+    )
+    target_parent = _open_nofollow_directory(
+        target.parent,
+        create_missing=True,
+    )
+    source_fd: int | None = None
+    target_fd: int | None = None
+    created = False
+    completed = False
+    try:
+        source_fd = os.open(
+            source_path.name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=source_parent,
+        )
+        before = os.fstat(source_fd)
+        visible = os.stat(
+            source_path.name,
+            dir_fd=source_parent,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not _same_inode(before, visible)
+        ):
+            raise RuntimeError(
+                f"artifact input is not a stable regular file: {source_path}"
+            )
+        target_fd = os.open(
+            target.name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=target_parent,
+        )
+        created = True
+        while chunk := os.read(source_fd, 1024 * 1024):
+            remaining = memoryview(chunk)
+            while remaining:
+                written = os.write(target_fd, remaining)
+                if written <= 0:
+                    raise RuntimeError(f"could not copy artifact file: {target}")
+                remaining = remaining[written:]
+        after = os.fstat(source_fd)
+        visible_after = os.stat(
+            source_path.name,
+            dir_fd=source_parent,
+            follow_symlinks=False,
+        )
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or not _same_inode(after, visible_after):
+            raise RuntimeError(f"artifact input changed while copying: {source_path}")
+        os.fsync(target_fd)
+        target_visible = os.stat(
+            target.name,
+            dir_fd=target_parent,
+            follow_symlinks=False,
+        )
+        target_metadata = os.fstat(target_fd)
+        if (
+            not stat.S_ISREG(target_metadata.st_mode)
+            or target_metadata.st_nlink != 1
+            or not _same_inode(target_visible, target_metadata)
+        ):
+            raise RuntimeError(f"artifact output identity changed: {target}")
+        os.fsync(target_parent)
+        completed = True
+        return target
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
+        if target_fd is not None:
+            os.close(target_fd)
+        if created and not completed:
+            try:
+                os.unlink(target.name, dir_fd=target_parent)
+            except FileNotFoundError:
+                pass
+        os.close(source_parent)
+        os.close(target_parent)
 
 
 def write_immutable_text(path: Path, value: str) -> None:
@@ -806,7 +904,6 @@ class RunRecord:
                 ) from exc
             os.close(descriptor)
             _resolved_artifact_member(self.paths.role(role), path, f"{role} directory")
-            self.add_file(role, path)
             return path
 
     def path(self, role: str, *components: str) -> Path:
@@ -850,11 +947,9 @@ class RunRecord:
                 if not isinstance(label, str) or not label:
                     raise ValueError("artifact file label must be a non-empty string")
                 reference["label"] = label
-            candidate_manifest = copy.deepcopy(self.manifest)
-            entries = candidate_manifest["files"][role]
+            entries = self.manifest["files"][role]
             entries[:] = [entry for entry in entries if entry["path"] != reference["path"]]
             entries.append(reference)
-            self._persist_candidate(candidate_manifest)
             return reference
 
     def _verify_registered_files(self) -> None:
@@ -923,9 +1018,8 @@ class RunRecord:
     ) -> Path:
         with self._lock:
             self._require_running("copy a file")
-            payload = _read_nofollow_bytes(source)
             path = self.path(role, *components)
-            _write_exclusive_bytes(path, payload)
+            copy_immutable_file(source, path)
             self.add_file(role, path, label=label)
             return path
 
@@ -951,6 +1045,14 @@ class RunRecord:
         validated = validate_manifest(candidate)
         atomic_write_json(self.paths.manifest, validated)
         self.manifest = validated
+
+    def checkpoint(self) -> Path:
+        """Persist the current inventory once after a logical execution step."""
+
+        with self._lock:
+            self._require_running("checkpoint a run")
+            self._persist_candidate(self.manifest)
+            return self.paths.manifest
 
     def _transition(
         self,

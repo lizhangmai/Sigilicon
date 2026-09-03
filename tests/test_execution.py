@@ -115,6 +115,21 @@ def test_resources_require_typed_project_configuration(
         )
 
 
+def test_source_reference_is_binary_safe_and_does_not_retain_payload(
+    tmp_path: Path,
+) -> None:
+    payload = b"\x00\xffbinary\x00source"
+    source_path = tmp_path / "macro.gds"
+    source_path.write_bytes(payload)
+
+    source = Source.capture(source_path, root=tmp_path)
+
+    assert source.size == len(payload)
+    assert source.read_bytes() == payload
+    assert not hasattr(source, "text")
+    assert source.current()
+
+
 def test_step_files_does_not_import_the_execution_model() -> None:
     source = (
         Path(__file__).parents[1]
@@ -322,7 +337,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 10
+    assert json.loads(json.dumps(plan.record))["schema"] == 11
     assert "resources_identity" not in plan.record
     assert [resource["identity"] for resource in plan.record["resources"]] == [
         "test.value"
@@ -338,7 +353,7 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
         project.preflight(plan)
 
 
-def test_project_plan_identity_includes_runtime_configuration(
+def test_project_plan_identity_excludes_runtime_configuration(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
@@ -355,10 +370,10 @@ def test_project_plan_identity_includes_runtime_configuration(
     )
     without_runtime = _project(tmp_path, CopyAdapter())
     current = without_runtime.plan("example:check")
-    assert current.record != plan.record
-    assert current.project_identity != plan.project_identity
+    assert current.record == plan.record
+    assert current.project_identity == plan.project_identity
     assert without_runtime.preflight(current).status == "blocked"
-    with pytest.raises(ContractError, match="another project composition"):
+    with pytest.raises(ContractError, match="not produced by this Project"):
         without_runtime.preflight(plan)
 
 
@@ -429,7 +444,7 @@ def test_engine_rejects_manifest_drift_after_project_plan_validation(
         project.run(plan, run_id="f" * 32)
 
 
-def test_project_freezes_inherited_environment_in_its_identity(
+def test_project_freezes_inherited_environment_outside_its_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -444,7 +459,7 @@ def test_project_freezes_inherited_environment_in_its_identity(
     assert first.resources().environment == {"LM_LICENSE_FILE": "first-license"}
     assert second.resources().environment == {"LM_LICENSE_FILE": "second-license"}
     assert first.identity == first_identity
-    assert second.identity != first_identity
+    assert second.identity == first_identity
 
 
 def test_project_records_an_absent_declared_environment_value(
@@ -459,7 +474,7 @@ def test_project_records_an_absent_declared_environment_value(
     assert absent.resources().environment_record == {"LM_LICENSE_FILE": None}
 
     monkeypatch.setenv("LM_LICENSE_FILE", "now-present")
-    assert Project.open(tmp_path).identity != absent.identity
+    assert Project.open(tmp_path).identity == absent.identity
 
 
 def test_execution_resources_reject_a_tool_replaced_after_sealing(
@@ -590,6 +605,29 @@ def test_cli_run_consumes_a_portable_plan_record(
         )
     ) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "succeeded"
+
+
+def test_cli_audit_stream_verifies_a_closed_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sigilicon.cli.main import main as sigilicon_main
+
+    _write_project(tmp_path)
+    project = _project(tmp_path, CopyAdapter())
+    result = project.run(project.plan("example:check"), run_id="8" * 32)
+
+    assert sigilicon_main(
+        (
+            "flow",
+            "audit",
+            "example:check",
+            result.run_id,
+            "--project-root",
+            str(tmp_path),
+        )
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "verified"
 
 
 def test_cli_rejects_a_symlinked_plan_file(
@@ -1190,7 +1228,7 @@ def test_tool_resource_binds_a_multicall_symlink_and_its_exact_target(
     binding = resources.capture("test.tool")
 
     assert binding.location == launcher
-    assert binding.data == b"first tool\n"
+    assert binding.read_bytes() == b"first tool\n"
     assert resources.matches(binding)
 
     launcher.unlink()
@@ -1436,12 +1474,13 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     assert restored.outcomes[0].result.facts == {"passed": False}
     artifact = restored.outcomes[0].result.artifacts[0]
     assert artifact.role == "evidence"
-    assert artifact.path.read_text() == "{}\n"
+    assert artifact.read_text() == "{}\n"
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
-    artifact.record_path.unlink()
-    artifact.record_path.symlink_to(outside)
-    assert artifact.path.read_text() == "{}\n"
+    artifact.path.unlink()
+    artifact.path.symlink_to(outside)
+    with pytest.raises((OSError, RuntimeError)):
+        artifact.read_text()
     assert restored.record["steps"][0]["artifacts"][0]["path"] == (
         "outputs/run/evidence/failure.json"
     )
@@ -1493,7 +1532,9 @@ def test_run_store_is_independent_of_current_operation_source_and_rejects_tamper
         _read_run(project, "example:check", result.run_id)
 
 
-def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
+def test_run_store_defers_artifact_hashing_until_payload_access_or_audit(
+    tmp_path: Path,
+) -> None:
     _write_project(tmp_path)
     project = _project(tmp_path, CopyAdapter(),)
     plan = _plan(project, "example:check")
@@ -1504,8 +1545,18 @@ def test_run_store_rejects_same_size_artifact_tampering(tmp_path: Path) -> None:
     output = result.outcomes[0].result.artifacts[0].path
     output.write_text("jello", encoding="utf-8")
 
+    stored = _read_run(project, "example:check", result.run_id)
+    artifact = stored.outcomes[0].result.artifacts[0]
+    with pytest.raises(ContractError, match="payload"):
+        artifact.read_text()
+    store, owner, operation, variant = _run_store_call(project, "example:check")
     with pytest.raises(RunStoreError, match="metadata"):
-        _read_run(project, "example:check", result.run_id)
+        store.audit(
+            owner=owner,
+            operation=operation,
+            variant=variant,
+            run_id=result.run_id,
+        )
 
 
 def test_run_identity_is_exclusive(tmp_path: Path) -> None:

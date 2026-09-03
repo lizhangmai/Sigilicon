@@ -257,7 +257,9 @@ def _validate_oa_plan_sources(
         validate_oa_plan_source_members(planning, members)
     except ValueError as exc:
         raise ContractError(str(exc)) from exc
-    return MappingProxyType({member.location: member.text for member in members})
+    return MappingProxyType(
+        {member.location: member.read_text() for member in members}
+    )
 
 
 def _require_bound_sources(
@@ -323,7 +325,7 @@ def _external_file_records(
     )
     for resource in resources:
         expected = selected[resource.identity][1]
-        if expected is not None and expected.encode("utf-8") != resource.data:
+        if expected is not None and expected.encode("utf-8") != resource.read_bytes():
             raise ContractError(
                 f"external resource changed during planning: {resource.identity}"
             )

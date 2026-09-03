@@ -379,7 +379,7 @@ def validate_oa_plan_source_members(
 ) -> None:
     """Prove that Action sources are complete and match the typed OA snapshots."""
 
-    records = {member.location: member.text for member in members}
+    records = {member.location: member.read_text() for member in members}
     required = oa_plan_source_paths(plan)
     if not required.issubset(records):
         missing = sorted(path.as_posix() for path in required - records.keys())

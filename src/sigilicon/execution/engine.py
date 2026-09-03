@@ -92,7 +92,7 @@ def _held_step_inputs(
 def _refresh_failure_inventory(record: RunRecord, paths: RunPaths) -> None:
     """Make a failed run's safe on-disk state readable by RunStore."""
 
-    for role in paths.roles:
+    for role in ("inputs", "outputs", "logs"):
         _register_tree(record, role, paths.role(role))
 
 
@@ -105,7 +105,7 @@ def _preflight(
 
     checks: list[PreflightCheck] = []
     seen_sources: set[tuple[Path, str]] = set()
-    for source in (*plan.composition_sources, *plan.sources):
+    for source in (*plan._composition_sources, *plan.sources):
         identity = (source.root, source.path)
         if identity in seen_sources:
             continue
@@ -186,13 +186,12 @@ def _seal_sources(record: RunRecord, plan: ExecutionPlan) -> Path:
     root = record.directory("inputs", "sources")
     for source in plan.sources:
         components = ("sources", *Path(source.path).parts)
-        path = record.write_text("inputs", components, source.text)
+        path = record.copy_file("inputs", components, source.location)
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
         try:
             os.fchmod(descriptor, 0o555 if source.executable else 0o444)
         finally:
             os.close(descriptor)
-        record.add_file("inputs", path)
     for directory in sorted(
         (path for path in root.rglob("*") if path.is_dir()),
         key=lambda path: len(path.parts),
@@ -218,21 +217,19 @@ def _seal_resources(record: RunRecord, plan: ExecutionPlan) -> Path | None:
         components = ("resources", resource.materialization_key)
         if resource.kind == "file":
             item = resource.files[0]
-            path = record.write_bytes("inputs", components, item.data)
+            path = record.copy_file("inputs", components, item.location)
             path.chmod(0o555 if item.executable else 0o444)
-            record.add_file("inputs", path)
             continue
         resource_root = record.directory("inputs", *components)
         for relative in resource.directories:
             record.directory("inputs", *components, *PurePosixPath(relative).parts)
         for item in resource.files:
-            path = record.write_bytes(
+            path = record.copy_file(
                 "inputs",
                 (*components, *PurePosixPath(item.path).parts),
-                item.data,
+                item.location,
             )
             path.chmod(0o555 if item.executable else 0o444)
-            record.add_file("inputs", path)
         for directory in sorted(
             (path for path in resource_root.rglob("*") if path.is_dir()),
             key=lambda path: len(path.parts),
@@ -334,7 +331,7 @@ def _run(
         record.write_json("inputs", ("preflight.json",), checked.record)
         changed_at_seal = tuple(
             source.path
-            for source in (*plan.composition_sources, *plan.sources)
+            for source in (*plan._composition_sources, *plan.sources)
             if not source.current()
         )
         if changed_at_seal:
@@ -373,7 +370,7 @@ def _run(
             else:
                 changed = tuple(
                     source.path
-                    for source in (*plan.composition_sources, *plan.sources)
+                    for source in (*plan._composition_sources, *plan.sources)
                     if not source.current()
                 )
                 if changed:
@@ -473,8 +470,6 @@ def _run(
                         f"adapter {step.uses!r} output inventory does not match "
                         "its published artifacts"
                     )
-                _register_tree(record, "work", work_root)
-                _register_tree(record, "outputs", output_root)
             by_id[step.id] = result
             outcome = StepOutcome(step.id, step.uses, result)
             outcomes.append(outcome)
@@ -500,6 +495,7 @@ def _run(
                         ],
                 },
             )
+            record.checkpoint()
             if progress is not None:
                 progress(step.id, result.status)
         step_statuses = {outcome.result.status for outcome in outcomes}

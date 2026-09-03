@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 
 from sigilicon.artifacts import (
+    _inspect_nofollow_file,
     _open_nofollow_directory,
     ensure_nofollow_directory,
     read_nofollow_bytes,
@@ -147,11 +148,12 @@ class Evidence:
 
 @dataclass(frozen=True)
 class Source:
-    """Exact no-follow snapshot of one project-owned source file."""
+    """Content-addressed reference to one project-owned source file."""
 
     path: str
     root: Path = field(repr=False, compare=False)
-    text: str = field(repr=False, compare=False)
+    sha256: str
+    size: int
     executable: bool
     location: Path = field(repr=False, compare=False)
     scope: str = "project"
@@ -174,7 +176,14 @@ class Source:
         expected = root.joinpath(*relative.parts)
         if location != expected or location.resolve() != expected:
             raise ContractError("source location disagrees with its root or traverses a symlink")
-        if not isinstance(self.text, str) or not isinstance(self.executable, bool):
+        if (
+            not isinstance(self.sha256, str)
+            or len(self.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.sha256)
+            or type(self.size) is not int
+            or self.size < 0
+            or not isinstance(self.executable, bool)
+        ):
             raise ContractError("source snapshot fields have invalid types")
         if not isinstance(self.scope, str) or _ADAPTER.fullmatch(self.scope) is None:
             raise ContractError("source scope must be a semantic identity")
@@ -199,21 +208,22 @@ class Source:
         metadata = resolved.stat(follow_symlinks=False)
         if not stat.S_ISREG(metadata.st_mode):
             raise ContractError(f"source must be a regular file: {path}")
+        inspected, digest = _inspect_nofollow_file(
+            resolved,
+            require_single_link=False,
+        )
         return cls(
             resolved.relative_to(source_root).as_posix(),
             source_root,
-            read_nofollow_text(resolved),
-            bool(metadata.st_mode & 0o111),
+            digest,
+            inspected.st_size,
+            bool(inspected.st_mode & 0o111),
             resolved,
             scope,
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mtime_ns,
+            inspected.st_dev,
+            inspected.st_ino,
+            inspected.st_mtime_ns,
         )
-
-    @property
-    def sha256(self) -> str:
-        return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
 
     @property
     def record(self) -> dict[str, object]:
@@ -221,31 +231,56 @@ class Source:
             "scope": self.scope,
             "path": self.path,
             "sha256": self.sha256,
+            "size": self.size,
             "executable": self.executable,
         }
+
+    def read_bytes(self) -> bytes:
+        payload = read_nofollow_bytes(self.location)
+        if (
+            len(payload) != self.size
+            or hashlib.sha256(payload).hexdigest() != self.sha256
+        ):
+            raise ContractError(f"source changed after planning: {self.path}")
+        return payload
+
+    def read_text(self) -> str:
+        try:
+            return self.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ContractError(f"source is not UTF-8 text: {self.path}") from exc
 
     def current(self) -> bool:
         try:
             metadata = self.location.stat(follow_symlinks=False)
-            return (
-                self.location.absolute() == self.location.resolve()
-                and stat.S_ISREG(metadata.st_mode)
-                and read_nofollow_text(self.location) == self.text
-                and bool(metadata.st_mode & 0o111) == self.executable
-                and metadata.st_dev == self.device
-                and metadata.st_ino == self.inode
-                and metadata.st_mtime_ns == self.mtime_ns
+            if (
+                self.location.absolute() != self.location.resolve()
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size != self.size
+                or bool(metadata.st_mode & 0o111) != self.executable
+                or metadata.st_dev != self.device
+                or metadata.st_ino != self.inode
+                or metadata.st_mtime_ns != self.mtime_ns
+            ):
+                return False
+            _, digest = _inspect_nofollow_file(
+                self.location,
+                require_single_link=False,
             )
-        except (OSError, RuntimeError, UnicodeError):
+            return (
+                digest == self.sha256
+            )
+        except (OSError, RuntimeError):
             return False
 
 @dataclass(frozen=True)
 class ResourceFile:
-    """One binary-safe file inside a captured runtime resource."""
+    """One content-addressed file inside a runtime resource."""
 
     path: str
     sha256: str
-    data: bytes = field(repr=False, compare=False)
+    size: int
+    location: Path = field(repr=False, compare=False)
     executable: bool = False
 
     def __post_init__(self) -> None:
@@ -260,21 +295,38 @@ class ResourceFile:
                 or any(part in {"", ".", ".."} for part in relative.parts)
             ):
                 raise ContractError("resource file path must be canonical and relative")
-        if not isinstance(self.data, bytes):
-            raise ContractError("resource file payload must be bytes")
-        if hashlib.sha256(self.data).hexdigest() != self.sha256:
-            raise ContractError("resource file digest disagrees with its payload")
+        if (
+            not isinstance(self.sha256, str)
+            or len(self.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.sha256)
+            or type(self.size) is not int
+            or self.size < 0
+        ):
+            raise ContractError("resource file reference is invalid")
+        location = Path(self.location).absolute()
+        if location != location.resolve():
+            raise ContractError("resource file must not traverse a symlink")
         if not isinstance(self.executable, bool):
             raise ContractError("resource file executable flag must be boolean")
+        object.__setattr__(self, "location", location)
 
     @property
     def record(self) -> dict[str, object]:
         return {
             "path": self.path,
-            "size": len(self.data),
+            "size": self.size,
             "sha256": self.sha256,
             "executable": self.executable,
         }
+
+    def read_bytes(self) -> bytes:
+        payload = read_nofollow_bytes(self.location)
+        if (
+            len(payload) != self.size
+            or hashlib.sha256(payload).hexdigest() != self.sha256
+        ):
+            raise ContractError("resource file changed after planning")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -393,8 +445,10 @@ class ResourceBinding:
             selected_kind = "file" if kind is None else kind
             if selected_kind not in {"tool", "file"}:
                 raise ContractError("regular resource must be a tool or file")
-            data = read_nofollow_bytes(selected)
-            current = selected.stat(follow_symlinks=False)
+            current, digest = _inspect_nofollow_file(
+                selected,
+                require_single_link=False,
+            )
             launcher = location.stat(follow_symlinks=False)
             if location.resolve(strict=True) != resolved:
                 raise ContractError("tool launcher changed while being captured")
@@ -418,8 +472,9 @@ class ResourceBinding:
             )
             entry = ResourceFile(
                 "",
-                hashlib.sha256(data).hexdigest(),
-                data,
+                digest,
+                current.st_size,
+                selected,
                 bool(current.st_mode & 0o111),
             )
             return cls(
@@ -439,10 +494,13 @@ class ResourceBinding:
         files: list[ResourceFile] = []
         fingerprint: list[tuple[object, ...]] = []
 
-        def stable_file(descriptor: int, before: os.stat_result) -> bytes:
-            chunks: list[bytes] = []
+        def stable_file(
+            descriptor: int,
+            before: os.stat_result,
+        ) -> tuple[int, str]:
+            digest = hashlib.sha256()
             while chunk := os.read(descriptor, 1024 * 1024):
-                chunks.append(chunk)
+                digest.update(chunk)
             after = os.fstat(descriptor)
             if (
                 before.st_dev,
@@ -456,7 +514,7 @@ class ResourceBinding:
                 after.st_mtime_ns,
             ):
                 raise ContractError("resource file changed while being captured")
-            return b"".join(chunks)
+            return after.st_size, digest.hexdigest()
 
         def capture_directory(descriptor: int, prefix: PurePosixPath) -> None:
             for name in sorted(os.listdir(descriptor)):
@@ -506,12 +564,13 @@ class ResourceBinding:
                         directories.append(relative)
                         capture_directory(child, prefix / name)
                     else:
-                        data = stable_file(child, held)
+                        size, digest = stable_file(child, held)
                         files.append(
                             ResourceFile(
                                 relative,
-                                hashlib.sha256(data).hexdigest(),
-                                data,
+                                digest,
+                                size,
+                                location.joinpath(*PurePosixPath(relative).parts),
                                 bool(held.st_mode & 0o111),
                             )
                         )
@@ -629,7 +688,7 @@ class ResourceBinding:
             "size": (
                 len(self.value.encode("utf-8"))
                 if self.kind == "value" and self.value is not None
-                else sum(len(item.data) for item in self.files)
+                else sum(item.size for item in self.files)
             ),
         }
         if self.kind == "value":
@@ -646,15 +705,14 @@ class ResourceBinding:
     def materialization_key(self) -> str:
         return resource_materialization_key(self.identity)
 
-    @property
-    def data(self) -> bytes:
+    def read_bytes(self) -> bytes:
         if self.kind not in {"tool", "file"}:
             raise ContractError("resource has no single binary payload")
-        return self.files[0].data
+        return self.files[0].read_bytes()
 
     def read_text(self) -> str:
         try:
-            return self.data.decode("utf-8")
+            return self.read_bytes().decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ContractError(
                 f"resource binding is not UTF-8 text: {self.identity}"
@@ -703,11 +761,15 @@ class ResourceBinding:
                     target.st_mode,
                 ),
             )
+            digest = hashlib.sha256()
+            offset = 0
+            while chunk := os.pread(owned.target.fd, 1024 * 1024, offset):
+                digest.update(chunk)
+                offset += len(chunk)
             return (
                 actual == self._fingerprint
                 and self.location.resolve(strict=True) == owned.target.path
-                and hashlib.sha256(os.pread(owned.target.fd, target.st_size, 0)).hexdigest()
-                == self.sha256
+                and digest.hexdigest() == self.sha256
             )
         except (OSError, RuntimeError):
             return False
@@ -871,7 +933,11 @@ class ExecutionPlan:
     steps: tuple[Step, ...]
     sources: tuple[Source, ...]
     resources: tuple[ResourceBinding, ...] = field(repr=False)
-    composition_sources: tuple[Source, ...] = field(default=(), repr=False)
+    _composition_sources: tuple[Source, ...] = field(
+        default=(),
+        repr=False,
+        compare=False,
+    )
     _authority: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -891,20 +957,10 @@ class ExecutionPlan:
             raise ContractError("execution plan must retain its operation source")
         if any(not isinstance(source, Source) for source in self.sources):
             raise ContractError("execution plan sources must be Source values")
-        if not isinstance(self.composition_sources, tuple) or any(
-            not isinstance(source, Source) for source in self.composition_sources
+        if not isinstance(self._composition_sources, tuple) or any(
+            not isinstance(source, Source) for source in self._composition_sources
         ):
-            raise ContractError(
-                "execution plan composition sources must be Source values"
-            )
-        composition_closure = {
-            (source.root, source.path): source
-            for source in self.composition_sources
-        }
-        if len(composition_closure) != len(self.composition_sources):
-            raise ContractError(
-                "execution plan contains duplicate composition source identities"
-            )
+            raise ContractError("execution plan composition monitor is invalid")
         closure = {(source.root, source.path): source for source in self.sources}
         if len(closure) != len(self.sources):
             raise ContractError("execution plan contains duplicate source identities")
@@ -935,15 +991,12 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 10,
+            "schema": 11,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,
             "operation": self.operation,
             "variant": self.variant,
-            "composition_sources": [
-                source.record for source in self.composition_sources
-            ],
             "sources": [source.record for source in self.sources],
             "resources": [resource.record for resource in self.resources],
             "steps": [step.record for step in self.steps],
@@ -1279,8 +1332,8 @@ class Artifact:
     kind: str
     path: Path
     qualifiers: Mapping[str, Any] = field(default_factory=dict)
-    _record_path: Path | None = field(default=None, repr=False, compare=False)
-    _payload_owner: object | None = field(default=None, repr=False, compare=False)
+    size: int | None = None
+    sha256: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", _identifier(self.role, "artifact role"))
@@ -1288,19 +1341,33 @@ class Artifact:
         if not isinstance(self.qualifiers, Mapping):
             raise ContractError("artifact qualifiers must be a mapping")
         object.__setattr__(self, "path", Path(self.path).absolute())
-        if self._record_path is not None:
-            object.__setattr__(
-                self,
-                "_record_path",
-                Path(self._record_path).absolute(),
-            )
+        if (self.size is None) != (self.sha256 is None):
+            raise ContractError("artifact size and digest must be provided together")
+        if self.size is not None and (
+            type(self.size) is not int
+            or self.size < 0
+            or not isinstance(self.sha256, str)
+            or len(self.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.sha256)
+        ):
+            raise ContractError("artifact size or digest is invalid")
         object.__setattr__(self, "qualifiers", _freeze(self.qualifiers, "artifact qualifiers"))
 
-    @property
-    def record_path(self) -> Path:
-        """Return the managed locator recorded in execution provenance."""
+    def read_bytes(self) -> bytes:
+        """Read and, for a stored artifact, verify its payload on demand."""
 
-        return self.path if self._record_path is None else self._record_path
+        payload = read_nofollow_bytes(self.path)
+        if self.size is not None and (
+            len(payload) != self.size
+            or hashlib.sha256(payload).hexdigest() != self.sha256
+        ):
+            raise ContractError("stored artifact payload disagrees with its reference")
+        return payload
+
+    def read_text(self, *, encoding: str = "utf-8") -> str:
+        """Read verified text without making an eager retained copy."""
+
+        return self.read_bytes().decode(encoding)
 
 
 @dataclass(frozen=True)
@@ -1725,7 +1792,7 @@ class RunResult:
         for outcome in self.outcomes:
             expected = root / "outputs" / outcome.step
             if any(
-                not artifact.record_path.is_relative_to(expected)
+                not artifact.path.is_relative_to(expected)
                 for artifact in outcome.result.artifacts
             ):
                 raise ContractError(
@@ -1756,7 +1823,7 @@ class RunResult:
                         {
                             "role": artifact.role,
                             "kind": artifact.kind,
-                            "path": artifact.record_path.relative_to(
+                            "path": artifact.path.relative_to(
                                 self.run_root
                             ).as_posix(),
                             "qualifiers": json_value(artifact.qualifiers),

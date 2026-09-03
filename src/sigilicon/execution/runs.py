@@ -12,7 +12,6 @@ from sigilicon.artifacts import (
     SafeTree,
     load_manifest,
     read_json_object,
-    read_nofollow_bytes,
     read_nofollow_text,
 )
 from sigilicon.canonical import canonical_digest
@@ -28,7 +27,6 @@ from sigilicon.execution.model import (
     resource_identity,
     resource_materialization_key,
 )
-from sigilicon.external_tools import retain_sealed_input
 from sigilicon.paths import ArtifactLayout, RunPaths
 
 
@@ -101,9 +99,9 @@ class RunStore:
         cls,
         paths: RunPaths,
         manifest: Mapping[str, Any],
+        *,
+        verify_content: bool = False,
     ) -> None:
-        root = paths.root
-        allowed = {Path("manifest.json"), *(Path(role) for role in paths.roles)}
         references: dict[str, Mapping[str, Any]] = {}
         for entries in manifest["files"].values():
             for entry in entries:
@@ -111,31 +109,41 @@ class RunStore:
                 if value in references:
                     raise RunStoreError("run manifest file inventory is duplicated")
                 references[value] = entry
-        for value in references:
-            relative = Path(value)
-            allowed.add(relative)
-            allowed.update(parent for parent in relative.parents if parent != Path("."))
         try:
-            inventory = SafeTree(root).inventory()
+            trees = {role: SafeTree(paths.role(role)) for role in paths.roles}
         except (OSError, RuntimeError) as exc:
-            raise RunStoreError(
-                f"run filesystem inventory is unsafe: {exc}"
-            ) from exc
-        actual = set(inventory.files) | set(inventory.directories)
-        if actual != allowed:
-            raise RunStoreError("run filesystem inventory disagrees with its manifest")
+            raise RunStoreError(f"run role root is unsafe: {exc}") from exc
         for value, reference in references.items():
             relative = Path(value)
+            role = relative.parts[0]
+            member = Path(*relative.parts[1:]).as_posix()
             if reference["kind"] == "file":
-                file = inventory.files.get(relative)
-                if (
-                    file is None
-                    or file.size != reference["size"]
-                    or file.sha256 != reference.get("sha256")
-                ):
+                try:
+                    path = trees[role].path(member, "run artifact")
+                    metadata = path.stat(follow_symlinks=False)
+                    valid = (
+                        path.is_file()
+                        and not path.is_symlink()
+                        and metadata.st_nlink == 1
+                        and metadata.st_size == reference["size"]
+                    )
+                    if valid and verify_content:
+                        file = trees[role].file(member, "run artifact")
+                        valid = file.sha256 == reference.get("sha256")
+                except (KeyError, OSError, RuntimeError):
+                    valid = False
+                if not valid:
                     raise RunStoreError("run file metadata disagrees with its manifest")
-            elif relative not in inventory.directories:
-                raise RunStoreError("run directory metadata disagrees with its manifest")
+            else:
+                try:
+                    path = trees[role].path(member, "run directory")
+                    valid = path.is_dir() and not path.is_symlink()
+                except (KeyError, OSError, RuntimeError):
+                    valid = False
+                if not valid:
+                    raise RunStoreError(
+                        "run directory metadata disagrees with its manifest"
+                    )
 
     def _manifest(
         self,
@@ -206,7 +214,7 @@ class RunStore:
         ):
             raise RunStoreError("execution manifest identity or closure drift")
         if (
-            plan.get("schema") != 10
+            plan.get("schema") != 11
             or plan.get("contract_kind") != "execution-plan"
             or plan.get("owner") != selected.owner
             or plan.get("operation") != selected.operation
@@ -442,28 +450,20 @@ class RunStore:
                 for raw in raw_step["artifacts"]:
                     record = registered[raw["path"]]
                     original = root.joinpath(*Path(raw["path"]).parts)
-                    data = read_nofollow_bytes(original)
                     if (
                         record.get("kind") != "file"
-                        or len(data) != record.get("size")
-                        or hashlib.sha256(data).hexdigest()
-                        != record.get("sha256")
+                        or not isinstance(record.get("size"), int)
+                        or not isinstance(record.get("sha256"), str)
                     ):
-                        raise RunStoreError(
-                            "persisted artifact changed while retaining its payload"
-                        )
-                    payload = retain_sealed_input(
-                        data,
-                        name=original.name,
-                    )
+                        raise RunStoreError("persisted artifact reference is malformed")
                     artifacts.append(
                         Artifact(
                             raw["role"],
                             raw["kind"],
-                            Path(payload.child_path),
+                            original,
                             raw["qualifiers"],
-                            _record_path=original,
-                            _payload_owner=payload,
+                            size=record["size"],
+                            sha256=record["sha256"],
                         )
                     )
                 step_result = StepResult(
@@ -541,6 +541,29 @@ class RunStore:
             tree.remove(expected)
         except (OSError, RuntimeError) as exc:
             raise RunStoreError(f"could not safely clean execution run: {exc}") from exc
+
+    def audit(
+        self,
+        *,
+        owner: str,
+        operation: str,
+        variant: str | None = None,
+        run_id: str,
+    ) -> None:
+        """Stream-verify every registered payload in one terminal run."""
+
+        selected = self._select(
+            owner=owner,
+            operation=operation,
+            variant=variant,
+            run_id=run_id,
+        )
+        manifest = self._manifest(selected)
+        self._validate_inventory(
+            selected.paths,
+            manifest,
+            verify_content=True,
+        )
 
 
 __all__ = ["RunStore", "RunStoreError"]

@@ -226,7 +226,7 @@ def plan_execution(
         resources=tuple(
             captured_resources[name] for name in sorted(captured_resources)
         ),
-        composition_sources=composition_sources,
+        _composition_sources=composition_sources,
         _authority=authority,
     )
 

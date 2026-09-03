@@ -163,7 +163,7 @@ def _bind_plan(context: StepContext, step: Step) -> StepContext:
         root.mkdir(exist_ok=True)
     for resource in step._resource_bindings:
         if resource.kind == "file":
-            (root / resource.materialization_key).write_bytes(resource.data)
+            (root / resource.materialization_key).write_bytes(resource.read_bytes())
         elif resource.kind == "directory":
             target = root / resource.materialization_key
             target.mkdir()
@@ -172,7 +172,7 @@ def _bind_plan(context: StepContext, step: Step) -> StepContext:
             for item in resource.files:
                 path = target / item.path
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(item.data)
+                path.write_bytes(item.read_bytes())
     return replace(
         context,
         step=step,

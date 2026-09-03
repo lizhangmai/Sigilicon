@@ -218,3 +218,31 @@ def test_concurrent_runs_never_overwrite_each_other(tmp_path: Path) -> None:
     assert {load_manifest(root / "manifest.json")["run_id"] for root in roots} == set(
         identities
     )
+
+
+def test_file_registration_is_batched_at_run_checkpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sigilicon.artifacts as artifacts
+
+    persisted: list[Path] = []
+    real_write = artifacts.atomic_write_json
+
+    def counted_write(path: Path, value: dict[str, object]) -> None:
+        persisted.append(path)
+        real_write(path, value)
+
+    monkeypatch.setattr(artifacts, "atomic_write_json", counted_write)
+    record = _record(tmp_path)
+    for index in range(2_000):
+        output = record.path("outputs", f"result-{index:04d}.txt")
+        output.write_text(str(index), encoding="utf-8")
+        record.add_file("outputs", output)
+
+    assert len(persisted) == 1
+    record.succeed(
+        completion_evidence=(record.path("outputs", "result-1999.txt"),)
+    )
+    assert len(persisted) == 2
+    assert len(load_manifest(record.paths.manifest)["files"]["outputs"]) == 2_000

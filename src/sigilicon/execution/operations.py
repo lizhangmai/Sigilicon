@@ -350,7 +350,7 @@ def compile_operation(
         )
 
     catalog_source = Source.capture(path, root=root, scope="owner")
-    if catalog_source.text != record_text:
+    if catalog_source.read_text() != record_text:
         raise ContractError("operation catalog changed while it was being parsed")
     unique_sources: dict[str, Source] = {catalog_source.path: catalog_source}
     for _step_value, sources in compiled:
