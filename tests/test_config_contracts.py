@@ -7,7 +7,12 @@ import pytest
 from sigilicon.domain.config_contracts import (
     inspect_project_configuration_sources,
 )
-from sigilicon.contracts import freeze_toml_document, require_config_header
+from sigilicon.contracts import (
+    ContractReader,
+    freeze_toml_document,
+    require_config_header,
+    require_relative_path,
+)
 from sigilicon.project import Project
 
 
@@ -292,3 +297,37 @@ def test_common_header_rejects_wrong_scope() -> None:
             path_scope="owner",
             owner="test",
         )
+
+
+def test_contract_reader_consumes_strict_typed_fields() -> None:
+    reader = ContractReader(
+        {
+            "name": "fixture",
+            "enabled": True,
+            "count": 2,
+            "roles": ["rtl", "timing"],
+            "settings": {"mode": "fast"},
+        },
+        "fixture",
+    )
+
+    assert reader.text("name") == "fixture"
+    assert reader.boolean("enabled") is True
+    assert reader.integer("count", minimum=1) == 2
+    assert reader.strings("roles", nonempty=True) == ("rtl", "timing")
+    assert reader.table("settings") == {"mode": "fast"}
+    reader.finish()
+
+
+def test_contract_reader_rejects_unconsumed_fields() -> None:
+    reader = ContractReader({"name": "fixture", "typo": True}, "fixture")
+    assert reader.text("name") == "fixture"
+
+    with pytest.raises(ValueError, match="unknown fields.*typo"):
+        reader.finish()
+
+
+@pytest.mark.parametrize("value", ["../escape", "/absolute", "a\\b", "a/./b"])
+def test_contract_relative_path_is_canonical(value: str) -> None:
+    with pytest.raises(ValueError, match="safe relative path"):
+        require_relative_path(value, "path")

@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tomllib
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, TypeVar, cast
 
 from sigilicon.artifacts import read_nofollow_text
 
@@ -23,6 +23,146 @@ PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
 )
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+_MISSING = object()
+_T = TypeVar("_T")
+
+
+class ContractReader:
+    """Consume one strict TOML table without duplicating scalar validation."""
+
+    __slots__ = ("_label", "_raw", "_remaining")
+
+    def __init__(self, raw: Mapping[str, Any], label: str) -> None:
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{label} must be a TOML table")
+        if not isinstance(label, str) or not label:
+            raise ValueError("contract reader label must be non-empty")
+        self._raw = raw
+        self._label = label
+        self._remaining = set(raw)
+
+    @property
+    def raw(self) -> Mapping[str, Any]:
+        return self._raw
+
+    def take(self, name: str, default: _T | object = _MISSING) -> Any | _T:
+        self._remaining.discard(name)
+        if name in self._raw:
+            return self._raw[name]
+        if default is _MISSING:
+            raise ValueError(f"{self._label}.{name} is required")
+        return cast(_T, default)
+
+    def text(
+        self,
+        name: str,
+        default: str | None | object = _MISSING,
+    ) -> str | None:
+        value = self.take(name, default)
+        if value is None and default is None:
+            return None
+        return require_text(value, f"{self._label}.{name}")
+
+    def boolean(self, name: str, default: bool | object = _MISSING) -> bool:
+        value = self.take(name, default)
+        if not isinstance(value, bool):
+            raise ValueError(f"{self._label}.{name} must be boolean")
+        return value
+
+    def integer(
+        self,
+        name: str,
+        default: int | None | object = _MISSING,
+        *,
+        minimum: int | None = None,
+    ) -> int | None:
+        value = self.take(name, default)
+        if value is None and default is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{self._label}.{name} must be an integer")
+        if minimum is not None and value < minimum:
+            raise ValueError(
+                f"{self._label}.{name} must be at least {minimum}"
+            )
+        return value
+
+    def table(
+        self,
+        name: str,
+        default: Mapping[str, Any] | object = _MISSING,
+    ) -> Mapping[str, Any]:
+        return require_table(self.take(name, default), f"{self._label}.{name}")
+
+    def strings(
+        self,
+        name: str,
+        default: tuple[str, ...] | object = _MISSING,
+        *,
+        nonempty: bool = False,
+        unique: bool = True,
+    ) -> tuple[str, ...]:
+        return require_strings(
+            self.take(name, default),
+            f"{self._label}.{name}",
+            nonempty=nonempty,
+            unique=unique,
+        )
+
+    def consume(self, *names: str) -> None:
+        self._remaining.difference_update(names)
+
+    def finish(self) -> None:
+        if self._remaining:
+            raise ValueError(
+                f"{self._label} contains unknown fields: "
+                f"{sorted(self._remaining)}"
+            )
+
+
+def require_text(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value
+
+
+def require_table(value: object, field: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a TOML table")
+    return value
+
+
+def require_strings(
+    value: object,
+    field: str,
+    *,
+    nonempty: bool = False,
+    unique: bool = True,
+) -> tuple[str, ...]:
+    if (
+        not isinstance(value, (list, tuple))
+        or (nonempty and not value)
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        qualifier = "a non-empty " if nonempty else "a "
+        raise ValueError(f"{field} must be {qualifier}string array")
+    result = tuple(value)
+    if unique and len(result) != len(set(result)):
+        raise ValueError(f"{field} contains duplicates")
+    return result
+
+
+def require_relative_path(value: object, field: str) -> PurePosixPath:
+    text = require_text(value, field)
+    path = PurePosixPath(text)
+    if (
+        path.is_absolute()
+        or "\\" in text
+        or path.as_posix() != text
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"{field} must be a safe relative path: {text!r}")
+    return path
 
 
 def freeze_toml_document(value: Any) -> Any:
@@ -186,17 +326,28 @@ class DocumentStore:
             if self.resolve(path) != document:
                 raise ValueError(f"{label} disagrees with captured source: {path}")
 
+    def verify_current(
+        self,
+        label: str,
+        paths: Iterable[Path] | None = None,
+    ) -> None:
+        """Verify selected source files against this immutable capture."""
+
+        selected = tuple(self.documents) if paths is None else tuple(paths)
+        for path in selected:
+            expected = self.resolve(path)
+            try:
+                current = freeze_toml_document(read_toml(path))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(f"{label} source document drift: {path}") from exc
+            if current != expected:
+                raise ValueError(f"{label} source document drift: {path}")
+
 
 def contract_schema(contract_kind: str) -> int:
     """Return the one supported schema for a typed configuration domain."""
 
     return _CONFIG_SCHEMAS.get(contract_kind, CONFIG_SCHEMA)
-
-
-def _text(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} must be a non-empty string")
-    return value
 
 
 def require_config_header(
@@ -213,20 +364,20 @@ def require_config_header(
     actual_schema = raw.get("schema")
     if isinstance(actual_schema, bool) or actual_schema != schema:
         raise ValueError(f"{path}: schema must be {schema}")
-    actual_kind = _text(raw.get("contract_kind"), f"{path}: contract_kind")
+    actual_kind = require_text(raw.get("contract_kind"), f"{path}: contract_kind")
     allowed_kinds = (contract_kind,) if isinstance(contract_kind, str) else contract_kind
     if actual_kind not in allowed_kinds:
         raise ValueError(
             f"{path}: contract_kind must be one of {sorted(allowed_kinds)}"
         )
-    actual_scope = _text(raw.get("path_scope"), f"{path}: path_scope")
+    actual_scope = require_text(raw.get("path_scope"), f"{path}: path_scope")
     allowed_scopes = (path_scope,) if isinstance(path_scope, str) else path_scope
     if actual_scope not in allowed_scopes or actual_scope not in PATH_SCOPES:
         raise ValueError(
             f"{path}: path_scope must be one of "
             f"{sorted(set(allowed_scopes) & PATH_SCOPES)}"
         )
-    actual_owner = _text(raw.get("owner"), f"{path}: owner")
+    actual_owner = require_text(raw.get("owner"), f"{path}: owner")
     if owner is not None and actual_owner != owner:
         raise ValueError(f"{path}: owner must be {owner!r}, got {actual_owner!r}")
     return ConfigHeader(schema, actual_kind, actual_scope, actual_owner)
@@ -246,6 +397,7 @@ def read_toml(path: Path) -> dict[str, Any]:
 
 __all__ = [
     "CONFIG_SCHEMA",
+    "ContractReader",
     "ConfigHeader",
     "DocumentStore",
     "PATH_SCOPES",
@@ -254,5 +406,9 @@ __all__ = [
     "is_frozen_toml_document",
     "read_toml",
     "require_config_header",
+    "require_relative_path",
+    "require_strings",
+    "require_table",
+    "require_text",
     "thaw_toml_document",
 ]

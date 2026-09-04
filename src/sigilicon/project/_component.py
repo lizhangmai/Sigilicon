@@ -8,11 +8,16 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sigilicon.contracts import (
+    ContractReader,
     contract_schema,
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
     require_config_header,
+    require_relative_path,
+    require_strings,
+    require_table,
+    require_text,
 )
 
 
@@ -44,25 +49,6 @@ _COMPONENT_FIELDS = {
 }
 _DEPENDENCY_FIELDS = {"name", "contract", "release"}
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
-
-
-def _string(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{label} must be a non-empty string")
-    return value
-
-
-def _safe_relative(value: object, label: str) -> PurePosixPath:
-    text = _string(value, label)
-    path = PurePosixPath(text)
-    if (
-        path.is_absolute()
-        or "\\" in text
-        or path.as_posix() != text
-        or any(part in {"", ".", ".."} for part in path.parts)
-    ):
-        raise ValueError(f"{label} must be a safe project-relative path: {text!r}")
-    return path
 
 
 @dataclass(frozen=True)
@@ -106,7 +92,7 @@ def _source_role(
 ) -> PurePosixPath | None:
     if value is None:
         return None
-    identity = _string(value, label)
+    identity = require_text(value, label)
     try:
         return sources[identity]
     except KeyError as exc:
@@ -118,11 +104,10 @@ def _source_roles(
     label: str,
     sources: Mapping[str, PurePosixPath],
 ) -> Mapping[str, PurePosixPath]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be a TOML table")
+    value = require_table(value, label)
     selected: dict[str, PurePosixPath] = {}
     for name, identity in value.items():
-        role = _string(name, f"{label} name")
+        role = require_text(name, f"{label} name")
         resolved = _source_role(identity, f"{label}.{role}", sources)
         assert resolved is not None
         selected[role] = resolved
@@ -132,26 +117,20 @@ def _source_roles(
 def _component_release(value: object, label: str) -> ComponentRelease | None:
     if value is None:
         return None
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be a TOML table")
+    value = require_table(value, label)
     required = {"export", "required_maturity", "roles"}
     if set(value) != required:
         raise ValueError(f"{label} fields must be exactly {sorted(required)}")
-    roles_raw = value.get("roles")
-    if (
-        not isinstance(roles_raw, (list, tuple))
-        or not roles_raw
-        or any(not isinstance(role, str) or not role for role in roles_raw)
-        or len(set(roles_raw)) != len(roles_raw)
-    ):
-        raise ValueError(f"{label}.roles must be unique non-empty strings")
+    roles_raw = require_strings(
+        value.get("roles"), f"{label}.roles", nonempty=True
+    )
     return ComponentRelease(
-        export=_string(value.get("export"), f"{label}.export"),
-        required_maturity=_string(
+        export=require_text(value.get("export"), f"{label}.export"),
+        required_maturity=require_text(
             value.get("required_maturity"),
             f"{label}.required_maturity",
         ),
-        roles=tuple(roles_raw),
+        roles=roles_raw,
     )
 
 
@@ -174,13 +153,13 @@ def parse_component_contract(
         path_scope="owner",
         schema=contract_schema("ip-component"),
     )
-    unknown = set(document) - _COMPONENT_FIELDS
-    if unknown:
-        raise ValueError(f"component contains unknown fields: {sorted(unknown)}")
-    kind = _string(document.get("kind"), "kind")
+    reader = ContractReader(document, "component")
+    reader.consume(*_COMPONENT_FIELDS)
+    reader.finish()
+    kind = require_text(document.get("kind"), "kind")
     if kind not in COMPONENT_KINDS:
         raise ValueError(f"unsupported component kind: {kind}")
-    lifecycle = _string(document.get("lifecycle", "active"), "lifecycle")
+    lifecycle = require_text(document.get("lifecycle", "active"), "lifecycle")
     if lifecycle not in COMPONENT_LIFECYCLES:
         raise ValueError(f"unsupported component lifecycle: {lifecycle}")
 
@@ -192,7 +171,7 @@ def parse_component_contract(
     for name, value in sources_raw.items():
         if not isinstance(name, str) or not name:
             raise ValueError("source names must be non-empty strings")
-        source = _safe_relative(value, f"sources.{name}")
+        source = require_relative_path(value, f"sources.{name}")
         if source in source_paths:
             raise ValueError(f"source path has multiple identities: {source}")
         sources[name] = source
@@ -235,7 +214,7 @@ def parse_component_contract(
         if not isinstance(values, (list, tuple)) or not values:
             raise ValueError(f"filesets.{name} must be a non-empty array")
         identities = tuple(
-            _string(value, f"filesets.{name} entry") for value in values
+            require_text(value, f"filesets.{name} entry") for value in values
         )
         if len(set(identities)) != len(identities):
             raise ValueError(f"filesets.{name} contains duplicate sources")
@@ -260,14 +239,14 @@ def parse_component_contract(
             raise ValueError(
                 f"component[{index}] contains unknown fields: {sorted(unknown)}"
             )
-        name = _string(value.get("name"), f"component[{index}].name")
+        name = require_text(value.get("name"), f"component[{index}].name")
         if name in names:
             raise ValueError(f"duplicate component dependency: {name}")
         names.add(name)
         dependencies.append(
             ComponentDependency(
                 name=name,
-                contract=_safe_relative(
+                contract=require_relative_path(
                     value.get("contract"), f"component[{index}].contract"
                 ),
                 release=_component_release(
@@ -281,7 +260,7 @@ def parse_component_contract(
         path=contract_path,
         project_root=root,
         owner=header.owner,
-        name=_string(document.get("name"), "name"),
+        name=require_text(document.get("name"), "name"),
         kind=kind,
         lifecycle=lifecycle,
         public_interface=public_interface,

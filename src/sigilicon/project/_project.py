@@ -7,18 +7,20 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
-import tomllib
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest, canonical_json
 from sigilicon.contracts import (
+    ContractReader,
     DocumentStore,
     freeze_toml_document,
     is_frozen_toml_document,
     read_toml,
     require_config_header,
+    require_strings,
+    require_text,
     thaw_toml_document,
 )
 from sigilicon.project._component import ComponentContract, load_component_contract
@@ -34,17 +36,6 @@ from sigilicon.execution._model import (
 )
 
 _HEADER_FIELDS = frozenset({"schema", "contract_kind", "path_scope", "owner"})
-_RUNTIME_FIELDS = frozenset(
-    {
-        "capabilities",
-        "tools",
-        "files",
-        "directories",
-        "values",
-        "inherit_environment",
-    }
-)
-
 if TYPE_CHECKING:
     from sigilicon.execution.adapter import AdapterRegistry
     from sigilicon.execution._model import (
@@ -58,27 +49,15 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
     runtime = raw.get("runtime", {})
     if not isinstance(runtime, Mapping):
         raise ValueError(f"{contract}: runtime must be a table")
-    unknown = set(runtime) - _RUNTIME_FIELDS
-    if unknown:
-        raise ValueError(f"{contract}: runtime contains unknown fields: {sorted(unknown)}")
-    capabilities = runtime.get("capabilities", [])
-    if not isinstance(capabilities, list) or any(
-        not isinstance(item, str) for item in capabilities
-    ):
-        raise ValueError(f"{contract}: runtime.capabilities must be a text array")
-    if len(capabilities) != len(set(capabilities)):
-        raise ValueError(f"{contract}: runtime.capabilities must be unique")
-    inherit_environment = runtime.get("inherit_environment", [])
-    if not isinstance(inherit_environment, list) or any(
-        not isinstance(item, str) for item in inherit_environment
-    ):
-        raise ValueError(
-            f"{contract}: runtime.inherit_environment must be a text array"
-        )
-    if len(inherit_environment) != len(set(inherit_environment)):
-        raise ValueError(
-            f"{contract}: runtime.inherit_environment must be unique"
-        )
+    reader = ContractReader(runtime, f"{contract}: runtime")
+    capabilities = require_strings(
+        reader.take("capabilities", ()),
+        f"{contract}: runtime.capabilities",
+    )
+    inherit_environment = require_strings(
+        reader.take("inherit_environment", ()),
+        f"{contract}: runtime.inherit_environment",
+    )
     environment: dict[str, str] = {}
     for name in inherit_environment:
         try:
@@ -87,9 +66,7 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
             pass
 
     def table(name: str) -> dict[str, str]:
-        value = runtime.get(name, {})
-        if not isinstance(value, Mapping):
-            raise ValueError(f"{contract}: runtime.{name} must be a table")
+        value = reader.table(name, {})
         result: dict[str, str] = {}
         for key, item in value.items():
             try:
@@ -106,7 +83,7 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
         return result
 
     try:
-        return Resources(
+        result = Resources(
             capabilities=frozenset(capabilities),
             tools=table("tools"),
             files=table("files"),
@@ -117,6 +94,8 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
         )
     except ContractError as exc:
         raise ValueError(f"{contract}: invalid runtime configuration: {exc}") from exc
+    reader.finish()
+    return result
 
 
 def _source_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -126,8 +105,7 @@ def _source_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _project_file(root: Path, value: object, field: str) -> Path:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty project-relative path")
+    value = require_text(value, field)
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"{field} must stay below the project root")
@@ -197,6 +175,16 @@ class Project:
     )
     _runtime: Resources = field(
         default_factory=Resources,
+        repr=False,
+        compare=False,
+    )
+    _documents: DocumentStore | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _composition_documents: DocumentStore | None = field(
+        default=None,
         repr=False,
         compare=False,
     )
@@ -353,19 +341,26 @@ class Project:
         return self._execution_resources()
 
     def configuration_documents(self) -> DocumentStore:
-        """Capture the complete catalog-reachable TOML closure for checking."""
+        """Return the immutable TOML closure captured when this Project opened."""
 
         expected: dict[Path, Mapping[str, Any]] = {
-            self.manifest_path: self.manifest_source_document(),
+            self.manifest_path: self.manifest_document,
             **{
                 owner.component.path: owner.component.document
                 for owner in self.owners
             },
         }
-        if self.find_catalog("ip") is not None:
-            catalog = self.ip_catalog_snapshot()
-            expected[catalog.path] = catalog.document
-        documents = DocumentStore.capture_trees(
+        if self._ip_catalog is not None:
+            expected[self._ip_catalog.path] = self._ip_catalog.document
+        documents = self._documents
+        if documents is None:
+            documents = self._capture_configuration_documents()
+            object.__setattr__(self, "_documents", documents)
+        documents.verify("Project source snapshot", expected)
+        return documents
+
+    def _capture_configuration_documents(self) -> DocumentStore:
+        return DocumentStore.capture_trees(
             self.project_root,
             self.configuration_roots,
             paths={
@@ -373,8 +368,22 @@ class Project:
                 *(path for _, path in self.catalog_paths),
             },
         )
-        documents.verify("Project source snapshot", expected)
-        return documents
+
+    def _composition_snapshot(self) -> DocumentStore:
+        snapshot = self._composition_documents
+        if snapshot is None:
+            expected: dict[Path, Mapping[str, Any]] = {
+                self.manifest_path: self.manifest_document,
+                **{
+                    owner.component.path: owner.component.document
+                    for owner in self.owners
+                },
+            }
+            if self._ip_catalog is not None:
+                expected[self._ip_catalog.path] = self._ip_catalog.document
+            snapshot = DocumentStore(self.project_root, expected)
+            object.__setattr__(self, "_composition_documents", snapshot)
+        return snapshot
 
     @property
     def configuration_roots(self) -> tuple[Path, ...]:
@@ -542,7 +551,7 @@ class Project:
             for right in owners:
                 if left is not right and left.root.is_relative_to(right.root):
                     raise ValueError("repository owner roots must not overlap")
-        return cls(
+        result = cls(
             _paths=project,
             manifest_owner=manifest_owner,
             catalog_paths=catalog_paths,
@@ -563,6 +572,8 @@ class Project:
             ),
             _runtime=runtime,
         )
+        object.__setattr__(result, "_composition_documents", result._composition_snapshot())
+        return result
 
     def manifest_source_document(self) -> Mapping[str, Any]:
         """Validate and return the manifest source captured with this Project."""
@@ -573,14 +584,14 @@ class Project:
         if not is_frozen_toml_document(raw):
             raise ValueError("project manifest snapshot source document drift")
         contract = self.manifest_path
+        documents = self._composition_snapshot()
         try:
-            current = freeze_toml_document(
-                tomllib.loads(read_nofollow_text(contract))
-            )
-        except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-            raise ValueError("project manifest snapshot source document drift") from exc
-        if current != raw:
-            raise ValueError("project manifest snapshot source document drift")
+            documents.verify("project manifest snapshot", {contract: raw})
+        except ValueError as exc:
+            raise ValueError(
+                "project manifest snapshot source document drift"
+            ) from exc
+        documents.verify_current("project manifest snapshot", (contract,))
         source_paths = ProjectContext.from_contract(contract, _source_manifest(raw))
         if (
             (
@@ -695,9 +706,11 @@ class Project:
         """Fail when cached catalog/component facts no longer match source."""
 
         catalog = self.ip_catalog_snapshot()
-        current_component = freeze_toml_document(read_toml(owner.component.path))
-        if current_component != owner.component.document:
-            raise ValueError("component snapshot source document drift")
+        documents = self._composition_snapshot()
+        documents.verify(
+            "component snapshot", {owner.component.path: owner.component.document}
+        )
+        documents.verify_current("component snapshot", (owner.component.path,))
         if owner.name not in catalog.document.get("components", {}):
             raise ValueError("IP catalog snapshot owner mapping drift")
 
@@ -766,7 +779,9 @@ class Project:
             path_scope="repository",
             owner=self.manifest_owner,
         )
-        current = freeze_toml_document(read_toml(snapshot.path))
+        documents = self._composition_snapshot()
+        documents.verify("IP catalog snapshot", {snapshot.path: snapshot.document})
+        documents.verify_current("IP catalog snapshot", (snapshot.path,))
         if (
             snapshot.path != self.catalog("ip")
             or not snapshot.path.is_relative_to(self.project_root)
@@ -774,7 +789,6 @@ class Project:
             or snapshot.role != "ip"
             or snapshot.contract_kind != header.contract_kind
             or snapshot.owner != header.owner
-            or current != snapshot.document
         ):
             raise ValueError("IP catalog snapshot source document drift")
         unknown = set(snapshot.document) - _HEADER_FIELDS - {"components"}
