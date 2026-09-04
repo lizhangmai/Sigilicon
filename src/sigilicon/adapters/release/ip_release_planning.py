@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
 import hashlib
-import json
 from pathlib import Path
 import re
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from sigilicon.artifacts import (
@@ -21,7 +18,6 @@ from sigilicon.contracts import (
     require_relative_path,
 )
 from sigilicon.domain.ip_release import (
-    RELEASE_MATURITY_LEVELS,
     IpContract,
     IpExport,
     OaMixedSignalIpInterface,
@@ -46,88 +42,30 @@ from sigilicon.domain.systemverilog import (
     named_port_connections,
 )
 from sigilicon.adapters.release.source_control import inspect_checkout
+from sigilicon.adapters.release.release_plan_record import (
+    IpReleasePlan,
+    IpReleaseRecord,
+    InterfaceConsistencyCheck,
+    MixedSignalReleaseInterface,
+    NativeBundleMetadata,
+    NativeOaReleaseInterface,
+    ReleaseAvailability,
+    ReleaseCheck,
+    ReleaseCollateralRecord,
+    ReleaseComponentRecord,
+    ReleaseExportRecord,
+    ReleaseInterface,
+    ReleaseOaIdentity,
+    RequiredRolesCheck,
+    RtlReleaseInterface,
+    QualifiedViewSemanticsCheck,
+)
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
     from sigilicon.domain.oa_library import OALibrarySource
     from sigilicon.domain.platform import PlatformSet
     from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
-
-
-class IpReleaseError(RuntimeError):
-    """The requested release is not backed by accepted immutable evidence."""
-
-
-@dataclass(frozen=True)
-class IpReleasePlan:
-    """Immutable publication plan and generated native collateral."""
-
-    contract: IpContract
-    release_id: str
-    store: str
-    source_commit: str
-    source_files: tuple[str, ...]
-    maturity: str
-    missing_items: tuple[str, ...]
-    working_tree_dirty: bool
-    _record_json: str
-    native_bundles: Mapping[tuple[str, str], str]
-
-    @classmethod
-    def create(
-        cls,
-        contract: IpContract,
-        record: Mapping[str, Any],
-        native_bundles: Mapping[tuple[str, str], str],
-    ) -> "IpReleasePlan":
-        def text(name: str) -> str:
-            value = record.get(name)
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"IP release plan {name} must be non-empty text")
-            return value
-
-        def strings(name: str) -> tuple[str, ...]:
-            value = record.get(name)
-            if not isinstance(value, list) or any(
-                not isinstance(item, str) or not item for item in value
-            ):
-                raise ValueError(f"IP release plan {name} must be a string array")
-            return tuple(value)
-
-        source_files = strings("source_files")
-        for index, source in enumerate(source_files):
-            require_relative_path(source, f"source_files[{index}]")
-        maturity = text("maturity_level")
-        if maturity not in RELEASE_MATURITY_LEVELS:
-            raise ValueError("IP release plan maturity is unsupported")
-        working_tree_dirty = record.get("working_tree_dirty")
-        if type(working_tree_dirty) is not bool:
-            raise ValueError("IP release plan working_tree_dirty must be boolean")
-        return cls(
-            contract,
-            text("release_id"),
-            text("release_store"),
-            text("source_commit"),
-            source_files,
-            maturity,
-            strings("missing_items"),
-            working_tree_dirty,
-            json.dumps(record, sort_keys=True, separators=(",", ":")),
-            MappingProxyType(dict(native_bundles)),
-        )
-
-    @property
-    def record(self) -> dict[str, Any]:
-        """Return a detached portable projection for CLI and manifests."""
-
-        value = json.loads(self._record_json)
-        if not isinstance(value, dict):
-            raise RuntimeError("IP release plan record is not an object")
-        return value
-
-    @property
-    def identity(self) -> str:
-        return hashlib.sha256(self._record_json.encode("utf-8")).hexdigest()
 
 
 _IMPLEMENTATION_ROLE_FORMATS = {
@@ -335,7 +273,7 @@ def _development_interface_check(
     exported: IpExport,
     *,
     project: Project,
-) -> dict[str, Any]:
+) -> ReleaseCheck:
     return _development_interface_check_with_design_inventory(
         contract,
         exported,
@@ -350,7 +288,7 @@ def _development_interface_check_with_design_inventory(
     *,
     project: Project,
     design_inventory: Mapping[Path, DesignSpec] | None,
-) -> dict[str, Any]:
+) -> ReleaseCheck:
     """Validate the machine-readable boundary against shipped SV collateral."""
 
     if isinstance(exported.interface, RtlIpInterface):
@@ -472,18 +410,16 @@ def _development_interface_check_with_design_inventory(
     bindings = named_port_connections(adapter_text, str(shell_module), str(physical_module))
     if tuple(bindings) != tuple(oa_ports):
         raise ValueError("physical shell named-pin order disagrees with the OA port contract")
-    return {
-        "name": f"development_interface_consistency:{exported.name}",
-        "export": exported.name,
-        "passed": True,
-        "physical_module": physical_module,
-        "physical_port_count": len(physical_ports),
-        "transaction_module": logical_module,
-        "transaction_port_count": len(logical_ports),
-        "transaction_signature_checked": True,
-        "physical_shell_module": shell_module,
-        "physical_named_bindings_checked": len(bindings),
-    }
+    return InterfaceConsistencyCheck(
+        export=exported.name,
+        physical_module=str(physical_module),
+        physical_port_count=len(physical_ports),
+        transaction_module=str(logical_module),
+        transaction_port_count=len(logical_ports),
+        transaction_signature_checked=True,
+        physical_shell_module=str(shell_module),
+        physical_named_bindings_checked=len(bindings),
+    )
 
 
 def _native_oa_development_interface_check(
@@ -492,7 +428,7 @@ def _native_oa_development_interface_check(
     *,
     project: Project,
     design_inventory: Mapping[Path, DesignSpec] | None,
-) -> dict[str, Any]:
+) -> ReleaseCheck:
     """Validate a native OA boundary without imposing a digital adapter schema."""
 
     interface = exported.interface
@@ -554,16 +490,14 @@ def _native_oa_development_interface_check(
         raise ValueError("canonical circuit netlist must stay inside the release producer")
     if subckt_ports(circuit_source, interface.cell) != tuple(oa_ports):
         raise ValueError("canonical circuit pin order disagrees with the OA port contract")
-    return {
-        "name": f"development_interface_consistency:{exported.name}",
-        "export": exported.name,
-        "passed": True,
-        "interface_kind": interface.kind,
-        "oa_library": interface.library,
-        "oa_cell": interface.cell,
-        "physical_port_count": len(oa_ports),
-        "native_oa_port_contract_checked": True,
-    }
+    return InterfaceConsistencyCheck(
+        export=exported.name,
+        interface_kind=interface.kind,
+        oa_library=interface.library,
+        oa_cell=interface.cell,
+        physical_port_count=len(oa_ports),
+        native_oa_port_contract_checked=True,
+    )
 
 
 def _native_oa_interface_contract(
@@ -611,7 +545,7 @@ def _native_oa_interface_contract(
 
 def _rtl_development_interface_check(
     contract: IpContract, exported: IpExport
-) -> dict[str, Any]:
+) -> ReleaseCheck:
     """Validate one synthesizable top directly against its public RTL contract."""
 
     interface = exported.interface
@@ -660,17 +594,13 @@ def _rtl_development_interface_check(
     )
     if actual_ports != expected_ports:
         raise ValueError("RTL module signature disagrees with the interface contract")
-    result = {
-        "name": f"development_interface_consistency:{exported.name}",
-        "export": exported.name,
-        "passed": True,
-        "interface_kind": interface.kind,
-        "module": interface.module,
-        "port_count": len(actual_ports),
-    }
-    if interface.variant is not None:
-        result["variant"] = interface.variant
-    return result
+    return InterfaceConsistencyCheck(
+        export=exported.name,
+        interface_kind=interface.kind,
+        module=interface.module,
+        variant=interface.variant,
+        port_count=len(actual_ports),
+    )
 
 
 def _resolve_release_oa_source(
@@ -1076,7 +1006,7 @@ def _qualification_semantics(
     level: str,
     *,
     source_commit: str,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[ReleaseCheck, list[str]]:
     problems: list[str] = []
     for exported in contract.exports:
         interface = exported.interface
@@ -1128,11 +1058,10 @@ def _qualification_semantics(
                         )
                     )
     return (
-        {
-            "name": "qualified_view_semantics",
-            "passed": not problems,
-            "problems": sorted(problems),
-        },
+        QualifiedViewSemanticsCheck(
+            passed=not problems,
+            problems=tuple(sorted(problems)),
+        ),
         sorted(problems),
     )
 
@@ -1143,7 +1072,7 @@ def _availability(
     roles: set[str],
     *,
     collateral_passed: bool,
-) -> dict[str, bool]:
+) -> ReleaseAvailability:
     if isinstance(exported.interface, RtlIpInterface):
         sources = [
             item
@@ -1151,21 +1080,19 @@ def _availability(
             if item.role == exported.interface.source_role
         ]
         capabilities = set(sources[0].capabilities) if len(sources) == 1 else set()
-        return {
-            capability: (
+        return ReleaseAvailability(
+            simulation=collateral_passed and "simulation" in capabilities,
+            synthesis=(
                 collateral_passed
-                and capability in capabilities
-                and (
-                    capability == "simulation"
-                    or level in {"implementation", "signoff"}
-                )
-            )
-            for capability in (
-                "simulation",
-                "synthesis",
-                "physical_implementation",
-            )
-        }
+                and "synthesis" in capabilities
+                and level in {"implementation", "signoff"}
+            ),
+            physical_implementation=(
+                collateral_passed
+                and "physical_implementation" in capabilities
+                and level in {"implementation", "signoff"}
+            ),
+        )
     if isinstance(exported.interface, OaNativeIpInterface):
         circuit = next(
             (
@@ -1176,27 +1103,27 @@ def _availability(
             None,
         )
         circuit_capabilities = set(circuit.capabilities) if circuit else set()
-        return {
-            "simulation": collateral_passed
+        return ReleaseAvailability(
+            simulation=collateral_passed
             and bool({"simulation", "circuit_simulation"} & circuit_capabilities),
             # A native OA macro is linkable by synthesis only when its release
             # carries the typed Liberty/DB role.  This may be an explicitly
             # uncharacterized structural model in a development release; the
             # role's corner and release metadata preserve that distinction.
-            "synthesis": collateral_passed
+            synthesis=collateral_passed
             and "raw_macro_liberty_or_db" in roles,
-            "physical_implementation": collateral_passed
+            physical_implementation=collateral_passed
             and level in {"implementation", "signoff"}
             and set(_IMPLEMENTATION_ROLE_FORMATS).issubset(roles),
-        }
-    return {
-        "simulation": "transaction_model" in roles,
-        "synthesis": collateral_passed
+        )
+    return ReleaseAvailability(
+        simulation="transaction_model" in roles,
+        synthesis=collateral_passed
         and level in {"implementation", "signoff"}
         and "integration_adapter" in roles
         and "physical_blackbox" in roles
         and "raw_macro_liberty_or_db" in roles,
-        "physical_implementation": collateral_passed
+        physical_implementation=collateral_passed
         and level in {"implementation", "signoff"}
         and "integration_adapter" in roles
         and "physical_blackbox" in roles
@@ -1204,7 +1131,7 @@ def _availability(
         and "raw_macro_liberty_or_db" in roles
         and "raw_macro_gds_or_oasis" in roles
         and "raw_macro_cdl_or_lvs_netlist" in roles,
-    }
+    )
 
 
 def _release_design_inventory(
@@ -1262,50 +1189,44 @@ def _release_design_inventory(
 
 def _export_interface_manifest(
     contract: IpContract, exported: IpExport
-) -> dict[str, Any]:
+) -> tuple[ReleaseOaIdentity | None, ReleaseInterface]:
     interface = exported.interface
     if isinstance(interface, OaMixedSignalIpInterface):
-        return {
-            "oa": {
-                "library": interface.library,
-                "cell": interface.cell,
-                "schematic_view": interface.schematic_view,
-                "layout_view": interface.layout_view,
-            },
-            "interface": {
-                "kind": interface.kind,
-                "contract": interface.contract.as_posix(),
-                "physical": interface.physical,
-                "logical": interface.logical,
-                "interfaces_are_distinct": interface.physical != interface.logical,
-            },
-        }
+        return (
+            ReleaseOaIdentity(
+                interface.library,
+                interface.cell,
+                interface.schematic_view,
+                interface.layout_view,
+            ),
+            MixedSignalReleaseInterface(
+                contract=interface.contract.as_posix(),
+                physical=interface.physical,
+                logical=interface.logical,
+                interfaces_are_distinct=interface.physical != interface.logical,
+            ),
+        )
     if isinstance(interface, OaNativeIpInterface):
-        return {
-            "oa": {
-                "library": interface.library,
-                "cell": interface.cell,
-                "schematic_view": interface.schematic_view,
-                "layout_view": interface.layout_view,
-            },
-            "interface": {
-                "kind": interface.kind,
-                "contract": (
-                    contract.producer / interface.contract
-                ).as_posix(),
-            },
-        }
-    row = {
-        "kind": interface.kind,
-        "contract": (
-            contract.producer / interface.contract
-        ).as_posix(),
-        "module": interface.module,
-        "source_role": interface.source_role,
-    }
-    if interface.variant is not None:
-        row["variant"] = interface.variant
-    return {"interface": row}
+        return (
+            ReleaseOaIdentity(
+                interface.library,
+                interface.cell,
+                interface.schematic_view,
+                interface.layout_view,
+            ),
+            NativeOaReleaseInterface(
+                contract=(contract.producer / interface.contract).as_posix(),
+            ),
+        )
+    return (
+        None,
+        RtlReleaseInterface(
+            contract=(contract.producer / interface.contract).as_posix(),
+            module=interface.module,
+            source_role=interface.source_role,
+            variant=interface.variant,
+        ),
+    )
 
 
 def _native_oa_spectre_bundle(
@@ -1313,7 +1234,7 @@ def _native_oa_spectre_bundle(
     exported: IpExport,
     *,
     library: OALibrarySource,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, NativeBundleMetadata]:
     """Close one native OA circuit role over its reachable Spectre hierarchy."""
 
     interface = exported.interface
@@ -1356,12 +1277,11 @@ def _native_oa_spectre_bundle(
             "OA assembly"
         )
     text = render_canonical_spectre(hierarchy)
-    return text, {
-        "composition": "reachable-spectre-hierarchy",
-        "subcircuits": list(hierarchy.dependency_order),
-        "primitive_masters": sorted(hierarchy.primitive_counts),
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    }
+    return text, NativeBundleMetadata(
+        subcircuits=hierarchy.dependency_order,
+        primitive_masters=tuple(sorted(hierarchy.primitive_counts)),
+        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
 
 
 def _plan_loaded_ip_release(
@@ -1441,8 +1361,8 @@ def _plan_loaded_ip_release(
         source_commit=commit,
     )
     missing = [*role_missing, *semantic_missing]
-    export_rows: list[dict[str, Any]] = []
-    role_checks: list[dict[str, Any]] = []
+    export_rows: list[ReleaseExportRecord] = []
+    role_checks: list[ReleaseCheck] = []
     for exported in contract.exports:
         roles = {item.role for item in exported.collateral}
         export_missing = [
@@ -1455,38 +1375,39 @@ def _plan_loaded_ip_release(
             collateral_passed=not export_missing,
         )
         role_checks.append(
-            {
-                "name": f"required_release_roles:{exported.name}",
-                "export": exported.name,
-                "passed": not any(
+            RequiredRolesCheck(
+                export=exported.name,
+                passed=not any(
                     item.startswith(f"{exported.name}:") for item in role_missing
                 ),
-                "required": list(exported.required_roles[level]),
-                "present": sorted(roles),
-            }
+                required=exported.required_roles[level],
+                present=tuple(sorted(roles)),
+            )
         )
+        oa_identity, interface = _export_interface_manifest(contract, exported)
         export_rows.append(
-            {
-                "name": exported.name,
-                **_export_interface_manifest(contract, exported),
-                "maturity": {
-                    "required_roles": list(exported.required_roles[level]),
-                    "missing_items": export_missing,
-                },
-                "availability": availability,
-            }
+            ReleaseExportRecord(
+                name=exported.name,
+                interface=interface,
+                maturity_required_roles=exported.required_roles[level],
+                maturity_missing_items=tuple(export_missing),
+                availability=availability,
+                oa=oa_identity,
+            )
         )
-    availability = {
-        capability: all(
-            bool(exported["availability"][capability]) for exported in export_rows
-        )
-        for capability in (
-            "simulation",
-            "synthesis",
-            "physical_implementation",
-        )
-    }
-    native_bundle_metadata: dict[tuple[str, str], dict[str, Any]] = {}
+    availability = ReleaseAvailability(
+        simulation=all(
+            exported.availability.simulation for exported in export_rows
+        ),
+        synthesis=all(
+            exported.availability.synthesis for exported in export_rows
+        ),
+        physical_implementation=all(
+            exported.availability.physical_implementation
+            for exported in export_rows
+        ),
+    )
+    native_bundle_metadata: dict[tuple[str, str], NativeBundleMetadata] = {}
     native_bundles: dict[tuple[str, str], str] = {}
     if oa_library is not None:
         for exported in contract.exports:
@@ -1500,7 +1421,7 @@ def _plan_loaded_ip_release(
             key = (exported.name, "circuit_netlist")
             native_bundle_metadata[key] = metadata
             native_bundles[key] = text
-    collateral_source_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    collateral_source_identity: dict[tuple[str, str], tuple[int, str]] = {}
     for item in contract.collateral:
         source = _project_path(
             contract.project_root,
@@ -1508,57 +1429,55 @@ def _plan_loaded_ip_release(
             f"{item.export}/{item.role} source",
         )
         source_metadata, source_digest = _inspect_nofollow_file(source)
-        collateral_source_identity[(item.export, item.role)] = {
-            "source_size": source_metadata.st_size,
-            "source_sha256": source_digest,
-        }
-    record = {
-        "ip_name": contract.name,
-        "owner": contract.owner,
-        "contract": contract.path.relative_to(contract.project_root).as_posix(),
-        "producer": contract.producer.as_posix(),
-        "component": {
-            "name": component.name,
-            "kind": component.kind,
-            "lifecycle": component.lifecycle,
-            "contract": component.path.relative_to(contract.project_root).as_posix(),
-        },
-        "release_id": release_id,
-        "release_store": contract.owner,
-        "source_commit": commit,
-        "working_tree_dirty": dirty,
-        "source_files": list(source_paths),
-        "maturity_level": level,
-        "maturity_checks": [
-            *role_checks,
-            *interface_checks,
-            semantic_check,
-        ],
-        "missing_items": missing,
-        "availability": availability,
-        "exports": export_rows,
-        "collateral": [
-            {
-                "export": item.export,
-                "role": item.role,
-                "component": item.component,
-                "source_id": item.source_id,
-                "source": item.source.as_posix(),
-                "package_path": item.package_path.as_posix(),
-                "format": item.format,
-                "module": item.module,
-                "library": item.library,
-                "cell": item.cell,
-                "view": item.view,
-                "corner": item.corner,
-                "capabilities": list(item.capabilities),
-                **collateral_source_identity[(item.export, item.role)],
-                **native_bundle_metadata.get((item.export, item.role), {}),
-            }
-            for item in contract.collateral
-        ],
-    }
-    return IpReleasePlan.create(contract, record, native_bundles)
+        collateral_source_identity[(item.export, item.role)] = (
+            source_metadata.st_size,
+            source_digest,
+        )
+    collateral = tuple(
+        ReleaseCollateralRecord(
+            export=item.export,
+            role=item.role,
+            component=item.component,
+            source_id=item.source_id,
+            source=item.source.as_posix(),
+            package_path=item.package_path.as_posix(),
+            format=item.format,
+            module=item.module,
+            library=item.library,
+            cell=item.cell,
+            view=item.view,
+            corner=item.corner,
+            capabilities=item.capabilities,
+            source_size=collateral_source_identity[(item.export, item.role)][0],
+            source_sha256=collateral_source_identity[(item.export, item.role)][1],
+            native_bundle=native_bundle_metadata.get((item.export, item.role)),
+        )
+        for item in contract.collateral
+    )
+    payload = IpReleaseRecord(
+        ip_name=contract.name,
+        owner=contract.owner,
+        contract=contract.path.relative_to(contract.project_root).as_posix(),
+        producer=contract.producer.as_posix(),
+        component=ReleaseComponentRecord(
+            name=component.name,
+            kind=component.kind,
+            lifecycle=component.lifecycle,
+            contract=component.path.relative_to(contract.project_root).as_posix(),
+        ),
+        release_id=release_id,
+        release_store=contract.owner,
+        source_commit=commit,
+        working_tree_dirty=dirty,
+        source_files=source_paths,
+        maturity_level=level,
+        maturity_checks=tuple((*role_checks, *interface_checks, semantic_check)),
+        missing_items=tuple(missing),
+        availability=availability,
+        exports=tuple(export_rows),
+        collateral=collateral,
+    )
+    return IpReleasePlan(contract, payload, native_bundles)
 
 
 def plan_ip_release(

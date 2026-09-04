@@ -22,10 +22,10 @@ from sigilicon.execution._model import (
     StepResult,
 )
 from sigilicon.adapters.release.ip_packaging import _publish_ip_release
-from sigilicon.adapters.release.ip_release_planning import (
+from sigilicon.adapters.release.ip_release_planning import plan_ip_release
+from sigilicon.adapters.release.release_plan_record import (
     IpReleaseError,
     IpReleasePlan,
-    plan_ip_release,
 )
 from sigilicon.release_store import release_store_resource
 from sigilicon.project import Project

@@ -46,8 +46,6 @@ from sigilicon.release_store import (
 )
 from sigilicon.adapters.release.source_control import inspect_checkout
 from sigilicon.adapters.release.ip_release_planning import (
-    IpReleaseError,
-    IpReleasePlan,
     _IMPLEMENTATION_ROLE_FORMATS,
     _SIGNOFF_RECEIPT_BINDINGS,
     _identity_module,
@@ -57,6 +55,10 @@ from sigilicon.adapters.release.ip_release_planning import (
     _project_path,
     _rtl_module_contract,
     _table,
+)
+from sigilicon.adapters.release.release_plan_record import (
+    IpReleaseError,
+    IpReleasePlan,
 )
 
 

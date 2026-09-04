@@ -23,6 +23,7 @@ from sigilicon.domain.ip_release import (
 )
 from sigilicon.project import Project
 from sigilicon.adapters.release.ip_packaging import release_role_view
+from sigilicon.adapters.release.release_plan_record import IpReleaseRecord
 
 from conftest import write_project_context, write_test_platform
 
@@ -700,6 +701,10 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         project=Project.open(tmp_path),
     )
 
+    assert isinstance(plan.payload, IpReleaseRecord)
+    detached_record = plan.record
+    detached_record["exports"] = []
+    assert plan.record["exports"]
     assert plan.record["missing_items"] == []
     assert plan.record["exports"] == [
         {
