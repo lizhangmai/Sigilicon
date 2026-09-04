@@ -376,7 +376,7 @@ def _run(
             "inputs",
             ("runtime-bindings.json",),
             {
-                "schema": 5,
+                "schema": 6,
                 "contract_kind": "runtime-bindings",
                 "capabilities": sorted(resources.capabilities),
                 "inherit_environment": list(resources.inherit_environment),

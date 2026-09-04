@@ -58,7 +58,20 @@ def _runtime_resources(raw: Mapping[str, Any], contract: Path) -> Resources:
         reader.take("inherit_environment", ()),
         f"{contract}: runtime.inherit_environment",
     )
+    configured_environment = reader.table("environment", {})
+    overlap = set(configured_environment) & set(inherit_environment)
+    if overlap:
+        raise ValueError(
+            f"{contract}: runtime environment names cannot be both fixed and "
+            f"inherited: {sorted(overlap)}"
+        )
     environment: dict[str, str] = {}
+    for name, value in configured_environment.items():
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"{contract}: runtime.environment.{name} must be non-empty text"
+            )
+        environment[name] = value
     for name in inherit_environment:
         try:
             environment[name] = os.environ[name]

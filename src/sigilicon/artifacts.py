@@ -534,6 +534,97 @@ class SafeTree:
             MappingProxyType(directories),
         )
 
+    def make_readonly(self) -> None:
+        """Freeze every regular file and directory through held descriptors."""
+
+        root_fd = _open_nofollow_directory(self.root, create_missing=False)
+        expected_root = os.fstat(root_fd)
+
+        def freeze(directory_fd: int, prefix: Path) -> None:
+            for name in sorted(os.listdir(directory_fd)):
+                relative = prefix / name
+                visible = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if stat.S_ISLNK(visible.st_mode):
+                    raise RuntimeError(
+                        f"safe tree cannot contain symlinks: {relative}"
+                    )
+                if stat.S_ISREG(visible.st_mode):
+                    descriptor = os.open(
+                        name,
+                        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        held = os.fstat(descriptor)
+                        if not _same_inode(visible, held):
+                            raise RuntimeError(
+                                f"safe tree file changed while freezing: {relative}"
+                            )
+                        os.fchmod(
+                            descriptor,
+                            stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH,
+                        )
+                    finally:
+                        os.close(descriptor)
+                    continue
+                if not stat.S_ISDIR(visible.st_mode):
+                    raise RuntimeError(
+                        f"safe tree contains an unsupported entry: {relative}"
+                    )
+                child = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    held = os.fstat(child)
+                    if not _same_inode(visible, held):
+                        raise RuntimeError(
+                            f"safe tree directory changed while freezing: {relative}"
+                        )
+                    freeze(child, relative)
+                    os.fchmod(
+                        child,
+                        stat.S_IRUSR
+                        | stat.S_IXUSR
+                        | stat.S_IRGRP
+                        | stat.S_IXGRP
+                        | stat.S_IROTH
+                        | stat.S_IXOTH,
+                    )
+                finally:
+                    os.close(child)
+            os.fsync(directory_fd)
+
+        try:
+            freeze(root_fd, Path())
+            os.fchmod(
+                root_fd,
+                stat.S_IRUSR
+                | stat.S_IXUSR
+                | stat.S_IRGRP
+                | stat.S_IXGRP
+                | stat.S_IROTH
+                | stat.S_IXOTH,
+            )
+            visible_fd = _open_nofollow_directory(
+                self.root,
+                create_missing=False,
+            )
+            try:
+                if not _same_inode(expected_root, os.fstat(visible_fd)):
+                    raise RuntimeError(
+                        f"safe tree root changed while freezing: {self.root}"
+                    )
+            finally:
+                os.close(visible_fd)
+        finally:
+            os.close(root_fd)
+
     def remove(self, expected: os.stat_result) -> None:
         """Remove the expected root through held parent/root descriptors."""
 

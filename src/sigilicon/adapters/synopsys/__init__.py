@@ -13,13 +13,14 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shlex
 from typing import Any
 
 from sigilicon.artifacts import ensure_nofollow_directory
 from sigilicon.canonical import canonical_digest
+from sigilicon.contracts import require_relative_path
 from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
 from sigilicon.execution._model import (
     Artifact,
@@ -144,15 +145,10 @@ def _strict_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
 
 
 def _safe_relative(value: str, label: str) -> str:
-    relative = PurePosixPath(value)
-    if (
-        relative.is_absolute()
-        or "\\" in value
-        or relative.as_posix() != value
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
-        raise ContractError(f"{label} must be a canonical relative path")
-    return value
+    try:
+        return require_relative_path(value, label).as_posix()
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
 
 
 def _source_members(

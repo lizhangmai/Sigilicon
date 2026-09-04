@@ -13,6 +13,7 @@ from typing import Any, Mapping, Protocol
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
+from sigilicon.contracts import require_relative_path
 from sigilicon.domain.oa_library import find_oa_assembly
 from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
 from sigilicon.execution._model import (
@@ -107,15 +108,10 @@ def _strings(config: Mapping[str, Any], name: str) -> tuple[str, ...]:
 
 
 def _relative(value: str, label: str) -> str:
-    path = PurePosixPath(value)
-    if (
-        path.is_absolute()
-        or "\\" in value
-        or path.as_posix() != value
-        or any(part in {"", ".", ".."} for part in path.parts)
-    ):
-        raise ContractError(f"{label} must be a canonical relative path")
-    return value
+    try:
+        return require_relative_path(value, label).as_posix()
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
 
 
 def _capability_checks(

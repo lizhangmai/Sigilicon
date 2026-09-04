@@ -173,6 +173,7 @@ def test_release_build_rejects_symlinked_namespace_ancestor(
             "source_commit": "d" * 40,
             "release_store": "fixture",
             "release_id": "development-fixture",
+            "maturity_level": "development",
         },
         {},
     )

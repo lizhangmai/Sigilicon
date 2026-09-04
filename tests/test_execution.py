@@ -214,6 +214,9 @@ artifact_root = "artifacts"
 capabilities = ["offline"]
 inherit_environment = ["LM_LICENSE_FILE"]
 
+[runtime.environment]
+PATH = "/usr/bin:/bin"
+
 [runtime.tools]
 "test.tool" = "/bin/true"
 
@@ -576,9 +579,11 @@ def test_project_runtime_configuration_replaces_sigilicon_environment(
     assert runtime.require_value("test.value") == "configured"
     assert "SIGILICON_TEST_TOOL" not in runtime.environment
     assert "SIGILICON_TEST_VALUE" not in runtime.environment
+    assert runtime.environment["PATH"] == "/usr/bin:/bin"
     assert runtime.environment["LM_LICENSE_FILE"] == "host-license"
     assert "UNDECLARED_SITE_VALUE" not in runtime.environment
     assert runtime.inherit_environment == ("LM_LICENSE_FILE",)
+    assert set(runtime.environment_record) == {"LM_LICENSE_FILE", "PATH"}
 
     plan = Project.open(tmp_path).plan("example:check")
     assert plan.steps[0].runtime.values == {"SELECTED_VALUE": "test.value"}
@@ -639,8 +644,14 @@ def test_project_freezes_inherited_environment_outside_its_identity(
     monkeypatch.setenv("LM_LICENSE_FILE", "second-license")
     second = Project.open(tmp_path)
 
-    assert first.resources().environment == {"LM_LICENSE_FILE": "first-license"}
-    assert second.resources().environment == {"LM_LICENSE_FILE": "second-license"}
+    assert first.resources().environment == {
+        "PATH": "/usr/bin:/bin",
+        "LM_LICENSE_FILE": "first-license",
+    }
+    assert second.resources().environment == {
+        "PATH": "/usr/bin:/bin",
+        "LM_LICENSE_FILE": "second-license",
+    }
     assert first.identity == first_identity
     assert second.identity == first_identity
 
@@ -653,8 +664,11 @@ def test_project_records_an_absent_declared_environment_value(
     monkeypatch.delenv("LM_LICENSE_FILE")
     absent = Project.open(tmp_path)
 
-    assert absent.resources().environment == {}
-    assert absent.resources().environment_record == {"LM_LICENSE_FILE": None}
+    assert absent.resources().environment == {"PATH": "/usr/bin:/bin"}
+    assert absent.resources().environment_record == {
+        "LM_LICENSE_FILE": None,
+        "PATH": "sha256-d4cf48d3b88fb43a02e7526bba0cd5e74b71de538482d2ca7e4c39b1f306382c",
+    }
 
     monkeypatch.setenv("LM_LICENSE_FILE", "now-present")
     assert Project.open(tmp_path).identity == absent.identity
@@ -1323,7 +1337,7 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     assert bindings["configuration"]["values"] == {
         "test.value": "configured"
     }
-    assert set(bindings["environment"]) == {"LM_LICENSE_FILE"}
+    assert set(bindings["environment"]) == {"LM_LICENSE_FILE", "PATH"}
     assert bindings["environment"]["LM_LICENSE_FILE"].startswith("sha256-")
     assert "test-license" not in str(bindings)
     assert str(live) not in str(bindings)

@@ -1144,7 +1144,7 @@ def test_ip_filelist_contract_and_entries_have_distinct_safe_boundaries(
         "ip/demo/rtl//top.sv\n",
         encoding="utf-8",
     )
-    with pytest.raises(RuntimeError, match="safe project-relative path"):
+    with pytest.raises(RuntimeError, match="safe relative path"):
         ip_integration.plan_ip_integration_fileset(
             contract,
             project=Project.open(project_root),

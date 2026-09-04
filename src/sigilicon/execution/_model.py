@@ -22,6 +22,7 @@ from sigilicon.artifacts import (
     read_nofollow_text,
 )
 from sigilicon.canonical import canonical_digest, canonical_json
+from sigilicon.contracts import require_relative_path
 from sigilicon.paths import validate_artifact_component, validate_artifact_id
 
 if TYPE_CHECKING:
@@ -82,18 +83,10 @@ def resource_materialization_key(identity: str) -> str:
 
 
 def _source_name(value: object) -> str:
-    if not isinstance(value, str):
-        raise ContractError("source name must be canonical relative text")
-    relative = PurePosixPath(value)
-    if (
-        not value
-        or relative.is_absolute()
-        or "\\" in value
-        or relative.as_posix() != value
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
-        raise ContractError(f"source name must be canonical and relative: {value!r}")
-    return value
+    try:
+        return require_relative_path(value, "source name").as_posix()
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
 
 
 def _freeze(value: Any, label: str) -> Any:
@@ -1238,7 +1231,7 @@ class Resources:
             or not isinstance(value, str)
             for key, value in self.environment.items()
         ):
-            raise ContractError("host environment must map non-empty strings to strings")
+            raise ContractError("process environment must map names to strings")
         object.__setattr__(self, "environment", MappingProxyType(dict(self.environment)))
         if (
             not isinstance(self._tool_bindings, Mapping)
@@ -1359,7 +1352,7 @@ class Resources:
 
     @property
     def environment_record(self) -> dict[str, str | None]:
-        """Identify every declared host value without persisting its contents."""
+        """Identify every fixed or inherited value without persisting its contents."""
 
         return {
             name: (
@@ -1367,7 +1360,7 @@ class Resources:
                 if name in self.environment
                 else None
             )
-            for name in sorted(self.inherit_environment)
+            for name in sorted({*self.environment, *self.inherit_environment})
         }
 
     def matches(self, binding: ResourceBinding) -> bool:

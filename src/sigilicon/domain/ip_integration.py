@@ -20,8 +20,9 @@ from sigilicon.contracts import (
     is_frozen_toml_document,
     read_toml,
     require_config_header,
+    require_relative_path,
 )
-from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
+from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS
 from sigilicon.release_store import ReleaseRef
 from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
@@ -368,7 +369,7 @@ def _operating_variant(
             )
         filesets[fileset_name] = IpIntegrationFileset(
             name=fileset_name,
-            filelist=safe_relative(
+            filelist=require_relative_path(
                 fileset.get("filelist"),
                 f"variant {name}.filesets.{fileset_name}.filelist",
             ),

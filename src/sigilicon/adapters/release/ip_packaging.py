@@ -24,7 +24,11 @@ from sigilicon.artifacts import (
     read_nofollow_bytes,
     write_immutable_text,
 )
-from sigilicon.contracts import read_toml, require_config_header
+from sigilicon.contracts import (
+    read_toml,
+    require_config_header,
+    require_relative_path,
+)
 from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
@@ -34,7 +38,6 @@ from sigilicon.domain.ip_release import (
     RtlIpInterface,
     load_ip_contract,
     resolve_ip_contract,
-    safe_relative,
 )
 from sigilicon.domain.netlist import (
     load_netlist_snapshot,
@@ -77,6 +80,13 @@ class IpReleasePlan:
     """Immutable publication plan and generated native collateral."""
 
     contract: IpContract
+    release_id: str
+    store: str
+    source_commit: str
+    source_files: tuple[str, ...]
+    maturity: str
+    missing_items: tuple[str, ...]
+    working_tree_dirty: bool
     _record_json: str
     native_bundles: Mapping[tuple[str, str], str]
 
@@ -87,8 +97,38 @@ class IpReleasePlan:
         record: Mapping[str, Any],
         native_bundles: Mapping[tuple[str, str], str],
     ) -> "IpReleasePlan":
+        def text(name: str) -> str:
+            value = record.get(name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"IP release plan {name} must be non-empty text")
+            return value
+
+        def strings(name: str) -> tuple[str, ...]:
+            value = record.get(name)
+            if not isinstance(value, list) or any(
+                not isinstance(item, str) or not item for item in value
+            ):
+                raise ValueError(f"IP release plan {name} must be a string array")
+            return tuple(value)
+
+        source_files = strings("source_files")
+        for index, source in enumerate(source_files):
+            require_relative_path(source, f"source_files[{index}]")
+        maturity = text("maturity_level")
+        if maturity not in RELEASE_MATURITY_LEVELS:
+            raise ValueError("IP release plan maturity is unsupported")
+        working_tree_dirty = record.get("working_tree_dirty")
+        if type(working_tree_dirty) is not bool:
+            raise ValueError("IP release plan working_tree_dirty must be boolean")
         return cls(
             contract,
+            text("release_id"),
+            text("release_store"),
+            text("source_commit"),
+            source_files,
+            maturity,
+            strings("missing_items"),
+            working_tree_dirty,
             json.dumps(record, sort_keys=True, separators=(",", ":")),
             MappingProxyType(dict(native_bundles)),
         )
@@ -579,7 +619,7 @@ def _native_oa_interface_contract(
     ):
         raise ValueError("physical.port_count must be a positive integer")
 
-    port_contract_relative = safe_relative(
+    port_contract_relative = require_relative_path(
         physical.get("canonical_port_contract"),
         "physical.canonical_port_contract",
     )
@@ -1579,76 +1619,6 @@ def plan_ip_release_contract(
     )
 
 
-def _readonly_tree_at(parent_fd: int, name: str) -> None:
-    """Freeze one exact tree using only held descriptor-relative traversal."""
-
-    descriptor = os.open(
-        name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-    try:
-        for child in os.listdir(descriptor):
-            metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
-            if stat.S_ISDIR(metadata.st_mode):
-                _readonly_tree_at(descriptor, child)
-                continue
-            if not stat.S_ISREG(metadata.st_mode):
-                raise RuntimeError(f"release staging tree has an unsafe member: {child}")
-            file_fd = os.open(
-                child,
-                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                dir_fd=descriptor,
-            )
-            try:
-                visible = os.fstat(file_fd)
-                if (visible.st_dev, visible.st_ino) != (
-                    metadata.st_dev,
-                    metadata.st_ino,
-                ):
-                    raise RuntimeError(
-                        f"release staging member changed while freezing: {child}"
-                    )
-                os.fchmod(file_fd, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-            finally:
-                os.close(file_fd)
-        os.fchmod(
-            descriptor,
-            stat.S_IRUSR
-            | stat.S_IXUSR
-            | stat.S_IRGRP
-            | stat.S_IXGRP
-            | stat.S_IROTH
-            | stat.S_IXOTH,
-        )
-    finally:
-        os.close(descriptor)
-
-
-def _readonly_tree(root: Path) -> None:
-    absolute = Path(os.path.abspath(root))
-    with owned_directory(absolute.parent) as parent:
-        _readonly_tree_at(parent.fd, absolute.name)
-
-
-def _remove_tree_at(parent_fd: int, name: str) -> None:
-    """Remove one exact staging tree without following filesystem links."""
-
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-    descriptor = os.open(name, flags, dir_fd=parent_fd)
-    try:
-        os.fchmod(descriptor, stat.S_IRWXU)
-        for child in os.listdir(descriptor):
-            metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
-            if stat.S_ISDIR(metadata.st_mode):
-                _remove_tree_at(descriptor, child)
-            else:
-                os.unlink(child, dir_fd=descriptor)
-    finally:
-        os.close(descriptor)
-    os.rmdir(name, dir_fd=parent_fd)
-
-
 def _publish_ip_release(
     plan: IpReleasePlan,
     *,
@@ -1664,7 +1634,7 @@ def _publish_ip_release(
     record = plan.record
     expected_sources = {
         (contract.project_root / relative).absolute()
-        for relative in record["source_files"]
+        for relative in plan.source_files
     }
     selected_sources = {
         Path(source).absolute(): Path(sealed).absolute()
@@ -1672,12 +1642,12 @@ def _publish_ip_release(
     }
     if set(selected_sources) != expected_sources:
         raise IpReleaseError("release execution source closure disagrees with its plan")
-    if record["missing_items"]:
-        missing = ", ".join(record["missing_items"])
+    if plan.missing_items:
+        missing = ", ".join(plan.missing_items)
         raise IpReleaseError(
-            f"cannot build {record['maturity_level']} IP release; missing: {missing}"
+            f"cannot build {plan.maturity} IP release; missing: {missing}"
         )
-    if record["working_tree_dirty"]:
+    if plan.working_tree_dirty:
         raise IpReleaseError(
             "IP releases require a clean source checkout"
         )
@@ -1686,14 +1656,14 @@ def _publish_ip_release(
         resources,
     )
     if (
-        source_state.commit != record["source_commit"]
+        source_state.commit != plan.source_commit
         or source_state.working_tree_dirty
     ):
         raise IpReleaseError("source checkout changed during release build")
     store = ReleaseStore(store_root)
-    namespace = store.root / str(record["release_store"]) / "objects"
+    namespace = store.root / plan.store / "objects"
     with owned_directory(namespace, create_missing=True) as release_namespace:
-        temporary_name = f".{record['release_id']}.{uuid.uuid4().hex}.tmp"
+        temporary_name = f".{plan.release_id}.{uuid.uuid4().hex}.tmp"
         os.mkdir(temporary_name, dir_fd=release_namespace.fd)
         temporary = namespace / temporary_name
         installed = False
@@ -1775,16 +1745,16 @@ def _publish_ip_release(
                 "release_kind": "source-package",
                 "ip_name": record["ip_name"],
                 "owner": record["owner"],
-                "release_id": record["release_id"],
-                "source_commit": record["source_commit"],
-                "source_files": record["source_files"],
+                "release_id": plan.release_id,
+                "source_commit": plan.source_commit,
+                "source_files": list(plan.source_files),
                 "component": record["component"],
                 "exports": record["exports"],
                 "views": views,
                 "maturity": {
-                    "level": record["maturity_level"],
+                    "level": plan.maturity,
                     "checks": record["maturity_checks"],
-                    "missing_items": record["missing_items"],
+                    "missing_items": list(plan.missing_items),
                 },
                 "provenance": {
                     "contract": record["contract"],
@@ -1798,7 +1768,7 @@ def _publish_ip_release(
                 read_nofollow_bytes(temporary / "manifest.json")
             ).hexdigest()
             ref = ReleaseRef(
-                str(record["release_store"]),
+                plan.store,
                 manifest_digest,
             )
             object_name = _release_object_name(ref)
@@ -1809,7 +1779,7 @@ def _publish_ip_release(
                     follow_symlinks=False,
                 )
             except FileNotFoundError:
-                _readonly_tree(temporary)
+                SafeTree(temporary).make_readonly()
                 os.rename(
                     temporary_name,
                     object_name,
@@ -1825,7 +1795,13 @@ def _publish_ip_release(
         finally:
             if not installed:
                 try:
-                    _remove_tree_at(release_namespace.fd, temporary_name)
+                    temporary_tree = SafeTree(temporary)
+                    expected_temporary = os.stat(
+                        temporary_name,
+                        dir_fd=release_namespace.fd,
+                        follow_symlinks=False,
+                    )
+                    temporary_tree.remove(expected_temporary)
                 except FileNotFoundError:
                     pass
     audited = store.open(ref, validate=validate_ip_release_package)
@@ -1900,7 +1876,10 @@ def _packaged_rtl_interface_check(
             f"packaged {export_name} RTL interface identity is invalid"
         )
     try:
-        safe_relative(contract_source, f"exports.{export_name}.interface.contract")
+        require_relative_path(
+            contract_source,
+            f"exports.{export_name}.interface.contract",
+        )
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     contract_path = resolve_release_role(
@@ -1968,7 +1947,10 @@ def _packaged_native_oa_interface_check(
             f"packaged {export_name} native OA interface identity is invalid"
         )
     try:
-        safe_relative(contract_source, f"exports.{export_name}.interface.contract")
+        require_relative_path(
+            contract_source,
+            f"exports.{export_name}.interface.contract",
+        )
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     oa = exported.get("oa")

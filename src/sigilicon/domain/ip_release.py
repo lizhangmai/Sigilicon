@@ -13,6 +13,7 @@ from sigilicon.contracts import (
     is_frozen_toml_document,
     read_toml,
     require_config_header,
+    require_relative_path,
 )
 from sigilicon.domain.oa_library import find_oa_assembly
 from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
@@ -45,19 +46,6 @@ def _reject_unknown(
     unknown = set(value) - allowed
     if unknown:
         raise ValueError(f"{label} contains unknown fields: {sorted(unknown)}")
-
-
-def safe_relative(value: object, label: str) -> PurePosixPath:
-    text = _string(value, label)
-    path = PurePosixPath(text)
-    if (
-        path.is_absolute()
-        or "\\" in text
-        or path.as_posix() != text
-        or any(part in {"", ".", ".."} for part in path.parts)
-    ):
-        raise ValueError(f"{label} must be a safe project-relative path: {text!r}")
-    return path
 
 
 @dataclass(frozen=True)
@@ -262,7 +250,7 @@ def _parse_ip_contract(
             interface_fields,
             f"exports[{index}].interface",
         )
-        interface_contract = safe_relative(
+        interface_contract = require_relative_path(
             interface.get("contract"),
             f"exports[{index}].interface.contract",
         )
@@ -428,7 +416,7 @@ def _parse_ip_contract(
             entry.get("source"), f"collateral[{index}].source"
         )
         source = resolve_component_source(component_graph, component, source_id)
-        package_path = safe_relative(
+        package_path = require_relative_path(
             entry.get("package_path"), f"collateral[{index}].package_path"
         )
         if package_path.parts[:2] != ("exports", export):

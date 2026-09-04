@@ -21,8 +21,8 @@ from sigilicon.domain.ip_release import (
     RELEASE_MATURITY_LEVELS,
     IpContract,
     load_ip_contract,
-    safe_relative,
 )
+from sigilicon.contracts import require_relative_path
 from sigilicon.domain.oa_library import OALibrarySource
 from sigilicon.domain.platform import PlatformSet
 from sigilicon.project import Project
@@ -133,7 +133,7 @@ def _filelist(
         if not line or line.startswith("#"):
             continue
         try:
-            relative = safe_relative(line, "IP filelist source")
+            relative = require_relative_path(line, "IP filelist source")
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
         source = root.joinpath(*relative.parts).resolve()

@@ -111,7 +111,7 @@ class IpReleaseAdapter:
         project_root = project.project_root.resolve()
         sources: dict[Path, tuple[str, str, str]] = {}
         captured: list[Source] = []
-        for relative in release.record["source_files"]:
+        for relative in release.source_files:
             original = (project_root / relative).absolute()
             if original != original.resolve() or not original.is_file():
                 raise ContractError(f"release source is missing or unsafe: {relative}")
@@ -124,7 +124,7 @@ class IpReleaseAdapter:
             source = Source.capture(original, root=root, scope=scope)
             sources[original] = (scope, source.path, source.sha256)
             captured.append(source)
-        store_identity = release_store_resource(str(release.record["release_store"]))
+        store_identity = release_store_resource(release.store)
         action = _ReleaseAction(
             release,
             sources,
@@ -144,20 +144,20 @@ class IpReleaseAdapter:
         action = step.action
         if not isinstance(action, _ReleaseAction):
             raise ContractError("release step has no planned release action")
-        record = action.plan.record
-        missing = record["missing_items"]
-        clean = not record["working_tree_dirty"]
+        release = action.plan
+        missing = release.missing_items
+        clean = not release.working_tree_dirty
         complete = not missing
         return (
             PreflightCheck(
                 "source-checkout",
-                str(record["source_commit"]),
+                release.source_commit,
                 "ready" if clean else "blocked",
                 "clean source checkout" if clean else "source checkout is dirty",
             ),
             PreflightCheck(
                 "release-maturity",
-                str(record["maturity_level"]),
+                release.maturity,
                 "ready" if complete else "blocked",
                 "required collateral is complete"
                 if complete

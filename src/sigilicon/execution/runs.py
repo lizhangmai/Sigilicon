@@ -334,7 +334,7 @@ class RunStore:
             "inherit_environment",
             "environment",
             "configuration",
-        } or value.get("schema") != 5 or value.get("contract_kind") != (
+        } or value.get("schema") != 6 or value.get("contract_kind") != (
             "runtime-bindings"
         ):
             raise RunStoreError("persisted runtime bindings have an invalid shape")
@@ -353,7 +353,7 @@ class RunStore:
             or inherit_environment != list(dict.fromkeys(inherit_environment))
             or not isinstance(environment, Mapping)
             or list(environment) != sorted(environment)
-            or set(environment) != set(inherit_environment)
+            or not set(inherit_environment).issubset(environment)
             or any(
                 digest is not None
                 and (

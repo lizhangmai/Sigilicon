@@ -10,6 +10,7 @@ import pytest
 
 import sigilicon.domain.oa_library as oa_library_domain
 import sigilicon.adapters.release.ip_packaging as ip_packaging
+from sigilicon.artifacts import SafeTree
 from sigilicon.domain.ip_release import (
     OaMixedSignalIpInterface,
     OaNativeIpInterface,
@@ -76,8 +77,8 @@ def test_readonly_release_tree_rejects_symlink_members(tmp_path: Path) -> None:
     (staging / "link").symlink_to(outside, target_is_directory=True)
 
     try:
-        with pytest.raises(RuntimeError, match="unsafe member"):
-            ip_packaging._readonly_tree(staging)
+        with pytest.raises(RuntimeError, match="symlinks"):
+            SafeTree(staging).make_readonly()
         assert outside.stat().st_mode & 0o777 == 0o700
     finally:
         outside.chmod(0o700)
