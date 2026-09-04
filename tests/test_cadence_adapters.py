@@ -12,6 +12,7 @@ from sigilicon.adapters.cadence import (
     LayoutAdapter,
     LayoutVerificationAdapter,
     NativeOaAdapter,
+    SpectreAdapter,
     XceliumAdapter,
     XceliumAmsAdapter,
     cadence_adapters,
@@ -22,6 +23,7 @@ from sigilicon.execution._model import (
     Evidence,
     ExecutionError,
     ExecutionIO,
+    RuntimeEnvironment,
 )
 from sigilicon.execution._model import Resources
 from sigilicon.domain.platform import PlatformAsset
@@ -40,11 +42,87 @@ def test_oa_operations_have_fixed_backend_identities() -> None:
     names = {adapter.name for adapter in cadence_adapters()}
 
     assert "cadence.oa" not in names
+    assert "cadence.spectre" in names
     assert {
         "cadence.oa-check",
         "cadence.oa-rebuild",
         "cadence.oa-attest",
     }.issubset(names)
+
+
+def test_spectre_adapter_runs_a_source_closed_deck_template(
+    tmp_path: Path,
+) -> None:
+    executable = _file(
+        tmp_path / "site/spectre/bin/spectre",
+        """#!/bin/sh
+set -eu
+printf 'spectre completes with 0 errors\\n' > spectre.out
+printf 'time value\\n0 1\\n' > waveform.prn
+""",
+        executable=True,
+    )
+    model = _file(tmp_path / "pdk/model.scs", "simulator lang=spectre\n")
+    resources = Resources(
+        tools={"cadence.spectre": str(executable)},
+        files={"pdk.model": str(model)},
+        environment=dict(os.environ),
+    )
+    step = Step(
+        "simulate",
+        "cadence.spectre",
+        {
+            "deck": "simulation/testbench.scs",
+            "outputs": ("waveform.prn",),
+            "timeout_seconds": 10,
+        },
+        sources=("simulation/testbench.scs", "netlist/dut.scs"),
+        evidence=Evidence("diagnostic", "l1", "direct-spectre"),
+        runtime=RuntimeEnvironment(files={"MODEL": "pdk.model"}),
+        resources=("pdk.model",),
+        resource_closure=(resources.capture("pdk.model"),),
+    )
+    adapter = SpectreAdapter()
+    prepared = _prepared_step(
+        step,
+        adapter.prepare(SimpleNamespace(), step, resources),
+    )
+    unbound = replace(prepared, resources=(), resource_closure=())
+    context = _bind_plan(_context(tmp_path, unbound, resources), prepared)
+    _file(
+        context.source_directory / "simulation/testbench.scs",
+        'include "{{source:netlist/dut.scs}}"\n'
+        'include "{{file:MODEL}}"\n'
+        'print tran v(out) to="waveform.prn"\n',
+    )
+    _file(
+        context.source_directory / "netlist/dut.scs",
+        "subckt DUT out 0\nends DUT\n",
+    )
+
+    assert all(
+        check.status == "ready"
+        for check in adapter.preflight(prepared, resources)
+    )
+    result = adapter.run(context)
+
+    assert result.status == "succeeded"
+    assert result.facts == {
+        "simulator_completed": True,
+        "output_count": 1,
+        "product_qualification_conclusion": False,
+        "evidence_role": "diagnostic",
+        "evidence_level": "l1",
+        "evidence_scope": "direct-spectre",
+    }
+    assert result.artifacts[0].path.read_text(encoding="utf-8") == (
+        "time value\n0 1\n"
+    )
+    invocation = (
+        context.work_directory / "tool/spectre.tool.scs"
+    ).read_text(encoding="utf-8")
+    assert "{{" not in invocation
+    assert "/proc/" in invocation and "/fd/" in invocation
 
 
 def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:

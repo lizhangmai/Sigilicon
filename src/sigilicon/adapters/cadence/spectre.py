@@ -69,6 +69,7 @@ def run_spectre_deck(
     output_names: Sequence[str],
     timeout: int,
     resources: Resources,
+    environment_values: Mapping[str, str] | None = None,
     process: ProcessPort = managed_process,
 ) -> SpectreExecution:
     """Render, execute, and prove one direct Spectre deck.
@@ -180,7 +181,12 @@ def run_spectre_deck(
                 argv=tuple(command),
                 executable=owned_spectre.executable,
                 cwd=Path(owned_work.child_path),
-                environment=spectre_env(executable, resources.environment),
+                environment=spectre_env(
+                    executable,
+                    resources.environment
+                    if environment_values is None
+                    else environment_values,
+                ),
                 timeout_seconds=timeout,
                 before_spawn=validate_spawn,
                 pass_fds=pass_fds,

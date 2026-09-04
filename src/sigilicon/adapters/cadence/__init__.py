@@ -49,6 +49,9 @@ _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _BRIDGE_RESOURCES = (VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT)
+_SPECTRE_TEMPLATE_TOKEN = re.compile(
+    r"\{\{(?:source|file|value):[^{}]+\}\}"
+)
 
 
 class _CadencePlanningProject(PlanningProject, Protocol):
@@ -584,6 +587,146 @@ class _CadenceDomainAdapter:
             raise ExecutionError("Cadence Step has no planned Domain value")
         domain_plan.validate(context)
         return domain_plan
+
+
+class SpectreAdapter:
+    """Run one source-owned Spectre deck template as managed raw evidence."""
+
+    name = "cadence.spectre"
+    _fields = frozenset({"deck", "outputs", "timeout_seconds"})
+
+    @classmethod
+    def _configuration(
+        cls,
+        step: Step,
+    ) -> tuple[str, tuple[str, ...], int]:
+        config = _strict_config(step, cls._fields)
+        deck = _relative(_text(config, "deck"), "Spectre deck")
+        if deck not in step.sources:
+            raise ContractError("Spectre deck must be selected by the step filesets")
+        outputs = tuple(
+            _relative(name, "Spectre output")
+            for name in _strings(config, "outputs")
+        )
+        if step.runtime.tools or step.runtime.directories:
+            raise ContractError(
+                "cadence.spectre runtime profiles support files and values only"
+            )
+        return deck, outputs, _positive_integer(config, "timeout_seconds")
+
+    def prepare(
+        self,
+        project: PlanningProject,
+        step: Step,
+        resources: Resources,
+    ) -> AdapterPreparation:
+        del project
+        self._configuration(step)
+        return AdapterPreparation(
+            resources=_runtime_bindings(resources, CADENCE_SPECTRE_TOOL),
+        )
+
+    def preflight(
+        self,
+        step: Step,
+        resources: Resources,
+    ) -> tuple[PreflightCheck, ...]:
+        self._configuration(step)
+        from sigilicon.execution.runtime import preflight_environment
+
+        return (
+            _executable_check(resources, CADENCE_SPECTRE_TOOL),
+            *preflight_environment(step.runtime, resources),
+        )
+
+    def run(self, context: ExecutionIO) -> StepResult:
+        from sigilicon.adapters.cadence.spectre import run_spectre_deck
+
+        step = context.step
+        deck, outputs, timeout = self._configuration(step)
+        workspace = context.workspace(
+            "spectre",
+            {
+                "schema": 1,
+                "contract_kind": "direct-spectre-plan",
+                "deck": deck,
+                "outputs": list(outputs),
+            },
+        )
+        staged: dict[str, Path] = {}
+        for name in step.sources:
+            relative = PurePosixPath(name)
+            destination = ("sources", *relative.parts)
+            if len(destination) > 1:
+                workspace.directory("inputs", *destination[:-1])
+            staged[f"source:{name}"] = workspace.copy_file(
+                "inputs",
+                destination,
+                context.owner_source_path(name),
+            )
+        if step.runtime.files:
+            workspace.directory("inputs", "runtime")
+        for alias, identity in step.runtime.files.items():
+            staged[f"file:{alias}"] = workspace.copy_file(
+                "inputs",
+                ("runtime", alias),
+                context.resource_path(identity),
+            )
+        values = {
+            alias: context.runtime.require_value(identity)
+            for alias, identity in step.runtime.values.items()
+        }
+        template = context.source_text(deck)
+
+        def render(paths: Mapping[str, str]) -> str:
+            rendered = template
+            for key, path in paths.items():
+                rendered = rendered.replace("{{" + key + "}}", path)
+            for alias, value in values.items():
+                rendered = rendered.replace("{{value:" + alias + "}}", value)
+            unresolved = _SPECTRE_TEMPLATE_TOKEN.search(rendered)
+            if unresolved is not None:
+                raise ExecutionError(
+                    f"Spectre deck has an unresolved input token: {unresolved.group()}"
+                )
+            return rendered
+
+        execution = run_spectre_deck(
+            workspace,
+            render_deck=render,
+            inputs=staged,
+            output_names=outputs,
+            timeout=timeout,
+            resources=context.runtime,
+            environment_values=context.runtime.environment,
+        )
+        artifacts: list[Artifact] = []
+        for name, payload in execution.raw_outputs.items():
+            relative = PurePosixPath(name)
+            if len(relative.parts) > 1:
+                workspace.directory("outputs", *relative.parts[:-1])
+            artifacts.append(
+                Artifact(
+                    "spectre",
+                    "raw.cadence-spectre",
+                    workspace.write_bytes("outputs", relative.parts, payload),
+                )
+            )
+        envelope = step.evidence
+        facts: dict[str, Any] = {
+            "simulator_completed": True,
+            "output_count": len(artifacts),
+            "product_qualification_conclusion": False,
+        }
+        if envelope is not None:
+            facts.update(
+                {
+                    "evidence_role": envelope.role,
+                    "evidence_level": envelope.level,
+                    "evidence_scope": envelope.scope,
+                }
+            )
+        return StepResult.succeeded(artifacts=tuple(artifacts), facts=facts)
 
 
 class XceliumAdapter:
@@ -1579,6 +1722,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
 
 def cadence_adapters() -> tuple[
+    SpectreAdapter,
     XceliumAdapter,
     XceliumAmsAdapter,
     NativeOaAdapter,
@@ -1589,6 +1733,7 @@ def cadence_adapters() -> tuple[
     LayoutVerificationAdapter,
 ]:
     return (
+        SpectreAdapter(),
         XceliumAdapter(),
         XceliumAmsAdapter(),
         NativeOaAdapter(),
@@ -1604,6 +1749,7 @@ __all__ = [
     "LayoutAdapter",
     "LayoutVerificationAdapter",
     "NativeOaAdapter",
+    "SpectreAdapter",
     "XceliumAdapter",
     "XceliumAmsAdapter",
     "cadence_adapters",
