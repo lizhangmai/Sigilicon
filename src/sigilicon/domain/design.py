@@ -223,7 +223,7 @@ def load_design_spec(
     )
     return DesignSpec(
         path=spec_path,
-        repository=RepositoryIdentity.capture(repository),
+        repository=RepositoryIdentity.for_path(repository, spec_path),
         library=library,
         cell=cell,
         sync_mode=sync_mode,

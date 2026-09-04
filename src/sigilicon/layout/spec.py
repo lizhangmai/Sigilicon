@@ -505,7 +505,7 @@ def load_layout_spec(
         )
     return LayoutSpec(
         path=spec_path,
-        repository=RepositoryIdentity.capture(repository),
+        repository=RepositoryIdentity.for_path(repository, spec_path),
         library=library,
         cell=cell,
         view=view,
@@ -549,7 +549,7 @@ def resolve_layout_spec(
     root = project.project_root
     if (
         snapshot.path != spec_path
-        or snapshot.repository != RepositoryIdentity.capture(project)
+        or snapshot.repository != RepositoryIdentity.for_path(project, spec_path)
         or not spec_path.is_relative_to(root)
         or not spec_path.is_file()
     ):

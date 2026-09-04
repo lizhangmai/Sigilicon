@@ -332,7 +332,11 @@ class PlatformSet(Mapping[str, Platform]):
             _validate_immutable_platform_snapshot(platform)
             if set(platform.source_documents) != set(platform.source_paths[1:]):
                 raise ValueError("platform source identity drift")
-        object.__setattr__(self, "_repository", RepositoryIdentity.capture(project))
+        object.__setattr__(
+            self,
+            "_repository",
+            RepositoryIdentity.for_repository(project),
+        )
         object.__setattr__(self, "_catalog", catalog)
         object.__setattr__(self, "_platforms", MappingProxyType(selected))
 

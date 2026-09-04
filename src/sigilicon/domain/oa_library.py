@@ -604,7 +604,7 @@ def load_oa_library_source(
         source_documents[physical_verification.path] = physical_verification.document
     return OALibrarySource(
         manifest_path=manifest_path,
-        repository=RepositoryIdentity.capture(context),
+        repository=RepositoryIdentity.for_owner(context, assembly_owner),
         name=name,
         pdk=pdk,
         workspace_template=workspace_template,

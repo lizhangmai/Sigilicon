@@ -542,7 +542,7 @@ def _parse_verification_cell(
     )
     return VerificationCellSpec(
         path=contract,
-        repository=RepositoryIdentity.capture(repository),
+        repository=RepositoryIdentity.for_owner(repository, owner),
         owner=owner,
         cell=cell,
         role=role,

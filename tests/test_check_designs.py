@@ -117,7 +117,7 @@ def test_project_manifest_source_document_is_frozen_and_resolved(
 
     run_scoped = project.with_artifact_root(tmp_path / "run-artifacts")
     assert run_scoped.manifest_source_document() == project.manifest_document
-    RepositoryIdentity.capture(project).validate(run_scoped)
+    RepositoryIdentity.for_repository(project).validate(run_scoped)
     manifest = tmp_path / "sigilicon.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(

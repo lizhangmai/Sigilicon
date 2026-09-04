@@ -538,7 +538,7 @@ def _parse_ip_contract(
         raise ValueError("default_maturity is unsupported")
     result = IpContract(
         path=contract_path,
-        repository=RepositoryIdentity.capture(repository),
+        repository=RepositoryIdentity.for_owner(repository, header.owner),
         owner=header.owner,
         name=ip_name,
         producer=producer,
@@ -586,7 +586,7 @@ def resolve_ip_contract(
     root = project.project_root
     if (
         snapshot.path != contract_path
-        or snapshot.repository != RepositoryIdentity.capture(project)
+        or snapshot.repository != RepositoryIdentity.for_path(project, contract_path)
         or not contract_path.is_relative_to(root)
         or not contract_path.is_file()
     ):

@@ -606,7 +606,7 @@ def _load_native_oa_simulation_spec(
         source_documents[rdb_contract.path] = rdb_contract.source_document
     return OASimulationSpec(
         path=spec_path,
-        repository=RepositoryIdentity.capture(context),
+        repository=RepositoryIdentity.for_path(context, spec_path),
         library=library,
         cell=cell,
         dut=dut,

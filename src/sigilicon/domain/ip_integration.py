@@ -587,7 +587,7 @@ def load_ip_integration_contract(
     )
     source_documents.update(implementation_documents)
     return IpIntegrationContract(
-        repository=RepositoryIdentity.capture(repository),
+        repository=RepositoryIdentity.for_owner(repository, component.owner),
         component=component,
         component_graph=MappingProxyType(dict(graph)),
         dependency_lock=dependency_lock,
@@ -612,7 +612,7 @@ def resolve_ip_integration_contract(
     root = project.project_root
     if (
         snapshot.path != contract_path
-        or snapshot.repository != RepositoryIdentity.capture(project)
+        or snapshot.repository != RepositoryIdentity.for_path(project, contract_path)
         or not contract_path.is_relative_to(root)
         or not contract_path.is_file()
     ):
@@ -692,7 +692,7 @@ def resolve_ip_integration_contract(
     }
     expected_documents.update(implementation_documents)
     parsed = IpIntegrationContract(
-        repository=RepositoryIdentity.capture(project),
+        repository=RepositoryIdentity.for_owner(project, component.owner),
         component=component,
         component_graph=MappingProxyType(dict(graph)),
         dependency_lock=dependency_lock,

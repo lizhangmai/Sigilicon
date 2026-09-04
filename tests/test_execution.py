@@ -32,6 +32,7 @@ from sigilicon.execution._model import (
 )
 from sigilicon.execution._model import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
+from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.execution.operations import parse_selector
 from sigilicon.execution.runs import RunStoreError
 from sigilicon.external_tools import ProcessGroupCleanupUncertainError
@@ -540,12 +541,14 @@ root = "ip/foreign"
     before_project = _project(tmp_path, CopyAdapter())
     before = before_project.plan("example:check")
     repository_identity = before_project.identity
+    owner_identity = RepositoryIdentity.for_owner(before_project, "example")
     operations.write_text(operations.read_text(encoding="utf-8") + "\n")
     after_project = _project(tmp_path, CopyAdapter())
     after = after_project.plan("example:check")
 
     assert after.identity == before.identity
     assert after_project.identity != repository_identity
+    assert RepositoryIdentity.for_owner(after_project, "example") == owner_identity
 
 
 def test_project_catalog_identity_matches_component_owner(tmp_path: Path) -> None:
