@@ -20,6 +20,7 @@ from sigilicon.execution._model import (
     Artifact,
     ContractError,
     RunFailure,
+    RunFailureProvenance,
     RunResult,
     StepOutcome,
     StepResult,
@@ -551,6 +552,10 @@ class RunStore:
         error_type = details.get("error_type") if isinstance(details, Mapping) else None
         message = details.get("error") if isinstance(details, Mapping) else None
         try:
+            provenance = RunFailureProvenance.from_manifest(
+                manifest.get("partial_failure"),
+                manifest.get("uncertain_reason"),
+            )
             return RunFailure(
                 selected.owner,
                 selected.operation,
@@ -561,9 +566,9 @@ class RunStore:
                 manifest["status"],
                 error_type,
                 message,
-                manifest.get("partial_failure") or {},
+                provenance,
             )
-        except (ContractError, TypeError) as exc:
+        except (ContractError, TypeError, ValueError) as exc:
             raise RunStoreError(f"persisted run failure is malformed: {exc}") from exc
 
     def clean(

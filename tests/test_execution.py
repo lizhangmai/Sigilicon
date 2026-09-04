@@ -25,6 +25,7 @@ from sigilicon.execution._model import (
     ContractError,
     ExecutionError,
     PreflightCheck,
+    RunFailureProvenance,
     Source,
     ExecutionIO,
     StepOutcome,
@@ -1044,6 +1045,30 @@ def test_project_runs_dag_and_run_store_validates_and_cleans_result(tmp_path: Pa
         _read_run(project, "example:all", "a" * 32)
 
 
+def test_run_store_decodes_typed_partial_failure_provenance(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    class FailingUpperAdapter(UpperAdapter):
+        def run(self, _context: ExecutionIO) -> StepResult:
+            raise RuntimeError("transform failed")
+
+    project = _project(tmp_path, CopyAdapter(), FailingUpperAdapter())
+    run_id = "p" * 32
+
+    with pytest.raises(RuntimeError, match="transform failed"):
+        project.run(_plan(project, "example:all"), run_id=run_id)
+
+    failure = _read_run(project, "example:all", run_id)
+    assert failure.status == "partial"
+    assert isinstance(failure.provenance, RunFailureProvenance)
+    assert failure.provenance.completed_steps == ("source",)
+    assert failure.provenance.uncertain_reason is None
+    assert failure.record["provenance"] == {
+        "completed_steps": ["source"],
+        "uncertain_reason": None,
+    }
+
+
 def test_run_store_can_clean_an_abandoned_running_run(tmp_path: Path) -> None:
     _write_project(tmp_path)
     project = _project(tmp_path, CopyAdapter())
@@ -1166,6 +1191,10 @@ def test_adapter_defects_propagate_after_terminalizing_the_run(tmp_path: Path) -
     failure = _read_run(project, "example:check", run_id)
     assert failure.status == "failed"
     assert failure.error_type == "RuntimeError"
+    assert isinstance(failure.provenance, RunFailureProvenance)
+    assert failure.provenance.completed_steps == ()
+    assert failure.provenance.uncertain_reason is None
+    assert failure.record["schema"] == 3
 
 
 def test_same_content_source_metadata_drift_keeps_the_sealed_snapshot(
@@ -1242,6 +1271,9 @@ def test_sealed_input_mutation_is_uncertain_and_remains_readable(
     assert failure.status == "uncertain"
     assert failure.error_type == "InputIntegrityError"
     assert "sealed adapter input changed" in failure.message
+    assert isinstance(failure.provenance, RunFailureProvenance)
+    assert failure.provenance.completed_steps == ()
+    assert failure.provenance.uncertain_reason is not None
     _clean_run(project, "example:check", run_id)
 
 
@@ -1545,6 +1577,8 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
     failure = _read_run(project, "example:check", run_id)
     assert failure.status == "uncertain"
     assert failure.error_type == "InputIntegrityError"
+    assert isinstance(failure.provenance, RunFailureProvenance)
+    assert failure.provenance.uncertain_reason is not None
 
 
 def test_project_rejects_a_plan_for_another_composition(tmp_path: Path) -> None:

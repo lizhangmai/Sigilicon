@@ -2063,6 +2063,61 @@ def _run_artifact_path(step: str, path: Path) -> str:
 
 
 @dataclass(frozen=True)
+class RunFailureProvenance:
+    """Structured progress and uncertainty for a terminal run failure."""
+
+    completed_steps: tuple[str, ...] = ()
+    uncertain_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.completed_steps, tuple):
+            raise ContractError("run failure completed steps must be a tuple")
+        steps = tuple(
+            _identifier(step, "completed run step")
+            for step in self.completed_steps
+        )
+        if len(steps) != len(set(steps)):
+            raise ContractError("run failure completed steps contain duplicates")
+        object.__setattr__(self, "completed_steps", steps)
+        if self.uncertain_reason is not None and (
+            not isinstance(self.uncertain_reason, str)
+            or not self.uncertain_reason
+        ):
+            raise ContractError(
+                "run failure uncertainty reason must be non-empty text or None"
+            )
+
+    @classmethod
+    def from_manifest(
+        cls,
+        partial_failure: object,
+        uncertain_reason: object,
+    ) -> "RunFailureProvenance":
+        if partial_failure is None:
+            completed_steps: object = ()
+        elif not isinstance(partial_failure, Mapping):
+            raise ContractError(
+                "run failure partial provenance must be an object or null"
+            )
+        else:
+            if set(partial_failure) != {"completed_steps"}:
+                raise ContractError(
+                    "run failure partial provenance fields are invalid"
+                )
+            completed_steps = partial_failure.get("completed_steps")
+        if not isinstance(completed_steps, (list, tuple)):
+            raise ContractError("run failure completed_steps must be an array")
+        return cls(tuple(completed_steps), uncertain_reason)
+
+    @property
+    def record(self) -> dict[str, Any]:
+        return {
+            "completed_steps": list(self.completed_steps),
+            "uncertain_reason": self.uncertain_reason,
+        }
+
+
+@dataclass(frozen=True)
 class RunFailure:
     """Typed terminal record for a run that failed before producing RunResult."""
 
@@ -2075,7 +2130,9 @@ class RunFailure:
     status: str
     error_type: str
     message: str
-    provenance: Mapping[str, Any] = field(default_factory=dict)
+    provenance: RunFailureProvenance = field(
+        default_factory=RunFailureProvenance
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner", _identifier(self.owner, "run owner"))
@@ -2092,18 +2149,34 @@ class RunFailure:
             raise ContractError("run failure error type must be non-empty text")
         if not isinstance(self.message, str):
             raise ContractError("run failure message must be text")
-        if not isinstance(self.provenance, Mapping):
-            raise ContractError("run failure provenance must be a mapping")
-        object.__setattr__(
-            self,
-            "provenance",
-            _freeze(self.provenance, "run failure provenance"),
-        )
+        if not isinstance(self.provenance, RunFailureProvenance):
+            raise ContractError("run failure provenance must be RunFailureProvenance")
+        if self.status == "failed" and (
+            self.provenance.completed_steps
+            or self.provenance.uncertain_reason is not None
+        ):
+            raise ContractError("failed run cannot contain failure provenance")
+        if self.status == "partial":
+            if not self.provenance.completed_steps:
+                raise ContractError("partial run failure requires completed steps")
+            if self.provenance.uncertain_reason is not None:
+                raise ContractError(
+                    "partial run failure cannot contain uncertainty reason"
+                )
+        elif self.status == "uncertain":
+            if self.provenance.uncertain_reason is None:
+                raise ContractError(
+                    "uncertain run failure requires uncertainty reason"
+                )
+        elif self.provenance.uncertain_reason is not None:
+            raise ContractError(
+                "uncertainty reason requires an uncertain run failure"
+            )
 
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
             "contract_kind": "run-failure",
             "owner": self.owner,
             "operation": self.operation,
@@ -2113,5 +2186,5 @@ class RunFailure:
             "plan_identity": self.plan_identity,
             "status": self.status,
             "error": {"type": self.error_type, "message": self.message},
-            "provenance": json_value(self.provenance),
+            "provenance": self.provenance.record,
         }

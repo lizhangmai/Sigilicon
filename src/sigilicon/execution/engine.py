@@ -362,7 +362,6 @@ def _run(
         partial_failure=lambda: (
             {
                 "completed_steps": [outcome.step for outcome in outcomes],
-                "plan_identity": plan_identity,
             }
             if outcomes
             else None
