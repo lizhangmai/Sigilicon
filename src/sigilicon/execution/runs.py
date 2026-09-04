@@ -262,7 +262,7 @@ class RunStore:
         ):
             raise RunStoreError("persisted execution plan identity drift")
         if (
-            result.get("schema") != 2
+            result.get("schema") != 3
             or result.get("contract_kind") != "run-result"
             or any(result.get(name) != value for name, value in expected.items())
             or result.get("status")
@@ -302,11 +302,17 @@ class RunStore:
             raise RunStoreError("persisted run step lineage drift")
         registered = self._registered_files(manifest)
         for step in result_steps:
-            if not isinstance(step, Mapping) or not isinstance(step.get("artifacts"), list):
+            if (
+                not isinstance(step, Mapping)
+                or set(step) != {"id", "uses", "status", "message", "artifacts"}
+                or not isinstance(step.get("artifacts"), list)
+            ):
                 raise RunStoreError("persisted run step is malformed")
             for artifact in step["artifacts"]:
-                if not isinstance(artifact, Mapping) or not isinstance(
-                    artifact.get("path"), str
+                if (
+                    not isinstance(artifact, Mapping)
+                    or set(artifact) != {"role", "kind", "path"}
+                    or not isinstance(artifact.get("path"), str)
                 ):
                     raise RunStoreError("persisted run artifact is malformed")
                 relative = Path(artifact["path"])
@@ -511,7 +517,6 @@ class RunStore:
                             raw["role"],
                             raw["kind"],
                             original,
-                            raw["qualifiers"],
                             size=record["size"],
                             sha256=record["sha256"],
                         )
@@ -519,8 +524,7 @@ class RunStore:
                 step_result = StepResult(
                     raw_step["status"],
                     tuple(artifacts),
-                    raw_step["facts"],
-                    raw_step["message"],
+                    message=raw_step["message"],
                 )
                 outcomes.append(
                     StepOutcome(raw_step["id"], raw_step["uses"], step_result)

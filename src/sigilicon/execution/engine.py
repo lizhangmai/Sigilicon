@@ -25,7 +25,6 @@ from sigilicon.execution._model import (
     ExecutionIO,
     StepOutcome,
     StepResult,
-    json_value,
 )
 from sigilicon.execution.adapter import AdapterRegistry
 from sigilicon.external_tools import (
@@ -430,7 +429,10 @@ def _run(
             if failed_dependencies:
                 result = StepResult(
                     "blocked",
-                    message=f"dependencies did not succeed: {', '.join(failed_dependencies)}",
+                    message=(
+                        "dependencies did not succeed: "
+                        + ", ".join(failed_dependencies)
+                    ),
                 )
             else:
                 record.directory("work", step.id)
@@ -504,13 +506,12 @@ def _run(
                 "outputs",
                 (f"step-{step.id}-result.json",),
                 {
-                    "schema": 1,
+                    "schema": 2,
                     "contract_kind": "step-result",
                     "step": step.id,
                     "uses": step.uses,
                     "status": result.status,
                     "message": result.message,
-                    "facts": json_value(result.facts),
                     "artifacts": [
                         {
                             "role": artifact.role,
@@ -518,7 +519,6 @@ def _run(
                             "path": artifact.path.relative_to(
                                 paths.root
                             ).as_posix(),
-                            "qualifiers": json_value(artifact.qualifiers),
                         }
                         for artifact in result.artifacts
                     ],

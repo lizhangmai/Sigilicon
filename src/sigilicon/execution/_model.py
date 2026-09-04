@@ -1488,15 +1488,12 @@ class Artifact:
     role: str
     kind: str
     path: Path
-    qualifiers: Mapping[str, JsonValue] = field(default_factory=dict)
     size: int | None = None
     sha256: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", _identifier(self.role, "artifact role"))
         object.__setattr__(self, "kind", adapter_identity(self.kind))
-        if not isinstance(self.qualifiers, Mapping):
-            raise ContractError("artifact qualifiers must be a mapping")
         object.__setattr__(self, "path", Path(self.path).absolute())
         if (self.size is None) != (self.sha256 is None):
             raise ContractError("artifact size and digest must be provided together")
@@ -1508,7 +1505,6 @@ class Artifact:
             or any(character not in "0123456789abcdef" for character in self.sha256)
         ):
             raise ContractError("artifact size or digest is invalid")
-        object.__setattr__(self, "qualifiers", _freeze(self.qualifiers, "artifact qualifiers"))
 
     def read_bytes(self) -> bytes:
         """Read and, for a stored artifact, verify its payload on demand."""
@@ -1531,7 +1527,6 @@ class Artifact:
 class StepResult:
     status: str
     artifacts: tuple[Artifact, ...] = ()
-    facts: Mapping[str, JsonValue] = field(default_factory=dict)
     message: str = ""
 
     def __post_init__(self) -> None:
@@ -1543,22 +1538,18 @@ class StepResult:
             raise ContractError("step result artifacts must be Artifact values")
         if self.status in {"blocked", "cancelled"} and self.artifacts:
             raise ContractError("blocked or cancelled steps cannot publish artifacts")
-        if not isinstance(self.facts, Mapping):
-            raise ContractError("step facts must be a mapping")
         if not isinstance(self.message, str):
             raise ContractError("step result message must be text")
         if self.status != "succeeded" and not self.message:
             raise ContractError("failed or blocked steps require a message")
-        object.__setattr__(self, "facts", _freeze(self.facts, "step facts"))
 
     @classmethod
     def succeeded(
         cls,
         *,
         artifacts: tuple[Artifact, ...] = (),
-        facts: Mapping[str, JsonValue] | None = None,
     ) -> "StepResult":
-        return cls("succeeded", artifacts, {} if facts is None else facts)
+        return cls("succeeded", artifacts)
 
     @classmethod
     def failed(cls, message: str) -> "StepResult":
@@ -1568,19 +1559,15 @@ class StepResult:
     def partial(
         cls,
         message: str,
-        *,
-        facts: Mapping[str, JsonValue] | None = None,
     ) -> "StepResult":
-        return cls("partial", facts={} if facts is None else facts, message=message)
+        return cls("partial", message=message)
 
     @classmethod
     def uncertain(
         cls,
         message: str,
-        *,
-        facts: Mapping[str, JsonValue] | None = None,
     ) -> "StepResult":
-        return cls("uncertain", facts={} if facts is None else facts, message=message)
+        return cls("uncertain", message=message)
 
     @classmethod
     def cancelled(cls, message: str) -> "StepResult":
@@ -2024,7 +2011,7 @@ class RunResult:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 2,
+            "schema": 3,
             "contract_kind": "run-result",
             "owner": self.owner,
             "operation": self.operation,
@@ -2039,7 +2026,6 @@ class RunResult:
                     "uses": outcome.adapter,
                     "status": outcome.result.status,
                     "message": outcome.result.message,
-                    "facts": json_value(outcome.result.facts),
                     "artifacts": [
                         {
                             "role": artifact.role,
@@ -2048,7 +2034,6 @@ class RunResult:
                                 outcome.step,
                                 artifact.path,
                             ),
-                            "qualifiers": json_value(artifact.qualifiers),
                         }
                         for artifact in outcome.result.artifacts
                     ],

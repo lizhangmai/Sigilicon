@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from sigilicon.adapters.cadence._common import (
-    AdapterPreparation, Any, Artifact, CADENCE_SPECTRE_TOOL, ContractError,
+    AdapterPreparation, Artifact, CADENCE_SPECTRE_TOOL, ContractError,
     ExecutionError, ExecutionIO, Mapping, Path, PlanningProject, PreflightCheck,
     PurePosixPath, Resources, Step, StepResult, _SPECTRE_TEMPLATE_TOKEN, _XRUN,
     _executable_check, _positive_integer, _relative, _runtime_bindings,
-    _strict_config, _strings, _text, owned_scratch_directory,
+    _strict_config, _strings, _text, json, owned_scratch_directory,
 )
 
 class SpectreAdapter:
@@ -134,20 +134,32 @@ class SpectreAdapter:
                 )
             )
         envelope = step.evidence
-        facts: dict[str, Any] = {
+        evidence: dict[str, object] = {
+            "schema": 1,
+            "contract_kind": "cadence-spectre-evidence",
             "simulator_completed": True,
             "output_count": len(artifacts),
             "product_qualification_conclusion": False,
         }
         if envelope is not None:
-            facts.update(
-                {
-                    "evidence_role": envelope.role,
-                    "evidence_level": envelope.level,
-                    "evidence_scope": envelope.scope,
-                }
+            evidence.update(
+                evidence_role=envelope.role,
+                evidence_level=envelope.level,
+                evidence_scope=envelope.scope,
             )
-        return StepResult.succeeded(artifacts=tuple(artifacts), facts=facts)
+        artifacts.append(
+            Artifact(
+                "spectre",
+                "evidence.cadence-spectre",
+                context.write_text(
+                    "spectre",
+                    "flow-evidence.json",
+                    json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+                    + "\n",
+                ),
+            )
+        )
+        return StepResult.succeeded(artifacts=tuple(artifacts))
 
 
 class XceliumAdapter:
@@ -257,12 +269,11 @@ class XceliumAdapter:
             ),
         )
         return (
-            StepResult.succeeded(artifacts=artifacts, facts={"passed": True})
+            StepResult.succeeded(artifacts=artifacts)
             if completed.passed
             else StepResult(
                 "failed",
                 artifacts,
-                {"passed": False},
-                "Xcelium did not prove a successful declared testbench",
+                message="Xcelium did not prove a successful declared testbench",
             )
         )

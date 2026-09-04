@@ -337,7 +337,6 @@ class CopyAdapter:
         )
         return StepResult.succeeded(
             artifacts=(Artifact("source", "text.plain", output),),
-            facts={"length": len(str(step.config["text"]))},
         )
 
 
@@ -1321,7 +1320,7 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
             assert context.resource_bytes(step.resources[0]) == payload
             with pytest.raises(ExecutionError, match="not UTF-8"):
                 context.resource_text(step.resources[0])
-            return StepResult.succeeded(facts={"size": len(payload)})
+            return StepResult.succeeded()
 
     project = _project(tmp_path, BinaryAdapter())
     result = project.run(
@@ -1329,7 +1328,7 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
         run_id="b" * 32,
     )
 
-    assert result.outcomes[0].result.facts == {"size": len(payload)}
+    assert result.status == "succeeded"
     bindings = json.loads(
         (_run_root(project, "example:check", result.run_id) / "inputs/runtime-bindings.json").read_text()
     )
@@ -1377,7 +1376,7 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
             assert (sealed / "model.bin").read_bytes() == b"\x00model"
             assert (sealed / "nested/empty").is_dir()
             assert os.access(sealed / "nested/tool", os.X_OK)
-            return StepResult.succeeded(facts={"tree": True})
+            return StepResult.succeeded()
 
     project = _project(tmp_path, DirectoryAdapter())
     result = project.run(
@@ -1385,7 +1384,7 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
         run_id="d" * 32,
     )
 
-    assert result.outcomes[0].result.facts == {"tree": True}
+    assert result.status == "succeeded"
     bindings = json.loads(
         (_run_root(project, "example:check", result.run_id) / "inputs/runtime-bindings.json").read_text()
     )
@@ -1497,7 +1496,7 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
                 ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
             )
             sealed.chmod(0o444)
-            return StepResult.succeeded(facts={"tamper_rejected": True})
+            return StepResult.succeeded()
 
     project = _project(tmp_path, TamperingAdapter())
     plan = _plan(project, "example:check")
@@ -1753,12 +1752,15 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
 
     class RejectingAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
-            evidence = context.write_text("evidence", "failure.json", "{}\n")
+            evidence = context.write_text(
+                "evidence",
+                "failure.json",
+                '{"schema":1,"contract_kind":"fixture-evidence","passed":false}\n',
+            )
             return StepResult(
                 "failed",
                 (Artifact("evidence", "evidence.failure", evidence),),
-                {"passed": False},
-                "qualification failed",
+                message="qualification failed",
             )
 
     project = _project(tmp_path, RejectingAdapter(),)
@@ -1772,12 +1774,13 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     assert json.loads((_run_root(project, "example:check", result.run_id) / "manifest.json").read_text())["status"] == (
         "failed"
     )
-    assert result.outcomes[0].result.artifacts[0].path.read_text() == "{}\n"
+    assert json.loads(
+        result.outcomes[0].result.artifacts[0].path.read_text()
+    )["passed"] is False
     restored = _read_run(project, "example:check", result.run_id)
-    assert restored.outcomes[0].result.facts == {"passed": False}
     artifact = restored.outcomes[0].result.artifacts[0]
     assert artifact.role == "evidence"
-    assert artifact.read_text() == "{}\n"
+    assert json.loads(artifact.read_text())["contract_kind"] == "fixture-evidence"
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
     artifact.path.unlink()

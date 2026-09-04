@@ -167,8 +167,7 @@ class LayoutAdapter:
                 return StepResult(
                     "uncertain",
                     published,
-                    {"workspace_uncertainty": tuple(uncertainty)},
-                    " | ".join(uncertainty),
+                    message=" | ".join(uncertainty),
                 )
             raise
         published = context.output_artifacts(
@@ -176,10 +175,7 @@ class LayoutAdapter:
         )
         if not published:
             raise ExecutionError("layout generation produced no managed evidence")
-        return StepResult.succeeded(
-            artifacts=published,
-            facts={"instance_count": result.instance_count},
-        )
+        return StepResult.succeeded(artifacts=published)
 
 
 class LayoutVerificationAdapter:
@@ -349,8 +345,7 @@ class LayoutVerificationAdapter:
                 return StepResult(
                     "uncertain",
                     published,
-                    {"workspace_uncertainty": tuple(uncertainty)},
-                    " | ".join(uncertainty),
+                    message=" | ".join(uncertainty),
                 )
             raise
         envelope = context.step.evidence
@@ -384,22 +379,14 @@ class LayoutVerificationAdapter:
         )
         if not published:
             raise ExecutionError("layout verification produced no managed evidence")
-        facts = {
-            "passed": result.passed,
-            "check": str(config["check"]),
-            "status": result.evidence.status.value,
-            "evidence_role": envelope.role,
-            "evidence_level": envelope.level,
-            "evidence_scope": envelope.scope,
-            "product_qualification_conclusion": False,
-        }
         return (
-            StepResult.succeeded(artifacts=published, facts=facts)
+            StepResult.succeeded(artifacts=published)
             if result.passed
             else StepResult(
                 "failed",
                 published,
-                facts,
-                f"Calibre {str(config['check']).upper()} did not prove clean",
+                message=(
+                    f"Calibre {str(config['check']).upper()} did not prove clean"
+                ),
             )
         )

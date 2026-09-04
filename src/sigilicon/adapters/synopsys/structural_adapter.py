@@ -335,20 +335,15 @@ class StructuralLinkAdapter:
             "evidence.structural-link",
             required=True,
         )
-        facts = {
-            **result.facts,
-            "evidence_role": envelope.role,
-            "evidence_level": envelope.level,
-            "evidence_scope": envelope.scope,
-        }
         return (
-            StepResult.succeeded(artifacts=published, facts=facts)
+            StepResult.succeeded(artifacts=published)
             if result.passed
             else StepResult(
                 "failed",
                 published,
-                facts,
-                "Synopsys structural link did not prove the declared macro seam",
+                message=(
+                    "Synopsys structural link did not prove the declared macro seam"
+                ),
             )
         )
 

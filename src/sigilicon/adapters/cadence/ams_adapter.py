@@ -157,20 +157,14 @@ class XceliumAmsAdapter:
         published = context.output_artifacts(
             "xcelium-ams", "evidence.xcelium-ams"
         )
-        facts = {
-            "passed": result.passed,
-            "evidence_role": envelope.role,
-            "evidence_level": envelope.level,
-            "evidence_scope": envelope.scope,
-            "product_qualification_conclusion": False,
-        }
         return (
-            StepResult.succeeded(artifacts=published, facts=facts)
+            StepResult.succeeded(artifacts=published)
             if result.passed
             else StepResult(
                 "failed",
                 published,
-                facts,
-                "Xcelium AMS did not prove the declared migration testbench",
+                message=(
+                    "Xcelium AMS did not prove the declared migration testbench"
+                ),
             )
         )

@@ -185,12 +185,6 @@ class IpReleaseAdapter:
         )
         return StepResult.succeeded(
             artifacts=(Artifact("release", "summary.ip-release", summary),),
-            facts={
-                "release_id": published["release_id"],
-                "store": published["store"],
-                "manifest_sha256": published["manifest_sha256"],
-                "passed": True,
-            },
         )
 
 

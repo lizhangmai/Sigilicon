@@ -261,10 +261,6 @@ class FcAdapter:
                         "failed",
                         published,
                         message="FC execution completed but owner evidence failed",
-                        facts=verdict.facts(),
                     )
-                return StepResult.succeeded(
-                    artifacts=published,
-                    facts=verdict.facts(),
-                )
+                return StepResult.succeeded(artifacts=published)
             return StepResult.succeeded(artifacts=(*logs, *artifacts))

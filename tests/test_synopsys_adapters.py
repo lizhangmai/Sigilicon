@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -317,7 +318,11 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         "execution-verdict",
     }
     assert len(result.artifacts) == 8
-    assert result.facts["tool_verdict"]["passed"] is True
+    verdict = next(
+        artifact for artifact in result.artifacts
+        if artifact.role == "execution-verdict"
+    )
+    assert json.loads(verdict.path.read_text())["passed"] is True
     assert not (context.work_directory / "tool").exists()
 
     failed_context = _context(tmp_path / "failed-verdict", step, context.runtime)
@@ -339,7 +344,11 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         "mapped-netlist",
         "execution-verdict",
     }
-    assert failed.facts["tool_verdict"]["passed"] is False
+    failed_verdict = next(
+        artifact for artifact in failed.artifacts
+        if artifact.role == "execution-verdict"
+    )
+    assert json.loads(failed_verdict.path.read_text())["passed"] is False
 
 
 def test_hspice_failure_preserves_campaign_and_qualification_evidence(

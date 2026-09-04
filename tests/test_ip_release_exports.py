@@ -362,9 +362,10 @@ def test_release_publication_runs_as_one_managed_adapter_step(
     assert checked.ready
     assert result.status == "succeeded"
     step = result.outcomes[0].result
-    assert step.facts["release_id"] == f"development-{'a' * 40}"
-    assert step.facts["passed"] is True
     assert step.artifacts[0].kind == "summary.ip-release"
+    summary = json.loads(step.artifacts[0].read_text())
+    assert summary["release_id"] == f"development-{'a' * 40}"
+    assert summary["store"] == "rtl-fixture"
 
 
 def _native_oa_contract_fixture(root: Path) -> Path:

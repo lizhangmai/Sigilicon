@@ -128,6 +128,5 @@ class DcAdapter:
                     "failed",
                     artifacts,
                     message="DC execution completed but owner evidence failed",
-                    facts=verdict.facts(),
                 )
-            return StepResult.succeeded(artifacts=artifacts, facts=verdict.facts())
+            return StepResult.succeeded(artifacts=artifacts)

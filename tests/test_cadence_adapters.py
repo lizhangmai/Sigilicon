@@ -205,7 +205,6 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
 
     assert result.status == "succeeded"
     assert len(result.artifacts) == 4
-    assert result.facts == {"passed": True}
     assert not (context.work_directory / "xcelium.d").exists()
 
 

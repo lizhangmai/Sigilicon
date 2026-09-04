@@ -167,8 +167,7 @@ class NativeOaAdapter:
                 return StepResult(
                     "uncertain",
                     published,
-                    {"workspace_uncertainty": tuple(uncertainty)},
-                    " | ".join(uncertainty),
+                    message=" | ".join(uncertainty),
                 )
             raise
         published = context.output_artifacts(
@@ -177,16 +176,12 @@ class NativeOaAdapter:
         if not published:
             raise ExecutionError("native Maestro produced no managed evidence")
         return (
-            StepResult.succeeded(
-                artifacts=published,
-                facts={"passed": result.passed, "evidence_status": result.evidence.status},
-            )
+            StepResult.succeeded(artifacts=published)
             if result.passed
             else StepResult(
                 "failed",
                 published,
-                {"passed": False, "evidence_status": result.evidence.status},
-                "native Maestro evidence did not pass",
+                message="native Maestro evidence did not pass",
             )
         )
 
@@ -360,15 +355,13 @@ def _publish_oa_result(
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
     )
     artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
-    facts = {"passed": passed, "operation": operation}
     return (
-        StepResult.succeeded(artifacts=artifacts, facts=facts)
+        StepResult.succeeded(artifacts=artifacts)
         if passed
         else StepResult(
             "failed",
             artifacts,
-            facts,
-            f"OA {operation} did not pass",
+            message=f"OA {operation} did not pass",
         )
     )
 
