@@ -232,10 +232,10 @@ def test_manifest_binds_run_identity_and_status_provenance(
     with pytest.raises(ArtifactManifestError, match="run id"):
         validate_manifest(wrong_identity)
 
-    legacy = copy.deepcopy(record.manifest)
-    legacy["attempt_id"] = legacy["run_id"]
+    unknown = copy.deepcopy(record.manifest)
+    unknown["unexpected"] = True
     with pytest.raises(ArtifactManifestError, match="fields are invalid"):
-        validate_manifest(legacy)
+        validate_manifest(unknown)
 
     missing_owner = copy.deepcopy(record.manifest)
     missing_owner["owner"] = ""

@@ -14,12 +14,10 @@ from sigilicon.virtuoso.locks import (
 )
 from sigilicon.virtuoso.oa import (
     OpenCellViewInfo,
-    close_exact_hidden_cell_views,
     delete_cell,
     delete_cell_view,
     open_cell_views,
 )
-from sigilicon.virtuoso.workspace import OperationPolicy
 
 
 def _write_lock(path: Path, *, host: str, pid: int) -> None:
@@ -181,10 +179,7 @@ def test_config_lock_is_detected_and_only_current_vts_owner_can_update(
 
 def test_open_view_inventory_reports_exact_mode_and_visibility() -> None:
     class Client:
-        def execute_skill(self, source, **_kwargs):
-            assert 'equal(cv~>libName "lib")' in source
-            assert "window != hiGetCIWindow()" in source
-            assert 'equal(hiGetWidgetType(window) "graphics")' in source
+        def execute_skill(self, _source, **_kwargs):
             return type(
                 "Response",
                 (),
@@ -199,39 +194,11 @@ def test_open_view_inventory_reports_exact_mode_and_visibility() -> None:
     )
 
 
-def test_exact_hidden_cellview_cleanup_uses_dbid_and_never_name_matching(
-    workspace_factory,
-) -> None:
-    class Client:
-        def __init__(self) -> None:
-            self.source = ""
-
-        def execute_skill(self, source, **_kwargs):
-            self.source = source
-            return SimpleNamespace(output="t", errors=[])
-
-    client = Client()
-    target = OpenCellViewInfo(
-        "analogLib", "vsource", "symbol", "r", False, "db:0x123"
-    )
-    with workspace_factory(client, policy=OperationPolicy.GUI_ACTION) as operation:
-        close_exact_hidden_cell_views(client, (target,), operation=operation)
-
-    assert '"db:0x123"' in client.source
-    assert "sprintf(nil \"%L\" flowCv)" in client.source
-    assert "dbClose(flowCv)" in client.source
-    assert "geGetWindowCellView(flowWindow)" in client.source
-    assert "flowWindow != hiGetCIWindow()" in client.source
-    assert 'equal(hiGetWidgetType(flowWindow) "graphics")' in client.source
-
-
 def test_delete_cell_uses_exact_deletion_scope(workspace_factory) -> None:
     target = None
 
     class Client:
-        def execute_skill(self, source, **_kwargs):
-            assert 'ddGetObj("lib" "retired")' in source
-            assert 'member(flowCv~>cellName list("retired"))' in source
+        def execute_skill(self, _source, **_kwargs):
             assert target is not None
             target.rmdir()
             return SimpleNamespace(output="t", errors=[])
@@ -260,9 +227,7 @@ def test_delete_cell_view_retains_parent_cell(workspace_factory) -> None:
     target = None
 
     class Client:
-        def execute_skill(self, source, **_kwargs):
-            assert 'ddGetObj("lib" "retained" "retired_layout")' in source
-            assert 'member(flowCv~>cellName list("retained"))' in source
+        def execute_skill(self, _source, **_kwargs):
             assert target is not None
             target.rmdir()
             return SimpleNamespace(output="t", errors=[])

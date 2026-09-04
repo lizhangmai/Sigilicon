@@ -173,17 +173,17 @@ def test_platform_contract_rejects_unknown_fields(tmp_path: Path) -> None:
         )
 
 
-def test_platform_manifest_rejects_legacy_installation_schema(tmp_path: Path) -> None:
+def test_platform_manifest_rejects_unknown_table(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     manifest = tmp_path / "configs/platform/testpdk/platform.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8")
-        + '\n[installation]\nroot_environment = "OLD_ROOT"\n',
+        + "\n[unexpected]\nvalue = true\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="unsupported fields.*installation"):
+    with pytest.raises(ValueError, match="unsupported fields.*unexpected"):
         load_platform(
             Project.open(tmp_path), "testpdk", resources=Resources()
         )

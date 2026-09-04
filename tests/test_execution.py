@@ -927,11 +927,11 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
         _plan(project, "example:check")
 
 
-def test_operation_catalog_rejects_source_groups(tmp_path: Path) -> None:
+def test_operation_catalog_rejects_unknown_top_level_fields(tmp_path: Path) -> None:
     operations = _write_project(tmp_path)
     operations.write_text(
         operations.read_text(encoding="utf-8")
-        + '\n[source_groups]\nlegacy = ["configs/value.txt"]\n',
+        + "\n[unexpected]\nvalue = true\n",
         encoding="utf-8",
     )
 
@@ -957,10 +957,10 @@ def test_operation_rejects_source_globs(tmp_path: Path) -> None:
         _plan(_project(tmp_path, CopyAdapter()), "example:check")
 
 
-def test_operation_rejects_legacy_target_selector(tmp_path: Path) -> None:
+def test_operation_rejects_malformed_selector(tmp_path: Path) -> None:
     _write_project(tmp_path)
     with pytest.raises(ContractError, match=r"owner:operation\[@variant\]"):
-        _plan(Project.open(tmp_path), "example/smoke:check")
+        _plan(Project.open(tmp_path), "not-a-selector")
 
 
 def test_component_rejects_unknown_field(tmp_path: Path) -> None:

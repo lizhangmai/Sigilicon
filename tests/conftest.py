@@ -11,6 +11,21 @@ import pytest
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 
 
+def write_file(
+    path: Path,
+    text: str = "fixture\n",
+    *,
+    executable: bool = False,
+) -> Path:
+    """Write one test-owned text file and optionally make it executable."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    if executable:
+        path.chmod(0o755)
+    return path
+
+
 def write_project_context(root: Path) -> Path:
     """Write the explicit caller-owned layout contract used by offline tests."""
 
@@ -37,6 +52,8 @@ artifact_root = "artifacts"
 
 [runtime.directories]
 "release-store.fixture" = "{root / 'artifacts/release-store'}"
+"release-store.fixture-ip" = "{root / 'artifacts/release-store'}"
+"release-store.native-fixture" = "{root / 'artifacts/release-store'}"
 "release-store.native-provider" = "{root / 'artifacts/release-store'}"
 "release-store.rtl-fixture" = "{root / 'artifacts/release-store'}"
 """,

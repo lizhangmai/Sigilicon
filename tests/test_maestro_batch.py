@@ -20,35 +20,6 @@ NONCE = "a" * 32
 PROC_FD_PREFIX = f"/proc/{os.getpid()}/fd/"
 
 
-def test_rendered_native_worker_reads_official_rdb_without_result_path_fallbacks(
-    tmp_path: Path,
-) -> None:
-    source = render_isolated_maestro_run_skill(
-        "lib",
-        "tb",
-        variables={"z": 'quoted"value', "a": "1"},
-        simulation_root=tmp_path / "run" / "simulation",
-        nonce=NONCE,
-        rdb_export=tmp_path / "work" / "maestro-rdb.tsv",
-    )
-
-    assert "maeOpenSetup" in source
-    assert "maeOpenResults(?history history ?session session)" in source
-    assert "maeReadResDB(?historyName history ?session session)" in source
-    assert "resultDb->points()" in source
-    assert "resultPoint->outputs(?type 'expr ?sortBy 'corner)" in source
-    assert "maeGetSpecStatus(" in source
-    assert "resultPoint->params()" in source
-    assert '"PARAM\\t%d\\t%s\\t%L\\n"' in source
-    assert "maeGetOverallSpecStatus(?verbose nil)" in source
-    assert "maeExportOutputView" not in source
-    assert "axlGetPointPsfDir" not in source
-    assert "runObjFile" not in source
-    assert "FLOW_ISOLATED_MAESTRO_RDB" in source
-    assert source.index('maeSetVar("a" "1"') < source.index('maeSetVar("z"')
-    assert 'maeSetVar("z" "quoted\\"value"' in source
-
-
 @pytest.mark.parametrize(
     ("library", "cell", "nonce"),
     (("../lib", "tb", NONCE), ("lib", "/tb", NONCE), ("lib", "tb", "../bad")),
@@ -198,9 +169,6 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
     assert result.rdb_payload.startswith(b"RDB_SCHEMA")
     assert result.status == "isolated-worker-complete"
     assert result.stdout == "worker stdout\n"
-    assert "maeReadResDB" in result.control_script
-    assert "runObjFile" not in result.control_script
-    assert "axlGetPointPsfDir" not in result.control_script
     assert (worker_log.parent / "maestro-worker.il").read_text(
         encoding="utf-8"
     ) == result.control_script

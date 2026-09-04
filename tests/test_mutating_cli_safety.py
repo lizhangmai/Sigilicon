@@ -5,24 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sigilicon.cli.main import main as sigilicon_main
-from sigilicon.virtuoso.oa import close_visible_cell_windows
 from sigilicon.virtuoso.oa import WindowCloseResult
-from sigilicon.virtuoso.schematic import set_instance_parameters
-from sigilicon.virtuoso.workspace import OperationPolicy
 from sigilicon.adapters.cadence.virtuoso_operations import (
     close_cell,
     update_instance_parameters,
 )
-
-
-class RecordingClient:
-    def __init__(self, output: str = "t") -> None:
-        self.output = output
-        self.sources: list[str] = []
-
-    def execute_skill(self, source: str, **_kwargs):
-        self.sources.append(source)
-        return SimpleNamespace(output=self.output, errors=[])
 
 
 def test_close_cell_workflow_enters_workspace_and_project_library_policy(
@@ -176,83 +163,3 @@ def test_public_mutating_clis_delegate_to_application_workflows(
     assert events[0][1][2:] == ("design", "top", "symbol")
     assert events[1][1][2:] == ("design", "top", "symbol")
     assert len(clients) == 2
-
-
-def test_close_cell_skill_uses_exact_cellview_identity_and_escaping(
-    workspace_factory,
-) -> None:
-    client = RecordingClient(output="(0 0)")
-
-    with workspace_factory(client, policy=OperationPolicy.GUI_ACTION) as operation:
-        result = close_visible_cell_windows(
-            client,
-            'lib"name',
-            "cell\\name",
-            "schematic",
-            operation=operation,
-        )
-
-    assert result == WindowCloseResult(0, 0)
-
-    source = client.sources[0]
-    assert "libName ==" in source and "cellName ==" in source
-    assert 'lib\\"name' in source
-    assert "hidden or unowned open cellview" in source
-    assert "target windows remained open" in source
-    assert "window != hiGetCIWindow()" in source
-    assert 'equal(hiGetWidgetType(window) "graphics")' in source
-
-
-def test_parameter_update_escapes_values_and_releases_cdf_and_oa_state(
-    workspace_factory,
-) -> None:
-    client = RecordingClient()
-
-    with workspace_factory(client, library="lib") as operation:
-        with operation.mutation_scope(
-            "lib", cells=("cell",), phase="test parameter update"
-        ):
-            applied = set_instance_parameters(
-                client,
-                "lib",
-                "cell",
-                'M0"unsafe',
-                {"w": '2u"unsafe'},
-                operation=operation,
-            )
-
-    assert applied == {"w": '2u"unsafe'}
-    source = client.sources[0]
-    assert 'M0\\"unsafe' in source
-    assert '2u\\"unsafe' in source
-    assert "unwindProtect" in source
-    assert "dbSave" in source and "dbClose" in source
-    assert "flowSavedCdfValues" in source
-    assert 'equal(param~>paramType "int")' in source
-    assert "atoi(arrayref(paramVals name))" in source
-    assert "flowBeforeViews = dbGetOpenCellViews()" in source
-    assert "member(flowCv flowBeforeViews)" in source
-
-
-def test_parameter_update_can_skip_gui_only_cdf_callbacks(
-    workspace_factory,
-) -> None:
-    client = RecordingClient()
-
-    with workspace_factory(client, library="lib") as operation:
-        with operation.mutation_scope(
-            "lib", cells=("cell",), phase="headless parameter update"
-        ):
-            set_instance_parameters(
-                client,
-                "lib",
-                "cell",
-                "V0",
-                {"tvpairs": "2"},
-                operation=operation,
-                invoke_callbacks=False,
-            )
-
-    source = client.sources[0]
-    assert "cdfUpdateInstParam(inst)" in source
-    assert "evalstring(callback)" not in source

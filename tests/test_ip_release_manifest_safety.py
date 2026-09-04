@@ -3,16 +3,12 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from sigilicon.cli.main import main as sigilicon_main
-from sigilicon.project import Project
 from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.adapters.release import ip_packaging
-
-from conftest import write_project_context
 
 
 def _write_release(root: Path) -> Path:
@@ -150,48 +146,18 @@ def test_release_audit_is_reachable_only_through_the_public_cli(
     assert '"ip_name": "fixture"' in capsys.readouterr().out
 
 
-def test_release_build_rejects_symlinked_namespace_ancestor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_release_store_rejects_symlinked_namespace_ancestor(
+    tmp_path: Path,
 ) -> None:
-    project = Project.open(write_project_context(tmp_path).parent)
-    store_root = project.artifact_root / "release-store"
-    store_root.mkdir(parents=True)
+    store_root = tmp_path / "release-store"
+    store_root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
     (store_root / "fixture").symlink_to(outside, target_is_directory=True)
-    contract = SimpleNamespace(
-        project=project,
-        project_root=project.project_root,
-        collateral=(),
-    )
-    plan = ip_packaging.IpReleasePlan.create(
-        contract,
-        {
-            "source_files": [],
-            "missing_items": [],
-            "working_tree_dirty": False,
-            "source_commit": "d" * 40,
-            "release_store": "fixture",
-            "release_id": "development-fixture",
-            "maturity_level": "development",
-        },
-        {},
-    )
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
-        lambda *_args, **_kw: SimpleNamespace(
-            commit="d" * 40,
-            working_tree_dirty=False,
-        ),
-    )
 
-    with pytest.raises(OSError):
-        ip_packaging._publish_ip_release(
-            plan,
-            store_root=store_root,
-            source_paths={},
-            resources=project.resources(),
+    with pytest.raises(RuntimeError, match="symlink"):
+        ReleaseStore(store_root).object_root(
+            ReleaseRef("fixture", "d" * 64),
         )
 
     assert list(outside.iterdir()) == []

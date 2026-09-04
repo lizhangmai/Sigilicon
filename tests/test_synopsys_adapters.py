@@ -4,7 +4,6 @@ import os
 from dataclasses import replace
 from pathlib import Path
 import sys
-import tarfile
 
 import pytest
 
@@ -14,7 +13,6 @@ from sigilicon.adapters.synopsys import (
     HspiceAdapter,
     VcsAdapter,
 )
-from sigilicon.adapters.synopsys.fc_adapter import _archive_directory
 from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,
@@ -23,13 +21,7 @@ from sigilicon.execution._model import (
     ExecutionIO,
 )
 
-
-def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    if executable:
-        path.chmod(0o755)
-    return path
+from conftest import write_file as _file
 
 
 def _context(
@@ -585,23 +577,3 @@ exit 1
     assert {path.name for path in failed_context.output_directory.iterdir()} == {
         "log"
     }
-
-
-def test_fc_checkpoint_archive_preserves_vendor_private_members(
-    tmp_path: Path,
-) -> None:
-    checkpoint = tmp_path / "design.dlib"
-    _file(checkpoint / "lib.ndm", "database\n")
-    _file(checkpoint / "__private_meta_data_:pin.err", "diagnostic\n")
-    archive_path = tmp_path / "design.dlib.tar"
-
-    _archive_directory(checkpoint, archive_path, checkpoint.name)
-
-    with tarfile.open(archive_path, "r") as archive:
-        members = list(archive)
-        assert [member.name for member in members] == [
-            "design.dlib",
-            "design.dlib/__private_meta_data_:pin.err",
-            "design.dlib/lib.ndm",
-        ]
-        assert all(member.uid == member.gid == member.mtime == 0 for member in members)

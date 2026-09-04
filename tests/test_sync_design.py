@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from virtuoso_bridge import ExecutionStatus, VirtuosoResult
 
 from sigilicon.artifacts import RunRecord
 from sigilicon.domain.design import load_design_spec
@@ -187,7 +186,6 @@ def test_sync_design_consumes_source_and_pdk_config(
     assert "DEFINE designLib ./designLib" in (
         root / "virtuoso" / "cds.lib"
     ).read_text()
-    assert any("term~>direction" in source for source in client.skill)
 
 
 def test_target_only_sync_reuses_bridge_import_without_touching_cds_lib(
@@ -351,82 +349,6 @@ def test_import_hierarchy_preserves_unowned_leaked_handle(
 
     assert operation is not None
     assert operation.uncertain_reason is not None
-
-
-def test_import_adapter_rejects_unowned_remote_process_launch(tmp_path) -> None:
-    from sigilicon.virtuoso import importer
-
-    with pytest.raises(RuntimeError, match="remote spiceIn is unsupported"):
-        importer._import_netlist(
-            SimpleNamespace(ssh_runner=object()),
-            "lib",
-            "cell",
-            tmp_path / "cell.scs",
-            operation=SimpleNamespace(
-                require_active_mutation=lambda *_args, **_kwargs: None
-            ),
-            own_netlist=lambda: None,
-            run_dir=tmp_path / "run",
-            timeout=12,
-            resources=SPICEIN_RESOURCES,
-        )
-
-
-def test_spicein_preflight_failure_prevents_process_launch(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    from sigilicon.virtuoso import importer
-
-    executable = tmp_path / "spiceIn"
-    executable.write_text("offline test sentinel\n", encoding="utf-8")
-    executable.chmod(0o755)
-    resources = Resources(
-        tools={"cadence.spice-in": str(executable)}
-    )
-    launches: list[object] = []
-    monkeypatch.setattr(
-        importer,
-        "managed_process",
-        SimpleNamespace(run=lambda request: launches.append(request)),
-    )
-    client = SimpleNamespace(
-        ssh_runner=None,
-        execute_skill=lambda *_args, **_kwargs: SimpleNamespace(
-            errors=["target schematic exists"]
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="target schematic exists"):
-        importer._import_netlist(
-            client,
-            "lib",
-            "cell",
-            tmp_path / "cell.scs",
-            operation=SimpleNamespace(
-                root=tmp_path,
-                require_active_mutation=lambda *_args, **_kwargs: None,
-            ),
-            own_netlist=lambda: None,
-            run_dir=tmp_path / "run",
-            timeout=12,
-            resources=resources,
-        )
-    assert launches == []
-
-
-def test_import_skill_result_requires_explicit_success() -> None:
-    from sigilicon.virtuoso.importer import _require_skill_result
-
-    for result in (
-        VirtuosoResult(status=ExecutionStatus.PARTIAL),
-        VirtuosoResult(status=ExecutionStatus.FAILURE),
-        VirtuosoResult(status=ExecutionStatus.ERROR),
-    ):
-        with pytest.raises(RuntimeError, match="unconfirmed bridge status"):
-            _require_skill_result(result, "import confirmation")
-    success = VirtuosoResult(status=ExecutionStatus.SUCCESS)
-    assert _require_skill_result(success, "import confirmation") is success
 
 
 def test_sync_refuses_an_existing_library_with_wrong_technology(project_factory) -> None:

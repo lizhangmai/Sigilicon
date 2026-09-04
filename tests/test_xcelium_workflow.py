@@ -17,13 +17,7 @@ from sigilicon.adapters.cadence.xcelium import (
     plan_xcelium_cell,
 )
 
-from conftest import write_component_owner
-
-
-def _write(path: Path, text: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    return path
+from conftest import write_component_owner, write_file as _write
 
 
 def _run_artifacts(root: Path) -> ExecutionWorkspace:

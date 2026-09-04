@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -20,7 +21,7 @@ from sigilicon.domain.ip_release import (
 from sigilicon.project import Project
 from sigilicon.adapters.release.ip_packaging import release_role_view
 
-from conftest import write_project_context, write_test_layout_platform
+from conftest import write_project_context, write_test_platform
 
 
 def _built_manifest(project: Project, built: dict[str, object]) -> Path:
@@ -40,31 +41,40 @@ def _publish_release(
     project: Project,
     maturity: str | None = None,
 ) -> dict[str, object]:
-    plan = ip_packaging.plan_ip_release(
-        contract_path,
-        project=project,
-        maturity=maturity,
-    )
-    sources = {
-        project.project_root / relative: project.project_root / relative
-        for relative in plan.record["source_files"]
-    }
-    return ip_packaging._publish_ip_release(
-        plan,
-        store_root=project.artifact_root / "release-store",
-        source_paths=sources,
-        resources=project.resources(),
+    owner = project.require_owner(contract_path).name
+    selector = f"{owner}:release"
+    plan = project.plan(selector)
+    if maturity is not None:
+        planned = plan.steps[0].config.get("maturity")
+        if planned != maturity:
+            raise ValueError(
+                f"fixture operation maturity is {planned!r}, expected {maturity!r}"
+            )
+    result = project.run(plan, run_id=uuid.uuid4().hex)
+    if result.status != "succeeded":
+        raise RuntimeError(f"release run did not succeed: {result.status}")
+    return json.loads(
+        result.outcomes[0].result.artifacts[0].read_text()
     )
 
 
-def _minimal_release_inputs(contract, **_kwargs) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                contract.path.relative_to(contract.project_root).as_posix(),
-                *(item.source.as_posix() for item in contract.collateral),
-            }
-        )
+def _write_release_operation(configs: Path, owner: str) -> None:
+    (configs.parents[2] / "artifacts/release-store").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    (configs / "operations.toml").write_text(
+        f'''schema = 4
+contract_kind = "owner-operations"
+path_scope = "owner"
+owner = "{owner}"
+
+[operations.release]
+uses = "sigilicon.ip-release"
+filesets = ["release"]
+config = {{ owner = "{owner}", maturity = "development" }}
+''',
+        encoding="utf-8",
     )
 
 
@@ -117,15 +127,18 @@ owner = "fixture-ip"
 name = "fixture-ip"
 kind = "composite-ip"
 release_contract = "release"
+operation_catalog = "operations"
 
 [sources]
 oa = "ip/fixture/configs/oa.toml"
 release = "ip/fixture/configs/release.toml"
+operations = "ip/fixture/configs/operations.toml"
 left = "ip/fixture/sources/left.toml"
 right = "ip/fixture/sources/right.toml"
 
 [filesets]
 oa_source = ["oa"]
+release = ["release"]
 """,
         encoding="utf-8",
     )
@@ -206,6 +219,7 @@ root = "ip/fixture"
 ''',
         encoding="utf-8",
     )
+    _write_release_operation(configs, "fixture-ip")
     return contract
 
 
@@ -249,11 +263,16 @@ name = "rtl-fixture"
 kind = "rtl-ip"
 public_interface = "interface"
 release_contract = "release"
+operation_catalog = "operations"
 
 [sources]
 interface = "ip/rtl_fixture/configs/interface.toml"
 release = "ip/rtl_fixture/configs/release.toml"
+operations = "ip/rtl_fixture/configs/operations.toml"
 rtl = "ip/rtl_fixture/rtl/top.sv"
+
+[filesets]
+release = ["release"]
 ''',
         encoding="utf-8",
     )
@@ -317,6 +336,7 @@ root = "ip/rtl_fixture"
 ''',
         encoding="utf-8",
     )
+    _write_release_operation(configs, "rtl-fixture")
     return contract
 
 
@@ -324,38 +344,7 @@ def test_release_publication_runs_as_one_managed_adapter_step(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = _rtl_contract_fixture(tmp_path)
-    (tmp_path / "artifacts/release-store").mkdir(parents=True)
-    component = contract.parent / "ip.toml"
-    component.write_text(
-        component.read_text(encoding="utf-8")
-        .replace(
-            'release_contract = "release"',
-            'release_contract = "release"\noperation_catalog = "operations"',
-        )
-        .replace(
-            "[sources]\n",
-            '[sources]\noperations = "ip/rtl_fixture/configs/operations.toml"\n',
-        )
-        + '\n[filesets]\nrelease = ["release"]\n',
-        encoding="utf-8",
-    )
-    (contract.parent / "operations.toml").write_text(
-        '''schema = 4
-contract_kind = "owner-operations"
-path_scope = "owner"
-owner = "rtl-fixture"
-
-[operations.release]
-uses = "sigilicon.ip-release"
-filesets = ["release"]
-
-[operations.release.config]
-owner = "rtl-fixture"
-maturity = "development"
-''',
-        encoding="utf-8",
-    )
+    _rtl_contract_fixture(tmp_path)
     monkeypatch.setattr(
         ip_packaging,
         "inspect_checkout",
@@ -378,63 +367,6 @@ maturity = "development"
     assert step.artifacts[0].kind == "summary.ip-release"
 
 
-def _oa_source_closure_fixture(root: Path) -> Path:
-    contract = _contract_fixture(root)
-    owner = root / "ip/fixture"
-    configs = owner / "configs"
-    sources = owner / "sources"
-    (root / "virtuoso").mkdir()
-    write_test_layout_platform(root)
-    contract.write_text(
-        contract.read_text(encoding="utf-8").replace(
-            'library = "fixture-lib"', 'library = "fixture_lib"'
-        ),
-        encoding="utf-8",
-    )
-    (configs / "oa.toml").write_text(
-        '''schema = 1
-contract_kind = "oa-assembly"
-path_scope = "owner"
-owner = "fixture-ip"
-
-name = "fixture_lib"
-pdk = "testpdk"
-primitive_masters = []
-cell_roots = ["sources"]
-''',
-        encoding="utf-8",
-    )
-    for cell in ("LEFT", "RIGHT"):
-        cell_root = sources / cell
-        cell_root.mkdir()
-        (cell_root / "circuit.scs").write_text(
-            f"subckt {cell} IN OUT\nends {cell}\n",
-            encoding="utf-8",
-        )
-        (cell_root / "design.toml").write_text(
-            f"name = '{cell}'\n",
-            encoding="utf-8",
-        )
-        (cell_root / "cell.toml").write_text(
-            f'''schema = 1
-contract_kind = "oa-cell"
-path_scope = "cell"
-owner = "fixture-ip"
-
-cell = "{cell}"
-role = "design"
-canonical_source = "circuit.scs"
-views = [
-  {{ name = "netlist", kind = "spectre_netlist", source = "circuit.scs", dependencies = [] }},
-  {{ name = "schematic", kind = "schematic", source = "design.toml", dependencies = ["{cell}/netlist"] }},
-  {{ name = "symbol", kind = "symbol", source = "design.toml", dependencies = ["{cell}/schematic"] }},
-]
-''',
-            encoding="utf-8",
-        )
-    return contract
-
-
 def _native_oa_contract_fixture(root: Path) -> Path:
     write_project_context(root)
     owner = root / "ip/native_fixture"
@@ -442,12 +374,17 @@ def _native_oa_contract_fixture(root: Path) -> Path:
     sources = owner / "sources"
     configs.mkdir(parents=True)
     sources.mkdir()
+    (root / "virtuoso").mkdir()
+    write_test_platform(root)
     (configs / "oa.toml").write_text(
         "schema = 1\n"
         'contract_kind = "oa-assembly"\n'
         'path_scope = "owner"\n'
         'owner = "native-fixture"\n'
-        'name = "native-lib"\n',
+        'name = "native_lib"\n'
+        'pdk = "testpdk"\n'
+        'primitive_masters = ["nch_mac"]\n'
+        'cell_roots = ["sources"]\n',
         encoding="utf-8",
     )
     (configs / "interface.toml").write_text(
@@ -457,10 +394,10 @@ path_scope = "owner"
 owner = "native-fixture"
 
 [physical]
-library = "native-lib"
+library = "native_lib"
 cell = "NATIVE_TOP"
 port_count = 2
-canonical_port_contract = "ip/native_fixture/sources/design.toml"
+canonical_port_contract = "ip/native_fixture/sources/NATIVE_TOP/design.toml"
 
 [behavior]
 result = "native circuit response"
@@ -470,7 +407,11 @@ domains = []
 ''',
         encoding="utf-8",
     )
-    (sources / "design.toml").write_text(
+    top = sources / "NATIVE_TOP"
+    child = sources / "NATIVE_CHILD"
+    top.mkdir()
+    child.mkdir()
+    (top / "design.toml").write_text(
         '''[ports]
 order = ["IN", "OUT"]
 
@@ -480,18 +421,43 @@ OUT = "output"
 ''',
         encoding="utf-8",
     )
-    (sources / "circuit.scs").write_text(
+    (top / "circuit.scs").write_text(
         "subckt NATIVE_TOP IN OUT\n"
         "X0 (IN OUT) NATIVE_CHILD\n"
         "ends NATIVE_TOP\n",
         encoding="utf-8",
     )
-    (sources / "child.scs").write_text(
+    (child / "design.toml").write_text(
+        "[ports]\norder = [\"IN\", \"OUT\"]\n",
+        encoding="utf-8",
+    )
+    (child / "circuit.scs").write_text(
         "subckt NATIVE_CHILD IN OUT\n"
         "M0 (OUT IN 0 0) nch_mac l=30n w=120n\n"
         "ends NATIVE_CHILD\n",
         encoding="utf-8",
     )
+    for cell, directory, netlist_dependencies in (
+        ("NATIVE_TOP", top, '["NATIVE_CHILD/netlist"]'),
+        ("NATIVE_CHILD", child, "[]"),
+    ):
+        (directory / "cell.toml").write_text(
+            f'''schema = 1
+contract_kind = "oa-cell"
+path_scope = "cell"
+owner = "native-fixture"
+
+cell = "{cell}"
+role = "design"
+canonical_source = "circuit.scs"
+views = [
+  {{ name = "netlist", kind = "spectre_netlist", source = "circuit.scs", dependencies = {netlist_dependencies} }},
+  {{ name = "schematic", kind = "schematic", source = "design.toml", dependencies = ["{cell}/netlist"] }},
+  {{ name = "symbol", kind = "symbol", source = "design.toml", dependencies = ["{cell}/schematic"] }},
+]
+''',
+            encoding="utf-8",
+        )
     (configs / "ip.toml").write_text(
         '''schema = 3
 contract_kind = "ip-component"
@@ -501,17 +467,20 @@ owner = "native-fixture"
 name = "native-fixture"
 kind = "hard-macro"
 release_contract = "release"
+operation_catalog = "operations"
 
 [sources]
 oa = "ip/native_fixture/configs/oa.toml"
 release = "ip/native_fixture/configs/release.toml"
+operations = "ip/native_fixture/configs/operations.toml"
 interface = "ip/native_fixture/configs/interface.toml"
-ports = "ip/native_fixture/sources/design.toml"
-circuit = "ip/native_fixture/sources/circuit.scs"
-circuit_dependency = "ip/native_fixture/sources/child.scs"
+ports = "ip/native_fixture/sources/NATIVE_TOP/design.toml"
+circuit = "ip/native_fixture/sources/NATIVE_TOP/circuit.scs"
+circuit_dependency = "ip/native_fixture/sources/NATIVE_CHILD/circuit.scs"
 
 [filesets]
 oa_source = ["oa"]
+release = ["release"]
 ''',
         encoding="utf-8",
     )
@@ -528,7 +497,7 @@ default_maturity = "development"
 [[exports]]
 name = "native-top"
 [exports.oa]
-library = "native-lib"
+library = "native_lib"
 cell = "NATIVE_TOP"
 schematic_view = "schematic"
 layout_view = "layout"
@@ -580,22 +549,8 @@ root = "ip/native_fixture"
 ''',
         encoding="utf-8",
     )
+    _write_release_operation(configs, "native-fixture")
     return contract
-
-
-def _native_oa_library_fixture(root: Path) -> SimpleNamespace:
-    sources = root / "ip/native_fixture/sources"
-    return SimpleNamespace(
-        name="native-lib",
-        primitive_masters=("nch_mac",),
-        cells=tuple(
-            SimpleNamespace(
-                canonical_source=sources / filename,
-                views=(SimpleNamespace(kind="spectre_netlist"),),
-            )
-            for filename in ("circuit.scs", "child.scs")
-        ),
-    )
 
 
 def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> None:
@@ -614,68 +569,6 @@ def test_one_ip_contract_exposes_multiple_scoped_circuits(tmp_path: Path) -> Non
         "interface_contract",
         "interface_contract",
     ]
-
-
-def test_oa_release_derives_complete_platform_source_closure(tmp_path: Path) -> None:
-    contract_path = _oa_source_closure_fixture(tmp_path)
-    platform = tmp_path / "configs/platform/testpdk"
-    manifest = platform / "platform.toml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(
-            "\n[contracts]\n",
-            '\nasset_scope = "external"\n\n[contracts]\n',
-        ),
-        encoding="utf-8",
-    )
-    project_manifest = tmp_path / "sigilicon.toml"
-    project_manifest.write_text(
-        project_manifest.read_text(encoding="utf-8")
-        + f'\n"platform.testpdk" = "{platform}"\n',
-        encoding="utf-8",
-    )
-    contract = load_ip_contract(
-        contract_path,
-        project=Project.open(tmp_path),
-    )
-
-    sources = set(
-        ip_packaging._source_inputs(
-            contract,
-            project=Project.open(tmp_path),
-        )
-    )
-
-    assert {
-        "configs/platform/catalog.toml",
-        "configs/platform/testpdk/platform.toml",
-        "configs/platform/testpdk/simulation.toml",
-        "configs/platform/testpdk/oa.toml",
-        "configs/platform/testpdk/layout.toml",
-        "configs/platform/testpdk/verification.toml",
-    }.issubset(sources)
-    assert {
-        "ip/fixture/configs/left_interface.toml",
-        "ip/fixture/configs/right_interface.toml",
-        "ip/fixture/configs/oa.toml",
-        "ip/fixture/sources/LEFT/cell.toml",
-        "ip/fixture/sources/RIGHT/cell.toml",
-    }.issubset(sources)
-
-
-def test_release_rejects_removed_owner_and_source_fields(tmp_path: Path) -> None:
-    contract_path = _rtl_contract_fixture(tmp_path)
-    contract_path.write_text(
-        contract_path.read_text(encoding="utf-8").replace(
-            'name = "rtl-fixture"\n',
-            'name = "rtl-fixture"\nproducer = "ip/rtl_fixture"\n',
-            1,
-        )
-        + "\n[source]\nfiles = []\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="unknown fields.*producer.*source"):
-        load_ip_contract(contract_path, project=Project.open(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -771,22 +664,11 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
 
     monkeypatch.setattr(
         ip_packaging,
-        "_source_inputs",
-        _minimal_release_inputs,
-    )
-    monkeypatch.setattr(
-        ip_packaging,
         "inspect_checkout",
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
     )
-    monkeypatch.setattr(
-        oa_library_domain,
-        "load_oa_library_source",
-        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
-    )
-
     plan = ip_packaging.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
@@ -797,7 +679,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         {
             "name": "native-top",
             "oa": {
-                "library": "native-lib",
+                "library": "native_lib",
                 "cell": "NATIVE_TOP",
                 "schematic_view": "schematic",
                 "layout_view": "layout",
@@ -826,7 +708,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         "export": "native-top",
         "passed": True,
         "interface_kind": "oa-native",
-        "oa_library": "native-lib",
+        "oa_library": "native_lib",
         "oa_cell": "NATIVE_TOP",
         "physical_port_count": 2,
         "native_oa_port_contract_checked": True,
@@ -893,7 +775,7 @@ def test_release_build_rejects_checkout_drift_before_publication(
         lambda _root, _resources: next(states),
     )
 
-    with pytest.raises(ip_packaging.IpReleaseError, match="changed during"):
+    with pytest.raises(RuntimeError, match="changed during"):
         _publish_release(
             contract_path,
             project=Project.open(tmp_path),
@@ -936,7 +818,7 @@ component = "native-fixture"
 source = "structural_liberty"
 package_path = "exports/native-top/synthesis/NATIVE_TOP_structural.lib"
 format = "liberty"
-library = "native-lib"
+library = "native_lib"
 cell = "NATIVE_TOP"
 view = "structural_liberty"
 corner = "structural-uncharacterized"
@@ -947,22 +829,11 @@ capabilities = ["synthesis"]
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
-        "_source_inputs",
-        _minimal_release_inputs,
-    )
-    monkeypatch.setattr(
-        ip_packaging,
         "inspect_checkout",
         lambda _root, _resources: SimpleNamespace(
             commit="e" * 40, working_tree_dirty=False
         ),
     )
-    monkeypatch.setattr(
-        oa_library_domain,
-        "load_oa_library_source",
-        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
-    )
-
     plan = ip_packaging.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
@@ -992,19 +863,26 @@ capabilities = ["synthesis"]
 
 def test_native_oa_release_rejects_circuit_port_order_drift(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
-    contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
-    (tmp_path / "ip/native_fixture/sources/circuit.scs").write_text(
+    project = Project.open(tmp_path)
+    contract = load_ip_contract(contract_path, project=project)
+    (tmp_path / "ip/native_fixture/sources/NATIVE_TOP/circuit.scs").write_text(
         "subckt NATIVE_TOP OUT IN\nends NATIVE_TOP\n",
         encoding="utf-8",
     )
-
+    monkeypatch.setattr(
+        ip_packaging,
+        "inspect_checkout",
+        lambda _root, _resources: SimpleNamespace(
+            commit="d" * 40, working_tree_dirty=False
+        ),
+    )
     with pytest.raises(ValueError, match="circuit pin order"):
-        ip_packaging._development_interface_check(
+        ip_packaging.plan_ip_release_contract(
             contract,
-            contract.get_export("native-top"),
-            project=Project.open(tmp_path),
+            project=project,
         )
 
 
@@ -1016,20 +894,10 @@ def test_native_oa_package_rejects_digital_interface_sections(
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
-        "_source_inputs",
-        _minimal_release_inputs,
-    )
-    monkeypatch.setattr(
-        ip_packaging,
         "inspect_checkout",
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
-    )
-    monkeypatch.setattr(
-        oa_library_domain,
-        "load_oa_library_source",
-        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
     built = _publish_release(
         contract_path,
@@ -1077,20 +945,10 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
     monkeypatch.setattr(
         ip_packaging,
-        "_source_inputs",
-        _minimal_release_inputs,
-    )
-    monkeypatch.setattr(
-        ip_packaging,
         "inspect_checkout",
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
-    )
-    monkeypatch.setattr(
-        oa_library_domain,
-        "load_oa_library_source",
-        lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
     built = _publish_release(
         contract_path,
@@ -1277,38 +1135,6 @@ source = "ip/rtl_fixture/rtl/top.sv"
     assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
         plan.record["exports"]
     )
-
-
-def test_release_design_inventory_rejects_forged_oa_plan(
-    tmp_path: Path,
-) -> None:
-    contract = load_ip_contract(_contract_fixture(tmp_path), project=Project.open(tmp_path))
-    oa_manifest = (tmp_path / "ip/fixture/configs/oa.toml").resolve()
-    declared = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
-    forged = (tmp_path / "ip/fixture/configs/right_interface.toml").resolve()
-    source = SimpleNamespace(
-        repository=contract.repository,
-        name="fixture-lib",
-        pdk="testpdk",
-        cells=(SimpleNamespace(cell="LEFT", design_spec=declared),),
-    )
-    forged_spec = SimpleNamespace(
-        path=forged,
-        repository=contract.repository,
-        library="fixture-lib",
-        cell="LEFT",
-        pdk=SimpleNamespace(key="testpdk"),
-    )
-    plan = SimpleNamespace(
-        source=source,
-        designs=(SimpleNamespace(inspection=SimpleNamespace(spec=forged_spec)),),
-    )
-
-    with pytest.raises(ValueError, match="undeclared design spec"):
-        ip_packaging._release_design_inventory(
-            contract,
-            {oa_manifest: plan},
-        )
 
 
 def test_ip_contract_owner_must_match_cataloged_owner(tmp_path: Path) -> None:

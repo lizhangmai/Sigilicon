@@ -255,7 +255,7 @@ def test_structural_link_rejects_unknown_dependency_lock_fields(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="fields must be exactly"):
-        _fixture(tmp_path, monkeypatch, lock_extra='legacy_manifest = "path"')
+        _fixture(tmp_path, monkeypatch, lock_extra="unexpected = true")
 
 
 def test_structural_link_rejects_same_size_release_tampering(

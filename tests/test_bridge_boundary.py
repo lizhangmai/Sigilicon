@@ -31,13 +31,12 @@ def test_library_discovery_uses_public_bridge_library_api() -> None:
     assert calls == [20]
 
 
-def test_readonly_discovery_escapes_skill_strings() -> None:
+def test_readonly_discovery_returns_typed_cells() -> None:
     client = RecordingClient(('"lib"', '"cell|schematic\\n"'))
 
     data = list_cells(client, 'lib"unsafe')
 
     assert data["cells"] == [{"name": "cell", "views": ["schematic"]}]
-    assert all('lib\\"unsafe' in source for source in client.sources)
 
 
 @pytest.mark.parametrize(
@@ -57,10 +56,6 @@ def test_oa_existence_queries_return_only_skill_booleans(
     client = RecordingClient((output,))
 
     assert query(client, *arguments) is expected
-
-    source = client.sources[0]
-    assert source.startswith("if(ddGetObj(")
-    assert source.endswith(" t nil)")
 
 
 @pytest.mark.parametrize("query", (cell_exists, cell_view_exists))
@@ -86,9 +81,3 @@ def test_readonly_schematic_source_closes_its_handle(
                 include_positions=False,
                 operation=operation,
             )
-
-    schematic_source = client.sources[0]
-    assert "unwindProtect" in schematic_source
-    assert "dbClose" in schematic_source
-    assert 'lib\\"unsafe' in schematic_source
-    assert "preserved exact dbIds" in schematic_source

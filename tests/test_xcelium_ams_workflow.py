@@ -17,13 +17,11 @@ from sigilicon.adapters.cadence.xcelium_ams import (
     plan_xcelium_ams_cell,
 )
 
-from conftest import write_component_owner, write_test_platform
-
-
-def _write(path: Path, text: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    return path
+from conftest import (
+    write_component_owner,
+    write_file as _write,
+    write_test_platform,
+)
 
 
 def _run_artifacts(root: Path) -> ExecutionWorkspace:
@@ -396,7 +394,7 @@ def test_xcelium_ams_rejects_unknown_dependency_lock_fields(
     _configure_locked_native_release(tmp_path, circuit)
     lock = tmp_path / "ip/demo/configs/dependency.lock.toml"
     lock.write_text(
-        lock.read_text(encoding="utf-8") + 'legacy_manifest = "path"\n',
+        lock.read_text(encoding="utf-8") + "unexpected = true\n",
         encoding="utf-8",
     )
 
