@@ -294,7 +294,7 @@ value = ["value"]
     (owner / "configs/value.txt").write_text("hello\n", encoding="utf-8")
     operations = owner / "configs/operations.toml"
     operations.write_text(
-        """schema = 3
+        """schema = 4
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "example"
@@ -305,16 +305,20 @@ owner = "example"
 [runtime.copy]
 values = { SELECTED_VALUE = "test.value" }
 
+[config_profiles.copy]
+text = "profile"
+
 [operations.check]
 uses = "fake.copy"
 filesets = ["value"]
+config_profile = "copy"
 config = { text = "hello" }
 evidence = { role = "regression", level = "l0", scope = "source" }
 
 [operations."check@fast"]
 uses = "fake.copy"
 filesets = ["value"]
-config = { text = "hello" }
+config_profile = "copy"
 evidence = { role = "regression", level = "l0", scope = "source" }
 
 [operations.all]
@@ -524,7 +528,7 @@ operation_catalog = ["operations"]
     )
     operations = foreign / "configs/operations.toml"
     operations.write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "foreign"
@@ -955,8 +959,10 @@ def test_operation_rejects_source_globs(tmp_path: Path) -> None:
     operations = _write_project(tmp_path)
     operations.write_text(
         operations.read_text(encoding="utf-8").replace(
-            'filesets = ["value"]\nconfig = { text = "hello" }',
-            'filesets = ["value"]\nsource_globs = ["rtl/**/*.sv"]\n'
+            'filesets = ["value"]\nconfig_profile = "copy"\n'
+            'config = { text = "hello" }',
+            'filesets = ["value"]\nconfig_profile = "copy"\n'
+            'source_globs = ["rtl/**/*.sv"]\n'
             'config = { text = "hello" }',
             1,
         ),
@@ -1089,6 +1095,7 @@ def test_variant_is_part_of_plan_run_and_artifact_identity(tmp_path: Path) -> No
     )
 
     assert plan.variant == "fast"
+    assert plan.steps[0].config == {"text": "profile"}
     assert result.variant == "fast"
     assert _run_root(project, "example:check@fast", result.run_id) == (
         tmp_path / "artifacts/runs/example/check/variants/fast" / ("1" * 32)

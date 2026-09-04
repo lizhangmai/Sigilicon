@@ -338,7 +338,7 @@ def test_release_publication_runs_as_one_managed_adapter_step(
         encoding="utf-8",
     )
     (contract.parent / "operations.toml").write_text(
-        '''schema = 3
+        '''schema = 4
 contract_kind = "owner-operations"
 path_scope = "owner"
 owner = "rtl-fixture"

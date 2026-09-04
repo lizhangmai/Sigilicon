@@ -17,7 +17,7 @@ _CONFIG_SCHEMAS = {
     "ip-dependency-lock": 3,
     "ip-component": 3,
     "ip-release": 2,
-    "owner-operations": 3,
+    "owner-operations": 4,
 }
 PATH_SCOPES = frozenset(
     {"repository", "owner", "cell", "verification", "platform", "variant"}
