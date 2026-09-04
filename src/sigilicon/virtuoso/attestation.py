@@ -614,14 +614,10 @@ def compare_native_setup_attestation(
     persistence = list(attestation.get("persistence") or ())
     contract = spec.native_setup.rdb_contract
     diagnostic_contract = None if contract is None else contract.diagnostic_equivalence
-    diagnostic_processor = None if contract is None else contract.diagnostic_processor
     diagnostic_requirements = (
         {}
-        if diagnostic_contract is None or diagnostic_processor is None
-        else diagnostic_processor.attestation_requirements(
-            diagnostic_contract,
-            set(contract.tests),
-        )
+        if diagnostic_contract is None
+        else diagnostic_contract.attestation_requirements
     )
     expected_run_options = dict(diagnostic_requirements.get("run_options", {}))
     actual_run_options = {

@@ -21,7 +21,7 @@ def _spec() -> SimpleNamespace:
         scalar_outputs=(("scalar", 'value(VT("/OUT") 1u)'),),
         setup_model_identities=(),
         diagnostic_equivalence=None,
-        diagnostic_processor=None,
+        diagnostic_program=None,
     )
     return SimpleNamespace(
         library="fixture_lib",

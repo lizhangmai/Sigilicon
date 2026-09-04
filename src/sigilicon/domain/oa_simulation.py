@@ -19,9 +19,9 @@ from sigilicon.domain.platform import (
 )
 from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticContract,
-    NativeDiagnosticProcessor,
+    NativeDiagnosticProgram,
     NativeDiagnosticReport,
-    load_native_diagnostic_processor,
+    load_native_diagnostic_program,
 )
 from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
@@ -43,7 +43,7 @@ class OANativeRdbContract:
     scalar_outputs: tuple[tuple[str, str], ...]
     setup_model_identities: tuple[tuple[str, str], ...] = ()
     diagnostic_equivalence: NativeDiagnosticContract | None = None
-    diagnostic_processor: NativeDiagnosticProcessor | None = None
+    diagnostic_program: NativeDiagnosticProgram | None = None
     source_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -71,11 +71,7 @@ class OANativeRdbContract:
 
         if self.diagnostic_equivalence is None:
             return ()
-        if self.diagnostic_processor is None:
-            raise RuntimeError("native diagnostic contract has no owner processor")
-        return self.diagnostic_processor.nullable_scalar_names(
-            self.diagnostic_equivalence
-        )
+        return self.diagnostic_equivalence.nullable_scalar_names
 
     @property
     def support_sources(self) -> tuple[Path, ...]:
@@ -100,9 +96,15 @@ class OANativeRdbContract:
 
         if self.diagnostic_equivalence is None:
             return None
-        if self.diagnostic_processor is None:
-            raise RuntimeError("native diagnostic contract has no owner processor")
-        return self.diagnostic_processor.reconstruct(result, self)
+        if self.diagnostic_program is None:
+            raise RuntimeError("native diagnostic contract has no owner program")
+        return self.diagnostic_program.reconstruct(
+            result,
+            self.diagnostic_equivalence,
+            point_count=self.point_count,
+            corners=self.corners,
+            tests=self.tests,
+        )
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,7 @@ def _load_native_rdb_contract(
     *,
     project_root: Path,
     owner_root: Path,
+    setup_text: str,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None,
 ) -> OANativeRdbContract:
     """Load the source-owned native RDB identity audit model.
@@ -206,7 +209,7 @@ def _load_native_rdb_contract(
         "waveforms",
         "scalars",
         "setup_identity",
-        "diagnostic_processor",
+        "diagnostic_program",
         "diagnostic_equivalence",
     } or not {
         "schema",
@@ -219,7 +222,7 @@ def _load_native_rdb_contract(
         raise ValueError(
             "native RDB contract fields must be exactly schema, point_count, "
             "corners, tests, waveforms, scalars, with optional setup_identity, "
-            "diagnostic_processor, and diagnostic_equivalence"
+            "diagnostic_program, and diagnostic_equivalence"
         )
     if raw.get("schema") != 2:
         raise ValueError("native RDB contract schema must be 2")
@@ -307,45 +310,45 @@ def _load_native_rdb_contract(
             )
         setup_model_identities = tuple(models)
 
-    diagnostic_processor: NativeDiagnosticProcessor | None = None
-    processor_value = raw.get("diagnostic_processor")
+    diagnostic_program: NativeDiagnosticProgram | None = None
+    program_value = raw.get("diagnostic_program")
     diagnostic_raw = raw.get("diagnostic_equivalence")
-    if processor_value is not None:
+    if program_value is not None:
         if diagnostic_raw is None:
             raise ValueError(
-                "native RDB diagnostic_processor requires diagnostic_equivalence"
+                "native RDB diagnostic_program requires diagnostic_equivalence"
             )
         if (
-            not isinstance(processor_value, str)
-            or not processor_value
-            or Path(processor_value).name != processor_value
-            or Path(processor_value).suffix != ".py"
+            not isinstance(program_value, str)
+            or not program_value
+            or Path(program_value).name != program_value
+            or Path(program_value).suffix != ".py"
         ):
             raise ValueError(
-                "native RDB diagnostic_processor must be a testbench-local "
+                "native RDB diagnostic_program must be a testbench-local "
                 "Python filename"
             )
-        processor_source = (path.parent / processor_value).resolve()
+        program_source = (path.parent / program_value).resolve()
         if (
-            not processor_source.is_relative_to(path.parent.resolve())
-            or not processor_source.is_relative_to(owner_root.resolve())
-            or not processor_source.is_file()
+            not program_source.is_relative_to(path.parent.resolve())
+            or not program_source.is_relative_to(owner_root.resolve())
+            or not program_source.is_file()
         ):
             raise ValueError(
-                "native RDB diagnostic_processor must be an existing "
+                "native RDB diagnostic_program must be an existing "
                 "testbench-owned file"
             )
-        diagnostic_processor = load_native_diagnostic_processor(
-            processor_source,
+        diagnostic_program = load_native_diagnostic_program(
+            program_source,
             project_root=project_root,
         )
 
     diagnostic_equivalence: NativeDiagnosticContract | None = None
     if diagnostic_raw is not None:
-        if diagnostic_processor is None:
+        if diagnostic_program is None:
             raise ValueError(
                 "native RDB diagnostic_equivalence requires a testbench-local "
-                "diagnostic_processor declared by the native RDB contract"
+                "diagnostic_program declared by the native RDB contract"
             )
         if architecture_source_documents is not None and (
             not isinstance(architecture_source_documents, _MAPPING_PROXY_TYPE)
@@ -371,11 +374,13 @@ def _load_native_rdb_contract(
                 }
             )
         )
-        diagnostic_equivalence = diagnostic_processor.load_contract(
+        diagnostic_equivalence = diagnostic_program.describe(
             diagnostic_raw,
             contract_path=path,
-            project_root=project_root,
             source_documents=owner_architecture_documents,
+            point_count=point_count,
+            tests=tests,
+            setup_text=setup_text,
         )
 
     waveform_names = [name for name, _signal in waveform_outputs]
@@ -387,12 +392,6 @@ def _load_native_rdb_contract(
     )
     scalar_outputs.extend(diagnostic_scalar_outputs)
     scalar_names = [name for name, _expression in scalar_outputs]
-    if diagnostic_equivalence is not None:
-        assert diagnostic_processor is not None
-        diagnostic_processor.validate_contract(
-            diagnostic_equivalence,
-            point_count=point_count,
-        )
     if len(set(waveform_names)) != len(waveform_names):
         raise ValueError("native RDB contract waveform names must be unique")
     if len(set(scalar_names)) != len(scalar_names):
@@ -422,15 +421,15 @@ def _load_native_rdb_contract(
             raise ValueError(
                 "native RDB diagnostic support source must stay inside its owner"
             )
-        processor_snapshot = (
+        program_snapshot = (
             None
-            if diagnostic_processor is None
-            else diagnostic_processor.source_snapshot
+            if diagnostic_program is None
+            else diagnostic_program.source_snapshot
         )
         support_source_snapshots.append(
-            processor_snapshot
-            if processor_snapshot is not None
-            and processor_snapshot.source_path == source
+            program_snapshot
+            if program_snapshot is not None
+            and program_snapshot.source_path == source
             else load_text_source_snapshot(source)
         )
     return OANativeRdbContract(
@@ -442,7 +441,7 @@ def _load_native_rdb_contract(
         scalar_outputs=tuple(scalar_outputs),
         setup_model_identities=setup_model_identities,
         diagnostic_equivalence=diagnostic_equivalence,
-        diagnostic_processor=diagnostic_processor,
+        diagnostic_program=diagnostic_program,
         source_document=freeze_toml_document(raw),
         source_snapshot=source_snapshot,
         support_source_snapshots=tuple(support_source_snapshots),
@@ -478,13 +477,6 @@ def _validate_native_rdb_contract_source(
     for model_file, section in contract.setup_model_identities:
         if model_file not in setup_text or f'"{section}"' not in setup_text:
             missing.append(f"setup model {model_file}/{section}")
-    diagnostic = contract.diagnostic_equivalence
-    if diagnostic is not None:
-        if contract.diagnostic_processor is None:
-            raise RuntimeError("native diagnostic contract has no owner processor")
-        missing.extend(
-            contract.diagnostic_processor.validate_source(diagnostic, setup_text)
-        )
     if missing:
         raise ValueError(
             "native RDB contract is not consistent with setup.il: "
@@ -597,6 +589,7 @@ def _load_native_oa_simulation_spec(
             rdb_contract_path,
             project_root=project_root,
             owner_root=owner_root,
+            setup_text=setup_text,
             architecture_source_documents=architecture_source_documents,
         )
         if rdb_contract_path.is_file()

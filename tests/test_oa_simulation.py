@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +11,6 @@ from sigilicon.domain.oa_simulation import (
     load_oa_simulation_spec,
 )
 from sigilicon.domain.native_diagnostics import (
-    NativeDiagnosticContract,
-    NativeDiagnosticProcessor,
     NativeDiagnosticReport,
 )
 from sigilicon.project import Project
@@ -108,48 +107,17 @@ def test_oa_maestro_evidence_is_fail_closed(
     assert evidence.as_dict()["status"] == status
 
 
-def test_native_diagnostic_processor_requires_an_explicit_verdict(
-    tmp_path: Path,
-) -> None:
-    processor = NativeDiagnosticProcessor(
-        source=(tmp_path / "processor.py").resolve(),
-        implementation=SimpleNamespace(
-            reconstruct=lambda _result, _contract: {
-                "contexts": [{"passed": False}]
-            }
-        ),
-    )
-
+def test_native_diagnostic_report_requires_an_explicit_verdict() -> None:
     with pytest.raises(ValueError, match="top-level passed boolean"):
-        processor.reconstruct({}, object())
+        NativeDiagnosticReport({"contexts": [{"passed": False}]})
 
 
-def test_native_rdb_contract_returns_a_typed_diagnostic_report(
-    tmp_path: Path,
-) -> None:
+def test_native_diagnostic_report_freezes_its_top_level_payload() -> None:
     payload = {
         "passed": False,
         "contexts": [{"passed": False}],
     }
-    diagnostic = NativeDiagnosticContract("fixture", {}, ())
-    processor = NativeDiagnosticProcessor(
-        source=(tmp_path / "processor.py").resolve(),
-        implementation=SimpleNamespace(
-            reconstruct=lambda _result, _contract: payload
-        ),
-    )
-    contract = OANativeRdbContract(
-        path=(tmp_path / "native_rdb.toml").resolve(),
-        point_count=1,
-        corners=("tt",),
-        tests=("tran",),
-        waveform_outputs=(),
-        scalar_outputs=(),
-        diagnostic_equivalence=diagnostic,
-        diagnostic_processor=processor,
-    )
-
-    report = contract.reconstruct_diagnostic({"outputs": []})
+    report = NativeDiagnosticReport(payload)
     payload["passed"] = True
 
     assert isinstance(report, NativeDiagnosticReport)
@@ -308,9 +276,12 @@ expression = "value(VT(\\"/OUT\\") 1u)"
         contract.source_document["schema"] = 1
 
 
-def _write_local_diagnostic_processor(path: Path) -> None:
+def _write_local_diagnostic_program(path: Path) -> None:
     path.write_text(
-        '''from sigilicon.domain.native_diagnostics import NativeDiagnosticContract
+        '''import os
+from sigilicon.domain.native_diagnostics import NativeDiagnosticContract
+
+os.environ["SIGILICON_OWNER_PROGRAM_EXECUTED"] = "1"
 
 
 def load_contract(raw, *, contract_path, project_root, source_documents):
@@ -345,7 +316,7 @@ def attestation_requirements(diagnostic, tests):
     )
 
 
-def test_native_rdb_selects_a_testbench_local_diagnostic_processor(
+def test_native_rdb_selects_an_isolated_testbench_diagnostic_program(
     tmp_path: Path,
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
@@ -359,14 +330,14 @@ procedure(fixtureNativeMaestro(session lib cell modelFile modelSection)
 ''',
         encoding="utf-8",
     )
-    processor = spec_path.parent / "native_diagnostics.py"
-    _write_local_diagnostic_processor(processor)
+    program = spec_path.parent / "native_diagnostics.py"
+    _write_local_diagnostic_program(program)
     (spec_path.parent / "native_rdb.toml").write_text(
         '''schema = 2
 point_count = 1
 corners = ["tt"]
 tests = ["tran_main"]
-diagnostic_processor = "native_diagnostics.py"
+diagnostic_program = "native_diagnostics.py"
 waveforms = [{ name = "out_wave", signal = "/OUT" }]
 scalars = []
 
@@ -380,22 +351,24 @@ kind = "fixture"
 
     contract = spec.native_setup.rdb_contract
     assert contract is not None
-    assert contract.diagnostic_processor is not None
-    assert contract.diagnostic_processor.source == processor.resolve()
-    assert contract.diagnostic_processor.source_snapshot is not None
+    assert contract.diagnostic_program is not None
+    assert contract.diagnostic_program.source == program.resolve()
     assert (
-        contract.diagnostic_processor.source_snapshot.text
-        == processor.read_text(encoding="utf-8")
+        contract.diagnostic_program.source_snapshot.text
+        == program.read_text(encoding="utf-8")
     )
     assert contract.diagnostic_scalar_names == ("diag_value",)
-    assert processor.resolve() in contract.support_sources
+    assert program.resolve() in contract.support_sources
     assert tuple(
         snapshot.source_path for snapshot in contract.support_source_snapshots
     ) == contract.support_sources
     assert (
         contract.support_source_snapshots[0]
-        is contract.diagnostic_processor.source_snapshot
+        is contract.diagnostic_program.source_snapshot
     )
+    report = contract.reconstruct_diagnostic({"outputs": []})
+    assert report is not None and report.passed
+    assert os.environ.get("SIGILICON_OWNER_PROGRAM_EXECUTED") is None
     with pytest.raises(ValueError, match="architecture source inventory"):
         load_oa_simulation_spec(
             spec_path,
@@ -404,14 +377,14 @@ kind = "fixture"
         )
 
 
-def test_native_rdb_rejects_a_nonlocal_diagnostic_processor(tmp_path: Path) -> None:
+def test_native_rdb_rejects_a_nonlocal_diagnostic_program(tmp_path: Path) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
     (spec_path.parent / "native_rdb.toml").write_text(
         '''schema = 2
 point_count = 1
 corners = ["tt"]
 tests = ["tran_main"]
-diagnostic_processor = "../native_diagnostics.py"
+diagnostic_program = "../native_diagnostics.py"
 waveforms = [{ name = "out_wave", signal = "/OUT" }]
 scalars = []
 
@@ -425,15 +398,15 @@ kind = "fixture"
         load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
-def test_native_rdb_rejects_an_unused_diagnostic_processor(tmp_path: Path) -> None:
+def test_native_rdb_rejects_an_unused_diagnostic_program(tmp_path: Path) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
-    _write_local_diagnostic_processor(spec_path.parent / "native_diagnostics.py")
+    _write_local_diagnostic_program(spec_path.parent / "native_diagnostics.py")
     (spec_path.parent / "native_rdb.toml").write_text(
         '''schema = 2
 point_count = 1
 corners = ["tt"]
 tests = ["tran_main"]
-diagnostic_processor = "native_diagnostics.py"
+diagnostic_program = "native_diagnostics.py"
 waveforms = [{ name = "out_wave", signal = "/OUT" }]
 scalars = []
 ''',
@@ -442,12 +415,12 @@ scalars = []
 
     with pytest.raises(
         ValueError,
-        match="diagnostic_processor requires diagnostic_equivalence",
+        match="diagnostic_program requires diagnostic_equivalence",
     ):
         load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
-def test_native_rdb_requires_local_processor_for_diagnostic_equivalence(
+def test_native_rdb_requires_local_program_for_diagnostic_equivalence(
     tmp_path: Path,
 ) -> None:
     root, spec_path = _write_native_simulation_spec(tmp_path)
@@ -465,7 +438,7 @@ kind = "fixture"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="testbench-local diagnostic_processor"):
+    with pytest.raises(ValueError, match="testbench-local diagnostic_program"):
         load_oa_simulation_spec(spec_path, project=Project.open(root))
 
 
