@@ -63,7 +63,9 @@ ALLOWED_DEPENDENCIES = {
         "root",
     },
 }
-COMPOSITION_ROOTS: dict[Path, str] = {}
+FLOW_ROOT = Path(__file__).parents[1] / "src" / "sigilicon"
+
+
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names: set[str] = set()
@@ -83,15 +85,11 @@ def _dependency_layer(module: str) -> str | None:
 
 
 def test_sigilicon_modules_follow_the_declared_layer_dependency_matrix() -> None:
-    flow_root = Path(__file__).parents[1] / "src" / "sigilicon"
-    assert flow_root.is_dir()
+    assert FLOW_ROOT.is_dir()
     violations: list[str] = []
-    for path in flow_root.rglob("*.py"):
-        relative = path.relative_to(flow_root)
-        source_layer = COMPOSITION_ROOTS.get(
-            relative,
-            relative.parts[0] if len(relative.parts) > 1 else "root",
-        )
+    for path in FLOW_ROOT.rglob("*.py"):
+        relative = path.relative_to(FLOW_ROOT)
+        source_layer = relative.parts[0] if len(relative.parts) > 1 else "root"
         allowed = ALLOWED_DEPENDENCIES[source_layer]
         for imported in _imports(path):
             target = _dependency_layer(imported)
@@ -103,13 +101,12 @@ def test_sigilicon_modules_follow_the_declared_layer_dependency_matrix() -> None
 
 
 def test_external_integration_apis_live_in_their_owned_adapter_layers() -> None:
-    flow_root = Path(__file__).parents[1] / "src" / "sigilicon"
-    assert flow_root.is_dir()
+    assert FLOW_ROOT.is_dir()
     bridge_users: set[str] = set()
     skill_users: set[str] = set()
     process_users: set[str] = set()
-    for path in flow_root.rglob("*.py"):
-        relative = path.relative_to(flow_root)
+    for path in FLOW_ROOT.rglob("*.py"):
+        relative = path.relative_to(FLOW_ROOT)
         imports = _imports(path)
         if any(name.startswith("virtuoso_bridge") for name in imports):
             bridge_users.add(str(relative))
@@ -128,19 +125,54 @@ def test_external_integration_apis_live_in_their_owned_adapter_layers() -> None:
 
 
 def test_platform_source_contracts_have_one_loader() -> None:
-    flow_root = Path(__file__).parents[1] / "src" / "sigilicon"
-    platform_loader = flow_root / "domain/platform.py"
+    platform_loader = FLOW_ROOT / "domain/platform.py"
     violations: list[str] = []
-    for path in flow_root.rglob("*.py"):
+    for path in FLOW_ROOT.rglob("*.py"):
         if path == platform_loader:
             continue
         source = path.read_text(encoding="utf-8")
         if "platform-definition" in source or "platform-simulation" in source:
-            violations.append(str(path.relative_to(flow_root)))
+            violations.append(str(path.relative_to(FLOW_ROOT)))
         if ".pdk.path" in source or "platform_config(" in source:
-            violations.append(str(path.relative_to(flow_root)))
+            violations.append(str(path.relative_to(FLOW_ROOT)))
 
     assert violations == []
+
+
+def test_layout_owner_code_is_loaded_only_inside_the_worker_process() -> None:
+    layout_root = FLOW_ROOT / "layout"
+    dynamic_loaders: set[str] = set()
+    path_mutators: set[str] = set()
+    for path in layout_root.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        relative = path.relative_to(FLOW_ROOT).as_posix()
+        if "spec_from_file_location" in source:
+            dynamic_loaders.add(relative)
+        if "sys.path.insert" in source:
+            path_mutators.add(relative)
+
+    assert dynamic_loaders == {"layout/_generator_worker.py"}
+    assert path_mutators == dynamic_loaders
+    assert "tempfile" not in _imports(layout_root / "generator.py")
+
+
+def test_deleted_parallel_framework_surfaces_do_not_return() -> None:
+    removed = {
+        "PreparedPlan",
+        "PreparedStep",
+        "StepContext",
+        "StepWorkspace",
+        "PdkConfig",
+        "PlatformContract",
+        "build_ip_release",
+        "sigilicon.backends",
+    }
+    sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in FLOW_ROOT.rglob("*.py")
+    )
+
+    assert not (FLOW_ROOT / "backends").exists()
+    assert all(name not in sources for name in removed)
 
 
 def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:

@@ -8,6 +8,7 @@ import tomllib
 from typing import Any
 
 from sigilicon.artifacts import read_nofollow_text
+from sigilicon.contracts import contract_schema
 from sigilicon.execution._model import (
     ContractError,
     Evidence,
@@ -281,15 +282,16 @@ def compile_operation(
         raw = tomllib.loads(record_text)
     except (OSError, RuntimeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ContractError(f"cannot read operation catalog {path}: {exc}") from exc
+    schema = contract_schema("owner-operations")
     expected_header = {
-        "schema": 4,
+        "schema": schema,
         "contract_kind": "owner-operations",
         "path_scope": "owner",
         "owner": owner,
     }
     if any(raw.get(name) != value for name, value in expected_header.items()):
         raise ContractError(
-            f"{path}: expected schema=4, contract_kind='owner-operations', "
+            f"{path}: expected schema={schema}, contract_kind='owner-operations', "
             f"path_scope='owner', owner={owner!r}"
         )
     unknown = set(raw) - _HEADER - {

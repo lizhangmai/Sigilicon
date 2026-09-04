@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import importlib.util
 import json
 from pathlib import Path
 import sys
-import tempfile
-from types import MappingProxyType, ModuleType
-from typing import Any, Mapping
+from types import MappingProxyType
+from typing import Mapping
 
 from sigilicon.domain.netlist import NetlistSnapshot
-from sigilicon.external_tools import ProcessRequest, managed_process
+from sigilicon.external_tools import (
+    ProcessRequest,
+    managed_process,
+    owned_sealed_input,
+)
 from sigilicon.layout.ir import LayoutPlan
+from sigilicon.layout._json import (
+    array as _array,
+    record as _record,
+    record_mapping as _record_mapping,
+    strings as _strings,
+    text as _text,
+)
 
 
 @dataclass(frozen=True)
@@ -137,93 +146,6 @@ def _snapshot_from_payload(value: object, label: str) -> NetlistSnapshot:
     )
 
 
-def _record(
-    value: object,
-    label: str,
-    fields: set[str],
-) -> Mapping[str, Any]:
-    raw = _record_mapping(value, label)
-    if set(raw) != fields:
-        raise ValueError(
-            f"{label} fields disagree: missing={sorted(fields - set(raw))}, "
-            f"unknown={sorted(set(raw) - fields)}"
-        )
-    return raw
-
-
-def _record_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
-        raise ValueError(f"{label} must be an object")
-    return value
-
-
-def _array(value: object, label: str) -> list[object]:
-    if not isinstance(value, list):
-        raise ValueError(f"{label} must be an array")
-    return value
-
-
-def _text(value: object, label: str, *, empty: bool = False) -> str:
-    if not isinstance(value, str) or (not value and not empty):
-        raise ValueError(f"{label} must be text")
-    return value
-
-
-def _strings(value: object, label: str) -> tuple[str, ...]:
-    result = tuple(_text(item, f"{label}[]") for item in _array(value, label))
-    if len(set(result)) != len(result):
-        raise ValueError(f"{label} contains duplicates")
-    return result
-
-
-def _load_generator_module(source: Path) -> ModuleType:
-    module_spec = importlib.util.spec_from_file_location(
-        "_sigilicon_layout_generator", source
-    )
-    if module_spec is None or module_spec.loader is None:
-        raise ValueError(f"cannot load layout generator source: {source}")
-    module = importlib.util.module_from_spec(module_spec)
-    sys.modules[module.__name__] = module
-    module_spec.loader.exec_module(module)
-    return module
-
-
-def execute_layout_generator(
-    spec: LayoutGeneratorInput,
-    *,
-    project_root: Path,
-    generator_source: Path,
-) -> LayoutPlan:
-    """Worker-side generator execution inside one disposable interpreter."""
-
-    root = project_root.absolute()
-    source = generator_source.absolute()
-    if root != root.resolve() or source != source.resolve():
-        raise ValueError("layout generator paths must not traverse symlinks")
-    if not source.is_file() or not source.is_relative_to(root):
-        raise ValueError("layout generator must be a file inside the sealed project")
-    sys.path.insert(0, str(root))
-    module = _load_generator_module(source)
-    entrypoint = getattr(module, "build_layout_plan", None)
-    if not callable(entrypoint):
-        raise ValueError(f"layout generator {source} must export build_layout_plan")
-    plan = entrypoint(spec)
-    if not isinstance(plan, LayoutPlan):
-        raise TypeError(
-            f"layout generator {source} returned {type(plan).__name__}, "
-            "expected LayoutPlan"
-        )
-    identity = (plan.library, plan.cell, plan.view, plan.generator, plan.stage)
-    expected = (spec.library, spec.cell, spec.view, spec.generator, spec.stage)
-    if identity != expected:
-        raise ValueError(
-            f"layout generator changed spec identity: got={identity}, expected={expected}"
-        )
-    return plan
-
-
 def build_layout_plan_from_sources(
     spec: LayoutGeneratorInput,
     *,
@@ -244,17 +166,11 @@ def build_layout_plan_from_sources(
         "generator_source": source.relative_to(root).as_posix(),
         "spec": spec.payload(),
     }
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        prefix=".sigilicon-layout-generator-",
-        suffix=".json",
-        dir=root,
-        delete=False,
-    ) as stream:
-        json.dump(request, stream, sort_keys=True)
-        request_path = Path(stream.name)
-    try:
+    payload = json.dumps(request, sort_keys=True).encode("utf-8")
+    with owned_sealed_input(payload, name="layout-generator.json") as request_file:
+        descriptor = request_file.fd
+        if descriptor is None:
+            raise RuntimeError("layout generator request is not retained")
         completed = managed_process.run(
             ProcessRequest(
                 argv=(
@@ -263,15 +179,15 @@ def build_layout_plan_from_sources(
                     "-B",
                     "-m",
                     "sigilicon.layout._generator_worker",
-                    str(request_path),
+                    str(descriptor),
                 ),
                 cwd=root,
                 environment={},
                 timeout_seconds=120,
+                pass_fds=(descriptor,),
+                before_spawn=request_file.require_sealed,
             )
         )
-    finally:
-        request_path.unlink(missing_ok=True)
     if completed.returncode != 0:
         detail = completed.stderr.strip() or "worker exited without diagnostics"
         raise RuntimeError(f"layout generator subprocess failed:\n{detail}")

@@ -6,6 +6,16 @@ from dataclasses import asdict, dataclass
 import json
 from typing import Any, Mapping
 
+from sigilicon.layout._json import (
+    array as _array,
+    int_pair as _int_pair_payload,
+    optional_text as _optional_text,
+    positive_int as _positive_int,
+    record as _record,
+    string_tuple as _string_tuple,
+    text as _text,
+)
+
 
 @dataclass(frozen=True)
 class LayoutInstance:
@@ -124,65 +134,6 @@ class LayoutPlan:
                 for index, item in enumerate(_array(raw.get("vias", []), "vias"))
             ),
         )
-
-
-def _record(
-    value: object,
-    label: str,
-    fields: set[str],
-    *,
-    optional: set[str] = frozenset(),
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be an object")
-    unknown = set(value) - fields
-    missing = fields - optional - set(value)
-    if unknown or missing:
-        raise ValueError(
-            f"{label} fields disagree: missing={sorted(missing)}, "
-            f"unknown={sorted(unknown)}"
-        )
-    return value
-
-
-def _array(value: object, label: str) -> list[object]:
-    if not isinstance(value, list):
-        raise ValueError(f"{label} must be an array")
-    return value
-
-
-def _text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{label} must be non-empty text")
-    return value
-
-
-def _optional_text(value: object, label: str) -> str | None:
-    if value is None:
-        return None
-    return _text(value, label)
-
-
-def _positive_int(value: object, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{label} must be a positive integer")
-    return value
-
-
-def _int_pair_payload(value: object, label: str) -> tuple[int, int]:
-    if (
-        not isinstance(value, list)
-        or len(value) != 2
-        or any(isinstance(item, bool) or not isinstance(item, int) for item in value)
-    ):
-        raise ValueError(f"{label} must contain two integers")
-    return value[0], value[1]
-
-
-def _string_tuple(value: object, label: str, size: int) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) != size:
-        raise ValueError(f"{label} must contain {size} strings")
-    return tuple(_text(item, label) for item in value)
 
 
 def _layout_instance(value: object, index: int) -> LayoutInstance:
