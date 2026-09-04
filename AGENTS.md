@@ -13,8 +13,10 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   `RunStore`。一个 operation 只在 owner contract 中声明一次；planner 把它编译为包含完整
   source/resource closure 的 typed steps，executor 只按 plan 调用 adapter。不得为同一事实
   增加多层转述，也不得为 owner 动态执行 Python 注册模块。
-- `Project` 是外部 composition seam。公共执行接口只有 open、plan、preflight 和 run；
-  adapter 是 package-owned trusted code，不是同进程插件沙箱；owner 不能注入 adapter Python。
+- `Project` 是外部 composition seam，执行生命周期只有 open、plan、preflight 和 run；
+  owner、catalog、resource 和 configuration 查询仍从同一个 `Project` 提供给 domain/workflow，
+  不建立平行 composition 入口。adapter 是 package-owned trusted code，不是同进程插件沙箱；
+  owner 不能注入 adapter Python。
   adapter 启动的工具必须使用公共 no-follow/process supervisor seam，不能把裸路径检查冒充
   外部进程隔离。只有存在真实变化的实现时才建立 adapter。旧接口迁移采用替换并删除，
   不提供 alias、兼容 schema、双写或弃用期。
@@ -39,6 +41,28 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   只有 CLI 可从 cwd 发现 `sigilicon.toml`。
 - `virtuoso_bridge` 只能由 `sigilicon.virtuoso` adapter 直接导入。顶层
   `import sigilicon` 和 CLI help 不得要求 Bridge 或 Virtuoso 可用。
+
+## 测试设计与验证
+
+- 测试先选择稳定 seam：执行行为从 `Project -> ExecutionPlan -> RunResult/RunStore`、公共
+  CLI 或持久化 artifact 进入；domain loader/workflow 接收显式 `Project` 并检查稳定返回值
+  或 typed result；package-owned adapter 通过 `Adapter`/`ExecutionIO` 行为测试。若一项普通
+  行为只能通过私有状态验证，先加深 owning module，让现有 interface 返回足够结论；不为
+  测试增加裸字段、debug getter 或平行 public API。
+- 回归断言稳定含义：status、identity、错误语义、artifact 内容、受支持的 typed 字段，以及
+  canonical persisted contract 中由本模块拥有的字段。`record` 只有在确实作为 CLI、manifest
+  或持久化协议被消费时才是测试面，优先验证 writer -> reader/auditor round trip；planner
+  action、cache、snapshot 容器和完整中间 dict 不是回归输出。
+- 测试表达当前支持的 contract，不保存已删除 API 的墓碑。测试不通过精确 `__all__`、函数
+  签名、`__dict__`、dataclass 字段表、属性不存在性或生产源码字符串来规定实现形状；
+  `tests/test_suite_policy.py` 持续检查这条边界。
+- fixture 使用真实 TOML、owner/catalog 关系和公共 composition 路径；fake Adapter 只从测试
+  assembly 接入。mock/monkeypatch 放在 EDA、Bridge、进程、时钟或明确的故障注入边界，不用
+  私有 parser/loader 调用次数、对象同一性或 cache 命中证明正确性。性能回归用输入规模与
+  可观察资源上界表达。
+- no-follow、TOCTOU、进程清理和 OA completion uncertainty 等竞争条件可以在无法从外部稳定
+  触发时 patch 最窄的私有 transition point；测试仍须从公共 operation 进入，并断言公共错误、
+  terminal result 或 artifact。该例外保持局部，不扩展成通用测试接口。
 - package test 不启动真实 EDA；需要 Bridge 的测试使用 fake client 或已有离线 helper。
   调用项目明确授权的端到端验证按该项目 owner 的受管入口执行。
 - Sigilicon 不内置 placement、routing 或 physical closure engine；执行内核保持单轮确定
