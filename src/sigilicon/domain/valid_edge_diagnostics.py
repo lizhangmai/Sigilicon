@@ -25,7 +25,7 @@ class ValidEdgeScenario:
 
 @dataclass(frozen=True)
 class ValidEdgeContractDefinition:
-    """Backend-neutral inputs needed to create Calculator edge expressions."""
+    """Adapter-neutral inputs needed to create Calculator edge expressions."""
 
     kind: str
     scenarios: tuple[ValidEdgeScenario, ...]

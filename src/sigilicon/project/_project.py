@@ -199,7 +199,7 @@ class Project:
     def _adapters(self) -> AdapterRegistry:
         """Return this Project's package-owned tool adapters."""
 
-        from sigilicon.backends import trusted_adapters
+        from sigilicon.adapters import trusted_adapters
         from sigilicon.execution.adapter import AdapterRegistry
 
         registry = self._adapter_registry

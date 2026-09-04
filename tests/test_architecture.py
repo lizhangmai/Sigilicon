@@ -20,7 +20,7 @@ LAYERS = {
     "project",
     "domain",
     "execution",
-    "backends",
+    "adapters",
     "layout",
     "virtuoso",
     "workflows",
@@ -28,11 +28,11 @@ LAYERS = {
 }
 ALLOWED_DEPENDENCIES = {
     "root": {"project", "root"},
-    "project": {"backends", "execution", "project", "root"},
+    "project": {"adapters", "execution", "project", "root"},
     "domain": {"domain", "project", "root"},
     "execution": {"execution", "root"},
-    "backends": {
-        "backends",
+    "adapters": {
+        "adapters",
         "domain",
         "execution",
         "project",
@@ -52,7 +52,7 @@ ALLOWED_DEPENDENCIES = {
         "root",
     },
     "cli": {
-        "backends",
+        "adapters",
         "domain",
         "execution",
         "layout",

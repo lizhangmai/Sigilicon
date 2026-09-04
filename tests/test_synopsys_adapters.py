@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from sigilicon.backends.synopsys import (
+from sigilicon.adapters.synopsys import (
     DcAdapter,
     FcAdapter,
     HspiceAdapter,
@@ -156,13 +156,13 @@ printf 'managed vcs\n'
         },
     )
     context = _context(tmp_path, step, resources)
-    backend = VcsAdapter()
+    adapter = VcsAdapter()
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.runtime)
+        for check in adapter.preflight(step, context.runtime)
     )
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {"log"}
@@ -178,7 +178,7 @@ printf 'managed vcs\n'
     _file(missing.source_directory / "rtl/design.sv")
     _file(missing.source_directory / "dv/testbench.sv")
 
-    failed = backend.run(missing)
+    failed = adapter.run(missing)
 
     assert failed.status == "failed"
     assert failed.message == "VCS runner omitted its declared success marker"
@@ -324,15 +324,15 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
             liberty_resource: "file",
         },
     )
-    backend = StructuralLinkAdapter()
+    adapter = StructuralLinkAdapter()
     observed = []
     monkeypatch.setattr(
-        backend,
+        adapter,
         "_execute",
         lambda _context, plan: observed.append(plan) or StepResult.succeeded(),
     )
 
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert observed[0].top == "top"
@@ -346,7 +346,7 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         replace(planning, top="identity_drift"),
     )
     with pytest.raises(ExecutionError, match="step action identity drift"):
-        backend.run(context)
+        adapter.run(context)
 
 
 def test_dc_backend_collects_only_declared_delivery_files(tmp_path: Path) -> None:
@@ -427,13 +427,13 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
             environment=dict(os.environ),
         ),
     )
-    backend = DcAdapter()
+    adapter = DcAdapter()
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.runtime)
+        for check in adapter.preflight(step, context.runtime)
     )
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {
@@ -543,21 +543,21 @@ raise SystemExit(1)
             environment=dict(os.environ),
         ),
     )
-    backend = HspiceAdapter()
+    adapter = HspiceAdapter()
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.runtime)
+        for check in adapter.preflight(step, context.runtime)
     )
     with pytest.raises(ContractError, match="unknown config fields: requires_mismatch"):
-        backend.preflight(
+        adapter.preflight(
             replace(
                 step,
                 config={**step.config, "requires_mismatch": True},
             ),
             context.runtime,
         )
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "failed"
     assert {artifact.role for artifact in result.artifacts} == {
@@ -642,13 +642,13 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
             environment=dict(os.environ),
         ),
     )
-    backend = FcAdapter()
+    adapter = FcAdapter()
 
     assert all(
         check.status == "ready"
-        for check in backend.preflight(step, context.runtime)
+        for check in adapter.preflight(step, context.runtime)
     )
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert {artifact.role for artifact in result.artifacts} == {

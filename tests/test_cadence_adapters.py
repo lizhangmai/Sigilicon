@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.backends.cadence import (
+from sigilicon.adapters.cadence import (
     LayoutAdapter,
     LayoutVerificationAdapter,
     NativeOaAdapter,
@@ -37,7 +37,7 @@ def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> P
 
 
 def test_oa_operations_have_fixed_backend_identities() -> None:
-    names = {backend.name for backend in cadence_adapters()}
+    names = {adapter.name for adapter in cadence_adapters()}
 
     assert "cadence.oa" not in names
     assert {
@@ -101,16 +101,16 @@ def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
 
 
 def test_cadence_run_methods_only_consume_planned_actions() -> None:
-    backends = (
+    adapters = (
         XceliumAmsAdapter(),
         NativeOaAdapter(),
         LayoutAdapter(),
         LayoutVerificationAdapter(),
-        *(backend for backend in cadence_adapters() if backend.name.startswith("cadence.oa-")),
+        *(adapter for adapter in cadence_adapters() if adapter.name.startswith("cadence.oa-")),
     )
 
-    for backend in backends:
-        source = inspect.getsource(backend.run)
+    for adapter in adapters:
+        source = inspect.getsource(adapter.run)
         assert "Project.open" not in source
         assert "plan_xcelium" not in source
         assert "plan_oa" not in source
@@ -262,16 +262,16 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     )
     _file(context.source_directory / "rtl/design.sv", "module design; endmodule\n")
     _file(context.source_directory / "dv/testbench.sv", "module testbench; endmodule\n")
-    backend = XceliumAdapter()
+    adapter = XceliumAdapter()
 
-    assert all(check.status == "ready" for check in backend.preflight(step, resources))
-    result = backend.run(context)
+    assert all(check.status == "ready" for check in adapter.preflight(step, resources))
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert len(result.artifacts) == 4
     assert result.facts == {"passed": True}
     assert not (context.work_directory / "xcelium.d").exists()
-    assert tuple(inspect.signature(backend.run).parameters) == ("context",)
+    assert tuple(inspect.signature(adapter.run).parameters) == ("context",)
 
 
 def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
@@ -372,8 +372,8 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         "sigilicon.workflows.xcelium_ams.execute_xcelium_ams_cell",
         execute,
     )
-    backend = XceliumAmsAdapter()
-    prepared = backend.plan(selected_project, step, resources)
+    adapter = XceliumAmsAdapter()
+    prepared = adapter.plan(selected_project, step, resources)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
@@ -387,9 +387,9 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     }
 
     assert all(
-        check.status == "ready" for check in backend.preflight(prepared, resources)
+        check.status == "ready" for check in adapter.preflight(prepared, resources)
     )
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {
@@ -502,11 +502,11 @@ def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> No
         "virtuoso-bridge.port": "65432",
     }
     capabilities = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
-    backend = next(
+    adapter = next(
         item for item in cadence_adapters() if item.name == "cadence.oa-rebuild"
     )
 
-    blocked = backend.preflight(
+    blocked = adapter.preflight(
         step,
         Resources(capabilities=capabilities, values=values),
     )
@@ -519,7 +519,7 @@ def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> No
 
     spicein = _file(tmp_path / "tools/spiceIn", executable=True)
     text_import = _file(tmp_path / "tools/cdsTextTo5x", executable=True)
-    ready = backend.preflight(
+    ready = adapter.preflight(
         step,
         Resources(
             capabilities=capabilities,
@@ -564,7 +564,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         else None,
     )
     monkeypatch.setattr(
-        "sigilicon.backends.cadence.find_oa_assembly",
+        "sigilicon.adapters.cadence.find_oa_assembly",
         lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
@@ -606,12 +606,12 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         "sigilicon.workflows.oa_simulation.execute_oa_maestro_testbench",
         execute,
     )
-    backend = NativeOaAdapter()
-    prepared = backend.plan(project, step, context.runtime)
+    adapter = NativeOaAdapter()
+    prepared = adapter.plan(project, step, context.runtime)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {"passed": True, "evidence_status": "passed"}
@@ -652,7 +652,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         owner=lambda _name: SimpleNamespace(root=owner_root),
     )
     monkeypatch.setattr(
-        "sigilicon.backends.cadence.find_oa_assembly",
+        "sigilicon.adapters.cadence.find_oa_assembly",
         lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
@@ -672,7 +672,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         lambda _plan, _members: None,
     )
     monkeypatch.setattr(
-        "sigilicon.backends.cadence._oa_resource_identities",
+        "sigilicon.adapters.cadence._oa_resource_identities",
         lambda _project, _plan, _required, _resources: {
             model: "pdk:fixture:simulation/nominal/model.scs"
         },
@@ -710,21 +710,21 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         "sigilicon.workflows.oa_library.rebuild_oa_library",
         rebuild,
     )
-    backend = next(
-        backend for backend in cadence_adapters()
-        if backend.name == "cadence.oa-rebuild"
+    adapter = next(
+        adapter for adapter in cadence_adapters()
+        if adapter.name == "cadence.oa-rebuild"
     )
-    prepared = backend.plan(project, step, context.runtime)
+    prepared = adapter.plan(project, step, context.runtime)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert registered[0].operation_id == context.operation_id
     response["passed"] = "false"
     with pytest.raises(ExecutionError, match="boolean 'passed'"):
-        backend.run(context)
+        adapter.run(context)
 
 
 def test_layout_backend_binds_mutation_and_preserves_uncertainty(
@@ -797,11 +797,11 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         generate,
     )
 
-    backend = LayoutAdapter()
-    prepared = backend.plan(project, step, context.runtime)
+    adapter = LayoutAdapter()
+    prepared = adapter.plan(project, step, context.runtime)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {"instance_count": 3}
@@ -820,7 +820,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         _oa_context(tmp_path / "uncertain", step, registered=[]),
         prepared,
     )
-    result = backend.run(second)
+    result = adapter.run(second)
     assert result.status == "uncertain"
     assert result.facts["workspace_uncertainty"] == (
         "workspace cleanup could not be proven",
@@ -1002,15 +1002,15 @@ def test_layout_verification_backend_publishes_classified_evidence(
         "sigilicon.workflows.layout_verification.run_layout_verification",
         verify,
     )
-    backend = LayoutVerificationAdapter()
-    prepared = backend.plan(project, step, resources)
+    adapter = LayoutVerificationAdapter()
+    prepared = adapter.plan(project, step, resources)
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
     assert all(
-        check.status == "ready" for check in backend.preflight(prepared, resources)
+        check.status == "ready" for check in adapter.preflight(prepared, resources)
     )
-    result = backend.run(context)
+    result = adapter.run(context)
 
     assert result.status == "succeeded"
     assert result.facts == {

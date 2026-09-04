@@ -105,7 +105,6 @@ def test_execution_interface_has_one_vocabulary_and_run_store_seam() -> None:
         "ExecutionError",
         "OperationStep",
         "PreparedStep",
-        "Backend",
         "Operation",
         "Preparation",
         "PreflightCheck",
@@ -209,11 +208,11 @@ def test_step_workspace_does_not_import_the_execution_model() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _bind_test_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+def _bind_test_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     global _TEST_ADAPTERS
     _TEST_ADAPTERS = ()
     monkeypatch.setattr(
-        "sigilicon.backends.trusted_adapters",
+        "sigilicon.adapters.trusted_adapters",
         lambda: _TEST_ADAPTERS,
     )
     monkeypatch.setenv("LM_LICENSE_FILE", "test-license")
@@ -1148,12 +1147,12 @@ def test_same_content_source_metadata_drift_keeps_the_sealed_snapshot(
     _write_project(tmp_path)
     source = tmp_path / "ip/example/configs/value.txt"
 
-    class MutatingBackend(CopyAdapter):
+    class MutatingAdapter(CopyAdapter):
         def preflight(self, step, resources):
             source.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
             return ()
 
-    project = _project(tmp_path, MutatingBackend(),)
+    project = _project(tmp_path, MutatingAdapter(),)
     plan = _plan(project, "example:check")
 
     result = project.run(plan, run_id="b" * 32)
@@ -1168,7 +1167,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
     _write_project(tmp_path)
     live = tmp_path / "ip/example/configs/value.txt"
 
-    class SealedSourceBackend(CopyAdapter):
+    class SealedSourceAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
             live.write_text("later\n", encoding="utf-8")
             output = context.write_text(
@@ -1180,7 +1179,7 @@ def test_backend_consumes_the_sealed_source_not_the_live_owner_file(
                 artifacts=(Artifact("source", "text.plain", output),)
             )
 
-    project = _project(tmp_path, SealedSourceBackend(),)
+    project = _project(tmp_path, SealedSourceAdapter(),)
     plan = _plan(project, "example:check")
 
     result = project.run(
@@ -1679,7 +1678,7 @@ def test_public_execution_models_reject_inconsistent_values() -> None:
 def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class ExtraOutputBackend(CopyAdapter):
+    class ExtraOutputAdapter(CopyAdapter):
         def preflight(self, step, resources):
             return ()
 
@@ -1690,7 +1689,7 @@ def test_backend_cannot_publish_an_incomplete_output_inventory(tmp_path: Path) -
                 artifacts=(Artifact("source", "text.plain", published),)
             )
 
-    project = _project(tmp_path, ExtraOutputBackend(),)
+    project = _project(tmp_path, ExtraOutputAdapter(),)
     plan = _plan(project, "example:check")
 
     with pytest.raises(ExecutionError, match="output inventory"):
@@ -1702,7 +1701,7 @@ def test_failed_backend_cannot_leave_an_incomplete_output_inventory(
 ) -> None:
     _write_project(tmp_path)
 
-    class ExtraDiagnosticBackend(CopyAdapter):
+    class ExtraDiagnosticAdapter(CopyAdapter):
         def preflight(self, step, resources):
             return ()
 
@@ -1710,7 +1709,7 @@ def test_failed_backend_cannot_leave_an_incomplete_output_inventory(
             context.write_text("diagnostic", "unpublished.log", "diagnostic\n")
             return StepResult.failed("tool failed")
 
-    project = _project(tmp_path, ExtraDiagnosticBackend())
+    project = _project(tmp_path, ExtraDiagnosticAdapter())
     plan = _plan(project, "example:check")
 
     with pytest.raises(ExecutionError, match="output inventory"):
@@ -1722,7 +1721,7 @@ def test_backend_cannot_leave_an_unpublished_empty_output_directory(
 ) -> None:
     _write_project(tmp_path)
 
-    class EmptyDirectoryBackend(CopyAdapter):
+    class EmptyDirectoryAdapter(CopyAdapter):
         def preflight(self, step, resources):
             return ()
 
@@ -1730,7 +1729,7 @@ def test_backend_cannot_leave_an_unpublished_empty_output_directory(
             (context.output_directory / "unpublished").mkdir()
             return StepResult.succeeded()
 
-    project = _project(tmp_path, EmptyDirectoryBackend())
+    project = _project(tmp_path, EmptyDirectoryAdapter())
     plan = _plan(project, "example:check")
 
     with pytest.raises(ExecutionError, match="output inventory"):
@@ -1740,7 +1739,7 @@ def test_backend_cannot_leave_an_unpublished_empty_output_directory(
 def test_backend_cannot_leave_an_unpublished_output_symlink(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class SymlinkOutputBackend(CopyAdapter):
+    class SymlinkOutputAdapter(CopyAdapter):
         def preflight(self, step, resources):
             return ()
 
@@ -1750,7 +1749,7 @@ def test_backend_cannot_leave_an_unpublished_output_symlink(tmp_path: Path) -> N
             (context.output_directory / "unpublished").symlink_to(target)
             return StepResult.succeeded()
 
-    project = _project(tmp_path, SymlinkOutputBackend())
+    project = _project(tmp_path, SymlinkOutputAdapter())
     plan = _plan(project, "example:check")
 
     with pytest.raises(ExecutionError, match="output inventory"):
@@ -1760,11 +1759,11 @@ def test_backend_cannot_leave_an_unpublished_output_symlink(tmp_path: Path) -> N
 def test_uncertain_execution_is_distinct_from_closed_result_storage(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class UncertainBackend(CopyAdapter):
+    class UncertainAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
             return StepResult.uncertain("descendant cleanup could not be proven")
 
-    project = _project(tmp_path, UncertainBackend(),)
+    project = _project(tmp_path, UncertainAdapter(),)
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
@@ -1784,13 +1783,13 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
 ) -> None:
     _write_project(tmp_path)
 
-    class CleanupUnknownBackend(CopyAdapter):
+    class CleanupUnknownAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
             raise ProcessGroupCleanupUncertainError(
                 "descendant cleanup could not be proven"
             )
 
-    project = _project(tmp_path, CleanupUnknownBackend(),)
+    project = _project(tmp_path, CleanupUnknownAdapter(),)
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
@@ -1806,11 +1805,11 @@ def test_process_cleanup_uncertainty_cannot_be_downgraded_to_failure(
 def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class CancelledBackend(CopyAdapter):
+    class CancelledAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
             return StepResult.cancelled("operator cancelled the tool")
 
-    project = _project(tmp_path, CancelledBackend(),)
+    project = _project(tmp_path, CancelledAdapter(),)
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
@@ -1827,7 +1826,7 @@ def test_cancelled_execution_is_closed_and_restorable(tmp_path: Path) -> None:
 def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
-    class RejectingBackend(CopyAdapter):
+    class RejectingAdapter(CopyAdapter):
         def run(self, context: ExecutionIO) -> StepResult:
             evidence = context.write_text("evidence", "failure.json", "{}\n")
             return StepResult(
@@ -1837,7 +1836,7 @@ def test_failed_step_keeps_its_diagnostic_evidence(tmp_path: Path) -> None:
                 "qualification failed",
             )
 
-    project = _project(tmp_path, RejectingBackend(),)
+    project = _project(tmp_path, RejectingAdapter(),)
     plan = _plan(project, "example:check")
     result = project.run(
         plan,
