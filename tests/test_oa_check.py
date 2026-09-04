@@ -5,16 +5,19 @@ from types import SimpleNamespace
 
 import pytest
 
+import sigilicon.adapters.cadence.oa_check as oa_check
+from conftest import write_component_owner, write_test_platform
 from sigilicon.project import Project
 from sigilicon.execution._model import Resources
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.adapters.cadence.oa_check import (
-    _library_ownership,
-    _locks,
-    _recommendation,
     check_oa_library,
 )
-from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan, rebuild_oa_library
+from sigilicon.adapters.cadence.oa_library import (
+    OALibraryRebuildPlan,
+    plan_oa_library_rebuild,
+    rebuild_oa_library,
+)
 
 
 OA_RESOURCES = Resources()
@@ -85,114 +88,146 @@ def test_oa_rebuild_rejects_pure_layout_snapshot_before_live_access() -> None:
         )
 
 
-def test_current_clean_check_is_clean() -> None:
-    assert (
-        _recommendation(
-            plan_error=None,
-            parity={"passed": True},
-            ownership={"conflicts": []},
-            bridge={"active_maestro_sessions": [], "open_cell_views": []},
-            locks={"edit_locks": [], "errors": []},
-        )
-        == "clean"
+def _typed_oa_plan(root: Path) -> OALibraryRebuildPlan:
+    write_test_platform(root)
+    workspace = root / "virtuoso"
+    workspace.mkdir(exist_ok=True)
+    cell = root / "ip/fixture/cells/MODEL"
+    cell.mkdir(parents=True)
+    (cell / "circuit.scs").write_text(
+        "subckt MODEL IN OUT VDD VSS\nends MODEL\n",
+        encoding="utf-8",
     )
+    (cell / "design.toml").write_text(
+        '''schema = 1
+contract_kind = "cell-design"
+path_scope = "cell"
+owner = "fixture"
 
+[design]
+library = "fixture_lib"
+cell = "MODEL"
+source_netlist = "circuit.scs"
+pdk = "testpdk"
 
-def test_dead_bridge_process_makes_live_state_uncertain() -> None:
-    assert (
-        _recommendation(
-            plan_error=None,
-            parity={"passed": True},
-            ownership={"conflicts": []},
-            bridge={
-                "active_maestro_sessions": [],
-                "open_cell_views": [],
-                "process": {"pid": 123, "alive": False},
-            },
-            locks={"edit_locks": [], "errors": []},
-        )
-        == "uncertain"
+[ports]
+inputs = ["IN"]
+outputs = ["OUT"]
+supplies = ["VDD", "VSS"]
+order = ["IN", "OUT", "VDD", "VSS"]
+
+[ports.directions]
+IN = "input"
+OUT = "output"
+VDD = "inputOutput"
+VSS = "inputOutput"
+''',
+        encoding="utf-8",
     )
+    (cell / "cell.toml").write_text(
+        '''schema = 1
+contract_kind = "oa-cell"
+path_scope = "cell"
+owner = "fixture"
+cell = "MODEL"
+role = "design"
+canonical_source = "circuit.scs"
+views = [
+  { name = "netlist", kind = "spectre_netlist", source = "circuit.scs" },
+  { name = "schematic", kind = "schematic", source = "design.toml", dependencies = ["MODEL/netlist"] },
+  { name = "symbol", kind = "symbol", source = "design.toml", dependencies = ["MODEL/schematic"] },
+]
+''',
+        encoding="utf-8",
+    )
+    manifest = root / "ip/fixture/configs/oa.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '''schema = 1
+contract_kind = "oa-assembly"
+path_scope = "owner"
+owner = "fixture"
+name = "fixture_lib"
+pdk = "testpdk"
+cell_roots = ["cells"]
+primitive_masters = []
+''',
+        encoding="utf-8",
+    )
+    write_component_owner(
+        root,
+        "fixture",
+        filesets={
+            "oa_source": (
+                "ip/fixture/configs/oa.toml",
+                "ip/fixture/cells/MODEL/cell.toml",
+                "ip/fixture/cells/MODEL/circuit.scs",
+                "ip/fixture/cells/MODEL/design.toml",
+            )
+        },
+    )
+    plan = plan_oa_library_rebuild(manifest, project=Project.open(root))
+    plan.source.oa_library.mkdir()
+    return plan
 
 
-def test_check_proves_live_library_path_is_the_manifest_target(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("live_views", "pid_error", "expected_status", "expected_passed"),
+    (
+        ((), False, "clean", True),
+        (
+            (
+                SimpleNamespace(
+                    library="fixture_lib",
+                    cell="MODEL",
+                    view="spectre",
+                    mode="r",
+                    visible=True,
+                    identity="open-view",
+                ),
+            ),
+            False,
+            "blocked",
+            False,
+        ),
+        ((), True, "uncertain", False),
+    ),
+)
+def test_oa_check_reports_public_clean_blocked_and_uncertain_results(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    live_views: tuple[SimpleNamespace, ...],
+    pid_error: bool,
+    expected_status: str,
+    expected_passed: bool,
 ) -> None:
-    workspace = tmp_path / "virtuoso"
-    expected = workspace / "fixture_lib"
-    shadow = workspace / "shadow"
-    expected.mkdir(parents=True)
-    shadow.mkdir()
-    plan = SimpleNamespace(
-        library="fixture_lib",
-        source=SimpleNamespace(
-            project_root=tmp_path,
-            workspace_root=workspace,
-            oa_library=expected,
-        ),
+    plan = _typed_oa_plan(tmp_path)
+    monkeypatch.setattr(oa_check, "active_maestro_sessions", lambda _client: ())
+    monkeypatch.setattr(oa_check, "open_cell_views", lambda _client: live_views)
+    monkeypatch.setattr(
+        oa_check,
+        "virtuoso_workdir",
+        lambda _client: plan.source.workspace_template,
     )
-    client = SimpleNamespace(
-        library=SimpleNamespace(
-            get=lambda _library, **_kwargs: SimpleNamespace(path=str(shadow))
+    if pid_error:
+        def unavailable_pid(_client):
+            raise RuntimeError("bridge process unavailable")
+
+        monkeypatch.setattr(oa_check, "virtuoso_pid", unavailable_pid)
+    else:
+        monkeypatch.setattr(oa_check, "virtuoso_pid", lambda _client: 1)
+    monkeypatch.setattr(
+        oa_check,
+        "check_oa_parity",
+        lambda *_args, **_kwargs: {"passed": True},
+    )
+    operation = SimpleNamespace(
+        require_project_library_target=(
+            lambda _client, _library: plan.source.oa_library
         )
     )
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.virtuoso_workdir", lambda _client: workspace
-    )
-    monkeypatch.setattr(
-        "sigilicon.virtuoso.workspace.assert_no_active_maestro_sessions",
-        lambda *_args, **_kwargs: None,
-    )
 
-    report = _library_ownership(plan, client)
+    report = check_oa_library(plan, client=object(), operation=operation)
 
-    assert report["passed"] is False
-    assert report["status"] == "blocked"
-    assert report["registered_path"] == str(shadow)
-    assert report["expected_path"] == str(expected)
-
-
-def test_lock_inventory_includes_undeclared_oa_cache_views(tmp_path: Path) -> None:
-    view = tmp_path / "virtuoso" / "fixture_lib" / "EXTRA" / "schematic"
-    view.mkdir(parents=True)
-    (view / ".cdslck.1").write_text(
-        "HostName test-host\nProcessIdentifier 1\n", encoding="utf-8"
-    )
-    plan = SimpleNamespace(
-        expected_views={},
-        source=SimpleNamespace(
-            project_root=tmp_path,
-            oa_library=tmp_path / "virtuoso" / "fixture_lib",
-            workspace_template=tmp_path / "virtuoso",
-        ),
-    )
-
-    report = _locks(plan)
-
-    assert len(report["edit_locks"]) == 1
-    assert report["edit_locks"][0]["cell"] == "EXTRA"
-    assert report["edit_locks"][0]["view"] == "schematic"
-    assert report["edit_locks"][0]["declared"] is False
-
-
-def test_released_flow_marker_is_not_reported_as_live_lock() -> None:
-    base = {
-        "edit_locks": [],
-        "errors": [],
-        "flow_operation_lock": {"exists": True, "held": False},
-    }
-    common = {
-        "plan_error": None,
-        "parity": {"passed": True},
-        "ownership": {"conflicts": []},
-        "bridge": {"active_maestro_sessions": [], "open_cell_views": []},
-    }
-
-    assert _recommendation(locks=base, **common) == "clean"
-    assert (
-        _recommendation(
-            locks={**base, "flow_operation_lock": {"exists": True, "held": True}},
-            **common,
-        )
-        == "blocked"
-    )
+    assert report["status"] == expected_status
+    assert report["passed"] is expected_passed

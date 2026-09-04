@@ -8,12 +8,10 @@ import sys
 
 import pytest
 
-from sigilicon.adapters.synopsys import (
-    DcAdapter,
-    FcAdapter,
-    HspiceAdapter,
-    VcsAdapter,
-)
+from sigilicon.adapters.synopsys.dc_adapter import DcAdapter
+from sigilicon.adapters.synopsys.fc_adapter import FcAdapter
+from sigilicon.adapters.synopsys.hspice_adapter import HspiceAdapter
+from sigilicon.adapters.synopsys.vcs_adapter import VcsAdapter
 from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,

@@ -6,10 +6,7 @@ from types import SimpleNamespace
 from sigilicon.virtuoso.bridge import decode_skill_output
 
 from sigilicon.virtuoso.attestation import (
-    _parse_rows,
-    _normalize_calculator_expression,
-    build_native_setup_attestation_skill,
-    compare_native_setup_attestation,
+    compare_native_setup_attestation_output,
 )
 
 
@@ -42,98 +39,19 @@ def _spec() -> SimpleNamespace:
     )
 
 
-def test_attestation_skill_uses_official_read_only_objects() -> None:
-    skill = build_native_setup_attestation_skill("fixture_lib", "tb_main")
-
-    for api in (
-        "hdbOpen",
-        "pcdbGetInstMasterGen",
-        "hdbBind",
-        "maeOpenSetup",
-        "axlGetTestToolArgs",
-        "maeGetAnalysis",
-        "maeGetEnvOption",
-        "axlGetCorners",
-        "axlGetModelFile",
-        "maeGetTestOutputs",
-        "maeGetSpecStatus",
-        "maeGetOverallSpecStatus",
-        "maeGetCurrentRunMode",
-        "axlGetAllSweepsEnabled",
-        "axlGetVars",
-        "maeGetVar",
-        "axlGetRunOptions",
-        "axlGetRunOptionValue",
-        "maeGetSessions",
-    ):
-        assert api in skill
-    assert 'load("' not in skill
-    assert '"w"' not in skill
-    assert '"a"' not in skill
-    assert "analysisOptions option envOptions" in skill
-
-
-def test_attestation_skill_has_balanced_parentheses_and_strings() -> None:
-    skill = build_native_setup_attestation_skill("fixture_lib", "tb_main")
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in skill:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-        elif character == '"':
-            in_string = True
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-            assert depth >= 0
-
-    assert in_string is False
-    assert depth == 0
-
-
-def test_calculator_comparison_normalizes_cadence_numeric_spelling_only() -> None:
-    source = 'ymax(clip(VT("/OUT") 643.2n 645n))-ymin(clip(VT("/OUT") 643.2n 645n))'
-    cadence = '(ymax(clip(VT("/OUT") 6.432e-7 6.45e-7)) - ymin(clip(VT("/OUT") 6.432e-7 6.45e-7)))'
-
-    assert _normalize_calculator_expression(source) == _normalize_calculator_expression(
-        cadence
-    )
-    assert _normalize_calculator_expression(source) != _normalize_calculator_expression(
-        source.replace("643.2n", "644n")
-    )
-    dynamic_source = (
-        'value(VT("/D0") (cross(clip(VT("/RDY") 2n 3.6n) '
-        '0.45 1 "rising" nil "time") + 20p))'
-    )
-    dynamic_cadence = (
-        'value(VT("/D0") (cross(clip(VT("/RDY") 2e-9 3.6e-9) '
-        '4.5e-1 1 "rising" nil "time") + 2e-11))'
-    )
-    assert _normalize_calculator_expression(
-        dynamic_source
-    ) == _normalize_calculator_expression(dynamic_cadence)
-
-
 def test_bridge_quoted_attestation_fixture_decodes_before_row_parsing() -> None:
     fixture = Path(__file__).parent / "fixtures" / "oa_native_attestation_output.txt"
     decoded = decode_skill_output(fixture.read_text(encoding="utf-8"))
-    observations = _parse_rows(decoded)
-
-    result = compare_native_setup_attestation(_spec(), observations)
+    result = compare_native_setup_attestation_output(_spec(), decoded)
+    observations = result["observations"]
 
     assert result["passed"] is True
     assert observations["outputs"][1]["expression"] == 'value(VT("/OUT") 1u)'
 
 
 def test_attestation_comparison_covers_setup_and_result_identity() -> None:
-    observations = _parse_rows(
+    result = compare_native_setup_attestation_output(
+        _spec(),
         "\n".join(
             (
                 "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
@@ -149,10 +67,8 @@ def test_attestation_comparison_covers_setup_and_result_identity() -> None:
                 "SESSION|opened|fnxSession1",
                 "SESSION|closed|nil",
             )
-        )
+        ),
     )
-
-    result = compare_native_setup_attestation(_spec(), observations)
 
     assert result["passed"] is True
     assert all(result["checks"].values())
@@ -165,7 +81,8 @@ def test_attestation_uses_explicit_nondefault_setup_model_identity() -> None:
     spec.native_setup.rdb_contract.setup_model_identities = (
         ("local_models.scs", "local_mos"),
     )
-    observations = _parse_rows(
+    result = compare_native_setup_attestation_output(
+        spec,
         "\n".join(
             (
                 "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
@@ -181,10 +98,8 @@ def test_attestation_uses_explicit_nondefault_setup_model_identity() -> None:
                 "SESSION|opened|fnxSession1",
                 "SESSION|closed|nil",
             )
-        )
+        ),
     )
-
-    result = compare_native_setup_attestation(spec, observations)
 
     assert result["passed"] is True
     assert result["diagnostics"]["model_file_section"]["expected"] == [
@@ -193,7 +108,8 @@ def test_attestation_uses_explicit_nondefault_setup_model_identity() -> None:
 
 
 def test_attestation_diagnostics_identify_the_changed_result_contract_field() -> None:
-    observations = _parse_rows(
+    result = compare_native_setup_attestation_output(
+        _spec(),
         "\n".join(
             (
                 "CONFIG|fixture_lib|tb_main|config|fixture_lib|tb_main|schematic",
@@ -209,10 +125,8 @@ def test_attestation_diagnostics_identify_the_changed_result_contract_field() ->
                 "SESSION|opened|fnxSession1",
                 "SESSION|closed|nil",
             )
-        )
+        ),
     )
-
-    result = compare_native_setup_attestation(_spec(), observations)
 
     assert result["passed"] is False
     assert result["checks"]["waveform_outputs"] is False

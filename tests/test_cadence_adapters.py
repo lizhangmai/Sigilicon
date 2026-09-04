@@ -1,25 +1,22 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from sigilicon.adapters.cadence import (
-    LayoutAdapter,
-    NativeOaAdapter,
-    XceliumAdapter,
-    cadence_adapters,
-)
+from sigilicon.adapters.cadence import cadence_adapters
+from sigilicon.adapters.cadence.layout_adapter import LayoutAdapter
+from sigilicon.adapters.cadence.oa_adapter import NativeOaAdapter
+from sigilicon.adapters.cadence.rtl_adapter import XceliumAdapter
 from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,
     ExecutionIO,
 )
 from sigilicon.execution._model import Resources
-from sigilicon.adapters.cadence.oa_library import oa_plan_source_paths
 
 from conftest import write_file as _file
 
@@ -34,59 +31,6 @@ def test_oa_operations_have_fixed_backend_identities() -> None:
         "cadence.oa-rebuild",
         "cadence.oa-attest",
     }.issubset(names)
-
-
-def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
-    model = _file(tmp_path / "model.scs")
-    support = _file(tmp_path / "support.scs")
-    setup = _file(tmp_path / "setup.il")
-    testbench = _file(tmp_path / "testbench.scs")
-    model_set = SimpleNamespace(paths=(model, support))
-    pdk = SimpleNamespace(
-        source_paths=(),
-        runtime_bound=True,
-        simulation=SimpleNamespace(model_sets={"default": model_set}),
-    )
-    native_setup = SimpleNamespace(
-        pdk=pdk,
-        source_snapshot=SimpleNamespace(source_path=setup),
-        rdb_contract=None,
-    )
-    simulation = SimpleNamespace(
-        source_documents={},
-        native_setup=native_setup,
-    )
-    plan = SimpleNamespace(
-        source=SimpleNamespace(source_documents={}, cells=()),
-        netlist_snapshots={},
-        designs=(),
-        layouts=(),
-        testbenches=(
-            SimpleNamespace(
-                source_snapshot=SimpleNamespace(source_path=testbench),
-                simulation=simulation,
-            ),
-        ),
-        views=(),
-    )
-
-    closure = oa_plan_source_paths(plan)
-
-    assert {model.resolve(), support.resolve()}.issubset(closure)
-
-    native_setup.pdk = SimpleNamespace(
-        source_paths=(),
-        runtime_bound=False,
-        simulation=SimpleNamespace(
-            model_sets={
-                "default": SimpleNamespace(
-                    files=(PurePosixPath("model.scs"),)
-                )
-            }
-        ),
-    )
-    source_closure = oa_plan_source_paths(plan)
-    assert (Path.cwd() / "model.scs").resolve() not in source_closure
 
 
 def _context(

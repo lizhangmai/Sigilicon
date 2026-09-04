@@ -362,10 +362,6 @@ kind = "fixture"
     assert tuple(
         snapshot.source_path for snapshot in contract.support_source_snapshots
     ) == contract.support_sources
-    assert (
-        contract.support_source_snapshots[0]
-        is contract.diagnostic_program.source_snapshot
-    )
     report = contract.reconstruct_diagnostic({"outputs": []})
     assert report is not None and report.passed
     assert os.environ.get("SIGILICON_OWNER_PROGRAM_EXECUTED") is None

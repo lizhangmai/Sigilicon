@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 
 
@@ -24,6 +25,21 @@ def write_file(
     if executable:
         path.chmod(0o755)
     return path
+
+
+def managed_execution_workspace(root: Path) -> ExecutionWorkspace:
+    """Return the canonical managed-run layout used by adapter tests."""
+
+    run = root / "run"
+    return ExecutionWorkspace(
+        run_id="managed-run",
+        root=run,
+        input_root=run / "work/action/inputs",
+        work_root=run / "work/action/tool",
+        output_root=run / "outputs/action/evidence",
+        log_root=run / "logs/action",
+        source={},
+    )
 
 
 def write_project_context(root: Path) -> Path:

@@ -11,26 +11,16 @@ from sigilicon.project import Project
 from sigilicon.adapters.cadence import xcelium as xcelium_workflow
 from sigilicon.external_tools import ProcessResult
 from sigilicon.execution._model import Resources
-from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.adapters.cadence.xcelium import (
     execute_xcelium_cell,
     plan_xcelium_cell,
 )
 
-from conftest import write_component_owner, write_file as _write
-
-
-def _run_artifacts(root: Path) -> ExecutionWorkspace:
-    run = root / "run"
-    return ExecutionWorkspace(
-        run_id="managed-run",
-        root=run,
-        input_root=run / "work/action/inputs",
-        work_root=run / "work/action/tool",
-        output_root=run / "outputs/action/evidence",
-        log_root=run / "logs/action",
-        source={},
-    )
+from conftest import (
+    managed_execution_workspace,
+    write_component_owner,
+    write_file as _write,
+)
 
 
 def _verification_project(root: Path) -> Path:
@@ -152,7 +142,7 @@ def test_xcelium_execution_reuses_plan_and_writes_flow_artifacts(
         )
 
     plan = plan_xcelium_cell(contract, project=project)
-    artifacts = _run_artifacts(tmp_path)
+    artifacts = managed_execution_workspace(tmp_path)
     result = execute_xcelium_cell(
         plan,
         artifacts=artifacts,
@@ -187,7 +177,7 @@ def test_xcelium_execution_reports_absent_success_marker(
 
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
-        artifacts=_run_artifacts(tmp_path),
+        artifacts=managed_execution_workspace(tmp_path),
         resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
@@ -219,7 +209,7 @@ def test_xcelium_execution_rejects_failure_after_success_marker(
 
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
-        artifacts=_run_artifacts(tmp_path),
+        artifacts=managed_execution_workspace(tmp_path),
         resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
@@ -250,7 +240,7 @@ def test_xcelium_execution_rejects_owner_failure_marker_after_success(
 
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
-        artifacts=_run_artifacts(tmp_path),
+        artifacts=managed_execution_workspace(tmp_path),
         resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
@@ -279,7 +269,7 @@ def test_xcelium_execution_accepts_success_marker_from_native_log(
 
     result = execute_xcelium_cell(
         plan_xcelium_cell(contract, project=project),
-        artifacts=_run_artifacts(tmp_path),
+        artifacts=managed_execution_workspace(tmp_path),
         resources=Resources(tools={"cadence.xrun": str(xrun)}),
         process=SimpleNamespace(run=capture),
     )
@@ -298,7 +288,7 @@ def test_xcelium_captures_native_log_before_releasing_work_directory(
     project = Project.open(tmp_path)
     xrun = _write(tmp_path / "tools/xcelium/tools/bin/xrun", "#!/bin/sh\nexit 99\n")
     xrun.chmod(0o755)
-    artifacts = _run_artifacts(tmp_path)
+    artifacts = managed_execution_workspace(tmp_path)
     original_owned_directory = xcelium_workflow.owned_directory
 
     @contextmanager

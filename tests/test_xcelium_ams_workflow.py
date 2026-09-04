@@ -11,30 +11,17 @@ from sigilicon.project import Project
 from sigilicon.execution._model import Resources
 from sigilicon.external_tools import ProcessResult
 from sigilicon.adapters.cadence import xcelium_ams
-from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.adapters.cadence.xcelium_ams import (
     execute_xcelium_ams_cell,
     plan_xcelium_ams_cell,
 )
 
 from conftest import (
+    managed_execution_workspace,
     write_component_owner,
     write_file as _write,
     write_test_platform,
 )
-
-
-def _run_artifacts(root: Path) -> ExecutionWorkspace:
-    run = root / "run"
-    return ExecutionWorkspace(
-        run_id="managed-run",
-        root=run,
-        input_root=run / "work/action/inputs",
-        work_root=run / "work/action/tool",
-        output_root=run / "outputs/action/evidence",
-        log_root=run / "logs/action",
-        source={},
-    )
 
 
 def _ams_project(root: Path) -> tuple[Path, Path]:
@@ -514,7 +501,7 @@ def test_xcelium_ams_execution_stages_inputs_and_records_regression(
             project=project,
             resources=Project.open(tmp_path).resources(),
         ),
-        artifacts=_run_artifacts(tmp_path),
+        artifacts=managed_execution_workspace(tmp_path),
         resources=Resources(
             tools={
                 "cadence.xrun": str(xrun),
@@ -562,7 +549,7 @@ def test_xcelium_ams_execution_reports_missing_success_marker(
             project=project,
             resources=Project.open(tmp_path).resources(),
         ),
-        artifacts=_run_artifacts(tmp_path),
+        artifacts=managed_execution_workspace(tmp_path),
         resources=Resources(
             tools={
                 "cadence.xrun": str(xrun),
