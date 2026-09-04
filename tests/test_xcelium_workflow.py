@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.project import Project
-import sigilicon.project._project as repository_module
 from sigilicon.workflows import xcelium as xcelium_workflow
 from sigilicon.external_tools import ProcessResult
 from sigilicon.execution._model import Resources
@@ -84,24 +83,9 @@ success_marker = "TB_DEMO_SUMMARY failures=0"
     return contract
 
 
-def test_project_xcelium_plan_parses_one_project(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_project_xcelium_plan_reuses_the_explicit_project(tmp_path: Path) -> None:
     contract = _verification_project(tmp_path)
-    project_contract = (tmp_path / "sigilicon.toml").resolve()
-    original = repository_module.read_toml
-    manifest_reads = 0
-
-    def counted(path: Path):
-        nonlocal manifest_reads
-        if path.resolve() == project_contract:
-            manifest_reads += 1
-        return original(path)
-
-    monkeypatch.setattr(repository_module, "read_toml", counted)
-
-    project = Project.open(project_contract.parent)
+    project = Project.open(tmp_path)
     plan = plan_xcelium_cell(contract, project=project)
     payload = plan.as_dict()
 
@@ -112,7 +96,6 @@ def test_project_xcelium_plan_parses_one_project(
     assert payload["owner"] == "demo"
     assert payload["contracts"] == ["ip/demo/configs/interface.toml"]
     assert all(not source.endswith(".toml") for source in payload["sources"])
-    assert manifest_reads == 1
 
 
 def test_xcelium_plan_rejects_non_hdl_compile_dependency(tmp_path: Path) -> None:

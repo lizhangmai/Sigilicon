@@ -321,7 +321,6 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
     platform = inventory["testpdk"]
 
     assert isinstance(platform, Platform)
-    assert not hasattr(platform, "_planning")
     assert (
         resolve_platform_snapshot(
             inventory.project,

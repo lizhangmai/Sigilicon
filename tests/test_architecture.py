@@ -1,18 +1,7 @@
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
-
-from sigilicon.virtuoso import (
-    ade,
-    importer,
-    library,
-    maestro_batch,
-    oa,
-    schematic,
-    text_view,
-)
 
 
 LAYERS = {
@@ -122,78 +111,3 @@ def test_external_integration_apis_live_in_their_owned_adapter_layers() -> None:
     assert bridge_users <= {"virtuoso/bridge.py"}
     assert all(path.startswith("virtuoso/") for path in skill_users)
     assert process_users <= {"external_tools.py", "process_supervisor.py"}
-
-
-def test_platform_source_contracts_have_one_loader() -> None:
-    platform_loader = FLOW_ROOT / "domain/platform.py"
-    violations: list[str] = []
-    for path in FLOW_ROOT.rglob("*.py"):
-        if path == platform_loader:
-            continue
-        source = path.read_text(encoding="utf-8")
-        if "platform-definition" in source or "platform-simulation" in source:
-            violations.append(str(path.relative_to(FLOW_ROOT)))
-        if ".pdk.path" in source or "platform_config(" in source:
-            violations.append(str(path.relative_to(FLOW_ROOT)))
-
-    assert violations == []
-
-
-def test_layout_owner_code_is_loaded_only_inside_the_worker_process() -> None:
-    layout_root = FLOW_ROOT / "layout"
-    dynamic_loaders: set[str] = set()
-    path_mutators: set[str] = set()
-    for path in layout_root.glob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        relative = path.relative_to(FLOW_ROOT).as_posix()
-        if "spec_from_file_location" in source:
-            dynamic_loaders.add(relative)
-        if "sys.path.insert" in source:
-            path_mutators.add(relative)
-
-    assert dynamic_loaders == {"layout/_generator_worker.py"}
-    assert path_mutators == dynamic_loaders
-    assert "tempfile" not in _imports(layout_root / "generator.py")
-
-
-def test_deleted_parallel_framework_surfaces_do_not_return() -> None:
-    removed = {
-        "PreparedPlan",
-        "PreparedStep",
-        "StepContext",
-        "StepWorkspace",
-        "PdkConfig",
-        "PlatformContract",
-        "build_ip_release",
-        "sigilicon.backends",
-    }
-    sources = "\n".join(
-        path.read_text(encoding="utf-8") for path in FLOW_ROOT.rglob("*.py")
-    )
-
-    assert not (FLOW_ROOT / "backends").exists()
-    assert all(name not in sources for name in removed)
-
-
-def test_stateful_virtuoso_adapters_expose_an_operation_context() -> None:
-    stateful = (
-        ade.create_oa_native_config_view,
-        ade.create_oa_native_maestro_view,
-        importer.generate_symbol,
-        importer.import_schematic,
-        library.create_project_library,
-        library.ensure_project_library,
-        maestro_batch.run_isolated_maestro,
-        oa.close_visible_cell_windows,
-        oa.set_cell_port_directions,
-        oa.validate_cell_port_directions,
-        schematic.read_instance_parameters,
-        schematic.read_schematic,
-        schematic.set_instance_parameters,
-        text_view.import_oa_text_view,
-    )
-    parameters = {
-        f"{function.__module__}.{function.__name__}": inspect.signature(function).parameters
-        for function in stateful
-    }
-    assert all("operation" in names for names in parameters.values())

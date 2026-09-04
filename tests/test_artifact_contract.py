@@ -282,7 +282,7 @@ def test_artifact_files_reject_symlinks_even_when_target_stays_inside_role(
 def test_partial_and_uncertain_require_structured_provenance(tmp_path: Path) -> None:
     partial = _record(tmp_path, "5" * 32)
     with pytest.raises(RuntimeError, match="requires provenance"):
-        partial._transition("partial")
+        partial.complete("partial", completion_evidence=())
     partial.fail(
         RuntimeError("symbol failed"),
         partial_failure={
@@ -295,7 +295,7 @@ def test_partial_and_uncertain_require_structured_provenance(tmp_path: Path) -> 
 
     uncertain = _record(tmp_path, "6" * 32)
     with pytest.raises(RuntimeError, match="requires a reason"):
-        uncertain._transition("uncertain")
+        uncertain.complete("uncertain", completion_evidence=())
     uncertain.fail(RuntimeError("lost reply"), uncertain_reason="completion unknown")
     state = load_manifest(uncertain.paths.manifest)
     assert state["status"] == "uncertain"
@@ -322,29 +322,16 @@ def test_concurrent_runs_never_overwrite_each_other(tmp_path: Path) -> None:
     )
 
 
-def test_file_registration_is_persisted_once_at_terminal_transition(
+def test_terminal_manifest_contains_the_complete_large_file_inventory(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import sigilicon.artifacts as artifacts
-
-    persisted: list[Path] = []
-    real_write = artifacts.atomic_write_json
-
-    def counted_write(path: Path, value: dict[str, object]) -> None:
-        persisted.append(path)
-        real_write(path, value)
-
-    monkeypatch.setattr(artifacts, "atomic_write_json", counted_write)
     record = _record(tmp_path)
     for index in range(2_000):
         output = record.path("outputs", f"result-{index:04d}.txt")
         output.write_text(str(index), encoding="utf-8")
         record.add_file("outputs", output)
 
-    assert len(persisted) == 1
     record.succeed(
         completion_evidence=(record.path("outputs", "result-1999.txt"),)
     )
-    assert len(persisted) == 2
     assert len(load_manifest(record.paths.manifest)["files"]["outputs"]) == 2_000

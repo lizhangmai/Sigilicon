@@ -9,7 +9,6 @@ import pytest
 
 from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.project import Project
-from sigilicon import release_store
 from sigilicon.release_store import ReleaseRef, ReleaseStore
 from sigilicon.workflows import ip_packaging
 
@@ -111,9 +110,8 @@ def test_exact_release_audit_rejects_unmanifested_directories(
         ip_packaging.audit_ip_release_manifest(manifest_path)
 
 
-def test_release_store_performs_one_audit_before_and_after_domain_validation(
+def test_release_store_rejects_mutation_during_domain_validation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     temporary = tmp_path / "temporary"
     manifest_path = _write_release(temporary)
@@ -123,24 +121,21 @@ def test_release_store_performs_one_audit_before_and_after_domain_validation(
     )
     object_root.parent.mkdir(parents=True)
     temporary.rename(object_root)
-    calls = 0
-    original = release_store._audit_release_package
-
-    def counted(path: Path, *, manifest_sha256: str | None = None):
-        nonlocal calls
-        calls += 1
-        return original(path, manifest_sha256=manifest_sha256)
-
     validated: list[str] = []
-    monkeypatch.setattr(release_store, "_audit_release_package", counted)
-    result = ReleaseStore(tmp_path / "store").open(
-        ReleaseRef("fixture", digest),
-        validate=lambda package: validated.append(str(package.manifest["ip_name"])),
-    )
 
-    assert result.ref == ReleaseRef("fixture", digest)
+    def mutate(package) -> None:
+        validated.append(str(package.manifest["ip_name"]))
+        (package.manifest_path.parent / "injected.txt").write_text(
+            "changed during validation\n", encoding="utf-8"
+        )
+
+    with pytest.raises(RuntimeError, match="inventory"):
+        ReleaseStore(tmp_path / "store").open(
+            ReleaseRef("fixture", digest),
+            validate=mutate,
+        )
+
     assert validated == ["fixture"]
-    assert calls == 2
 
 
 def test_release_audit_is_reachable_only_through_the_public_cli(

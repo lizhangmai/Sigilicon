@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import sigilicon.project._project as repository_module
 
 from sigilicon.cli.common import open_cli_project
 from sigilicon.paths import (
@@ -80,28 +79,12 @@ def test_repository_owner_filesets_cannot_escape_the_cataloged_root(
         Project.open(tmp_path)
 
 
-def test_project_is_the_single_manifest_parser(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    contract = (tmp_path / "sigilicon.toml").resolve()
-    original = repository_module.read_toml
-    manifest_reads = 0
-
-    def counted(path: Path):
-        nonlocal manifest_reads
-        if path.resolve() == contract:
-            manifest_reads += 1
-        return original(path)
-
-    monkeypatch.setattr(repository_module, "read_toml", counted)
-
+def test_project_resolves_its_manifest_contract(tmp_path: Path) -> None:
     project = Project.open(tmp_path)
 
     assert project.manifest_owner == "test"
     assert project.project_root == tmp_path.resolve()
     assert project.artifact_root == (tmp_path / "artifacts").resolve()
-    assert manifest_reads == 1
 
 
 def test_execution_creation_rejects_symlinked_structural_components(

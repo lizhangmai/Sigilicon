@@ -55,7 +55,6 @@ def test_integration_plan_passes_same_project_to_domain_loader(
         "plan_ip_integration_contract",
         lambda contract, **_kwargs: {"ip": contract.name},
     )
-    assert not hasattr(Project, "from_project_root")
 
     plan = ip_integration.plan_ip_integration(component, project=project)
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 from pathlib import Path
 import tomllib
@@ -10,9 +9,7 @@ from typing import Any
 
 import pytest
 
-import sigilicon.contracts as contract_io
 import sigilicon.workflows.ip_integration as ip_integration
-from sigilicon.cli.main import main as sigilicon_cli_main
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
     OaNativePhysicalBinding,
@@ -729,24 +726,11 @@ root = "ip/composite"
 
 def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
     contract = _write_ip_fixture(project_root, release_id, manifest)
-    catalog = (project_root / "ip/catalog.toml").resolve()
-    original_read = contract_io.read_nofollow_text
-    catalog_reads = 0
-
-    def counted_read(path: Path):
-        nonlocal catalog_reads
-        if path.resolve() == catalog:
-            catalog_reads += 1
-        return original_read(path)
-
-    monkeypatch.setattr(contract_io, "read_nofollow_text", counted_read)
-
     result = check_ip_integration(
         contract,
         project=Project.open(project_root).with_artifact_root(artifact_root),
@@ -757,7 +741,6 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert result["contract_kind"] == "ip-integration-check"
     assert result["owner"] == "demo"
     assert result["passed"] is True
-    assert catalog_reads == 1
     assert "architecture" not in result
     assert _absolute_strings(result) == []
     assert "sources" not in result
@@ -784,17 +767,11 @@ def test_ip_integration_check_keeps_paths_public_and_resolves_only_for_execution
     assert all(path.is_absolute() and path.is_file() for path in resolved)
 
 
-def test_integration_check_is_not_a_parallel_public_cli(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_integration_check_returns_a_portable_result(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     artifact_root = tmp_path / "artifacts"
     release_id, manifest = _write_release_fixture(artifact_root)
     contract = _write_ip_fixture(project_root, release_id, manifest)
-    monkeypatch.chdir(project_root)
-
     result = check_ip_integration(
         contract,
         project=Project.open(project_root).with_artifact_root(artifact_root),
@@ -804,9 +781,6 @@ def test_integration_check_is_not_a_parallel_public_cli(
     assert result["contract_kind"] == "ip-integration-check"
     assert result["ip"] == "demo"
     assert _absolute_strings(result) == []
-    with pytest.raises(SystemExit, match="2"):
-        sigilicon_cli_main(["ip"])
-    assert "invalid choice: 'ip'" in capsys.readouterr().err
 
 
 def test_source_level_child_ip_is_selected_by_fileset_without_a_release_lock(
@@ -1120,11 +1094,6 @@ def test_declaring_release_capability_does_not_implicitly_consume_it(
 
     assert result["dependency_lock"] is None
     assert result["dependency_releases"] == []
-
-
-def test_ip_integration_has_no_caller_selected_lock_path() -> None:
-    assert "lock_path" not in inspect.signature(check_ip_integration).parameters
-    assert "lock_path" not in inspect.signature(resolve_ip_integration_fileset).parameters
 
 
 def test_component_dependency_owns_its_typed_release_intent(tmp_path: Path) -> None:

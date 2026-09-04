@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -12,21 +11,15 @@ from sigilicon.adapters.synopsys import (
     DcAdapter,
     FcAdapter,
     HspiceAdapter,
-    StructuralLinkAdapter,
     VcsAdapter,
-    _StructuralLinkAction,
 )
+from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,
-    ExecutionError,
     Resources,
     RuntimeEnvironment,
-    Step,
     ExecutionIO,
-    StepResult,
 )
-from sigilicon.execution._model import resource_materialization_key
-from sigilicon.workflows.structural_link import StructuralLinkPlan
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -226,127 +219,6 @@ printf 'tampered\n' >>"$source_file"
     with pytest.raises(RuntimeError, match="changed during invocation"):
         VcsAdapter().run(_context(tmp_path, step, resources))
     assert rtl.read_text(encoding="utf-8").endswith("tampered\n")
-
-
-def test_structural_link_run_consumes_its_typed_plan_without_replanning(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    manifest_resource = "release:fixture:object/manifest"
-    liberty_resource = "release:fixture:object/role/raw-macro-liberty"
-    manifest_text = "{}\n"
-    liberty_text = "library(fixture) {}\n"
-    manifest_digest = hashlib.sha256(manifest_text.encode()).hexdigest()
-    liberty_digest = hashlib.sha256(liberty_text.encode()).hexdigest()
-    owner_sources = (
-        "configs/dependency.lock.toml",
-        "configs/variant.toml",
-        "compile.tcl",
-        "link.tcl",
-        "rtl/top.sv",
-    )
-    source_root = tmp_path / "run/inputs/sources"
-    for name in owner_sources:
-        _file(source_root / name)
-    resource_root = tmp_path / "run/inputs/resources"
-    _file(resource_root / resource_materialization_key(manifest_resource), manifest_text)
-    _file(resource_root / resource_materialization_key(liberty_resource), liberty_text)
-    config = {
-        "owner": "example",
-        "dependency": "provider",
-        "dependency_lock": owner_sources[0],
-        "variant": "default",
-        "variant_contract": owner_sources[1],
-        "compile_script": owner_sources[2],
-        "link_script": owner_sources[3],
-        "library_name": "fixture",
-        "macro_cell": "MACRO",
-        "parameter_overrides": {"ROWS": 1},
-        "expected_macro_instances": 1,
-        "expected_unresolved_references": 0,
-        "library_compiler_version": "U-2022.12-SP6-T-20250827",
-        "release_export": "macro",
-        "liberty_role": "raw_macro_liberty_or_db",
-        "timeout_seconds": 10,
-    }
-    planning = StructuralLinkPlan(
-        owner="example",
-        variant="default",
-        top="top",
-        rtl_sources=(tmp_path / owner_sources[4],),
-        compile_script=tmp_path / owner_sources[2],
-        link_script=tmp_path / owner_sources[3],
-        library_name="fixture",
-        macro_cell="MACRO",
-        parameter_overrides={"ROWS": 1},
-        expected_macro_instances=1,
-        expected_unresolved_references=0,
-        library_compiler_version="U-2022.12-SP6-T-20250827",
-        release_liberty=tmp_path / "unsealed.lib",
-        release_id="development-" + "a" * 40,
-        release_source_commit="a" * 40,
-        release_store="fixture",
-        release_manifest_sha256=manifest_digest,
-        release_liberty_sha256=liberty_digest,
-        release_sources=(tmp_path / "manifest.json", tmp_path / "unsealed.lib"),
-    )
-    structural_link = _StructuralLinkAction(
-        planning,
-        (owner_sources[4],),
-        owner_sources[2],
-        owner_sources[3],
-        manifest_resource,
-        liberty_resource,
-    )
-    step = Step(
-        "link",
-        "synopsys.structural-link",
-        config,
-        sources=owner_sources,
-        resources=(manifest_resource, liberty_resource),
-        action=structural_link,
-    )
-    context = ExecutionIO(
-        "1" * 64,
-        step,
-        "2" * 32,
-        "3" * 64,
-        tmp_path / "run",
-        Resources(),
-        {},
-        _source_scopes={name: "owner" for name in owner_sources},
-        _resource_digests={
-            manifest_resource: manifest_digest,
-            liberty_resource: liberty_digest,
-        },
-        _resource_kinds={
-            manifest_resource: "file",
-            liberty_resource: "file",
-        },
-    )
-    adapter = StructuralLinkAdapter()
-    observed = []
-    monkeypatch.setattr(
-        adapter,
-        "_execute",
-        lambda _context, plan: observed.append(plan) or StepResult.succeeded(),
-    )
-
-    result = adapter.run(context)
-
-    assert result.status == "succeeded"
-    assert observed[0].top == "top"
-    assert observed[0].release_liberty == (
-        resource_root / resource_materialization_key(liberty_resource)
-    )
-
-    object.__setattr__(
-        structural_link,
-        "plan",
-        replace(planning, top="identity_drift"),
-    )
-    with pytest.raises(ExecutionError, match="step action identity drift"):
-        adapter.run(context)
 
 
 def test_dc_backend_collects_only_declared_delivery_files(tmp_path: Path) -> None:

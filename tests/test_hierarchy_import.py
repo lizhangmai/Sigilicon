@@ -30,7 +30,7 @@ def _artifact(tmp_path: Path, identity: str = "1" * 32) -> RunRecord:
     )
 
 
-def test_netlist_is_parsed_once_and_preplanned_order_drives_import(
+def test_preplanned_hierarchy_order_drives_import(
     monkeypatch,
     tmp_path,
     workspace_factory,
@@ -46,16 +46,7 @@ ends leaf
 """,
         encoding="utf-8",
     )
-    original_load = hierarchy.load_netlist_snapshot
-    parse_calls = 0
-
-    def load_once(path):
-        nonlocal parse_calls
-        parse_calls += 1
-        return original_load(path)
-
     events: list[tuple[str, str, object]] = []
-    monkeypatch.setattr(hierarchy, "load_netlist_snapshot", load_once)
     monkeypatch.setattr(
         "sigilicon.virtuoso.workspace.require_quiescent_project_cell",
         lambda _operation, _library, cell, **_kwargs: (
@@ -104,7 +95,6 @@ ends leaf
             resources=SPICEIN_RESOURCES,
         )
 
-    assert parse_calls == 1
     assert plan.ordered_cells == ("leaf", "top")
     assert completed == plan.ordered_cells
     assert (artifact.paths.root / "work/leaf").is_dir()

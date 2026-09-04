@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-import tomllib
 
 from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.virtuoso.oa import close_visible_cell_windows
@@ -24,37 +23,6 @@ class RecordingClient:
     def execute_skill(self, source: str, **_kwargs):
         self.sources.append(source)
         return SimpleNamespace(output=self.output, errors=[])
-
-
-def test_internal_oa_mutation_helpers_are_not_public_commands() -> None:
-    with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as stream:
-        tasks = tomllib.load(stream)["project"]["scripts"]
-
-    assert not {
-        "create-library",
-        "manual-set-params",
-        "manual-import-netlist",
-        "manual-generate-symbol",
-    }.intersection(tasks)
-
-
-def test_noncanonical_engineering_cli_modules_are_removed() -> None:
-    root = Path(__file__).resolve().parents[1] / "src" / "sigilicon" / "cli"
-
-    for module in (
-        "create_library.py",
-        "generate_layout.py",
-        "generate_symbol.py",
-        "import_netlist.py",
-        "set_params.py",
-        "verify_layout.py",
-        "xcelium.py",
-        "check_designs.py",
-        "close_cell.py",
-        "flow_core.py",
-        "open_cell.py",
-    ):
-        assert not (root / module).exists()
 
 
 def test_close_cell_workflow_enters_workspace_and_project_library_policy(

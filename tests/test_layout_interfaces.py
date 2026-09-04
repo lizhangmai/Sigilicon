@@ -141,9 +141,6 @@ def test_managed_layout_ir_uses_only_sealed_owner_code(tmp_path: Path) -> None:
         """from sigilicon.layout.ir import LayoutPlan
 
 def build_layout_plan(spec):
-    assert not hasattr(spec, "project")
-    assert not hasattr(spec, "project_root")
-    assert not hasattr(spec, "path")
     from project_recipe import OFFSET
     return LayoutPlan(
         library=spec.library,

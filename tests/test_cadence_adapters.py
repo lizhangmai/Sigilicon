@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import os
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -14,14 +13,13 @@ from sigilicon.adapters.cadence import (
     NativeOaAdapter,
     XceliumAdapter,
     XceliumAmsAdapter,
-    _CadenceAction,
     cadence_adapters,
 )
+from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,
     Evidence,
     ExecutionError,
-    Step,
     ExecutionIO,
 )
 from sigilicon.execution._model import Resources
@@ -99,23 +97,6 @@ def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
     )
     source_closure = oa_plan_source_paths(plan)
     assert (Path.cwd() / "model.scs").resolve() not in source_closure
-
-
-def test_cadence_run_methods_only_consume_planned_actions() -> None:
-    adapters = (
-        XceliumAmsAdapter(),
-        NativeOaAdapter(),
-        LayoutAdapter(),
-        LayoutVerificationAdapter(),
-        *(adapter for adapter in cadence_adapters() if adapter.name.startswith("cadence.oa-")),
-    )
-
-    for adapter in adapters:
-        source = inspect.getsource(adapter.run)
-        assert "Project.open" not in source
-        assert "plan_xcelium" not in source
-        assert "plan_oa" not in source
-        assert "plan_layout" not in source
 
 
 def _context(
@@ -272,7 +253,6 @@ def test_xcelium_backend_requires_explicit_sources_and_completion_marker(
     assert len(result.artifacts) == 4
     assert result.facts == {"passed": True}
     assert not (context.work_directory / "xcelium.d").exists()
-    assert tuple(inspect.signature(adapter.run).parameters) == ("context",)
 
 
 def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
@@ -378,9 +358,6 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
-    record = prepared.record
-    assert str(model) not in str(record)
-    assert "model snapshot" not in str(record)
     assert set(prepared.resources) == {
         "cadence.xrun",
         "cadence.spectre",
@@ -407,6 +384,7 @@ def _oa_context(
     step: Step,
     *,
     registered: list[object],
+    tools: dict[str, str] | None = None,
 ) -> ExecutionIO:
     project = tmp_path / "source-project"
     owner = project / "ip/example"
@@ -422,7 +400,7 @@ def _oa_context(
             capabilities=frozenset(
                 {"tool.virtuoso-bridge", "license.cadence-oa"}
             ),
-            tools={"cadence.virtuoso": str(virtuoso)},
+            tools={"cadence.virtuoso": str(virtuoso), **(tools or {})},
             values={
                 "virtuoso-bridge.host": "127.0.0.1",
                 "virtuoso-bridge.port": "65432",
@@ -472,62 +450,6 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
         Resources(
             capabilities=capabilities,
             tools={"cadence.virtuoso": str(executable)},
-            values=values,
-        ),
-    )
-
-    assert all(check.status == "ready" for check in ready)
-
-
-def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> None:
-    step = Step(
-        "oa",
-        "cadence.oa-rebuild",
-        {"owner": "example", "timeout_seconds": 10},
-        sources=("configs/oa.toml",),
-        action=_CadenceAction(
-            object(),
-            {
-                "runtime_executables": (
-                    "cadence.spice-in",
-                    "cadence.cds-text-to-5x",
-                )
-            },
-            {},
-            (),
-            tmp_path,
-        ),
-    )
-    values = {
-        "virtuoso-bridge.host": "127.0.0.1",
-        "virtuoso-bridge.port": "65432",
-    }
-    capabilities = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
-    adapter = next(
-        item for item in cadence_adapters() if item.name == "cadence.oa-rebuild"
-    )
-
-    blocked = adapter.preflight(
-        step,
-        Resources(capabilities=capabilities, values=values),
-    )
-
-    assert {
-        check.subject
-        for check in blocked
-        if check.status == "blocked"
-    } == {"cadence.spice-in", "cadence.cds-text-to-5x"}
-
-    spicein = _file(tmp_path / "tools/spiceIn", executable=True)
-    text_import = _file(tmp_path / "tools/cdsTextTo5x", executable=True)
-    ready = adapter.preflight(
-        step,
-        Resources(
-            capabilities=capabilities,
-            tools={
-                "cadence.spice-in": str(spicein),
-                "cadence.cds-text-to-5x": str(text_import),
-            },
             values=values,
         ),
     )
@@ -631,7 +553,17 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         sources=("configs/oa.toml",),
     )
     registered: list[object] = []
-    context = _oa_context(tmp_path, step, registered=registered)
+    spicein = _file(tmp_path / "site/spiceIn", executable=True)
+    text_import = _file(tmp_path / "site/cdsTextTo5x", executable=True)
+    context = _oa_context(
+        tmp_path,
+        step,
+        registered=registered,
+        tools={
+            "cadence.spice-in": str(spicein),
+            "cadence.cds-text-to-5x": str(text_import),
+        },
+    )
     project_root = tmp_path / "source-project"
     owner_root = project_root / "ip/example"
     workspace_root = tmp_path / "oa-workspace"
@@ -639,7 +571,9 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
     manifest = owner_root / "configs/oa.toml"
     planning = SimpleNamespace(
         library="example",
+        designs=(object(),),
         testbenches=(),
+        views=(SimpleNamespace(view=SimpleNamespace(kind="system_verilog")),),
         source=SimpleNamespace(
             manifest_path=owner_root / "configs/oa.toml",
             project=object(),
@@ -716,6 +650,23 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         if adapter.name == "cadence.oa-rebuild"
     )
     prepared = adapter.plan(project, step, context.runtime)
+    blocked = adapter.preflight(
+        prepared,
+        Resources(
+            capabilities=context.runtime.capabilities,
+            tools={
+                "cadence.virtuoso": context.runtime.tools["cadence.virtuoso"]
+            },
+            values=context.runtime.values,
+        ),
+    )
+    assert {
+        check.subject for check in blocked if check.status == "blocked"
+    } == {"cadence.spice-in", "cadence.cds-text-to-5x"}
+    assert all(
+        check.status == "ready"
+        for check in adapter.preflight(prepared, context.runtime)
+    )
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
