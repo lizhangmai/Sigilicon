@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 import sigilicon.domain.oa_library as oa_library_domain
 import sigilicon.adapters.release.ip_packaging as ip_packaging
+import sigilicon.adapters.release.ip_release_planning as ip_release_planning
 from sigilicon.artifacts import SafeTree
 from sigilicon.domain.ip_release import (
     OaMixedSignalIpInterface,
@@ -23,6 +25,14 @@ from sigilicon.project import Project
 from sigilicon.adapters.release.ip_packaging import release_role_view
 
 from conftest import write_project_context, write_test_platform
+
+
+def _patch_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    callback: Callable[..., object],
+) -> None:
+    monkeypatch.setattr(ip_release_planning, "inspect_checkout", callback)
+    monkeypatch.setattr(ip_packaging, "inspect_checkout", callback)
 
 
 def _built_manifest(project: Project, built: dict[str, object]) -> Path:
@@ -346,9 +356,8 @@ def test_release_publication_runs_as_one_managed_adapter_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _rtl_contract_fixture(tmp_path)
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="a" * 40,
             working_tree_dirty=False,
@@ -680,14 +689,13 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     exported = contract.get_export("native-top")
     assert isinstance(exported.interface, OaNativeIpInterface)
 
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
     )
-    plan = ip_packaging.plan_ip_release_contract(
+    plan = ip_release_planning.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
     )
@@ -787,9 +795,8 @@ def test_release_build_rejects_checkout_drift_before_publication(
             SimpleNamespace(commit="d" * 40, working_tree_dirty=True),
         )
     )
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: next(states),
     )
 
@@ -845,14 +852,13 @@ capabilities = ["synthesis"]
         encoding="utf-8",
     )
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="e" * 40, working_tree_dirty=False
         ),
     )
-    plan = ip_packaging.plan_ip_release_contract(
+    plan = ip_release_planning.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
     )
@@ -890,15 +896,14 @@ def test_native_oa_release_rejects_circuit_port_order_drift(
         "subckt NATIVE_TOP OUT IN\nends NATIVE_TOP\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
     )
     with pytest.raises(ValueError, match="circuit pin order"):
-        ip_packaging.plan_ip_release_contract(
+        ip_release_planning.plan_ip_release_contract(
             contract,
             project=project,
         )
@@ -910,9 +915,8 @@ def test_native_oa_package_rejects_digital_interface_sections(
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
@@ -961,9 +965,8 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
 ) -> None:
     contract_path = _native_oa_contract_fixture(tmp_path)
     contract = load_ip_contract(contract_path, project=Project.open(tmp_path))
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="d" * 40, working_tree_dirty=False
         ),
@@ -1017,15 +1020,14 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
     monkeypatch.setattr(
         oa_library_domain, "load_oa_library_source", reject_oa_load
     )
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="a" * 40, working_tree_dirty=False
         ),
     )
 
-    plan = ip_packaging.plan_ip_release_contract(
+    plan = ip_release_planning.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
     )
@@ -1050,7 +1052,7 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
             },
         }
     ]
-    implementation = ip_packaging.plan_ip_release_contract(
+    implementation = ip_release_planning.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
         maturity="implementation",
@@ -1127,9 +1129,8 @@ source = "ip/rtl_fixture/rtl/top.sv"
         1,
     ).replace('module = "rtl_top"', 'module = "rtl_alternate"', 1)
     contract_path.write_text(source, encoding="utf-8")
-    monkeypatch.setattr(
-        ip_packaging,
-        "inspect_checkout",
+    _patch_checkout(
+        monkeypatch,
         lambda _root, _resources: SimpleNamespace(
             commit="b" * 40, working_tree_dirty=False
         ),
@@ -1140,7 +1141,7 @@ source = "ip/rtl_fixture/rtl/top.sv"
     assert isinstance(exported.interface, RtlIpInterface)
     assert exported.interface.variant == "alternate"
 
-    plan = ip_packaging.plan_ip_release_contract(
+    plan = ip_release_planning.plan_ip_release_contract(
         contract,
         project=Project.open(tmp_path),
     )

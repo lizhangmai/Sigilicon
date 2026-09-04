@@ -32,10 +32,8 @@ from sigilicon.release_store import (
     ReleaseStore,
     release_store_resource,
 )
-from sigilicon.adapters.release.ip_packaging import (
-    plan_ip_release_contract,
-    validate_ip_release_package,
-)
+from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
+from sigilicon.adapters.release.ip_release_planning import plan_ip_release_contract
 
 if TYPE_CHECKING:
     from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan

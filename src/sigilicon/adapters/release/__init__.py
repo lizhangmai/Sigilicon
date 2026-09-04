@@ -21,10 +21,10 @@ from sigilicon.execution._model import (
     Step,
     StepResult,
 )
-from sigilicon.adapters.release.ip_packaging import (
+from sigilicon.adapters.release.ip_packaging import _publish_ip_release
+from sigilicon.adapters.release.ip_release_planning import (
     IpReleaseError,
     IpReleasePlan,
-    _publish_ip_release,
     plan_ip_release,
 )
 from sigilicon.release_store import release_store_resource
