@@ -1850,7 +1850,7 @@ def test_run_store_rejects_unregistered_immutable_role_members(
         _read_run(project, "example:check", result.run_id)
 
 
-def test_run_store_defers_artifact_hashing_until_payload_access_or_audit(
+def test_run_store_rejects_same_size_artifact_tampering_on_read(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
@@ -1863,18 +1863,8 @@ def test_run_store_defers_artifact_hashing_until_payload_access_or_audit(
     output = result.outcomes[0].result.artifacts[0].path
     output.write_text("jello", encoding="utf-8")
 
-    stored = _read_run(project, "example:check", result.run_id)
-    artifact = stored.outcomes[0].result.artifacts[0]
-    with pytest.raises(ContractError, match="payload"):
-        artifact.read_text()
-    store, owner, operation, variant = _run_store_call(project, "example:check")
     with pytest.raises(RunStoreError, match="metadata"):
-        store.audit(
-            owner=owner,
-            operation=operation,
-            variant=variant,
-            run_id=result.run_id,
-        )
+        _read_run(project, "example:check", result.run_id)
 
 
 def test_run_identity_is_exclusive(tmp_path: Path) -> None:

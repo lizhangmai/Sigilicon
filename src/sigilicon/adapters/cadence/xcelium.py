@@ -6,6 +6,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
+import re
 import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -26,6 +27,11 @@ from sigilicon.execution._model import Resources, json_value
 
 
 _HDL_SOURCE_SUFFIXES = frozenset({".sv", ".svh", ".v", ".vh"})
+_XCELIUM_FAILURE_PATTERNS = (
+    ("xcelium-error", re.compile(r"(?im)^\s*\*[EF],")),
+    ("failed-status", re.compile(r"(?i)\bstatus\s*=\s*failed\b")),
+    ("failure-text", re.compile(r"(?im)^\s*(?:test\s+)?fail(?:ed|ure)?\b")),
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +89,47 @@ class XceliumExecution:
         """Combined simulator output available to owner-specific result parsers."""
 
         return "\n".join(output for output in (self.stdout, self.native_log) if output)
+
+
+@dataclass(frozen=True)
+class XceliumConclusion:
+    """Parsed terminal conclusion across the simulator-owned output streams."""
+
+    passed: bool
+    success_marker_evidence: tuple[str, ...]
+    failure_evidence: tuple[str, ...]
+
+
+def _xcelium_conclusion(
+    *,
+    returncode: int,
+    success_marker: str,
+    outputs: tuple[tuple[str, str], ...],
+) -> XceliumConclusion:
+    success = tuple(source for source, output in outputs if success_marker in output)
+    failures: list[str] = []
+    counter = None
+    if success_marker.endswith("failures=0"):
+        counter = re.compile(
+            re.escape(success_marker[: -len("failures=0")])
+            + r"failures=([0-9]+)"
+        )
+    for source, output in outputs:
+        if counter is not None and any(
+            int(match.group(1)) != 0 for match in counter.finditer(output)
+        ):
+            failures.append(f"{source}:nonzero-failure-count")
+        failures.extend(
+            f"{source}:{name}"
+            for name, pattern in _XCELIUM_FAILURE_PATTERNS
+            if pattern.search(output)
+        )
+    evidence = tuple(dict.fromkeys(failures))
+    return XceliumConclusion(
+        passed=returncode == 0 and bool(success) and not evidence,
+        success_marker_evidence=success,
+        failure_evidence=evidence,
+    )
 
 
 def resolve_xcelium_contract(path: Path, *, project: Project) -> Path:
@@ -334,16 +381,15 @@ def execute_xcelium_invocation(
         if native_log_bytes is not None
         else None
     )
-    success_marker_evidence = [
-        source
-        for source, output in (
+    conclusion = _xcelium_conclusion(
+        returncode=completed.returncode,
+        success_marker=success_marker,
+        outputs=(
             ("stdout", completed.stdout),
+            ("stderr", completed.stderr),
             ("native_log", native_output),
-        )
-        if success_marker in output
-    ]
-    success_marker_seen = bool(success_marker_evidence)
-    passed = completed.returncode == 0 and success_marker_seen
+        ),
+    )
     summary = {
         "schema": 1,
         "cell": cell,
@@ -352,9 +398,10 @@ def execute_xcelium_invocation(
         "command": command,
         "returncode": completed.returncode,
         "success_marker": success_marker,
-        "success_marker_seen": success_marker_seen,
-        "success_marker_evidence": success_marker_evidence,
-        "passed": passed,
+        "success_marker_seen": bool(conclusion.success_marker_evidence),
+        "success_marker_evidence": conclusion.success_marker_evidence,
+        "failure_evidence": conclusion.failure_evidence,
+        "passed": conclusion.passed,
         **(summary_fields or {}),
         "logs": {
             "stdout": str(stdout_path.relative_to(artifacts.root)),
@@ -372,7 +419,7 @@ def execute_xcelium_invocation(
     return XceliumExecution(
         run_summary=summary_path,
         returncode=completed.returncode,
-        passed=passed,
+        passed=conclusion.passed,
         stdout=completed.stdout,
         stderr=completed.stderr,
         native_log=native_output,

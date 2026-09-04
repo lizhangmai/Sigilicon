@@ -539,7 +539,7 @@ class RunStore:
             raise RunStoreError(f"persisted run result is malformed: {exc}") from exc
 
     def _read_selected(self, selected: _SelectedRun) -> RunResult | RunFailure:
-        manifest = self._manifest(selected)
+        manifest = self._manifest(selected, verify_content=True)
         if "outputs/run-result.json" in manifest.get("completion_evidence", ()):
             manifest, _plan, result = self._records(selected, manifest)
             return self._typed_result(result, selected.paths.root, manifest)
