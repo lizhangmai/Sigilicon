@@ -593,7 +593,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         else None,
     )
     monkeypatch.setattr(
-        "sigilicon.adapters.cadence.find_oa_assembly",
+        "sigilicon.adapters.cadence.oa_adapter.find_oa_assembly",
         lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
@@ -696,7 +696,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         owner=lambda _name: SimpleNamespace(root=owner_root),
     )
     monkeypatch.setattr(
-        "sigilicon.adapters.cadence.find_oa_assembly",
+        "sigilicon.adapters.cadence.oa_adapter.find_oa_assembly",
         lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
@@ -716,7 +716,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         lambda _plan, _members: None,
     )
     monkeypatch.setattr(
-        "sigilicon.adapters.cadence._oa_resource_identities",
+        "sigilicon.adapters.cadence.oa_adapter._oa_resource_identities",
         lambda _project, _plan, _required, _resources: {
             model: "pdk:fixture:simulation/nominal/model.scs"
         },

@@ -13,8 +13,8 @@ from sigilicon.adapters.synopsys import (
     FcAdapter,
     HspiceAdapter,
     VcsAdapter,
-    _archive_directory,
 )
+from sigilicon.adapters.synopsys.fc_adapter import _archive_directory
 from sigilicon.execution import Step
 from sigilicon.execution._model import (
     ContractError,
