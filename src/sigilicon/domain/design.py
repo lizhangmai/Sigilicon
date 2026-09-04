@@ -20,7 +20,7 @@ from sigilicon.domain.platform import (
     PlatformSnapshot,
     resolve_platform_snapshot,
 )
-from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -31,7 +31,7 @@ _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 @dataclass(frozen=True)
 class DesignSpec:
     path: Path
-    project: Project
+    repository: RepositoryIdentity
     library: str
     cell: str
     sync_mode: str
@@ -52,7 +52,11 @@ class DesignSpec:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
     @property
     def ports(self) -> tuple[str, ...]:
@@ -103,7 +107,7 @@ def _optional_names(value: Any, field: str) -> tuple[str, ...]:
 def load_design_spec(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     platform: PlatformSnapshot | None = None,
     netlist_snapshot: NetlistSnapshot | None = None,
 ) -> DesignSpec:
@@ -216,7 +220,7 @@ def load_design_spec(
     )
     return DesignSpec(
         path=spec_path,
-        project=repository,
+        repository=RepositoryIdentity.capture(repository),
         library=library,
         cell=cell,
         sync_mode=sync_mode,
@@ -240,7 +244,7 @@ def load_design_spec(
 def resolve_design_spec(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     snapshot: DesignSpec | None = None,
 ) -> DesignSpec:
     """Load a design spec or validate one operation-owned snapshot."""
@@ -251,11 +255,11 @@ def resolve_design_spec(
     root = project.project_root
     if (
         snapshot.path != spec_path
-        or snapshot.project is not project
         or not spec_path.is_relative_to(root)
         or not spec_path.is_file()
     ):
         raise ValueError("design snapshot identity drift")
+    snapshot.repository.validate(project)
     owner = project.owner_for(spec_path)
     if (
         not isinstance(snapshot.source_documents, Mapping)

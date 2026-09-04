@@ -82,9 +82,8 @@ def _ownership(plan: OALibraryRebuildPlan) -> dict[str, Any]:
             cell for cell, count in Counter(cells).items() if count > 1
         )
         conflicts.extend(f"{owner}/{cell}" for cell in duplicates)
-    project = plan.source.project
     unmanaged_consumed = any(
-        project.owner_for(path) is None
+        not path.is_relative_to(plan.source.project_root)
         for source in plan.source.source_roots
         for path in (source.directory, *source.cell_roots)
     )
@@ -109,14 +108,13 @@ def _library_ownership(
     """Prove that the live library resolves to the manifest-owned OA path."""
 
     expected = plan.source.oa_library.resolve()
-    project = plan.source.project
     try:
         if operation is not None:
             registered = operation.require_project_library_target(client, plan.library)
         else:
             with workspace_operation(
                 client,
-                project.workspace_root,
+                plan.source.workspace_root,
                 "check-oa-library-ownership",
                 policy=OperationPolicy.READ_ONLY,
                 acquire_flow_lock=False,

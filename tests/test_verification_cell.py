@@ -65,7 +65,7 @@ def test_verification_cell_loads_its_owned_source_boundary(tmp_path: Path) -> No
     assert spec.contracts == ()
     assert spec.runner is None
     assert spec.success_marker == "TB_DEMO_SUMMARY failures=0"
-    assert spec.project is project
+    assert spec.repository.project_root == project.project_root
     assert spec.owner == "demo"
 
 

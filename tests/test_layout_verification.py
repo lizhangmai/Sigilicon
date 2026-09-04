@@ -171,7 +171,7 @@ def test_xstream_artifacts_preserve_separate_output_streams(
         ),
     )
     spec = SimpleNamespace(
-        project=SimpleNamespace(workspace_root=workspace),
+        workspace_root=workspace,
         library="example",
         cell="TOP",
         view="layout",
@@ -225,18 +225,18 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
     spec = SimpleNamespace(
         physical_verification=policy,
         oa_assembly_manifest=tmp_path / "oa.toml",
-        project=project,
+        workspace_root=project.workspace_root,
         library="example",
         cell="TOP",
         view="layout",
         pdk=SimpleNamespace(
             oa=SimpleNamespace(technology_library="example-tech")
         ),
-            layout_pdk=SimpleNamespace(
-                layermap=PlatformAsset(PurePosixPath("layermap"), layermap),
-                drc_deck=PlatformAsset(PurePosixPath("drc.deck"), drc_deck),
-                lvs_deck=PlatformAsset(PurePosixPath("lvs.deck"), lvs_deck),
-            ),
+        layout_pdk=SimpleNamespace(
+            layermap=PlatformAsset(PurePosixPath("layermap"), layermap),
+            drc_deck=PlatformAsset(PurePosixPath("drc.deck"), drc_deck),
+            lvs_deck=PlatformAsset(PurePosixPath("lvs.deck"), lvs_deck),
+        ),
     )
     plan = SimpleNamespace(
         stage="routed",

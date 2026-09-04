@@ -1,4 +1,4 @@
-"""Private owner composition contracts used by the Project module."""
+"""Typed owner composition contracts."""
 
 from __future__ import annotations
 

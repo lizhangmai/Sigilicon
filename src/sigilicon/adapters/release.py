@@ -174,6 +174,7 @@ class IpReleaseAdapter:
                 action.plan,
                 store_root=action.store_root,
                 source_paths=action.source_paths(context),
+                resources=context.runtime,
             )
         except (IpReleaseError, OSError, RuntimeError, ValueError) as exc:
             raise ExecutionError(f"IP release publication failed: {exc}") from exc

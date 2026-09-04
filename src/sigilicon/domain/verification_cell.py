@@ -15,7 +15,7 @@ from sigilicon.contracts import (
     read_toml,
     require_config_header,
 )
-from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
 
 _FIELDS = frozenset(
@@ -123,7 +123,7 @@ class VerificationCellSpec:
     """One verification-owned testbench cell and its source boundary."""
 
     path: Path
-    project: Project
+    repository: RepositoryIdentity
     owner: str
     cell: str
     role: str
@@ -142,7 +142,11 @@ class VerificationCellSpec:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
     @property
     def source_inputs(self) -> tuple[Path, ...]:
@@ -254,7 +258,7 @@ def _parse_xcelium_ams_circuit(
     cell_root: Path,
     project_root: Path,
     owner: str,
-    repository: Project,
+    repository: RepositoryContext,
 ) -> XceliumAmsCircuit:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field} must be a table")
@@ -321,7 +325,7 @@ def _parse_xcelium_ams_configuration(
     cell_root: Path,
     project_root: Path,
     owner: str,
-    repository: Project,
+    repository: RepositoryContext,
 ) -> XceliumAmsConfiguration:
     field = f"{contract}: ams"
     if not isinstance(value, Mapping):
@@ -364,7 +368,7 @@ def _parse_xcelium_ams_configuration(
     )
 
 
-def _verification_cell_path(path: Path, repository: Project) -> Path:
+def _verification_cell_path(path: Path, repository: RepositoryContext) -> Path:
     contract = path.resolve()
     if (
         not contract.is_relative_to(repository.project_root)
@@ -378,7 +382,7 @@ def _parse_verification_cell(
     contract: Path,
     raw: Mapping[str, Any],
     *,
-    repository: Project,
+    repository: RepositoryContext,
     contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     root = repository.project_root
@@ -535,7 +539,7 @@ def _parse_verification_cell(
     )
     return VerificationCellSpec(
         path=contract,
-        project=repository,
+        repository=RepositoryIdentity.capture(repository),
         owner=owner,
         cell=cell,
         role=role,
@@ -556,7 +560,7 @@ def parse_verification_cell(
     path: Path,
     document: Mapping[str, Any],
     *,
-    project: Project,
+    project: RepositoryContext,
     contract_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> VerificationCellSpec:
     """Validate one already read ``verification-cell`` document."""
@@ -574,7 +578,7 @@ def parse_verification_cell(
 def load_verification_cell(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
 ) -> VerificationCellSpec:
     """Load and validate one ``contract_kind = verification-cell`` document."""
 

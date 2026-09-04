@@ -111,7 +111,7 @@ def _sync_design_impl(
 ) -> DesignSyncResult:
     """Run the shared design synchronizer under its caller-owned work scope."""
 
-    project = spec.project
+    workspace_root = spec.workspace_root
     attempt: Any = work
     hierarchy_plan = plan_hierarchy(spec.netlist_snapshot, top=spec.cell)
     device_map = _write_standard_spicein_device_map(attempt)
@@ -119,7 +119,7 @@ def _sync_design_impl(
     imported: tuple[str, ...] = ()
     with workspace_operation(
         client,
-        project.workspace_root,
+        workspace_root,
         "sync-design",
         policy=OperationPolicy.RECURSIVE_OA,
         operation_id=operation_id,
@@ -130,7 +130,7 @@ def _sync_design_impl(
             spec.library,
             cells=None,
             phase="ensure design library",
-            expected_library_path=project.workspace_root / spec.library,
+            expected_library_path=workspace_root / spec.library,
             quarantine_root=attempt.directory("outputs", "stale-locks")
             if quarantine_stale_locks
             else None,
@@ -139,9 +139,9 @@ def _sync_design_impl(
             library = ensure_project_library(
                 client,
                 library=spec.library,
-                path=project.workspace_root / spec.library,
+                path=workspace_root / spec.library,
                 technology_library=spec.pdk.oa.technology_library,
-                cds_lib=project.workspace_root / "cds.lib",
+                cds_lib=workspace_root / "cds.lib",
                 operation=operation,
                 timeout=timeout,
             )
@@ -239,7 +239,7 @@ def _sync_existing_design_target_only_impl(
 ) -> TargetOnlyDesignSyncResult:
     """Run target-only synchronization under its caller-owned work scope."""
 
-    project = spec.project
+    workspace_root = spec.workspace_root
     plan = plan_hierarchy(spec.netlist_snapshot, top=spec.cell)
     if plan.ordered_cells != (spec.cell,):
         raise ValueError(
@@ -255,7 +255,7 @@ def _sync_existing_design_target_only_impl(
     with (
         workspace_operation(
             client,
-            project.workspace_root,
+            workspace_root,
             "sync-existing-design-target-only",
             policy=OperationPolicy.DIRECT_MUTATION,
             operation_id=operation_id,
@@ -277,7 +277,7 @@ def _sync_existing_design_target_only_impl(
                 f"target-only sync requires an existing library: {spec.library}"
             )
         info = client.library.get(spec.library, timeout=30)
-        expected_library_path = project.workspace_root / spec.library
+        expected_library_path = workspace_root / spec.library
         library_path = operation.require_project_library_target(client, spec.library)
         if library_path != expected_library_path:
             raise RuntimeError(

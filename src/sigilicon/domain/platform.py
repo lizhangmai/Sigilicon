@@ -15,7 +15,7 @@ from sigilicon.contracts import (
     require_config_header,
 )
 from sigilicon.domain.layout_technology import LayoutTechnology, parse_layout_technology
-from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
@@ -295,13 +295,13 @@ _PLATFORM_INVENTORY_AUTHORITY = object()
 class PlatformSet(Mapping[str, Platform]):
     """One validated platform catalog with one binding state."""
 
-    __slots__ = ("_catalog", "_platforms", "_project")
+    __slots__ = ("_catalog", "_platforms", "_repository")
 
     def __init__(
         self,
         *,
         _authority: object,
-        project: Project,
+        project: RepositoryContext,
         catalog: PlatformCatalogSnapshot,
         platforms: Mapping[str, Platform],
     ) -> None:
@@ -329,13 +329,13 @@ class PlatformSet(Mapping[str, Platform]):
             _validate_immutable_platform_snapshot(platform)
             if set(platform.source_documents) != set(platform.source_paths[1:]):
                 raise ValueError("platform source identity drift")
-        object.__setattr__(self, "_project", project)
+        object.__setattr__(self, "_repository", RepositoryIdentity.capture(project))
         object.__setattr__(self, "_catalog", catalog)
         object.__setattr__(self, "_platforms", MappingProxyType(selected))
 
     @property
-    def project(self) -> Project:
-        return self._project
+    def repository(self) -> RepositoryIdentity:
+        return self._repository
 
     @property
     def catalog(self) -> PlatformCatalogSnapshot:
@@ -357,11 +357,11 @@ class PlatformSet(Mapping[str, Platform]):
     def __len__(self) -> int:
         return len(self.platforms)
 
-    def resolve(self, context: Project, key: str) -> Platform:
+    def resolve(self, context: RepositoryContext, key: str) -> Platform:
         context.manifest_source_document()
+        self.repository.validate(context)
         if (
-            context is not self.project
-            or self.catalog.project_root != context.project_root
+            self.catalog.project_root != context.project_root
             or self.catalog.path != context.catalog("platform")
         ):
             raise ValueError("platform set belongs to a different operation")
@@ -423,7 +423,7 @@ def _validate_immutable_platform_snapshot(snapshot: Platform) -> None:
 
 
 def _validate_platform_snapshot(
-    context: Project,
+    context: RepositoryContext,
     key: str,
     snapshot: Platform,
     *,
@@ -458,7 +458,7 @@ def _validate_platform_snapshot(
     return snapshot
 
 def resolve_platform_snapshot(
-    context: Project,
+    context: RepositoryContext,
     key: str,
     *,
     snapshot: PlatformSnapshot | None = None,
@@ -473,7 +473,7 @@ def resolve_platform_snapshot(
 
 
 def resolve_platform_catalog(
-    context: Project,
+    context: RepositoryContext,
     *,
     snapshot: PlatformCatalogSnapshot | None = None,
 ) -> PlatformCatalogSnapshot:
@@ -867,7 +867,7 @@ def _load_layout(
 
 
 def _platform_catalog_document(
-    context: Project,
+    context: RepositoryContext,
     document: Mapping[str, Any],
 ) -> tuple[Path, Path, str, Mapping[str, Any]]:
     context.manifest_source_document()
@@ -892,7 +892,7 @@ def _platform_catalog_document(
 
 
 def parse_platform_catalog(
-    context: Project,
+    context: RepositoryContext,
     document: Mapping[str, Any],
 ) -> PlatformCatalogSnapshot:
     """Validate an already read canonical platform catalog document."""
@@ -921,7 +921,7 @@ def parse_platform_catalog(
     )
 
 
-def load_platform_catalog(context: Project) -> PlatformCatalogSnapshot:
+def load_platform_catalog(context: RepositoryContext) -> PlatformCatalogSnapshot:
     """Read and validate the project's canonical platform catalog once."""
 
     catalog_path = context.catalog("platform")
@@ -929,7 +929,7 @@ def load_platform_catalog(context: Project) -> PlatformCatalogSnapshot:
 
 
 def _load_platform(
-    context: Project,
+    context: RepositoryContext,
     key: str,
     *,
     resources: PlatformResources | None,
@@ -1066,7 +1066,7 @@ def _load_platform(
 
 
 def load_platform(
-    context: Project,
+    context: RepositoryContext,
     key: str,
     *,
     resources: PlatformResources | None = None,
@@ -1085,7 +1085,7 @@ def load_platform(
 
 
 def _load_platforms(
-    context: Project,
+    context: RepositoryContext,
     *,
     resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
@@ -1117,7 +1117,7 @@ def _load_platforms(
 
 
 def load_platforms(
-    context: Project,
+    context: RepositoryContext,
     *,
     resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,

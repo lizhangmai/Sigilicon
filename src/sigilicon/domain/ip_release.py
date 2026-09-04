@@ -15,10 +15,10 @@ from sigilicon.contracts import (
     require_config_header,
 )
 from sigilicon.domain.oa_library import find_oa_assembly
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
 if TYPE_CHECKING:
-    from sigilicon.project._component import ComponentContract
-    from sigilicon.project import Project
+    from sigilicon.domain.component import ComponentContract
 
 RELEASE_MATURITY_LEVELS = ("development", "implementation", "signoff")
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
@@ -125,7 +125,7 @@ class IpExport:
 @dataclass(frozen=True)
 class IpContract:
     path: Path
-    project: Project
+    repository: RepositoryIdentity
     owner: str
     name: str
     producer: PurePosixPath
@@ -143,7 +143,11 @@ class IpContract:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
     @property
     def collateral(self) -> tuple[IpCollateral, ...]:
@@ -167,7 +171,7 @@ class IpContract:
 def _parse_ip_contract(
     contract_path: Path,
     *,
-    repository: Project,
+    repository: RepositoryContext,
     raw: Mapping[str, Any],
     source_component_graph: Mapping[str, ComponentContract] | None,
     source_interface_documents: Mapping[Path, Mapping[str, Any]] | None,
@@ -198,7 +202,7 @@ def _parse_ip_contract(
     component_contract = PurePosixPath(
         component_path.relative_to(producer_path).as_posix()
     )
-    from sigilicon.project._component import (
+    from sigilicon.domain.component import (
         load_component_graph,
         resolve_component_source,
         resolve_component_graph,
@@ -545,7 +549,7 @@ def _parse_ip_contract(
         raise ValueError("default_maturity is unsupported")
     result = IpContract(
         path=contract_path,
-        project=repository,
+        repository=RepositoryIdentity.capture(repository),
         owner=header.owner,
         name=ip_name,
         producer=producer,
@@ -563,10 +567,8 @@ def _parse_ip_contract(
 def load_ip_contract(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
 ) -> IpContract:
-    from sigilicon.project import Project
-
     repository = project
     contract_path = path.resolve()
     if not contract_path.is_relative_to(repository.project_root):
@@ -584,7 +586,7 @@ def load_ip_contract(
 def resolve_ip_contract(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     snapshot: IpContract | None = None,
 ) -> IpContract:
     """Load an IP contract or validate one operation-owned snapshot."""
@@ -595,7 +597,7 @@ def resolve_ip_contract(
     root = project.project_root
     if (
         snapshot.path != contract_path
-        or snapshot.project is not project
+        or snapshot.repository != RepositoryIdentity.capture(project)
         or not contract_path.is_relative_to(root)
         or not contract_path.is_file()
     ):

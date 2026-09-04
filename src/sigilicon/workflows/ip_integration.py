@@ -45,13 +45,14 @@ def _producer_contract(
     contract: IpIntegrationContract,
     dependency_name: str,
     *,
+    project: Project,
     release_inventory: Mapping[str, IpContract] | None = None,
 ) -> IpContract:
     try:
         component = contract.component_graph[dependency_name]
     except KeyError as exc:
         raise ValueError(f"unknown IP dependency: {dependency_name}") from exc
-    owner = contract.project.require_owner(component.path)
+    owner = project.require_owner(component.path)
     if (
         owner.component.path != component.path
         or owner.component.name != dependency_name
@@ -61,7 +62,7 @@ def _producer_contract(
     if path is None:
         raise ValueError(f"IP dependency has no release contract: {dependency_name}")
     if release_inventory is None:
-        producer = load_ip_contract(path, project=contract.project)
+        producer = load_ip_contract(path, project=project)
     else:
         try:
             producer = release_inventory[dependency_name]
@@ -72,7 +73,6 @@ def _producer_contract(
     if (
         producer.name != dependency_name
         or producer.path != path
-        or producer.project is not contract.project
     ):
         raise ValueError(f"IP catalog identity mismatch: {dependency_name}")
     return producer
@@ -158,9 +158,12 @@ def _fileset_source_plan(
     contract: IpIntegrationContract,
     variant: IpOperatingVariant,
     fileset_name: str,
+    *,
+    project: Project,
 ) -> dict[str, Any]:
     fileset = variant.get_fileset(fileset_name)
-    filelist_path, filelist_relative = contract.project.resolve_owner_file(
+    contract.repository.validate(project)
+    filelist_path, filelist_relative = project.resolve_owner_file(
         contract.owner,
         fileset.filelist.as_posix(),
         f"variant {variant.name}.filesets.{fileset.name}.filelist",
@@ -208,14 +211,17 @@ def _binding_plan(variant: IpOperatingVariant) -> dict[str, Any] | None:
 
 
 def _variant_source_plan(
-    contract: IpIntegrationContract, variant: IpOperatingVariant
+    contract: IpIntegrationContract,
+    variant: IpOperatingVariant,
+    *,
+    project: Project,
 ) -> dict[str, Any]:
     return {
         "name": variant.name,
         "contract": variant.path.relative_to(contract.project_root).as_posix(),
         "default_fileset": variant.default_fileset,
         "filesets": {
-            name: _fileset_source_plan(contract, variant, name)
+            name: _fileset_source_plan(contract, variant, name, project=project)
             for name in variant.filesets
         },
         "physical_binding": _binding_plan(variant),
@@ -236,6 +242,7 @@ def plan_ip_integration(
     contract = load_ip_integration_contract(contract_path, project=project)
     return plan_ip_integration_contract(
         contract,
+        project=project,
         platform_inventory=platform_inventory,
         release_inventory=release_inventory,
         oa_source_inventory=oa_source_inventory,
@@ -246,6 +253,7 @@ def plan_ip_integration(
 def plan_ip_integration_contract(
     contract: IpIntegrationContract,
     *,
+    project: Project,
     platform_inventory: PlatformSet | None = None,
     release_inventory: Mapping[str, IpContract] | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
@@ -255,7 +263,7 @@ def plan_ip_integration_contract(
 
     contract = resolve_ip_integration_contract(
         contract.path,
-        project=contract.project,
+        project=project,
         snapshot=contract,
     )
     dependencies: list[dict[str, Any]] = []
@@ -269,10 +277,12 @@ def plan_ip_integration_contract(
             producer = _producer_contract(
                 contract,
                 dependency.name,
+                project=project,
                 release_inventory=release_inventory,
             )
             expected = plan_ip_release_contract(
                 producer,
+                project=project,
                 maturity=release.required_maturity,
                 platform_inventory=platform_inventory,
                 oa_source_inventory=oa_source_inventory,
@@ -306,7 +316,8 @@ def plan_ip_integration_contract(
             for name, path in contract.implementation_profiles.items()
         },
         "variants": [
-            _variant_source_plan(contract, variant) for variant in contract.variants
+            _variant_source_plan(contract, variant, project=project)
+            for variant in contract.variants
         ],
     }
 
@@ -322,7 +333,12 @@ def plan_ip_integration_fileset(
     contract = load_ip_integration_contract(contract_path, project=repository)
     variant = contract.get_variant(variant_name)
     fileset = variant.get_fileset(fileset_name)
-    return _fileset_source_plan(contract, variant, fileset.name)
+    return _fileset_source_plan(
+        contract,
+        variant,
+        fileset.name,
+        project=repository,
+    )
 
 
 def _level_satisfies(actual: str, required: str) -> bool:
@@ -361,6 +377,7 @@ def resolve_locked_ip_release(
 def _locked_release_manifest(
     *,
     contract: IpIntegrationContract,
+    project: Project,
     release_store_root: Path,
     dependency: IpIntegrationDependency,
     pinned: LockedIpRelease,
@@ -378,7 +395,7 @@ def _locked_release_manifest(
     component_path = (
         contract.project_root / Path(dependency.component_contract)
     ).resolve()
-    expected_owner = contract.project.require_owner(component_path)
+    expected_owner = project.require_owner(component_path)
     provenance = manifest.get("provenance")
     expected_producer = expected_owner.root.relative_to(
         contract.project_root
@@ -410,7 +427,8 @@ def check_ip_integration(
 
     contract = load_ip_integration_contract(contract_path, project=project)
     root = contract.project_root
-    runtime = contract.project.resources()
+    contract.repository.validate(project)
+    runtime = project.resources()
     variant = contract.get_variant(variant_name)
     fileset = variant.get_fileset(fileset_name)
     binding = variant.physical_binding
@@ -422,7 +440,12 @@ def check_ip_integration(
         raise RuntimeError(
             f"IP physical binding is blocked: {', '.join(binding.blockers)}"
         )
-    source_plan = _fileset_source_plan(contract, variant, fileset.name)
+    source_plan = _fileset_source_plan(
+        contract,
+        variant,
+        fileset.name,
+        project=project,
+    )
 
     selected_release_dependencies = tuple(
         dependency
@@ -432,7 +455,7 @@ def check_ip_integration(
     locked_by_name: dict[str, LockedIpRelease] = {}
     lock = None
     if selected_release_dependencies:
-        lock = load_ip_dependency_lock(contract=contract)
+        lock = load_ip_dependency_lock(contract=contract, project=project)
         locked_by_name = {item.name: item for item in lock.dependencies}
 
     resolved_dependencies: list[dict[str, Any]] = []
@@ -446,6 +469,7 @@ def check_ip_integration(
         )
         audited = _locked_release_manifest(
             contract=contract,
+            project=project,
             release_store_root=store_root,
             dependency=dependency,
             pinned=pinned,

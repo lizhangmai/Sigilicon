@@ -190,6 +190,7 @@ def test_release_build_rejects_symlinked_namespace_ancestor(
             plan,
             store_root=store_root,
             source_paths={},
+            resources=project.resources(),
         )
 
     assert list(outside.iterdir()) == []

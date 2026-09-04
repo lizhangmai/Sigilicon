@@ -220,7 +220,7 @@ def test_native_simulation_contract_is_thin_and_source_owned(tmp_path: Path) -> 
 
     spec = load_oa_simulation_spec(spec_path, project=project)
 
-    assert spec.project is project
+    assert spec.repository.project_root == project.project_root
     assert spec.contract_schema == 3
     assert spec.native_setup.source.name == "setup.il"
     assert spec.native_setup.rdb_contract is None

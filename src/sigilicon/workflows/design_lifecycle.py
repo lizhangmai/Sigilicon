@@ -177,10 +177,9 @@ def attest_oa_design(
     if operation is not None:
         parameter_report = attest(operation)
     else:
-        project = spec.project
         with workspace_operation(
             client,
-            project.workspace_root,
+            spec.workspace_root,
             "attest-design-source-parity",
             policy=OperationPolicy.READ_ONLY,
             acquire_flow_lock=acquire_flow_lock,

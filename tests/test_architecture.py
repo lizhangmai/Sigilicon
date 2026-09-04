@@ -17,8 +17,8 @@ LAYERS = {
 }
 ALLOWED_DEPENDENCIES = {
     "root": {"project", "root"},
-    "project": {"adapters", "execution", "project", "root"},
-    "domain": {"domain", "project", "root"},
+    "project": {"adapters", "domain", "execution", "project", "root"},
+    "domain": {"domain", "root"},
     "execution": {"execution", "root"},
     "adapters": {
         "adapters",

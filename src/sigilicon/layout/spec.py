@@ -8,9 +8,10 @@ import sysconfig
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.project._component import ComponentContract, load_component_graph
+from sigilicon.domain.component import ComponentContract, load_component_graph
 from sigilicon.contracts import freeze_toml_document, read_toml, require_config_header
 from sigilicon.domain.design import IDENTIFIER_RE
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 from sigilicon.domain.netlist import (
     NetlistSnapshot,
     load_netlist_snapshot,
@@ -29,8 +30,6 @@ from sigilicon.domain.platform import (
     PlatformSnapshot,
     resolve_platform_snapshot,
 )
-from sigilicon.project import Project
-from sigilicon.project._project import RepositoryOwner
 
 
 _DIRECTIONS = {"input", "output", "inputOutput"}
@@ -41,7 +40,7 @@ _STDLIB_SOURCE_ROOT = Path(sysconfig.get_path("stdlib")).resolve()
 @dataclass(frozen=True)
 class LayoutSpec:
     path: Path
-    project: Project
+    repository: RepositoryIdentity
     library: str
     cell: str
     view: str
@@ -68,7 +67,11 @@ class LayoutSpec:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
 def _table(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -118,7 +121,7 @@ def _module_source(project_root: Path, module: str) -> Path | None:
 
 
 def _owner_oa_assembly(
-    repository: Project,
+    repository: RepositoryContext,
     spec_path: Path,
     *,
     oa_source: OALibrarySource | None = None,
@@ -133,8 +136,7 @@ def _owner_oa_assembly(
             return None
         source = load_oa_library_source(manifest, project=repository)
     else:
-        if oa_source.project is not repository:
-            raise ValueError("OA assembly source belongs to a different Project")
+        oa_source.repository.validate(repository)
         source = oa_source
     declared_specs = {
         layout_spec
@@ -173,9 +175,9 @@ def _component_source_files(
 
 
 def _validate_generator_ownership(
-    repository: Project,
+    repository: RepositoryContext,
     *,
-    owner: RepositoryOwner,
+    owner: Any,
     component_graph: Mapping[str, ComponentContract],
     generator_source: Path,
     generator_dependencies: tuple[Path, ...],
@@ -276,7 +278,7 @@ def _validate_generator_ownership(
 def load_layout_spec(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     oa_source: OALibrarySource | None = None,
     platform: PlatformSnapshot | None = None,
     netlist_inventory: Mapping[Path, NetlistSnapshot] | None = None,
@@ -500,7 +502,7 @@ def load_layout_spec(
         )
     return LayoutSpec(
         path=spec_path,
-        project=repository,
+        repository=RepositoryIdentity.capture(repository),
         library=library,
         cell=cell,
         view=view,
@@ -532,7 +534,7 @@ def load_layout_spec(
 def resolve_layout_spec(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     snapshot: LayoutSpec | None = None,
     platform: PlatformSnapshot | None = None,
 ) -> LayoutSpec:
@@ -544,7 +546,7 @@ def resolve_layout_spec(
     root = project.project_root
     if (
         snapshot.path != spec_path
-        or snapshot.project is not project
+        or snapshot.repository != RepositoryIdentity.capture(project)
         or not spec_path.is_relative_to(root)
         or not spec_path.is_file()
     ):

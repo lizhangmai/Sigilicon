@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 from sigilicon.virtuoso.disposable import DisposableWork
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell_view
@@ -16,7 +16,7 @@ from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 def sync_oa_text_view(
     client: Any,
     *,
-    project: Project,
+    repository: RepositoryIdentity,
     library: str,
     cell: str,
     view: str,
@@ -42,7 +42,7 @@ def sync_oa_text_view(
     with DisposableWork.create(prefix="sigilicon-oa-text-") as work:
         _sync_oa_text_view_impl(
             client,
-            project=project,
+            repository=repository,
             library=library,
             cell=cell,
             view=view,
@@ -60,7 +60,7 @@ def sync_oa_text_view(
 def _sync_oa_text_view_impl(
     client: Any,
     *,
-    project: Project,
+    repository: RepositoryIdentity,
     library: str,
     cell: str,
     view: str,
@@ -76,14 +76,14 @@ def _sync_oa_text_view_impl(
     """Materialize one text view under its caller-owned temporary scope."""
 
     source_path = source.source_path
-    if not source_path.is_relative_to(project.project_root):
+    if not source_path.is_relative_to(repository.project_root):
         raise ValueError("OA text-view source must be a project-owned file")
     if _work is None:
         raise RuntimeError("OA text-view synchronization requires a work scope")
     work = _work
     with workspace_operation(
         client,
-        project.workspace_root,
+        repository.workspace_root,
         "sync-oa-text-view",
         policy=OperationPolicy.DIRECT_MUTATION,
         operation_id=operation_id,

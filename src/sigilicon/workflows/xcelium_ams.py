@@ -152,13 +152,14 @@ def _locked_native_release(
     spec: VerificationCellSpec,
     circuit_selection: XceliumAmsReleaseCircuit,
     resources: Resources,
+    project: Project,
 ) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     """Resolve one native circuit through the canonical integration workflow."""
 
     try:
         selection = check_ip_integration(
             circuit_selection.contract,
-            project=spec.project,
+            project=project,
             variant_name=circuit_selection.variant,
             fileset_name=circuit_selection.fileset,
         )
@@ -249,12 +250,13 @@ def _locked_native_release(
 def _resolve_circuit(
     spec: VerificationCellSpec,
     resources: Resources,
+    project: Project,
 ) -> tuple[str, Path, Mapping[str, Any], Mapping[Path, str]]:
     ams = spec.ams
     assert ams is not None
     circuit = ams.circuit
     if isinstance(circuit, XceliumAmsReleaseCircuit):
-        return _locked_native_release(spec, circuit, resources)
+        return _locked_native_release(spec, circuit, resources, project)
     assert isinstance(circuit, XceliumAmsSourceCircuit)
     digest = _sha256(circuit.path)
     return (
@@ -347,7 +349,7 @@ def plan_xcelium_ams_cell(
             f"Spectre circuits must come from the AMS circuit selection: {invalid}"
         )
     native_cell, circuit, integration_check, release_records = (
-        _resolve_circuit(spec, resources)
+        _resolve_circuit(spec, resources, repository)
     )
     platform = load_platform(
         repository,

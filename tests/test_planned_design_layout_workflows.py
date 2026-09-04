@@ -26,8 +26,8 @@ def test_managed_layout_generation_reuses_parent_artifacts_and_operation(
     project = _project(tmp_path)
     source = SimpleNamespace(text="subckt\n", source_path=tmp_path / "source.scs")
     spec = SimpleNamespace(
-        project=project,
         project_root=tmp_path,
+        workspace_root=project.workspace_root,
         library="example",
         cell="leaf",
         view="layout",

@@ -139,11 +139,11 @@ def _sync_oa_testbench_impl(
         "devselect := resistor res\ndevselect := capacitor cap\n",
     )
     setup_source = _native_setup_source(spec)
-    project = spec.project
+    workspace_root = spec.workspace_root
 
     with workspace_operation(
         client,
-        project.workspace_root,
+        workspace_root,
         "rebuild-oa-testbench",
         policy=OperationPolicy.DIRECT_MUTATION,
         operation_id=operation_id,
@@ -158,7 +158,7 @@ def _sync_oa_testbench_impl(
             raise RuntimeError(
                 f"testbench materialization requires existing library {spec.library}"
             )
-        expected_library = project.workspace_root / spec.library
+        expected_library = workspace_root / spec.library
         if operation.require_project_library_target(client, spec.library) != expected_library:
             raise RuntimeError(
                 "testbench library does not resolve inside the project workspace"

@@ -23,7 +23,7 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticReport,
     load_native_diagnostic_processor,
 )
-from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 
 
@@ -125,7 +125,7 @@ class OASimulationSpec:
     """The native-only schema-3 simulation identity consumed by OA workflows."""
 
     path: Path
-    project: Project
+    repository: RepositoryIdentity
     library: str
     cell: str
     dut: str
@@ -140,7 +140,11 @@ class OASimulationSpec:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
 
 def _identifier(value: object, field: str) -> str:
@@ -515,7 +519,7 @@ def _load_native_oa_simulation_spec(
     spec_path: Path,
     project_root: Path,
     *,
-    context: Project,
+    context: RepositoryContext,
     owner_root: Path,
     raw: Mapping[str, Any],
     source_snapshot: TextSourceSnapshot,
@@ -606,7 +610,7 @@ def _load_native_oa_simulation_spec(
         source_documents[rdb_contract.path] = rdb_contract.source_document
     return OASimulationSpec(
         path=spec_path,
-        project=context,
+        repository=RepositoryIdentity.capture(context),
         library=library,
         cell=cell,
         dut=dut,
@@ -627,7 +631,7 @@ def _load_native_oa_simulation_spec(
 def load_oa_simulation_spec(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     platform: PlatformSnapshot | None = None,
     architecture_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> OASimulationSpec:

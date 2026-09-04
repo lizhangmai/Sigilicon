@@ -23,7 +23,7 @@ from sigilicon.contracts import (
     require_text,
     thaw_toml_document,
 )
-from sigilicon.project._component import ComponentContract, load_component_contract
+from sigilicon.domain.component import ComponentContract, load_component_contract
 from sigilicon.paths import (
     ProjectContext,
     validate_artifact_component,

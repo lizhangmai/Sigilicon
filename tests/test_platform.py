@@ -77,7 +77,7 @@ def test_platform_capabilities_are_independently_optional(
     assert getattr(contract, present) is not None
 
 
-def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None:
+def test_platform_inventory_reuses_one_repository_snapshot(tmp_path: Path) -> None:
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     project = Project.open(tmp_path)
@@ -92,12 +92,11 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="has no 'other' entry"):
         resolve_platform_snapshot(project, "other", snapshot=inventory)
 
-    with pytest.raises(ValueError, match="different operation"):
-        resolve_platform_snapshot(
-            Project.open(tmp_path),
-            "testpdk",
-            snapshot=inventory,
-        )
+    reopened = Project.open(tmp_path)
+    assert (
+        resolve_platform_snapshot(reopened, "testpdk", snapshot=inventory)
+        is inventory["testpdk"]
+    )
 
 
 @pytest.mark.parametrize("snapshot_kind", ("inventory", "platform"))
@@ -317,13 +316,14 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
         encoding="utf-8",
     )
 
-    inventory = load_platforms(Project.open(tmp_path))
+    project = Project.open(tmp_path)
+    inventory = load_platforms(project)
     platform = inventory["testpdk"]
 
     assert isinstance(platform, Platform)
     assert (
         resolve_platform_snapshot(
-            inventory.project,
+            project,
             "testpdk",
             snapshot=inventory,
         )
@@ -509,6 +509,9 @@ def test_platform_set_rejects_source_drift(
 
     with pytest.raises(
         ValueError,
-        match="source identity drift|identity drift|catalog snapshot|owner must be",
+        match=(
+            "project composition|source identity drift|identity drift|"
+            "catalog snapshot|owner must be"
+        ),
     ):
         resolve_platform_snapshot(project, "testpdk", snapshot=inventory)

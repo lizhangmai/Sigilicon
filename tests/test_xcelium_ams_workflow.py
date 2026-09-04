@@ -101,7 +101,7 @@ def _patch_native_resolution(
     monkeypatch.setattr(
         xcelium_ams,
         "_locked_native_release",
-        lambda _spec, _selection, _resources: (
+        lambda _spec, _selection, _resources, _project: (
             "NATIVE_TOP",
             circuit,
             {

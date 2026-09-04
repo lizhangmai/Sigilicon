@@ -18,7 +18,7 @@ from sigilicon.domain.physical_verification import (
     PhysicalVerificationPolicy,
     parse_physical_verification_policy,
 )
-from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
 _VIEW_KINDS = {
@@ -65,7 +65,7 @@ _ASSEMBLY_FIELDS = {
 _MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
-def find_oa_assembly(project: Project, path: Path | str) -> Path | None:
+def find_oa_assembly(project: RepositoryContext, path: Path | str) -> Path | None:
     """Return the one OA assembly selected by the path's component owner."""
 
     owner = project.require_owner(path)
@@ -157,7 +157,7 @@ class OALibrarySource:
     """Assembly contract for one generated OA library."""
 
     manifest_path: Path
-    project: Project
+    repository: RepositoryIdentity
     name: str
     pdk: str
     workspace_template: Path
@@ -174,7 +174,11 @@ class OALibrarySource:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -366,7 +370,7 @@ def _load_cell(
 def _load_source_root(
     path: Path,
     *,
-    context: Project,
+    context: RepositoryContext,
     allow_assembly_fields: bool = False,
     raw: dict[str, Any] | None = None,
 ) -> OASourceRoot:
@@ -469,7 +473,7 @@ def _load_source_root(
 def load_oa_library_source(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     snapshot: OALibrarySource | None = None,
 ) -> OALibrarySource:
     """Load one OA assembly or validate its exact operation snapshot."""
@@ -597,7 +601,7 @@ def load_oa_library_source(
         source_documents[physical_verification.path] = physical_verification.document
     return OALibrarySource(
         manifest_path=manifest_path,
-        project=context,
+        repository=RepositoryIdentity.capture(context),
         name=name,
         pdk=pdk,
         workspace_template=workspace_template,

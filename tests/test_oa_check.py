@@ -126,8 +126,8 @@ def test_check_proves_live_library_path_is_the_manifest_target(
     plan = SimpleNamespace(
         library="fixture_lib",
         source=SimpleNamespace(
-            project=Project.open(tmp_path),
             project_root=tmp_path,
+            workspace_root=workspace,
             oa_library=expected,
         ),
     )

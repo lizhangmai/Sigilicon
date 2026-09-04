@@ -425,7 +425,7 @@ def _run_xstream(
     timeout: int,
 ) -> Path:
     layermap = record.write_text("inputs", ("layermap",), layermap_source)
-    cds_lib = spec.project.workspace_root / "cds.lib"
+    cds_lib = spec.workspace_root / "cds.lib"
     if not cds_lib.is_file() or cds_lib.is_symlink():
         raise RuntimeError(f"workspace cds.lib is unavailable: {cds_lib}")
     work = record.directory("work")
@@ -698,7 +698,7 @@ def run_layout_verification(
     try:
         with workspace_operation(
             client,
-            spec.project.workspace_root,
+            spec.workspace_root,
             f"verify-layout-{check}",
             policy=OperationPolicy.READ_ONLY,
             operation_id=operation_id,

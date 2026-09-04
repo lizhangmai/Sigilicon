@@ -7,7 +7,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from sigilicon.project._component import load_component_graph
+from sigilicon.domain.component import load_component_graph
 from sigilicon.domain.config_contracts import (
     inspect_project_configuration_sources,
 )
@@ -294,6 +294,7 @@ def inspect_repository_designs(
             )
             integration = plan_ip_integration_contract(
                 integration_contract,
+                project=context,
                 platform_inventory=platform_inventory,
                 release_inventory=release_inventory,
                 oa_source_inventory=oa_source_inventory,

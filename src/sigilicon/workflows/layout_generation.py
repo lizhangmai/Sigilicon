@@ -87,7 +87,11 @@ def _layout_source_paths(spec: LayoutSpec) -> tuple[Path, ...]:
     return tuple(sorted(Path(path).resolve() for path in paths))
 
 
-def plan_layout_snapshot(spec: LayoutSpec) -> LayoutPlanningResult:
+def plan_layout_snapshot(
+    spec: LayoutSpec,
+    *,
+    project: Project,
+) -> LayoutPlanningResult:
     """Freeze layout inputs without executing owner-authored Python."""
     paths = _layout_source_paths(spec)
     before = {path: read_nofollow_text(path) for path in paths}
@@ -95,7 +99,7 @@ def plan_layout_snapshot(spec: LayoutSpec) -> LayoutPlanningResult:
         spec,
         source_records=MappingProxyType(before),
     )
-    resolve_layout_spec(spec.path, project=spec.project, snapshot=spec)
+    resolve_layout_spec(spec.path, project=project, snapshot=spec)
     after = {path: read_nofollow_text(path) for path in paths}
     if after != before:
         raise ValueError("layout source changed while its typed plan was built")
@@ -202,7 +206,7 @@ def plan_layout_spec(
     platform: PlatformSnapshot | None = None,
 ) -> LayoutPlanningResult:
     spec = load_layout_spec(spec_path, project=project, platform=platform)
-    return plan_layout_snapshot(spec)
+    return plan_layout_snapshot(spec, project=project)
 
 
 def generate_layout(
@@ -305,7 +309,7 @@ def _generate_layout_impl(
     try:
         with workspace_operation(
             client,
-            spec.project.workspace_root,
+            spec.workspace_root,
             "generate-layout",
             policy=OperationPolicy.DIRECT_MUTATION,
             operation_id=operation_id,

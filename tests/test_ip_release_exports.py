@@ -52,6 +52,7 @@ def _publish_release(
         plan,
         store_root=project.artifact_root / "release-store",
         source_paths=sources,
+        resources=project.resources(),
     )
 
 
@@ -636,7 +637,12 @@ def test_oa_release_derives_complete_platform_source_closure(tmp_path: Path) -> 
         project=Project.open(tmp_path),
     )
 
-    sources = set(ip_packaging._source_inputs(contract))
+    sources = set(
+        ip_packaging._source_inputs(
+            contract,
+            project=Project.open(tmp_path),
+        )
+    )
 
     assert {
         "configs/platform/catalog.toml",
@@ -780,7 +786,10 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
         lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
 
-    plan = ip_packaging.plan_ip_release_contract(contract)
+    plan = ip_packaging.plan_ip_release_contract(
+        contract,
+        project=Project.open(tmp_path),
+    )
 
     assert plan.record["missing_items"] == []
     assert plan.record["exports"] == [
@@ -830,12 +839,12 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
 
     built = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
     assert built["store"] == "native-fixture"
     assert "object" not in built
     assert "manifest" not in built
-    manifest = _built_manifest(contract.project, built)
+    manifest = _built_manifest(Project.open(tmp_path), built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
     assert audited["schema"] == 2
     assert audited["release_id"] == f"development-{'d' * 40}"
@@ -844,7 +853,7 @@ def test_native_oa_release_keeps_its_domain_interface_and_audits(
     snapshot = manifest.read_bytes()
     repeated = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
     assert {
         key: repeated[key] for key in ("store", "manifest_sha256")
@@ -953,7 +962,10 @@ capabilities = ["synthesis"]
         lambda *_args, **_kwargs: _native_oa_library_fixture(tmp_path),
     )
 
-    plan = ip_packaging.plan_ip_release_contract(contract)
+    plan = ip_packaging.plan_ip_release_contract(
+        contract,
+        project=Project.open(tmp_path),
+    )
 
     assert plan.record["exports"][0]["availability"] == {
         "simulation": True,
@@ -962,9 +974,9 @@ capabilities = ["synthesis"]
     }
     built = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
-    manifest = _built_manifest(contract.project, built)
+    manifest = _built_manifest(Project.open(tmp_path), built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
     assert audited["exports"][0]["availability"] == plan.record["exports"][0][
         "availability"
@@ -991,6 +1003,7 @@ def test_native_oa_release_rejects_circuit_port_order_drift(
         ip_packaging._development_interface_check(
             contract,
             contract.get_export("native-top"),
+            project=Project.open(tmp_path),
         )
 
 
@@ -1019,9 +1032,9 @@ def test_native_oa_package_rejects_digital_interface_sections(
     )
     built = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
-    manifest_path = _built_manifest(contract.project, built)
+    manifest_path = _built_manifest(Project.open(tmp_path), built)
     tampered_root = tmp_path / "tampered-native-release"
     shutil.copytree(manifest_path.parent, tampered_root)
     tampered_manifest = tampered_root / "manifest.json"
@@ -1080,9 +1093,9 @@ def test_native_oa_package_rejects_missing_reachable_subcircuit(
     )
     built = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
-    manifest_path = _built_manifest(contract.project, built)
+    manifest_path = _built_manifest(Project.open(tmp_path), built)
     tampered_root = tmp_path / "tampered-native-hierarchy"
     shutil.copytree(manifest_path.parent, tampered_root)
     tampered_manifest = tampered_root / "manifest.json"
@@ -1135,7 +1148,10 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         ),
     )
 
-    plan = ip_packaging.plan_ip_release_contract(contract)
+    plan = ip_packaging.plan_ip_release_contract(
+        contract,
+        project=Project.open(tmp_path),
+    )
 
     assert plan.record["exports"] == [
         {
@@ -1158,16 +1174,18 @@ def test_rtl_release_plans_and_audits_without_oa_sources(
         }
     ]
     implementation = ip_packaging.plan_ip_release_contract(
-        contract, maturity="implementation"
+        contract,
+        project=Project.open(tmp_path),
+        maturity="implementation",
     )
     assert implementation.record["missing_items"] == [
         "rtl-top:synthesis_receipt"
     ]
     built = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
-    manifest = _built_manifest(contract.project, built)
+    manifest = _built_manifest(Project.open(tmp_path), built)
     audited = ip_packaging.audit_ip_release_manifest(manifest)
     assert audited["exports"] == plan.record["exports"]
 
@@ -1245,13 +1263,16 @@ source = "ip/rtl_fixture/rtl/top.sv"
     assert isinstance(exported.interface, RtlIpInterface)
     assert exported.interface.variant == "alternate"
 
-    plan = ip_packaging.plan_ip_release_contract(contract)
+    plan = ip_packaging.plan_ip_release_contract(
+        contract,
+        project=Project.open(tmp_path),
+    )
     assert plan.record["exports"][0]["interface"]["variant"] == "alternate"
     built = _publish_release(
         contract_path,
-        project=contract.project,
+        project=Project.open(tmp_path),
     )
-    manifest = _built_manifest(contract.project, built)
+    manifest = _built_manifest(Project.open(tmp_path), built)
     assert ip_packaging.audit_ip_release_manifest(manifest)["exports"] == (
         plan.record["exports"]
     )
@@ -1265,14 +1286,14 @@ def test_release_design_inventory_rejects_forged_oa_plan(
     declared = (tmp_path / "ip/fixture/configs/left_interface.toml").resolve()
     forged = (tmp_path / "ip/fixture/configs/right_interface.toml").resolve()
     source = SimpleNamespace(
-        project=contract.project,
+        repository=contract.repository,
         name="fixture-lib",
         pdk="testpdk",
         cells=(SimpleNamespace(cell="LEFT", design_spec=declared),),
     )
     forged_spec = SimpleNamespace(
         path=forged,
-        project=contract.project,
+        repository=contract.repository,
         library="fixture-lib",
         cell="LEFT",
         pdk=SimpleNamespace(key="testpdk"),

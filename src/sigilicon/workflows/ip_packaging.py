@@ -281,6 +281,7 @@ def _oa_port_contract_document(
     contract: IpContract,
     path: Path,
     *,
+    project: Project,
     design_inventory: Mapping[Path, DesignSpec] | None,
 ) -> Mapping[str, Any]:
     if design_inventory is None:
@@ -293,7 +294,7 @@ def _oa_port_contract_document(
 
     design = resolve_design_spec(
         path,
-        project=contract.project,
+        project=project,
         snapshot=design_snapshot,
     )
     producer_root = _project_path(
@@ -307,11 +308,15 @@ def _oa_port_contract_document(
 
 
 def _development_interface_check(
-    contract: IpContract, exported: IpExport
+    contract: IpContract,
+    exported: IpExport,
+    *,
+    project: Project,
 ) -> dict[str, Any]:
     return _development_interface_check_with_design_inventory(
         contract,
         exported,
+        project=project,
         design_inventory=None,
     )
 
@@ -320,6 +325,7 @@ def _development_interface_check_with_design_inventory(
     contract: IpContract,
     exported: IpExport,
     *,
+    project: Project,
     design_inventory: Mapping[Path, DesignSpec] | None,
 ) -> dict[str, Any]:
     """Validate the machine-readable boundary against shipped SV collateral."""
@@ -330,6 +336,7 @@ def _development_interface_check_with_design_inventory(
         return _native_oa_development_interface_check(
             contract,
             exported,
+            project=project,
             design_inventory=design_inventory,
         )
 
@@ -406,6 +413,7 @@ def _development_interface_check_with_design_inventory(
     oa_document = _oa_port_contract_document(
         contract,
         oa_source,
+        project=project,
         design_inventory=design_inventory,
     )
     oa_ports = _oa_port_contract(oa_document)
@@ -459,6 +467,7 @@ def _native_oa_development_interface_check(
     contract: IpContract,
     exported: IpExport,
     *,
+    project: Project,
     design_inventory: Mapping[Path, DesignSpec] | None,
 ) -> dict[str, Any]:
     """Validate a native OA boundary without imposing a digital adapter schema."""
@@ -506,6 +515,7 @@ def _native_oa_development_interface_check(
     oa_document = _oa_port_contract_document(
         contract,
         port_contract_path,
+        project=project,
         design_inventory=design_inventory,
     )
     oa_ports = _oa_port_contract(oa_document)
@@ -643,6 +653,7 @@ def _rtl_development_interface_check(
 def _resolve_release_oa_source(
     contract: IpContract,
     *,
+    project: Project,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None,
     resolved_oa_source: OALibrarySource | None = None,
 ) -> tuple[Path, OALibrarySource]:
@@ -659,13 +670,13 @@ def _resolve_release_oa_source(
 
     if resolved_oa_source is not None:
         if (
-            resolved_oa_source.project is not contract.project
+            resolved_oa_source.repository != contract.repository
             or resolved_oa_source.manifest_path != oa_manifest
         ):
             raise ValueError("resolved OA release source identity drift")
         library = resolved_oa_source
     elif oa_source_inventory is None:
-        library = load_oa_library_source(oa_manifest, project=contract.project)
+        library = load_oa_library_source(oa_manifest, project=project)
     else:
         try:
             source_snapshot = oa_source_inventory[oa_manifest]
@@ -675,7 +686,7 @@ def _resolve_release_oa_source(
             ) from exc
         library = load_oa_library_source(
             oa_manifest,
-            project=contract.project,
+            project=project,
             snapshot=source_snapshot,
         )
     return oa_manifest, library
@@ -684,6 +695,7 @@ def _resolve_release_oa_source(
 def _source_inputs(
     contract: IpContract,
     *,
+    project: Project,
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
@@ -724,6 +736,7 @@ def _source_inputs(
 
     oa_manifest, library = _resolve_release_oa_source(
         contract,
+        project=project,
         oa_source_inventory=oa_source_inventory,
         resolved_oa_source=resolved_oa_source,
     )
@@ -732,9 +745,9 @@ def _source_inputs(
 
     if platform_inventory is None:
         release_platform = load_platform(
-            library.project,
+            project,
             library.pdk,
-            resources=library.project.resources(),
+            resources=project.resources(),
         )
     else:
         try:
@@ -744,7 +757,7 @@ def _source_inputs(
                 f"platform inventory has no {library.pdk!r} entry"
             ) from exc
         release_platform = resolve_platform_snapshot(
-            library.project,
+            project,
             library.pdk,
             snapshot=platform_snapshot,
         )
@@ -838,7 +851,7 @@ def _source_inputs(
                 from sigilicon.domain.oa_simulation import load_oa_simulation_spec
                 simulation = load_oa_simulation_spec(
                     next(iter(setup_sources)),
-                    project=library.project,
+                    project=project,
                     platform=release_platform,
                 )
             else:
@@ -852,7 +865,7 @@ def _source_inputs(
                 if (
                     testbench_step.canonical_source != cell.canonical_source
                     or simulation.path != next(iter(setup_sources))
-                    or simulation.project is not library.project
+                    or simulation.repository != library.repository
                     or simulation.library != library.name
                     or simulation.cell != cell.cell
                     or simulation.native_setup.pdk.source_paths
@@ -928,7 +941,7 @@ def _source_inputs(
                     ) from exc
                 if (
                     layout_step.spec.path != layout_spec
-                    or layout_step.spec.project is not library.project
+                    or layout_step.spec.repository != library.repository
                     or layout_step.spec.library != library.name
                     or layout_step.spec.cell != cell.cell
                 ):
@@ -1207,7 +1220,7 @@ def _release_design_inventory(
         if (
             path in result
             or spec.path != path
-            or spec.project is not oa_plan.source.project
+            or spec.repository != oa_plan.source.repository
             or spec.cell != cell.cell
             or spec.library != oa_plan.source.name
             or spec.pdk.key != oa_plan.source.pdk
@@ -1331,15 +1344,15 @@ def _native_oa_spectre_bundle(
 def _plan_loaded_ip_release(
     contract: IpContract,
     *,
+    project: Project,
     maturity: str | None = None,
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
     oa_plan_inventory: Mapping[Path, OALibraryRebuildPlan] | None = None,
 ) -> IpReleasePlan:
-    repository = contract.project
     contract = resolve_ip_contract(
         contract.path,
-        project=repository,
+        project=project,
         snapshot=contract,
     )
     level = contract.require_level(maturity or contract.default_maturity)
@@ -1354,10 +1367,12 @@ def _plan_loaded_ip_release(
     if oa_exports:
         _, oa_library = _resolve_release_oa_source(
             contract,
+            project=project,
             oa_source_inventory=oa_source_inventory,
         )
     source_paths = _source_inputs(
         contract,
+        project=project,
         platform_inventory=platform_inventory,
         oa_source_inventory=oa_source_inventory,
         oa_plan_inventory=oa_plan_inventory,
@@ -1365,7 +1380,7 @@ def _plan_loaded_ip_release(
     )
     source_state = inspect_checkout(
         contract.project_root,
-        contract.project.resources(),
+        project.resources(),
     )
     commit = source_state.commit
     dirty = source_state.working_tree_dirty
@@ -1383,7 +1398,7 @@ def _plan_loaded_ip_release(
     design_inventory = _release_design_inventory(contract, oa_plan_inventory)
     interface_checks = (
         [
-            _development_interface_check(contract, exported)
+            _development_interface_check(contract, exported, project=project)
             for exported in contract.exports
         ]
         if design_inventory is None
@@ -1391,6 +1406,7 @@ def _plan_loaded_ip_release(
             _development_interface_check_with_design_inventory(
                 contract,
                 exported,
+                project=project,
                 design_inventory=design_inventory,
             )
             for exported in contract.exports
@@ -1534,6 +1550,7 @@ def plan_ip_release(
     contract = load_ip_contract(contract_path, project=project)
     return plan_ip_release_contract(
         contract,
+        project=project,
         maturity=maturity,
         platform_inventory=platform_inventory,
         oa_source_inventory=oa_source_inventory,
@@ -1544,6 +1561,7 @@ def plan_ip_release(
 def plan_ip_release_contract(
     contract: IpContract,
     *,
+    project: Project,
     maturity: str | None = None,
     platform_inventory: PlatformSet | None = None,
     oa_source_inventory: Mapping[Path, OALibrarySource] | None = None,
@@ -1553,6 +1571,7 @@ def plan_ip_release_contract(
 
     return _plan_loaded_ip_release(
         contract,
+        project=project,
         maturity=maturity,
         platform_inventory=platform_inventory,
         oa_source_inventory=oa_source_inventory,
@@ -1635,6 +1654,7 @@ def _publish_ip_release(
     *,
     store_root: Path,
     source_paths: Mapping[Path, Path],
+    resources: Any,
 ) -> dict[str, Any]:
     """Publish one planned release exclusively from its sealed source closure."""
 
@@ -1663,7 +1683,7 @@ def _publish_ip_release(
         )
     source_state = inspect_checkout(
         contract.project_root,
-        contract.project.resources(),
+        resources,
     )
     if (
         source_state.commit != record["source_commit"]

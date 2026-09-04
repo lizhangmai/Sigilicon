@@ -265,11 +265,9 @@ def _run_native_oa_maestro_testbench_impl(
     _record_native_oa_maestro_inputs(artifacts, step)
     parsed_results: dict[str, Any] | None = None
     rdb_export = artifacts.path("work", "maestro-rdb.tsv")
-    project = plan.source.project
-
     with _registered_oa_maestro_operation(
         client,
-        project.workspace_root,
+        plan.source.workspace_root,
         operation_id=operation_id,
         bind_operation=bind_operation,
         record_uncertainty=record_uncertainty,

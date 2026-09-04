@@ -489,6 +489,7 @@ def _load_definitions(
 
 def _plan_designs(
     source: OALibrarySource,
+    project: Project,
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
     platform: PlatformSnapshot,
@@ -500,7 +501,7 @@ def _plan_designs(
             continue
         inspection = inspect_design(
             cell.design_spec,
-            project=source.project,
+            project=project,
             platform=platform,
             netlist_snapshot=(
                 None
@@ -638,6 +639,7 @@ def _instance_parameter_expectations(
 
 def _plan_testbenches(
     source: OALibrarySource,
+    project: Project,
     definitions: Mapping[str, NetlistSubcircuit],
     netlist_snapshots: Mapping[Path, NetlistSnapshot],
     platform: PlatformSnapshot,
@@ -661,7 +663,7 @@ def _plan_testbenches(
         setup_source = next(iter(setup_sources))
         simulation = load_oa_simulation_spec(
             setup_source,
-            project=source.project,
+            project=project,
             platform=platform,
             architecture_source_documents=architecture_source_documents,
         )
@@ -706,6 +708,7 @@ def _plan_testbenches(
 
 def _plan_layouts(
     source: OALibrarySource,
+    project: Project,
     library: str,
     definitions: Mapping[str, NetlistSubcircuit],
     platform: PlatformSnapshot,
@@ -718,7 +721,7 @@ def _plan_layouts(
         for spec_path in cell.layout_specs:
             spec = load_layout_spec(
                 spec_path,
-                project=source.project,
+                project=project,
                 oa_source=source,
                 platform=platform,
                 netlist_inventory=netlist_inventory,
@@ -745,7 +748,7 @@ def _plan_layouts(
             key = (spec.cell, spec.view)
             if key in planning_by_key:
                 raise ValueError(f"duplicate canonical layout rebuild view: {key}")
-            planning = plan_layout_snapshot(spec)
+            planning = plan_layout_snapshot(spec, project=project)
             specs.append(spec)
             planning_by_key[key] = planning
     keys = tuple((spec.cell, spec.view) for spec in specs)
@@ -876,7 +879,7 @@ def plan_oa_library_rebuild(
         from sigilicon.execution._model import Resources
 
         platform_snapshot: PlatformSnapshot = load_platform(
-            source.project,
+            project,
             source.pdk,
             resources=Resources(),
         )
@@ -891,12 +894,13 @@ def plan_oa_library_rebuild(
                     f"platform inventory has no {source.pdk!r} entry"
                 ) from exc
         resolve_platform_snapshot(
-            source.project,
+            project,
             source.pdk,
             snapshot=platform_snapshot,
         )
     designs = _plan_designs(
         source,
+        project,
         target_library,
         definitions,
         platform_snapshot,
@@ -904,6 +908,7 @@ def plan_oa_library_rebuild(
     )
     layouts = _plan_layouts(
         source,
+        project,
         target_library,
         definitions,
         platform_snapshot,
@@ -911,6 +916,7 @@ def plan_oa_library_rebuild(
     )
     testbenches = _plan_testbenches(
         source,
+        project,
         definitions,
         netlist_snapshots,
         platform_snapshot,
@@ -978,10 +984,9 @@ def attest_oa_testbench(
         raise ValueError(f"testbench plan identity mismatch: {step.cell} != {spec.cell}")
     if spec.native_setup is None:
         raise ValueError(f"native setup is not declared for {step.cell}")
-    project = plan.source.project
     with workspace_operation(
         client,
-        project.workspace_root,
+        plan.source.workspace_root,
         "attest-oa-native-setup",
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=False,
@@ -1276,10 +1281,9 @@ def _attest_layout_steps(
     if operation is not None:
         attest(operation)
         return
-    project = plan.source.project
     with workspace_operation(
         client,
-        project.workspace_root,
+        plan.source.workspace_root,
         operation_name,
         policy=OperationPolicy.READ_ONLY,
         acquire_flow_lock=acquire_flow_lock,
@@ -1317,10 +1321,9 @@ def _discard_undeclared_oa_cache(
     target_cells = tuple(
         sorted(set(extra_cells) | {cell for cell, _view in extra_views})
     )
-    project = plan.source.project
     with workspace_operation(
         client,
-        project.workspace_root,
+        plan.source.workspace_root,
         "discard-undeclared-oa-cache",
         policy=OperationPolicy.DIRECT_MUTATION,
         operation_id=operation_id,
@@ -1477,7 +1480,7 @@ def rebuild_oa_library(
             emit(f"text view {index}/{len(text_steps)}: {action} {identity}")
             sync_oa_text_view(
                 client,
-                project=plan.source.project,
+                repository=plan.source.repository,
                 library=plan.library,
                 cell=step.cell,
                 view=step.view.name,

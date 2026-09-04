@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Mapping
+from typing import Any, Literal, Mapping
 
-from sigilicon.project._component import (
+from sigilicon.domain.component import (
     ComponentContract,
     ComponentRelease,
     load_component_contract,
@@ -23,9 +23,7 @@ from sigilicon.contracts import (
 )
 from sigilicon.domain.ip_release import RELEASE_MATURITY_LEVELS, safe_relative
 from sigilicon.release_store import ReleaseRef
-
-if TYPE_CHECKING:
-    from sigilicon.project import Project
+from sigilicon.domain.context import RepositoryContext, RepositoryIdentity
 
 
 _CAPABILITIES = frozenset({"simulation", "synthesis", "physical_implementation"})
@@ -133,7 +131,7 @@ class IpOperatingVariant:
 
 @dataclass(frozen=True)
 class IpIntegrationContract:
-    project: Project
+    repository: RepositoryIdentity
     component: ComponentContract
     component_graph: Mapping[str, ComponentContract]
     dependency_lock: PurePosixPath | None
@@ -151,7 +149,11 @@ class IpIntegrationContract:
 
     @property
     def project_root(self) -> Path:
-        return self.project.project_root
+        return self.repository.project_root
+
+    @property
+    def workspace_root(self) -> Path:
+        return self.repository.workspace_root
 
     @property
     def owner(self) -> str:
@@ -234,7 +236,7 @@ def parse_locked_ip_release(value: object, label: str) -> LockedIpRelease:
 def _implementation_profiles(
     component: ComponentContract,
     *,
-    project: Project,
+    project: RepositoryContext,
     source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> tuple[Mapping[str, PurePosixPath], Mapping[Path, Mapping[str, Any]]]:
     result: dict[str, PurePosixPath] = {}
@@ -510,12 +512,10 @@ def _integration_dependencies(
 def load_ip_integration_contract(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     variant_source_documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> IpIntegrationContract:
     """Load composite-IP integration intent from its canonical component manifest."""
-
-    from sigilicon.project import Project
 
     repository = project
     root = repository.project_root
@@ -583,7 +583,7 @@ def load_ip_integration_contract(
     )
     source_documents.update(implementation_documents)
     return IpIntegrationContract(
-        project=repository,
+        repository=RepositoryIdentity.capture(repository),
         component=component,
         component_graph=MappingProxyType(dict(graph)),
         dependency_lock=dependency_lock,
@@ -597,7 +597,7 @@ def load_ip_integration_contract(
 def resolve_ip_integration_contract(
     path: Path,
     *,
-    project: Project,
+    project: RepositoryContext,
     snapshot: IpIntegrationContract | None = None,
 ) -> IpIntegrationContract:
     """Load an integration contract or validate one operation-owned snapshot."""
@@ -608,7 +608,7 @@ def resolve_ip_integration_contract(
     root = project.project_root
     if (
         snapshot.path != contract_path
-        or snapshot.project is not project
+        or snapshot.repository != RepositoryIdentity.capture(project)
         or not contract_path.is_relative_to(root)
         or not contract_path.is_file()
     ):
@@ -688,7 +688,7 @@ def resolve_ip_integration_contract(
     }
     expected_documents.update(implementation_documents)
     parsed = IpIntegrationContract(
-        project=project,
+        repository=RepositoryIdentity.capture(project),
         component=component,
         component_graph=MappingProxyType(dict(graph)),
         dependency_lock=dependency_lock,
@@ -702,13 +702,18 @@ def resolve_ip_integration_contract(
     return snapshot
 
 
-def load_ip_dependency_lock(*, contract: IpIntegrationContract) -> IpDependencyLock:
+def load_ip_dependency_lock(
+    *,
+    contract: IpIntegrationContract,
+    project: RepositoryContext,
+) -> IpDependencyLock:
     """Load the sole dependency lock selected by the component contract."""
 
     if contract.dependency_lock is None:
         raise ValueError("IP integration has no dependency lock")
     relative = contract.dependency_lock.as_posix()
-    lock_path, _ = contract.project.resolve_owner_file(
+    contract.repository.validate(project)
+    lock_path, _ = project.resolve_owner_file(
         contract.owner,
         relative,
         "IP dependency lock",

@@ -90,7 +90,7 @@ def test_project_xcelium_plan_reuses_the_explicit_project(tmp_path: Path) -> Non
     payload = plan.as_dict()
 
     assert plan.spec.project_root == tmp_path
-    assert plan.spec.project is project
+    assert plan.spec.repository.project_root == project.project_root
     assert plan.spec.owner == "demo"
     assert payload["contract"] == "ip/demo/verification/tb_demo/cell.toml"
     assert payload["owner"] == "demo"
