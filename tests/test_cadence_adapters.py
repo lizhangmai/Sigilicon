@@ -25,6 +25,7 @@ from sigilicon.execution._model import (
     ExecutionIO,
 )
 from sigilicon.execution._model import Resources
+from sigilicon.domain.platform import PlatformAsset
 from sigilicon.workflows.oa_library import oa_plan_source_paths
 
 
@@ -52,7 +53,7 @@ def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
     support = _file(tmp_path / "support.scs")
     setup = _file(tmp_path / "setup.il")
     testbench = _file(tmp_path / "testbench.scs")
-    model_set = SimpleNamespace(files=(model, support))
+    model_set = SimpleNamespace(paths=(model, support))
     pdk = SimpleNamespace(
         source_paths=(),
         runtime_bound=True,
@@ -333,7 +334,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         },
         sources=(contract,),
         circuit_netlist=contract,
-        model_set=SimpleNamespace(name="nominal", files=(model,)),
+        model_set=SimpleNamespace(name="nominal", paths=(model,)),
         integration_check={
             "dependency_releases": [
                 {
@@ -568,8 +569,8 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.resolve_platforms",
-        lambda _project, _resources: object(),
+        "sigilicon.domain.platform.load_platforms",
+        lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
@@ -656,8 +657,8 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         lambda _project, _root: owner_root / "configs/oa.toml",
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.resolve_platforms",
-        lambda _project, _resources: object(),
+        "sigilicon.domain.platform.load_platforms",
+        lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
@@ -770,8 +771,8 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.resolve_platforms",
-        lambda _project, _resources: object(),
+        "sigilicon.domain.platform.load_platforms",
+        lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
@@ -864,8 +865,8 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
         ),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.resolve_platforms",
-        lambda _project, _resources: object(),
+        "sigilicon.domain.platform.load_platforms",
+        lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",
@@ -945,12 +946,12 @@ def test_layout_verification_backend_publishes_classified_evidence(
             view="layout",
             generator="fixture",
             stage="routed",
-            pdk=SimpleNamespace(key="fixture-pdk"),
-            layout_pdk=SimpleNamespace(
-                layermap=layermap,
-                drc_deck=drc_deck,
-                lvs_deck=lvs_deck,
-            ),
+                pdk=SimpleNamespace(key="fixture-pdk"),
+                layout_pdk=SimpleNamespace(
+                    layermap=PlatformAsset(PurePosixPath("layermap"), layermap),
+                    drc_deck=PlatformAsset(PurePosixPath("drc.deck"), drc_deck),
+                    lvs_deck=PlatformAsset(PurePosixPath("lvs.deck"), lvs_deck),
+                ),
         ),
         source_records={source: source.read_text(encoding="utf-8")},
         plan=None,
@@ -960,8 +961,8 @@ def test_layout_verification_backend_publishes_classified_evidence(
         plan=SimpleNamespace(canonical_json=lambda: '{"schema":1}\n'),
     )
     monkeypatch.setattr(
-        "sigilicon.domain.platform.resolve_platforms",
-        lambda _project, _resources: object(),
+        "sigilicon.domain.platform.load_platforms",
+        lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
         "sigilicon.workflows.layout_generation.plan_layout_spec",

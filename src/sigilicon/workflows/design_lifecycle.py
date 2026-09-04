@@ -73,9 +73,10 @@ def inspect_design(
             spec,
             netlist_snapshot=select_subckt_snapshot(spec.netlist_snapshot, spec.cell),
         )
-    model_file = spec.pdk.simulation.default.file
-    if spec.pdk.runtime_bound and not model_file.is_file():
-        raise FileNotFoundError(f"PDK model file does not exist: {model_file}")
+    if spec.pdk.runtime_bound:
+        model_file = spec.pdk.simulation.default.file.require_path()
+        if not model_file.is_file():
+            raise FileNotFoundError(f"PDK model file does not exist: {model_file}")
     plan = plan_hierarchy(spec.netlist_snapshot, top=spec.cell)
     if not plan.ordered_cells or plan.ordered_cells[-1] != spec.cell:
         raise RuntimeError(f"invalid hierarchy plan for {spec.library}/{spec.cell}")

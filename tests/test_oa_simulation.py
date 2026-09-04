@@ -507,6 +507,10 @@ sections = ["local_mos"]
 ''',
         encoding="utf-8",
     )
+    (simulation.parent / "local_models.scs").write_text(
+        "simulator lang=spectre\n",
+        encoding="utf-8",
+    )
     spec_path.parent.joinpath("setup.il").write_text(
         '''procedure(fixtureNativeConfig(lib cell dut sourceView refs) t)
 procedure(fixtureNativeMaestro(session lib cell modelFile modelSection)

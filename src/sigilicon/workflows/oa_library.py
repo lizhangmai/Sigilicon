@@ -284,7 +284,7 @@ def oa_plan_source_paths(plan: OALibraryRebuildPlan) -> frozenset[Path]:
             paths.update(native_setup.pdk.source_paths)
             if native_setup.pdk.runtime_bound:
                 for model_set in native_setup.pdk.simulation.model_sets.values():
-                    paths.update(model_set.files)
+                    paths.update(model_set.paths)
             paths.add(native_setup.source_snapshot.source_path)
             rdb_contract = native_setup.rdb_contract
             if rdb_contract is not None:
@@ -1515,7 +1515,9 @@ def rebuild_oa_library(
             f"testbench {index}/{len(selected_testbenches)}: rebuild "
             f"{plan.library}/{step.cell}"
         )
-        model_path = step.simulation.native_setup.pdk.simulation.default.file.resolve()
+        model_path = (
+            step.simulation.native_setup.pdk.simulation.default.file.require_path()
+        )
         model_file = resource_paths.get(model_path, source_paths.get(model_path))
         if model_file is None:
             raise ValueError(

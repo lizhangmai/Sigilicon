@@ -760,7 +760,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
                 *planning.source_records,
                 *planning.sources,
                 planning.circuit_netlist,
-                *planning.model_set.files,
+                *planning.model_set.paths,
             }
         )
         if required != frozenset(planning.source_records):
@@ -881,7 +881,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import resolve_platforms
+        from sigilicon.domain.platform import load_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
@@ -894,7 +894,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         manifest = find_oa_assembly(project, selected_owner.root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = resolve_platforms(project, resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_oa_library_rebuild(
             manifest,
             project=project,
@@ -1081,7 +1081,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> Step:
-        from sigilicon.domain.platform import resolve_platforms
+        from sigilicon.domain.platform import load_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
@@ -1093,7 +1093,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         manifest = find_oa_assembly(project, project.owner(owner).root)
         if manifest is None:
             raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = resolve_platforms(project, resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_oa_library_rebuild(
             manifest,
             project=project,
@@ -1265,7 +1265,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> Step:
         from sigilicon.domain.platform import (
-            resolve_platforms,
+            load_platforms,
             platform_resource_identities,
         )
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1276,7 +1276,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = resolve_platforms(project, resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_layout_spec(
             spec,
             project=project,
@@ -1406,7 +1406,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> Step:
         from sigilicon.domain.platform import (
-            resolve_platforms,
+            load_platforms,
             platform_resource_identities,
         )
         from sigilicon.workflows.layout_generation import plan_layout_spec
@@ -1417,7 +1417,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         spec = project.owner(owner).root / _relative(
             _text(config, "spec"), "layout spec"
         )
-        platforms = resolve_platforms(project, resources)
+        platforms = load_platforms(project, resources=resources)
         planning = plan_layout_spec(
             spec,
             project=project,
@@ -1426,9 +1426,9 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         if planning.spec.layout_pdk is None:
             raise ContractError("layout verification requires a layout PDK")
         deck = (
-            planning.spec.layout_pdk.drc_deck
+            planning.spec.layout_pdk.drc_deck.require_path()
             if _text(config, "check") == "drc"
-            else planning.spec.layout_pdk.lvs_deck
+            else planning.spec.layout_pdk.lvs_deck.require_path()
         )
         check = _text(config, "check")
         prepared_identity = {
@@ -1449,7 +1449,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             prepared=prepared_identity,
             source_records=planning.source_records,
             resource_identities=platform_resource_identities(planning.spec.pdk),
-            extra_resources=(planning.spec.layout_pdk.layermap, deck),
+            extra_resources=(planning.spec.layout_pdk.layermap.require_path(), deck),
             runtime_identities=(*_BRIDGE_RESOURCES, _XSTREAM, _CALIBRE),
         )
 

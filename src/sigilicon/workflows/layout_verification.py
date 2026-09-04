@@ -678,10 +678,10 @@ def run_layout_verification(
         )
     if plan.stage != "routed":
         raise ValueError("layout verification requires a routed layout plan")
-    layermap_path = spec.layout_pdk.layermap.resolve()
+    layermap_path = spec.layout_pdk.layermap.require_path()
     deck_path = (
         spec.layout_pdk.drc_deck if check == "drc" else spec.layout_pdk.lvs_deck
-    ).resolve()
+    ).require_path()
     try:
         layermap_source = external_sources[layermap_path]
         deck_source = external_sources[deck_path]

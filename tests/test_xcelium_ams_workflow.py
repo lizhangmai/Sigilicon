@@ -382,7 +382,7 @@ cell = "ANALOG_TOP"''',
     assert plan.integration_check["contract_kind"] == "source-circuit-selection"
     assert plan.circuit_sha256 == hashlib.sha256(circuit.read_bytes()).hexdigest()
     assert circuit not in plan.resource_identities
-    assert set(plan.resource_identities) == set(plan.model_set.files)
+    assert set(plan.resource_identities) == set(plan.model_set.paths)
     assert all(
         identity.startswith("pdk:testpdk:simulation/nominal/")
         for identity in plan.resource_identities.values()

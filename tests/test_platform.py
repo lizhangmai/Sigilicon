@@ -11,13 +11,10 @@ from conftest import (
     write_test_platform,
 )
 from sigilicon.domain.platform import (
-    PdkConfig,
-    PlatformContract,
+    Platform,
     load_platform,
     load_platform_catalog,
-    load_platform_contract,
     load_platforms,
-    resolve_platforms,
     resolve_platform_snapshot,
 )
 from sigilicon.execution._model import Resources
@@ -32,7 +29,7 @@ def test_platform_loads_typed_immutable_project_capabilities(tmp_path: Path) -> 
         Project.open(tmp_path), "testpdk", resources=Resources()
     )
 
-    assert platform.simulation.default.file == model
+    assert platform.simulation.default.file.require_path() == model
     assert platform.simulation.default.single_section == "tt"
     assert platform.oa.technology_library == "techLib"
     assert platform.oa.reference_libraries == ("deviceLib",)
@@ -72,7 +69,7 @@ def test_platform_capabilities_are_independently_optional(
     platform = load_platform(
         Project.open(tmp_path), "testpdk", resources=Resources()
     )
-    contract = load_platform_contract(Project.open(tmp_path), "testpdk")
+    contract = load_platform(Project.open(tmp_path), "testpdk")
 
     assert getattr(platform, omitted) is None
     assert getattr(contract, omitted) is None
@@ -84,7 +81,7 @@ def test_operation_inventory_reuses_one_project_snapshot(tmp_path: Path) -> None
     write_project_context(tmp_path)
     write_test_platform(tmp_path)
     project = Project.open(tmp_path)
-    inventory = resolve_platforms(project, Resources())
+    inventory = load_platforms(project, resources=Resources())
 
     assert (
         resolve_platform_snapshot(project, "testpdk", snapshot=inventory)
@@ -129,7 +126,7 @@ def test_runtime_platform_snapshot_rejects_project_manifest_drift(
         encoding="utf-8",
     )
     project = Project.open(tmp_path)
-    inventory = resolve_platforms(project, project.resources())
+    inventory = load_platforms(project, resources=project.resources())
     snapshot = inventory if snapshot_kind == "inventory" else inventory["testpdk"]
 
     contract.write_text(
@@ -302,7 +299,7 @@ asset_scope = "external"
 
     platform = load_platform(Project.open(tmp_path), "testpdk", resources=resources)
 
-    assert platform.simulation.default.file == model
+    assert platform.simulation.default.file.require_path() == model
     assert all(path.is_relative_to(tmp_path) for path in platform.source_documents)
 
 
@@ -323,8 +320,7 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
     inventory = load_platforms(Project.open(tmp_path))
     platform = inventory["testpdk"]
 
-    assert isinstance(platform, PlatformContract)
-    assert not isinstance(platform, PdkConfig)
+    assert isinstance(platform, Platform)
     assert not hasattr(platform, "_planning")
     assert (
         resolve_platform_snapshot(
@@ -336,7 +332,8 @@ def test_external_platform_contract_inventory_needs_no_runtime_root(
     )
     assert platform.asset_root_resource == "platform.testpdk"
     assert tuple(path.as_posix() for path in platform.asset_paths) == ("model.scs",)
-    assert isinstance(platform.simulation.default.file, PurePosixPath)
+    assert platform.simulation.default.file.logical == PurePosixPath("model.scs")
+    assert not platform.simulation.default.file.bound
 
 
 def test_external_platform_model_cannot_traverse_a_symlink(
@@ -463,7 +460,7 @@ def test_platform_manifest_owner_is_its_catalog_identity(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="platform manifest owner"):
-        load_platform_contract(Project.open(tmp_path), "testpdk")
+        load_platform(Project.open(tmp_path), "testpdk")
 
 
 @pytest.mark.parametrize("changed", ("catalog", "platform"))
@@ -491,6 +488,6 @@ def test_platform_set_rejects_source_drift(
 
     with pytest.raises(
         ValueError,
-        match="source identity drift|catalog snapshot|owner must be",
+        match="source identity drift|identity drift|catalog snapshot|owner must be",
     ):
         resolve_platform_snapshot(project, "testpdk", snapshot=inventory)

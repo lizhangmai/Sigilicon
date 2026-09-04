@@ -13,8 +13,8 @@ from sigilicon.contracts import (
     is_frozen_toml_document,
 )
 from sigilicon.domain.platform import (
+    Platform,
     PlatformSnapshot,
-    ResolvedPlatform,
     resolve_platform_snapshot,
 )
 from sigilicon.domain.native_diagnostics import (
@@ -109,7 +109,7 @@ class OANativeRdbContract:
 class OANativeSetup:
     """Source-owned native ADE/Maestro setup materialized through SKILL."""
 
-    pdk: ResolvedPlatform
+    pdk: Platform
     source_snapshot: TextSourceSnapshot
     config_procedure: str
     maestro_procedure: str
@@ -490,7 +490,7 @@ def _validate_native_rdb_contract_source(
 
 def _validate_native_rdb_platform_models(
     contract: OANativeRdbContract,
-    pdk: ResolvedPlatform,
+    pdk: Platform,
 ) -> None:
     """Require audited setup models to be declared by the selected platform."""
 

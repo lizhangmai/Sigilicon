@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.platform import (
-    PdkConfig,
+    Platform,
     SimulationModelSet,
     load_platform,
     model_resource_identities,
@@ -61,7 +61,7 @@ class XceliumAmsCellPlan(XceliumCellPlan):
     circuit_netlist: Path
     circuit_sha256: str
     native_cell: str
-    platform: PdkConfig
+    platform: Platform
     model_set: SimulationModelSet
     model_sha256: Mapping[Path, str]
     integration_check: Mapping[str, Any]
@@ -99,7 +99,7 @@ class XceliumAmsCellPlan(XceliumCellPlan):
         assert ams is not None
         section = self.model_set.single_section
         circuit = self.circuit_netlist if circuit_netlist is None else circuit_netlist
-        model = self.model_set.file if model_file is None else model_file
+        model = self.model_set.file.require_path() if model_file is None else model_file
         return (
             "simulator lang=spectre\n"
             f'include "{_spectre_path(circuit)}"\n'
@@ -124,7 +124,7 @@ class XceliumAmsCellPlan(XceliumCellPlan):
                 ),
                 "sha256": self.model_sha256[path],
             }
-            for index, path in enumerate(self.model_set.files)
+            for index, path in enumerate(self.model_set.paths)
         ]
         return {
             **self.spec.as_dict(),
@@ -275,7 +275,7 @@ def _resolve_circuit(
 
 def _external_resource_identities(
     spec: VerificationCellSpec,
-    platform: PdkConfig,
+    platform: Platform,
     model_set: SimulationModelSet,
     circuit: Path,
     selection: Mapping[str, Any],
@@ -355,7 +355,7 @@ def plan_xcelium_ams_cell(
         resources=resources,
     )
     model_set = platform.simulation.model_set(spec.ams.model_set)
-    model_names = [path.name for path in model_set.files]
+    model_names = [path.name for path in model_set.paths]
     if len(model_names) != len(set(model_names)):
         raise ValueError("Xcelium AMS platform model files have duplicate basenames")
     command_template = (
@@ -378,11 +378,11 @@ def plan_xcelium_ams_cell(
         *spec.source_documents,
         *platform.source_paths,
         *release_records,
-        *model_set.files,
+        *model_set.paths,
     }
     if spec.runner is not None:
         source_paths.add(spec.runner)
-    model_sha256 = {path: _sha256(path) for path in model_set.files}
+    model_sha256 = {path: _sha256(path) for path in model_set.paths}
     source_records = snapshot_verification_sources(
         source_paths,
         documents=(spec.source_documents, platform.source_documents),
@@ -453,7 +453,7 @@ def execute_xcelium_ams_cell(
                     ("pdk", path.name),
                     selected(path),
                 )
-                for path in plan.model_set.files
+                for path in plan.model_set.paths
             }
         )
         staged["control"] = artifacts.write_text(
@@ -512,7 +512,7 @@ def _require_ams_inputs(
     required = (
         *plan.spec.source_inputs,
         *plan.platform.source_paths,
-        *plan.model_set.files,
+        *plan.model_set.paths,
         plan.circuit_netlist,
     )
     if any(not selected(path).is_file() for path in required):

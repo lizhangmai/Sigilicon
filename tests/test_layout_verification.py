@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
+from sigilicon.domain.platform import PlatformAsset
 from sigilicon.workflows import layout_verification
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._model import Resources
@@ -231,11 +232,11 @@ def test_layout_verification_binds_before_lease_and_commits_typed_evidence(
         pdk=SimpleNamespace(
             oa=SimpleNamespace(technology_library="example-tech")
         ),
-        layout_pdk=SimpleNamespace(
-            layermap=layermap,
-            drc_deck=drc_deck,
-            lvs_deck=lvs_deck,
-        ),
+            layout_pdk=SimpleNamespace(
+                layermap=PlatformAsset(PurePosixPath("layermap"), layermap),
+                drc_deck=PlatformAsset(PurePosixPath("drc.deck"), drc_deck),
+                lvs_deck=PlatformAsset(PurePosixPath("lvs.deck"), lvs_deck),
+            ),
     )
     plan = SimpleNamespace(
         stage="routed",

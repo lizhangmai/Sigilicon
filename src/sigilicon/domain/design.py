@@ -16,8 +16,8 @@ from sigilicon.contracts import (
 )
 from sigilicon.domain.netlist import NetlistSnapshot, load_netlist_snapshot, subckt_ports
 from sigilicon.domain.platform import (
+    Platform,
     PlatformSnapshot,
-    ResolvedPlatform,
     resolve_platform_snapshot,
 )
 from sigilicon.project import Project
@@ -44,7 +44,7 @@ class DesignSpec:
     ground_supply: str | None
     port_order: tuple[str, ...]
     directions: Mapping[str, str]
-    pdk: ResolvedPlatform
+    pdk: Platform
     netlist_snapshot: NetlistSnapshot
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})

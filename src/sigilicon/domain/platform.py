@@ -43,17 +43,57 @@ class _SnapshotPlatformResources:
 
 
 @dataclass(frozen=True)
+class PlatformAsset:
+    """One logical PDK asset with an optional explicit runtime binding."""
+
+    logical: PurePosixPath
+    location: Path | None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.logical, PurePosixPath)
+            or self.logical.is_absolute()
+            or any(part in {"", ".", ".."} for part in self.logical.parts)
+        ):
+            raise ValueError("platform asset path must be logical and relative")
+        if self.location is not None:
+            location = Path(self.location).absolute()
+            if location != location.resolve():
+                raise ValueError("platform asset binding must not traverse a symlink")
+            object.__setattr__(self, "location", location)
+
+    @property
+    def name(self) -> str:
+        return self.logical.name
+
+    @property
+    def bound(self) -> bool:
+        return self.location is not None
+
+    def require_path(self) -> Path:
+        if self.location is None:
+            raise ValueError(f"platform asset is not runtime-bound: {self.logical}")
+        return self.location
+
+
+@dataclass(frozen=True)
 class SimulationModelSet:
     """One caller-selectable simulator model include set."""
 
     name: str
-    file: Path
+    file: PlatformAsset
     sections: tuple[str, ...]
-    support_files: tuple[Path, ...] = ()
+    support_files: tuple[PlatformAsset, ...] = ()
 
     @property
-    def files(self) -> tuple[Path, ...]:
+    def files(self) -> tuple[PlatformAsset, ...]:
         return (self.file, *self.support_files)
+
+    @property
+    def paths(self) -> tuple[Path, ...]:
+        """Return runtime paths, rejecting use before explicit binding."""
+
+        return tuple(asset.require_path() for asset in self.files)
 
     @property
     def single_section(self) -> str:
@@ -65,8 +105,8 @@ class SimulationModelSet:
 
 
 @dataclass(frozen=True)
-class SimulationPlatformConfig:
-    """Resolved simulation capability supplied by one project platform."""
+class SimulationPlatform:
+    """Simulation capability supplied by one project platform."""
 
     path: Path
     default_model_set: str
@@ -112,95 +152,37 @@ class OaMaterializationMapping:
 
 
 @dataclass(frozen=True)
-class LayoutPdkConfig:
-    """Resolved layout and physical-verification platform capability."""
+class LayoutPlatform:
+    """Layout and physical-verification capability of one platform."""
 
     layout_path: Path
     verification_path: Path
     dbu_per_micron: int
-    layermap: Path
-    drc_deck: Path
-    lvs_deck: Path
-    qrc_tech_file: Path | None
+    layermap: PlatformAsset
+    drc_deck: PlatformAsset
+    lvs_deck: PlatformAsset
+    qrc_tech_file: PlatformAsset | None
     xstream_flatten_pcells: bool = True
     xstream_suppressed_warnings: tuple[str, ...] = ()
     oa_materialization: OaMaterializationMapping | None = None
     technology: LayoutTechnology | None = None
 
 
-@dataclass(frozen=True)
-class SimulationModelContract:
-    """One model set whose assets remain logical references."""
-
-    name: str
-    file: PurePosixPath
-    sections: tuple[str, ...]
-    support_files: tuple[PurePosixPath, ...] = ()
-
-    @property
-    def files(self) -> tuple[PurePosixPath, ...]:
-        return (self.file, *self.support_files)
-
-    @property
-    def single_section(self) -> str:
-        if len(self.sections) != 1:
-            raise ValueError(
-                f"platform model set {self.name!r} does not have one default section"
-            )
-        return self.sections[0]
+_PLATFORM_AUTHORITY = object()
 
 
 @dataclass(frozen=True)
-class SimulationPlatformContract:
-    """Source-owned simulation contract without host paths."""
-
-    path: Path
-    default_model_set: str
-    model_sets: Mapping[str, SimulationModelContract]
-
-    @property
-    def default(self) -> SimulationModelContract:
-        return self.model_set(self.default_model_set)
-
-    def model_set(self, name: str) -> SimulationModelContract:
-        try:
-            return self.model_sets[name]
-        except KeyError as exc:
-            raise ValueError(f"platform has no simulation model set {name!r}") from exc
-
-
-@dataclass(frozen=True)
-class LayoutPlatformContract:
-    """Source-owned layout contract with logical verification assets."""
-
-    layout_path: Path
-    verification_path: Path
-    dbu_per_micron: int
-    layermap: PurePosixPath
-    drc_deck: PurePosixPath
-    lvs_deck: PurePosixPath
-    qrc_tech_file: PurePosixPath | None
-    xstream_flatten_pcells: bool = True
-    xstream_suppressed_warnings: tuple[str, ...] = ()
-    oa_materialization: OaMaterializationMapping | None = None
-    technology: LayoutTechnology | None = None
-
-
-_PDK_CONFIG_AUTHORITY = object()
-
-
-@dataclass(frozen=True)
-class PdkConfig:
-    """Loader-sealed platform and its validated operation source snapshot."""
+class Platform:
+    """One loader-sealed logical platform with optional runtime-bound assets."""
 
     _authority: InitVar[object]
     key: str
     path: Path
     owner: str
     name: str
-    simulation: SimulationPlatformConfig | None
+    simulation: SimulationPlatform | None
     oa: OaPlatformConfig | None
-    layout: LayoutPdkConfig | None
+    layout: LayoutPlatform | None
     source_paths: tuple[Path, ...]
     catalog_document: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
@@ -212,107 +194,80 @@ class PdkConfig:
     )
 
     def __post_init__(self, _authority: object) -> None:
-        if _authority is not _PDK_CONFIG_AUTHORITY:
+        if _authority is not _PLATFORM_AUTHORITY:
             raise ValueError("platform snapshots must be built by the platform loader")
+        if any(not isinstance(asset, PlatformAsset) for asset in self.assets):
+            raise ValueError("platform assets must use logical PlatformAsset values")
 
     @property
     def runtime_bound(self) -> bool:
         """Whether external asset paths were resolved for this invocation."""
 
-        return self.asset_root is not None
+        return all(asset.bound for asset in self.assets)
+
+    @property
+    def assets(self) -> tuple[PlatformAsset, ...]:
+        selected: list[PlatformAsset] = []
+        if self.simulation is not None:
+            selected.extend(
+                asset
+                for model_set in self.simulation.model_sets.values()
+                for asset in model_set.files
+            )
+        if self.layout is not None:
+            selected.extend(
+                asset
+                for asset in (
+                    self.layout.layermap,
+                    self.layout.drc_deck,
+                    self.layout.lvs_deck,
+                    self.layout.qrc_tech_file,
+                )
+                if asset is not None
+            )
+        return tuple(selected)
+
+    @property
+    def asset_paths(self) -> tuple[PurePosixPath, ...]:
+        return tuple(sorted({asset.logical for asset in self.assets}))
 
 
-def platform_resource_identities(platform: PdkConfig) -> Mapping[Path, str]:
+def platform_resource_identities(platform: Platform) -> Mapping[Path, str]:
     """Name every external platform asset by its domain identity."""
 
     selected: dict[Path, str] = {}
     simulation = getattr(platform, "simulation", None)
     if simulation is not None:
         for name, model_set in sorted(simulation.model_sets.items()):
-            for index, path in enumerate(model_set.files):
+            for index, asset in enumerate(model_set.files):
+                path = asset.require_path()
                 selected[path.absolute()] = (
                     f"pdk:{platform.key}:simulation/{name}/{index}-{path.name}"
                 )
     layout = getattr(platform, "layout", None)
     if layout is not None:
         for role in ("layermap", "drc_deck", "lvs_deck", "qrc_tech_file"):
-            path = getattr(layout, role, None)
-            if path is not None:
+            asset = getattr(layout, role, None)
+            if asset is not None:
+                path = asset.require_path()
                 selected[path.absolute()] = f"pdk:{platform.key}:layout/{role}"
     return MappingProxyType(selected)
 
 
 def model_resource_identities(
-    platform: PdkConfig,
+    platform: Platform,
     model_set: SimulationModelSet,
 ) -> Mapping[Path, str]:
     """Name the selected simulator model assets within their platform."""
 
     selected = dict(platform_resource_identities(platform))
-    for index, path in enumerate(model_set.files):
+    for index, asset in enumerate(model_set.files):
+        path = asset.require_path()
         selected[path.absolute()] = (
             f"pdk:{platform.key}:simulation/"
             f"{model_set.name}/{index}-{path.name}"
         )
     return MappingProxyType(selected)
-
-
-_PLATFORM_CONTRACT_AUTHORITY = object()
-
-
-@dataclass(frozen=True)
-class PlatformContract:
-    """Project-owned platform contract with logical, unresolved asset references."""
-
-    _authority: InitVar[object]
-    key: str
-    path: Path
-    owner: str
-    name: str
-    simulation: SimulationPlatformContract | None
-    oa: OaPlatformConfig | None
-    layout: LayoutPlatformContract | None
-    asset_root_resource: str | None
-    source_paths: tuple[Path, ...]
-    catalog_document: Mapping[str, Any]
-    source_documents: Mapping[Path, Mapping[str, Any]]
-
-    def __post_init__(self, _authority: object) -> None:
-        if _authority is not _PLATFORM_CONTRACT_AUTHORITY:
-            raise ValueError("platform contracts must be built by the platform loader")
-        if any(
-            not isinstance(path, PurePosixPath)
-            or path.is_absolute()
-            or any(part in {"", ".", ".."} for part in path.parts)
-            for path in self.asset_paths
-        ):
-            raise ValueError("platform contract asset paths must be logical and relative")
-
-    @property
-    def asset_paths(self) -> tuple[PurePosixPath, ...]:
-        assets = []
-        if self.simulation is not None:
-            assets.extend(
-                path
-                for model_set in self.simulation.model_sets.values()
-                for path in model_set.files
-            )
-        if self.layout is not None:
-            assets.extend(
-                path
-                for path in (
-                    self.layout.layermap,
-                    self.layout.drc_deck,
-                    self.layout.lvs_deck,
-                    self.layout.qrc_tech_file,
-                )
-                if path is not None
-            )
-        return tuple(sorted(set(assets)))
-
-    @property
-    def runtime_bound(self) -> bool:
-        return False
 
 
 @dataclass(frozen=True)
@@ -335,8 +290,8 @@ class PlatformCatalogSnapshot:
 _PLATFORM_INVENTORY_AUTHORITY = object()
 
 
-class PlatformSet(Mapping[str, "ResolvedPlatform"]):
-    """One validated logical or runtime-bound platform catalog."""
+class PlatformSet(Mapping[str, Platform]):
+    """One validated platform catalog with one binding state."""
 
     __slots__ = ("_catalog", "_platforms", "_project")
 
@@ -346,7 +301,7 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
         _authority: object,
         project: Project,
         catalog: PlatformCatalogSnapshot,
-        platforms: Mapping[str, "ResolvedPlatform"],
+        platforms: Mapping[str, Platform],
     ) -> None:
         if _authority is not _PLATFORM_INVENTORY_AUTHORITY:
             raise ValueError("platform set must be built by its loader")
@@ -360,10 +315,8 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
         if set(selected) != set(catalog.manifests):
             raise ValueError("platform set does not cover its complete catalog")
         for key, platform in selected.items():
-            if isinstance(platform, PdkConfig):
-                _validate_immutable_platform_snapshot(platform)
             if (
-                not isinstance(platform, (PdkConfig, PlatformContract))
+                not isinstance(platform, Platform)
                 or platform.key != key
                 or platform.path != catalog.manifest(key)
                 or platform.catalog_document != catalog.document
@@ -371,11 +324,9 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
                 or platform.source_paths[0] != catalog.path
             ):
                 raise ValueError("platform set identity drift")
-            if isinstance(platform, PdkConfig) and (
-                not platform.runtime_bound
-                or set(platform.source_documents) != set(platform.source_paths[1:])
-            ):
-                raise ValueError("runtime platform identity drift")
+            _validate_immutable_platform_snapshot(platform)
+            if set(platform.source_documents) != set(platform.source_paths[1:]):
+                raise ValueError("platform source identity drift")
         object.__setattr__(self, "_project", project)
         object.__setattr__(self, "_catalog", catalog)
         object.__setattr__(self, "_platforms", MappingProxyType(selected))
@@ -389,13 +340,13 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
         return self._catalog
 
     @property
-    def platforms(self) -> Mapping[str, "ResolvedPlatform"]:
+    def platforms(self) -> Mapping[str, Platform]:
         return self._platforms
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("platform set is immutable")
 
-    def __getitem__(self, key: str) -> "ResolvedPlatform":
+    def __getitem__(self, key: str) -> Platform:
         return self.platforms[key]
 
     def __iter__(self) -> Iterator[str]:
@@ -404,7 +355,7 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
     def __len__(self) -> int:
         return len(self.platforms)
 
-    def resolve(self, context: Project, key: str) -> "ResolvedPlatform":
+    def resolve(self, context: Project, key: str) -> Platform:
         context.manifest_source_document()
         if (
             context is not self.project
@@ -423,25 +374,11 @@ class PlatformSet(Mapping[str, "ResolvedPlatform"]):
             or platform.source_paths[0] != self.catalog.path
         ):
             raise ValueError("platform set identity drift")
-        current_catalog = resolve_platform_catalog(context, snapshot=self.catalog)
-        if isinstance(platform, PdkConfig):
-            _validate_platform_snapshot(context, key, platform, resources=None)
-        elif load_platform_contract(
-            context,
-            key,
-            catalog=current_catalog,
-        ) != platform:
-            raise ValueError("platform set source identity drift")
-        return platform
+        resolve_platform_catalog(context, snapshot=self.catalog)
+        return _validate_platform_snapshot(context, key, platform, resources=None)
 
 
-PlatformSnapshot = (
-    PdkConfig
-    | PlatformSet
-    | PlatformContract
-)
-ResolvedPlatform = PdkConfig | PlatformContract
-ResolvedLayoutPlatform = LayoutPdkConfig | LayoutPlatformContract
+PlatformSnapshot = Platform | PlatformSet
 
 
 def _validate_immutable_platform_catalog(
@@ -453,7 +390,7 @@ def _validate_immutable_platform_catalog(
         raise ValueError("platform catalog snapshot immutable identity drift")
 
 
-def _validate_immutable_platform_snapshot(snapshot: PdkConfig) -> None:
+def _validate_immutable_platform_snapshot(snapshot: Platform) -> None:
     if not is_frozen_toml_document(snapshot.catalog_document):
         raise ValueError("platform snapshot catalog document identity drift")
     if not isinstance(snapshot.source_documents, _MAPPING_PROXY_TYPE) or any(
@@ -486,15 +423,15 @@ def _validate_immutable_platform_snapshot(snapshot: PdkConfig) -> None:
 def _validate_platform_snapshot(
     context: Project,
     key: str,
-    snapshot: PdkConfig,
+    snapshot: Platform,
     *,
     resources: PlatformResources | None,
-) -> PdkConfig:
+) -> Platform:
     """Validate a platform snapshot without consulting ambient process state."""
 
     context.manifest_source_document()
     if snapshot is None:
-        raise TypeError("platform snapshot must be PdkConfig")
+        raise TypeError("platform snapshot must be Platform")
     if snapshot.key != key:
         raise ValueError(
             f"platform snapshot {snapshot.key!r} disagrees with requested key {key!r}"
@@ -523,20 +460,13 @@ def resolve_platform_snapshot(
     key: str,
     *,
     snapshot: PlatformSnapshot | None = None,
-) -> ResolvedPlatform:
+) -> Platform:
     """Resolve a public snapshot or select an operation-trusted inventory."""
 
     if isinstance(snapshot, PlatformSet):
         return snapshot.resolve(context, key)
-    if isinstance(snapshot, PlatformContract):
-        if snapshot.key != key:
-            raise ValueError("platform contract disagrees with requested key")
-        current = load_platform_contract(context, key)
-        if current != snapshot:
-            raise ValueError("platform contract source identity drift")
-        return snapshot
     if snapshot is None:
-        return load_platform_contract(context, key)
+        return load_platform(context, key)
     return _validate_platform_snapshot(context, key, snapshot, resources=None)
 
 
@@ -613,23 +543,27 @@ def _safe_relative(base: Path, value: object, field: str, *, root: Path) -> Path
     return result
 
 
-def _asset_path(base: Path, value: object, field: str) -> Path:
+def _platform_asset(
+    base: Path | None,
+    value: object,
+    field: str,
+    *,
+    require_asset: bool = True,
+) -> PlatformAsset:
     text = _text(value, field)
-    relative = Path(text)
-    if relative.is_absolute() or ".." in relative.parts:
+    relative = PurePosixPath(text)
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
         raise ValueError(f"{field} must be a safe asset-relative path")
-    return (base / relative).resolve()
-
-
-def _asset_source_path(base: Path, value: object, field: str) -> Path:
-    text = _text(value, field)
-    relative = Path(text)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"{field} must be a safe asset-relative path")
-    configured = (base / relative).absolute()
+    if base is None:
+        return PlatformAsset(relative, None)
+    configured = (base / Path(relative)).absolute()
     if configured != configured.resolve():
         raise ValueError(f"{field} must not traverse a symlink")
-    return configured
+    if require_asset and not configured.is_file():
+        raise ValueError(f"{field} does not exist: {configured}")
+    return PlatformAsset(relative, configured)
 
 
 def _platform_asset_resource(key: str) -> str:
@@ -673,19 +607,6 @@ def _platform_asset_root(
     return asset_root.expanduser().absolute(), root_resource
 
 
-def _required_file(
-    base: Path,
-    value: object,
-    field: str,
-    *,
-    require_asset: bool = True,
-) -> Path:
-    result = _asset_source_path(base, value, field)
-    if require_asset and not result.is_file():
-        raise ValueError(f"{field} does not exist: {result}")
-    return result
-
-
 def _contract(
     manifest: Path,
     contracts: Mapping[str, Any],
@@ -716,8 +637,8 @@ def _contract(
 
 
 def _load_simulation(
-    path: Path, raw: Mapping[str, Any], *, asset_root: Path
-) -> SimulationPlatformConfig:
+    path: Path, raw: Mapping[str, Any], *, asset_root: Path | None
+) -> SimulationPlatform:
     _reject_unknown(
         raw,
         _HEADER_FIELDS | {"default_model_set", "model_sets"},
@@ -739,7 +660,7 @@ def _load_simulation(
         )
         support_values = item.get("support_files", [])
         support_files = tuple(
-            _asset_source_path(
+            _platform_asset(
                 asset_root,
                 support,
                 f"model_sets.{name}.support_files[{index}]",
@@ -750,7 +671,7 @@ def _load_simulation(
         )
         model_sets[name] = SimulationModelSet(
             name=name,
-            file=_asset_source_path(
+            file=_platform_asset(
                 asset_root,
                 item.get("file"),
                 f"model_sets.{name}.file",
@@ -761,7 +682,7 @@ def _load_simulation(
     if default_name not in model_sets:
         raise ValueError("default_model_set must select a declared model set")
     model_sets[default_name].single_section
-    return SimulationPlatformConfig(
+    return SimulationPlatform(
         path,
         default_name,
         MappingProxyType(model_sets),
@@ -856,9 +777,9 @@ def _load_layout(
     verification_path: Path,
     verification_raw: Mapping[str, Any],
     *,
-    asset_root: Path,
+    asset_root: Path | None,
     require_assets: bool = True,
-) -> LayoutPdkConfig:
+) -> LayoutPlatform:
     _reject_unknown(
         layout_raw,
         _HEADER_FIELDS | {"dbu_per_micron", "oa_materialization", "custom_layout"},
@@ -896,30 +817,30 @@ def _load_layout(
         for warning in warnings
     ):
         raise ValueError("xstream warnings must use XSTRM-<number> identities")
-    return LayoutPdkConfig(
+    return LayoutPlatform(
         layout_path=layout_path,
         verification_path=verification_path,
         dbu_per_micron=dbu,
-        layermap=_required_file(
+        layermap=_platform_asset(
             asset_root,
             verification_raw.get("layermap"),
             "layermap",
             require_asset=require_assets,
         ),
-        drc_deck=_required_file(
+        drc_deck=_platform_asset(
             asset_root,
             verification_raw.get("drc_deck"),
             "drc_deck",
             require_asset=require_assets,
         ),
-        lvs_deck=_required_file(
+        lvs_deck=_platform_asset(
             asset_root,
             verification_raw.get("lvs_deck"),
             "lvs_deck",
             require_asset=require_assets,
         ),
         qrc_tech_file=(
-            _required_file(
+            _platform_asset(
                 asset_root,
                 verification_raw["qrc_tech_file"],
                 "qrc_tech_file",
@@ -1011,7 +932,7 @@ def _load_platform(
     *,
     resources: PlatformResources | None,
     catalog: PlatformCatalogSnapshot | None = None,
-) -> PdkConfig:
+) -> Platform:
     """Parse one platform, optionally resolving its external asset root."""
 
     if not isinstance(key, str) or _PLATFORM_KEY.fullmatch(key) is None:
@@ -1061,7 +982,6 @@ def _load_platform(
         raw,
         resources=resources,
     )
-    contract_asset_root = asset_root or manifest.parent
     contracts = _table(raw.get("contracts"), "platform.contracts")
     allowed = {"simulation", "oa", "layout", "verification"}
     if set(contracts) - allowed or not contracts:
@@ -1087,7 +1007,7 @@ def _load_platform(
         else _load_simulation(
             simulation_contract[0],
             simulation_contract[1],
-            asset_root=contract_asset_root,
+            asset_root=asset_root,
         )
     )
     oa = None if oa_contract is None else _load_oa(*oa_contract)
@@ -1097,7 +1017,7 @@ def _load_platform(
         if selected is not None:
             source_paths.append(selected[0])
             source_documents[selected[0]] = selected[1]
-    layout: LayoutPdkConfig | None = None
+    layout: LayoutPlatform | None = None
     if "layout" in contracts:
         layout_contract = _contract(
             manifest, contracts, "layout", root=root, owner=header.owner
@@ -1113,7 +1033,7 @@ def _load_platform(
             layout_raw,
             verification_path,
             verification_raw,
-            asset_root=contract_asset_root,
+            asset_root=asset_root,
             require_assets=asset_root is not None,
         )
         source_paths.extend((layout_path, verification_path))
@@ -1121,8 +1041,8 @@ def _load_platform(
     if layout is not None:
         source_documents[layout.layout_path] = layout_raw
         source_documents[layout.verification_path] = verification_raw
-    return PdkConfig(
-        _authority=_PDK_CONFIG_AUTHORITY,
+    return Platform(
+        _authority=_PLATFORM_AUTHORITY,
         key=key,
         path=manifest,
         owner=header.owner,
@@ -1147,101 +1067,18 @@ def load_platform(
     context: Project,
     key: str,
     *,
-    resources: PlatformResources,
+    resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
-) -> PdkConfig:
-    """Resolve one platform against explicit runtime assets."""
+) -> Platform:
+    """Load one platform, optionally binding its external runtime assets."""
 
-    if not isinstance(resources, PlatformResources):
+    if resources is not None and not isinstance(resources, PlatformResources):
         raise TypeError("platform resources must provide require_directory")
-    platform = _load_platform(
+    return _load_platform(
         context,
         key,
         resources=resources,
         catalog=catalog,
-    )
-    if platform.asset_root is None:
-        raise ValueError("platform runtime asset root was not resolved")
-    return platform
-
-
-def load_platform_contract(
-    context: Project,
-    key: str,
-    *,
-    catalog: PlatformCatalogSnapshot | None = None,
-) -> PlatformContract:
-    """Validate one platform's project-owned source without host bindings."""
-
-    platform = _load_platform(context, key, resources=None, catalog=catalog)
-    asset_base = platform.asset_root or platform.path.parent
-
-    def logical(path: Path) -> PurePosixPath:
-        try:
-            relative = path.relative_to(asset_base)
-        except ValueError as exc:
-            raise ValueError("platform asset escaped its logical root") from exc
-        return PurePosixPath(relative.as_posix())
-
-    runtime_simulation = platform.simulation
-    simulation = (
-        None
-        if runtime_simulation is None
-        else SimulationPlatformContract(
-            path=runtime_simulation.path,
-            default_model_set=runtime_simulation.default_model_set,
-            model_sets=MappingProxyType(
-                {
-                    name: SimulationModelContract(
-                        name=model_set.name,
-                        file=logical(model_set.file),
-                        sections=model_set.sections,
-                        support_files=tuple(
-                            logical(path) for path in model_set.support_files
-                        ),
-                    )
-                    for name, model_set in runtime_simulation.model_sets.items()
-                }
-            ),
-        )
-    )
-    runtime_layout = platform.layout
-    layout = (
-        None
-        if runtime_layout is None
-        else LayoutPlatformContract(
-            layout_path=runtime_layout.layout_path,
-            verification_path=runtime_layout.verification_path,
-            dbu_per_micron=runtime_layout.dbu_per_micron,
-            layermap=logical(runtime_layout.layermap),
-            drc_deck=logical(runtime_layout.drc_deck),
-            lvs_deck=logical(runtime_layout.lvs_deck),
-            qrc_tech_file=(
-                None
-                if runtime_layout.qrc_tech_file is None
-                else logical(runtime_layout.qrc_tech_file)
-            ),
-            xstream_flatten_pcells=runtime_layout.xstream_flatten_pcells,
-            xstream_suppressed_warnings=(
-                runtime_layout.xstream_suppressed_warnings
-            ),
-            oa_materialization=runtime_layout.oa_materialization,
-            technology=runtime_layout.technology,
-        )
-    )
-    return PlatformContract(
-        _authority=_PLATFORM_CONTRACT_AUTHORITY,
-        key=platform.key,
-        path=platform.path,
-        owner=platform.owner,
-        name=platform.name,
-        simulation=simulation,
-        oa=platform.oa,
-        layout=layout,
-        asset_root_resource=platform.asset_root_resource,
-        source_paths=platform.source_paths,
-        catalog_document=platform.catalog_document,
-        source_documents=platform.source_documents,
     )
 
 
@@ -1261,15 +1098,11 @@ def _load_platforms(
     if resources is not None and not isinstance(resources, PlatformResources):
         raise TypeError("platform resources must provide require_directory")
     platforms = {
-        key: (
-            load_platform_contract(context, key, catalog=selected_catalog)
-            if resources is None
-            else load_platform(
-                context,
-                key,
-                resources=resources,
-                catalog=selected_catalog,
-            )
+        key: load_platform(
+            context,
+            key,
+            resources=resources,
+            catalog=selected_catalog,
         )
         for key in selected_catalog.manifests
     }
@@ -1284,21 +1117,9 @@ def _load_platforms(
 def load_platforms(
     context: Project,
     *,
+    resources: PlatformResources | None = None,
     catalog: PlatformCatalogSnapshot | None = None,
 ) -> PlatformSet:
-    """Load the complete source-owned platform catalog."""
+    """Load the catalog, optionally binding external runtime assets."""
 
-    return _load_platforms(context, catalog=catalog)
-
-
-def resolve_platforms(
-    context: Project,
-    resources: PlatformResources,
-    *,
-    catalog: PlatformCatalogSnapshot | None = None,
-) -> PlatformSet:
-    """Resolve the complete platform catalog against explicit runtime assets."""
-
-    if not isinstance(resources, PlatformResources):
-        raise TypeError("platform resources must provide require_directory")
     return _load_platforms(context, resources=resources, catalog=catalog)

@@ -24,9 +24,9 @@ from sigilicon.domain.oa_library import (
 )
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import (
+    LayoutPlatform,
+    Platform,
     PlatformSnapshot,
-    ResolvedLayoutPlatform,
-    ResolvedPlatform,
     resolve_platform_snapshot,
 )
 from sigilicon.project import Project
@@ -60,8 +60,8 @@ class LayoutSpec:
     oa_assembly_manifest: Path | None
     primitive_masters: tuple[str, ...]
     physical_verification: PhysicalVerificationPolicy | None
-    pdk: ResolvedPlatform
-    layout_pdk: ResolvedLayoutPlatform
+    pdk: Platform
+    layout_pdk: LayoutPlatform
     source_documents: Mapping[Path, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
