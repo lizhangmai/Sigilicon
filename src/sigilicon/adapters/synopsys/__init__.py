@@ -654,20 +654,13 @@ class FcAdapter:
         )
         held_files = list(runtime.files)
         held_directories = list(runtime.directories)
+        reference_name: str | None = None
+        output_names: dict[str, str] = {}
+        required: frozenset[str] = frozenset()
         if target == "library":
-            name = _safe_relative(
+            reference_name = _safe_relative(
                 _text(config, "reference_library_output"),
                 "reference library output",
-            )
-            reference_root = ensure_nofollow_directory(
-                context.output_directory / "reference-library"
-            ) / name
-            report = context.output_path("library-check-report", "check_workspace.rpt")
-            environment.update(
-                {
-                    "SIGILICON_FC_REFERENCE_NDM": str(reference_root),
-                    "SIGILICON_FC_LIBRARY_CHECK_REPORT": str(report),
-                }
             )
         else:
             synthesis = _text(config, "synthesis_step")
@@ -691,21 +684,23 @@ class FcAdapter:
                 for key, value in _mapping(config, "outputs").items()
                 if isinstance(key, str) and isinstance(value, str)
             }
-            required = {
-                "routed-netlist",
-                "routed-constraints",
-                "layout-stream",
-                "checkpoint",
-                "design-check-report",
-                "structural-report",
-                "qor-report",
-                "timing-report",
-                "area-report",
-                "power-report",
-                "drc-report",
-                "physical-completion-report",
-                "tie-off-check-report",
-            }
+            required = frozenset(
+                {
+                    "routed-netlist",
+                    "routed-constraints",
+                    "layout-stream",
+                    "checkpoint",
+                    "design-check-report",
+                    "structural-report",
+                    "qor-report",
+                    "timing-report",
+                    "area-report",
+                    "power-report",
+                    "drc-report",
+                    "physical-completion-report",
+                    "tie-off-check-report",
+                }
+            )
             if set(output_names) != required:
                 raise ContractError("FC outputs do not match the physical result contract")
             role_environment = {
@@ -723,10 +718,6 @@ class FcAdapter:
                 "physical-completion-report": "SIGILICON_FC_PHYSICAL_COMPLETION_REPORT",
                 "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
             }
-            for role, environment_name in role_environment.items():
-                path = context.output_directory / role / output_names[role]
-                ensure_nofollow_directory(path.parent)
-                environment[environment_name] = str(path)
             environment.update(
                 {
                     "SIGILICON_FC_MAPPED_NETLIST": str(mapped_netlist.path),
@@ -744,6 +735,25 @@ class FcAdapter:
             is not None,
         ) as scratch:
             environment["SIGILICON_FC_WORK_ROOT"] = scratch.child_path
+            if target == "library":
+                assert reference_name is not None
+                environment.update(
+                    {
+                        "SIGILICON_FC_REFERENCE_NDM": (
+                            f"{scratch.child_path}/reference-library/"
+                            f"{reference_name}"
+                        ),
+                        "SIGILICON_FC_LIBRARY_CHECK_REPORT": (
+                            f"{scratch.child_path}/library-check-report/"
+                            "check_workspace.rpt"
+                        ),
+                    }
+                )
+            else:
+                for role, environment_name in role_environment.items():
+                    environment[environment_name] = (
+                        f"{scratch.child_path}/{role}/{output_names[role]}"
+                    )
             completed = _run_script(
                 context,
                 environment,
@@ -758,31 +768,63 @@ class FcAdapter:
                     "failed", logs, message=f"FC runner exited {completed.returncode}"
                 )
             if target == "library":
-                artifacts = (
-                    *context.output_artifacts(
-                        "reference-library",
-                        "library.synopsys-ndm",
-                        required=True,
-                    ),
-                    Artifact("library-check-report", "report.synopsys", report),
+                assert reference_name is not None
+                reference_root = (
+                    scratch.path / "reference-library" / reference_name
                 )
-            else:
-                artifacts = tuple(
-                    Artifact(
-                        role,
-                        "checkpoint.synopsys-dlib"
-                        if role == "checkpoint"
-                        else "result.synopsys-fc",
-                        path.absolute(),
+                reference_artifacts = tuple(
+                    context.copy_output(
+                        role="reference-library",
+                        kind="library.synopsys-ndm",
+                        source=path,
+                        filename=(
+                            Path(reference_name) / path.relative_to(reference_root)
+                        ).as_posix(),
                     )
-                    for role in sorted(required)
-                    for path in (
-                        sorted((context.output_directory / role).rglob("*"))
-                        if role == "checkpoint"
-                        else [context.output_directory / role / output_names[role]]
-                    )
+                    for path in sorted(reference_root.rglob("*"))
                     if path.is_file() and not path.is_symlink()
                 )
+                if not reference_artifacts:
+                    raise ExecutionError(
+                        "FC produced an empty reference-library directory"
+                    )
+                artifacts = (
+                    *reference_artifacts,
+                    context.copy_output(
+                        role="library-check-report",
+                        kind="report.synopsys",
+                        source=(
+                            scratch.path
+                            / "library-check-report"
+                            / "check_workspace.rpt"
+                        ),
+                        filename="check_workspace.rpt",
+                    ),
+                )
+            else:
+                copied: list[Artifact] = []
+                for role in sorted(required):
+                    role_root = scratch.path / role
+                    paths = (
+                        sorted(role_root.rglob("*"))
+                        if role == "checkpoint"
+                        else (role_root / output_names[role],)
+                    )
+                    copied.extend(
+                        context.copy_output(
+                            role=role,
+                            kind=(
+                                "checkpoint.synopsys-dlib"
+                                if role == "checkpoint"
+                                else "result.synopsys-fc"
+                            ),
+                            source=path,
+                            filename=path.relative_to(role_root).as_posix(),
+                        )
+                        for path in paths
+                        if path.is_file() and not path.is_symlink()
+                    )
+                artifacts = tuple(copied)
                 if {artifact.role for artifact in artifacts} != required:
                     raise ExecutionError("FC omitted one or more physical result roles")
             return StepResult.succeeded(artifacts=(*logs, *artifacts))

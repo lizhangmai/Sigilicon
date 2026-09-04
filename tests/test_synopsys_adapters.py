@@ -454,7 +454,8 @@ def test_fc_backend_keeps_tool_scratch_outside_the_managed_run(
         """#!/usr/bin/env bash
 set -euo pipefail
 test "$1" = library
-mkdir -p "$SIGILICON_FC_WORK_ROOT/cache" "$SIGILICON_FC_REFERENCE_NDM"
+mkdir -p "$SIGILICON_FC_WORK_ROOT/cache" "$SIGILICON_FC_REFERENCE_NDM" \
+  "$(dirname "$SIGILICON_FC_LIBRARY_CHECK_REPORT")"
 printf 'cache\n' >"$SIGILICON_FC_WORK_ROOT/cache/data"
 ln -s data "$SIGILICON_FC_WORK_ROOT/cache/current"
 printf 'ndm\n' >"$SIGILICON_FC_REFERENCE_NDM/library.ndm"
@@ -534,3 +535,22 @@ printf 'clean\n' >"$SIGILICON_FC_LIBRARY_CHECK_REPORT"
         "library-check-report",
     }
     assert not (context.work_directory / "tool").exists()
+
+    failed_context = _context(tmp_path / "failed", step, context.runtime)
+    _file(
+        failed_context.source_directory / "impl/pnr/run_fc.sh",
+        """#!/usr/bin/env bash
+mkdir -p "$SIGILICON_FC_REFERENCE_NDM"
+printf 'partial\n' >"$SIGILICON_FC_REFERENCE_NDM/partial.ndm"
+exit 1
+""",
+        executable=True,
+    )
+
+    failed = adapter.run(failed_context)
+
+    assert failed.status == "failed"
+    assert {artifact.role for artifact in failed.artifacts} == {"log"}
+    assert {path.name for path in failed_context.output_directory.iterdir()} == {
+        "log"
+    }
