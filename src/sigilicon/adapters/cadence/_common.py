@@ -5,20 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping, Protocol
-
-if TYPE_CHECKING:
-    from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
-    from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
-    from sigilicon.adapters.cadence.xcelium_ams import XceliumAmsCellPlan
-
-    type CadenceDomainPlan = (
-        LayoutPlanningResult | OALibraryRebuildPlan | XceliumAmsCellPlan
-    )
+from typing import Any, Mapping, Protocol
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
@@ -29,6 +20,7 @@ from sigilicon.execution._model import (
     Artifact,
     ContractError,
     ExecutionError,
+    PlannedAction,
     ResourceBinding,
     PreflightCheck,
     Resources,
@@ -36,7 +28,6 @@ from sigilicon.execution._model import (
     Step,
     ExecutionIO,
     StepResult,
-    adapter_identity,
 )
 from sigilicon.external_tools import (
     CADENCE_SPECTRE_TOOL,
@@ -413,11 +404,9 @@ def _captured_project_sources(
 
 
 @dataclass(frozen=True)
-class _CadenceAction:
-    """Adapter-private domain plan plus its sealed-path correspondence."""
+class _CadenceInputs:
+    """Sealed source, resource, and workspace bindings shared by Cadence actions."""
 
-    kind: str
-    plan: CadenceDomainPlan
     plan_identity: str
     runtime_identities: tuple[str, ...]
     sources: Mapping[Path, tuple[str, str]]
@@ -425,7 +414,6 @@ class _CadenceAction:
     workspace_root: Path
 
     def __post_init__(self) -> None:
-        adapter_identity(self.kind)
         if (
             not isinstance(self.plan_identity, str)
             or not self.plan_identity.startswith("sha256-")
@@ -449,17 +437,13 @@ class _CadenceAction:
     @classmethod
     def create(
         cls,
-        kind: str,
-        plan: CadenceDomainPlan,
         plan_identity: str,
         runtime_identities: tuple[str, ...],
         sources: Mapping[Path, tuple[str, str]],
         resources: tuple[ResourceBinding, ...],
         workspace_root: Path,
-    ) -> "_CadenceAction":
+    ) -> "_CadenceInputs":
         return cls(
-            kind,
-            plan,
             plan_identity,
             runtime_identities,
             sources,
@@ -479,11 +463,8 @@ class _CadenceAction:
     @property
     def record(self) -> Mapping[str, Any]:
         return {
-            "domain": {
-                "kind": self.kind,
-                "plan_identity": self.plan_identity,
-                "runtime_identities": self.runtime_identities,
-            },
+            "plan_identity": self.plan_identity,
+            "runtime_identities": self.runtime_identities,
             "sources": tuple(
                 sorted((name, digest) for name, digest in self.sources.values())
             ),
@@ -496,11 +477,6 @@ class _CadenceAction:
         }
 
     def validate(self, context: ExecutionIO) -> None:
-        external_identities = tuple(
-            identity for _path, identity, _digest in self.resources
-        )
-        if context.step.resources[: len(external_identities)] != external_identities:
-            raise ExecutionError("Cadence external resource identity drift")
         _require_bound_sources(context, self.sources)
         for _path, identity, _digest in self.resources:
             context.resource_path(identity)
@@ -532,92 +508,62 @@ class _CadenceAction:
             }
         )
 
-class _CadenceDomainAdapter:
-    """Attach one typed domain action to its fully recorded Step."""
+@dataclass(frozen=True)
+class _CadencePreparation:
+    """Kernel preparation data awaiting one vertical adapter action."""
 
-    def _prepare_domain_step(
-        self,
-        project: _CadencePlanningProject,
-        step: Step,
-        resources: Resources,
-        *,
-        owner: str,
-        action_kind: str,
-        plan: CadenceDomainPlan,
-        plan_identity: str,
-        source_records: Mapping[Path, str | Source],
-        resource_identities: Mapping[Path, str],
-        extra_resources: tuple[Path, ...] = (),
-        runtime_identities: tuple[str, ...] = (),
-    ) -> AdapterPreparation:
-        """Seal one typed Cadence plan through the common execution boundary."""
+    inputs: _CadenceInputs
+    sources: tuple[Source, ...]
+    resources: tuple[ResourceBinding, ...]
 
-        sources = _bind_source_paths(project, owner, step, source_records)
-        external = _external_file_records(
-            project,
-            source_records,
-            extra_resources,
-            identities=resource_identities,
+    def bind(self, action: PlannedAction) -> AdapterPreparation:
+        return AdapterPreparation(
+            action=action,
+            sources=self.sources,
+            resources=self.resources,
         )
-        preparation = self._bind_domain_plan(
-            plan=plan,
-            plan_identity=plan_identity,
-            action_kind=action_kind,
-            sources=sources,
-            captured=_captured_project_sources(
-                project,
-                owner,
-                sources,
-                source_records,
-            ),
-            resources=external,
-            runtime_bindings=_runtime_bindings(resources, *runtime_identities),
-            workspace_root=project.workspace_root,
-        )
-        return preparation
 
-    def _bind_domain_plan(
-        self,
-        *,
-        action_kind: str,
-        plan: CadenceDomainPlan,
-        plan_identity: str,
-        sources: Mapping[Path, tuple[str, str]],
-        captured: tuple[Source, ...],
-        resources: tuple[ResourceBinding, ...],
-        runtime_bindings: tuple[ResourceBinding, ...] = (),
-        workspace_root: Path,
-    ) -> AdapterPreparation:
-        domain_plan = _CadenceAction.create(
-            action_kind,
-            plan,
+
+def _prepare_cadence_inputs(
+    project: _CadencePlanningProject,
+    step: Step,
+    resources: Resources,
+    *,
+    owner: str,
+    plan_identity: str,
+    source_records: Mapping[Path, str | Source],
+    resource_identities: Mapping[Path, str],
+    extra_resources: tuple[Path, ...] = (),
+    runtime_identities: tuple[str, ...] = (),
+) -> _CadencePreparation:
+    """Seal common inputs without erasing the vertical action's plan type."""
+
+    sources = _bind_source_paths(project, owner, step, source_records)
+    external = _external_file_records(
+        project,
+        source_records,
+        extra_resources,
+        identities=resource_identities,
+    )
+    runtime_bindings = _runtime_bindings(resources, *runtime_identities)
+    combined_bindings = tuple(dict.fromkeys((*external, *runtime_bindings)))
+    if len({binding.identity for binding in combined_bindings}) != len(
+        combined_bindings
+    ):
+        raise ContractError("Cadence plan binds a runtime identity more than once")
+    return _CadencePreparation(
+        _CadenceInputs.create(
             plan_identity,
             tuple(binding.identity for binding in runtime_bindings),
             sources,
-            resources,
-            workspace_root,
-        )
-        combined_bindings = tuple(
-            dict.fromkeys((*resources, *runtime_bindings))
-        )
-        if len({binding.identity for binding in combined_bindings}) != len(
-            combined_bindings
-        ):
-            raise ContractError("Cadence plan binds a runtime identity more than once")
-        return AdapterPreparation(
-            action=domain_plan,
-            sources=captured,
-            resources=combined_bindings,
-        )
-
-    def _domain_action(self, context: ExecutionIO, kind: str) -> _CadenceAction:
-        context.step.validate_action()
-        domain_plan = context.step.action
-        if not isinstance(domain_plan, _CadenceAction):
-            raise ExecutionError("Cadence Step has no planned Domain value")
-        if domain_plan.kind != kind:
-            raise ExecutionError(
-                f"Cadence Step action kind is {domain_plan.kind!r}, expected {kind!r}"
-            )
-        domain_plan.validate(context)
-        return domain_plan
+            external,
+            project.workspace_root,
+        ),
+        _captured_project_sources(
+            project,
+            owner,
+            sources,
+            source_records,
+        ),
+        combined_bindings,
+    )

@@ -2,16 +2,57 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sigilicon.adapters.cadence._common import (
     AdapterPreparation, Any, ContractError, ExecutionError, ExecutionIO, Mapping,
     Path, PreflightCheck, Resources, Step, StepResult, _BRIDGE_RESOURCES,
-    _CALIBRE, _CadenceDomainAdapter, _CadencePlanningProject, _OA_CAPABILITIES,
+    _CALIBRE, _CadenceInputs, _CadencePlanningProject, _OA_CAPABILITIES,
     _PYTHON, _XSTREAM, _bridge_check, _capability_checks, _executable_check,
-    _positive_integer, _relative, _strict_config, _text, canonical_digest, json,
-    owned_scratch_directory, process_group_cleanup_uncertainty,
+    _positive_integer, _prepare_cadence_inputs, _relative, _strict_config,
+    _text, canonical_digest, json, owned_scratch_directory,
+    process_group_cleanup_uncertainty,
 )
+from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
 
-class LayoutAdapter(_CadenceDomainAdapter):
+
+@dataclass(frozen=True)
+class _LayoutAction:
+    plan: LayoutPlanningResult
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, LayoutPlanningResult):
+            raise ContractError("layout action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "layout", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+@dataclass(frozen=True)
+class _LayoutVerificationAction:
+    plan: LayoutPlanningResult
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, LayoutPlanningResult):
+            raise ContractError("layout verification action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "layout-verification", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+class LayoutAdapter:
     """Generate one source-authored layout through a bound OA mutation lease."""
 
     name = "cadence.layout"
@@ -54,13 +95,11 @@ class LayoutAdapter(_CadenceDomainAdapter):
             project=project,
             platform=platforms,
         )
-        return self._prepare_domain_step(
+        prepared = _prepare_cadence_inputs(
             project,
             step,
             resources,
             owner=owner,
-            action_kind="layout",
-            plan=planning,
             plan_identity=canonical_digest(
                 {
                     "library": planning.spec.library,
@@ -74,15 +113,20 @@ class LayoutAdapter(_CadenceDomainAdapter):
             resource_identities=platform_resource_identities(planning.spec.pdk),
             runtime_identities=(*_BRIDGE_RESOURCES, _PYTHON),
         )
+        return prepared.bind(_LayoutAction(planning, prepared.inputs))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.adapters.cadence.layout_generation import build_managed_layout_ir
 
-        prepared = self._domain_action(context, "layout")
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _LayoutAction):
+            raise ExecutionError("layout Step has no typed action")
+        action.inputs.validate(context)
         planning = build_managed_layout_ir(
-            prepared.plan,
-            source_paths=prepared.source_paths(context),
+            action.plan,
+            source_paths=action.inputs.source_paths(context),
             workspace=context.workspace("layout-ir", {}),
             python_executable=context.runtime.require_tool(_PYTHON),
         )
@@ -138,7 +182,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         )
 
 
-class LayoutVerificationAdapter(_CadenceDomainAdapter):
+class LayoutVerificationAdapter:
     """Verify one existing routed OA layout with XStream and Calibre."""
 
     name = "cadence.layout-verify"
@@ -206,13 +250,11 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             else planning.spec.layout_pdk.lvs_deck.require_path()
         )
         check = _text(config, "check")
-        return self._prepare_domain_step(
+        prepared = _prepare_cadence_inputs(
             project,
             step,
             resources,
             owner=owner,
-            action_kind="layout-verify",
-            plan=planning,
             plan_identity=canonical_digest(
                 {
                     "library": planning.spec.library,
@@ -228,6 +270,9 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             extra_resources=(planning.spec.layout_pdk.layermap.require_path(), deck),
             runtime_identities=(*_BRIDGE_RESOURCES, _PYTHON, _XSTREAM, _CALIBRE),
         )
+        return prepared.bind(
+            _LayoutVerificationAction(planning, prepared.inputs)
+        )
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
@@ -235,17 +280,21 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(step, self._fields)
         check = _text(config, "check")
-        prepared = self._domain_action(context, "layout-verify")
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _LayoutVerificationAction):
+            raise ExecutionError("layout verification Step has no typed action")
+        action.inputs.validate(context)
         planning = build_managed_layout_ir(
-            prepared.plan,
-            source_paths=prepared.source_paths(context),
+            action.plan,
+            source_paths=action.inputs.source_paths(context),
             workspace=context.workspace("layout-ir", {}),
             python_executable=context.runtime.require_tool(_PYTHON),
         )
         return self._execute(
             context,
             planning,
-            prepared.resource_text(context),
+            action.inputs.resource_text(context),
         )
 
     def _execute(

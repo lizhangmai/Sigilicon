@@ -2,24 +2,41 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 from sigilicon.adapters.cadence._common import (
     AdapterPreparation, Any, Artifact, CADENCE_SPICEIN_TOOL,
     CADENCE_TEXT_IMPORT_TOOL, CADENCE_VIRTUOSO_TOOL, ContractError,
     ExecutionError, ExecutionIO, Mapping, PreflightCheck, Resources, Step,
-    StepResult, _BRIDGE_RESOURCES, _CadenceAction, _CadenceDomainAdapter,
-    _CadencePlanningProject, _OA_CAPABILITIES, _PYTHON, _bridge_check,
-    _capability_checks, _executable_check, _oa_resource_identities,
-    _oa_runtime_executables, _positive_integer, _strict_config, _text,
-    _validate_oa_plan_sources, canonical_digest, find_oa_assembly, json,
-    owned_scratch_directory, process_group_cleanup_uncertainty,
+    StepResult, _BRIDGE_RESOURCES, _CadenceInputs, _CadencePlanningProject,
+    _OA_CAPABILITIES, _PYTHON, _bridge_check, _capability_checks,
+    _executable_check, _oa_resource_identities, _oa_runtime_executables,
+    _positive_integer, _prepare_cadence_inputs, _strict_config, _text,
+    _validate_oa_plan_sources, canonical_digest, find_oa_assembly,
+    json, owned_scratch_directory, process_group_cleanup_uncertainty,
 )
+from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
 
-if TYPE_CHECKING:
-    from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
 
-class NativeOaAdapter(_CadenceDomainAdapter):
+@dataclass(frozen=True)
+class _NativeOaAction:
+    plan: OALibraryRebuildPlan
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, OALibraryRebuildPlan):
+            raise ContractError("native OA action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "native-oa", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+class NativeOaAdapter:
     """Run one source-owned native Maestro testbench through a bound OA session."""
 
     name = "cadence.native-oa"
@@ -74,13 +91,11 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             planning,
             oa_plan_source_paths(planning),
         )
-        return self._prepare_domain_step(
+        prepared = _prepare_cadence_inputs(
             project,
             step,
             resources,
             owner=owner,
-            action_kind="native-oa",
-            plan=planning,
             plan_identity=canonical_digest(planning.as_dict()),
             source_records=required,
             resource_identities=_oa_resource_identities(
@@ -95,6 +110,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
                 _PYTHON,
             ),
         )
+        return prepared.bind(_NativeOaAction(planning, prepared.inputs))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
@@ -105,10 +121,14 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
         testbench = _text(config, "testbench")
-        prepared = self._domain_action(context, "native-oa")
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _NativeOaAction):
+            raise ExecutionError("native OA Step has no typed action")
+        action.inputs.validate(context)
         plan = build_oa_layout_ir(
-            prepared.plan,
-            source_paths=prepared.source_paths(context),
+            action.plan,
+            source_paths=action.inputs.source_paths(context),
             workspace=context.workspace("layout-ir", {}),
             python_executable=context.runtime.require_tool(_PYTHON),
         )
@@ -171,7 +191,64 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         )
 
 
-class _OaAdapter(_CadenceDomainAdapter):
+@dataclass(frozen=True)
+class _OaCheckAction:
+    plan: OALibraryRebuildPlan
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, OALibraryRebuildPlan):
+            raise ContractError("OA check action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "oa-check", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+@dataclass(frozen=True)
+class _OaRebuildAction:
+    plan: OALibraryRebuildPlan
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, OALibraryRebuildPlan):
+            raise ContractError("OA rebuild action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "oa-rebuild", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+@dataclass(frozen=True)
+class _OaAttestAction:
+    plan: OALibraryRebuildPlan
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, OALibraryRebuildPlan):
+            raise ContractError("OA attest action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "oa-attest", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+type _OaOperationAction = _OaCheckAction | _OaRebuildAction | _OaAttestAction
+
+
+class _OaAdapter:
     """Common planning and publication for one fixed native-OA operation."""
 
     _base_fields = frozenset({"owner", "timeout_seconds"})
@@ -196,17 +273,19 @@ class _OaAdapter(_CadenceDomainAdapter):
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
         action = step.action
-        if action is not None and (
-            not isinstance(action, _CadenceAction)
-            or action.kind != f"oa-{self.operation}"
-        ):
+        expected = {
+            "check": _OaCheckAction,
+            "rebuild": _OaRebuildAction,
+            "attest": _OaAttestAction,
+        }[self.operation]
+        if action is not None and not isinstance(action, expected):
             raise ContractError("OA Step has an invalid planned action")
         step.validate_action()
         runtime_executables: tuple[str, ...] = ()
         if action is not None:
             runtime_executables = tuple(
                 item
-                for item in action.runtime_identities
+                for item in action.inputs.runtime_identities
                 if item in {
                     CADENCE_SPICEIN_TOOL,
                     CADENCE_TEXT_IMPORT_TOOL,
@@ -227,7 +306,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         context: ExecutionIO,
         *,
         planning: OALibraryRebuildPlan,
-        prepared: _CadenceAction,
+        prepared: _OaOperationAction,
         selected: Any,
         client: Any,
         timeout: int,
@@ -273,13 +352,11 @@ class _OaAdapter(_CadenceDomainAdapter):
             planning,
             oa_plan_source_paths(planning),
         )
-        return self._prepare_domain_step(
+        prepared = _prepare_cadence_inputs(
             project,
             step,
             resources,
             owner=owner,
-            action_kind=f"oa-{self.operation}",
-            plan=planning,
             plan_identity=canonical_digest(planning.as_dict()),
             source_records=required,
             resource_identities=_oa_resource_identities(
@@ -293,6 +370,12 @@ class _OaAdapter(_CadenceDomainAdapter):
                 *_oa_runtime_executables(planning, self.operation),
             ),
         )
+        action_type = {
+            "check": _OaCheckAction,
+            "rebuild": _OaRebuildAction,
+            "attest": _OaAttestAction,
+        }[self.operation]
+        return prepared.bind(action_type(planning, prepared.inputs))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
@@ -303,12 +386,21 @@ class _OaAdapter(_CadenceDomainAdapter):
 
         config = self._config(step)
         owner = _text(config, "owner")
-        prepared = self._domain_action(context, f"oa-{self.operation}")
+        context.step.validate_action()
+        prepared = context.step.action
+        expected = {
+            "check": _OaCheckAction,
+            "rebuild": _OaRebuildAction,
+            "attest": _OaAttestAction,
+        }[self.operation]
+        if not isinstance(prepared, expected):
+            raise ExecutionError(f"OA {self.operation} Step has no typed action")
+        prepared.inputs.validate(context)
         planning = prepared.plan
         if self.materializes_layout_ir:
             planning = build_oa_layout_ir(
                 planning,
-                source_paths=prepared.source_paths(context),
+                source_paths=prepared.inputs.source_paths(context),
                 workspace=context.workspace("layout-ir", {}),
                 python_executable=context.runtime.require_tool(_PYTHON),
             )
@@ -363,7 +455,7 @@ class OaCheckAdapter(_OaAdapter):
         context: ExecutionIO,
         *,
         planning: OALibraryRebuildPlan,
-        prepared: _CadenceAction,
+        prepared: _OaOperationAction,
         selected: Any,
         client: Any,
         timeout: int,
@@ -373,7 +465,7 @@ class OaCheckAdapter(_OaAdapter):
 
         with workspace_operation(
             client,
-            prepared.workspace_root,
+            prepared.inputs.workspace_root,
             "check-oa-library",
             policy=OperationPolicy.READ_ONLY,
             acquire_flow_lock=False,
@@ -401,7 +493,7 @@ class OaRebuildAdapter(_OaAdapter):
         context: ExecutionIO,
         *,
         planning: OALibraryRebuildPlan,
-        prepared: _CadenceAction,
+        prepared: _OaOperationAction,
         selected: Any,
         client: Any,
         timeout: int,
@@ -411,8 +503,8 @@ class OaRebuildAdapter(_OaAdapter):
         return rebuild_oa_library(
             planning,
             client,
-            source_paths=prepared.source_paths(context),
-            resource_paths=prepared.resource_paths(context),
+            source_paths=prepared.inputs.source_paths(context),
+            resource_paths=prepared.inputs.resource_paths(context),
             resources=context.runtime,
             timeout=timeout,
             operation_id=context.operation_id,
@@ -432,7 +524,7 @@ class OaAttestAdapter(_OaAdapter):
         context: ExecutionIO,
         *,
         planning: OALibraryRebuildPlan,
-        prepared: _CadenceAction,
+        prepared: _OaOperationAction,
         selected: Any,
         client: Any,
         timeout: int,

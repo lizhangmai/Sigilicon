@@ -2,15 +2,38 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sigilicon.adapters.cadence._common import (
     AdapterPreparation, CADENCE_SPECTRE_TOOL, ContractError, ExecutionError,
     ExecutionIO, PreflightCheck, Resources, Step, StepResult,
-    _CadenceDomainAdapter, _CadencePlanningProject, _XRUN, _executable_check,
-    _positive_integer, _relative, _strict_config, _text, canonical_digest, json,
-    owned_scratch_directory, process_group_cleanup_uncertainty,
+    _CadenceInputs, _CadencePlanningProject, _XRUN, _executable_check,
+    _positive_integer, _prepare_cadence_inputs, _relative, _strict_config,
+    _text, canonical_digest, json, owned_scratch_directory,
+    process_group_cleanup_uncertainty,
 )
+from sigilicon.adapters.cadence.xcelium_ams import XceliumAmsCellPlan
 
-class XceliumAmsAdapter(_CadenceDomainAdapter):
+
+@dataclass(frozen=True)
+class _XceliumAmsAction:
+    plan: XceliumAmsCellPlan
+    inputs: _CadenceInputs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, XceliumAmsCellPlan):
+            raise ContractError("Xcelium AMS action requires a typed plan")
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {"kind": "xcelium-ams", "inputs": self.inputs.record}
+
+    @property
+    def identity(self) -> str:
+        return canonical_digest(self.record)
+
+
+class XceliumAmsAdapter:
     """Execute one locked-release Verilog-AMS migration cell."""
 
     name = "cadence.xcelium-ams"
@@ -60,18 +83,17 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
         )
         if required != frozenset(planning.source_records):
             raise ContractError("Xcelium AMS plan source snapshot is incomplete")
-        return self._prepare_domain_step(
+        prepared = _prepare_cadence_inputs(
             project,
             step,
             resources,
             owner=owner,
-            action_kind="xcelium-ams",
-            plan=planning,
             plan_identity=canonical_digest(planning.as_dict()),
             source_records=planning.source_records,
             resource_identities=planning.resource_identities,
             runtime_identities=(_XRUN, CADENCE_SPECTRE_TOOL),
         )
+        return prepared.bind(_XceliumAmsAction(planning, prepared.inputs))
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
@@ -79,8 +101,12 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
-        prepared = self._domain_action(context, "xcelium-ams")
-        planning = prepared.plan
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _XceliumAmsAction):
+            raise ExecutionError("Xcelium AMS Step has no typed action")
+        action.inputs.validate(context)
+        planning = action.plan
         with owned_scratch_directory(
             prefix=f"sigilicon-xcelium-ams-{context.run_id}-",
             retain_on_error=lambda exc: process_group_cleanup_uncertainty(exc)
@@ -94,8 +120,8 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
                 },
                 tool_work_root=scratch.path,
             )
-            bound_sources = dict(prepared.source_paths(context))
-            bound_sources.update(prepared.resource_paths(context))
+            bound_sources = dict(action.inputs.source_paths(context))
+            bound_sources.update(action.inputs.resource_paths(context))
             result = execute_xcelium_ams_cell(
                 planning,
                 artifacts=artifacts,
