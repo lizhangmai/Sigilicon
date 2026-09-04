@@ -16,9 +16,10 @@ import os
 from pathlib import Path
 import re
 import shlex
+import tarfile
 from typing import Any
 
-from sigilicon.artifacts import ensure_nofollow_directory
+from sigilicon.artifacts import SafeTree, ensure_nofollow_directory
 from sigilicon.canonical import canonical_digest
 from sigilicon.contracts import require_relative_path
 from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
@@ -178,6 +179,25 @@ def _prepend_path(environment: dict[str, str], directory: Path) -> None:
     environment["PATH"] = str(directory) + (
         os.pathsep + existing if existing else ""
     )
+
+
+def _archive_directory(source: Path, destination: Path, name: str) -> None:
+    """Bundle one completed tool directory without exposing vendor path syntax."""
+
+    SafeTree(source).inventory(verify_content=True)
+
+    def normalize(member: tarfile.TarInfo) -> tarfile.TarInfo:
+        member.uid = 0
+        member.gid = 0
+        member.uname = ""
+        member.gname = ""
+        member.mtime = 0
+        member.mode = 0o755 if member.isdir() else 0o644
+        member.pax_headers.clear()
+        return member
+
+    with tarfile.open(destination, "w", format=tarfile.GNU_FORMAT) as archive:
+        archive.add(source, arcname=name, recursive=True, filter=normalize)
 
 
 def _runtime_environment(
@@ -805,19 +825,30 @@ class FcAdapter:
                 copied: list[Artifact] = []
                 for role in sorted(required):
                     role_root = scratch.path / role
+                    if role == "checkpoint":
+                        checkpoint = role_root / output_names[role]
+                        archive = scratch.path / f"{output_names[role]}.tar"
+                        _archive_directory(
+                            checkpoint,
+                            archive,
+                            output_names[role],
+                        )
+                        copied.append(
+                            context.copy_output(
+                                role=role,
+                                kind="checkpoint.synopsys-dlib-tar",
+                                source=archive,
+                                filename=archive.name,
+                            )
+                        )
+                        continue
                     paths = (
-                        sorted(role_root.rglob("*"))
-                        if role == "checkpoint"
-                        else (role_root / output_names[role],)
+                        role_root / output_names[role],
                     )
                     copied.extend(
                         context.copy_output(
                             role=role,
-                            kind=(
-                                "checkpoint.synopsys-dlib"
-                                if role == "checkpoint"
-                                else "result.synopsys-fc"
-                            ),
+                            kind="result.synopsys-fc",
                             source=path,
                             filename=path.relative_to(role_root).as_posix(),
                         )
