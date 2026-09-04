@@ -76,6 +76,83 @@ _TOOL_LOCATION_ENVIRONMENT = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class _ToolVerdict:
+    owner: str
+    stage: str
+    variant: str
+    passed: bool
+    product_qualification_conclusion: bool
+    checks: Mapping[str, bool]
+
+    @classmethod
+    def load(cls, path: Path) -> _ToolVerdict:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ExecutionError(f"invalid tool verdict {path.name}: {exc}") from exc
+        fields = {
+            "schema",
+            "contract_kind",
+            "owner",
+            "stage",
+            "variant",
+            "passed",
+            "product_qualification_conclusion",
+            "checks",
+        }
+        if not isinstance(payload, dict) or set(payload) != fields:
+            raise ExecutionError(f"invalid tool verdict envelope in {path.name}")
+        if payload["schema"] != 1 or payload["contract_kind"] != "tool-verdict":
+            raise ExecutionError(f"unsupported tool verdict contract in {path.name}")
+        texts = {
+            name: payload[name]
+            for name in ("owner", "stage", "variant")
+        }
+        if any(not isinstance(value, str) or not value for value in texts.values()):
+            raise ExecutionError(f"invalid tool verdict identity in {path.name}")
+        passed = payload["passed"]
+        qualification = payload["product_qualification_conclusion"]
+        checks = payload["checks"]
+        if not isinstance(passed, bool) or not isinstance(qualification, bool):
+            raise ExecutionError(f"invalid tool verdict conclusion in {path.name}")
+        if (
+            not isinstance(checks, dict)
+            or not checks
+            or any(
+                not isinstance(name, str)
+                or not name
+                or not isinstance(value, bool)
+                for name, value in checks.items()
+            )
+        ):
+            raise ExecutionError(f"invalid tool verdict checks in {path.name}")
+        if passed != all(checks.values()):
+            raise ExecutionError(f"inconsistent tool verdict conclusion in {path.name}")
+        return cls(
+            owner=texts["owner"],
+            stage=texts["stage"],
+            variant=texts["variant"],
+            passed=passed,
+            product_qualification_conclusion=qualification,
+            checks=checks,
+        )
+
+    def facts(self) -> dict[str, object]:
+        return {
+            "tool_verdict": {
+                "owner": self.owner,
+                "stage": self.stage,
+                "variant": self.variant,
+                "passed": self.passed,
+                "product_qualification_conclusion": (
+                    self.product_qualification_conclusion
+                ),
+                "checks": dict(self.checks),
+            }
+        }
+
+
 def _declared_inputs(
     _adapter: object,
     _project: PlanningProject,
@@ -541,11 +618,13 @@ class DcAdapter:
         {
             "constraints",
             "corner",
+            "evaluator",
             "reports",
             "rtl_root",
             "runner",
             "timeout_seconds",
             "variant",
+            "verdict_report",
         }
     )
 
@@ -553,9 +632,12 @@ class DcAdapter:
         _strict_config(step, self._fields)
         checks = _base_checks(step)
         constraints = _safe_relative(_text(step.config, "constraints"), "constraints")
+        evaluator = _safe_relative(_text(step.config, "evaluator"), "evaluator")
         _text(step.config, "corner")
         if constraints not in step.sources:
             raise ContractError("DC constraints must be inside the step source closure")
+        if evaluator not in step.sources:
+            raise ContractError("DC evaluator must be inside the step source closure")
         _source_members(step, "rtl_root", suffix=".sv")
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
@@ -578,6 +660,9 @@ class DcAdapter:
                 "SIGILICON_DC_CONSTRAINTS": str(
                     context.source_path(_text(config, "constraints"))
                 ),
+                "SIGILICON_IMPLEMENTATION_EVALUATOR": str(
+                    context.source_path(_text(config, "evaluator"))
+                ),
             }
         )
         with owned_scratch_directory(
@@ -599,6 +684,10 @@ class DcAdapter:
                 return StepResult(
                     "failed", logs, message=f"DC runner exited {completed.returncode}"
                 )
+            verdict_name = _safe_relative(
+                _text(config, "verdict_report"), "DC verdict report"
+            )
+            verdict = _ToolVerdict.load(scratch.path / verdict_name)
             outputs = (
                 context.copy_output(
                     role="mapped-netlist",
@@ -628,7 +717,21 @@ class DcAdapter:
                 )
                 for relative in _strings(config, "reports")
             )
-            return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
+            verdict_artifact = context.copy_output(
+                role="execution-verdict",
+                kind="evidence.tool-verdict",
+                source=scratch.path / verdict_name,
+                filename=verdict_name,
+            )
+            artifacts = (*logs, *outputs, *reports, verdict_artifact)
+            if not verdict.passed:
+                return StepResult(
+                    "failed",
+                    artifacts,
+                    message="DC execution completed but owner evidence failed",
+                    facts=verdict.facts(),
+                )
+            return StepResult.succeeded(artifacts=artifacts, facts=verdict.facts())
 
 
 class FcAdapter:
@@ -637,6 +740,7 @@ class FcAdapter:
     _fields = frozenset(
         {
             "corner",
+            "evaluator",
             "outputs",
             "reference_library_output",
             "reference_step",
@@ -656,6 +760,10 @@ class FcAdapter:
         _text(step.config, "corner")
         if target not in {"library", "pnr"}:
             raise ContractError(f"unsupported FC target {target!r}")
+        if target == "pnr":
+            evaluator = _safe_relative(_text(step.config, "evaluator"), "evaluator")
+            if evaluator not in step.sources:
+                raise ContractError("FC evaluator must be inside the step source closure")
         checks.extend(preflight_environment(step.runtime, resources))
         return tuple(checks)
 
@@ -719,6 +827,7 @@ class FcAdapter:
                     "drc-report",
                     "physical-completion-report",
                     "tie-off-check-report",
+                    "execution-verdict",
                 }
             )
             if set(output_names) != required:
@@ -737,12 +846,16 @@ class FcAdapter:
                 "drc-report": "SIGILICON_FC_DRC_REPORT",
                 "physical-completion-report": "SIGILICON_FC_PHYSICAL_COMPLETION_REPORT",
                 "tie-off-check-report": "SIGILICON_FC_TIE_OFF_CHECK_REPORT",
+                "execution-verdict": "SIGILICON_FC_EXECUTION_VERDICT",
             }
             environment.update(
                 {
                     "SIGILICON_FC_MAPPED_NETLIST": str(mapped_netlist.path),
                     "SIGILICON_FC_MAPPED_SDC": str(mapped_constraints.path),
                     "SIGILICON_FC_REFERENCE_NDM": str(next(iter(candidates))),
+                    "SIGILICON_IMPLEMENTATION_EVALUATOR": str(
+                        context.source_path(_text(config, "evaluator"))
+                    ),
                 }
             )
             held_files.extend(
@@ -858,6 +971,25 @@ class FcAdapter:
                 artifacts = tuple(copied)
                 if {artifact.role for artifact in artifacts} != required:
                     raise ExecutionError("FC omitted one or more physical result roles")
+            if target == "pnr":
+                verdict_path = (
+                    scratch.path
+                    / "execution-verdict"
+                    / output_names["execution-verdict"]
+                )
+                verdict = _ToolVerdict.load(verdict_path)
+                published = (*logs, *artifacts)
+                if not verdict.passed:
+                    return StepResult(
+                        "failed",
+                        published,
+                        message="FC execution completed but owner evidence failed",
+                        facts=verdict.facts(),
+                    )
+                return StepResult.succeeded(
+                    artifacts=published,
+                    facts=verdict.facts(),
+                )
             return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 

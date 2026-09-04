@@ -234,6 +234,8 @@ mkdir -p "$SIGILICON_DC_OUTPUT_ROOT"
 for output in mapped.v mapped.sdc mapped.ddc check_design.rpt area.rpt; do
   printf '%s\n' "$output" >"$SIGILICON_DC_OUTPUT_ROOT/$output"
 done
+printf '{"schema":1,"contract_kind":"tool-verdict","owner":"fixture","stage":"synthesis","variant":"test","passed":true,"product_qualification_conclusion":false,"checks":{"timing_clean":true}}\n' \
+  >"$SIGILICON_DC_OUTPUT_ROOT/verdict.json"
 mkdir -p "$SIGILICON_DC_OUTPUT_ROOT/cache"
 ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
 """,
@@ -241,6 +243,7 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
     )
     _file(sources / "rtl/design.sv")
     _file(sources / "impl/syn/constraints.sdc")
+    _file(sources / "tools/evaluate.py")
     site = tmp_path / "site"
     executable = site / "dc_shell"
     target = _file(
@@ -269,14 +272,17 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
             "constraints": "impl/syn/constraints.sdc",
             "variant": "test",
             "corner": "tt",
+            "evaluator": "tools/evaluate.py",
             "rtl_root": "rtl",
             "timeout_seconds": 10,
             "reports": ("check_design.rpt", "area.rpt"),
+            "verdict_report": "verdict.json",
         },
         sources=(
             "impl/syn/run_dc.sh",
             "impl/syn/constraints.sdc",
             "rtl/design.sv",
+            "tools/evaluate.py",
         ),
         runtime=RuntimeEnvironment(
             tools={
@@ -316,9 +322,32 @@ ln -s ../mapped.ddc "$SIGILICON_DC_OUTPUT_ROOT/cache/current.ddc"
         "mapped-constraints",
         "checkpoint",
         "report",
+        "execution-verdict",
     }
-    assert len(result.artifacts) == 7
+    assert len(result.artifacts) == 8
+    assert result.facts["tool_verdict"]["passed"] is True
     assert not (context.work_directory / "tool").exists()
+
+    failed_context = _context(tmp_path / "failed-verdict", step, context.runtime)
+    failed_runner = _file(
+        failed_context.source_directory / "impl/syn/run_dc.sh",
+        runner.read_text(encoding="utf-8").replace(
+            '"passed":true', '"passed":false'
+        ).replace('"timing_clean":true', '"timing_clean":false'),
+        executable=True,
+    )
+    _file(failed_context.source_directory / "rtl/design.sv")
+    _file(failed_context.source_directory / "impl/syn/constraints.sdc")
+    _file(failed_context.source_directory / "tools/evaluate.py")
+    failed = adapter.run(failed_context)
+
+    assert failed.status == "failed"
+    assert failed.message == "DC execution completed but owner evidence failed"
+    assert {artifact.role for artifact in failed.artifacts} >= {
+        "mapped-netlist",
+        "execution-verdict",
+    }
+    assert failed.facts["tool_verdict"]["passed"] is False
 
 
 def test_hspice_failure_preserves_campaign_and_qualification_evidence(
