@@ -8,7 +8,7 @@ from sigilicon.adapters.cadence._common import (
     AdapterPreparation, Any, Artifact, CADENCE_SPICEIN_TOOL,
     CADENCE_TEXT_IMPORT_TOOL, CADENCE_VIRTUOSO_TOOL, ContractError,
     ExecutionError, ExecutionIO, Mapping, PreflightCheck, Resources, Step,
-    StepResult, _BRIDGE_RESOURCES, _CadenceInputs, _CadencePlanningProject,
+    StepResult, _BRIDGE_RESOURCES, _CadenceInputs, Project,
     _OA_CAPABILITIES, _PYTHON, _bridge_check, _capability_checks,
     _executable_check, _oa_resource_identities, _oa_runtime_executables,
     _positive_integer, _prepare_cadence_inputs, _strict_config, _text,
@@ -58,7 +58,7 @@ class NativeOaAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
@@ -287,7 +287,7 @@ def _oa_preflight(
 
 
 def _prepare_oa(
-    project: _CadencePlanningProject,
+    project: Project,
     step: Step,
     resources: Resources,
     *,
@@ -385,7 +385,7 @@ class OaCheckAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
@@ -455,7 +455,7 @@ class OaRebuildAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
@@ -519,7 +519,7 @@ class OaAttestAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:

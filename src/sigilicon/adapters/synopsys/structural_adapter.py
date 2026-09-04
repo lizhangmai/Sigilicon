@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sigilicon.adapters.synopsys._common import (
     AdapterPreparation, Any, ContractError, ExecutionError, ExecutionIO, Mapping,
-    Path, PlanningProject, PreflightCheck, ResourceBinding, Resources, Source,
+    Path, Project, PreflightCheck, ResourceBinding, Resources, Source,
     Step, StepResult, StructuralLinkPlan, _mapping, _positive_integer,
     _runtime_environment, _safe_relative, _text, canonical_digest, dataclass,
     execute_structural_link, json, owned_scratch_directory, plan_structural_link,
@@ -169,7 +169,7 @@ class StructuralLinkAdapter:
 
     def prepare(
         self,
-        project: PlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:

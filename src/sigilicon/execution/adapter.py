@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from sigilicon.execution._model import (
     ContractError,
@@ -23,20 +22,8 @@ from sigilicon.execution._model import (
     adapter_identity,
 )
 
-
-class OwnerView(Protocol):
-    root: Path
-
-
-class PlanningProject(Protocol):
-    """Repository capabilities shared by every planning adapter."""
-
-    project_root: Path
-    artifact_root: Path
-
-    def owner(self, name: str) -> OwnerView: ...
-
-    def owner_for(self, path: Path) -> OwnerView | None: ...
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 @runtime_checkable
@@ -47,7 +34,7 @@ class Adapter(Protocol):
 
     def prepare(
         self,
-        project: PlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> "AdapterPreparation": ...
@@ -143,7 +130,7 @@ class AdapterRegistry(Mapping[str, Adapter]):
 def plan_execution(
     draft: ExecutionPlan,
     *,
-    project: PlanningProject,
+    project: Project,
     adapters: AdapterRegistry,
     resources: Resources,
     authority: object,

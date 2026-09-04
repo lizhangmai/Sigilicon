@@ -10,6 +10,18 @@ from sigilicon.artifacts import read_nofollow_text
 
 
 @dataclass(frozen=True)
+class SourceExecutionContext:
+    """Canonical root exposed to one isolated source-code invocation."""
+
+    root: Path
+
+    def __post_init__(self) -> None:
+        root = Path(os.path.abspath(self.root))
+        if root != self.root or root != root.resolve() or not root.is_dir():
+            raise ValueError("source execution root must be a canonical directory")
+
+
+@dataclass(frozen=True)
 class TextSourceSnapshot:
     """One exact UTF-8 read bound to its canonical source path."""
 

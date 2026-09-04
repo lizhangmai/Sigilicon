@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.domain.platform import PlatformSnapshot
+from sigilicon.domain.source import SourceExecutionContext
 from sigilicon.project import Project
 from sigilicon.layout.generator import (
     LayoutGeneratorInput,
@@ -192,7 +193,7 @@ def build_managed_layout_ir(
     )
     plan = build_layout_plan_from_sources(
         generator_input,
-        project_root=root,
+        context=SourceExecutionContext(root),
         generator_source=bound(planning.spec.generator_source),
         python_executable=python_executable,
     )

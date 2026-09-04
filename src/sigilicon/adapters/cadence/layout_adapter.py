@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sigilicon.adapters.cadence._common import (
     AdapterPreparation, Any, ContractError, ExecutionError, ExecutionIO, Mapping,
     Path, PreflightCheck, Resources, Step, StepResult, _BRIDGE_RESOURCES,
-    _CALIBRE, _CadenceInputs, _CadencePlanningProject, _OA_CAPABILITIES,
+    _CALIBRE, _CadenceInputs, _OA_CAPABILITIES, Project,
     _PYTHON, _XSTREAM, _bridge_check, _capability_checks, _executable_check,
     _positive_integer, _prepare_cadence_inputs, _relative, _strict_config,
     _text, canonical_digest, json, owned_scratch_directory,
@@ -73,7 +73,7 @@ class LayoutAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
@@ -216,7 +216,7 @@ class LayoutVerificationAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 import tomllib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.contracts import contract_schema
@@ -19,6 +19,9 @@ from sigilicon.execution._model import (
     adapter_identity,
 )
 from sigilicon.paths import validate_artifact_component
+
+if TYPE_CHECKING:
+    from sigilicon.project import Project
 
 
 _HEADER = frozenset({"schema", "contract_kind", "path_scope", "owner"})
@@ -257,24 +260,23 @@ def _step(
     return step, sources
 
 
-def compile_operation(
-    catalog_path: Path,
+def _compile_operation(
+    project: Project,
     *,
-    project_identity: str,
     owner: str,
-    owner_root: Path,
-    project_root: Path,
-    component_filesets: Mapping[str, tuple[PurePosixPath, ...]],
     operation: str,
     variant: str | None = None,
 ) -> ExecutionPlan:
     """Compile ``owner:operation[@variant]`` from one owner catalog."""
 
-    path = Path(catalog_path).absolute()
-    root = Path(owner_root).resolve()
-    repository_root = Path(project_root).resolve()
-    if not root.is_relative_to(repository_root):
-        raise ContractError("operation owner root must stay inside its project")
+    selected_owner = project.owner(owner)
+    relative = selected_owner.component.operation_catalog
+    if relative is None:
+        raise ValueError(f"owner {selected_owner.name!r} has no operation catalog")
+    path = project.project_root.joinpath(*relative.parts).absolute()
+    root = selected_owner.root.resolve()
+    repository_root = project.project_root.resolve()
+    component_filesets = selected_owner.component.filesets
     if path.resolve() != path or not path.is_relative_to(root):
         raise ContractError("operation catalog must be a non-symlink owner source")
     try:
@@ -409,7 +411,7 @@ def compile_operation(
         for source in sources:
             unique_sources.setdefault(source.path, source)
     return ExecutionPlan(
-        project_identity=project_identity,
+        project_identity=project.operation_identity(selected_owner.name),
         owner=owner,
         operation=operation_name,
         variant=variant_name,
@@ -429,4 +431,4 @@ def parse_selector(value: str) -> tuple[str, str, str | None]:
     return _name(owner, "owner"), operation, variant
 
 
-__all__ = ["compile_operation", "parse_selector"]
+__all__ = ["parse_selector"]

@@ -10,7 +10,11 @@ import sys
 from types import MappingProxyType
 from typing import Any, cast
 
-from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
+from sigilicon.domain.source import (
+    SourceExecutionContext,
+    TextSourceSnapshot,
+    load_text_source_snapshot,
+)
 from sigilicon.external_tools import ProcessRequest, managed_process, owned_sealed_input
 
 
@@ -75,11 +79,12 @@ class NativeDiagnosticProgram:
     """Immutable owner program invoked only in a supervised child interpreter."""
 
     source_snapshot: TextSourceSnapshot
-    project_root: Path
+    context: SourceExecutionContext
 
     def __post_init__(self) -> None:
-        root = self.project_root.resolve()
-        if root != self.project_root or not self.source.is_relative_to(root):
+        if not isinstance(self.context, SourceExecutionContext):
+            raise TypeError("native diagnostic program requires a source context")
+        if not self.source.is_relative_to(self.context.root):
             raise ValueError("native diagnostic program must stay inside its project")
 
     @property
@@ -89,7 +94,7 @@ class NativeDiagnosticProgram:
     def _invoke(self, action: str, payload: Mapping[str, object]) -> Mapping[str, Any]:
         request = {
             "action": action,
-            "project_root": str(self.project_root),
+            "project_root": str(self.context.root),
             "source_path": str(self.source),
             "source_text": self.source_snapshot.text,
             **payload,
@@ -106,7 +111,7 @@ class NativeDiagnosticProgram:
                         owned.child_path,
                     ),
                     executable=sys.executable,
-                    cwd=self.project_root,
+                    cwd=self.context.root,
                     environment={},
                     timeout_seconds=30,
                     pass_fds=(owned.fd,),
@@ -217,13 +222,14 @@ class NativeDiagnosticProgram:
 
 
 def load_native_diagnostic_program(
-    source: Path, *, project_root: Path
+    source: Path, *, context: SourceExecutionContext
 ) -> NativeDiagnosticProgram:
     source = source.resolve()
-    root = project_root.resolve()
-    if not source.is_relative_to(root):
+    if not isinstance(context, SourceExecutionContext):
+        raise TypeError("native diagnostic loader requires a source context")
+    if not source.is_relative_to(context.root):
         raise ValueError("native diagnostic program must stay inside its project")
     return NativeDiagnosticProgram(
         source_snapshot=load_text_source_snapshot(source),
-        project_root=root,
+        context=context,
     )

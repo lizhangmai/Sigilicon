@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.domain.source import SourceExecutionContext
 from sigilicon.external_tools import (
     ProcessRequest,
     managed_process,
@@ -149,7 +150,7 @@ def _snapshot_from_payload(value: object, label: str) -> NetlistSnapshot:
 def build_layout_plan_from_sources(
     spec: LayoutGeneratorInput,
     *,
-    project_root: Path,
+    context: SourceExecutionContext,
     generator_source: Path,
     python_executable: Path,
 ) -> LayoutPlan:
@@ -157,7 +158,9 @@ def build_layout_plan_from_sources(
 
     if not isinstance(spec, LayoutGeneratorInput):
         raise TypeError("layout generator input must be LayoutGeneratorInput")
-    root = project_root.resolve()
+    if not isinstance(context, SourceExecutionContext):
+        raise TypeError("layout generation requires a source context")
+    root = context.root
     source = generator_source.absolute()
     executable = Path(python_executable).absolute()
     if source != source.resolve() or not source.is_relative_to(root):

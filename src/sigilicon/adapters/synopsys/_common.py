@@ -16,7 +16,7 @@ from typing import Any
 from sigilicon.artifacts import SafeTree, ensure_nofollow_directory
 from sigilicon.canonical import canonical_digest
 from sigilicon.contracts import require_relative_path
-from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
+from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -45,6 +45,7 @@ from sigilicon.external_tools import (
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
 )
+from sigilicon.project import Project
 from sigilicon.adapters.synopsys.structural_link import (
     StructuralLinkPlan,
     execute_structural_link,
@@ -149,7 +150,7 @@ class _ToolVerdict:
 
 def _declared_inputs(
     _adapter: object,
-    _project: PlanningProject,
+    _project: Project,
     _step: Step,
     _resources: Resources,
 ) -> AdapterPreparation:

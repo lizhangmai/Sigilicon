@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sigilicon.adapters.cadence._common import (
     AdapterPreparation, CADENCE_SPECTRE_TOOL, ContractError, ExecutionError,
     ExecutionIO, PreflightCheck, Resources, Step, StepResult,
-    _CadenceInputs, _CadencePlanningProject, _XRUN, _executable_check,
+    _CadenceInputs, Project, _XRUN, _executable_check,
     _positive_integer, _prepare_cadence_inputs, _relative, _strict_config,
     _text, canonical_digest, json, owned_scratch_directory,
     process_group_cleanup_uncertainty,
@@ -55,7 +55,7 @@ class XceliumAmsAdapter:
 
     def prepare(
         self,
-        project: _CadencePlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:

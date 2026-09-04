@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
+from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -28,6 +28,7 @@ from sigilicon.adapters.release.ip_packaging import (
     plan_ip_release,
 )
 from sigilicon.release_store import release_store_resource
+from sigilicon.project import Project
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:
@@ -89,7 +90,7 @@ class IpReleaseAdapter:
 
     def prepare(
         self,
-        project: PlanningProject,
+        project: Project,
         step: Step,
         _resources: Resources,
     ) -> AdapterPreparation:

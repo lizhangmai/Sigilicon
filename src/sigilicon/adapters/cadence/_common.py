@@ -9,13 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping
 
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.contracts import require_relative_path
 from sigilicon.domain.oa_library import find_oa_assembly
-from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
+from sigilicon.execution.adapter import AdapterPreparation
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -37,6 +37,7 @@ from sigilicon.external_tools import (
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
 )
+from sigilicon.project import Project
 from sigilicon.virtuoso.bridge import (
     VIRTUOSO_BRIDGE_HOST,
     VIRTUOSO_BRIDGE_PORT,
@@ -54,12 +55,6 @@ _BRIDGE_RESOURCES = (VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT)
 _SPECTRE_TEMPLATE_TOKEN = re.compile(
     r"\{\{(?:source|file|value):[^{}]+\}\}"
 )
-
-
-class _CadencePlanningProject(PlanningProject, Protocol):
-    """Cadence planning adds an explicitly configured workspace."""
-
-    workspace_root: Path
 
 
 def _runtime_bindings(
@@ -183,7 +178,7 @@ def _oa_runtime_executables(planning: Any, operation: str) -> tuple[str, ...]:
 
 
 def _bind_source_paths(
-    project: PlanningProject,
+    project: Project,
     owner_name: str,
     step: Step,
     paths: Mapping[Path, str | Source] | tuple[Path, ...] | frozenset[Path],
@@ -229,7 +224,7 @@ def _bind_source_paths(
 
 
 def _validate_oa_plan_sources(
-    project: PlanningProject,
+    project: Project,
     owner_name: str,
     planning: Any,
     paths: frozenset[Path],
@@ -272,7 +267,7 @@ def _require_bound_sources(
 
 
 def _external_file_records(
-    project: PlanningProject,
+    project: Project,
     source_records: Mapping[Path, str | Source],
     extra_paths: tuple[Path, ...] = (),
     identities: Mapping[Path, str] = MappingProxyType({}),
@@ -340,7 +335,7 @@ def _external_file_records(
 
 
 def _oa_resource_identities(
-    project: PlanningProject,
+    project: Project,
     planning: Any,
     paths: Mapping[Path, str | Source],
     resources: Resources,
@@ -378,7 +373,7 @@ def _oa_resource_identities(
 
 
 def _captured_project_sources(
-    project: PlanningProject,
+    project: Project,
     owner_name: str,
     sources: Mapping[Path, tuple[str, str]],
     records: Mapping[Path, str | Source],
@@ -525,7 +520,7 @@ class _CadencePreparation:
 
 
 def _prepare_cadence_inputs(
-    project: _CadencePlanningProject,
+    project: Project,
     step: Step,
     resources: Resources,
     *,

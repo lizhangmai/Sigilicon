@@ -23,6 +23,7 @@ from sigilicon.domain.native_diagnostics import (
     NativeDiagnosticReport,
     load_native_diagnostic_program,
 )
+from sigilicon.domain.source import SourceExecutionContext
 from sigilicon.domain.context import RepositoryIdentity
 from sigilicon.domain.source import TextSourceSnapshot, load_text_source_snapshot
 
@@ -343,7 +344,7 @@ def _load_native_rdb_contract(
             )
         diagnostic_program = load_native_diagnostic_program(
             program_source,
-            project_root=project_root,
+            context=SourceExecutionContext(project_root),
         )
 
     diagnostic_equivalence: NativeDiagnosticContract | None = None

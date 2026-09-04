@@ -17,7 +17,7 @@ from sigilicon.contracts import (
     read_toml,
     require_config_header,
 )
-from sigilicon.execution.operations import compile_operation, parse_selector
+from sigilicon.execution.operations import _compile_operation, parse_selector
 from sigilicon.domain.ip_integration import load_ip_integration_contract
 from sigilicon.domain.ip_release import load_ip_contract
 from sigilicon.domain.oa_library import load_oa_library_source
@@ -407,13 +407,9 @@ def inspect_repository_designs(
             _selected_owner, operation, variant = parse_selector(
                 f"{owner.name}:{identity}"
             )
-            plan = compile_operation(
-                catalog_path,
-                project_identity=context.identity,
+            plan = _compile_operation(
+                context,
                 owner=owner.name,
-                owner_root=owner.root,
-                project_root=context.project_root,
-                component_filesets=owner.component.filesets,
                 operation=operation,
                 variant=variant,
             )

@@ -244,25 +244,17 @@ class Project:
         """Compile a selector to its complete source and runtime closure."""
 
         from sigilicon.execution.adapter import plan_execution
-        from sigilicon.execution.operations import compile_operation, parse_selector
+        from sigilicon.execution.operations import _compile_operation, parse_selector
 
         if not isinstance(selector, str):
             raise TypeError("Project.plan requires an owner:operation selector")
         owner_name, operation, variant = parse_selector(selector)
         owner = self.owner(owner_name)
-        relative = owner.component.operation_catalog
-        if relative is None:
-            raise ValueError(f"owner {owner.name!r} has no operation catalog")
-        catalog = self.project_root.joinpath(*relative.parts).absolute()
-        draft = compile_operation(
-            catalog,
+        draft = _compile_operation(
+            self,
             owner=owner.name,
-            owner_root=owner.root,
-            project_root=self.project_root,
-            component_filesets=owner.component.filesets,
             operation=operation,
             variant=variant,
-            project_identity=self.operation_identity(owner.name),
         )
         composition_sources = tuple(
             Source.capture(path, root=self.project_root, scope="project")

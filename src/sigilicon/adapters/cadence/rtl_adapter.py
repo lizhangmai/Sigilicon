@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sigilicon.adapters.cadence._common import (
     AdapterPreparation, Artifact, CADENCE_SPECTRE_TOOL, ContractError,
-    ExecutionError, ExecutionIO, Mapping, Path, PlanningProject, PreflightCheck,
+    ExecutionError, ExecutionIO, Mapping, Path, Project, PreflightCheck,
     PurePosixPath, Resources, Step, StepResult, _SPECTRE_TEMPLATE_TOKEN, _XRUN,
     _executable_check, _positive_integer, _relative, _runtime_bindings,
     _strict_config, _strings, _text, json, owned_scratch_directory,
@@ -37,7 +37,7 @@ class SpectreAdapter:
 
     def prepare(
         self,
-        project: PlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
@@ -189,7 +189,7 @@ class XceliumAdapter:
 
     def prepare(
         self,
-        project: PlanningProject,
+        project: Project,
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:

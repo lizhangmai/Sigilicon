@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.domain.netlist import NetlistSnapshot
+from sigilicon.domain.source import SourceExecutionContext
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.layout.generator import (
     LayoutGeneratorInput,
@@ -115,7 +116,7 @@ def build_layout_plan(spec):
 
     assert build_layout_plan_from_sources(
         spec,
-        project_root=project_root,
+        context=SourceExecutionContext(project_root),
         generator_source=generator,
         python_executable=Path(sys.executable),
     ).dbu_per_micron == 1007
@@ -125,7 +126,7 @@ def build_layout_plan(spec):
     recipe.write_text("OFFSET = 11\n", encoding="utf-8")
     assert build_layout_plan_from_sources(
         spec,
-        project_root=project_root,
+        context=SourceExecutionContext(project_root),
         generator_source=generator,
         python_executable=Path(sys.executable),
     ).dbu_per_micron == 1011
@@ -253,7 +254,7 @@ def test_layout_generator_cannot_import_unsealed_project_module(
     with pytest.raises(RuntimeError, match="ModuleNotFoundError.*unsealed"):
         build_layout_plan_from_sources(
             spec,
-            project_root=managed_root,
+            context=SourceExecutionContext(managed_root),
             generator_source=generator,
             python_executable=Path(sys.executable),
         )
@@ -289,7 +290,7 @@ def test_layout_generator_discards_unsealed_namespace_package(
     with pytest.raises(RuntimeError, match="ModuleNotFoundError.*unsealed_package"):
         build_layout_plan_from_sources(
             spec,
-            project_root=managed_root,
+            context=SourceExecutionContext(managed_root),
             generator_source=generator,
             python_executable=Path(sys.executable),
         )
@@ -324,7 +325,7 @@ def test_explicit_source_exclusion_wins_inside_runtime_prefix(
     with pytest.raises(RuntimeError, match="ModuleNotFoundError.*unsealed"):
         build_layout_plan_from_sources(
             spec,
-            project_root=managed_root,
+            context=SourceExecutionContext(managed_root),
             generator_source=generator,
             python_executable=Path(sys.executable),
         )
