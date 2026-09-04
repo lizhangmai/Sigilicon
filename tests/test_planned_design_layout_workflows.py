@@ -7,8 +7,8 @@ from contextlib import nullcontext
 import pytest
 
 from sigilicon.project import Project
-from sigilicon.workflows import layout_generation
-from sigilicon.workflows.layout_generation import LayoutPlanningResult
+from sigilicon.adapters.cadence import layout_generation
+from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
 from sigilicon.execution._workspace import ExecutionWorkspace
 
 from conftest import write_component_owner

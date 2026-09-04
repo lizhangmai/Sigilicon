@@ -9,7 +9,7 @@ import sys
 
 from sigilicon.cli.common import emit_json, open_cli_project
 from sigilicon.execution.runs import RunStore
-from sigilicon.workflows import ip_packaging
+from sigilicon.adapters.release import ip_packaging
 
 
 def _parser() -> argparse.ArgumentParser:

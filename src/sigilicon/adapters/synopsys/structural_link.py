@@ -26,7 +26,7 @@ from sigilicon.release_store import (
     ReleaseStore,
     release_store_resource,
 )
-from sigilicon.workflows.ip_packaging import validate_ip_release_package
+from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")

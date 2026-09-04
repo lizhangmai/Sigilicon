@@ -24,8 +24,8 @@ from sigilicon.domain.oa_library import load_oa_library_source
 from sigilicon.domain.platform import load_platforms
 from sigilicon.project import Project
 from sigilicon.layout.spec import resolve_layout_spec
-from sigilicon.workflows.oa_library import plan_oa_library_rebuild
-from sigilicon.workflows.ip_integration import plan_ip_integration_contract
+from sigilicon.adapters.cadence.oa_library import plan_oa_library_rebuild
+from sigilicon.adapters.release.ip_integration import plan_ip_integration_contract
 
 
 def _contract_entries(

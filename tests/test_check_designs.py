@@ -8,7 +8,7 @@ import pytest
 from conftest import write_component_owner
 from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.project import Project
-import sigilicon.workflows.repository_checks as repository_checks
+import sigilicon.project.checks as repository_checks
 
 
 def test_core_project_and_check_do_not_require_domain_catalogs(

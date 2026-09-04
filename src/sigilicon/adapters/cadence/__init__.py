@@ -47,7 +47,7 @@ _CALIBRE = "mentor.calibre"
 _PYTHON = "runtime.python"
 _OA_CAPABILITIES = frozenset({"tool.virtuoso-bridge", "license.cadence-oa"})
 _OA_TEXT_VIEW_KINDS = frozenset({"spectre_model", "veriloga", "system_verilog"})
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _BRIDGE_RESOURCES = (VIRTUOSO_BRIDGE_HOST, VIRTUOSO_BRIDGE_PORT)
 
 
@@ -234,7 +234,7 @@ def _validate_oa_plan_sources(
     planning: Any,
     paths: frozenset[Path],
 ) -> Mapping[Path, Source]:
-    from sigilicon.workflows.oa_library import validate_oa_plan_source_members
+    from sigilicon.adapters.cadence.oa_library import validate_oa_plan_source_members
 
     project_root = project.project_root.resolve()
     owner_root = project.owner(owner_name).root.resolve()
@@ -624,7 +624,7 @@ class XceliumAdapter:
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        from sigilicon.workflows.xcelium import execute_xcelium_invocation
+        from sigilicon.adapters.cadence.xcelium import execute_xcelium_invocation
 
         config = _strict_config(context.step, self._fields)
         source_names = self._hdl_sources(context.step)
@@ -730,7 +730,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
-        from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
+        from sigilicon.adapters.cadence.xcelium_ams import plan_xcelium_ams_cell
 
         initial = step
         config = _strict_config(initial, self._fields)
@@ -769,7 +769,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        from sigilicon.workflows.xcelium_ams import execute_xcelium_ams_cell
+        from sigilicon.adapters.cadence.xcelium_ams import execute_xcelium_ams_cell
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
@@ -871,7 +871,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> AdapterPreparation:
         from sigilicon.domain.platform import load_platforms
-        from sigilicon.workflows.oa_library import (
+        from sigilicon.adapters.cadence.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
@@ -927,9 +927,9 @@ class NativeOaAdapter(_CadenceDomainAdapter):
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        from sigilicon.workflows.oa_client import get_client
-        from sigilicon.workflows.oa_library import build_oa_layout_ir
-        from sigilicon.workflows.oa_simulation import execute_oa_maestro_testbench
+        from sigilicon.adapters.cadence.oa_client import get_client
+        from sigilicon.adapters.cadence.oa_library import build_oa_layout_ir
+        from sigilicon.adapters.cadence.oa_simulation import execute_oa_maestro_testbench
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
@@ -1079,7 +1079,7 @@ class _OaAdapter(_CadenceDomainAdapter):
         resources: Resources,
     ) -> AdapterPreparation:
         from sigilicon.domain.platform import load_platforms
-        from sigilicon.workflows.oa_library import (
+        from sigilicon.adapters.cadence.oa_library import (
             oa_plan_source_paths,
             plan_oa_library_rebuild,
         )
@@ -1143,9 +1143,9 @@ class _OaAdapter(_CadenceDomainAdapter):
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        from sigilicon.workflows.oa_client import get_client
-        from sigilicon.workflows.oa_check import check_oa_library
-        from sigilicon.workflows.oa_library import (
+        from sigilicon.adapters.cadence.oa_client import get_client
+        from sigilicon.adapters.cadence.oa_check import check_oa_library
+        from sigilicon.adapters.cadence.oa_library import (
             attest_oa_testbench,
             build_oa_layout_ir,
             rebuild_oa_library,
@@ -1266,7 +1266,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
             load_platforms,
             platform_resource_identities,
         )
-        from sigilicon.workflows.layout_generation import plan_layout_spec
+        from sigilicon.adapters.cadence.layout_generation import plan_layout_spec
 
         initial = step
         config = _strict_config(initial, self._fields)
@@ -1301,7 +1301,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        from sigilicon.workflows.layout_generation import build_managed_layout_ir
+        from sigilicon.adapters.cadence.layout_generation import build_managed_layout_ir
 
         prepared = self._domain_action(context)
         planning = build_managed_layout_ir(
@@ -1313,8 +1313,8 @@ class LayoutAdapter(_CadenceDomainAdapter):
         return self._execute(context, planning)
 
     def _execute(self, context: ExecutionIO, planning: Any) -> StepResult:
-        from sigilicon.workflows.oa_client import get_client
-        from sigilicon.workflows.layout_generation import generate_layout
+        from sigilicon.adapters.cadence.oa_client import get_client
+        from sigilicon.adapters.cadence.layout_generation import generate_layout
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")
@@ -1408,7 +1408,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             load_platforms,
             platform_resource_identities,
         )
-        from sigilicon.workflows.layout_generation import plan_layout_spec
+        from sigilicon.adapters.cadence.layout_generation import plan_layout_spec
 
         initial = step
         config = _strict_config(initial, self._fields)
@@ -1453,7 +1453,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
-        from sigilicon.workflows.layout_generation import build_managed_layout_ir
+        from sigilicon.adapters.cadence.layout_generation import build_managed_layout_ir
 
         config = _strict_config(step, self._fields)
         check = _text(config, "check")
@@ -1476,8 +1476,8 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
         planning: Any,
         external_sources: Mapping[Path, str],
     ) -> StepResult:
-        from sigilicon.workflows.oa_client import get_client
-        from sigilicon.workflows.layout_verification import run_layout_verification
+        from sigilicon.adapters.cadence.oa_client import get_client
+        from sigilicon.adapters.cadence.layout_verification import run_layout_verification
 
         config = _strict_config(context.step, self._fields)
         owner = _text(config, "owner")

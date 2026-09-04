@@ -11,7 +11,7 @@ from typing import Any
 from sigilicon.cli.common import emit_json, open_cli_project
 from sigilicon.execution._model import Resources
 from sigilicon.paths import ProjectContext
-from sigilicon.workflows.virtuoso_operations import close_cell, open_project_cell
+from sigilicon.adapters.cadence.virtuoso_operations import close_cell, open_project_cell
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -48,10 +48,10 @@ def main(
             workspace_root=project.workspace_root,
         )
         if client_factory is None:
-            from sigilicon.workflows.oa_client import get_client
+            from sigilicon.adapters.cadence.oa_client import get_client
 
             client_factory = get_client
-        from sigilicon.workflows.oa_client import bind_client
+        from sigilicon.adapters.cadence.oa_client import bind_client
 
         resources = project.resources()
         client = bind_client(client_factory(resources), resources)

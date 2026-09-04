@@ -1954,7 +1954,7 @@ print(json.dumps(sorted(name for name in sys.modules if name.startswith('sigilic
     assert not any(
         name.startswith((
             "sigilicon.virtuoso",
-            "sigilicon.workflows.synopsys",
+            "sigilicon.adapters.synopsys",
             "sigilicon.capabilities",
         ))
         for name in modules

@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from sigilicon.project import Project
-from sigilicon.workflows import xcelium as xcelium_workflow
+from sigilicon.adapters.cadence import xcelium as xcelium_workflow
 from sigilicon.external_tools import ProcessResult
 from sigilicon.execution._model import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.workflows.xcelium import (
+from sigilicon.adapters.cadence.xcelium import (
     execute_xcelium_cell,
     plan_xcelium_cell,
 )

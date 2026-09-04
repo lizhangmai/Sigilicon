@@ -40,7 +40,7 @@ from sigilicon.virtuoso.xstream import (
     XStreamExportRequest,
     run_xstream_export,
 )
-from sigilicon.workflows.layout_generation import LayoutPlanningResult
+from sigilicon.adapters.cadence.layout_generation import LayoutPlanningResult
 from sigilicon.execution._workspace import ExecutionWorkspace
 
 

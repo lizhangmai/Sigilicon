@@ -16,7 +16,7 @@ from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
 from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.oa_library import (
+from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     TestbenchRebuildStep,
     check_oa_parity,

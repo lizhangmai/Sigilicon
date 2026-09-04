@@ -10,11 +10,11 @@ import pytest
 
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._model import Resources
-from sigilicon.workflows.structural_link import (
+from sigilicon.adapters.synopsys.structural_link import (
     execute_structural_link,
     plan_structural_link,
 )
-from sigilicon.workflows import structural_link as structural_link_workflow
+from sigilicon.adapters.synopsys import structural_link as structural_link_workflow
 from sigilicon.external_tools import ProcessRequest, managed_process, owned_executable
 
 

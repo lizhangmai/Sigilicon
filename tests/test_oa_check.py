@@ -8,13 +8,13 @@ import pytest
 from sigilicon.project import Project
 from sigilicon.execution._model import Resources
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.oa_check import (
+from sigilicon.adapters.cadence.oa_check import (
     _library_ownership,
     _locks,
     _recommendation,
     check_oa_library,
 )
-from sigilicon.workflows.oa_library import OALibraryRebuildPlan, rebuild_oa_library
+from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan, rebuild_oa_library
 
 
 OA_RESOURCES = Resources()

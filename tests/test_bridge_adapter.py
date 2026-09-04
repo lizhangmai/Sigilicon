@@ -4,7 +4,7 @@ import pytest
 
 from sigilicon.execution._model import ContractError, Resources
 from sigilicon.virtuoso import bridge
-from sigilicon.workflows import oa_client as client_adapter
+from sigilicon.adapters.cadence import oa_client as client_adapter
 
 
 def test_missing_bridge_dependency_has_an_actionable_error(

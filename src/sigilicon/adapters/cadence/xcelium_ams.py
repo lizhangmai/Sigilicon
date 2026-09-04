@@ -32,9 +32,9 @@ from sigilicon.domain.verification_cell import (
 from sigilicon.external_tools import ProcessPort, managed_process
 from sigilicon.execution._model import Resources
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.workflows.ip_packaging import validate_ip_release_package
-from sigilicon.workflows.ip_integration import check_ip_integration
-from sigilicon.workflows.xcelium import (
+from sigilicon.adapters.release.ip_packaging import validate_ip_release_package
+from sigilicon.adapters.release.ip_integration import check_ip_integration
+from sigilicon.adapters.cadence.xcelium import (
     XceliumCellPlan,
     XceliumExecution,
     execute_xcelium_invocation,

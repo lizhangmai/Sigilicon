@@ -59,13 +59,13 @@ from sigilicon.release_store import (
     _release_object_name,
     audit_release_package,
 )
-from sigilicon.workflows.source_control import inspect_checkout
+from sigilicon.adapters.release.source_control import inspect_checkout
 
 if TYPE_CHECKING:
     from sigilicon.domain.design import DesignSpec
     from sigilicon.domain.oa_library import OALibrarySource
     from sigilicon.domain.platform import PlatformSet
-    from sigilicon.workflows.oa_library import OALibraryRebuildPlan
+    from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
 
 
 class IpReleaseError(RuntimeError):

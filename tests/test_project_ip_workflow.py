@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sigilicon.project import Project
-from sigilicon.workflows import ip_integration
+from sigilicon.adapters.release import ip_integration
 
 from conftest import write_component_owner, write_project_context
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from sigilicon.cli.common import emit_json, open_cli_project
-from sigilicon.workflows.repository_checks import inspect_repository_designs
+from sigilicon.project.checks import inspect_repository_designs
 
 
 def _summary(report: dict[str, object]) -> dict[str, object]:

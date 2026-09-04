@@ -23,7 +23,7 @@ from sigilicon.virtuoso.oa import cell_exists, cell_view_exists, delete_cell
 from sigilicon.virtuoso.schematic import set_instance_parameters
 from sigilicon.virtuoso.text_view import import_oa_text_view
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.hierarchy_import import plan_hierarchy
+from sigilicon.adapters.cadence.hierarchy_import import plan_hierarchy
 
 
 _TESTBENCH_VIEWS = ("netlist", "schematic", "config", "measurement", "maestro")

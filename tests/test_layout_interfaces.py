@@ -13,7 +13,7 @@ from sigilicon.layout.generator import (
     LayoutGeneratorInput,
     build_layout_plan_from_sources,
 )
-from sigilicon.workflows.layout_generation import (
+from sigilicon.adapters.cadence.layout_generation import (
     LayoutPlanningResult,
     build_managed_layout_ir,
 )

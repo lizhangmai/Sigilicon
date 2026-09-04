@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import sigilicon.domain.oa_library as oa_library_domain
-import sigilicon.workflows.ip_packaging as ip_packaging
+import sigilicon.adapters.release.ip_packaging as ip_packaging
 from sigilicon.domain.ip_release import (
     OaMixedSignalIpInterface,
     OaNativeIpInterface,
@@ -17,7 +17,7 @@ from sigilicon.domain.ip_release import (
     load_ip_contract,
 )
 from sigilicon.project import Project
-from sigilicon.workflows.ip_packaging import release_role_view
+from sigilicon.adapters.release.ip_packaging import release_role_view
 
 from conftest import write_project_context, write_test_layout_platform
 

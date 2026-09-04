@@ -49,7 +49,7 @@ from sigilicon.external_tools import (
     owned_scratch_directory,
     process_group_cleanup_uncertainty,
 )
-from sigilicon.workflows.structural_link import (
+from sigilicon.adapters.synopsys.structural_link import (
     StructuralLinkPlan,
     execute_structural_link,
     plan_structural_link,

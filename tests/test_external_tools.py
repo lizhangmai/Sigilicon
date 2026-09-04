@@ -30,12 +30,12 @@ from sigilicon.external_tools import (
 )
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._model import Resources
-from sigilicon.workflows.spectre import (
+from sigilicon.adapters.cadence.spectre import (
     StagedSpectreInput,
     run_spectre_deck,
     run_spectre_measurement,
 )
-from sigilicon.workflows import spectre as spectre_workflow
+from sigilicon.adapters.cadence import spectre as spectre_workflow
 
 
 def test_cadence_child_environment_removes_conflicting_license_variable() -> None:

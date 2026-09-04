@@ -12,7 +12,7 @@ from sigilicon.virtuoso.locks import discover_oa_locks, inspect_flow_operation_l
 from sigilicon.virtuoso.maestro import active_maestro_sessions
 from sigilicon.virtuoso.oa import open_cell_views, virtuoso_pid, virtuoso_workdir
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.oa_library import (
+from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     check_oa_parity,
 )

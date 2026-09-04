@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import sigilicon.workflows.hierarchy_import as hierarchy
+import sigilicon.adapters.cadence.hierarchy_import as hierarchy
 from sigilicon.artifacts import RunRecord
 from sigilicon.execution._model import Resources
 from sigilicon.paths import ArtifactLayout

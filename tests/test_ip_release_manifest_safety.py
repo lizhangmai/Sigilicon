@@ -10,7 +10,7 @@ import pytest
 from sigilicon.cli.main import main as sigilicon_main
 from sigilicon.project import Project
 from sigilicon.release_store import ReleaseRef, ReleaseStore
-from sigilicon.workflows import ip_packaging
+from sigilicon.adapters.release import ip_packaging
 
 from conftest import write_project_context
 

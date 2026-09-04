@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 from sigilicon.execution._model import Resources
-from sigilicon.workflows.source_control import inspect_checkout
+from sigilicon.adapters.release.source_control import inspect_checkout
 
 
 def _git(root: Path, *arguments: str) -> str:

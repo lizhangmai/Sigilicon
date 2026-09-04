@@ -25,7 +25,7 @@ from sigilicon.execution._model import (
 )
 from sigilicon.execution._model import Resources
 from sigilicon.domain.platform import PlatformAsset
-from sigilicon.workflows.oa_library import oa_plan_source_paths
+from sigilicon.adapters.cadence.oa_library import oa_plan_source_paths
 
 
 def _file(path: Path, text: str = "fixture\n", *, executable: bool = False) -> Path:
@@ -347,7 +347,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         as_dict=lambda: {"cell": "tb_ams", "model": str(model)},
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.xcelium_ams.plan_xcelium_ams_cell",
+        "sigilicon.adapters.cadence.xcelium_ams.plan_xcelium_ams_cell",
         lambda _cell, *, project, resources: (
             planning if project is selected_project else None
         ),
@@ -368,7 +368,7 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         return SimpleNamespace(passed=True)
 
     monkeypatch.setattr(
-        "sigilicon.workflows.xcelium_ams.execute_xcelium_ams_cell",
+        "sigilicon.adapters.cadence.xcelium_ams.execute_xcelium_ams_cell",
         execute,
     )
     adapter = XceliumAmsAdapter()
@@ -523,23 +523,23 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
+        "sigilicon.adapters.cadence.oa_library.plan_oa_library_rebuild",
         lambda _manifest, *, project, platform_inventory: plan,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.oa_plan_source_paths",
+        "sigilicon.adapters.cadence.oa_library.oa_plan_source_paths",
         lambda _plan: frozenset(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.validate_oa_plan_source_members",
+        "sigilicon.adapters.cadence.oa_library.validate_oa_plan_source_members",
         lambda _plan, _members: None,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_client.get_client",
+        "sigilicon.adapters.cadence.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.build_oa_layout_ir",
+        "sigilicon.adapters.cadence.oa_library.build_oa_layout_ir",
         lambda plan, **_kwargs: plan,
     )
 
@@ -554,7 +554,7 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         )
 
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_simulation.execute_oa_maestro_testbench",
+        "sigilicon.adapters.cadence.oa_simulation.execute_oa_maestro_testbench",
         execute,
     )
     adapter = NativeOaAdapter()
@@ -626,15 +626,15 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.plan_oa_library_rebuild",
+        "sigilicon.adapters.cadence.oa_library.plan_oa_library_rebuild",
         lambda _manifest, *, project, platform_inventory: planning,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.oa_plan_source_paths",
+        "sigilicon.adapters.cadence.oa_library.oa_plan_source_paths",
         lambda _plan: frozenset({manifest, model}),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.validate_oa_plan_source_members",
+        "sigilicon.adapters.cadence.oa_library.validate_oa_plan_source_members",
         lambda _plan, _members: None,
     )
     monkeypatch.setattr(
@@ -644,11 +644,11 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         },
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_client.get_client",
+        "sigilicon.adapters.cadence.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.build_oa_layout_ir",
+        "sigilicon.adapters.cadence.oa_library.build_oa_layout_ir",
         lambda plan, **_kwargs: plan,
     )
     response: dict[str, object] = {"passed": True}
@@ -673,7 +673,7 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         return dict(response)
 
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_library.rebuild_oa_library",
+        "sigilicon.adapters.cadence.oa_library.rebuild_oa_library",
         rebuild,
     )
     adapter = next(
@@ -760,15 +760,15 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        "sigilicon.adapters.cadence.layout_generation.plan_layout_spec",
         lambda _spec, *, project, platform: planning,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_client.get_client",
+        "sigilicon.adapters.cadence.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.build_managed_layout_ir",
+        "sigilicon.adapters.cadence.layout_generation.build_managed_layout_ir",
         lambda _planning, **_kwargs: generated,
     )
 
@@ -779,7 +779,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         return SimpleNamespace(instance_count=3)
 
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.generate_layout",
+        "sigilicon.adapters.cadence.layout_generation.generate_layout",
         generate,
     )
 
@@ -802,7 +802,7 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
         raise RuntimeError("cleanup failure")
 
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.generate_layout",
+        "sigilicon.adapters.cadence.layout_generation.generate_layout",
         uncertain,
     )
     second = _bind_plan(
@@ -857,7 +857,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        "sigilicon.adapters.cadence.layout_generation.plan_layout_spec",
         lambda _spec, *, project, platform: planning,
     )
 
@@ -954,15 +954,15 @@ def test_layout_verification_backend_publishes_classified_evidence(
         lambda _project, *, resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.plan_layout_spec",
+        "sigilicon.adapters.cadence.layout_generation.plan_layout_spec",
         lambda _spec, *, project, platform: planning,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.oa_client.get_client",
+        "sigilicon.adapters.cadence.oa_client.get_client",
         lambda _resources: object(),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_generation.build_managed_layout_ir",
+        "sigilicon.adapters.cadence.layout_generation.build_managed_layout_ir",
         lambda _planning, **_kwargs: generated,
     )
 
@@ -989,7 +989,7 @@ def test_layout_verification_backend_publishes_classified_evidence(
         return SimpleNamespace(passed=True, evidence=evidence)
 
     monkeypatch.setattr(
-        "sigilicon.workflows.layout_verification.run_layout_verification",
+        "sigilicon.adapters.cadence.layout_verification.run_layout_verification",
         verify,
     )
     adapter = LayoutVerificationAdapter()

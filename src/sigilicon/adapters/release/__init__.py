@@ -21,7 +21,7 @@ from sigilicon.execution._model import (
     Step,
     StepResult,
 )
-from sigilicon.workflows.ip_packaging import (
+from sigilicon.adapters.release.ip_packaging import (
     IpReleaseError,
     IpReleasePlan,
     _publish_ip_release,

@@ -7,7 +7,7 @@ import pytest
 from conftest import write_component_owner
 from sigilicon.domain.design import load_design_spec, resolve_design_spec
 from sigilicon.project import Project
-from sigilicon.workflows.design_lifecycle import inspect_design
+from sigilicon.adapters.cadence.design_lifecycle import inspect_design
 
 
 def test_design_loader_rejects_project_escape_and_symlink(

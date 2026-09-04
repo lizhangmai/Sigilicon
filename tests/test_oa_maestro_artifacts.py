@@ -9,7 +9,7 @@ import pytest
 from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import load_text_source_snapshot
 from sigilicon.execution._model import Resources
-from sigilicon.workflows import oa_simulation
+from sigilicon.adapters.cadence import oa_simulation
 
 
 def test_flow_action_remains_the_only_workspace_operation_record(

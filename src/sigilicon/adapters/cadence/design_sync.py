@@ -22,7 +22,7 @@ from sigilicon.virtuoso.workspace import (
     OperationPolicy,
     workspace_operation,
 )
-from sigilicon.workflows.hierarchy_import import (
+from sigilicon.adapters.cadence.hierarchy_import import (
     import_hierarchy,
     plan_hierarchy,
 )

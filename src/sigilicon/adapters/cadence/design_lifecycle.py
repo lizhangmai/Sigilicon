@@ -21,13 +21,13 @@ from sigilicon.virtuoso.oa import (
     validate_instance_parameters,
 )
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.design_sync import (
+from sigilicon.adapters.cadence.design_sync import (
     DesignSyncResult,
     TargetOnlyDesignSyncResult,
     sync_design,
     sync_existing_design_target_only,
 )
-from sigilicon.workflows.hierarchy_import import plan_hierarchy
+from sigilicon.adapters.cadence.hierarchy_import import plan_hierarchy
 
 
 @dataclass(frozen=True)

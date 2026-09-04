@@ -8,7 +8,7 @@ import pytest
 
 from sigilicon.domain.physical_verification import PhysicalVerificationPolicy
 from sigilicon.domain.platform import PlatformAsset
-from sigilicon.workflows import layout_verification
+from sigilicon.adapters.cadence import layout_verification
 from sigilicon.execution._workspace import ExecutionWorkspace
 from sigilicon.execution._model import Resources
 

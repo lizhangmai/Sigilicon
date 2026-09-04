@@ -9,7 +9,7 @@ from sigilicon.virtuoso.oa import close_visible_cell_windows
 from sigilicon.virtuoso.oa import WindowCloseResult
 from sigilicon.virtuoso.schematic import set_instance_parameters
 from sigilicon.virtuoso.workspace import OperationPolicy
-from sigilicon.workflows.virtuoso_operations import (
+from sigilicon.adapters.cadence.virtuoso_operations import (
     close_cell,
     update_instance_parameters,
 )
@@ -53,15 +53,15 @@ def test_close_cell_workflow_enters_workspace_and_project_library_policy(
     paths = SimpleNamespace(workspace_root=tmp_path / "virtuoso")
     client = object()
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.workspace_operation",
+        "sigilicon.adapters.cadence.virtuoso_operations.workspace_operation",
         workspace,
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.require_project_library_path",
+        "sigilicon.adapters.cadence.virtuoso_operations.require_project_library_path",
         lambda *_args: events.append("project-library") or tmp_path / "virtuoso/lib",
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.close_visible_cell_windows",
+        "sigilicon.adapters.cadence.virtuoso_operations.close_visible_cell_windows",
         lambda *_args, **_kwargs: events.append("exact-close")
         or WindowCloseResult(1, 0),
     )
@@ -98,20 +98,20 @@ def test_manual_set_params_workflow_cannot_bypass_quiescent_cell_policy(
     paths = SimpleNamespace(workspace_root=tmp_path / "virtuoso")
     client = object()
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.workspace_operation",
+        "sigilicon.adapters.cadence.virtuoso_operations.workspace_operation",
         workspace,
     )
     reads = iter(({"w": "1u"}, {"w": "2u"}))
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.read_instance_parameters",
+        "sigilicon.adapters.cadence.virtuoso_operations.read_instance_parameters",
         lambda *_args, **_kwargs: events.append("read") or next(reads),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.set_instance_parameters",
+        "sigilicon.adapters.cadence.virtuoso_operations.set_instance_parameters",
         lambda *_args, **_kwargs: events.append("write") or {"w": "2u"},
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.virtuoso_operations.assert_cell_has_no_open_views",
+        "sigilicon.adapters.cadence.virtuoso_operations.assert_cell_has_no_open_views",
         lambda *_args: events.append("closed"),
     )
 

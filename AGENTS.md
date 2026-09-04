@@ -14,7 +14,8 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   source/resource closure 的 typed steps，executor 只按 plan 调用 adapter。不得为同一事实
   增加多层转述，也不得为 owner 动态执行 Python 注册模块。
 - `Project` 是外部 composition seam，执行生命周期只有 open、plan、preflight 和 run；
-  owner、catalog、resource 和 configuration 查询仍从同一个 `Project` 提供给 domain/workflow，
+  owner、catalog、resource 和 configuration 查询仍从同一个 `Project` 提供给 domain loader
+  与 adapter planner，
   不建立平行 composition 入口。adapter 是 package-owned trusted code，不是同进程插件沙箱；
   owner 不能注入 adapter Python。
   adapter 启动的工具必须使用公共 no-follow/process supervisor seam，不能把裸路径检查冒充
@@ -29,14 +30,15 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
   只组合这些 identity；release collateral 直接引用 component/source identity。不得重复路径、
   建立只转发一个文件的 release fileset，或让 fileset 同时承担 source inventory 和发布寻址。
 - platform 的 simulation、OA、layout/verification capability 相互正交；loader 只要求至少
-  一个 capability，具体 workflow 在自己的 seam 要求所消费的 capability，不得让纯数字
+  一个 capability，具体 adapter operation 在自己的 seam 要求所消费的 capability，不得让纯数字
   platform 为满足模拟默认值而声明虚假 contract。
 - 公共 import namespace 是 `sigilicon`，实现采用 `src/sigilicon` layout。
 - 公共命令只有 `sigilicon {check,flow,oa,release}` 这一棵命令树；子命令实现是不可独立
   执行的内部模块。不得新增并行 console script、`python -m sigilicon.cli.<subcommand>`
   入口或只转发参数的 CLI wrapper。
-- 需要 owner、catalog 或 artifact inventory 的 domain loader 与 workflow 接收同一个显式
-  `Project`；只需路径和直接工具操作的窄接口接收显式 `ProjectContext`。最外层 composition
+- 需要 owner、catalog 或 artifact inventory 的 domain loader 与 adapter planner 接收同一个
+  显式 `Project`，但返回的 domain snapshot 只保留 immutable repository identity，不得反向
+  持有 composition 对象；只需路径和直接工具操作的窄接口接收显式 context。最外层 composition
   入口把显式 project root 解析成 `Project`，内部接口不接受 project root 代替 `Project`；
   只有 CLI 可从 cwd 发现 `sigilicon.toml`。
 - `virtuoso_bridge` 只能由 `sigilicon.virtuoso` adapter 直接导入。顶层
@@ -45,7 +47,7 @@ qualification 门槛和仓库布局由调用项目拥有。标准 ASIC、模拟/
 ## 测试设计与验证
 
 - 测试先选择稳定 seam：执行行为从 `Project -> ExecutionPlan -> RunResult/RunStore`、公共
-  CLI 或持久化 artifact 进入；domain loader/workflow 接收显式 `Project` 并检查稳定返回值
+  CLI 或持久化 artifact 进入；domain loader/adapter planner 接收显式 `Project` 并检查稳定返回值
   或 typed result；package-owned adapter 通过 `Adapter`/`ExecutionIO` 行为测试。若一项普通
   行为只能通过私有状态验证，先加深 owning module，让现有 interface 返回足够结论；不为
   测试增加裸字段、debug getter 或平行 public API。

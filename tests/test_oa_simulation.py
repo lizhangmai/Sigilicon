@@ -20,7 +20,7 @@ from sigilicon.virtuoso.ade import (
     _native_setup_entry_point,
     _staged_native_setup_source,
 )
-from sigilicon.workflows.oa_simulation import (
+from sigilicon.adapters.cadence.oa_simulation import (
     _elaborated_netlist,
     evaluate_oa_maestro_evidence,
 )

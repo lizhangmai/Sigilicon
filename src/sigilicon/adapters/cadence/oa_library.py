@@ -44,22 +44,22 @@ from sigilicon.virtuoso.discovery import list_cells
 from sigilicon.virtuoso.layout_generation import validate_layout_plan
 from sigilicon.virtuoso.oa import cell_view_exists, delete_cell, delete_cell_view
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
-from sigilicon.workflows.design_lifecycle import (
+from sigilicon.adapters.cadence.design_lifecycle import (
     DesignInspection,
     attest_oa_design,
     inspect_design,
     synchronize_design,
 )
-from sigilicon.workflows.layout_generation import (
+from sigilicon.adapters.cadence.layout_generation import (
     LayoutPlanningResult,
     build_managed_layout_ir,
     generate_layout,
     plan_layout_snapshot,
 )
-from sigilicon.workflows.oa_testbench import (
+from sigilicon.adapters.cadence.oa_testbench import (
     sync_oa_testbench,
 )
-from sigilicon.workflows.oa_text_view import (
+from sigilicon.adapters.cadence.oa_text_view import (
     sync_oa_text_view,
 )
 

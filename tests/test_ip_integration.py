@@ -9,14 +9,14 @@ from typing import Any
 
 import pytest
 
-import sigilicon.workflows.ip_integration as ip_integration
+import sigilicon.adapters.release.ip_integration as ip_integration
 from sigilicon.domain.ip_integration import (
     LockedIpRelease,
     OaNativePhysicalBinding,
     load_ip_integration_contract,
 )
 from sigilicon.project import Project
-from sigilicon.workflows.ip_integration import (
+from sigilicon.adapters.release.ip_integration import (
     check_ip_integration,
     plan_ip_integration,
     resolve_locked_ip_release,

@@ -32,13 +32,13 @@ from sigilicon.release_store import (
     ReleaseStore,
     release_store_resource,
 )
-from sigilicon.workflows.ip_packaging import (
+from sigilicon.adapters.release.ip_packaging import (
     plan_ip_release_contract,
     validate_ip_release_package,
 )
 
 if TYPE_CHECKING:
-    from sigilicon.workflows.oa_library import OALibraryRebuildPlan
+    from sigilicon.adapters.cadence.oa_library import OALibraryRebuildPlan
 
 
 def _producer_contract(

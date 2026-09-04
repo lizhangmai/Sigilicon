@@ -12,7 +12,7 @@ from sigilicon.execution._model import Resources
 from sigilicon.project import Project
 from sigilicon.paths import ArtifactLayout
 from sigilicon.virtuoso.workspace import OperationPolicy
-from sigilicon.workflows.design_sync import (
+from sigilicon.adapters.cadence.design_sync import (
     sync_design,
     sync_existing_design_target_only,
 )
@@ -264,7 +264,7 @@ def test_import_hierarchy_passes_explicit_device_map(
     tmp_path,
     workspace_factory,
 ) -> None:
-    from sigilicon.workflows.hierarchy_import import import_hierarchy, plan_hierarchy
+    from sigilicon.adapters.cadence.hierarchy_import import import_hierarchy, plan_hierarchy
 
     root, path = project_factory()
     spec = SimpleNamespace(
@@ -304,7 +304,7 @@ def test_import_hierarchy_preserves_unowned_leaked_handle(
     tmp_path,
     workspace_factory,
 ) -> None:
-    from sigilicon.workflows.hierarchy_import import (
+    from sigilicon.adapters.cadence.hierarchy_import import (
         HierarchyImportError,
         import_hierarchy,
         plan_hierarchy,
@@ -486,7 +486,7 @@ def test_port_direction_write_rechecks_quiescence_after_hierarchy(
         ),
     )
     monkeypatch.setattr(
-        "sigilicon.workflows.design_sync.set_cell_port_directions",
+        "sigilicon.adapters.cadence.design_sync.set_cell_port_directions",
         lambda *_args, **_kwargs: direction_writes.append("write"),
     )
 

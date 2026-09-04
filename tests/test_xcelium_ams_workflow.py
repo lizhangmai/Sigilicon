@@ -10,9 +10,9 @@ import pytest
 from sigilicon.project import Project
 from sigilicon.execution._model import Resources
 from sigilicon.external_tools import ProcessResult
-from sigilicon.workflows import xcelium_ams
+from sigilicon.adapters.cadence import xcelium_ams
 from sigilicon.execution._workspace import ExecutionWorkspace
-from sigilicon.workflows.xcelium_ams import (
+from sigilicon.adapters.cadence.xcelium_ams import (
     execute_xcelium_ams_cell,
     plan_xcelium_ams_cell,
 )
