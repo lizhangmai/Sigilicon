@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Protocol, runtime_checkable
 
 from sigilicon.artifacts import (
     _inspect_nofollow_file,
@@ -899,9 +899,17 @@ class RuntimeEnvironment:
         }
 
 
+@runtime_checkable
+class PlannedAction(Protocol):
+    """Adapter-owned typed action recorded as part of one Step."""
+
+    @property
+    def record(self) -> Mapping[str, JsonValue]: ...
+
+
 @dataclass(frozen=True)
 class Step:
-    """Fully planned adapter action and its exact input closure."""
+    """One typed adapter action and its exact input closure."""
 
     id: str
     uses: str
@@ -911,16 +919,13 @@ class Step:
     evidence: Evidence | None = None
     resources: tuple[str, ...] = ()
     runtime: RuntimeEnvironment = field(default_factory=RuntimeEnvironment)
-    _prepared: Mapping[str, JsonValue] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
+    action: PlannedAction | None = field(default=None, repr=False, compare=False)
+    source_closure: tuple[Source, ...] = field(default=(), repr=False, compare=False)
+    resource_closure: tuple[ResourceBinding, ...] = field(
+        default=(), repr=False, compare=False
     )
-    _source_snapshots: tuple[Source, ...] = field(
-        default=(), init=False, repr=False, compare=False
-    )
-    _resource_bindings: tuple[ResourceBinding, ...] = field(
-        default=(), init=False, repr=False, compare=False
+    _action_identity: str | None = field(
+        default=None, init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
@@ -928,8 +933,6 @@ class Step:
         object.__setattr__(self, "uses", adapter_identity(self.uses))
         if not isinstance(self.config, Mapping):
             raise ContractError("step config must be a mapping")
-        if not isinstance(self._prepared, Mapping):
-            raise ContractError("prepared step state must be a mapping")
         if not isinstance(self.needs, tuple):
             raise ContractError("prepared step needs must be a tuple")
         needs = tuple(_identifier(value, "step dependency") for value in self.needs)
@@ -944,44 +947,70 @@ class Step:
             raise ContractError("prepared step evidence must be an Evidence value")
         if not isinstance(self.resources, tuple):
             raise ContractError("prepared step resources must be a tuple")
-        resources = tuple(
-            resource_identity(value)
-            for value in self.resources
-        )
+        resources = tuple(resource_identity(value) for value in self.resources)
         if len(resources) != len(set(resources)):
             raise ContractError("prepared step resources contain duplicates")
         if not isinstance(self.runtime, RuntimeEnvironment):
             raise ContractError("prepared step runtime must be a RuntimeEnvironment")
-        if not isinstance(self._source_snapshots, tuple) or any(
-            not isinstance(source, Source) for source in self._source_snapshots
+        if self.action is not None:
+            if not isinstance(self.action, PlannedAction):
+                raise ContractError("step action must expose one portable record")
+            action_record = _freeze(self.action.record, "step action")
+            object.__setattr__(
+                self,
+                "_action_identity",
+                canonical_digest(json_value(action_record)),
+            )
+        if not isinstance(self.source_closure, tuple) or any(
+            not isinstance(source, Source) for source in self.source_closure
         ):
             raise ContractError("step source closure must contain Source values")
-        captured_sources = {source.path for source in self._source_snapshots}
-        if captured_sources and captured_sources != set(sources):
-            raise ContractError("step source names disagree with their exact closure")
-        if not isinstance(self._resource_bindings, tuple) or any(
+        if len({source.path for source in self.source_closure}) != len(
+            self.source_closure
+        ):
+            raise ContractError("step source closure contains duplicate names")
+        captured_sources = tuple(source.path for source in self.source_closure)
+        if captured_sources:
+            if sources and set(sources) != set(captured_sources):
+                raise ContractError("step source names disagree with their exact closure")
+            if not sources:
+                sources = captured_sources
+        if not isinstance(self.resource_closure, tuple) or any(
             not isinstance(resource, ResourceBinding)
-            for resource in self._resource_bindings
+            for resource in self.resource_closure
         ):
             raise ContractError(
                 "step resource closure must contain ResourceBinding values"
             )
-        captured_resources = {
-            resource.identity for resource in self._resource_bindings
-        }
-        if captured_resources and captured_resources != set(resources):
-            raise ContractError(
-                "step resource names disagree with their exact closure"
-            )
+        if len({resource.identity for resource in self.resource_closure}) != len(
+            self.resource_closure
+        ):
+            raise ContractError("step resource closure contains duplicate identities")
+        captured_resources = tuple(
+            resource.identity for resource in self.resource_closure
+        )
+        if captured_resources:
+            if resources and set(resources) != set(captured_resources):
+                raise ContractError(
+                    "step resource names disagree with their exact closure"
+                )
+            if not resources:
+                resources = captured_resources
         object.__setattr__(self, "needs", needs)
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "resources", resources)
         object.__setattr__(self, "config", _freeze(self.config, "step config"))
-        object.__setattr__(
-            self,
-            "_prepared",
-            _freeze(self._prepared, "prepared step state"),
-        )
+
+    def validate_action(self) -> None:
+        """Reject mutation of an adapter-owned action after planning."""
+
+        if self.action is None:
+            if self._action_identity is not None:
+                raise ExecutionError("step action identity drift")
+            return
+        current = canonical_digest(json_value(self.action.record))
+        if current != self._action_identity:
+            raise ExecutionError("step action identity drift")
 
     @property
     def record(self) -> dict[str, Any]:
@@ -990,7 +1019,7 @@ class Step:
             "uses": self.uses,
             "needs": list(self.needs),
             "config": json_value(self.config),
-            "prepared": json_value(self._prepared),
+            "action": None if self.action is None else json_value(self.action.record),
             "sources": list(self.sources),
             "resources": list(self.resources),
             "runtime": self.runtime.record,
@@ -1001,68 +1030,34 @@ class Step:
 _UNSET = object()
 
 
-def _prepare_step(
+def _bind_step(
     step: Step,
     *,
     config: Mapping[str, JsonValue] | object = _UNSET,
-    sources: tuple[str, ...] | object = _UNSET,
-    resources: tuple[str, ...] | object = _UNSET,
-    prepared: Mapping[str, JsonValue] | object = _UNSET,
-    source_snapshots: tuple[Source, ...] | object = _UNSET,
-    resource_bindings: tuple[ResourceBinding, ...] | object = _UNSET,
+    action: PlannedAction | None | object = _UNSET,
+    source_closure: tuple[Source, ...] | object = _UNSET,
+    resource_closure: tuple[ResourceBinding, ...] | object = _UNSET,
 ) -> Step:
-    """Return one internally bound Step without exposing closure fields."""
+    """Return one Step with its adapter-owned action and exact closure."""
 
     public: dict[str, object] = {}
     if config is not _UNSET:
         public["config"] = config
-    if sources is not _UNSET:
-        public["sources"] = sources
-    if resources is not _UNSET:
-        public["resources"] = resources
-    result = replace(step, **public)
-    selected_prepared = step._prepared if prepared is _UNSET else prepared
-    selected_sources = (
-        step._source_snapshots
-        if source_snapshots is _UNSET
-        else source_snapshots
-    )
-    selected_resources = (
-        step._resource_bindings
-        if resource_bindings is _UNSET
-        else resource_bindings
-    )
-    if not isinstance(selected_prepared, Mapping):
-        raise ContractError("prepared step state must be a mapping")
-    if not isinstance(selected_sources, tuple) or any(
-        not isinstance(source, Source) for source in selected_sources
-    ):
-        raise ContractError("step source closure must contain Source values")
-    if selected_sources and {
-        source.path for source in selected_sources
-    } != set(result.sources):
-        raise ContractError("step source names disagree with their exact closure")
-    if not isinstance(selected_resources, tuple) or any(
-        not isinstance(resource, ResourceBinding)
-        for resource in selected_resources
-    ):
-        raise ContractError(
-            "step resource closure must contain ResourceBinding values"
+    if action is not _UNSET:
+        public["action"] = action
+    if source_closure is not _UNSET:
+        public["source_closure"] = source_closure
+        public["sources"] = tuple(
+            dict.fromkeys((*step.sources, *(source.path for source in source_closure)))
         )
-    if selected_resources and {
-        resource.identity for resource in selected_resources
-    } != set(result.resources):
-        raise ContractError(
-            "step resource names disagree with their exact closure"
+    if resource_closure is not _UNSET:
+        public["resource_closure"] = resource_closure
+        public["resources"] = tuple(
+            dict.fromkeys(
+                (*step.resources, *(resource.identity for resource in resource_closure))
+            )
         )
-    object.__setattr__(
-        result,
-        "_prepared",
-        _freeze(selected_prepared, "prepared step state"),
-    )
-    object.__setattr__(result, "_source_snapshots", selected_sources)
-    object.__setattr__(result, "_resource_bindings", selected_resources)
-    return result
+    return replace(step, **public)
 
 
 def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
@@ -1174,7 +1169,7 @@ class ExecutionPlan:
     @property
     def record(self) -> dict[str, Any]:
         return {
-            "schema": 13,
+            "schema": 14,
             "contract_kind": "execution-plan",
             "project_identity": self.project_identity,
             "owner": self.owner,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -35,8 +35,7 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
-    _prepare_step,
-    json_value,
+    _bind_step,
 )
 from sigilicon.execution.runtime import (
     BoundEnvironment,
@@ -960,7 +959,7 @@ class HspiceAdapter(DirectAdapter):
 
 
 @dataclass(frozen=True)
-class _PreparedStructuralLink:
+class _StructuralLinkAction:
     """Typed structural-link plan plus its sealed runtime path bindings."""
 
     plan: StructuralLinkPlan
@@ -998,16 +997,13 @@ class _PreparedStructuralLink:
 
     @property
     def identity(self) -> str:
-        return canonical_digest(json_value(self.record))
+        return canonical_digest(self.record)
 
     def validate(self, context: StepContext) -> None:
-        recorded = dict(context.step._prepared)
-        identity = recorded.pop("domain_plan_identity", None)
-        if (
-            identity != self.identity
-            or canonical_digest(json_value(recorded)) != self.identity
-        ):
-            raise ExecutionError("structural-link plan identity drift")
+        for source in (*self.rtl_sources, self.compile_script, self.link_script):
+            context.owner_source_path(source)
+        context.resource_path(self.release_manifest_resource)
+        context.resource_path(self.release_liberty_resource)
 
     def runtime(self, context: StepContext) -> StructuralLinkPlan:
         self.validate(context)
@@ -1023,47 +1019,6 @@ class _PreparedStructuralLink:
                 context.resource_path(self.release_manifest_resource),
                 context.resource_path(self.release_liberty_resource),
             ),
-        )
-
-
-@dataclass(frozen=True)
-class _StructuralLinkStep(Step):
-    """Adapter-private Step carrying its validated structural-link plan."""
-
-    structural_link: _PreparedStructuralLink = field(
-        kw_only=True,
-        repr=False,
-        compare=False,
-    )
-
-    @classmethod
-    def bind(
-        cls,
-        step: Step,
-        *,
-        config: Mapping[str, Any],
-        prepared: Mapping[str, Any],
-        sources: tuple[str, ...],
-        resources: tuple[str, ...],
-        source_snapshots: tuple[Source, ...],
-        resource_bindings: tuple[ResourceBinding, ...],
-        structural_link: _PreparedStructuralLink,
-    ) -> "_StructuralLinkStep":
-        return _prepare_step(
-            cls(
-                id=step.id,
-                uses=step.uses,
-                config=config,
-                needs=step.needs,
-                sources=sources,
-                evidence=step.evidence,
-                resources=resources,
-                runtime=step.runtime,
-                structural_link=structural_link,
-            ),
-            prepared=prepared,
-            source_snapshots=source_snapshots,
-            resource_bindings=resource_bindings,
         )
 
 
@@ -1248,7 +1203,7 @@ class StructuralLinkAdapter(DirectAdapter):
             raise ContractError(
                 "structural-link release changed while its Step was being bound"
             )
-        structural_link = _PreparedStructuralLink(
+        structural_link = _StructuralLinkAction(
             planning,
             rtl_names,
             compile_name,
@@ -1256,31 +1211,19 @@ class StructuralLinkAdapter(DirectAdapter):
             external[0].identity,
             external[1].identity,
         )
-        prepared_record = {
-            **structural_link.record,
-            "domain_plan_identity": structural_link.identity,
-        }
-        source_names = tuple(
-            dict.fromkeys(
-                (*step.sources, *(source.path for _scope, source in captured_sources))
-            )
-        )
-        prepared = _StructuralLinkStep.bind(
+        prepared = _bind_step(
             step,
             config=config,
-            prepared=prepared_record,
-            sources=source_names,
-            resources=tuple(resource.identity for resource in external),
-            source_snapshots=tuple(
+            action=structural_link,
+            source_closure=tuple(
                 dict.fromkeys(
                     (
-                        *step._source_snapshots,
+                        *step.source_closure,
                         *(source for _scope, source in captured_sources),
                     )
                 )
             ),
-            resource_bindings=external,
-            structural_link=structural_link,
+            resource_closure=external,
         )
         return prepared
 
@@ -1369,9 +1312,11 @@ class StructuralLinkAdapter(DirectAdapter):
 
     def run(self, context: StepContext) -> StepResult:
         step = context.step
-        if not isinstance(step, _StructuralLinkStep):
+        step.validate_action()
+        action = step.action
+        if not isinstance(action, _StructuralLinkAction):
             raise ExecutionError("structural-link Step has no typed plan")
-        return self._execute(context, step.structural_link.runtime(context))
+        return self._execute(context, action.runtime(context))
 
 
 def synopsys_adapters() -> tuple[

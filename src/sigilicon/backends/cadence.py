@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field as dataclass_field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
@@ -26,8 +26,7 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
-    _prepare_step,
-    json_value,
+    _bind_step,
 )
 from sigilicon.external_tools import (
     CADENCE_SPECTRE_TOOL,
@@ -415,7 +414,7 @@ def _captured_project_sources(
 
 
 @dataclass(frozen=True)
-class _PreparedCadencePlan:
+class _CadenceAction:
     """Adapter-private domain plan plus its sealed-path correspondence."""
 
     plan: object
@@ -445,7 +444,7 @@ class _PreparedCadencePlan:
         sources: Mapping[Path, tuple[str, str]],
         resources: tuple[ResourceBinding, ...],
         workspace_root: Path,
-    ) -> "_PreparedCadencePlan":
+    ) -> "_CadenceAction":
         return cls(
             plan,
             prepared,
@@ -461,28 +460,24 @@ class _PreparedCadencePlan:
     def identity(self) -> str:
         """Return the deterministic identity recorded by the Step."""
 
-        return canonical_digest(
-            {
-                "prepared": json_value(self.prepared),
-                "sources": sorted(
-                    (name, digest) for name, digest in self.sources.values()
-                ),
-                "resources": sorted(
+        return canonical_digest(self.record)
+
+    @property
+    def record(self) -> Mapping[str, Any]:
+        return {
+            "domain": self.prepared,
+            "sources": tuple(
+                sorted((name, digest) for name, digest in self.sources.values())
+            ),
+            "resources": tuple(
+                sorted(
                     (identity, digest)
                     for _path, identity, digest in self.resources
-                ),
-            }
-        )
+                )
+            ),
+        }
 
     def validate(self, context: StepContext) -> None:
-        recorded = dict(context.step._prepared)
-        identity = recorded.pop("domain_plan_identity", None)
-        if (
-            identity != self.identity
-            or canonical_digest(json_value(recorded))
-            != canonical_digest(json_value(self.prepared))
-        ):
-            raise ExecutionError("Cadence Domain plan identity drift")
         external_identities = tuple(
             identity for _path, identity, _digest in self.resources
         )
@@ -519,50 +514,8 @@ class _PreparedCadencePlan:
             }
         )
 
-
-@dataclass(frozen=True)
-class _CadenceStep(Step):
-    """Adapter-private step carrying one validated Cadence domain plan."""
-
-    domain_plan: _PreparedCadencePlan = dataclass_field(
-        kw_only=True,
-        repr=False,
-        compare=False,
-    )
-
-    @classmethod
-    def bind(
-        cls,
-        step: Step,
-        *,
-        config: Mapping[str, Any],
-        prepared: Mapping[str, Any],
-        sources: tuple[str, ...],
-        resources: tuple[str, ...],
-        source_snapshots: tuple[Source, ...],
-        resource_bindings: tuple[ResourceBinding, ...],
-        domain_plan: _PreparedCadencePlan,
-    ) -> "_CadenceStep":
-        return _prepare_step(
-            cls(
-                id=step.id,
-                uses=step.uses,
-                config=config,
-                needs=step.needs,
-                sources=sources,
-                evidence=step.evidence,
-                resources=resources,
-                runtime=step.runtime,
-                domain_plan=domain_plan,
-            ),
-            prepared=prepared,
-            source_snapshots=source_snapshots,
-            resource_bindings=resource_bindings,
-        )
-
-
 class _CadenceDomainAdapter:
-    """Attach a non-portable domain value to its fully recorded Step."""
+    """Attach one typed domain action to its fully recorded Step."""
 
     def _prepare_domain_step(
         self,
@@ -620,16 +573,15 @@ class _CadenceDomainAdapter:
         runtime_bindings: tuple[ResourceBinding, ...] = (),
         workspace_root: Path,
     ) -> Step:
-        domain_plan = _PreparedCadencePlan.create(
+        domain_plan = _CadenceAction.create(
             plan,
             prepared,
             sources,
             resources,
             workspace_root,
         )
-        portable = {**prepared, "domain_plan_identity": domain_plan.identity}
-        source_snapshots = tuple(
-            dict.fromkeys((*operation._source_snapshots, *captured))
+        source_closure = tuple(
+            dict.fromkeys((*operation.source_closure, *captured))
         )
         combined_bindings = tuple(
             dict.fromkeys((*resources, *runtime_bindings))
@@ -638,23 +590,19 @@ class _CadenceDomainAdapter:
             combined_bindings
         ):
             raise ContractError("Cadence plan binds a runtime identity more than once")
-        return _CadenceStep.bind(
+        return _bind_step(
             operation,
             config=config,
-            prepared=portable,
-            sources=tuple(
-                dict.fromkeys((*operation.sources, *(source.path for source in captured)))
-            ),
-            resources=tuple(resource.identity for resource in combined_bindings),
-            source_snapshots=source_snapshots,
-            resource_bindings=combined_bindings,
-            domain_plan=domain_plan,
+            action=domain_plan,
+            source_closure=source_closure,
+            resource_closure=combined_bindings,
         )
 
-    def _prepared_domain_plan(self, context: StepContext) -> _PreparedCadencePlan:
-        if not isinstance(context.step, _CadenceStep):
+    def _domain_action(self, context: StepContext) -> _CadenceAction:
+        context.step.validate_action()
+        domain_plan = context.step.action
+        if not isinstance(domain_plan, _CadenceAction):
             raise ExecutionError("Cadence Step has no planned Domain value")
-        domain_plan = context.step.domain_plan
         domain_plan.validate(context)
         return domain_plan
 
@@ -691,10 +639,9 @@ class XceliumAdapter(DirectAdapter):
         resources: Resources,
     ) -> Step:
         del project
-        return _prepare_step(
+        return _bind_step(
             step,
-            resources=(_XRUN,),
-            resource_bindings=_runtime_bindings(resources, _XRUN),
+            resource_closure=_runtime_bindings(resources, _XRUN),
         )
 
     def run(self, context: StepContext) -> StepResult:
@@ -849,7 +796,7 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
-        prepared = self._prepared_domain_plan(context)
+        prepared = self._domain_action(context)
         planning = prepared.plan
         with owned_scratch_directory(
             prefix=f"sigilicon-xcelium-ams-{context.run_id}-",
@@ -1004,7 +951,7 @@ class NativeOaAdapter(_CadenceDomainAdapter):
         config = _strict_config(step, self._fields)
         owner = _text(config, "owner")
         testbench = _text(config, "testbench")
-        prepared = self._prepared_domain_plan(context)
+        prepared = self._domain_action(context)
         plan = build_oa_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
@@ -1108,7 +1055,11 @@ class _OaAdapter(_CadenceDomainAdapter):
 
     def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
         self._config(step)
-        prepared = step._prepared
+        action = step.action
+        if action is not None and not isinstance(action, _CadenceAction):
+            raise ContractError("OA Step has an invalid planned action")
+        step.validate_action()
+        prepared = {} if action is None else action.prepared
         runtime_executables: tuple[str, ...] = ()
         if prepared:
             selected = prepared.get("runtime_executables")
@@ -1211,7 +1162,7 @@ class _OaAdapter(_CadenceDomainAdapter):
 
         config = self._config(step)
         owner = _text(config, "owner")
-        prepared = self._prepared_domain_plan(context)
+        prepared = self._domain_action(context)
         planning = prepared.plan
         if self.spec.materializes_layout_ir:
             planning = build_oa_layout_ir(
@@ -1360,7 +1311,7 @@ class LayoutAdapter(_CadenceDomainAdapter):
         step = context.step
         from sigilicon.workflows.layout_generation import build_managed_layout_ir
 
-        prepared = self._prepared_domain_plan(context)
+        prepared = self._domain_action(context)
         planning = build_managed_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),
@@ -1509,7 +1460,7 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
 
         config = _strict_config(step, self._fields)
         check = _text(config, "check")
-        prepared = self._prepared_domain_plan(context)
+        prepared = self._domain_action(context)
         planning = build_managed_layout_ir(
             prepared.plan,
             source_paths=prepared.source_paths(context),

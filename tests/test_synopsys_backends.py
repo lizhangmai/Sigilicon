@@ -14,8 +14,7 @@ from sigilicon.backends.synopsys import (
     HspiceAdapter,
     StructuralLinkAdapter,
     VcsAdapter,
-    _PreparedStructuralLink,
-    _StructuralLinkStep,
+    _StructuralLinkAction,
 )
 from sigilicon.execution._model import (
     ContractError,
@@ -25,7 +24,6 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
-    _prepare_step,
 )
 from sigilicon.execution._model import resource_materialization_key
 from sigilicon.workflows.structural_link import StructuralLinkPlan
@@ -271,27 +269,6 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         "liberty_role": "raw_macro_liberty_or_db",
         "timeout_seconds": 10,
     }
-    prepared = {
-        "owner": "example",
-        "variant": "default",
-        "top": "top",
-        "rtl_sources": [owner_sources[4]],
-        "compile_script": owner_sources[2],
-        "link_script": owner_sources[3],
-        "library_name": "fixture",
-        "macro_cell": "MACRO",
-        "parameter_overrides": {"ROWS": 1},
-        "expected_macro_instances": 1,
-        "expected_unresolved_references": 0,
-        "library_compiler_version": "U-2022.12-SP6-T-20250827",
-        "release_id": "development-" + "a" * 40,
-        "release_source_commit": "a" * 40,
-        "release_store": "fixture",
-        "release_manifest_resource": manifest_resource,
-        "release_manifest_sha256": manifest_digest,
-        "release_liberty_resource": liberty_resource,
-        "release_liberty_sha256": liberty_digest,
-    }
     planning = StructuralLinkPlan(
         owner="example",
         variant="default",
@@ -313,7 +290,7 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         release_liberty_sha256=liberty_digest,
         release_sources=(tmp_path / "manifest.json", tmp_path / "unsealed.lib"),
     )
-    structural_link = _PreparedStructuralLink(
+    structural_link = _StructuralLinkAction(
         planning,
         (owner_sources[4],),
         owner_sources[2],
@@ -321,19 +298,13 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
         manifest_resource,
         liberty_resource,
     )
-    step = _prepare_step(
-        _StructuralLinkStep(
-            "link",
-            "synopsys.structural-link",
-            config,
-            sources=owner_sources,
-            resources=(manifest_resource, liberty_resource),
-            structural_link=structural_link,
-        ),
-        prepared={
-            **prepared,
-            "domain_plan_identity": structural_link.identity,
-        },
+    step = Step(
+        "link",
+        "synopsys.structural-link",
+        config,
+        sources=owner_sources,
+        resources=(manifest_resource, liberty_resource),
+        action=structural_link,
     )
     context = StepContext(
         "1" * 64,
@@ -370,11 +341,11 @@ def test_structural_link_run_consumes_its_typed_plan_without_replanning(
     )
 
     object.__setattr__(
-        step.structural_link,
+        structural_link,
         "plan",
         replace(planning, top="identity_drift"),
     )
-    with pytest.raises(ExecutionError, match="structural-link plan identity drift"):
+    with pytest.raises(ExecutionError, match="step action identity drift"):
         backend.run(context)
 
 

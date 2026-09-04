@@ -147,6 +147,7 @@ def _preflight(
             )
         )
     for step in plan.steps:
+        step.validate_action()
         try:
             adapter = adapters[step.uses]
         except KeyError:

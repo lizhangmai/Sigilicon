@@ -18,8 +18,8 @@ from sigilicon.execution._model import (
     Step,
     StepContext,
     StepResult,
+    _bind_step,
     _bind_execution_plan,
-    _prepare_step,
     adapter_identity,
 )
 
@@ -142,7 +142,7 @@ def plan_execution(
                 f"adapter {step.uses!r} removed or reordered declared sources"
             )
 
-        for source in planned._source_snapshots:
+        for source in planned.source_closure:
             path = source.location
             source_owner = project.owner_for(path)
             if source_owner is not None and source_owner.root.resolve() != owner_root:
@@ -191,7 +191,7 @@ def plan_execution(
             )
         )
         step_resources = {
-            binding.identity: binding for binding in planned._resource_bindings
+            binding.identity: binding for binding in planned.resource_closure
         }
         for identity in declared_resources:
             if identity not in step_resources:
@@ -200,15 +200,14 @@ def plan_execution(
                     if identity in captured_resources
                     else resources.capture(identity)
                 )
-        planned = _prepare_step(
+        planned = _bind_step(
             planned,
-            resources=declared_resources,
-            resource_bindings=tuple(
+            resource_closure=tuple(
                 step_resources[identity] for identity in declared_resources
             ),
         )
 
-        for resource in planned._resource_bindings:
+        for resource in planned.resource_closure:
             previous = captured_resources.get(resource.identity)
             if previous is not None and previous.record != resource.record:
                 raise ContractError(

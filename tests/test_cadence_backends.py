@@ -14,6 +14,7 @@ from sigilicon.backends.cadence import (
     NativeOaAdapter,
     XceliumAdapter,
     XceliumAmsAdapter,
+    _CadenceAction,
     cadence_adapters,
 )
 from sigilicon.execution._model import (
@@ -22,7 +23,6 @@ from sigilicon.execution._model import (
     ExecutionError,
     Step,
     StepContext,
-    _prepare_step,
 )
 from sigilicon.execution._model import Resources
 from sigilicon.workflows.oa_library import oa_plan_source_paths
@@ -100,7 +100,7 @@ def test_oa_plan_closes_over_every_native_model_file(tmp_path: Path) -> None:
     assert (Path.cwd() / "model.scs").resolve() not in source_closure
 
 
-def test_cadence_run_methods_only_consume_prepared_domain_plans() -> None:
+def test_cadence_run_methods_only_consume_planned_actions() -> None:
     backends = (
         XceliumAmsAdapter(),
         NativeOaAdapter(),
@@ -152,12 +152,12 @@ def _bind_plan(context: StepContext, step: Step) -> StepContext:
     root = context.source_root.parent / "resources"
     sealed = tuple(
         resource
-        for resource in step._resource_bindings
+        for resource in step.resource_closure
         if resource.kind in {"file", "directory"}
     )
     if sealed:
         root.mkdir(exist_ok=True)
-    for resource in step._resource_bindings:
+    for resource in step.resource_closure:
         if resource.kind == "file":
             (root / resource.materialization_key).write_bytes(resource.read_bytes())
         elif resource.kind == "directory":
@@ -175,11 +175,11 @@ def _bind_plan(context: StepContext, step: Step) -> StepContext:
         source_scopes={source: "owner" for source in step.sources},
         resource_digests={
             resource.identity: resource.sha256
-            for resource in step._resource_bindings
+            for resource in step.resource_closure
         },
         resource_kinds={
             resource.identity: resource.kind
-            for resource in step._resource_bindings
+            for resource in step.resource_closure
         },
     )
 
@@ -479,19 +479,23 @@ def test_native_oa_preflight_requires_explicit_virtuoso_executable(
 
 
 def test_oa_rebuild_preflight_checks_its_prepared_subtools(tmp_path: Path) -> None:
-    step = _prepare_step(
-        Step(
-            "oa",
-            "cadence.oa-rebuild",
-            {"owner": "example", "timeout_seconds": 10},
-            sources=("configs/oa.toml",),
+    step = Step(
+        "oa",
+        "cadence.oa-rebuild",
+        {"owner": "example", "timeout_seconds": 10},
+        sources=("configs/oa.toml",),
+        action=_CadenceAction(
+            object(),
+            {
+                "runtime_executables": (
+                    "cadence.spice-in",
+                    "cadence.cds-text-to-5x",
+                )
+            },
+            {},
+            (),
+            tmp_path,
         ),
-        prepared={
-            "runtime_executables": (
-                "cadence.spice-in",
-                "cadence.cds-text-to-5x",
-            )
-        },
     )
     values = {
         "virtuoso-bridge.host": "127.0.0.1",

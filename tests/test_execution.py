@@ -27,7 +27,7 @@ from sigilicon.execution._model import (
     StepContext,
     StepOutcome,
     StepResult,
-    _prepare_step,
+    _bind_step,
 )
 from sigilicon.execution._model import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
@@ -139,7 +139,7 @@ def test_large_chain_plan_has_linear_topology_and_cached_identity(
             "fake.copy",
             {},
             needs=() if index == 0 else (f"step-{index - 1}",),
-            sources=(source.path,),
+            source_closure=(source,),
         )
         for index in range(2_000)
     )
@@ -456,13 +456,13 @@ def test_project_plan_is_source_bound_and_preflight_has_no_side_effects(
     assert plan.variant is None
     assert [step.uses for step in plan.steps] == ["fake.copy"]
     assert plan.steps[0].config == {"text": "hello"}
-    assert plan.steps[0].record["prepared"] == {}
+    assert plan.steps[0].record["action"] is None
     assert plan.steps[0].evidence.record == {
         "role": "regression",
         "level": "l0",
         "scope": "source",
     }
-    assert json.loads(json.dumps(plan.record))["schema"] == 13
+    assert json.loads(json.dumps(plan.record))["schema"] == 14
     assert "resources_identity" not in plan.record
     assert [resource["identity"] for resource in plan.record["resources"]] == [
         "test.value"
@@ -824,13 +824,11 @@ def test_adapter_planning_closes_over_discovered_sources_deterministically(
                 Source.capture(path, root=owner_root, scope="owner")
                 for path in self.paths
             )
-            names = tuple(sorted(source.path for source in sources))
-            return _prepare_step(
+            return _bind_step(
                 step,
-                sources=tuple(dict.fromkeys((*step.sources, *names))),
-                source_snapshots=tuple(
+                source_closure=tuple(
                     sorted(
-                        (*step._source_snapshots, *sources),
+                        (*step.source_closure, *sources),
                         key=lambda source: source.path,
                     )
                 ),
@@ -911,10 +909,9 @@ source = ["value"]
     class ForeignSourceAdapter(CopyAdapter):
         def plan(self, project, step, resources):
             source = Source.capture(value, root=foreign, scope="owner")
-            return _prepare_step(
+            return _bind_step(
                 step,
-                sources=(*step.sources, source.path),
-                source_snapshots=(*step._source_snapshots, source),
+                source_closure=(*step.source_closure, source),
             )
 
     project = _project(tmp_path, ForeignSourceAdapter())
@@ -933,10 +930,9 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
     class SymlinkSourceAdapter(CopyAdapter):
         def plan(self, project, step, resources):
             source = Source.capture(link, root=owner.parent, scope="owner")
-            return _prepare_step(
+            return _bind_step(
                 step,
-                sources=(*step.sources, source.path),
-                source_snapshots=(*step._source_snapshots, source),
+                source_closure=(*step.source_closure, source),
             )
 
     project = _project(tmp_path, SymlinkSourceAdapter())
@@ -1237,10 +1233,9 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return _prepare_step(
+            return _bind_step(
                 step,
-                resources=(resource.identity,),
-                resource_bindings=(resource,),
+                resource_closure=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1295,10 +1290,9 @@ def test_sealed_resource_lookup_does_not_recapture_the_live_tree(
                 live,
                 identity="pdk:fixture/library",
             )
-            return _prepare_step(
+            return _bind_step(
                 step,
-                resources=(resource.identity,),
-                resource_bindings=(resource,),
+                resource_closure=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1340,10 +1334,9 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     class BinaryAdapter(CopyAdapter):
         def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/table")
-            return _prepare_step(
+            return _bind_step(
                 step,
-                resources=(resource.identity,),
-                resource_bindings=(resource,),
+                resource_closure=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1407,10 +1400,9 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
     class DirectoryAdapter(CopyAdapter):
         def plan(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/library")
-            return _prepare_step(
+            return _bind_step(
                 step,
-                resources=(resource.identity,),
-                resource_bindings=(resource,),
+                resource_closure=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1491,10 +1483,9 @@ def test_run_store_keeps_tools_as_external_content_references(tmp_path: Path) ->
     class ToolAdapter(CopyAdapter):
         def plan(self, _project, step, resources):
             binding = resources.capture("test.tool")
-            return _prepare_step(
+            return _bind_step(
                 step,
-                resources=(binding.identity,),
-                resource_bindings=(binding,),
+                resource_closure=(binding,),
             )
 
     project = _project(tmp_path, ToolAdapter())
@@ -1527,10 +1518,9 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return _prepare_step(
+            return _bind_step(
                 step,
-                resources=(resource.identity,),
-                resource_bindings=(resource,),
+                resource_closure=(resource,),
             )
 
         def run(self, context: StepContext) -> StepResult:
@@ -1643,11 +1633,8 @@ def test_project_rejects_owner_python_registration_fields_without_importing(
 def test_public_execution_models_reject_inconsistent_values() -> None:
     assert "run_root" not in RunResult.__dataclass_fields__
     assert "_run_root" not in RunResult.__dataclass_fields__
-    assert not {
-        "_prepared",
-        "_source_snapshots",
-        "_resource_bindings",
-    } & inspect.signature(Step).parameters.keys()
+    assert "action" in inspect.signature(Step).parameters
+    assert not hasattr(Step("run", "fake.copy", {}), "_prepared")
     assert not {
         "_composition_sources",
         "_authority",
@@ -1665,7 +1652,7 @@ def test_public_execution_models_reject_inconsistent_values() -> None:
             "bad",
             "fake.copy",
             {},
-            _prepared={},
+            prepared={},
         )
     step = Step("good", "fake.copy", {"nested": {"value": [1, 2]}})
     with pytest.raises(TypeError):
