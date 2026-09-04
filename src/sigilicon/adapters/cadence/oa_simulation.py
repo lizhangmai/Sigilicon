@@ -19,8 +19,8 @@ from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     TestbenchRebuildStep,
-    check_oa_parity,
 )
+from sigilicon.adapters.cadence.oa_library_execution import check_oa_parity
 from sigilicon.execution._workspace import ExecutionWorkspace
 
 

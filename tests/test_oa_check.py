@@ -16,8 +16,8 @@ from sigilicon.adapters.cadence.oa_check import (
 from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
     plan_oa_library_rebuild,
-    rebuild_oa_library,
 )
+from sigilicon.adapters.cadence.oa_library_execution import rebuild_oa_library
 
 
 OA_RESOURCES = Resources()

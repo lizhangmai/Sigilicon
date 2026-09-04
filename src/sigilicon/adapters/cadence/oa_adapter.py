@@ -115,7 +115,9 @@ class NativeOaAdapter:
     def run(self, context: ExecutionIO) -> StepResult:
         step = context.step
         from sigilicon.adapters.cadence.oa_client import get_client
-        from sigilicon.adapters.cadence.oa_library import build_oa_layout_ir
+        from sigilicon.adapters.cadence.oa_library_execution import (
+            build_oa_layout_ir,
+        )
         from sigilicon.adapters.cadence.oa_simulation import execute_oa_maestro_testbench
 
         config = _strict_config(step, self._fields)
@@ -401,7 +403,9 @@ class OaCheckAdapter:
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_check import check_oa_library
         from sigilicon.adapters.cadence.oa_client import get_client
-        from sigilicon.adapters.cadence.oa_library import build_oa_layout_ir
+        from sigilicon.adapters.cadence.oa_library_execution import (
+            build_oa_layout_ir,
+        )
         from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 
         config = _oa_config(context.step, _OA_FIELDS)
@@ -470,7 +474,7 @@ class OaRebuildAdapter:
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_client import get_client
-        from sigilicon.adapters.cadence.oa_library import (
+        from sigilicon.adapters.cadence.oa_library_execution import (
             build_oa_layout_ir,
             rebuild_oa_library,
         )
@@ -534,7 +538,9 @@ class OaAttestAdapter:
 
     def run(self, context: ExecutionIO) -> StepResult:
         from sigilicon.adapters.cadence.oa_client import get_client
-        from sigilicon.adapters.cadence.oa_library import attest_oa_testbench
+        from sigilicon.adapters.cadence.oa_library_execution import (
+            attest_oa_testbench,
+        )
 
         config = _oa_config(context.step, _OA_ATTEST_FIELDS)
         context.step.validate_action()
