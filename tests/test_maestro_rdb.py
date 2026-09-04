@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
+from sigilicon.virtuoso.maestro_rdb import parse_native_maestro_rdb_export
 
 
 def test_native_maestro_rdb_export_preserves_official_identities(tmp_path: Path) -> None:
@@ -19,7 +19,7 @@ OVERALL_SPEC\tnil
         encoding="utf-8",
     )
 
-    result = read_native_maestro_rdb_export(path)
+    result = parse_native_maestro_rdb_export(path.read_bytes())
 
     assert result["source"] == "Cadence maeReadResDB/point->params+point->outputs"
     assert result["outputs"][0]["corner"] == "tt_25c"
@@ -53,7 +53,7 @@ OVERALL_SPEC\tnil
     )
 
     with pytest.raises(ValueError, match="no scalar value"):
-        read_native_maestro_rdb_export(path)
+        parse_native_maestro_rdb_export(path.read_bytes())
 
 
 def test_native_maestro_rdb_export_accepts_reviewed_nullable_output(
@@ -69,8 +69,8 @@ OVERALL_SPEC\tnil
         encoding="utf-8",
     )
 
-    result = read_native_maestro_rdb_export(
-        path,
+    result = parse_native_maestro_rdb_export(
+        path.read_bytes(),
         nullable_outputs=("diag_bank_post_ascending_boundary_00",),
     )
 
@@ -94,7 +94,7 @@ OVERALL_SPEC\tnil
     )
 
     with pytest.raises(ValueError, match="not finite"):
-        read_native_maestro_rdb_export(path)
+        parse_native_maestro_rdb_export(path.read_bytes())
 
 
 def test_native_maestro_rdb_export_preserves_point_parameters(tmp_path: Path) -> None:
@@ -110,7 +110,7 @@ OVERALL_SPEC\tpass
         encoding="utf-8",
     )
 
-    result = read_native_maestro_rdb_export(path)
+    result = parse_native_maestro_rdb_export(path.read_bytes())
 
     assert result["point_parameters"] == [
         {"point": 1, "name": "BANK_SWEEP_DIRECTION", "value": -1},
@@ -136,8 +136,8 @@ OVERALL_SPEC\t((\"overAll\" t))
         encoding="utf-8",
     )
 
-    result = read_native_maestro_rdb_export(
-        path,
+    result = parse_native_maestro_rdb_export(
+        path.read_bytes(),
         expected_point_count=1,
         expected_corners=("tt_25c",),
         expected_tests=("tran_truth_table",),
@@ -173,7 +173,7 @@ OVERALL_SPEC\t((\"overAll\" t))
     )
 
     with pytest.raises(ValueError, match="no scalar expression outputs"):
-        read_native_maestro_rdb_export(path)
+        parse_native_maestro_rdb_export(path.read_bytes())
 
 
 def test_native_maestro_rdb_export_rejects_wrong_cartesian_count(
@@ -190,8 +190,8 @@ OVERALL_SPEC\tnil
     )
 
     with pytest.raises(ValueError, match="expression count"):
-        read_native_maestro_rdb_export(
-            path,
+        parse_native_maestro_rdb_export(
+            path.read_bytes(),
             expected_point_count=1,
             expected_corners=("tt_25c",),
             expected_tests=("tran_generator",),

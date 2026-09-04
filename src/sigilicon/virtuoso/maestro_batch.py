@@ -37,7 +37,7 @@ class IsolatedMaestroRunResult:
     worker_log: Path
     worker_log_text: str
     control_script: str
-    rdb_export: Path
+    rdb_payload: bytes
     terminated_after_completion: bool = False
 
 
@@ -241,7 +241,7 @@ def run_isolated_maestro(
     timeout: int,
     operation: Any,
     resources: Any,
-    result_completion_probe: Callable[[str], bool],
+    result_completion_probe: Callable[[str, bytes], bool],
     rdb_export: Path,
 ) -> IsolatedMaestroRunResult:
     """Run one exact headless worker until its stable simulator result exists."""
@@ -387,7 +387,10 @@ def run_isolated_maestro(
                         return False
                     try:
                         owned_rdb.require_visible()
-                        return result_completion_probe(histories[0])
+                        payload = owned_rdb.read_bytes()
+                        return bool(payload) and result_completion_probe(
+                            histories[0], payload
+                        )
                     except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
                         return False
 
@@ -422,7 +425,8 @@ def run_isolated_maestro(
         log_text = owned_log.read_bytes().decode("utf-8", errors="replace")
         stdout_text = owned_stdout.read_bytes().decode("utf-8", errors="replace")
         owned_rdb.require_visible()
-        if not owned_rdb.read_bytes():
+        rdb_payload = owned_rdb.read_bytes()
+        if not rdb_payload:
             raise RuntimeError(
                 "isolated Maestro worker exported an empty native RDB result"
             )
@@ -439,7 +443,9 @@ def run_isolated_maestro(
     result_confirmed = False
     if len(histories) == 1:
         try:
-            result_confirmed = result_completion_probe(histories[0])
+            result_confirmed = result_completion_probe(
+                histories[0], rdb_payload
+            )
         except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
             result_confirmed = False
     if (
@@ -464,6 +470,6 @@ def run_isolated_maestro(
         worker_log=absolute_log,
         worker_log_text=log_text,
         control_script=control_script,
-        rdb_export=absolute_rdb,
+        rdb_payload=rdb_payload,
         terminated_after_completion=expected_termination,
     )

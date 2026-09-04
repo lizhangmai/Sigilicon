@@ -132,8 +132,8 @@ def _expected_identity(
         )
 
 
-def read_native_maestro_rdb_export(
-    path: Path,
+def parse_native_maestro_rdb_export(
+    payload: bytes,
     *,
     expected_point_count: int | None = None,
     expected_corners: Collection[str] | None = None,
@@ -142,7 +142,7 @@ def read_native_maestro_rdb_export(
     expected_expression_count: int | None = None,
     nullable_outputs: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """Validate and normalize a worker export made from ``maeReadResDB``.
+    """Validate and normalize bytes exported from ``maeReadResDB``.
 
     The worker writes this tabular envelope with SKILL ``fprintf``.  The
     values and identities are queried from the official read-only result
@@ -150,10 +150,12 @@ def read_native_maestro_rdb_export(
     metadata, or Detail CSV.
     """
 
+    if not isinstance(payload, bytes):
+        raise TypeError("native Maestro RDB export must be bytes")
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ValueError(f"cannot read native Maestro RDB export: {path}") from exc
+        lines = payload.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError("native Maestro RDB export is not UTF-8") from exc
     if not lines or lines[0].split("\t") != ["RDB_SCHEMA", "1"]:
         raise ValueError("native Maestro RDB export has an invalid schema header")
     nullable_output_names = {

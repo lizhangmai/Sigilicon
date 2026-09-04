@@ -14,7 +14,7 @@ from sigilicon.domain.netlist import NetlistSnapshot
 from sigilicon.domain.source import TextSourceSnapshot
 from sigilicon.virtuoso.attestation import attest_native_setup
 from sigilicon.virtuoso.maestro_batch import run_isolated_maestro
-from sigilicon.virtuoso.maestro_rdb import read_native_maestro_rdb_export
+from sigilicon.virtuoso.maestro_rdb import parse_native_maestro_rdb_export
 from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 from sigilicon.adapters.cadence.oa_library import (
     OALibraryRebuildPlan,
@@ -289,10 +289,10 @@ def _run_native_oa_maestro_testbench_impl(
         )
         nonce = uuid.uuid4().hex
 
-        def complete_results(_history: str) -> bool:
+        def complete_results(_history: str, rdb_payload: bytes) -> bool:
             nonlocal parsed_results
-            parsed_results = read_native_maestro_rdb_export(
-                rdb_export,
+            parsed_results = parse_native_maestro_rdb_export(
+                rdb_payload,
                 expected_point_count=rdb_contract.point_count,
                 expected_corners=rdb_contract.corners,
                 expected_tests=rdb_contract.tests,
@@ -331,8 +331,8 @@ def _run_native_oa_maestro_testbench_impl(
             final_netlist,
         )
         artifacts.write_text("logs", ("virtuoso-worker.log",), result.worker_log_text)
-        result_export = artifacts.copy_file(
-            "outputs", ("maestro-rdb.tsv",), rdb_export
+        result_export = artifacts.write_bytes(
+            "outputs", ("maestro-rdb.tsv",), result.rdb_payload
         )
         parsed = artifacts.write_json("outputs", ("maestro-rdb.json",), parsed_results)
         diagnostic_report = rdb_contract.reconstruct_diagnostic(parsed_results)

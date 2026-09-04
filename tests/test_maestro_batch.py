@@ -77,6 +77,7 @@ def _run_with_fake_process(
     terminated_after_confirmation: bool = False,
     residual_group_cleaned_after_exit: bool = False,
     result_confirmed: bool = True,
+    replace_rdb_after_confirmation: bool = False,
 ):
     client = object()
     work = tmp_path / "artifacts" / "run" / "work"
@@ -127,6 +128,14 @@ def _run_with_fake_process(
             and log_text.count(f"FLOW_ISOLATED_MAESTRO_DONE {NONCE}") <= 1
             and result_confirmed
         )
+        if replace_rdb_after_confirmation:
+            forged = work / "forged-rdb.tsv"
+            forged.write_text(
+                "RDB_SCHEMA\t1\nSUMMARY\t1\t1\nOVERALL_SPEC\tt\n",
+                encoding="utf-8",
+            )
+            rdb_path.unlink()
+            rdb_path.symlink_to(forged.name)
         captured.update(command=tuple(command), **kwargs)
         return ConfirmedProcessGroupResult(
             completed=subprocess.CompletedProcess(command, returncode, "", None),
@@ -155,7 +164,7 @@ def _run_with_fake_process(
             timeout=30,
             operation=operation,
             resources=runtime,
-            result_completion_probe=lambda _history: result_confirmed,
+            result_completion_probe=lambda _history, _payload: result_confirmed,
             rdb_export=rdb_path,
         )
     return result, captured, worker_log, rdb_path
@@ -186,7 +195,7 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
     assert captured["env"]["IUS_HOME"] == str(tmp_path / "xcelium")
     assert len(captured["pass_fds"]) == 9
     assert result.history == "ExplorerRORun.0.RO"
-    assert result.rdb_export == rdb_path
+    assert result.rdb_payload.startswith(b"RDB_SCHEMA")
     assert result.status == "isolated-worker-complete"
     assert result.stdout == "worker stdout\n"
     assert "maeReadResDB" in result.control_script
@@ -196,6 +205,22 @@ def test_isolated_runner_exports_native_rdb_and_keeps_exact_resources(
         encoding="utf-8"
     ) == result.control_script
     assert rdb_path.read_text(encoding="utf-8").startswith("RDB_SCHEMA")
+
+
+def test_isolated_runner_rejects_rdb_path_replacement_after_confirmation(
+    monkeypatch, workspace_factory, tmp_path: Path
+) -> None:
+    with pytest.raises(RuntimeError, match="owned atomic output"):
+        _run_with_fake_process(
+            monkeypatch,
+            workspace_factory,
+            tmp_path,
+            log_text=(
+                f"\\o FLOW_ISOLATED_MAESTRO_STARTED {NONCE} Run.1\n"
+                f"\\o FLOW_ISOLATED_MAESTRO_DONE {NONCE}\n"
+            ),
+            replace_rdb_after_confirmation=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -316,6 +341,6 @@ def test_isolated_runner_rejects_log_outside_direct_work(
                 timeout=30,
                 operation=operation,
                 resources=runtime,
-                result_completion_probe=lambda _history: True,
+                result_completion_probe=lambda _history, _payload: True,
                 rdb_export=work / "maestro-rdb.tsv",
             )
