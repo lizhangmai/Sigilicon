@@ -248,70 +248,147 @@ class _OaAttestAction:
 type _OaOperationAction = _OaCheckAction | _OaRebuildAction | _OaAttestAction
 
 
-class _OaAdapter:
-    """Common planning and publication for one fixed native-OA operation."""
+_OA_FIELDS = frozenset({"owner", "timeout_seconds"})
+_OA_ATTEST_FIELDS = frozenset({"owner", "testbench", "timeout_seconds"})
 
-    _base_fields = frozenset({"owner", "timeout_seconds"})
-    name: str
-    operation: str
-    requires_testbench = False
-    materializes_layout_ir = False
 
-    def _config(self, step: Step) -> Mapping[str, Any]:
-        fields = self._base_fields | (
-            {"testbench"} if self.requires_testbench else set()
+def _oa_config(step: Step, fields: frozenset[str]) -> Mapping[str, Any]:
+    config = _strict_config(step, fields)
+    _text(config, "owner")
+    _positive_integer(config, "timeout_seconds")
+    if "testbench" in fields:
+        _text(config, "testbench")
+    if "configs/oa.toml" not in step.sources:
+        raise ContractError("OA management step must close over configs/oa.toml")
+    return config
+
+
+def _oa_preflight(
+    step: Step,
+    resources: Resources,
+    *,
+    fields: frozenset[str],
+    action_type: type[_OaOperationAction],
+) -> tuple[PreflightCheck, ...]:
+    _oa_config(step, fields)
+    action = step.action
+    if action is not None and not isinstance(action, action_type):
+        raise ContractError("OA Step has an invalid planned action")
+    step.validate_action()
+    executables = (
+        ()
+        if action is None
+        else tuple(
+            name
+            for name in action.inputs.runtime_identities
+            if name in {CADENCE_SPICEIN_TOOL, CADENCE_TEXT_IMPORT_TOOL, _PYTHON}
         )
-        config = _strict_config(step, frozenset(fields))
-        _text(config, "owner")
-        _positive_integer(config, "timeout_seconds")
-        if self.requires_testbench:
-            _text(config, "testbench")
-        if "configs/oa.toml" not in step.sources:
-            raise ContractError("OA management step must close over configs/oa.toml")
-        return config
+    )
+    return (
+        _bridge_check(resources),
+        *(_executable_check(resources, name) for name in executables),
+        *_capability_checks(resources, _OA_CAPABILITIES),
+    )
 
-    def preflight(self, step: Step, resources: Resources) -> tuple[PreflightCheck, ...]:
-        self._config(step)
-        action = step.action
-        expected = {
-            "check": _OaCheckAction,
-            "rebuild": _OaRebuildAction,
-            "attest": _OaAttestAction,
-        }[self.operation]
-        if action is not None and not isinstance(action, expected):
-            raise ContractError("OA Step has an invalid planned action")
-        step.validate_action()
-        runtime_executables: tuple[str, ...] = ()
-        if action is not None:
-            runtime_executables = tuple(
-                item
-                for item in action.inputs.runtime_identities
-                if item in {
-                    CADENCE_SPICEIN_TOOL,
-                    CADENCE_TEXT_IMPORT_TOOL,
-                    _PYTHON,
-                }
-            )
-        return (
-            _bridge_check(resources),
-            *(
-                _executable_check(resources, name)
-                for name in runtime_executables
-            ),
-            *_capability_checks(resources, _OA_CAPABILITIES),
+
+def _prepare_oa(
+    project: _CadencePlanningProject,
+    step: Step,
+    resources: Resources,
+    *,
+    fields: frozenset[str],
+    operation: str,
+):
+    from sigilicon.domain.platform import load_platforms
+    from sigilicon.adapters.cadence.oa_library import (
+        oa_plan_source_paths,
+        plan_oa_library_rebuild,
+    )
+
+    config = _oa_config(step, fields)
+    owner = _text(config, "owner")
+    manifest = find_oa_assembly(project, project.owner(owner).root)
+    if manifest is None:
+        raise ContractError(f"owner {owner!r} has no OA assembly")
+    planning = plan_oa_library_rebuild(
+        manifest,
+        project=project,
+        platform_inventory=load_platforms(project, resources=resources),
+    )
+    if "testbench" in fields:
+        testbench = _text(config, "testbench")
+        if sum(item.cell == testbench for item in planning.testbenches) != 1:
+            raise ContractError(f"unknown native OA testbench: {testbench}")
+    required = _validate_oa_plan_sources(
+        project,
+        owner,
+        planning,
+        oa_plan_source_paths(planning),
+    )
+    prepared = _prepare_cadence_inputs(
+        project,
+        step,
+        resources,
+        owner=owner,
+        plan_identity=canonical_digest(planning.as_dict()),
+        source_records=required,
+        resource_identities=_oa_resource_identities(
+            project,
+            planning,
+            required,
+            resources,
+        ),
+        runtime_identities=(
+            *_BRIDGE_RESOURCES,
+            *_oa_runtime_executables(planning, operation),
+        ),
+    )
+    return planning, prepared
+
+
+def _publish_oa_result(
+    context: ExecutionIO,
+    operation: str,
+    payload: Mapping[str, Any],
+) -> StepResult:
+    passed = payload.get("passed")
+    if type(passed) is not bool:
+        raise ExecutionError("OA evidence must contain a boolean 'passed' field")
+    output = context.write_text(
+        "oa",
+        f"{operation}.json",
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+    )
+    artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
+    facts = {"passed": passed, "operation": operation}
+    return (
+        StepResult.succeeded(artifacts=artifacts, facts=facts)
+        if passed
+        else StepResult(
+            "failed",
+            artifacts,
+            facts,
+            f"OA {operation} did not pass",
         )
+    )
 
-    def _execute_operation(
+
+class OaCheckAdapter:
+    """Validate one planned OA library without mutating its workspace."""
+
+    name = "cadence.oa-check"
+
+    def preflight(
         self,
-        context: ExecutionIO,
-        *,
-        planning: OALibraryRebuildPlan,
-        prepared: _OaOperationAction,
-        selected: Any,
-        client: Any,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        raise NotImplementedError
+        step: Step,
+        resources: Resources,
+    ) -> tuple[PreflightCheck, ...]:
+        return _oa_preflight(
+            step,
+            resources,
+            fields=_OA_FIELDS,
+            action_type=_OaCheckAction,
+        )
 
     def prepare(
         self,
@@ -319,153 +396,37 @@ class _OaAdapter:
         step: Step,
         resources: Resources,
     ) -> AdapterPreparation:
-        from sigilicon.domain.platform import load_platforms
-        from sigilicon.adapters.cadence.oa_library import (
-            oa_plan_source_paths,
-            plan_oa_library_rebuild,
-        )
-
-        initial = step
-        config = self._config(initial)
-        owner = _text(config, "owner")
-        manifest = find_oa_assembly(project, project.owner(owner).root)
-        if manifest is None:
-            raise ContractError(f"owner {owner!r} has no OA assembly")
-        platforms = load_platforms(project, resources=resources)
-        planning = plan_oa_library_rebuild(
-            manifest,
-            project=project,
-            platform_inventory=platforms,
-        )
-        selected = None
-        if self.requires_testbench:
-            testbench = _text(config, "testbench")
-            matches = tuple(
-                item for item in planning.testbenches if item.cell == testbench
-            )
-            if len(matches) != 1:
-                raise ContractError(f"unknown native OA testbench: {testbench}")
-            selected = matches[0]
-        required = _validate_oa_plan_sources(
-            project,
-            owner,
-            planning,
-            oa_plan_source_paths(planning),
-        )
-        prepared = _prepare_cadence_inputs(
+        planning, prepared = _prepare_oa(
             project,
             step,
             resources,
-            owner=owner,
-            plan_identity=canonical_digest(planning.as_dict()),
-            source_records=required,
-            resource_identities=_oa_resource_identities(
-                project,
-                planning,
-                required,
-                resources,
-            ),
-            runtime_identities=(
-                *_BRIDGE_RESOURCES,
-                *_oa_runtime_executables(planning, self.operation),
-            ),
+            fields=_OA_FIELDS,
+            operation="check",
         )
-        action_type = {
-            "check": _OaCheckAction,
-            "rebuild": _OaRebuildAction,
-            "attest": _OaAttestAction,
-        }[self.operation]
-        return prepared.bind(action_type(planning, prepared.inputs))
+        return prepared.bind(_OaCheckAction(planning, prepared.inputs))
 
     def run(self, context: ExecutionIO) -> StepResult:
-        step = context.step
-        from sigilicon.adapters.cadence.oa_client import get_client
-        from sigilicon.adapters.cadence.oa_library import (
-            build_oa_layout_ir,
-        )
-
-        config = self._config(step)
-        owner = _text(config, "owner")
-        context.step.validate_action()
-        prepared = context.step.action
-        expected = {
-            "check": _OaCheckAction,
-            "rebuild": _OaRebuildAction,
-            "attest": _OaAttestAction,
-        }[self.operation]
-        if not isinstance(prepared, expected):
-            raise ExecutionError(f"OA {self.operation} Step has no typed action")
-        prepared.inputs.validate(context)
-        planning = prepared.plan
-        if self.materializes_layout_ir:
-            planning = build_oa_layout_ir(
-                planning,
-                source_paths=prepared.inputs.source_paths(context),
-                workspace=context.workspace("layout-ir", {}),
-                python_executable=context.runtime.require_tool(_PYTHON),
-            )
-        selected = None
-        if self.requires_testbench:
-            testbench = _text(config, "testbench")
-            matches = tuple(item for item in planning.testbenches if item.cell == testbench)
-            if len(matches) != 1:
-                raise ExecutionError(f"prepared OA testbench is invalid: {testbench}")
-            selected = matches[0]
-        timeout = _positive_integer(config, "timeout_seconds")
-        client = get_client(context.runtime)
-        payload = self._execute_operation(
-            context,
-            planning=planning,
-            prepared=prepared,
-            selected=selected,
-            client=client,
-            timeout=timeout,
-        )
-        passed = payload.get("passed")
-        if type(passed) is not bool:
-            raise ExecutionError("OA evidence must contain a boolean 'passed' field")
-        output = context.write_text(
-            "oa",
-            f"{self.operation}.json",
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-        )
-        artifacts = (Artifact("oa", "evidence.cadence-oa", output),)
-        facts = {"passed": passed, "operation": self.operation}
-        return (
-            StepResult.succeeded(artifacts=artifacts, facts=facts)
-            if passed
-            else StepResult(
-                "failed",
-                artifacts,
-                facts,
-                f"OA {self.operation} did not pass",
-            )
-        )
-
-
-class OaCheckAdapter(_OaAdapter):
-    """Validate one planned OA library without mutating its workspace."""
-
-    name = "cadence.oa-check"
-    operation = "check"
-    materializes_layout_ir = True
-
-    def _execute_operation(
-        self,
-        context: ExecutionIO,
-        *,
-        planning: OALibraryRebuildPlan,
-        prepared: _OaOperationAction,
-        selected: Any,
-        client: Any,
-        timeout: int,
-    ) -> Mapping[str, Any]:
         from sigilicon.adapters.cadence.oa_check import check_oa_library
+        from sigilicon.adapters.cadence.oa_client import get_client
+        from sigilicon.adapters.cadence.oa_library import build_oa_layout_ir
         from sigilicon.virtuoso.workspace import OperationPolicy, workspace_operation
 
+        config = _oa_config(context.step, _OA_FIELDS)
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _OaCheckAction):
+            raise ExecutionError("OA check Step has no typed action")
+        action.inputs.validate(context)
+        planning = build_oa_layout_ir(
+            action.plan,
+            source_paths=action.inputs.source_paths(context),
+            workspace=context.workspace("layout-ir", {}),
+            python_executable=context.runtime.require_tool(_PYTHON),
+        )
+        client = get_client(context.runtime)
         with workspace_operation(
             client,
-            prepared.inputs.workspace_root,
+            action.inputs.workspace_root,
             "check-oa-library",
             policy=OperationPolicy.READ_ONLY,
             acquire_flow_lock=False,
@@ -473,71 +434,133 @@ class OaCheckAdapter(_OaAdapter):
             operation_id=context.operation_id,
         ) as operation:
             context.register_mutation(operation)
-            return check_oa_library(
+            payload = check_oa_library(
                 planning,
                 client=client,
-                timeout=timeout,
+                timeout=_positive_integer(config, "timeout_seconds"),
                 operation=operation,
             )
+        return _publish_oa_result(context, "check", payload)
 
 
-class OaRebuildAdapter(_OaAdapter):
+class OaRebuildAdapter:
     """Rebuild one planned OA assembly through a bound mutation lease."""
 
     name = "cadence.oa-rebuild"
-    operation = "rebuild"
-    materializes_layout_ir = True
 
-    def _execute_operation(
+    def preflight(
         self,
-        context: ExecutionIO,
-        *,
-        planning: OALibraryRebuildPlan,
-        prepared: _OaOperationAction,
-        selected: Any,
-        client: Any,
-        timeout: int,
-    ) -> Mapping[str, Any]:
-        from sigilicon.adapters.cadence.oa_library import rebuild_oa_library
+        step: Step,
+        resources: Resources,
+    ) -> tuple[PreflightCheck, ...]:
+        return _oa_preflight(
+            step,
+            resources,
+            fields=_OA_FIELDS,
+            action_type=_OaRebuildAction,
+        )
 
-        return rebuild_oa_library(
+    def prepare(
+        self,
+        project: _CadencePlanningProject,
+        step: Step,
+        resources: Resources,
+    ) -> AdapterPreparation:
+        planning, prepared = _prepare_oa(
+            project,
+            step,
+            resources,
+            fields=_OA_FIELDS,
+            operation="rebuild",
+        )
+        return prepared.bind(_OaRebuildAction(planning, prepared.inputs))
+
+    def run(self, context: ExecutionIO) -> StepResult:
+        from sigilicon.adapters.cadence.oa_client import get_client
+        from sigilicon.adapters.cadence.oa_library import (
+            build_oa_layout_ir,
+            rebuild_oa_library,
+        )
+
+        config = _oa_config(context.step, _OA_FIELDS)
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _OaRebuildAction):
+            raise ExecutionError("OA rebuild Step has no typed action")
+        action.inputs.validate(context)
+        planning = build_oa_layout_ir(
+            action.plan,
+            source_paths=action.inputs.source_paths(context),
+            workspace=context.workspace("layout-ir", {}),
+            python_executable=context.runtime.require_tool(_PYTHON),
+        )
+        payload = rebuild_oa_library(
             planning,
-            client,
-            source_paths=prepared.inputs.source_paths(context),
-            resource_paths=prepared.inputs.resource_paths(context),
+            get_client(context.runtime),
+            source_paths=action.inputs.source_paths(context),
+            resource_paths=action.inputs.resource_paths(context),
             resources=context.runtime,
-            timeout=timeout,
+            timeout=_positive_integer(config, "timeout_seconds"),
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,
         )
+        return _publish_oa_result(context, "rebuild", payload)
 
 
-class OaAttestAdapter(_OaAdapter):
+class OaAttestAdapter:
     """Attest one native OA testbench against its planned assembly."""
 
     name = "cadence.oa-attest"
-    operation = "attest"
-    requires_testbench = True
 
-    def _execute_operation(
+    def preflight(
         self,
-        context: ExecutionIO,
-        *,
-        planning: OALibraryRebuildPlan,
-        prepared: _OaOperationAction,
-        selected: Any,
-        client: Any,
-        timeout: int,
-    ) -> Mapping[str, Any]:
+        step: Step,
+        resources: Resources,
+    ) -> tuple[PreflightCheck, ...]:
+        return _oa_preflight(
+            step,
+            resources,
+            fields=_OA_ATTEST_FIELDS,
+            action_type=_OaAttestAction,
+        )
+
+    def prepare(
+        self,
+        project: _CadencePlanningProject,
+        step: Step,
+        resources: Resources,
+    ) -> AdapterPreparation:
+        planning, prepared = _prepare_oa(
+            project,
+            step,
+            resources,
+            fields=_OA_ATTEST_FIELDS,
+            operation="attest",
+        )
+        return prepared.bind(_OaAttestAction(planning, prepared.inputs))
+
+    def run(self, context: ExecutionIO) -> StepResult:
+        from sigilicon.adapters.cadence.oa_client import get_client
         from sigilicon.adapters.cadence.oa_library import attest_oa_testbench
 
-        if selected is None:
-            raise ExecutionError("OA attest preparation lost its testbench")
-        return attest_oa_testbench(
-            planning,
-            selected,
-            client,
-            timeout=timeout,
+        config = _oa_config(context.step, _OA_ATTEST_FIELDS)
+        context.step.validate_action()
+        action = context.step.action
+        if not isinstance(action, _OaAttestAction):
+            raise ExecutionError("OA attest Step has no typed action")
+        action.inputs.validate(context)
+        testbench = _text(config, "testbench")
+        matches = tuple(
+            item for item in action.plan.testbenches if item.cell == testbench
+        )
+        if len(matches) != 1:
+            raise ExecutionError(f"prepared OA testbench is invalid: {testbench}")
+        payload = attest_oa_testbench(
+            action.plan,
+            matches[0],
+            get_client(context.runtime),
+            timeout=_positive_integer(config, "timeout_seconds"),
             operation_id=context.operation_id,
             bind_operation=context.register_mutation,
         )
+        return _publish_oa_result(context, "attest", payload)
