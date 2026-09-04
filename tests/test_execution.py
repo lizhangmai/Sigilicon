@@ -12,7 +12,14 @@ import pytest
 
 import sigilicon.execution.engine as execution_engine
 
-from sigilicon.execution import Adapter, ExecutionPlan, RunResult, RunStore, Step
+from sigilicon.execution import (
+    Adapter,
+    AdapterPreparation,
+    ExecutionPlan,
+    RunResult,
+    RunStore,
+    Step,
+)
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -22,7 +29,6 @@ from sigilicon.execution._model import (
     ExecutionIO,
     StepOutcome,
     StepResult,
-    _bind_step,
 )
 from sigilicon.execution._model import ResourceBinding, Resources
 from sigilicon.canonical import canonical_digest
@@ -309,8 +315,8 @@ filesets = ["value"]
 class CopyAdapter:
     name = "fake.copy"
 
-    def plan(self, _project, step, _resources):
-        return step
+    def prepare(self, _project, step, _resources):
+        return AdapterPreparation()
 
     def preflight(self, step, resources):
         return (
@@ -335,8 +341,8 @@ class CopyAdapter:
 class UpperAdapter:
     name = "fake.upper"
 
-    def plan(self, _project, step, _resources):
-        return step
+    def prepare(self, _project, step, _resources):
+        return AdapterPreparation()
 
     def preflight(self, step, resources):
         return ()
@@ -386,8 +392,8 @@ def test_large_chain_execution_does_not_rescan_the_global_source_set(
     class NoopAdapter:
         name = "fake.noop"
 
-        def plan(self, _project, step, _resources):
-            return step
+        def prepare(self, _project, step, _resources):
+            return AdapterPreparation()
 
         def preflight(self, _step, _resources):
             return ()
@@ -446,9 +452,9 @@ def test_run_consumes_the_compiled_plan_without_replanning(tmp_path: Path) -> No
     class CountingAdapter(CopyAdapter):
         plans = 0
 
-        def plan(self, project, step, resources):
+        def prepare(self, project, step, resources):
             self.plans += 1
-            return super().plan(project, step, resources)
+            return super().prepare(project, step, resources)
 
     adapter = CountingAdapter()
     project = _project(tmp_path, adapter)
@@ -797,20 +803,14 @@ def test_adapter_planning_closes_over_discovered_sources_deterministically(
         def __init__(self, paths: tuple[Path, ...]) -> None:
             self.paths = paths
 
-        def plan(self, project, step, resources):
+        def prepare(self, project, step, resources):
             owner_root = project.owner("example").root
             sources = tuple(
                 Source.capture(path, root=owner_root, scope="owner")
                 for path in self.paths
             )
-            return _bind_step(
-                step,
-                source_closure=tuple(
-                    sorted(
-                        (*step.source_closure, *sources),
-                        key=lambda source: source.path,
-                    )
-                ),
+            return AdapterPreparation(
+                sources=tuple(sorted(sources, key=lambda source: source.path)),
             )
 
     forward = _project(
@@ -842,9 +842,9 @@ def test_planning_rejects_a_compiled_source_change(tmp_path: Path) -> None:
     source = tmp_path / "ip/example/configs/value.txt"
 
     class ChangingAdapter(CopyAdapter):
-        def plan(self, project, step, resources):
+        def prepare(self, project, step, resources):
             source.write_text("changed during planning\n", encoding="utf-8")
-            return super().plan(project, step, resources)
+            return super().prepare(project, step, resources)
 
     project = _project(tmp_path, ChangingAdapter())
 
@@ -886,12 +886,9 @@ source = ["value"]
     value.write_text("foreign\n", encoding="utf-8")
 
     class ForeignSourceAdapter(CopyAdapter):
-        def plan(self, project, step, resources):
+        def prepare(self, project, step, resources):
             source = Source.capture(value, root=foreign, scope="owner")
-            return _bind_step(
-                step,
-                source_closure=(*step.source_closure, source),
-            )
+            return AdapterPreparation(sources=(source,))
 
     project = _project(tmp_path, ForeignSourceAdapter())
     with pytest.raises(ContractError, match="owned outside 'example'"):
@@ -907,12 +904,9 @@ def test_backend_cannot_discover_a_symlinked_source(tmp_path: Path) -> None:
     link.symlink_to(target.name)
 
     class SymlinkSourceAdapter(CopyAdapter):
-        def plan(self, project, step, resources):
+        def prepare(self, project, step, resources):
             source = Source.capture(link, root=owner.parent, scope="owner")
-            return _bind_step(
-                step,
-                source_closure=(*step.source_closure, source),
-            )
+            return AdapterPreparation(sources=(source,))
 
     project = _project(tmp_path, SymlinkSourceAdapter())
     with pytest.raises(ContractError, match="non-symlink"):
@@ -1210,15 +1204,12 @@ def test_external_resource_is_sealed_without_persisting_location_or_text(
     live.write_text("proprietary model\n", encoding="utf-8")
 
     class ResourceAdapter(CopyAdapter):
-        def plan(self, _project, step, resources):
+        def prepare(self, _project, step, resources):
             resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return _bind_step(
-                step,
-                resource_closure=(resource,),
-            )
+            return AdapterPreparation(resources=(resource,))
 
         def run(self, context: ExecutionIO) -> StepResult:
             step = context.step
@@ -1263,15 +1254,12 @@ def test_sealed_resource_lookup_does_not_recapture_the_live_tree(
         )
 
     class ResourceAdapter(CopyAdapter):
-        def plan(self, _project, step, resources):
+        def prepare(self, _project, step, resources):
             resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture/library",
             )
-            return _bind_step(
-                step,
-                resource_closure=(resource,),
-            )
+            return AdapterPreparation(resources=(resource,))
 
         def run(self, context: ExecutionIO) -> StepResult:
             identity = context.step.resources[0]
@@ -1310,12 +1298,9 @@ def test_binary_resource_is_sealed_without_text_decoding(tmp_path: Path) -> None
     live.write_bytes(payload)
 
     class BinaryAdapter(CopyAdapter):
-        def plan(self, _project, step, resources):
+        def prepare(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/table")
-            return _bind_step(
-                step,
-                resource_closure=(resource,),
-            )
+            return AdapterPreparation(resources=(resource,))
 
         def run(self, context: ExecutionIO) -> StepResult:
             step = context.step
@@ -1368,12 +1353,9 @@ def test_directory_resource_is_sealed_as_a_deterministic_tree(tmp_path: Path) ->
     executable.chmod(0o755)
 
     class DirectoryAdapter(CopyAdapter):
-        def plan(self, _project, step, resources):
+        def prepare(self, _project, step, resources):
             resource = ResourceBinding.capture(live, identity="pdk:fixture/library")
-            return _bind_step(
-                step,
-                resource_closure=(resource,),
-            )
+            return AdapterPreparation(resources=(resource,))
 
         def run(self, context: ExecutionIO) -> StepResult:
             step = context.step
@@ -1451,12 +1433,9 @@ def test_run_store_keeps_tools_as_external_content_references(tmp_path: Path) ->
     )
 
     class ToolAdapter(CopyAdapter):
-        def plan(self, _project, step, resources):
+        def prepare(self, _project, step, resources):
             binding = resources.capture("test.tool")
-            return _bind_step(
-                step,
-                resource_closure=(binding,),
-            )
+            return AdapterPreparation(resources=(binding,))
 
     project = _project(tmp_path, ToolAdapter())
     result = project.run(_plan(project, "example:check"), run_id="6" * 32)
@@ -1483,15 +1462,12 @@ def test_external_resource_reader_rejects_sealed_content_tampering(
     live.write_text("trusted model\n", encoding="utf-8")
 
     class TamperingAdapter(CopyAdapter):
-        def plan(self, _project, step, resources):
+        def prepare(self, _project, step, resources):
             resource = ResourceBinding.capture(
                 live,
                 identity="pdk:fixture:simulation/nominal/model.scs",
             )
-            return _bind_step(
-                step,
-                resource_closure=(resource,),
-            )
+            return AdapterPreparation(resources=(resource,))
 
         def run(self, context: ExecutionIO) -> StepResult:
             step = context.step

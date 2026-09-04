@@ -1028,39 +1028,6 @@ class Step:
         }
 
 
-_UNSET = object()
-
-
-def _bind_step(
-    step: Step,
-    *,
-    config: Mapping[str, JsonValue] | object = _UNSET,
-    action: PlannedAction | None | object = _UNSET,
-    source_closure: tuple[Source, ...] | object = _UNSET,
-    resource_closure: tuple[ResourceBinding, ...] | object = _UNSET,
-) -> Step:
-    """Return one Step with its adapter-owned action and exact closure."""
-
-    public: dict[str, object] = {}
-    if config is not _UNSET:
-        public["config"] = config
-    if action is not _UNSET:
-        public["action"] = action
-    if source_closure is not _UNSET:
-        public["source_closure"] = source_closure
-        public["sources"] = tuple(
-            dict.fromkeys((*step.sources, *(source.path for source in source_closure)))
-        )
-    if resource_closure is not _UNSET:
-        public["resource_closure"] = resource_closure
-        public["resources"] = tuple(
-            dict.fromkeys(
-                (*step.resources, *(resource.identity for resource in resource_closure))
-            )
-        )
-    return replace(step, **public)
-
-
 def _topology(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     by_id = {step.id: step for step in steps}
     if len(by_id) != len(steps):

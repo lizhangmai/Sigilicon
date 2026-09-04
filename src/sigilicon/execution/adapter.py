@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
@@ -12,13 +12,13 @@ from sigilicon.execution._model import (
     ContractError,
     ExecutionPlan,
     PreflightCheck,
+    PlannedAction,
     ResourceBinding,
     Resources,
     Source,
     Step,
     ExecutionIO,
     StepResult,
-    _bind_step,
     _bind_execution_plan,
     adapter_identity,
 )
@@ -45,12 +45,12 @@ class Adapter(Protocol):
 
     name: str
 
-    def plan(
+    def prepare(
         self,
         project: PlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step: ...
+    ) -> "AdapterPreparation": ...
 
     def preflight(
         self,
@@ -61,16 +61,53 @@ class Adapter(Protocol):
     def run(self, context: ExecutionIO) -> StepResult: ...
 
 
-class DirectAdapter:
-    """Base for requests whose manifest already contains their source closure."""
+@dataclass(frozen=True)
+class AdapterPreparation:
+    """Adapter-owned action and additional inputs discovered during planning."""
 
-    def plan(
-        self,
-        _project: PlanningProject,
-        step: Step,
-        _resources: Resources,
-    ) -> Step:
-        return step
+    action: PlannedAction | None = None
+    sources: tuple[Source, ...] = ()
+    resources: tuple[ResourceBinding, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.action is not None and not isinstance(self.action, PlannedAction):
+            raise ContractError("adapter preparation action must expose a record")
+        if not isinstance(self.sources, tuple) or any(
+            not isinstance(source, Source) for source in self.sources
+        ):
+            raise ContractError("adapter preparation sources must be Source values")
+        if not isinstance(self.resources, tuple) or any(
+            not isinstance(resource, ResourceBinding) for resource in self.resources
+        ):
+            raise ContractError(
+                "adapter preparation resources must be ResourceBinding values"
+            )
+
+
+def _prepare_step(step: Step, preparation: AdapterPreparation) -> Step:
+    """Apply adapter discoveries while keeping Step construction in the kernel."""
+
+    sources = tuple(dict.fromkeys((*step.source_closure, *preparation.sources)))
+    resources: dict[str, ResourceBinding] = {
+        resource.identity: resource for resource in step.resource_closure
+    }
+    for resource in preparation.resources:
+        previous = resources.get(resource.identity)
+        if previous is not None and previous.record != resource.record:
+            raise ContractError(
+                f"adapter preparation resource collision: {resource.identity}"
+            )
+        resources[resource.identity] = resource
+    return replace(
+        step,
+        action=preparation.action,
+        source_closure=sources,
+        sources=tuple(dict.fromkeys((*step.sources, *(source.path for source in sources)))),
+        resource_closure=tuple(resources.values()),
+        resources=tuple(
+            dict.fromkeys((*step.resources, *resources))
+        ),
+    )
 
 
 class AdapterRegistry(Mapping[str, Adapter]):
@@ -127,20 +164,16 @@ def plan_execution(
 
     for step in draft.steps:
         adapter = adapters.get(step.uses)
-        planned = step if adapter is None else adapter.plan(project, step, resources)
-        if not isinstance(planned, Step):
-            raise ContractError(f"adapter {step.uses!r} produced an invalid step")
-        if (
-            planned.id,
-            planned.uses,
-            planned.needs,
-            planned.evidence,
-        ) != (step.id, step.uses, step.needs, step.evidence):
-            raise ContractError(f"adapter {step.uses!r} rewrote operation structure")
-        if planned.sources[: len(step.sources)] != step.sources:
+        preparation = (
+            AdapterPreparation()
+            if adapter is None
+            else adapter.prepare(project, step, resources)
+        )
+        if not isinstance(preparation, AdapterPreparation):
             raise ContractError(
-                f"adapter {step.uses!r} removed or reordered declared sources"
+                f"adapter {step.uses!r} produced an invalid preparation"
             )
+        planned = _prepare_step(step, preparation)
 
         for source in planned.source_closure:
             path = source.location
@@ -200,8 +233,9 @@ def plan_execution(
                     if identity in captured_resources
                     else resources.capture(identity)
                 )
-        planned = _bind_step(
+        planned = replace(
             planned,
+            resources=declared_resources,
             resource_closure=tuple(
                 step_resources[identity] for identity in declared_resources
             ),
@@ -243,4 +277,4 @@ def plan_execution(
     )
 
 
-__all__ = ["Adapter", "AdapterRegistry", "DirectAdapter", "plan_execution"]
+__all__ = ["Adapter", "AdapterPreparation", "AdapterRegistry", "plan_execution"]

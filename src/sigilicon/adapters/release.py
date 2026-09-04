@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from sigilicon.execution.adapter import PlanningProject
+from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -20,7 +20,6 @@ from sigilicon.execution._model import (
     Source,
     Step,
     StepResult,
-    _bind_step,
 )
 from sigilicon.workflows.ip_packaging import (
     IpReleaseError,
@@ -88,12 +87,12 @@ class IpReleaseAdapter:
     name = "sigilicon.ip-release"
     _fields = frozenset({"owner", "maturity"})
 
-    def plan(
+    def prepare(
         self,
         project: PlanningProject,
         step: Step,
         _resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         unknown = set(step.config) - self._fields
         if unknown:
             raise ContractError(
@@ -131,14 +130,11 @@ class IpReleaseAdapter:
             sources,
             _resources.require_directory(store_identity),
         )
-        planned = _bind_step(
-            step,
+        return AdapterPreparation(
             action=action,
-            source_closure=tuple(captured),
-            resource_closure=(_resources.capture(store_identity),),
+            sources=tuple(captured),
+            resources=(_resources.capture(store_identity),),
         )
-        self.preflight(planned, _resources)
-        return planned
 
     def preflight(
         self,

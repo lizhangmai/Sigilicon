@@ -20,7 +20,7 @@ from typing import Any
 
 from sigilicon.artifacts import ensure_nofollow_directory
 from sigilicon.canonical import canonical_digest
-from sigilicon.execution.adapter import DirectAdapter, PlanningProject
+from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -32,7 +32,6 @@ from sigilicon.execution._model import (
     Step,
     ExecutionIO,
     StepResult,
-    _bind_step,
 )
 from sigilicon.execution.runtime import (
     BoundEnvironment,
@@ -73,6 +72,17 @@ _TOOL_LOCATION_ENVIRONMENT = frozenset(
         "SYNOPSYS_LC_ROOT",
     }
 )
+
+
+def _declared_inputs(
+    _adapter: object,
+    _project: PlanningProject,
+    _step: Step,
+    _resources: Resources,
+) -> AdapterPreparation:
+    """Use only the source and runtime closure declared by the operation."""
+
+    return AdapterPreparation()
 
 
 def _text(config: Mapping[str, Any], name: str) -> str:
@@ -431,8 +441,9 @@ def _run_script(
         ))
 
 
-class VcsAdapter(DirectAdapter):
+class VcsAdapter:
     name = "synopsys.vcs"
+    prepare = _declared_inputs
     _fields = frozenset(
         {
             "rtl_root",
@@ -507,8 +518,9 @@ class VcsAdapter(DirectAdapter):
         return StepResult.succeeded(artifacts=logs)
 
 
-class DcAdapter(DirectAdapter):
+class DcAdapter:
     name = "synopsys.dc"
+    prepare = _declared_inputs
     _fields = frozenset(
         {
             "constraints",
@@ -603,8 +615,9 @@ class DcAdapter(DirectAdapter):
             return StepResult.succeeded(artifacts=(*logs, *outputs, *reports))
 
 
-class FcAdapter(DirectAdapter):
+class FcAdapter:
     name = "synopsys.fc"
+    prepare = _declared_inputs
     _fields = frozenset(
         {
             "corner",
@@ -779,8 +792,9 @@ class FcAdapter(DirectAdapter):
             return StepResult.succeeded(artifacts=(*logs, *artifacts))
 
 
-class HspiceAdapter(DirectAdapter):
+class HspiceAdapter:
     name = "synopsys.hspice"
+    prepare = _declared_inputs
     _fields = frozenset(
         {
             "collect",
@@ -997,7 +1011,7 @@ class _StructuralLinkAction:
         )
 
 
-class StructuralLinkAdapter(DirectAdapter):
+class StructuralLinkAdapter:
     """Link owner RTL against one locked, uncharacterized macro release."""
 
     name = "synopsys.structural-link"
@@ -1089,12 +1103,12 @@ class StructuralLinkAdapter(DirectAdapter):
             )
         return preflight_environment(step.runtime, resources)
 
-    def plan(
+    def prepare(
         self,
         project: PlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         initial = step
         config = self._config(initial)
         owner = _text(config, "owner")
@@ -1186,21 +1200,11 @@ class StructuralLinkAdapter(DirectAdapter):
             external[0].identity,
             external[1].identity,
         )
-        prepared = _bind_step(
-            step,
-            config=config,
+        return AdapterPreparation(
             action=structural_link,
-            source_closure=tuple(
-                dict.fromkeys(
-                    (
-                        *step.source_closure,
-                        *(source for _scope, source in captured_sources),
-                    )
-                )
-            ),
-            resource_closure=external,
+            sources=tuple(source for _scope, source in captured_sources),
+            resources=external,
         )
-        return prepared
 
     def _execute(
         self,

@@ -16,7 +16,7 @@ from sigilicon.adapters.cadence import (
     XceliumAmsAdapter,
     cadence_adapters,
 )
-from sigilicon.execution import Step
+from sigilicon.execution import AdapterPreparation, Step
 from sigilicon.execution._model import (
     ContractError,
     Evidence,
@@ -164,6 +164,23 @@ def _bind_plan(context: ExecutionIO, step: Step) -> ExecutionIO:
             resource.identity: resource.kind
             for resource in step.resource_closure
         },
+    )
+
+
+def _prepared_step(step: Step, preparation: AdapterPreparation) -> Step:
+    sources = tuple(dict.fromkeys((*step.source_closure, *preparation.sources)))
+    resources = tuple(
+        dict.fromkeys((*step.resource_closure, *preparation.resources))
+    )
+    return replace(
+        step,
+        action=preparation.action,
+        source_closure=sources,
+        sources=tuple(dict.fromkeys((*step.sources, *(item.path for item in sources)))),
+        resource_closure=resources,
+        resources=tuple(
+            dict.fromkeys((*step.resources, *(item.identity for item in resources)))
+        ),
     )
 
 
@@ -355,7 +372,10 @@ def test_xcelium_ams_backend_uses_locked_plan_and_resource_snapshot(
         execute,
     )
     adapter = XceliumAmsAdapter()
-    prepared = adapter.plan(selected_project, step, resources)
+    prepared = _prepared_step(
+        step,
+        adapter.prepare(selected_project, step, resources),
+    )
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
@@ -538,7 +558,10 @@ def test_native_oa_backend_binds_operation_and_publishes_evidence(
         execute,
     )
     adapter = NativeOaAdapter()
-    prepared = adapter.plan(project, step, context.runtime)
+    prepared = _prepared_step(
+        step,
+        adapter.prepare(project, step, context.runtime),
+    )
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 
@@ -657,7 +680,10 @@ def test_oa_rebuild_backend_binds_every_mutation_to_the_execution(
         adapter for adapter in cadence_adapters()
         if adapter.name == "cadence.oa-rebuild"
     )
-    prepared = adapter.plan(project, step, context.runtime)
+    prepared = _prepared_step(
+        step,
+        adapter.prepare(project, step, context.runtime),
+    )
     blocked = adapter.preflight(
         prepared,
         Resources(
@@ -758,7 +784,10 @@ def test_layout_backend_binds_mutation_and_preserves_uncertainty(
     )
 
     adapter = LayoutAdapter()
-    prepared = adapter.plan(project, step, context.runtime)
+    prepared = _prepared_step(
+        step,
+        adapter.prepare(project, step, context.runtime),
+    )
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
     result = adapter.run(context)
@@ -833,7 +862,7 @@ def test_layout_backend_rejects_typed_source_snapshot_drift(
     )
 
     with pytest.raises(ContractError, match="typed adapter source snapshot drift"):
-        LayoutAdapter().plan(project, step, context.runtime)
+        LayoutAdapter().prepare(project, step, context.runtime)
 
 
 def test_layout_verification_backend_publishes_classified_evidence(
@@ -964,7 +993,10 @@ def test_layout_verification_backend_publishes_classified_evidence(
         verify,
     )
     adapter = LayoutVerificationAdapter()
-    prepared = adapter.plan(project, step, resources)
+    prepared = _prepared_step(
+        step,
+        adapter.prepare(project, step, resources),
+    )
     context = _bind_plan(context, prepared)
     monkeypatch.setattr("sigilicon.project.Project.open", lambda _root: pytest.fail("Cadence run reopened the Project"))
 

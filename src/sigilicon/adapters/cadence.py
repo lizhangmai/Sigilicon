@@ -14,7 +14,7 @@ from typing import Any, Mapping, Protocol
 from sigilicon.artifacts import read_nofollow_text
 from sigilicon.canonical import canonical_digest
 from sigilicon.domain.oa_library import find_oa_assembly
-from sigilicon.execution.adapter import DirectAdapter, PlanningProject
+from sigilicon.execution.adapter import AdapterPreparation, PlanningProject
 from sigilicon.execution._model import (
     Artifact,
     ContractError,
@@ -26,7 +26,6 @@ from sigilicon.execution._model import (
     Step,
     ExecutionIO,
     StepResult,
-    _bind_step,
 )
 from sigilicon.external_tools import (
     CADENCE_SPECTRE_TOOL,
@@ -515,14 +514,13 @@ class _CadenceDomainAdapter:
         resources: Resources,
         *,
         owner: str,
-        config: Mapping[str, Any],
         plan: object,
         prepared: Mapping[str, Any],
         source_records: Mapping[Path, str | Source],
         resource_identities: Mapping[Path, str],
         extra_resources: tuple[Path, ...] = (),
         runtime_identities: tuple[str, ...] = (),
-    ) -> Step:
+    ) -> AdapterPreparation:
         """Seal one typed Cadence plan through the common execution boundary."""
 
         sources = _bind_source_paths(project, owner, step, source_records)
@@ -532,9 +530,7 @@ class _CadenceDomainAdapter:
             extra_resources,
             identities=resource_identities,
         )
-        prepared_step = self._bind_domain_plan(
-            step,
-            config=config,
+        preparation = self._bind_domain_plan(
             plan=plan,
             prepared=prepared,
             sources=sources,
@@ -548,14 +544,11 @@ class _CadenceDomainAdapter:
             runtime_bindings=_runtime_bindings(resources, *runtime_identities),
             workspace_root=project.workspace_root,
         )
-        self.preflight(prepared_step, resources)
-        return prepared_step
+        return preparation
 
     def _bind_domain_plan(
         self,
-        operation: Step,
         *,
-        config: Mapping[str, Any],
         plan: object,
         prepared: Mapping[str, Any],
         sources: Mapping[Path, tuple[str, str]],
@@ -563,16 +556,13 @@ class _CadenceDomainAdapter:
         resources: tuple[ResourceBinding, ...],
         runtime_bindings: tuple[ResourceBinding, ...] = (),
         workspace_root: Path,
-    ) -> Step:
+    ) -> AdapterPreparation:
         domain_plan = _CadenceAction.create(
             plan,
             prepared,
             sources,
             resources,
             workspace_root,
-        )
-        source_closure = tuple(
-            dict.fromkeys((*operation.source_closure, *captured))
         )
         combined_bindings = tuple(
             dict.fromkeys((*resources, *runtime_bindings))
@@ -581,12 +571,10 @@ class _CadenceDomainAdapter:
             combined_bindings
         ):
             raise ContractError("Cadence plan binds a runtime identity more than once")
-        return _bind_step(
-            operation,
-            config=config,
+        return AdapterPreparation(
             action=domain_plan,
-            source_closure=source_closure,
-            resource_closure=combined_bindings,
+            sources=captured,
+            resources=combined_bindings,
         )
 
     def _domain_action(self, context: ExecutionIO) -> _CadenceAction:
@@ -598,7 +586,7 @@ class _CadenceDomainAdapter:
         return domain_plan
 
 
-class XceliumAdapter(DirectAdapter):
+class XceliumAdapter:
     """Execute one explicit, source-closed Verilog/SystemVerilog testbench."""
 
     name = "cadence.xcelium"
@@ -623,16 +611,15 @@ class XceliumAdapter(DirectAdapter):
         _positive_integer(config, "timeout_seconds")
         return (_executable_check(resources, _XRUN),)
 
-    def plan(
+    def prepare(
         self,
         project: PlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         del project
-        return _bind_step(
-            step,
-            resource_closure=_runtime_bindings(resources, _XRUN),
+        return AdapterPreparation(
+            resources=_runtime_bindings(resources, _XRUN),
         )
 
     def run(self, context: ExecutionIO) -> StepResult:
@@ -737,12 +724,12 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             _executable_check(resources, CADENCE_SPECTRE_TOOL),
         )
 
-    def plan(
+    def prepare(
         self,
         project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         from sigilicon.workflows.xcelium_ams import plan_xcelium_ams_cell
 
         initial = step
@@ -773,7 +760,6 @@ class XceliumAmsAdapter(_CadenceDomainAdapter):
             step,
             resources,
             owner=owner,
-            config=config,
             plan=planning,
             prepared=prepared_identity,
             source_records=planning.source_records,
@@ -878,12 +864,12 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def plan(
+    def prepare(
         self,
         project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         from sigilicon.domain.platform import load_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
@@ -923,7 +909,6 @@ class NativeOaAdapter(_CadenceDomainAdapter):
             step,
             resources,
             owner=owner,
-            config=config,
             plan=planning,
             prepared=prepared_identity,
             source_records=required,
@@ -1087,12 +1072,12 @@ class _OaAdapter(_CadenceDomainAdapter):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def plan(
+    def prepare(
         self,
         project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         from sigilicon.domain.platform import load_platforms
         from sigilicon.workflows.oa_library import (
             oa_plan_source_paths,
@@ -1141,7 +1126,6 @@ class _OaAdapter(_CadenceDomainAdapter):
             step,
             resources,
             owner=owner,
-            config=config,
             plan=planning,
             prepared=prepared_identity,
             source_records=required,
@@ -1272,12 +1256,12 @@ class LayoutAdapter(_CadenceDomainAdapter):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def plan(
+    def prepare(
         self,
         project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         from sigilicon.domain.platform import (
             load_platforms,
             platform_resource_identities,
@@ -1308,7 +1292,6 @@ class LayoutAdapter(_CadenceDomainAdapter):
             step,
             resources,
             owner=owner,
-            config=config,
             plan=planning,
             prepared=prepared_identity,
             source_records=planning.source_records,
@@ -1415,12 +1398,12 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             *_capability_checks(resources, _OA_CAPABILITIES),
         )
 
-    def plan(
+    def prepare(
         self,
         project: _CadencePlanningProject,
         step: Step,
         resources: Resources,
-    ) -> Step:
+    ) -> AdapterPreparation:
         from sigilicon.domain.platform import (
             load_platforms,
             platform_resource_identities,
@@ -1460,7 +1443,6 @@ class LayoutVerificationAdapter(_CadenceDomainAdapter):
             step,
             resources,
             owner=owner,
-            config=config,
             plan=planning,
             prepared=prepared_identity,
             source_records=planning.source_records,
