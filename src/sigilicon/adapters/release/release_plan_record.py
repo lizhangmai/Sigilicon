@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 from types import MappingProxyType
@@ -162,7 +162,7 @@ class RtlReleaseInterface:
     module: str
     source_role: str
     variant: str | None = None
-    kind: Literal["rtl"] = "rtl"
+    kind: Literal["rtl"] = field(default="rtl", init=False)
 
     @property
     def record(self) -> dict[str, object]:
@@ -183,7 +183,10 @@ class MixedSignalReleaseInterface:
     physical: str
     logical: str
     interfaces_are_distinct: bool
-    kind: Literal["oa-mixed-signal"] = "oa-mixed-signal"
+    kind: Literal["oa-mixed-signal"] = field(
+        default="oa-mixed-signal",
+        init=False,
+    )
 
     @property
     def record(self) -> dict[str, object]:
@@ -199,7 +202,7 @@ class MixedSignalReleaseInterface:
 @dataclass(frozen=True)
 class NativeOaReleaseInterface:
     contract: str
-    kind: Literal["oa-native"] = "oa-native"
+    kind: Literal["oa-native"] = field(default="oa-native", init=False)
 
     @property
     def record(self) -> dict[str, str]:
@@ -243,8 +246,9 @@ class NativeBundleMetadata:
     subcircuits: tuple[str, ...]
     primitive_masters: tuple[str, ...]
     sha256: str
-    composition: Literal["reachable-spectre-hierarchy"] = (
-        "reachable-spectre-hierarchy"
+    composition: Literal["reachable-spectre-hierarchy"] = field(
+        default="reachable-spectre-hierarchy",
+        init=False,
     )
 
 
