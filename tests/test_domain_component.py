@@ -198,3 +198,67 @@ python = ["library"]
 
     with pytest.raises(ValueError, match="component snapshot source document drift"):
         resolve_component_contract(contract, project=project, snapshot=snapshot)
+
+
+def test_owner_identity_captures_uncataloged_transitive_component(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "ip/leaf/leaf.sv"
+    source.parent.mkdir(parents=True)
+    source.write_text("module leaf; endmodule\n", encoding="utf-8")
+    leaf = tmp_path / "ip/leaf/component.toml"
+    leaf.write_text(
+        '''schema = 3
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "leaf"
+name = "leaf"
+kind = "rtl-ip"
+
+[sources]
+rtl = "ip/leaf/leaf.sv"
+
+[filesets]
+rtl = ["rtl"]
+''',
+        encoding="utf-8",
+    )
+    top_source = tmp_path / "ip/top/top.sv"
+    top_source.parent.mkdir(parents=True)
+    top_source.write_text("module top; leaf child(); endmodule\n", encoding="utf-8")
+    top = tmp_path / "ip/top/component.toml"
+    top.write_text(
+        '''schema = 3
+contract_kind = "ip-component"
+path_scope = "owner"
+owner = "top"
+name = "top"
+kind = "composite-ip"
+
+[sources]
+rtl = "ip/top/top.sv"
+
+[filesets]
+rtl = ["rtl"]
+
+[[component]]
+name = "leaf"
+contract = "ip/leaf/component.toml"
+''',
+        encoding="utf-8",
+    )
+    _catalog_component(tmp_path, "top", top)
+
+    project = Project.open(tmp_path)
+    identity = project.operation_identity("top")
+    leaf.write_text(
+        leaf.read_text(encoding="utf-8").replace(
+            'kind = "rtl-ip"',
+            'kind = "source-library"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="component snapshot source document drift"):
+        project.operation_identity("top")
+    assert Project.open(tmp_path).operation_identity("top") != identity

@@ -27,6 +27,7 @@ from sigilicon.domain.component import (
     ComponentContract,
     _parse_component_contract,
     load_component_graph,
+    resolve_component_graph,
 )
 from sigilicon.paths import (
     ProjectContext,
@@ -202,6 +203,11 @@ class Project:
     )
     _composition_documents: DocumentStore | None = field(
         default=None,
+        repr=False,
+        compare=False,
+    )
+    _component_graphs: Mapping[str, Mapping[str, ComponentContract]] = field(
+        default_factory=lambda: MappingProxyType({}),
         repr=False,
         compare=False,
     )
@@ -413,11 +419,17 @@ class Project:
 
     @property
     def component_inventory(self) -> Mapping[Path, ComponentContract]:
-        """Return canonical owner component snapshots keyed by source path."""
+        """Return the complete captured component inventory keyed by source path."""
 
-        return MappingProxyType(
+        inventory = {
+            component.path: component
+            for graph in self._component_graphs.values()
+            for component in graph.values()
+        }
+        inventory.update(
             {owner.component.path: owner.component for owner in self.owners}
         )
+        return MappingProxyType(inventory)
 
     @classmethod
     def _from_file(cls, path: Path | str) -> "Project":
@@ -583,6 +595,19 @@ class Project:
             _runtime=runtime,
         )
         object.__setattr__(result, "_composition_documents", result._composition_snapshot())
+        graphs = {
+            owner.name: MappingProxyType(
+                dict(
+                    load_component_graph(
+                        owner.component.path,
+                        project=result,
+                        root_contract=owner.component,
+                    )
+                )
+            )
+            for owner in result.owners
+        }
+        object.__setattr__(result, "_component_graphs", MappingProxyType(graphs))
         return result
 
     def manifest_source_document(self) -> Mapping[str, Any]:
@@ -720,17 +745,18 @@ class Project:
 
         catalog = self.ip_catalog_snapshot()
         documents = self._composition_snapshot()
-        graph = load_component_graph(
+        try:
+            snapshot = self._component_graphs[owner.name]
+        except KeyError as exc:
+            raise ValueError("component graph snapshot owner drift") from exc
+        graph = resolve_component_graph(
             owner.component.path,
             project=self,
-            root_contract=owner.component,
-            contract_inventory=self.component_inventory,
+            snapshot=snapshot,
         )
-        graph_documents = {
-            component.path: component.document for component in graph.values()
-        }
-        documents.verify("component snapshot", graph_documents)
-        documents.verify_current("component snapshot", graph_documents)
+        documents.verify(
+            "component snapshot", {owner.component.path: owner.component.document}
+        )
         if owner.name not in catalog.document.get("components", {}):
             raise ValueError("IP catalog snapshot owner mapping drift")
         return graph
