@@ -897,6 +897,17 @@ class HspiceAdapter(DirectAdapter):
             )
             logs = _logs(context, completed.stdout, completed.stderr or "")
             artifacts: list[Artifact] = list(logs)
+            if completed.returncode:
+                simulator_log = scratch.path / f"{target}.lis"
+                if simulator_log.is_file() and not simulator_log.is_symlink():
+                    artifacts.append(
+                        context.copy_output(
+                            role="log",
+                            kind="log.hspice",
+                            source=simulator_log,
+                            filename=f"{target}.lis",
+                        )
+                    )
             for role, relative in _mapping(config, "collect").items():
                 source = scratch.path / str(relative)
                 if not source.is_file() and completed.returncode:

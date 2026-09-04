@@ -457,6 +457,7 @@ def test_hspice_failure_preserves_campaign_and_qualification_evidence(
 set -euo pipefail
 mkdir -p "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified"
 printf '{}\n' >"$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/statistics.json"
+printf 'simulator diagnostic\n' >"$SIGILICON_HSPICE_OUTPUT_ROOT/formal.lis"
 ln -s statistics.json "$SIGILICON_HSPICE_OUTPUT_ROOT/common_mode_qualified/latest.json"
 "$SIGILICON_PYTHON" "$SIGILICON_FIXTURE_QUALIFICATION_EVALUATOR"
 """,
@@ -565,6 +566,10 @@ raise SystemExit(1)
         "campaign-summary",
         "qualification-evidence",
     }
+    simulator_log = next(
+        artifact for artifact in result.artifacts if artifact.kind == "log.hspice"
+    )
+    assert simulator_log.read_text() == "simulator diagnostic\n"
     assert not (context.work_directory / "tool").exists()
 
 
